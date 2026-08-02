@@ -103,6 +103,25 @@ disabled = []
 permission_mode = "ask"   # ask | allow | read-only
 shell_timeout_secs = 120
 
+[security]
+# The lethal trifecta: private data + untrusted content + a way to send.
+# Once a conversation holds the first two, outbound tools are refused —
+# text hidden in third-party content could be directing the exfiltration.
+#   block     refuse the send (default)
+#   ask       escalate to a human
+#   allow     permit it (only when the "untrusted" source is actually trusted)
+trifecta = "block"
+
+# Refuse HTTP to loopback, private, link-local, and CGNAT addresses. Without
+# this, http_fetch reaches your LAN and cloud metadata endpoints.
+block_private_ips = true
+
+# allowed_domains = ["docs.rs", "arxiv.org"]   # if set, nothing else is fetched
+# blocked_domains = []
+
+# Wrap third-party content so the model treats it as data, not instructions.
+mark_untrusted_output = true
+
 # MCP servers. Their tools appear as `<name>__<tool>`.
 # [[mcp]]
 # name = "pkg"

@@ -6,7 +6,7 @@
 //! the agent loop.
 
 use crate::config::McpServerConfig;
-use crate::tool::{Tool, ToolCtx, ToolOutput};
+use crate::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -167,7 +167,20 @@ impl McpClient {
             .into_iter()
             .filter_map(|t| {
                 let remote_name = t.get("name")?.as_str()?.to_string();
+                let hints = t.get("annotations").cloned().unwrap_or(Value::Null);
+                let hint = |k: &str| hints.get(k).and_then(Value::as_bool).unwrap_or(false);
+
                 Some(Arc::new(McpTool {
+                    read_only: hint("readOnlyHint"),
+                    // `openWorldHint` means the tool talks to the wider world:
+                    // that makes it both a source of attacker-influenced content
+                    // and a way for data to leave.
+                    capabilities: Capabilities {
+                        private_data: true,
+                        untrusted_input: hint("openWorldHint"),
+                        external_send: hint("openWorldHint"),
+                        destructive: hint("destructiveHint"),
+                    },
                     // Namespaced so two servers can each expose a `search`.
                     local_name: format!("{}__{}", self.name, remote_name),
                     remote_name,
@@ -207,11 +220,14 @@ impl McpClient {
         Ok(ToolOutput {
             content: if text.is_empty() { "(no content)".into() } else { text.join("\n") },
             is_error: result.get("isError").and_then(Value::as_bool).unwrap_or(false),
+            external: true,
         })
     }
 }
 
 struct McpTool {
+    read_only: bool,
+    capabilities: Capabilities,
     local_name: String,
     remote_name: String,
     description: String,
@@ -234,9 +250,16 @@ impl Tool for McpTool {
     }
 
     fn read_only(&self) -> bool {
-        // The protocol has a `readOnlyHint` annotation, but it's advisory and
-        // servers frequently omit it. Assume a remote tool can change things.
-        false
+        // `readOnlyHint` is advisory and often omitted, so an unannotated tool
+        // is assumed to change things.
+        self.read_only
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        // An unannotated server tool is assumed to return private data — that
+        // is what most of them exist to do — but not to reach the open world,
+        // because assuming otherwise would arm the interlock on every call.
+        self.capabilities
     }
 
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {

@@ -50,6 +50,7 @@ pub async fn prepare(opts: &GlobalOpts, interactive: bool) -> Result<Prepared> {
     let ctx = ToolCtx {
         workspace: tools.workspace.clone(),
         shell_timeout: std::time::Duration::from_secs(cfg.tools.shell_timeout_secs),
+        security: cfg.security.clone(),
     };
 
     let agent = Agent::new(

@@ -21,6 +21,7 @@ pub struct Config {
     pub providers: BTreeMap<String, ProviderConfig>,
     pub agent: AgentConfig,
     pub tools: ToolsConfig,
+    pub security: SecurityConfig,
     /// MCP servers to connect to at startup.
     #[serde(rename = "mcp")]
     pub mcp: Vec<McpServerConfig>,
@@ -44,6 +45,7 @@ impl Default for Config {
             providers,
             agent: AgentConfig::default(),
             tools: ToolsConfig::default(),
+            security: SecurityConfig::default(),
             mcp: Vec::new(),
         }
     }
@@ -141,6 +143,53 @@ impl Default for ToolsConfig {
             shell_timeout_secs: 120,
         }
     }
+}
+
+/// Defenses against the *lethal trifecta*: private data, untrusted content, and
+/// a way to send data out. An agent holding all three can be turned into an
+/// exfiltration tool by instructions hidden in the content it reads — a
+/// calendar invite title, an email footer, a web page.
+///
+/// The mitigation is structural, not a filter: once both private data and
+/// untrusted content have entered a conversation, refuse to let it send.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SecurityConfig {
+    pub trifecta: TrifectaPolicy,
+    /// Refuse HTTP requests to loopback, private, and link-local addresses.
+    /// Without this, `http_fetch` reaches your LAN and cloud metadata endpoints.
+    pub block_private_ips: bool,
+    /// If non-empty, HTTP requests may only go to these hosts (suffix match).
+    pub allowed_domains: Vec<String>,
+    /// Hosts that are always refused, checked before `allowed_domains`.
+    pub blocked_domains: Vec<String>,
+    /// Wrap third-party content in a marker telling the model to treat it as
+    /// data rather than instructions. Weak on its own — defense in depth.
+    pub mark_untrusted_output: bool,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        SecurityConfig {
+            trifecta: TrifectaPolicy::Block,
+            block_private_ips: true,
+            allowed_domains: Vec::new(),
+            blocked_domains: Vec::new(),
+            mark_untrusted_output: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrifectaPolicy {
+    /// Refuse the send outright. The default.
+    Block,
+    /// Ask a human. Only meaningful when someone is watching.
+    Ask,
+    /// Allow it. Appropriate only when the "untrusted" content is in fact
+    /// trusted — e.g. an allowlist of internal hosts.
+    Allow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,6 +297,7 @@ struct ConfigLayer {
     providers: Option<BTreeMap<String, ProviderConfig>>,
     agent: Option<AgentLayer>,
     tools: Option<ToolsLayer>,
+    security: Option<SecurityLayer>,
     #[serde(rename = "mcp")]
     mcp: Option<Vec<McpServerConfig>>,
 }
@@ -262,6 +312,16 @@ struct AgentLayer {
     effort: Option<Effort>,
     thinking: Option<bool>,
     cache_prompt: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecurityLayer {
+    trifecta: Option<TrifectaPolicy>,
+    block_private_ips: Option<bool>,
+    allowed_domains: Option<Vec<String>>,
+    blocked_domains: Option<Vec<String>>,
+    mark_untrusted_output: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -324,6 +384,24 @@ impl ConfigLayer {
             }
             if let Some(v) = x.shell_timeout_secs {
                 t.shell_timeout_secs = v;
+            }
+        }
+        if let Some(x) = self.security {
+            let t = &mut cfg.security;
+            if let Some(v) = x.trifecta {
+                t.trifecta = v;
+            }
+            if let Some(v) = x.block_private_ips {
+                t.block_private_ips = v;
+            }
+            if let Some(v) = x.allowed_domains {
+                t.allowed_domains = v;
+            }
+            if let Some(v) = x.blocked_domains {
+                t.blocked_domains = v;
+            }
+            if let Some(v) = x.mark_untrusted_output {
+                t.mark_untrusted_output = v;
             }
         }
         // MCP servers replace wholesale — merging lists by name would make it

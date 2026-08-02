@@ -4,7 +4,7 @@
 //! [`ToolCtx::resolve`] before it reaches the filesystem. Shell commands are
 //! likewise untrusted: they run under the approval gate, not around it.
 
-use super::{Tool, ToolCtx, ToolOutput};
+use super::{Capabilities, Tool, ToolCtx, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -76,6 +76,11 @@ impl Tool for FsRead {
         true
     }
 
+    fn capabilities(&self) -> Capabilities {
+        // Your files are the definition of private data.
+        Capabilities::default().private()
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let path = ctx.resolve(arg_str(&input, "path")?)?;
         let text = match tokio::fs::read_to_string(&path).await {
@@ -122,6 +127,10 @@ impl Tool for FsWrite {
         })
     }
 
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default().destructive()
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let path = ctx.resolve(arg_str(&input, "path")?)?;
         let content = arg_str(&input, "content")?;
@@ -162,6 +171,10 @@ impl Tool for FsEdit {
             },
             "required": ["path", "old", "new"]
         })
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default().destructive()
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -215,6 +228,10 @@ impl Tool for FsList {
         true
     }
 
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default().private()
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let raw = input.get("path").and_then(Value::as_str).unwrap_or(".");
         let path = ctx.resolve(raw)?;
@@ -262,6 +279,15 @@ impl Tool for Shell {
         })
     }
 
+    fn capabilities(&self) -> Capabilities {
+        // `shell` is universal: it reads your machine, it can `curl` data out,
+        // and it can delete things. Taint tracking cannot see inside a command,
+        // so it is deliberately NOT marked as an untrusted *source* — the real
+        // mitigation for shell is a sandbox, not classification. Marking it as
+        // a sink is what matters here.
+        Capabilities::default().private().sends().destructive()
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let command = arg_str(&input, "command")?;
         let cwd = match input.get("cwd").and_then(Value::as_str) {
@@ -306,6 +332,7 @@ impl Tool for Shell {
         Ok(ToolOutput {
             content: truncate(body, "output"),
             is_error: code != 0,
+            external: false,
         })
     }
 }
@@ -333,29 +360,135 @@ impl Tool for HttpFetch {
     }
 
     fn read_only(&self) -> bool {
+        // Read-only with respect to *your* data — but see `capabilities`: a GET
+        // is also an exfiltration channel, because the payload fits in the URL.
         true
     }
 
-    async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default().untrusted().sends()
+    }
+
+    async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let url = arg_str(&input, "url")?;
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Ok(ToolOutput::err("url must start with http:// or https://"));
+        if let Err(e) = check_url(url, ctx).await {
+            return Ok(ToolOutput::err(e.to_string()));
         }
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
+            // Following a redirect re-opens everything check_url just closed:
+            // a public host can 302 straight to 169.254.169.254.
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let resp = match client.get(url).send().await {
             Ok(r) => r,
             Err(e) => return Ok(ToolOutput::err(format!("request failed: {e}"))),
         };
 
+        if resp.status().is_redirection() {
+            let target = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("(no location header)");
+            return Ok(ToolOutput::err(format!(
+                "{} redirect to {target} — not followed. Call http_fetch again with that URL if you want it.",
+                resp.status()
+            )));
+        }
+
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        // The body is third-party content even on a 4xx — an injection hides
+        // just as well in an error page.
         Ok(ToolOutput {
             content: truncate(format!("HTTP {status}\n\n{body}"), "body"),
             is_error: !status.is_success(),
+            external: true,
         })
+    }
+}
+
+/// Refuse a URL before any packet leaves. Model output decides where this
+/// request goes, so "it's just a GET" is not a defense: the LAN, localhost,
+/// and cloud metadata endpoints are all reachable from here by default.
+async fn check_url(url: &str, ctx: &ToolCtx) -> Result<()> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid url: {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => anyhow::bail!("scheme {other:?} is not allowed (use http or https)"),
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("url has no host"))?
+        .to_ascii_lowercase();
+
+    let policy = &ctx.security;
+    let matches = |pattern: &str| {
+        let pattern = pattern.trim_start_matches('.').to_ascii_lowercase();
+        host == pattern || host.ends_with(&format!(".{pattern}"))
+    };
+
+    if policy.blocked_domains.iter().any(|d| matches(d)) {
+        anyhow::bail!("{host} is on the blocked-domain list");
+    }
+    if !policy.allowed_domains.is_empty() && !policy.allowed_domains.iter().any(|d| matches(d)) {
+        anyhow::bail!("{host} is not on the allowed-domain list");
+    }
+
+    if policy.block_private_ips {
+        // Resolve first and check every address: a hostname under the
+        // attacker's control can point at 127.0.0.1 or the metadata service.
+        let port = parsed.port_or_known_default().unwrap_or(80);
+        let addrs = tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .map_err(|e| anyhow::anyhow!("cannot resolve {host}: {e}"))?;
+
+        let mut any = false;
+        for addr in addrs {
+            any = true;
+            if is_internal(&addr.ip()) {
+                anyhow::bail!(
+                    "{host} resolves to the internal address {} — refused",
+                    addr.ip()
+                );
+            }
+        }
+        if !any {
+            anyhow::bail!("{host} did not resolve to any address");
+        }
+    }
+
+    Ok(())
+}
+
+/// Addresses an agent has no business reaching on the user's behalf.
+fn is_internal(ip: &std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                // 169.254.0.0/16 — includes the cloud metadata endpoint.
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                // 100.64.0.0/10, carrier-grade NAT and tailnets.
+                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
+                // 0.0.0.0/8
+                || v4.octets()[0] == 0
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                // fc00::/7 unique-local, fe80::/10 link-local.
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                // IPv4-mapped addresses must be checked as IPv4.
+                || v6.to_ipv4_mapped().is_some_and(|v4| is_internal(&IpAddr::V4(v4)))
+        }
     }
 }
 
@@ -368,6 +501,7 @@ mod tests {
         ToolCtx {
             workspace: dir.to_path_buf(),
             shell_timeout: std::time::Duration::from_secs(5),
+            ..Default::default()
         }
     }
 

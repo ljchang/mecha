@@ -103,6 +103,57 @@ Anything else comes from MCP. Each server's tools are namespaced
 `<server>__<tool>`, so two servers can both expose a `search`. MCP tools and
 built-ins are the same trait to the agent loop.
 
+## Security
+
+### The lethal trifecta
+
+An agent that simultaneously has **private data**, **untrusted content**, and a
+**way to send data out** can be turned into an exfiltration tool by instructions
+hidden in the content it reads — a web page, an email footer, a calendar invite
+title. No amount of prompting reliably prevents this, because the injected text
+arrives through the same channel as legitimate data.
+
+mecha treats it structurally. Every tool declares its capabilities:
+
+```rust
+fn capabilities(&self) -> Capabilities {
+    Capabilities::default().untrusted().sends()   // http_fetch
+}
+```
+
+The loop tracks which of these have entered the conversation. Once **both**
+private data and untrusted content are present, any tool that can send is
+refused before it runs — the model gets an error explaining why, and can
+summarise for you instead.
+
+| Tool | Declares |
+|---|---|
+| `fs_read`, `fs_list` | private |
+| `fs_write`, `fs_edit` | destructive |
+| `http_fetch` | untrusted **and** sends — a GET is an exfil channel; the payload fits in the URL |
+| `shell` | private, sends, destructive |
+| MCP tools | private; also untrusted+sends when the server sets `openWorldHint` |
+
+Set `trifecta = "ask"` to escalate to a human instead of refusing, or
+`"allow"` when the "untrusted" source is in fact trusted.
+
+**Known gap:** `shell` is universal — taint tracking cannot see inside a
+command, so it is not treated as an untrusted *source*. The mitigation for
+shell is a sandbox, not classification. Don't give an unsandboxed `shell` to an
+agent processing untrusted input.
+
+### Other hardening
+
+- **SSRF guard.** `http_fetch` resolves the host and refuses loopback, private,
+  link-local (including the `169.254.169.254` metadata endpoint), and CGNAT
+  addresses. Redirects are **not followed** — a public host can otherwise 302
+  straight to an internal one; the model is told the target and may re-request.
+- **Domain policy.** `allowed_domains` / `blocked_domains`.
+- **Path jail.** Every model-supplied path is canonicalized and proven to sit
+  inside the workspace before anything touches disk.
+- **Untrusted-content marking.** Third-party content is wrapped in a marker
+  telling the model to treat it as data. Weak alone — defense in depth.
+
 ## As a library
 
 ```rust
