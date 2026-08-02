@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use mecha_core::agent::Agent;
 use mecha_core::config::{Config, PermissionMode};
 use mecha_core::mcp::{self, McpClient};
+use mecha_core::subagent::{Subagent, SubagentProfile};
 use mecha_core::tool::{Approver, ModeApprover, Registry, ToolCtx};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -53,9 +54,20 @@ pub async fn prepare(opts: &GlobalOpts, interactive: bool) -> Result<Prepared> {
         security: cfg.security.clone(),
     };
 
+    // Subagents are built from the same tool pool but get their own registry —
+    // an allowlist, not an inheritance. Do this before the parent takes
+    // ownership of the registry.
+    let mut registry = tools.registry;
+    for profile in &cfg.subagents {
+        // A profile may point at a different provider entry entirely.
+        let (_, child_provider_cfg) = cfg.provider(profile.provider.as_deref())?;
+        let child = build_subagent(profile, &registry, &cfg, child_provider_cfg, &ctx)?;
+        registry.insert(Arc::new(child));
+    }
+
     let agent = Agent::new(
         provider,
-        tools.registry,
+        registry,
         tools.approver,
         ctx,
         cfg.agent.clone(),
@@ -145,6 +157,59 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         };
 
     Ok(PreparedTools { registry, workspace, config: cfg, approver, _mcp: clients })
+}
+
+/// Build one subagent: a child [`Agent`] with a restricted registry, wrapped as
+/// a tool the parent can call.
+fn build_subagent(
+    profile: &SubagentProfile,
+    pool: &Registry,
+    cfg: &Config,
+    provider_cfg: &mecha_core::config::ProviderConfig,
+    ctx: &ToolCtx,
+) -> Result<Subagent> {
+    let mut child_registry = Registry::new();
+    for wanted in &profile.tools {
+        match pool.get(wanted) {
+            Some(tool) => child_registry.insert(Arc::clone(tool)),
+            // A typo here silently produces a child that cannot do its job, so
+            // say so rather than starting a crippled agent.
+            None => anyhow::bail!(
+                "subagent `{}` asks for tool `{wanted}`, which is not available. \
+                 Available: {}",
+                profile.name,
+                pool.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
+            ),
+        }
+    }
+
+    // A child cannot prompt anyone, so `ask` degrades to read-only rather than
+    // to a blanket denial that would make the child useless.
+    let mode = match cfg.tools.permission_mode {
+        PermissionMode::Ask => PermissionMode::ReadOnly,
+        other => other,
+    };
+
+    let mut child_cfg = cfg.agent.clone();
+    child_cfg.max_turns = profile.max_turns;
+    child_cfg.system_prompt = profile.system_prompt.clone();
+    child_cfg.system_prompt_file = None;
+
+    let child = Agent::new(
+        mecha_core::provider::build(provider_cfg)?,
+        child_registry,
+        Arc::new(ModeApprover { mode }),
+        ToolCtx {
+            workspace: ctx.workspace.clone(),
+            shell_timeout: ctx.shell_timeout,
+            security: ctx.security.clone(),
+        },
+        child_cfg,
+        // Profile model wins; otherwise the child uses its provider's default.
+        profile.model.clone().or_else(|| provider_cfg.model.clone()),
+    )?;
+
+    Ok(Subagent::new(profile.clone(), Arc::new(child)))
 }
 
 /// `@path` reads from a file; anything else is the literal value. Lets

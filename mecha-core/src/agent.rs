@@ -137,8 +137,20 @@ impl Agent {
 
         loop {
             if turns >= self.cfg.max_turns {
+                // Out of budget. A model that never learned to stop searching
+                // would otherwise return nothing at all, so spend one more
+                // turn with the tools taken away: it can only answer.
+                let mut text = messages.last().map(Message::text).unwrap_or_default();
+                if self.cfg.force_final_answer {
+                    match self.final_answer(messages, &events).await {
+                        Ok(Some(answer)) => text = answer,
+                        Ok(None) => {}
+                        Err(e) => tracing::warn!(error = %e, "final-answer turn failed"),
+                    }
+                }
+
                 let outcome = RunOutcome {
-                    text: messages.last().map(Message::text).unwrap_or_default(),
+                    text,
                     stop_reason: StopReason::Other,
                     usage,
                     turns,
@@ -208,6 +220,47 @@ impl Agent {
                 }
             }
         }
+    }
+
+    /// One last turn with no tools available.
+    ///
+    /// Removing the tools is the whole trick: the model cannot call anything,
+    /// so the only move left is to answer. Turns "ran out of turns, produced
+    /// nothing" into "here is what I found, and here is what I could not".
+    async fn final_answer(
+        &self,
+        messages: &mut Vec<Message>,
+        events: &Option<UnboundedSender<AgentEvent>>,
+    ) -> Result<Option<String>> {
+        let nudge = Message::user(
+            "You have used your entire tool budget, and no more tool calls are \
+             possible. Answer now using only what you have already found. State \
+             plainly what you could not determine — an honest \"I could not find \
+             X\" is the correct answer here, not a failure.",
+        );
+        messages.push(nudge);
+
+        let request = CompletionRequest {
+            model: self.model.clone(),
+            system: self.system.clone(),
+            messages: messages.clone(),
+            // The load-bearing line.
+            tools: Vec::new(),
+            max_tokens: self.cfg.max_tokens,
+            effort: self.cfg.effort,
+            thinking: self.cfg.thinking,
+            cache_prompt: self.cfg.cache_prompt,
+        };
+
+        let response = self.complete(&request, events).await?;
+        let text = response.message.text();
+        messages.push(response.message);
+
+        if text.is_empty() {
+            return Ok(None);
+        }
+        emit(events, AgentEvent::AssistantText(text.clone()));
+        Ok(Some(text))
     }
 
     #[allow(clippy::too_many_arguments)]

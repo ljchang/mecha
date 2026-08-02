@@ -25,6 +25,9 @@ pub struct Config {
     /// MCP servers to connect to at startup.
     #[serde(rename = "mcp")]
     pub mcp: Vec<McpServerConfig>,
+    /// Subagents the parent may delegate to, each exposed as one tool.
+    #[serde(rename = "subagent")]
+    pub subagents: Vec<crate::subagent::SubagentProfile>,
 }
 
 impl Default for Config {
@@ -47,6 +50,7 @@ impl Default for Config {
             tools: ToolsConfig::default(),
             security: SecurityConfig::default(),
             mcp: Vec::new(),
+            subagents: Vec::new(),
         }
     }
 }
@@ -90,6 +94,10 @@ pub struct AgentConfig {
     pub thinking: bool,
     /// Mark the tools + system prefix as cacheable.
     pub cache_prompt: bool,
+    /// When the turn budget runs out, spend one more turn with the tools
+    /// removed so the model has to answer with what it has. Without this a
+    /// model that never stops searching returns nothing at all.
+    pub force_final_answer: bool,
 }
 
 impl Default for AgentConfig {
@@ -104,6 +112,7 @@ impl Default for AgentConfig {
             effort: Some(Effort::High),
             thinking: true,
             cache_prompt: true,
+            force_final_answer: true,
         }
     }
 }
@@ -300,6 +309,8 @@ struct ConfigLayer {
     security: Option<SecurityLayer>,
     #[serde(rename = "mcp")]
     mcp: Option<Vec<McpServerConfig>>,
+    #[serde(rename = "subagent")]
+    subagents: Option<Vec<crate::subagent::SubagentProfile>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -312,6 +323,7 @@ struct AgentLayer {
     effort: Option<Effort>,
     thinking: Option<bool>,
     cache_prompt: Option<bool>,
+    force_final_answer: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -367,6 +379,9 @@ impl ConfigLayer {
             if let Some(v) = a.cache_prompt {
                 t.cache_prompt = v;
             }
+            if let Some(v) = a.force_final_answer {
+                t.force_final_answer = v;
+            }
         }
         if let Some(x) = self.tools {
             let t = &mut cfg.tools;
@@ -408,6 +423,9 @@ impl ConfigLayer {
         // impossible for a project to turn a global server off.
         if let Some(v) = self.mcp {
             cfg.mcp = v;
+        }
+        if let Some(v) = self.subagents {
+            cfg.subagents = v;
         }
     }
 }

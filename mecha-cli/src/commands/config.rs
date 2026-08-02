@@ -122,6 +122,17 @@ block_private_ips = true
 # Wrap third-party content so the model treats it as data, not instructions.
 mark_untrusted_output = true
 
+# Subagents. Each becomes one tool on the parent. `tools` is an allowlist, not
+# an inheritance — this is where capability isolation is expressed.
+# [[subagent]]
+# name = "read_web"
+# description = "Fetch a URL and return a factual summary. Use this rather than
+#                fetching directly when private data is already in context."
+# tools = ["http_fetch"]
+# max_turns = 6
+# model = "gemma-4-4b"     # optional: a cheap model for a narrow job
+# provider = "local-small" # optional: a different server entirely
+
 # MCP servers. Their tools appear as `<name>__<tool>`.
 # [[mcp]]
 # name = "pkg"

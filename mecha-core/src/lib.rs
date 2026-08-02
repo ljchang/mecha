@@ -45,6 +45,7 @@ pub mod mcp;
 pub mod message;
 pub mod provider;
 pub mod session;
+pub mod subagent;
 pub mod tool;
 
 pub use agent::{Agent, AgentEvent, RunOutcome};

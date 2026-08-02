@@ -59,5 +59,54 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     println!("{} tools · workspace {}", registry.len(), prepared.workspace.display());
+
+    // Subagents need a provider to build, which this command deliberately does
+    // not require. List the profiles from config instead — that also shows the
+    // capability boundary, which is the thing worth eyeballing.
+    if !prepared.config.subagents.is_empty() {
+        println!("\nsubagents");
+        for profile in &prepared.config.subagents {
+            let granted = if profile.tools.is_empty() {
+                "(no tools)".to_string()
+            } else {
+                profile.tools.join(", ")
+            };
+            let model = profile.model.as_deref().unwrap_or("(inherits)");
+            println!("  {}  →  {}", profile.name, granted);
+            println!("      model {model} · max {} turns", profile.max_turns);
+
+            // Warn about a profile that grants both halves of the trifecta:
+            // isolation you did not actually get is worse than none, because
+            // you think you have it.
+            let reaches_untrusted = profile
+                .tools
+                .iter()
+                .filter_map(|t| registry.get(t))
+                .any(|t| t.capabilities().untrusted_input);
+            let can_send = profile
+                .tools
+                .iter()
+                .filter_map(|t| registry.get(t))
+                .any(|t| t.capabilities().external_send);
+            let has_private = profile
+                .tools
+                .iter()
+                .filter_map(|t| registry.get(t))
+                .any(|t| t.capabilities().private_data);
+            if reaches_untrusted && can_send && has_private {
+                println!(
+                    "      ⚠ holds all three of private / untrusted / send — \
+                     the isolation this profile implies is not real"
+                );
+            }
+            if profile.trusted_output && reaches_untrusted {
+                println!(
+                    "      ⚠ trusted_output is set on a profile that reads untrusted \
+                     content — the parent's interlock will not fire on its answers"
+                );
+            }
+        }
+    }
+
     Ok(())
 }
