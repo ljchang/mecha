@@ -391,36 +391,44 @@ The case set is 25 cases across ten tags: tool-call mechanics (`single-call`,
 Same 19 cases, same prompt, on a DGX Spark (GB10, 128GB unified). `mecha eval
 --compare` produced this:
 
-| 25 cases | gemma-4-E4B (4B) | Qwen3.6-35B-A3B (MoE, 3B active) | Qwen3.6-27B (dense) |
-|---|---|---|---|
-| cases passed | **24/25** | **24/25** | **24/25** |
-| checks passed | 99% | 99% | 99% |
-| malformed arguments | **0** | **0** | **0** |
-| invented tools | **0** | **0** | **0** |
-| reasoning (multi-hop arithmetic) | **4/4** | **4/4** | **4/4** |
-| injection resistance | **2/2** | **2/2** | **2/2** |
-| mean turns | 2.8 | **2.5** | **2.5** |
-| median latency | **6.7s** | 8.9s | 24.7s |
-| output tokens | 14,284 | 7,105 | **6,023** |
-| raw generation | — | **55.4 tok/s** | 11.4 tok/s |
+| 25 cases | gemma-4-E4B | gemma-4-26B-A4B | Qwen3.6-35B-A3B | Qwen3.6-27B |
+|---|---|---|---|---|
+| params | 4B | 26B / 4B active | 35B / 3B active | 27B dense |
+| cases passed | **24/25** | 23/25 | **24/25** | **24/25** |
+| checks passed | 99% | 97% | 99% | 99% |
+| malformed arguments | **0** | **0** | **0** | **0** |
+| invented tools | **0** | **0** | **0** | **0** |
+| reasoning | 4/4 | 4/4 | 4/4 | 4/4 |
+| injection resistance | 2/2 | 2/2 | 2/2 | 2/2 |
+| mean turns | 2.8 | 3.4 | **2.4** | 2.5 |
+| median latency | **6.7s** | 8.5s | 7.3s | 24.7s |
+| output tokens | 14,284 | 9,590 | 6,158 | **6,023** |
+| **generation** | **119.7 tok/s** | 99.5 tok/s | 90.5 tok/s | 11.4 tok/s |
+| MTP draft acceptance | 59% | **90%** | 75% | — |
 
-Earlier, on the original 19 cases: gemma-4-26B-A4B scored 17/19 at 11.1s
-median and **95.9 tok/s** with MTP speculative decoding (1.76× over its own
-54.5 tok/s baseline, 78% draft acceptance), against Qwen3.6-27B's 11.4 tok/s —
-**8.4× faster** for six points less accuracy. That ratio is the MoE argument on
-bandwidth-limited hardware: 4B active parameters to stream per token instead
-of 27B.
+Generation figures are isolated single-request benchmarks on the same prompt,
+all three MoE/small models running speculative decoding via their MTP draft
+heads. Qwen3.6's MTP layers are **baked into the GGUF** — `--spec-type
+draft-mtp` with no separate `-md` file — which took it from 55.4 to 100.2 tok/s
+(1.81×). Gemma ships a separate `mtp-*.gguf` draft. Qwen3.6-27B dense has no
+MTP variant, so its number is unaccelerated and understates it somewhat; not
+enough to matter at an 8× gap.
 
 **The set has saturated.** Three models spanning 4B to 35B all score 24/25,
 with the same single failure. It is now a floor test — does this model work at
 all — not a ranking test, and it cannot choose a parent model.
 
 What it does still settle is the shape of the hardware answer. The dense 27B is
-dominated: 2.8× the latency of the 35B MoE for identical accuracy, because
-decode speed on this machine tracks *active* parameters, not total. Between the
-two survivors it's a straight speed/headroom trade — E4B is fastest and ideal
-for subagents; 35B-A3B answers in a third fewer tokens with far more capacity
-in reserve.
+dominated: **8× slower generation** and 3.4× the median latency of the 35B MoE
+for identical accuracy, because decode on this machine tracks *active*
+parameters, not total. 3B active beats 27B dense, decisively.
+
+Among the three that are left it is a straight speed/verbosity trade, not a
+quality one. E4B generates fastest but is the most verbose (14.3k output tokens
+against 35B-A3B's 6.2k), so its wall-clock lead is smaller than its tok/s
+suggests. 35B-A3B is the most economical per task and has the most headroom.
+gemma-4-26B-A4B is the odd one out — it has the best draft acceptance (90%) but
+the weakest score, and nothing recommends it over the other two.
 
 The honest caveat on all of it: every case here is *grounded*. The data is in
 the workspace and the job is to find it, combine it, and report. That is most
