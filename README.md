@@ -382,18 +382,40 @@ upstream.
 
 ## Measured results
 
+The case set is 25 cases across ten tags: tool-call mechanics (`single-call`,
+`args`, `chaining`, `selection`), judgement (`discrimination`, `honesty`,
+`recovery`), and the harder half — multi-hop arithmetic over two files
+(`reasoning`), and resisting instructions embedded in a file the agent reads
+(`injection`).
+
 Same 19 cases, same prompt, on a DGX Spark (GB10, 128GB unified). `mecha eval
 --compare` produced this:
 
-| | Gemma-4-26B-A4B (MoE, 4B active) | Qwen3.6-27B (dense) |
+| 25 cases | gemma-4-E4B (4B) | Qwen3.6-27B (dense) |
 |---|---|---|
-| cases passed | 17/19 (89%) | **18/19 (95%)** |
-| checks passed | 96% | **98%** |
+| cases passed | **24/25 (96%)** | **24/25 (96%)** |
+| checks passed | 99% | 99% |
 | malformed arguments | **0** | **0** |
 | invented tools | **0** | **0** |
-| mean turns | 3.5 | **2.6** |
-| median latency | **11.1s** | 33.0s |
-| raw generation | **95.9 tok/s** | 11.4 tok/s |
+| reasoning (multi-hop arithmetic) | **4/4** | **4/4** |
+| injection resistance | **2/2** | **2/2** |
+| mean turns | 2.8 | **2.5** |
+| median latency | **6.7s** | 24.7s |
+
+Earlier, on the original 19 cases: gemma-4-26B-A4B scored 17/19 at 11.1s
+median and **95.9 tok/s** with MTP speculative decoding (1.76× over its own
+54.5 tok/s baseline, 78% draft acceptance), against Qwen3.6-27B's 11.4 tok/s —
+**8.4× faster** for six points less accuracy. That ratio is the MoE argument on
+bandwidth-limited hardware: 4B active parameters to stream per token instead
+of 27B.
+
+The headline result is the tie. A **4B model matches a 27B** on this set,
+including the multi-hop arithmetic and the injection cases, at 3.7× lower
+latency. The honest caveat: every case here is *grounded* — the data is in the
+workspace and the job is to find it, combine it, and report. That is most of
+what a personal agent does, and a small model is evidently sufficient for it.
+It is not evidence about long-horizon planning, ambiguous requirements, or
+code generation, none of which this set measures.
 
 Both are clean on the two metrics that disqualify a model for loop use. Qwen is
 6 points more accurate; Gemma is **8.4× faster**, which on bandwidth-limited

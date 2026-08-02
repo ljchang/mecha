@@ -13,6 +13,10 @@ Pre-alpha. The ingest path works; the reconciliation engine does not.
 - `data/` — configuration and sample data
 - `notes/` — meeting notes
 
+## Requirements
+
+Halcyon requires Rust 1.85 or newer.
+
 ## Contact
 
 Maintained by the Computational Social Affective Neuroscience lab.

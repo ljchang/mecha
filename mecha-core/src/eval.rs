@@ -99,11 +99,44 @@ pub struct GradedCase {
     pub text: String,
 }
 
+/// Normalize prose before substring matching.
+///
+/// Models format freely, and raw substring matching measures formatting rather
+/// than correctness. Two cases caught this in practice: a model answered
+/// `$2,520` and failed a check for `2520`, and answered `do **not** agree` and
+/// failed a check for `not agree`. Both answers were right.
+///
+/// So: fold case, drop markdown emphasis, remove digit-group separators, and
+/// collapse whitespace. Applied to needle and haystack alike.
+fn normalize(s: &str) -> String {
+    let lowered = s.to_lowercase();
+    let chars: Vec<char> = lowered.chars().collect();
+    let mut out = String::with_capacity(chars.len());
+
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            // Markdown emphasis can land in the middle of a phrase.
+            '*' | '_' | '`' | '#' => continue,
+            // A separator *between digits* only: "2,520" -> "2520", but
+            // "apples, oranges" keeps its comma.
+            ',' if i > 0
+                && chars[i - 1].is_ascii_digit()
+                && chars.get(i + 1).is_some_and(char::is_ascii_digit) =>
+            {
+                continue
+            }
+            _ => out.push(c),
+        }
+    }
+
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Grade one result against its case.
 pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
     let mut checks = Vec::new();
     let called: Vec<String> = result.tool_calls.iter().map(|c| c.name.clone()).collect();
-    let text_lower = result.text.to_lowercase();
+    let text_lower = normalize(&result.text);
 
     // A run that errored outright fails everything; report it once rather than
     // emitting a wall of derived failures.
@@ -152,7 +185,7 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
     }
 
     for needle in &case.expect.contains {
-        let passed = text_lower.contains(&needle.to_lowercase());
+        let passed = text_lower.contains(&normalize(needle));
         checks.push(Check {
             name: format!("says {needle:?}"),
             passed,
@@ -161,7 +194,7 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
     }
 
     for needle in &case.expect.not_contains {
-        let passed = !text_lower.contains(&needle.to_lowercase());
+        let passed = !text_lower.contains(&normalize(needle));
         checks.push(Check {
             name: format!("omits {needle:?}"),
             passed,
@@ -174,7 +207,7 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
             .expect
             .contains_any
             .iter()
-            .any(|n| text_lower.contains(&n.to_lowercase()));
+            .any(|n| text_lower.contains(&normalize(n)));
         checks.push(Check {
             name: format!("says one of {}", fmt(&case.expect.contains_any)),
             passed,
@@ -255,7 +288,7 @@ fn grade_arg(expect: &ArgExpect, result: &BatchResult) -> Check {
             && expect
                 .contains
                 .as_ref()
-                .is_none_or(|c| v.to_lowercase().contains(&c.to_lowercase()))
+                .is_none_or(|c| normalize(v).contains(&normalize(c)))
     });
 
     Check {
@@ -423,6 +456,34 @@ mod tests {
 
     fn case(expect: Expect) -> EvalCase {
         EvalCase { id: "c".into(), prompt: "p".into(), expect, tags: vec![] }
+    }
+
+    #[test]
+    fn formatting_does_not_decide_correctness() {
+        // Every one of these is a right answer that raw substring matching
+        // marked wrong. All three were observed from a real model.
+        let cases = [
+            ("Eshin worked 42 hours, for a total of **$2,520**.", "2520"),
+            ("Jin's week 28 cost is **$1,750**.", "1750"),
+            ("They do **not** agree: README says 1.85.", "not agree"),
+            ("The port is `8431`.", "8431"),
+        ];
+        for (answer, needle) in cases {
+            let c = case(Expect { contains: vec![needle.into()], ..Default::default() });
+            let r = result_with(vec![], answer);
+            assert!(grade(&c, &r).passed, "{answer:?} should satisfy {needle:?}");
+        }
+    }
+
+    #[test]
+    fn normalizing_does_not_make_wrong_answers_pass() {
+        let c = case(Expect { contains: vec!["2520".into()], ..Default::default() });
+        assert!(!grade(&c, &result_with(vec![], "The total is $2,530.")).passed);
+
+        // A comma between words is not a digit separator and must survive.
+        let c = case(Expect { contains: vec!["apples, oranges".into()], ..Default::default() });
+        assert!(grade(&c, &result_with(vec![], "We have apples, oranges.")).passed);
+        assert!(!grade(&c, &result_with(vec![], "We have apples and oranges.")).passed);
     }
 
     #[test]
