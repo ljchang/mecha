@@ -1,0 +1,416 @@
+{
+  "scorecard": {
+    "model": "gemma-4-e4b",
+    "provider": "small",
+    "total": 9,
+    "passed": 9,
+    "check_pass_rate": 1.0,
+    "malformed_tool_args": 0,
+    "unknown_tools": 0,
+    "tool_errors": 1,
+    "runs_errored": 0,
+    "mean_turns": 2.4444444444444446,
+    "median_latency_ms": 2947,
+    "total_usage": {
+      "input_tokens": 22701,
+      "output_tokens": 3570,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0
+    },
+    "wall_clock_ms": 14751,
+    "by_tag": [
+      {
+        "tag": "single-call",
+        "passed": 3,
+        "total": 3
+      },
+      {
+        "tag": "chaining",
+        "passed": 3,
+        "total": 3
+      },
+      {
+        "tag": "args",
+        "passed": 3,
+        "total": 3
+      }
+    ]
+  },
+  "cases": [
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls fs_read",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "says \"halcyon\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "fs_read.path",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤4 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 1406,
+      "id": "read-readme",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "tags": [
+        "single-call"
+      ],
+      "text": "Halcyon",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read"
+      ],
+      "turns": 2,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 2035,
+        "output_tokens": 103
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls fs_list",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "says \"meeting-2026-07-14\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "fs_list.path",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤4 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 1807,
+      "id": "list-notes",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "tags": [
+        "single-call"
+      ],
+      "text": "The files in the `notes` directory are:\n\n*   `meeting-2026-07-14.md`\n*   `meeting-2026-07-21.md`",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_list"
+      ],
+      "turns": 2,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 1950,
+        "output_tokens": 154
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls fs_read",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "says \"8431\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤4 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 1466,
+      "id": "config-port",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "tags": [
+        "single-call"
+      ],
+      "text": "8431",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read"
+      ],
+      "turns": 2,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 1997,
+        "output_tokens": 197
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "order fs_list → fs_read",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "says \"wasita\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤6 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 4397,
+      "id": "list-then-read",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "tags": [
+        "chaining"
+      ],
+      "text": "The earliest meeting note is `meeting-2026-07-14.md`, and the attendees were Luke, Wasita, and Eshin.",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_list",
+        "fs_read"
+      ],
+      "turns": 3,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 3123,
+        "output_tokens": 580
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "says \"migration guide\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "fs_read.path",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "fs_read.path",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤6 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 3776,
+      "id": "cross-file",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "tags": [
+        "chaining"
+      ],
+      "text": "The action item that appears in both meeting notes is: \"write a migration guide before the 0.4 release.\"",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_list",
+        "fs_read",
+        "fs_read"
+      ],
+      "turns": 4,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 4383,
+        "output_tokens": 491
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "says \"0.3.0\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "says one of pre-alpha, not production, no",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "fs_read.path",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "fs_read.path",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤6 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 3702,
+      "id": "readme-then-changelog",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "tags": [
+        "chaining"
+      ],
+      "text": "The latest version in `CHANGELOG.md` is **0.3.0**.\n\nNo, `README.md` states that the project is **Pre-alpha**, so it is not production ready.",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read",
+        "fs_read"
+      ],
+      "turns": 3,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 3229,
+        "output_tokens": 482
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls fs_read",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "fs_read.offset",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤4 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 7153,
+      "id": "read-offset",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "tags": [
+        "args"
+      ],
+      "text": "The lines 3 through 5 of `README.md` are:\n\n```\nHalcyon is a scheduling assistant for research labs. It reconciles calendars\nacross institutions and flags conflicts before they reach a human.\n```",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read"
+      ],
+      "turns": 2,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 1995,
+        "output_tokens": 902
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls shell",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "shell.command",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤4 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 1896,
+      "id": "shell-quoting",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "tags": [
+        "args"
+      ],
+      "text": "I was unable to run the command. The shell tool returned the following error: `Denied by the user: 'shell' modifies state and this run is read-only`.",
+      "tool_errors": 1,
+      "tools_called": [
+        "shell"
+      ],
+      "turns": 2,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 1973,
+        "output_tokens": 194
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "says \"5\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤5 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 2947,
+      "id": "csv-rows",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "tags": [
+        "args"
+      ],
+      "text": "5",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read"
+      ],
+      "turns": 2,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 2016,
+        "output_tokens": 467
+      }
+    }
+  ]
+}
