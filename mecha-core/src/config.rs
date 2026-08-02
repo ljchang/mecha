@@ -28,6 +28,10 @@ pub struct Config {
     /// Subagents the parent may delegate to, each exposed as one tool.
     #[serde(rename = "subagent")]
     pub subagents: Vec<crate::subagent::SubagentProfile>,
+    /// Search backends, in preference order. The chain falls through on
+    /// failure, which is what makes stacking two free tiers viable.
+    #[serde(rename = "search")]
+    pub search: Vec<SearchBackendConfig>,
 }
 
 impl Default for Config {
@@ -51,6 +55,7 @@ impl Default for Config {
             security: SecurityConfig::default(),
             mcp: Vec::new(),
             subagents: Vec::new(),
+            search: Vec::new(),
         }
     }
 }
@@ -175,6 +180,20 @@ pub struct SecurityConfig {
     /// Wrap third-party content in a marker telling the model to treat it as
     /// data rather than instructions. Weak on its own — defense in depth.
     pub mark_untrusted_output: bool,
+    /// Block *every* outbound call once private data is in context, whether or
+    /// not untrusted content has arrived.
+    ///
+    /// This is a different control from `trifecta`, guarding a different
+    /// threat. The trifecta interlock stops an *injection* turning the agent
+    /// into an exfiltration tool; it deliberately allows sends that happen
+    /// before any third-party content exists, because nothing could have
+    /// influenced them yet. That still lets the agent put your private data
+    /// into a search query because you asked it to, or because it judged that
+    /// helpful — an ordinary privacy leak rather than an attack.
+    ///
+    /// Turn this on when private data must not leave at all. It is
+    /// restrictive: it makes "read my notes, then look something up" fail.
+    pub block_sends_after_private: bool,
 }
 
 impl Default for SecurityConfig {
@@ -185,6 +204,11 @@ impl Default for SecurityConfig {
             allowed_domains: Vec::new(),
             blocked_domains: Vec::new(),
             mark_untrusted_output: true,
+            // Off by default: it breaks common, legitimate workflows, and the
+            // right answer for most people is capability separation (put
+            // search in a subagent with no filesystem access) rather than a
+            // blanket ban.
+            block_sends_after_private: false,
         }
     }
 }
@@ -210,6 +234,32 @@ pub enum PermissionMode {
     Allow,
     /// Read-only tools run; everything else is refused.
     ReadOnly,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SearchBackendConfig {
+    /// `exa` | `tavily` | `searxng`
+    pub kind: String,
+    /// Environment variable holding the key. Preferred over `api_key`.
+    pub api_key_env: Option<String>,
+    pub api_key: Option<String>,
+    /// Required for `searxng` (your instance); optional override elsewhere.
+    pub base_url: Option<String>,
+    pub disabled: bool,
+}
+
+impl SearchBackendConfig {
+    pub fn resolve_api_key(&self) -> Option<String> {
+        if let Some(var) = &self.api_key_env {
+            if let Ok(v) = std::env::var(var) {
+                if !v.is_empty() {
+                    return Some(v);
+                }
+            }
+        }
+        self.api_key.clone().filter(|k| !k.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -311,6 +361,8 @@ struct ConfigLayer {
     mcp: Option<Vec<McpServerConfig>>,
     #[serde(rename = "subagent")]
     subagents: Option<Vec<crate::subagent::SubagentProfile>>,
+    #[serde(rename = "search")]
+    search: Option<Vec<SearchBackendConfig>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -334,6 +386,7 @@ struct SecurityLayer {
     allowed_domains: Option<Vec<String>>,
     blocked_domains: Option<Vec<String>>,
     mark_untrusted_output: Option<bool>,
+    block_sends_after_private: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -418,6 +471,9 @@ impl ConfigLayer {
             if let Some(v) = x.mark_untrusted_output {
                 t.mark_untrusted_output = v;
             }
+            if let Some(v) = x.block_sends_after_private {
+                t.block_sends_after_private = v;
+            }
         }
         // MCP servers replace wholesale — merging lists by name would make it
         // impossible for a project to turn a global server off.
@@ -426,6 +482,9 @@ impl ConfigLayer {
         }
         if let Some(v) = self.subagents {
             cfg.subagents = v;
+        }
+        if let Some(v) = self.search {
+            cfg.search = v;
         }
     }
 }

@@ -176,6 +176,33 @@ command, so it is not treated as an untrusted *source*. The mitigation for
 shell is a sandbox, not classification. Don't give an unsandboxed `shell` to an
 agent processing untrusted input.
 
+### Two controls, two threats
+
+The interlock above stops an **injection** turning the agent into an
+exfiltration tool. It deliberately allows a send that happens *before* any
+third-party content exists, because nothing could have influenced it yet.
+
+That leaves a second, different risk: the agent putting your private data into
+an outbound call because you asked it to, or because it judged that helpful.
+An ordinary privacy leak, not an attack. Live example — reading a notes file
+and then searching for the names in it:
+
+```
+CALL fs_read  notes/meeting-2026-07-14.md
+CALL web_search {"query": "Wasita researcher"}     ← went out; nothing had injected it
+CALL web_search {"query": "\"Luke Chang\" \"Wasita ...\" Dartmouth"}
+BLOCKED: this conversation already contains both private data and third-party content
+```
+
+The interlock fired on the third call, correctly. The first two were user
+intent, not attack — and the data still left.
+
+`block_sends_after_private = true` closes that: **any** outbound tool is
+refused once private data is in context. It's off by default because it breaks
+"read my notes, then look something up", and because the better answer for most
+people is capability separation — put search in a subagent with no filesystem
+access, so the two never meet.
+
 ### Other hardening
 
 - **SSRF guard.** `http_fetch` resolves the host and refuses loopback, private,
@@ -280,6 +307,47 @@ regression gate on the harness itself.
 
 Every run writes an append-only JSONL transcript to `~/.mecha/sessions`
 (override with `MECHA_SESSION_DIR`). `--no-session` opts out.
+
+## Search
+
+Backends sit behind a `SearchBackend` trait and are tried in order, falling
+through on failure — which is what makes stacking free tiers a working strategy
+rather than a hack.
+
+```toml
+[[search]]
+kind = "searxng"                  # self-hosted: no key, no quota, no account
+base_url = "http://127.0.0.1:8888"
+
+[[search]]
+kind = "exa"                      # ~1,400 searches/mo free, semantic ranking
+api_key_env = "EXA_API_KEY"
+
+[[search]]
+kind = "tavily"                   # 1,000 credits/mo free
+api_key_env = "TAVILY_API_KEY"
+```
+
+`web_search` takes `depth: "quick" | "deep"`. Deep maps to Exa's
+`deep-reasoning` (~$0.015/query, 12–50s) or Tavily's `advanced`; quick is one
+cheap round trip and is right for nearly everything.
+
+SearXNG in Docker, which is the zero-cost path:
+
+```bash
+mkdir -p ~/searxng && cat > ~/searxng/settings.yml <<'EOF'
+use_default_settings: true
+server: {secret_key: "change-me", limiter: false}
+search: {formats: [html, json]}     # json is off by default; agents need it
+EOF
+docker run -d --name searxng -p 8888:8080 \
+  -v ~/searxng/settings.yml:/etc/searxng/settings.yml:ro searxng/searxng:latest
+```
+
+Note `web_search` declares **both** `untrusted_input` and `external_send`: results
+are attacker-influenceable, and the query itself is an exfiltration channel —
+the payload fits in `?q=`. That holds for SearXNG too, since it forwards
+upstream.
 
 ## Measured results
 

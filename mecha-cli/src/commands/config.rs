@@ -122,6 +122,24 @@ block_private_ips = true
 # Wrap third-party content so the model treats it as data, not instructions.
 mark_untrusted_output = true
 
+# Block EVERY outbound call once private data is in context, injection or not.
+# A different control from `trifecta`: that one stops an injection driving
+# exfiltration, this one stops private data leaving at all. Off by default —
+# it breaks "read my notes, then look something up", and capability separation
+# (search in a subagent with no filesystem access) is usually the better fix.
+# block_sends_after_private = false
+
+# Search backends, in preference order; the chain falls through on failure.
+# [[search]]
+# kind = "searxng"                    # self-hosted: no key, no quota
+# base_url = "http://127.0.0.1:8888"
+# [[search]]
+# kind = "exa"                        # ~1,400 searches/mo free
+# api_key_env = "EXA_API_KEY"
+# [[search]]
+# kind = "tavily"                     # 1,000 credits/mo free
+# api_key_env = "TAVILY_API_KEY"
+
 # Subagents. Each becomes one tool on the parent. `tools` is an allowlist, not
 # an inheritance — this is where capability isolation is expressed.
 # [[subagent]]

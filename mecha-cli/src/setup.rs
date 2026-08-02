@@ -8,7 +8,9 @@ use crate::GlobalOpts;
 use anyhow::{Context, Result};
 use mecha_core::agent::Agent;
 use mecha_core::config::{Config, PermissionMode};
+use mecha_core::config::SearchBackendConfig;
 use mecha_core::mcp::{self, McpClient};
+use mecha_core::search::{Exa, SearchBackend, SearchChain, Searxng, Tavily, WebSearch};
 use mecha_core::subagent::{Subagent, SubagentProfile};
 use mecha_core::tool::{Approver, ModeApprover, Registry, ToolCtx};
 use std::path::PathBuf;
@@ -131,6 +133,21 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
 
     // --- tools ---
     let mut registry = Registry::new().with_builtins(&cfg.tools);
+
+    // Search is only registered when a backend is configured — an agent with a
+    // `web_search` tool that always errors is worse than no tool at all.
+    if !cfg.search.is_empty() {
+        let (chain, errors) = build_search_chain(&cfg.search);
+        for error in errors {
+            eprintln!("mecha: search backend unavailable — {error}");
+        }
+        if !chain.is_empty() {
+            let allowed = opts.tools.is_empty() || opts.tools.iter().any(|t| t == "web_search");
+            if allowed {
+                registry.insert(Arc::new(WebSearch::new(Arc::new(chain))));
+            }
+        }
+    }
     let mut clients = Vec::new();
     if !opts.no_mcp && !cfg.mcp.is_empty() {
         let (tools, connected, errors) = mcp::connect_all(&cfg.mcp).await;
@@ -157,6 +174,43 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         };
 
     Ok(PreparedTools { registry, workspace, config: cfg, approver, _mcp: clients })
+}
+
+/// Build the search chain in configured order, skipping backends that cannot
+/// be constructed (usually a missing key) rather than failing the whole run.
+fn build_search_chain(configs: &[SearchBackendConfig]) -> (SearchChain, Vec<String>) {
+    let mut backends: Vec<Box<dyn SearchBackend>> = Vec::new();
+    let mut errors = Vec::new();
+
+    for cfg in configs.iter().filter(|c| !c.disabled) {
+        let built: Result<Box<dyn SearchBackend>> = match cfg.kind.as_str() {
+            "exa" => cfg
+                .resolve_api_key()
+                .context("no API key (set api_key_env, e.g. EXA_API_KEY)")
+                .and_then(|k| Ok(Box::new(Exa::new(k, cfg.base_url.clone())?) as Box<dyn SearchBackend>)),
+            "tavily" => cfg
+                .resolve_api_key()
+                .context("no API key (set api_key_env, e.g. TAVILY_API_KEY)")
+                .and_then(|k| {
+                    Ok(Box::new(Tavily::new(k, cfg.base_url.clone())?) as Box<dyn SearchBackend>)
+                }),
+            "searxng" => cfg
+                .base_url
+                .clone()
+                .context("searxng needs `base_url` pointing at your instance")
+                .and_then(|u| Ok(Box::new(Searxng::new(u)?) as Box<dyn SearchBackend>)),
+            other => Err(anyhow::anyhow!(
+                "unknown search backend {other:?} (expected: exa, tavily, searxng)"
+            )),
+        };
+
+        match built {
+            Ok(b) => backends.push(b),
+            Err(e) => errors.push(format!("{}: {e}", cfg.kind)),
+        }
+    }
+
+    (SearchChain::new(backends), errors)
 }
 
 /// Build one subagent: a child [`Agent`] with a restricted registry, wrapped as

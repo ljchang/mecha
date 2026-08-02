@@ -44,6 +44,7 @@ pub mod eval;
 pub mod mcp;
 pub mod message;
 pub mod provider;
+pub mod search;
 pub mod session;
 pub mod subagent;
 pub mod tool;
