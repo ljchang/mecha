@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Local config and transcripts should never be committed — they hold prompts,
+# workspace paths, and sometimes keys.
+/mecha.toml
+/.mecha/
+*.jsonl
+!eval/*.jsonl

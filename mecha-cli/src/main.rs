@@ -1,0 +1,133 @@
+//! `mecha` — a standalone agent harness.
+
+mod approve;
+mod commands;
+mod render;
+mod setup;
+
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use mecha_core::message::Effort;
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(
+    name = "mecha",
+    version,
+    about = "A standalone agent harness: one loop, any model, native and MCP tools.",
+    disable_help_subcommand = true
+)]
+pub struct Cli {
+    #[command(flatten)]
+    pub global: GlobalOpts,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+/// Options that apply to any command that actually runs an agent.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct GlobalOpts {
+    /// Provider to use, by config key (default: the config's default_provider).
+    #[arg(long, short = 'p', global = true)]
+    pub provider: Option<String>,
+
+    /// Model id, overriding the provider's default.
+    #[arg(long, short = 'm', global = true)]
+    pub model: Option<String>,
+
+    /// Reasoning depth: low, medium, high, xhigh, max.
+    #[arg(long, short = 'e', global = true)]
+    pub effort: Option<Effort>,
+
+    /// System prompt. Use @path to read it from a file.
+    #[arg(long, short = 's', global = true)]
+    pub system: Option<String>,
+
+    /// Directory the agent may read and write. Defaults to the working directory.
+    #[arg(long, short = 'w', global = true)]
+    pub workspace: Option<PathBuf>,
+
+    /// Approve every tool call without asking. Required for unattended runs
+    /// that need to write or execute anything.
+    #[arg(long, short = 'y', global = true)]
+    pub yes: bool,
+
+    /// Refuse anything that isn't read-only.
+    #[arg(long, global = true, conflicts_with = "yes")]
+    pub read_only: bool,
+
+    /// Stop after this many model turns.
+    #[arg(long, global = true)]
+    pub max_turns: Option<u32>,
+
+    /// Only expose these tools (repeatable). Names are matched exactly.
+    #[arg(long = "tool", global = true)]
+    pub tools: Vec<String>,
+
+    /// Skip MCP servers entirely.
+    #[arg(long, global = true)]
+    pub no_mcp: bool,
+
+    /// Turn off reasoning. Cheaper and faster, but noticeably worse on
+    /// multi-step work.
+    #[arg(long, global = true)]
+    pub no_thinking: bool,
+
+    /// Print tool calls, results, and token usage as they happen.
+    #[arg(long, short = 'v', global = true)]
+    pub verbose: bool,
+}
+
+#[derive(Subcommand)]
+pub enum Command {
+    /// Run one task and print the answer.
+    Run(commands::run::Args),
+
+    /// Interactive session in the terminal.
+    Chat(commands::chat::Args),
+
+    /// Run the same agent over a JSONL file of prompts.
+    Batch(commands::batch::Args),
+
+    /// List the tools an agent would see.
+    Tools(commands::tools::Args),
+
+    /// Inspect saved transcripts.
+    #[command(subcommand)]
+    Sessions(commands::sessions::Args),
+
+    /// Show or create configuration.
+    #[command(subcommand)]
+    Config(commands::config::Args),
+}
+
+#[tokio::main]
+async fn main() {
+    // Quiet by default; `MECHA_LOG=debug` turns on the internals.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_env("MECHA_LOG")
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .without_time()
+        .init();
+
+    if let Err(e) = dispatch().await {
+        eprintln!("mecha: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+async fn dispatch() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Run(args) => commands::run::execute(&cli.global, args).await,
+        Command::Chat(args) => commands::chat::execute(&cli.global, args).await,
+        Command::Batch(args) => commands::batch::execute(&cli.global, args).await,
+        Command::Tools(args) => commands::tools::execute(&cli.global, args).await,
+        Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
+        Command::Config(args) => commands::config::execute(&cli.global, args).await,
+    }
+}
