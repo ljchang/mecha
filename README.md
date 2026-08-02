@@ -17,6 +17,9 @@ is a plain Rust library that knows nothing about any particular application;
   └──────────────────────┘    └────────────────────────┘    └──────────────────┘
 ```
 
+See [`docs/HANDOFF.md`](docs/HANDOFF.md) for project state, environment, and
+what to build next.
+
 ## Install
 
 ```bash
