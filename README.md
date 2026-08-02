@@ -280,3 +280,28 @@ regression gate on the harness itself.
 
 Every run writes an append-only JSONL transcript to `~/.mecha/sessions`
 (override with `MECHA_SESSION_DIR`). `--no-session` opts out.
+
+## Measured results
+
+Same 19 cases, same prompt, on a DGX Spark (GB10, 128GB unified). `mecha eval
+--compare` produced this:
+
+| | Gemma-4-26B-A4B (MoE, 4B active) | Qwen3.6-27B (dense) |
+|---|---|---|
+| cases passed | 17/19 (89%) | **18/19 (95%)** |
+| checks passed | 96% | **98%** |
+| malformed arguments | **0** | **0** |
+| invented tools | **0** | **0** |
+| mean turns | 3.5 | **2.6** |
+| median latency | **11.1s** | 33.0s |
+| raw generation | **95.9 tok/s** | 11.4 tok/s |
+
+Both are clean on the two metrics that disqualify a model for loop use. Qwen is
+6 points more accurate; Gemma is **8.4× faster**, which on bandwidth-limited
+hardware is the whole argument for MoE — 4B active parameters to stream per
+token instead of 27B. (Gemma also runs with its MTP draft head for speculative
+decoding: 54.5 → 95.9 tok/s, 1.76×, 78% draft acceptance.)
+
+Zero malformed arguments on both is not luck: `llama-server --jinja`
+grammar-constrains tool-call output. Constrained decoding is worth turning on
+before concluding anything about a model's tool reliability.

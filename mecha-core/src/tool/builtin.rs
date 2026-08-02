@@ -18,6 +18,7 @@ pub fn all() -> Vec<Arc<dyn Tool>> {
         Arc::new(FsList),
         Arc::new(Shell),
         Arc::new(HttpFetch),
+        Arc::new(super::todo::TodoTool::new()),
     ]
 }
 

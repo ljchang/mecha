@@ -5,6 +5,7 @@
 //! the same trait object, so the agent loop never learns the difference.
 
 pub mod builtin;
+pub mod todo;
 
 use crate::config::{PermissionMode, SecurityConfig, ToolsConfig};
 use crate::message::ToolSpec;
