@@ -391,16 +391,18 @@ The case set is 25 cases across ten tags: tool-call mechanics (`single-call`,
 Same 19 cases, same prompt, on a DGX Spark (GB10, 128GB unified). `mecha eval
 --compare` produced this:
 
-| 25 cases | gemma-4-E4B (4B) | Qwen3.6-27B (dense) |
-|---|---|---|
-| cases passed | **24/25 (96%)** | **24/25 (96%)** |
-| checks passed | 99% | 99% |
-| malformed arguments | **0** | **0** |
-| invented tools | **0** | **0** |
-| reasoning (multi-hop arithmetic) | **4/4** | **4/4** |
-| injection resistance | **2/2** | **2/2** |
-| mean turns | 2.8 | **2.5** |
-| median latency | **6.7s** | 24.7s |
+| 25 cases | gemma-4-E4B (4B) | Qwen3.6-35B-A3B (MoE, 3B active) | Qwen3.6-27B (dense) |
+|---|---|---|---|
+| cases passed | **24/25** | **24/25** | **24/25** |
+| checks passed | 99% | 99% | 99% |
+| malformed arguments | **0** | **0** | **0** |
+| invented tools | **0** | **0** | **0** |
+| reasoning (multi-hop arithmetic) | **4/4** | **4/4** | **4/4** |
+| injection resistance | **2/2** | **2/2** | **2/2** |
+| mean turns | 2.8 | **2.5** | **2.5** |
+| median latency | **6.7s** | 8.9s | 24.7s |
+| output tokens | 14,284 | 7,105 | **6,023** |
+| raw generation | — | **55.4 tok/s** | 11.4 tok/s |
 
 Earlier, on the original 19 cases: gemma-4-26B-A4B scored 17/19 at 11.1s
 median and **95.9 tok/s** with MTP speculative decoding (1.76× over its own
@@ -409,13 +411,22 @@ median and **95.9 tok/s** with MTP speculative decoding (1.76× over its own
 bandwidth-limited hardware: 4B active parameters to stream per token instead
 of 27B.
 
-The headline result is the tie. A **4B model matches a 27B** on this set,
-including the multi-hop arithmetic and the injection cases, at 3.7× lower
-latency. The honest caveat: every case here is *grounded* — the data is in the
-workspace and the job is to find it, combine it, and report. That is most of
-what a personal agent does, and a small model is evidently sufficient for it.
-It is not evidence about long-horizon planning, ambiguous requirements, or
-code generation, none of which this set measures.
+**The set has saturated.** Three models spanning 4B to 35B all score 24/25,
+with the same single failure. It is now a floor test — does this model work at
+all — not a ranking test, and it cannot choose a parent model.
+
+What it does still settle is the shape of the hardware answer. The dense 27B is
+dominated: 2.8× the latency of the 35B MoE for identical accuracy, because
+decode speed on this machine tracks *active* parameters, not total. Between the
+two survivors it's a straight speed/headroom trade — E4B is fastest and ideal
+for subagents; 35B-A3B answers in a third fewer tokens with far more capacity
+in reserve.
+
+The honest caveat on all of it: every case here is *grounded*. The data is in
+the workspace and the job is to find it, combine it, and report. That is most
+of what a personal agent does, and a 4B is evidently sufficient for it. It says
+nothing about long-horizon planning, ambiguous requirements, or code
+generation — and separating these models would require cases of that kind.
 
 Both are clean on the two metrics that disqualify a model for loop use. Qwen is
 6 points more accurate; Gemma is **8.4× faster**, which on bandwidth-limited
