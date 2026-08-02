@@ -200,6 +200,10 @@ pub struct CompletionResponse {
     pub refusal: Option<Refusal>,
     /// The model that actually served the response.
     pub model: String,
+    /// Tool calls whose arguments did not parse as JSON. The single most
+    /// useful reliability signal when comparing models: a model that is
+    /// smarter but malforms arguments is worse in a loop.
+    pub malformed_tool_args: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

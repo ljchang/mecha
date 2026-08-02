@@ -30,6 +30,20 @@ pub enum AgentEvent {
     Done(Box<RunOutcome>),
 }
 
+/// One tool call as it actually happened. The trace is what you grade a model
+/// on — final text alone can't tell a lucky guess from correct tool use.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ToolCallTrace {
+    pub name: String,
+    pub input: Value,
+    /// The tool ran and reported failure.
+    pub is_error: bool,
+    /// Refused by the approver before it ran.
+    pub denied: bool,
+    /// The model named a tool that does not exist.
+    pub unknown: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct RunOutcome {
     /// Text of the final assistant turn.
@@ -41,6 +55,10 @@ pub struct RunOutcome {
     /// True when the loop stopped because it hit `max_turns`, not because the
     /// model was finished. The answer is probably incomplete.
     pub exhausted: bool,
+    /// Every tool call attempted, in order.
+    pub tool_calls: Vec<ToolCallTrace>,
+    /// Calls whose arguments did not parse as JSON.
+    pub malformed_tool_args: u32,
 }
 
 pub struct Agent {
@@ -86,6 +104,8 @@ impl Agent {
     ) -> Result<RunOutcome> {
         let mut usage = Usage::default();
         let mut turns = 0;
+        let mut trace: Vec<ToolCallTrace> = Vec::new();
+        let mut malformed = 0u32;
 
         loop {
             if turns >= self.cfg.max_turns {
@@ -96,6 +116,8 @@ impl Agent {
                     turns,
                     refusal: None,
                     exhausted: true,
+                    tool_calls: trace,
+                    malformed_tool_args: malformed,
                 };
                 emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
                 return Ok(outcome);
@@ -116,6 +138,7 @@ impl Agent {
 
             let response = self.complete(&request, &events).await?;
             usage.add(&response.usage);
+            malformed += response.malformed_tool_args;
             emit(&events, AgentEvent::TurnUsage(response.usage.clone()));
 
             let text = response.message.text();
@@ -126,12 +149,12 @@ impl Agent {
 
             match response.stop_reason {
                 StopReason::ToolUse => {
-                    let results = self.run_tools(&response.message, &events).await;
+                    let results = self.run_tools(&response.message, &events, &mut trace).await;
                     // The API rejects the next request unless every tool_use id
                     // has a matching tool_result, so this must never be empty
                     // when the model asked for tools.
                     if results.is_empty() {
-                        let outcome = self.finish(text, &response, usage, turns);
+                        let outcome = self.finish(text, &response, usage, turns, trace, malformed);
                         emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
                         return Ok(outcome);
                     }
@@ -141,7 +164,7 @@ impl Agent {
                 // conversation as-is resumes it; no extra user message.
                 StopReason::PauseTurn => continue,
                 _ => {
-                    let outcome = self.finish(text, &response, usage, turns);
+                    let outcome = self.finish(text, &response, usage, turns, trace, malformed);
                     emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
                     return Ok(outcome);
                 }
@@ -149,12 +172,15 @@ impl Agent {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finish(
         &self,
         text: String,
         response: &CompletionResponse,
         usage: Usage,
         turns: u32,
+        tool_calls: Vec<ToolCallTrace>,
+        malformed_tool_args: u32,
     ) -> RunOutcome {
         RunOutcome {
             text,
@@ -163,6 +189,8 @@ impl Agent {
             turns,
             refusal: response.refusal.clone(),
             exhausted: false,
+            tool_calls,
+            malformed_tool_args,
         }
     }
 
@@ -204,6 +232,7 @@ impl Agent {
         &self,
         assistant: &Message,
         events: &Option<UnboundedSender<AgentEvent>>,
+        trace: &mut Vec<ToolCallTrace>,
     ) -> Vec<Block> {
         let calls: Vec<(String, String, Value)> = assistant
             .tool_uses()
@@ -243,6 +272,13 @@ impl Agent {
                     content,
                     is_error: true,
                 });
+                trace.push(ToolCallTrace {
+                    name: name.clone(),
+                    input: input.clone(),
+                    is_error: true,
+                    denied: false,
+                    unknown: true,
+                });
                 continue;
             };
 
@@ -256,6 +292,13 @@ impl Agent {
                         tool_use_id: id.clone(),
                         content: format!("Denied by the user: {reason}"),
                         is_error: true,
+                    });
+                    trace.push(ToolCallTrace {
+                        name: name.clone(),
+                        input: input.clone(),
+                        is_error: true,
+                        denied: true,
+                        unknown: false,
                     });
                     continue;
                 }
@@ -278,6 +321,13 @@ impl Agent {
         .await;
 
         for (i, id, name, out) in executed {
+            trace.push(ToolCallTrace {
+                name: name.clone(),
+                input: calls[i].2.clone(),
+                is_error: out.is_error,
+                denied: false,
+                unknown: false,
+            });
             emit(
                 events,
                 AgentEvent::ToolResult {
@@ -359,6 +409,7 @@ mod tests {
             usage: Usage { input_tokens: 10, output_tokens: 5, ..Usage::default() },
             refusal: None,
             model: "scripted-1".into(),
+            malformed_tool_args: 0,
         }
     }
 

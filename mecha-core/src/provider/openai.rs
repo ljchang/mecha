@@ -217,6 +217,7 @@ fn parse_arguments(name: &str, raw: &str) -> Result<Value> {
 }
 
 fn decode_response(v: &Value) -> Result<CompletionResponse> {
+    let mut malformed = 0u32;
     let choice = v
         .pointer("/choices/0")
         .context("response has no choices")?;
@@ -238,9 +239,16 @@ fn decode_response(v: &Value) -> Result<CompletionResponse> {
             .pointer("/function/arguments")
             .and_then(Value::as_str)
             .unwrap_or("");
+        let input = match parse_arguments(&name, raw) {
+            Ok(v) => v,
+            Err(_) => {
+                malformed += 1;
+                json!({"__malformed_arguments": raw})
+            }
+        };
         content.push(Block::ToolUse {
             id: call.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
-            input: parse_arguments(&name, raw)?,
+            input,
             name,
         });
     }
@@ -251,6 +259,7 @@ fn decode_response(v: &Value) -> Result<CompletionResponse> {
         usage: decode_usage(v.get("usage")),
         refusal: None,
         model: v.get("model").and_then(Value::as_str).unwrap_or_default().to_string(),
+        malformed_tool_args: malformed,
     })
 }
 
@@ -304,13 +313,20 @@ impl Accumulator {
 
     fn finish(self) -> CompletionResponse {
         let mut content = Vec::new();
+        let mut malformed = 0u32;
         if !self.text.is_empty() {
             content.push(Block::text(self.text));
         }
         for (_, (id, name, args)) in self.calls {
             // A model that streams malformed arguments gets told so via an
             // error tool result rather than killing the whole turn.
-            let input = parse_arguments(&name, &args).unwrap_or_else(|_| json!({"__raw": args}));
+            let input = match parse_arguments(&name, &args) {
+                Ok(v) => v,
+                Err(_) => {
+                    malformed += 1;
+                    json!({"__malformed_arguments": args})
+                }
+            };
             content.push(Block::ToolUse { id, name, input });
         }
         CompletionResponse {
@@ -319,6 +335,7 @@ impl Accumulator {
             usage: self.usage,
             refusal: None,
             model: self.model,
+            malformed_tool_args: malformed,
         }
     }
 }

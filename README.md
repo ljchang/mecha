@@ -45,6 +45,7 @@ everything that isn't a read.
 | `mecha run "<task>"` | One task, one answer. `--json` for machine-readable output, `--resume <id>` to continue. |
 | `mecha chat` | Terminal REPL with history and slash commands. |
 | `mecha batch items.jsonl` | Same agent over many prompts, bounded concurrency, JSONL results. |
+| `mecha eval [cases.jsonl]` | Score a model on a case set. The bake-off rig — see below. |
 | `mecha tools` | List the tool surface. `--schema` shows exactly what the model sees. |
 | `mecha sessions list\|show\|path` | Inspect saved transcripts. |
 | `mecha config show\|path\|init` | See what settings are in effect. |
@@ -142,6 +143,53 @@ mecha batch items.jsonl --concurrency 8 --out results.jsonl --yes
 
 Results stream to the output file as they finish, keyed by `id` — a killed run
 still leaves everything completed so far on disk.
+
+## Choosing a model (`mecha eval`)
+
+The hard part of running locally isn't capability, it's **tool-call
+reliability**: a model that is 5% smarter but malforms JSON arguments 1-in-20
+calls is worse in a loop, because every bad call costs a recovery turn. So
+`mecha eval` grades the **tool-call trace**, not just the final text.
+
+```bash
+mecha eval -p local -m qwen3-moe   -o results/qwen.json
+mecha eval -p local -m nemotron    -o results/nemotron.json
+mecha eval -p anthropic            -o results/opus5.json     # the ceiling
+
+mecha eval --compare results/*.json
+```
+
+Runs are forced read-only against `eval/workspace`, so they're reproducible,
+safe at high concurrency, and comparable across models.
+
+Cases are JSONL, graded on what the model *did*:
+
+```json
+{"id":"list-then-read","tags":["chaining"],
+ "prompt":"Look at what is in the notes directory, then read the earliest note and tell me who attended.",
+ "expect":{"tools_in_order":["fs_list","fs_read"],"contains":["wasita"],"max_turns":6}}
+```
+
+| Expectation | Checks |
+|---|---|
+| `tools` | each named tool was called at least once |
+| `tools_in_order` | called in this relative order (interleaving allowed) |
+| `forbid_tools` / `no_tools` | never called / no tool used at all |
+| `args` | a call to that tool passed an argument matching `equals`/`contains` |
+| `contains` / `not_contains` / `contains_any` | substrings of the final answer |
+| `max_turns` | the run didn't flail |
+
+Two checks are applied to every case whether you ask for them or not, because
+they disqualify a model regardless of the answer: **malformed arguments** and
+**invented tool names**.
+
+The shipped set covers single calls, chaining, argument fidelity, tool
+selection among distractors, discrimination (knowing *not* to use a tool),
+recovery from errors and denials, and honesty about missing capabilities.
+`--tag chaining` runs one slice; `--failures` shows why each case failed.
+
+`mecha eval` exits non-zero when anything fails, so it also works as a
+regression gate on the harness itself.
 
 ## Sessions
 

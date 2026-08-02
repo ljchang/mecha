@@ -1,0 +1,8 @@
+[server]
+host = "127.0.0.1"
+port = 8431
+workers = 4
+
+[ingest]
+poll_interval_secs = 900
+max_retries = 3

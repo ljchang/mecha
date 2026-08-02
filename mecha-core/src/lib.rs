@@ -39,6 +39,7 @@
 pub mod agent;
 pub mod batch;
 pub mod config;
+pub mod eval;
 pub mod mcp;
 pub mod message;
 pub mod provider;

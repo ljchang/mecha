@@ -320,6 +320,9 @@ fn decode_response(v: &Value) -> Result<CompletionResponse> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        // Non-streaming responses carry already-parsed JSON, so arguments
+        // cannot arrive malformed on this path.
+        malformed_tool_args: 0,
     })
 }
 
@@ -428,6 +431,7 @@ impl StreamAccumulator {
 
     fn finish(self) -> Result<CompletionResponse> {
         let mut content = Vec::new();
+        let mut malformed = 0u32;
         for (_, block) in self.blocks {
             match block {
                 PartialBlock::Text(text) => {
@@ -443,9 +447,21 @@ impl StreamAccumulator {
                     let input = if json.trim().is_empty() {
                         json!({})
                     } else {
-                        serde_json::from_str(&json).with_context(|| {
-                            format!("tool {name} streamed unparseable arguments: {json}")
-                        })?
+                        match serde_json::from_str(&json) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                // Don't kill the turn: hand the model an error
+                                // result so it can retry, and count it as the
+                                // reliability signal it is.
+                                malformed += 1;
+                                tracing::warn!(
+                                    tool = %name,
+                                    error = %e,
+                                    "tool arguments did not parse"
+                                );
+                                json!({"__malformed_arguments": json})
+                            }
+                        }
                     };
                     content.push(Block::ToolUse { id, name, input });
                 }
@@ -459,6 +475,7 @@ impl StreamAccumulator {
             usage: self.usage,
             refusal: self.refusal,
             model: self.model,
+            malformed_tool_args: malformed,
         })
     }
 }

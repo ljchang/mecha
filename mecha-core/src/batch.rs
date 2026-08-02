@@ -4,7 +4,7 @@
 //! failures recorded rather than fatal, results keyed so they can be joined
 //! back to their inputs in any order.
 
-use crate::agent::Agent;
+use crate::agent::{Agent, ToolCallTrace};
 use crate::message::{Message, StopReason, Usage};
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,11 @@ pub struct BatchResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<serde_json::Value>,
     pub elapsed_ms: u64,
+    /// What the model actually did. Grading tool use needs this, not `text`.
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCallTrace>,
+    #[serde(default)]
+    pub malformed_tool_args: u32,
 }
 
 /// Run every item, at most `concurrency` at a time.
@@ -61,7 +66,9 @@ where
                 id: item.id,
                 // An exhausted run technically returned, but the answer is
                 // truncated; callers shouldn't count it as a success.
-                ok: !outcome.exhausted && outcome.stop_reason != StopReason::Refusal,
+                ok: !outcome.exhausted
+                    && outcome.stop_reason != StopReason::Refusal
+                    && outcome.malformed_tool_args == 0,
                 text: outcome.text,
                 error: outcome.refusal.map(|r| {
                     format!(
@@ -75,6 +82,8 @@ where
                 stop_reason: Some(outcome.stop_reason),
                 meta: item.meta,
                 elapsed_ms: started.elapsed().as_millis() as u64,
+                tool_calls: outcome.tool_calls,
+                malformed_tool_args: outcome.malformed_tool_args,
             },
             Err(e) => BatchResult {
                 id: item.id,
@@ -86,6 +95,8 @@ where
                 stop_reason: None,
                 meta: item.meta,
                 elapsed_ms: started.elapsed().as_millis() as u64,
+                tool_calls: Vec::new(),
+                malformed_tool_args: 0,
             },
         }
     }))
