@@ -74,7 +74,8 @@ pub async fn prepare(opts: &GlobalOpts, interactive: bool) -> Result<Prepared> {
         ctx,
         cfg.agent.clone(),
         Some(model.clone()),
-    )?;
+    )?
+    .with_pricing(provider_cfg.pricing());
 
     Ok(Prepared {
         agent,
@@ -96,6 +97,12 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     }
     if let Some(max_turns) = opts.max_turns {
         cfg.agent.max_turns = max_turns;
+    }
+    if opts.max_output_tokens.is_some() {
+        cfg.agent.max_output_tokens = opts.max_output_tokens;
+    }
+    if opts.max_cost.is_some() {
+        cfg.agent.max_cost_usd = opts.max_cost;
     }
     if opts.no_thinking {
         cfg.agent.thinking = false;

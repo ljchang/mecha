@@ -308,6 +308,37 @@ regression gate on the harness itself.
 Every run writes an append-only JSONL transcript to `~/.mecha/sessions`
 (override with `MECHA_SESSION_DIR`). `--no-session` opts out.
 
+## Budgets
+
+`max_turns` bounds how many round trips a run makes. It does not bound how
+large they are, which is what actually runs up a bill — so there are two more
+ceilings:
+
+```bash
+mecha run "..." --max-output-tokens 20000
+mecha run "..." --max-cost 0.50
+```
+
+```toml
+[agent]
+max_output_tokens = 20000
+max_cost_usd = 0.50
+
+[providers.anthropic]
+input_price_per_mtok = 5.0      # required for cost budgets and reporting
+output_price_per_mtok = 25.0
+```
+
+All three ceilings end a run the same way: one last turn with the tools
+removed, so there is an answer rather than silence. `stop_cause` distinguishes
+`completed` / `max_turns` / `output_token_budget` / `cost_budget`, and an early
+stop never returns an empty string.
+
+Cost accounting prices cache reads and writes separately (0.1× and 1.25× input
+by default), because a run that looks cheap on raw token counts often isn't.
+Leave prices unset for a local model and `cost_usd` reports `null` rather than
+a misleading zero.
+
 ## Search
 
 Backends sit behind a `SearchBackend` trait and are tried in order, falling

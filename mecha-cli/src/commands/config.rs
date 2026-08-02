@@ -80,6 +80,9 @@ default_provider = "anthropic"
 kind = "anthropic"
 model = "claude-opus-5"
 api_key_env = "ANTHROPIC_API_KEY"
+# Needed for cost budgets and reporting; omit for a local model.
+# input_price_per_mtok = 5.0
+# output_price_per_mtok = 25.0
 
 # A local OpenAI-compatible server (llama-server, vLLM, Ollama):
 # [providers.local]
@@ -91,6 +94,9 @@ api_key_env = "ANTHROPIC_API_KEY"
 # system_prompt_file = "prompts/agent.md"
 max_turns = 40
 max_tokens = 64000
+# Ceilings on size, not just round trips. Unset by default.
+# max_output_tokens = 20000
+# max_cost_usd = 0.50
 effort = "high"     # low | medium | high | xhigh | max
 thinking = true
 cache_prompt = true

@@ -103,6 +103,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             "stop_reason": outcome.stop_reason,
             "turns": outcome.turns,
             "exhausted": outcome.exhausted,
+            "stop_cause": outcome.stop_cause,
+            "cost_usd": outcome.cost_usd,
             "refusal": outcome.refusal,
             "usage": outcome.usage,
             "model": prepared.model,

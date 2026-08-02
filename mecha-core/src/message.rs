@@ -128,6 +128,43 @@ impl Usage {
     pub fn total_input(&self) -> u64 {
         self.input_tokens + self.cache_creation_input_tokens + self.cache_read_input_tokens
     }
+
+    /// What this cost, if the provider has prices configured.
+    ///
+    /// Cache reads and writes are billed at different multiples of the input
+    /// rate, so a run that looks cheap on raw token counts can be anything but.
+    pub fn cost_usd(&self, pricing: &Pricing) -> f64 {
+        let per_input = pricing.input_per_mtok / 1_000_000.0;
+        let per_output = pricing.output_per_mtok / 1_000_000.0;
+        self.input_tokens as f64 * per_input
+            + self.cache_creation_input_tokens as f64 * per_input * pricing.cache_write_multiplier
+            + self.cache_read_input_tokens as f64 * per_input * pricing.cache_read_multiplier
+            + self.output_tokens as f64 * per_output
+    }
+}
+
+/// Per-million-token prices. Configured, never guessed — hardcoding a price
+/// table guarantees it is wrong within a quarter.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Pricing {
+    pub input_per_mtok: f64,
+    pub output_per_mtok: f64,
+    /// Cache writes usually cost more than plain input.
+    pub cache_write_multiplier: f64,
+    /// Cache reads usually cost far less.
+    pub cache_read_multiplier: f64,
+}
+
+impl Default for Pricing {
+    fn default() -> Self {
+        // The prevailing Anthropic ratios; override per provider in config.
+        Pricing {
+            input_per_mtok: 0.0,
+            output_per_mtok: 0.0,
+            cache_write_multiplier: 1.25,
+            cache_read_multiplier: 0.1,
+        }
+    }
 }
 
 /// A tool as the model sees it.

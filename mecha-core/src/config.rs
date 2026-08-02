@@ -45,6 +45,8 @@ impl Default for Config {
                 api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
                 api_key: None,
                 base_url: None,
+                input_price_per_mtok: None,
+                output_price_per_mtok: None,
             },
         );
         Config {
@@ -71,9 +73,26 @@ pub struct ProviderConfig {
     /// Inline key. Convenient, but it lands in a file on disk — prefer the env var.
     pub api_key: Option<String>,
     pub base_url: Option<String>,
+    /// Per-million-token prices, so budgets and reporting can be in dollars.
+    /// Leave unset for a local model — the marginal cost really is zero.
+    pub input_price_per_mtok: Option<f64>,
+    pub output_price_per_mtok: Option<f64>,
 }
 
 impl ProviderConfig {
+    /// Prices, if configured. Both halves are required: knowing one is worse
+    /// than knowing neither, because it silently under-reports.
+    pub fn pricing(&self) -> Option<crate::message::Pricing> {
+        match (self.input_price_per_mtok, self.output_price_per_mtok) {
+            (Some(input), Some(output)) => Some(crate::message::Pricing {
+                input_per_mtok: input,
+                output_per_mtok: output,
+                ..Default::default()
+            }),
+            _ => None,
+        }
+    }
+
     pub fn resolve_api_key(&self) -> Option<String> {
         if let Some(var) = &self.api_key_env {
             if let Ok(v) = std::env::var(var) {
@@ -103,6 +122,12 @@ pub struct AgentConfig {
     /// removed so the model has to answer with what it has. Without this a
     /// model that never stops searching returns nothing at all.
     pub force_final_answer: bool,
+    /// Stop once this many output tokens have been generated in one run.
+    /// `max_turns` bounds the number of round trips; this bounds their size,
+    /// which is what actually runs up a bill.
+    pub max_output_tokens: Option<u64>,
+    /// Stop once one run has cost this much. Requires prices on the provider.
+    pub max_cost_usd: Option<f64>,
 }
 
 impl Default for AgentConfig {
@@ -118,6 +143,10 @@ impl Default for AgentConfig {
             thinking: true,
             cache_prompt: true,
             force_final_answer: true,
+            // Unset by default: a ceiling that surprises you mid-task is worse
+            // than no ceiling. Set them once you run things unattended.
+            max_output_tokens: None,
+            max_cost_usd: None,
         }
     }
 }
@@ -376,6 +405,8 @@ struct AgentLayer {
     thinking: Option<bool>,
     cache_prompt: Option<bool>,
     force_final_answer: Option<bool>,
+    max_output_tokens: Option<u64>,
+    max_cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -434,6 +465,12 @@ impl ConfigLayer {
             }
             if let Some(v) = a.force_final_answer {
                 t.force_final_answer = v;
+            }
+            if a.max_output_tokens.is_some() {
+                t.max_output_tokens = a.max_output_tokens;
+            }
+            if a.max_cost_usd.is_some() {
+                t.max_cost_usd = a.max_cost_usd;
             }
         }
         if let Some(x) = self.tools {

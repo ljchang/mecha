@@ -61,6 +61,15 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub max_turns: Option<u32>,
 
+    /// Stop once the run has generated this many output tokens.
+    #[arg(long, global = true)]
+    pub max_output_tokens: Option<u64>,
+
+    /// Stop once the run has cost this much, in USD. Needs prices configured
+    /// on the provider.
+    #[arg(long, global = true, value_name = "USD")]
+    pub max_cost: Option<f64>,
+
     /// Only expose these tools (repeatable). Names are matched exactly.
     #[arg(long = "tool", global = true)]
     pub tools: Vec<String>,

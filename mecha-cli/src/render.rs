@@ -130,19 +130,32 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                         );
                     }
                     if outcome.exhausted {
+                        let fix = match outcome.stop_cause {
+                            mecha_core::agent::StopCause::MaxTurns => "raise --max-turns",
+                            mecha_core::agent::StopCause::OutputTokenBudget => {
+                                "raise --max-output-tokens"
+                            }
+                            mecha_core::agent::StopCause::CostBudget => "raise --max-cost",
+                            mecha_core::agent::StopCause::Completed => "",
+                        };
                         eprintln!(
                             "{}",
                             style.red(&format!(
-                                "stopped after {} turns without finishing — raise --max-turns",
+                                "{} after {} turns — the answer may be incomplete ({fix})",
+                                outcome.stop_cause.describe(),
                                 outcome.turns
                             ))
                         );
                     }
                     if opts.verbose {
+                        let cost = outcome
+                            .cost_usd
+                            .map(|c| format!(" · ${c:.4}"))
+                            .unwrap_or_default();
                         println!(
                             "{}",
                             style.dim(&format!(
-                                "  {} turns · {}",
+                                "  {} turns · {}{cost}",
                                 outcome.turns,
                                 format_usage(&outcome.usage)
                             ))
