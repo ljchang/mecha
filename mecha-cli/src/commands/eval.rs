@@ -67,6 +67,16 @@ pub struct Args {
     pub keep_workspaces: bool,
 
     /// Compare previously written scorecards side by side instead of running.
+    /// Connect MCP servers during the eval.
+    ///
+    /// Off by default, which is a reproducibility decision rather than a
+    /// performance one: a scorecard that silently depends on whichever servers
+    /// happen to be configured on this machine today is not comparable to one
+    /// taken yesterday, or on another machine, or by anyone else. An eval
+    /// measures a model against a *fixed* tool surface.
+    #[arg(long)]
+    pub mcp: bool,
+
     /// Make `ask_user` available, answering nothing.
     ///
     /// The point is to measure whether the model *asks*, not to answer it: a
@@ -109,12 +119,17 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Force read-only and point the workspace at the fixture, whatever the
     // caller's flags or config said. An eval that can mutate its own fixture
     // isn't measuring anything repeatable.
-    let opts = GlobalOpts {
+    let mut opts = GlobalOpts {
         workspace: Some(fixture.clone()),
         read_only: true,
         yes: false,
         ..global.clone()
     };
+    // Ambient MCP servers would make the tool list depend on local config,
+    // so they are opt-in here even though they are on everywhere else.
+    if !args.mcp {
+        opts.no_mcp = true;
+    }
     let mut prepared = setup::prepare(&opts, false).await?;
     if args.ask_user {
         prepared
