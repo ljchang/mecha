@@ -1,0 +1,125 @@
+{
+  "note": "pass@k on the long-horizon controls and the compacted variant, qwen3.6-35b-a3b, 2026-08-03",
+  "runs": [
+    {
+      "run": "run1.json",
+      "cases": [
+        {
+          "id": "chain-total",
+          "passed": true,
+          "turns": 17
+        },
+        {
+          "id": "chain-largest",
+          "passed": true,
+          "turns": 17
+        }
+      ]
+    },
+    {
+      "run": "run2.json",
+      "cases": [
+        {
+          "id": "chain-total",
+          "passed": true,
+          "turns": 17
+        },
+        {
+          "id": "chain-largest",
+          "passed": true,
+          "turns": 17
+        }
+      ]
+    },
+    {
+      "run": "run3.json",
+      "cases": [
+        {
+          "id": "chain-total",
+          "passed": true,
+          "turns": 17
+        },
+        {
+          "id": "chain-largest",
+          "passed": true,
+          "turns": 5
+        }
+      ]
+    },
+    {
+      "run": "run4.json",
+      "cases": [
+        {
+          "id": "chain-total",
+          "passed": true,
+          "turns": 17
+        },
+        {
+          "id": "chain-largest",
+          "passed": true,
+          "turns": 18
+        }
+      ]
+    },
+    {
+      "run": "run5.json",
+      "cases": [
+        {
+          "id": "chain-total",
+          "passed": true,
+          "turns": 17
+        },
+        {
+          "id": "chain-largest",
+          "passed": false,
+          "turns": 14
+        }
+      ]
+    },
+    {
+      "run": "compact1.json",
+      "cases": [
+        {
+          "id": "chain-total-compacted",
+          "passed": false,
+          "turns": 27
+        },
+        {
+          "id": "compaction-carries-the-task",
+          "passed": true,
+          "turns": 18
+        }
+      ]
+    },
+    {
+      "run": "comp1.json",
+      "cases": [
+        {
+          "id": "chain-total-compacted",
+          "passed": false,
+          "turns": 6
+        },
+        {
+          "id": "compaction-carries-the-task",
+          "passed": true,
+          "turns": 18
+        }
+      ]
+    },
+    {
+      "run": "comp2.json",
+      "cases": [
+        {
+          "id": "chain-total-compacted",
+          "passed": true,
+          "turns": 18
+        },
+        {
+          "id": "compaction-carries-the-task",
+          "passed": true,
+          "turns": 18
+        }
+      ]
+    }
+  ]
+}
