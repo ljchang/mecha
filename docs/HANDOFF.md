@@ -154,14 +154,9 @@ in the same tag:
 
 - **long-horizon 2/2**, at ~17.5 turns — it walks a 16-link chain without
   losing the running total, and does not take the shortcut of summing the
-  decoys. **This no longer reproduces.** On 2026-08-03 the same case failed on
-  qwen3.6-35b-a3b: it walked the chain correctly for 11 links, then *invented*
-  `next: END` on `entry-9e1b.md` (which actually points to `entry-6189.md`),
-  and summed its own truncated list correctly to 576. The gold was
-  re-derived from the fixture and is right — 16 entries, 847. So this is a
-  model failure, and `long-horizon` belongs with `ambiguity` as a tag that
-  moves between runs rather than one that is saturated. Treat the 2/2 above as
-  one sample, not a baseline.
+  decoys. Confirmed at n=5 on 2026-08-03: `chain-total` is **5/5** uncompacted,
+  `chain-largest` **4/5**. A single failure seen before this was measured looked
+  like a regression and was variance — which is the whole argument for pass@k.
 - **codegen 2/2** — implements `median`, finds the one-line duration-parsing
   bug, and runs the tests itself. Graded by running them, not by asking.
 - **synthesis 2/2** — finds the majority figure and the outlier, and notices
@@ -478,12 +473,37 @@ that could have destroyed the task silently.
   never touches, so the type does the work — but there is a test, because it is
   the invariant that would be easiest to break later.
 - **Fidelity is not legality, and only one of them is unit-testable.** The cut
-  points are pure functions with tests. Whether a summary carried the running
-  total forward can only be answered by a model that had to use it, which is
-  what `chain-total-compacted` (`compact_at_tokens: 1200`,
-  `min_compactions: 1`) is for. As of 2026-08-03 that case fails — but so does
-  its uncompacted control, so it currently says nothing about compaction. Fix
-  the control first.
+  points are pure functions with tests. Whether a summary carried the task
+  forward can only be answered by a model that had to use it.
+- **Measured, and it is worse than this file used to claim.** Two cases, same
+  model, same threshold, on 2026-08-03:
+
+  | Case | Result |
+  |---|---|
+  | `compaction-carries-the-task` — recall a token stated in turn 1 after 8 filler turns | **3/3** |
+  | `chain-total-compacted` — the 16-link traversal, `compact_at_tokens: 1200` | **1/5** |
+  | `chain-total` — the identical task, uncompacted | **5/5** |
+
+  5/5 against 1/5 on the same task with one variable changed (Fisher's exact
+  p≈0.05). The earlier claim in this file — "it compacted four times and still
+  answered 16 entries / 847" — was one sample and does not hold up.
+
+  The failure mode names the cause. The two logged walks lost their *place*,
+  not their facts: one invented `next: END` five links early, the other read 14
+  links correctly, re-read an entry it had already seen, and restarted from
+  `START.md`. Meanwhile a stated fact survives compaction 3/3.
+
+  So the summariser preserves **what is true** and drops **how far you got**.
+  Read `SUMMARY_INSTRUCTION` with that in mind: it asks for established facts
+  with their values, for what failed so it is not repeated, and for what
+  remained — but never for position in a sequence, and "which entries I have
+  already visited" is neither a fact about the world nor a failed attempt.
+
+  The obvious fix is one clause in that instruction asking for progress through
+  any traversal. **It is not made, deliberately**: there is now a 1/5 baseline
+  to beat, and a prompt change shipped without re-running against it is exactly
+  the guess this rig exists to replace. Budget ~35 minutes of local compute for
+  the before/after.
 
 ---
 
@@ -546,9 +566,22 @@ Recorded so they aren't hit twice.
   vacuously on a host that had neither. Check the host has them before
   believing the sandbox took them away.
 - **Grade the control before believing the treatment.** `chain-total-compacted`
-  failed on its first run, which looked like a compaction-fidelity finding —
-  until the uncompacted `chain-total` failed the same way. A case that isolates
-  one variable proves nothing while its control is red.
+  failed on its first run, which looked like a compaction finding — until the
+  uncompacted control failed too, which made it look like nothing. Both readings
+  were n=1. Five runs of each turned it back into a finding, and a real one.
+  A case that isolates one variable proves nothing while its control is
+  unmeasured, in *either* direction.
+- **Do not couple a diagnostic to your hardest case.** The first compaction
+  case was the 16-link traversal, so a compaction failure and a long-horizon
+  failure were indistinguishable in the result. The replacement states a token
+  in turn one and asks for it after eight filler turns: the underlying task is
+  trivial, so the case can only fail for the reason it is named after.
+- **Assert on the trace, not only on the answer.** `chain-total` was graded on
+  its total, so a model that stopped early and summed its own truncated list
+  *correctly* failed with "847 not in the answer" — true, useless. Asserting it
+  read `entry-d084.md`, the one real terminator, names the failure instead. It
+  also closed a hole in `chain-largest`, whose answer sits at link 9 of 16 and
+  could be reached without ever finishing the walk.
 
 **Providers**
 
