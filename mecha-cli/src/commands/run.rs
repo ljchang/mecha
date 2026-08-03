@@ -42,13 +42,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let prepared = setup::prepare(global, interactive).await?;
 
     let session_dir = Session::default_dir()?;
-    let mut messages = Vec::new();
+    let mut convo = mecha_core::agent::Conversation::new();
     let mut session = None;
 
     if let Some(id) = &args.resume {
         let path = Session::find(&session_dir, id)?;
         let (meta, prior) = Session::load(&path)?;
-        messages = prior;
+        convo = prior;
         session = Some(Session { meta, path });
     } else if !args.no_session {
         session = Some(Session::create(
@@ -65,11 +65,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     let user = Message::user(&prompt);
-    messages.push(user.clone());
+    convo.push(user.clone());
     if let Some(s) = &session {
         s.append(&Record::Message(user))?;
     }
-    let history_len = messages.len();
+    let history_len = convo.len();
 
     let quiet = args.quiet || args.json;
     let events = if args.no_stream || args.json {
@@ -83,7 +83,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let outcome = crate::interrupt::run_interruptible(
         &prepared.agent,
         prepared.agent.context(),
-        &mut messages,
+        &mut convo,
         events.as_ref().map(|(tx, _)| tx.clone()),
     )
     .await?;
@@ -96,7 +96,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     if let Some(s) = &session {
-        s.append_messages(&messages[history_len..])?;
+        s.append_messages(&convo.messages[history_len..])?;
         s.append(&Record::Summary { usage: outcome.usage.clone(), turns: outcome.turns })?;
     }
 

@@ -24,7 +24,7 @@ A working agent harness, used and measured rather than just compiled.
 | Sessions | Append-only JSONL, resume |
 | Eval | 34 cases, 14 tags, scorecard, `--compare`, sandboxes, LLM judge |
 
-61 tests. `cargo clippy --all-targets` is clean and should stay that way.
+63 tests. `cargo clippy --all-targets` is clean and should stay that way.
 
 ## Environment as left
 
@@ -223,6 +223,20 @@ commands a model asked for out loud.
 - Asking for confinement with no backend set is a **startup error**, not a
   warning. `mecha tools` lists every server and says which are unconfined.
 
+**Taint is per-conversation, not per-run.** It was created fresh inside `run`,
+so a chat turn reset it and the lethal trifecta was defeated by pressing Enter.
+It now lives on `agent::Conversation` with the messages, and is written to the
+session file — provenance cannot be recovered by reading a transcript back, so
+without that record, resuming laundered it too. Verified across a process
+restart: a page fetched in one session, a file read in the resumed one, and the
+outbound call refused.
+
+The type is the fix. A caller that keeps the history keeps the taint; one that
+starts a new `Conversation` gets a clean one, which is why batch items,
+subagents and eval cases do not contaminate each other. There is a regression
+test, and it was checked to fail against the old behaviour rather than merely
+pass against the new.
+
 Still open on this axis:
 
 - **A confined MCP server sees the workspace**, so a filesystem server confined
@@ -355,6 +369,10 @@ Recorded so they aren't hit twice:
   `eval::normalize` handles it now — extend that, don't work around it.
 - **Wrapping our own errors as untrusted content** made the model invent
   explanations for its own harness's behaviour. Provenance, not capability.
+- **A turn boundary is not a security boundary.** Taint was per-run, so every
+  guard keyed on it silently reset between chat turns while the content it was
+  guarding against stayed in context. Anything scoped to "a run" is worth
+  re-checking against "a conversation".
 - **`Command::envs()` does not replace the environment, it adds to it.** Every
   MCP server was inheriting mecha's full environment, provider keys included,
   and nothing about the call site looked wrong. `env_clear()` first.

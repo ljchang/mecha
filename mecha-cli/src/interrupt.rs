@@ -5,8 +5,7 @@
 //! work the agent had already done, and the user pressing Ctrl-C almost never
 //! wants that — they want to redirect.
 
-use mecha_core::agent::{Agent, AgentEvent, RunContext, RunOutcome};
-use mecha_core::message::Message;
+use mecha_core::agent::{Agent, AgentEvent, Conversation, RunContext, RunOutcome};
 
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
@@ -19,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 pub async fn run_interruptible(
     agent: &Agent,
     cx: &RunContext,
-    messages: &mut Vec<Message>,
+    convo: &mut Conversation,
     events: Option<UnboundedSender<AgentEvent>>,
 ) -> anyhow::Result<RunOutcome> {
     let token = CancellationToken::new();
@@ -45,7 +44,7 @@ pub async fn run_interruptible(
         })
     };
 
-    let result = agent.run_in(&cx, messages, events).await;
+    let result = agent.run_in(&cx, convo, events).await;
 
     // Ends the watcher whichever way the run went, and releases the signal
     // handler so a later Ctrl-C at the prompt behaves normally.

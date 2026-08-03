@@ -10,7 +10,7 @@
 //!
 //! ```no_run
 //! # async fn example() -> anyhow::Result<()> {
-//! use mecha_core::{agent::Agent, config::Config, message::Message};
+//! use mecha_core::{agent::Agent, agent::Conversation, config::Config};
 //! use mecha_core::sandbox::Sandbox;
 //! use mecha_core::tool::{ModeApprover, Registry, ToolCtx};
 //! use std::sync::Arc;
@@ -35,8 +35,10 @@
 //!     None,
 //! )?;
 //!
-//! let mut messages = vec![Message::user("What changed in this repo today?")];
-//! let outcome = agent.run(&mut messages, None).await?;
+//! // A conversation carries its own taint, so keeping it across turns keeps
+//! // the trifecta interlock honest — see `agent::Conversation`.
+//! let mut convo = Conversation::user("What changed in this repo today?");
+//! let outcome = agent.run(&mut convo, None).await?;
 //! println!("{}", outcome.text);
 //! # Ok(())
 //! # }

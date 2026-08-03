@@ -4,6 +4,7 @@
 //! per message. Append-only, so a crashed run still leaves a readable
 //! transcript, and `mecha sessions resume` can pick it back up.
 
+use crate::agent::{Conversation, Taint};
 use crate::message::{Message, Usage};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -18,6 +19,14 @@ pub enum Record {
     /// Written when a run finishes, so `sessions show` can report cost without
     /// replaying the whole transcript.
     Summary { usage: Usage, turns: u32 },
+    /// What had entered the conversation by this point.
+    ///
+    /// Recorded because it cannot be recovered by reading the transcript back:
+    /// taint keys off *provenance* — whether a result actually came from
+    /// outside — and the transcript stores only the content. Without this,
+    /// resuming a session that had read a hostile page would hand the model
+    /// that page again with the interlock disarmed.
+    Taint(Taint),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,26 +92,31 @@ impl Session {
         Ok(())
     }
 
-    /// Read a transcript back. Unparseable lines are skipped rather than
-    /// failing the load — a truncated final line is the normal result of a
-    /// killed process.
-    pub fn load(path: &Path) -> Result<(SessionMeta, Vec<Message>)> {
+    /// Read a transcript back, taint included.
+    ///
+    /// Unparseable lines are skipped rather than failing the load — a truncated
+    /// final line is the normal result of a killed process.
+    pub fn load(path: &Path) -> Result<(SessionMeta, Conversation)> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
 
         let mut meta = None;
         let mut messages = Vec::new();
+        let mut taint = Taint::default();
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
             match serde_json::from_str::<Record>(line) {
                 Ok(Record::Meta(m)) => meta = Some(m),
                 Ok(Record::Message(m)) => messages.push(m),
+                // Merged rather than replaced: taint only ever grows, and a
+                // transcript written by an older build has none at all.
+                Ok(Record::Taint(t)) => taint.merge(t),
                 Ok(Record::Summary { .. }) => {}
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
         }
 
         let meta = meta.with_context(|| format!("{} has no session header", path.display()))?;
-        Ok((meta, messages))
+        Ok((meta, Conversation::resumed(messages, taint)))
     }
 
     /// Sessions in `dir`, newest first.

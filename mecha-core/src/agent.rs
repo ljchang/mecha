@@ -190,7 +190,8 @@ impl RunContext {
 /// data, untrusted content, and a way to send. Two of them are properties of
 /// the transcript, so they are tracked here; the third is a property of the
 /// tool about to run.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Taint {
     /// A tool has returned data the user considers private.
     pub private: bool,
@@ -203,6 +204,71 @@ impl Taint {
     /// True once an outbound tool could be used to exfiltrate.
     pub fn trifecta_armed(&self) -> bool {
         self.private && self.untrusted
+    }
+
+    pub fn merge(&mut self, other: Taint) {
+        self.private |= other.private;
+        self.untrusted |= other.untrusted;
+    }
+}
+
+/// A conversation, and what has entered it.
+///
+/// The taint lives here, with the messages, because that is what it is a
+/// property of. Tracking it per *run* meant the lethal trifecta was defeated by
+/// pressing Enter: fetch a hostile page on one turn, read a secret and send on
+/// the next, and the interlock saw a clean slate both times — while the
+/// attacker's text sat in the model's context the whole while, still able to
+/// steer it. A turn boundary is not a security boundary.
+///
+/// Bundling the two makes the right thing the default rather than something
+/// each caller has to remember. Keep the history and you keep the taint; start
+/// a new conversation — a batch item, a subagent, an eval case — and you get a
+/// clean one, because you built a new `Conversation` to do it.
+#[derive(Debug, Clone, Default)]
+pub struct Conversation {
+    pub messages: Vec<Message>,
+    /// What has entered this conversation so far. Grows, never shrinks: there
+    /// is no way to un-read a page.
+    pub taint: Taint,
+}
+
+impl Conversation {
+    pub fn new() -> Self {
+        Conversation::default()
+    }
+
+    /// Open with one user message.
+    pub fn user(text: impl Into<String>) -> Self {
+        Conversation { messages: vec![Message::user(text)], taint: Taint::default() }
+    }
+
+    /// Resume a transcript whose taint is known — from a session file that
+    /// recorded it.
+    pub fn resumed(messages: Vec<Message>, taint: Taint) -> Self {
+        Conversation { messages, taint }
+    }
+
+    pub fn push(&mut self, message: Message) {
+        self.messages.push(message);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.messages.len()
+    }
+}
+
+impl From<Vec<Message>> for Conversation {
+    /// Messages with no recorded taint are treated as clean. That is right for
+    /// a conversation being started and wrong for one being resumed — use
+    /// [`Conversation::resumed`] there, or resuming launders the taint the same
+    /// way a turn boundary used to.
+    fn from(messages: Vec<Message>) -> Self {
+        Conversation { messages, taint: Taint::default() }
     }
 }
 
@@ -363,10 +429,10 @@ impl Agent {
     /// REPL can call this repeatedly and keep the history.
     pub async fn run(
         &self,
-        messages: &mut Vec<Message>,
+        convo: &mut Conversation,
         events: Option<UnboundedSender<AgentEvent>>,
     ) -> Result<RunOutcome> {
-        self.run_in(&Arc::clone(&self.cx), messages, events).await
+        self.run_in(&Arc::clone(&self.cx), convo, events).await
     }
 
     /// Run against a caller-supplied context instead of the agent's own.
@@ -377,15 +443,23 @@ impl Agent {
     pub async fn run_in(
         &self,
         cx: &RunContext,
-        messages: &mut Vec<Message>,
+        convo: &mut Conversation,
         events: Option<UnboundedSender<AgentEvent>>,
     ) -> Result<RunOutcome> {
         let mut usage = Usage::default();
         let mut turns = 0;
         let mut trace: Vec<ToolCallTrace> = Vec::new();
         let mut malformed = 0u32;
-        let mut taint = Taint::default();
         let mut blocked_sends = 0u32;
+
+        // Carried in from the transcript, not started fresh. Everything the
+        // conversation has already seen still applies — this is the whole
+        // point of the type.
+        let mut taint = convo.taint;
+        // Whatever happens below, including an early return, the conversation
+        // keeps what it learned. `RunOutcome.taint` reports the same thing for
+        // callers that want it without reaching into the conversation.
+        let messages = &mut convo.messages;
 
         loop {
             // Checked before the budget ceilings and handled differently from
@@ -529,6 +603,12 @@ impl Agent {
                             &mut blocked_sends,
                         )
                         .await;
+
+                    // The only place taint changes, so the only place it has to
+                    // be written back. Doing it here rather than at each of the
+                    // five exits means a new early return cannot silently drop
+                    // what this turn learned.
+                    convo.taint = taint;
                     // The API rejects the next request unless every tool_use id
                     // has a matching tool_result, so this must never be empty
                     // when the model asked for tools.
@@ -1101,8 +1181,8 @@ mod tests {
             PermissionMode::Allow,
         );
 
-        let mut messages = vec![Message::user("ping")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("ping")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert_eq!(outcome.text, "done");
         assert_eq!(outcome.turns, 2);
@@ -1111,8 +1191,8 @@ mod tests {
         assert_eq!(outcome.usage.output_tokens, 10);
 
         // user, assistant(tool_use), user(tool_result), assistant(text)
-        assert_eq!(messages.len(), 4);
-        match &messages[2].content[0] {
+        assert_eq!(convo.messages.len(), 4);
+        match &convo.messages[2].content[0] {
             Block::ToolResult { tool_use_id, content, is_error } => {
                 assert_eq!(tool_use_id, "t1");
                 assert_eq!(content, "pong");
@@ -1144,11 +1224,11 @@ mod tests {
             PermissionMode::Allow,
         );
 
-        let mut messages = vec![Message::user("go")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert_eq!(outcome.text, "recovered");
-        match &messages[2].content[0] {
+        match &convo.messages[2].content[0] {
             Block::ToolResult { is_error, content, .. } => {
                 assert!(is_error);
                 assert!(content.contains("no tool named"));
@@ -1174,12 +1254,12 @@ mod tests {
             PermissionMode::Allow,
         );
 
-        let mut messages = vec![Message::user("loop forever")];
+        let mut convo = Conversation::from(vec![Message::user("loop forever")]);
         // Shrink the budget rather than waiting for the default.
         let outcome = {
             let mut agent = agent;
             agent.cfg.max_turns = 3;
-            agent.run(&mut messages, None).await.unwrap()
+            agent.run(&mut convo, None).await.unwrap()
         };
 
         assert!(outcome.exhausted);
@@ -1265,8 +1345,8 @@ mod tests {
     #[tokio::test]
     async fn outbound_call_is_blocked_once_private_and_untrusted_are_both_present() {
         let agent = trifecta_agent(TrifectaPolicy::Block);
-        let mut messages = vec![Message::user("summarise that page")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("summarise that page")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
 
         // SendTool panics if executed, so reaching here at all is the assertion.
         assert_eq!(outcome.blocked_sends, 1);
@@ -1278,12 +1358,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn taint_survives_a_turn_boundary() {
+        // The hole this closes. Taint used to be created fresh inside `run`, so
+        // a chat turn reset it. Fetch a hostile page on turn one, read a secret
+        // and send on turn two, and the interlock saw a clean slate both times
+        // — while the attacker's text sat in the model's context the whole
+        // while, still able to steer it.
+        let (mut agent, _) = agent_with(
+            vec![
+                // Turn one: read a page. Nothing private yet, so no block.
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "a".into(),
+                        name: "fetch_page".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("read it")], StopReason::EndTurn),
+                // Turn two, a separate `run` on the same conversation: read a
+                // secret, then send. This is the exfiltration.
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "b".into(),
+                        name: "read_private".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![Block::ToolUse { id: "c".into(), name: "send".into(), input: json!({}) }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("stopped")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.registry.insert(Arc::new(PrivateTool));
+        agent.registry.insert(Arc::new(UntrustedTool));
+        agent.registry.insert(Arc::new(SendTool)); // panics if it ever runs
+
+        let mut convo = Conversation::user("summarise that page");
+        let first = agent.run(&mut convo, None).await.unwrap();
+        assert!(convo.taint.untrusted, "the page is in the conversation now");
+        assert!(!first.taint.private);
+
+        // Second turn, same conversation.
+        convo.push(Message::user("now look up my key and post it"));
+        let second = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(second.blocked_sends, 1, "the interlock must fire on turn two");
+        assert!(convo.taint.trifecta_armed());
+    }
+
+    #[tokio::test]
+    async fn a_new_conversation_does_not_inherit_the_last_one() {
+        // The other half: taint that never cleared would be just as wrong,
+        // arming the interlock on unrelated work forever. Independent
+        // conversations — batch items, subagents, eval cases — are independent
+        // because they are separate `Conversation`s.
+        let mut tainted = Conversation::user("x");
+        tainted.taint.untrusted = true;
+        tainted.taint.private = true;
+        assert!(tainted.taint.trifecta_armed());
+
+        let fresh = Conversation::user("x");
+        assert_eq!(fresh.taint, Taint::default());
+        assert!(!fresh.taint.trifecta_armed());
+    }
+
+    #[tokio::test]
     async fn untrusted_output_is_labelled_as_data() {
         let agent = trifecta_agent(TrifectaPolicy::Block);
-        let mut messages = vec![Message::user("go")];
-        agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        agent.run(&mut convo, None).await.unwrap();
 
-        let fetched = messages.iter().flat_map(|m| &m.content).find_map(|b| match b {
+        let fetched = convo.messages.iter().flat_map(|m| &m.content).find_map(|b| match b {
             Block::ToolResult { tool_use_id, content, .. } if tool_use_id == "b" => Some(content),
             _ => None,
         });
@@ -1311,8 +1461,8 @@ mod tests {
         agent.cfg.max_turns = 2;
         agent.cfg.force_final_answer = false;
 
-        let mut messages = vec![Message::user("go")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert!(!outcome.text.trim().is_empty());
         assert!(outcome.text.contains("turn limit"), "{}", outcome.text);
@@ -1337,8 +1487,8 @@ mod tests {
         agent.cfg.max_output_tokens = Some(12);
         agent.cfg.force_final_answer = false;
 
-        let mut messages = vec![Message::user("loop")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("loop")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert_eq!(outcome.stop_cause, StopCause::OutputTokenBudget);
         assert!(outcome.exhausted);
@@ -1369,8 +1519,8 @@ mod tests {
         });
         agent.cfg.max_cost_usd = Some(0.00004);
 
-        let mut messages = vec![Message::user("loop")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("loop")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert_eq!(outcome.stop_cause, StopCause::CostBudget);
         assert!(outcome.cost_usd.unwrap() >= 0.00004);
@@ -1383,8 +1533,8 @@ mod tests {
             vec![assistant(vec![Block::text("done")], StopReason::EndTurn)],
             PermissionMode::Allow,
         );
-        let mut messages = vec![Message::user("hi")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("hi")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert_eq!(outcome.stop_cause, StopCause::Completed);
         assert!(!outcome.exhausted);
@@ -1438,14 +1588,14 @@ mod tests {
         agent.registry.insert(Arc::new(SendTool)); // panics if it ever runs
         agent.ctx_mut().security.block_sends_after_private = true;
 
-        let mut messages = vec![Message::user("look that up for me")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("look that up for me")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert_eq!(outcome.blocked_sends, 1);
         assert!(!outcome.taint.untrusted, "no untrusted content ever arrived");
         assert_eq!(outcome.text, "kept it local");
 
-        let denial = messages.iter().flat_map(|m| &m.content).find_map(|b| match b {
+        let denial = convo.messages.iter().flat_map(|m| &m.content).find_map(|b| match b {
             Block::ToolResult { tool_use_id, content, .. } if tool_use_id == "b" => Some(content),
             _ => None,
         });
@@ -1495,8 +1645,8 @@ mod tests {
         agent.registry.insert(Arc::new(PrivateTool));
         agent.registry.insert(Arc::new(HarmlessSend));
 
-        let mut messages = vec![Message::user("send my data")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("send my data")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
         assert_eq!(outcome.blocked_sends, 0);
         assert_eq!(outcome.text, "done");
     }
@@ -1527,8 +1677,8 @@ mod tests {
         let mut agent = trifecta_agent(TrifectaPolicy::Allow);
         agent.registry.insert(Arc::new(RecordingSend(Arc::clone(&ran))));
 
-        let mut messages = vec![Message::user("go")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert!(ran.load(Ordering::SeqCst), "Allow should have let the send run");
         assert_eq!(outcome.blocked_sends, 0);
@@ -1556,12 +1706,12 @@ mod tests {
             PermissionMode::Allow,
         );
 
-        let mut messages = vec![Message::user("ping")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("ping")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert_eq!(outcome.text, "done");
         assert_eq!(outcome.tool_calls.len(), 1, "the call should still have run");
-        match &messages[2].content[0] {
+        match &convo.messages[2].content[0] {
             Block::ToolResult { content, .. } => assert_eq!(content, "pong"),
             other => panic!("expected the tool result, got {other:?}"),
         }
@@ -1575,8 +1725,8 @@ mod tests {
             vec![assistant(vec![], StopReason::EndTurn)],
             PermissionMode::Allow,
         );
-        let mut messages = vec![Message::user("go")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert!(!outcome.text.trim().is_empty());
         assert!(outcome.text.contains("without saying anything"), "{}", outcome.text);
@@ -1613,8 +1763,8 @@ mod tests {
         // rather than running to completion.
         token.cancel();
 
-        let mut messages = vec![Message::user("go")];
-        let outcome = agent.run_in(&cx, &mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
 
         assert_eq!(outcome.stop_cause, StopCause::Interrupted);
         assert_eq!(outcome.turns, 0);
@@ -1661,8 +1811,8 @@ mod tests {
         .unwrap();
 
         let cx = agent.context().as_ref().clone().with_cancel(token);
-        let mut messages = vec![Message::user("go")];
-        let outcome = agent.run_in(&cx, &mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
 
         assert_eq!(outcome.stop_cause, StopCause::Interrupted);
         // Everything the model had written by the time it was stopped survives.
@@ -1675,9 +1825,9 @@ mod tests {
 
         // And it is in the transcript, so the conversation can carry on from
         // where it was cut off rather than pretending the turn never happened.
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[1].role, Role::Assistant);
-        assert_eq!(messages[1].text(), "Here is what I found so far");
+        assert_eq!(convo.messages.len(), 2);
+        assert_eq!(convo.messages[1].role, Role::Assistant);
+        assert_eq!(convo.messages[1].text(), "Here is what I found so far");
     }
 
     #[tokio::test]
@@ -1687,8 +1837,8 @@ mod tests {
         let agent = looping_agent(2, PermissionMode::Allow);
         let cx = agent.context().as_ref().clone().with_cancel(CancellationToken::new());
 
-        let mut messages = vec![Message::user("go")];
-        let outcome = agent.run_in(&cx, &mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
 
         assert_eq!(outcome.stop_cause, StopCause::Completed);
         assert_eq!(outcome.text, "finished on my own");
@@ -1724,8 +1874,8 @@ mod tests {
         agent.registry.insert(Arc::new(TypesWhileWorking(Arc::clone(&queue))));
         let cx = agent.context().as_ref().clone().with_queued_input(Arc::clone(&queue));
 
-        let mut messages = vec![Message::user("go")];
-        let outcome = agent.run_in(&cx, &mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
 
         // It ran to completion. Steering is not a stop.
         assert_eq!(outcome.stop_cause, StopCause::Completed);
@@ -1733,7 +1883,8 @@ mod tests {
 
         // And the steer landed in the message carrying the tool results, not as
         // a turn of its own — two consecutive user messages would be invalid.
-        let steered = messages
+        let steered = convo
+            .messages
             .iter()
             .find(|m| m.text().contains("actually, look at the other file"))
             .expect("the queued text should be in the conversation");
@@ -1745,7 +1896,7 @@ mod tests {
         );
 
         // Nowhere in the transcript are there two user messages in a row.
-        for pair in messages.windows(2) {
+        for pair in convo.messages.windows(2) {
             assert!(
                 !(pair[0].role == Role::User && pair[1].role == Role::User),
                 "consecutive user messages: {:?}",
@@ -1764,12 +1915,12 @@ mod tests {
         queue.lock().unwrap().push_back("one more thing".to_string());
         let cx = agent.context().as_ref().clone().with_queued_input(Arc::clone(&queue));
 
-        let mut messages = vec![Message::user("go")];
-        agent.run_in(&cx, &mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
 
-        assert_eq!(messages[0].role, Role::User);
-        assert!(messages[0].text().contains("go"));
-        assert!(messages[0].text().contains("one more thing"));
+        assert_eq!(convo.messages[0].role, Role::User);
+        assert!(convo.messages[0].text().contains("go"));
+        assert!(convo.messages[0].text().contains("one more thing"));
     }
 
     #[tokio::test]
@@ -1781,10 +1932,10 @@ mod tests {
         queue.lock().unwrap().push_back("focus on X".to_string());
         let cx = agent.context().as_ref().clone().with_queued_input(Arc::clone(&queue));
 
-        let mut messages = vec![Message::user("go")];
-        agent.run_in(&cx, &mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
 
-        let mentions = messages.iter().filter(|m| m.text().contains("focus on X")).count();
+        let mentions = convo.messages.iter().filter(|m| m.text().contains("focus on X")).count();
         assert_eq!(mentions, 1, "the steer should appear exactly once");
         assert!(queue.lock().unwrap().is_empty());
     }
@@ -1843,8 +1994,8 @@ mod tests {
             .context()
             .sandboxed(&sandbox, Arc::new(ModeApprover { mode: PermissionMode::Allow }));
 
-        let mut messages = vec![Message::user("write it")];
-        let outcome = agent.run_in(&cx, &mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("write it")]);
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
 
         assert_eq!(outcome.text, "done");
         let marker = sandbox.join("marker.txt");
@@ -1876,13 +2027,13 @@ mod tests {
         agent.cfg.force_final_answer = false;
 
         let cx = Arc::clone(agent.context()).as_ref().clone().with_budget(Budget::turns(7));
-        let mut messages = vec![Message::user("go")];
-        let outcome = agent.run_in(&cx, &mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
         assert_eq!(outcome.turns, 7, "the run's budget should win over the agent's");
 
         // And with no override, the agent's own ceiling still applies.
-        let mut messages = vec![Message::user("go")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
         assert_eq!(outcome.turns, 3);
     }
 
@@ -1891,10 +2042,10 @@ mod tests {
         // Same agent, same tool, no override: the default read-only policy has
         // to still bite, or the override above proves nothing.
         let agent = writing_agent(PermissionMode::ReadOnly);
-        let mut messages = vec![Message::user("write it")];
-        agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("write it")]);
+        agent.run(&mut convo, None).await.unwrap();
 
-        match &messages[2].content[0] {
+        match &convo.messages[2].content[0] {
             Block::ToolResult { is_error, content, .. } => {
                 assert!(is_error);
                 assert!(content.contains("Denied"), "{content}");
@@ -1932,11 +2083,11 @@ mod tests {
         );
         agent.registry.insert(Arc::new(WriteTool));
 
-        let mut messages = vec![Message::user("change it")];
-        let outcome = agent.run(&mut messages, None).await.unwrap();
+        let mut convo = Conversation::from(vec![Message::user("change it")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert_eq!(outcome.text, "understood");
-        match &messages[2].content[0] {
+        match &convo.messages[2].content[0] {
             Block::ToolResult { is_error, content, .. } => {
                 assert!(is_error);
                 assert!(content.contains("Denied"));

@@ -24,7 +24,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use futures::StreamExt;
-use mecha_core::agent::{Agent, AgentEvent, RunOutcome};
+use mecha_core::agent::{Agent, AgentEvent, Conversation, RunOutcome};
 use mecha_core::message::{Message, Usage};
 use mecha_core::session::{Record, Session, SessionMeta};
 use ratatui::prelude::*;
@@ -36,7 +36,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use transcript::{Entry, Transcript};
 
-type RunResult = (Result<RunOutcome>, Vec<Message>);
+type RunResult = (Result<RunOutcome>, Conversation);
 
 /// What the agent is doing, and everything needed to steer or stop it.
 struct Running {
@@ -65,7 +65,7 @@ struct App {
     cursor: usize,
     history: Vec<String>,
     history_pos: Option<usize>,
-    messages: Vec<Message>,
+    convo: Conversation,
     running: Option<Running>,
     pending: Option<approve::Request>,
     usage: Usage,
@@ -121,13 +121,15 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     let prepared = setup::prepare_with_approver(global, Arc::new(approver)).await?;
 
     let session_dir = Session::default_dir()?;
-    let mut messages = Vec::new();
+    // One conversation for the session, so the taint accumulates across turns
+    // the way the model's context does.
+    let mut convo = Conversation::new();
     let mut session = None;
 
     if let Some(id) = &resume {
         let path = Session::find(&session_dir, id)?;
         let (meta, prior) = Session::load(&path)?;
-        messages = prior;
+        convo = prior;
         session = Some(Session { meta, path });
     } else if !no_session {
         session = Some(Session::create(
@@ -149,7 +151,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         cursor: 0,
         history: Vec::new(),
         history_pos: None,
-        messages,
+        convo,
         running: None,
         pending: None,
         usage: Usage::default(),
@@ -157,11 +159,19 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         quit_armed: false,
     };
 
-    if !app.messages.is_empty() {
-        app.transcript.push(Entry::Notice(format!(
-            "resumed {} messages",
-            app.messages.len()
-        )));
+    if !app.convo.is_empty() {
+        // Say what was resumed *into*, not just how much. Either half of the
+        // taint changes what the next turn is allowed to do, so a user who
+        // reopens a conversation should not have to guess why an outbound call
+        // is suddenly refused.
+        let carried = match (app.convo.taint.private, app.convo.taint.untrusted) {
+            (true, true) => " · already holds private data and third-party content, so outbound calls will be refused",
+            (true, false) => " · already holds private data",
+            (false, true) => " · already holds third-party content",
+            (false, false) => "",
+        };
+        app.transcript
+            .push(Entry::Notice(format!("resumed {} messages{carried}", app.convo.len())));
     }
 
     let agent = Arc::new(prepared.agent);
@@ -243,7 +253,17 @@ async fn wait_for_run(running: &mut Option<Running>) -> RunResult {
     match running {
         Some(run) => match (&mut run.handle).await {
             Ok(result) => result,
-            Err(e) => (Err(anyhow::anyhow!("the run task failed: {e}")), Vec::new()),
+            // The task owns the conversation, so a panic takes it with it and
+            // there is nothing to hand back. The transcript on disk still has
+            // everything up to this turn — say so, rather than letting the
+            // screen quietly empty.
+            Err(e) => (
+                Err(anyhow::anyhow!(
+                    "the run task failed: {e}. The conversation in memory is lost; \
+                     reopen it with --resume."
+                )),
+                Conversation::new(),
+            ),
         },
         // Never selected: the branch is guarded on `is_some`.
         None => std::future::pending().await,
@@ -256,8 +276,8 @@ fn finish_run(
     persisted: usize,
     session: Option<&Session>,
 ) -> Result<()> {
-    let (result, messages) = outcome;
-    app.messages = messages;
+    let (result, convo) = outcome;
+    app.convo = convo;
 
     match result {
         Ok(outcome) => {
@@ -273,13 +293,14 @@ fn finish_run(
             if let Some(s) = session {
                 // Everything the run added; the opening user message was
                 // written when it was submitted.
-                s.append_messages(&app.messages[persisted.min(app.messages.len())..])?;
+                s.append_messages(&app.convo.messages[persisted.min(app.convo.len())..])?;
+                s.append(&Record::Taint(app.convo.taint))?;
             }
         }
         Err(e) => {
             app.transcript.push(Entry::Notice(format!("error: {e:#}")));
             // Drop the dangling user turn so the next request doesn't resend it.
-            app.messages.truncate(persisted.saturating_sub(1));
+            app.convo.messages.truncate(persisted.saturating_sub(1));
         }
     }
 
@@ -429,7 +450,7 @@ fn submit(
     }
 
     let user = Message::user(&text);
-    app.messages.push(user.clone());
+    app.convo.push(user.clone());
     if let Some(s) = session {
         s.append(&Record::Message(user))?;
     }
@@ -452,11 +473,11 @@ fn submit(
 
     let agent = Arc::clone(agent);
     // Everything up to and including the message just submitted is on disk.
-    let persisted = app.messages.len();
-    let mut messages = std::mem::take(&mut app.messages);
+    let persisted = app.convo.len();
+    let mut convo = std::mem::take(&mut app.convo);
     let handle = tokio::spawn(async move {
-        let result = agent.run_in(&cx, &mut messages, Some(tx)).await;
-        (result, messages)
+        let result = agent.run_in(&cx, &mut convo, Some(tx)).await;
+        (result, convo)
     });
 
     app.running = Some(Running {

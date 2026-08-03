@@ -62,7 +62,7 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
                 return Ok(());
             }
 
-            let (meta, messages) = Session::load(&path)?;
+            let (meta, convo) = Session::load(&path)?;
             println!(
                 "{} · {} ({}) · {}\n",
                 meta.id,
@@ -71,7 +71,7 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
                 meta.created_at.format("%Y-%m-%d %H:%M:%S")
             );
 
-            for message in &messages {
+            for message in &convo.messages {
                 match message.role {
                     Role::User => {
                         // A user turn is either something the human typed or a

@@ -22,8 +22,7 @@
 //! parent's context, the child cannot send, and the two halves of the trifecta
 //! can be kept in separate agents entirely.
 
-use crate::agent::{Agent, RunContext};
-use crate::message::Message;
+use crate::agent::{Agent, Conversation, RunContext};
 use crate::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -152,8 +151,10 @@ impl Tool for Subagent {
         };
 
         // A fresh conversation every time. The child inherits no history, which
-        // is the context-isolation half of why subagents are useful.
-        let mut messages = vec![Message::user(task)];
+        // is the context-isolation half of why subagents are useful — and no
+        // taint either, because it has not read any of what the parent read.
+        // What comes back is marked untrusted on its own merits, below.
+        let mut convo = Conversation::user(task);
 
         // The child works in the *caller's* workspace, not the one that existed
         // when it was built — otherwise a parent running against a per-run
@@ -175,7 +176,7 @@ impl Tool for Subagent {
             queued_input: None,
         };
 
-        let outcome = match self.agent.run_in(&cx, &mut messages, None).await {
+        let outcome = match self.agent.run_in(&cx, &mut convo, None).await {
             Ok(o) => o,
             Err(e) => {
                 return Ok(ToolOutput::err(format!(

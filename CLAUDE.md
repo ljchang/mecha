@@ -96,7 +96,18 @@ Two things are enforced structurally rather than by prompting:
 which canonicalizes and proves containment in the workspace. Never call `fs::*`
 on a raw path from tool input.
 
-**The trifecta interlock.** Tools declare `Capabilities` — `private_data`,
+**The trifecta interlock.** Taint is a property of the **conversation**, not of
+one run — it lives on `agent::Conversation` alongside the messages, and the
+session file records it so resuming does not launder it. It used to be created
+fresh inside `run`, which meant a chat turn reset it: fetch a hostile page on
+turn one, read a secret and send on turn two, and the interlock saw a clean
+slate both times while the attacker's text sat in context the whole while. A
+turn boundary is not a security boundary. Bundling taint with the messages makes
+the right thing the default — keep the history and you keep the taint; start a
+new `Conversation` (a batch item, a subagent, an eval case) and you get a clean
+one.
+
+Tools declare `Capabilities` — `private_data`,
 `untrusted_input`, `external_send`, `destructive`. The loop tracks which have
 entered the conversation (`Taint`) and refuses any `external_send` tool once
 both private and untrusted are present. It sits *ahead* of the approver on

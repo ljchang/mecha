@@ -4,8 +4,8 @@
 //! failures recorded rather than fatal, results keyed so they can be joined
 //! back to their inputs in any order.
 
-use crate::agent::{Agent, RunContext, ToolCallTrace};
-use crate::message::{Message, StopReason, Usage};
+use crate::agent::{Agent, Conversation, RunContext, ToolCallTrace};
+use crate::message::{StopReason, Usage};
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -80,12 +80,15 @@ where
     let mut stream = futures::stream::iter(items.into_iter().map(|item| async move {
         let started = std::time::Instant::now();
         // Each item gets a fresh conversation — batch items are independent by
-        // definition, and sharing history would leak one into the next.
-        let mut messages = vec![Message::user(&item.prompt)];
+        // definition, and sharing history would leak one into the next. That
+        // now covers the taint as well: one item reading a hostile page must
+        // not arm the interlock for the next, which is a different
+        // conversation that never saw it.
+        let mut convo = Conversation::user(&item.prompt);
 
         let cx = context_for(&item).unwrap_or_else(|| Arc::clone(agent.context()));
 
-        match agent.run_in(&cx, &mut messages, None).await {
+        match agent.run_in(&cx, &mut convo, None).await {
             Ok(outcome) => BatchResult {
                 id: item.id,
                 // An exhausted run technically returned, but the answer is

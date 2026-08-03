@@ -2,6 +2,7 @@
 
 use crate::{render, setup, GlobalOpts};
 use anyhow::Result;
+use mecha_core::agent::Conversation;
 use mecha_core::message::{Message, Usage};
 use mecha_core::session::{Record, Session, SessionMeta};
 use rustyline::error::ReadlineError;
@@ -22,14 +23,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let prepared = setup::prepare(global, true).await?;
     let session_dir = Session::default_dir()?;
 
-    let mut messages = Vec::new();
+    // One conversation for the whole session: the taint travels with it, so a
+    // hostile page read on turn one still arms the interlock on turn five.
+    let mut convo = Conversation::new();
     let mut session = None;
 
     if let Some(id) = &args.resume {
         let path = Session::find(&session_dir, id)?;
         let (meta, prior) = Session::load(&path)?;
-        println!("resumed {} ({} messages)", meta.id, prior.len());
-        messages = prior;
+        println!("resumed {} ({} messages)", meta.id, prior.messages.len());
+        convo = prior;
         session = Some(Session { meta, path });
     } else if !args.no_session {
         session = Some(Session::create(
@@ -74,18 +77,18 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let _ = editor.add_history_entry(input);
 
         if let Some(command) = input.strip_prefix('/') {
-            match handle_command(command, &prepared, &mut messages, &total, session.as_ref()) {
+            match handle_command(command, &prepared, &mut convo, &total, session.as_ref()) {
                 Flow::Continue => continue,
                 Flow::Quit => break,
             }
         }
 
         let user = Message::user(input);
-        messages.push(user.clone());
+        convo.push(user.clone());
         if let Some(s) = &session {
             s.append(&Record::Message(user))?;
         }
-        let history_len = messages.len();
+        let history_len = convo.len();
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let renderer =
@@ -94,7 +97,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let result = crate::interrupt::run_interruptible(
             &prepared.agent,
             prepared.agent.context(),
-            &mut messages,
+            &mut convo,
             Some(tx.clone()),
         )
         .await;
@@ -106,14 +109,17 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             Ok(outcome) => {
                 total.add(&outcome.usage);
                 if let Some(s) = &session {
-                    s.append_messages(&messages[history_len..])?;
+                    s.append_messages(&convo.messages[history_len..])?;
+                    // Persist what the conversation now knows, or resuming it
+                    // launders the taint exactly as a turn boundary used to.
+                    s.append(&Record::Taint(convo.taint))?;
                 }
             }
             Err(e) => {
                 eprintln!("error: {e:#}");
                 // Drop the turn so a failed request doesn't leave a dangling
                 // user message that the next request would resend.
-                messages.truncate(history_len - 1);
+                convo.messages.truncate(history_len - 1);
             }
         }
     }
@@ -132,7 +138,7 @@ enum Flow {
 fn handle_command(
     command: &str,
     prepared: &setup::Prepared,
-    messages: &mut Vec<Message>,
+    convo: &mut Conversation,
     total: &Usage,
     session: Option<&Session>,
 ) -> Flow {
@@ -166,7 +172,9 @@ fn handle_command(
         "usage" => println!("  {}", render::format_usage(total)),
 
         "clear" => {
-            messages.clear();
+            // A new conversation, taint included: nothing the old one read is
+            // in context any more, so nothing it read should still apply.
+            *convo = Conversation::new();
             println!("  conversation cleared");
         }
 
