@@ -25,6 +25,9 @@ const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120)
 /// A live connection to one MCP server.
 pub struct McpClient {
     name: String,
+    /// Capabilities forced onto every tool from this server, unioned with what
+    /// it declares. See [`McpServerConfig::capabilities`].
+    forced: Capabilities,
     stdin: tokio::sync::Mutex<ChildStdin>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
     next_id: AtomicU64,
@@ -138,6 +141,7 @@ impl McpClient {
 
         let client = Arc::new(McpClient {
             name: cfg.name.clone(),
+            forced: cfg.capabilities.into(),
             stdin: tokio::sync::Mutex::new(stdin),
             pending,
             next_id: AtomicU64::new(1),
@@ -227,7 +231,10 @@ impl McpClient {
                 let hint = |k: &str| hints.get(k).and_then(Value::as_bool).unwrap_or(false);
 
                 Some(Arc::new(McpTool {
-                    read_only: hint("readOnlyHint"),
+                    // A forced capability means we do not believe the server's
+                    // account of itself, so its read-only claim goes with it:
+                    // an approval gate is the cheaper of the two mistakes.
+                    read_only: hint("readOnlyHint") && self.forced == Capabilities::default(),
                     // `openWorldHint` means the tool talks to the wider world:
                     // that makes it both a source of attacker-influenced content
                     // and a way for data to leave.
@@ -236,7 +243,8 @@ impl McpClient {
                         untrusted_input: hint("openWorldHint"),
                         external_send: hint("openWorldHint"),
                         destructive: hint("destructiveHint"),
-                    },
+                    }
+                    .union(self.forced),
                     // Namespaced so two servers can each expose a `search`.
                     local_name: format!("{}__{}", self.name, remote_name),
                     remote_name,

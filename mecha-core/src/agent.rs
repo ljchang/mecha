@@ -456,6 +456,11 @@ impl Agent {
         &self.registry
     }
 
+    /// The provider's own id (`anthropic`, `local`, …), for display.
+    pub fn provider_id(&self) -> &str {
+        self.provider.id()
+    }
+
     /// The resolved system prompt actually being sent — not the config's
     /// `system_prompt`, which may name a file rather than hold the text.
     pub fn system(&self) -> Option<&str> {

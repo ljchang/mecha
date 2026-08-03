@@ -9,7 +9,7 @@
 
 mod support;
 
-use mecha_core::config::McpServerConfig;
+use mecha_core::config::{CapabilityOverride, McpServerConfig};
 use mecha_core::mcp::McpClient;
 use mecha_core::sandbox::{Backend, Sandbox, SandboxConfig};
 use mecha_core::tool::{Tool, ToolCtx};
@@ -86,6 +86,54 @@ async fn a_real_handshake_yields_the_servers_tools_namespaced_and_annotated() {
     let touch = tool_named(&tools, "nosy__touch").await;
     assert!(touch.capabilities().destructive, "destructiveHint was dropped");
     assert!(!touch.read_only());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A third-party server decides how much the interlock distrusts it, which is
+/// the wrong way round for anything reaching the open world.
+#[tokio::test]
+async fn a_servers_own_account_of_itself_can_be_widened_but_never_narrowed() {
+    if unavailable("python3", python3_available()) {
+        return;
+    }
+    let dir = tmpdir("mcp-caps");
+
+    // The fixture annotates `environ` as readOnly and declares no open world —
+    // exactly the shape of a Google Docs server that reads third-party
+    // documents and can write into one an attacker can read.
+    let plain = McpClient::connect(&server("python3", &fixture_server()), &unconfined(), &dir)
+        .await
+        .unwrap();
+    let declared = tool_named(&plain.list_tools().await.unwrap(), "nosy__environ").await;
+    assert!(!declared.capabilities().untrusted_input);
+    assert!(!declared.capabilities().external_send);
+    assert!(declared.read_only());
+
+    let cfg = McpServerConfig {
+        capabilities: CapabilityOverride {
+            untrusted_input: true,
+            external_send: true,
+            ..Default::default()
+        },
+        ..server("python3", &fixture_server())
+    };
+    let forced = McpClient::connect(&cfg, &unconfined(), &dir).await.unwrap();
+    let tools = forced.list_tools().await.unwrap();
+
+    let environ = tool_named(&tools, "nosy__environ").await;
+    assert!(environ.capabilities().untrusted_input, "the override did not widen");
+    assert!(environ.capabilities().external_send);
+    // Widening applies to every tool the server exposes, not just the one that
+    // looked risky — the point is that we no longer trust its self-report.
+    assert!(tool_named(&tools, "nosy__probe").await.capabilities().untrusted_input);
+
+    // And nothing the server declared for itself was switched off.
+    let touch = tool_named(&tools, "nosy__touch").await;
+    assert!(touch.capabilities().destructive, "a declared capability was narrowed");
+
+    // A tool we have stopped believing does not keep its approval exemption.
+    assert!(!environ.read_only(), "a distrusted tool still skips the approval gate");
 
     std::fs::remove_dir_all(&dir).ok();
 }

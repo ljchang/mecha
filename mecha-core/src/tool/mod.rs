@@ -86,6 +86,24 @@ impl Capabilities {
         self.destructive = true;
         self
     }
+
+    /// Everything either side declares.
+    ///
+    /// Union rather than assignment, because the only safe direction for an
+    /// override is *wider*. Letting config narrow a tool's declared
+    /// capabilities would disarm the interlock on the strength of a claim
+    /// nothing enforces — the same mistake as a sandbox that silently degrades,
+    /// and it would make the cheapest configuration the most dangerous one. A
+    /// server that genuinely over-declares is what `TrifectaPolicy` is for: one
+    /// deliberate, visible decision instead of a quiet per-server exemption.
+    pub fn union(self, other: Capabilities) -> Self {
+        Capabilities {
+            private_data: self.private_data || other.private_data,
+            untrusted_input: self.untrusted_input || other.untrusted_input,
+            external_send: self.external_send || other.external_send,
+            destructive: self.destructive || other.destructive,
+        }
+    }
 }
 
 #[async_trait]
