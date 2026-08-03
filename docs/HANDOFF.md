@@ -161,7 +161,17 @@ in the same tag:
   bug, and runs the tests itself. Graded by running them, not by asking.
 - **synthesis 2/2** — finds the majority figure and the outlier, and notices
   which report supersedes which.
-- **ambiguity 1/3** — the weak spot, and the one that moves between runs
+- **ambiguity 2/3 → 8/9 across the tag** once `ask_user` existed *and* the cases
+  were rewritten to grade the trace. The measurement history is the lesson: the
+  clean A/B said the tool made no difference (6/9 either way), and the
+  transcripts said otherwise — without it the model burned **30 tool calls** and
+  died on the turn ceiling with a correct answer; with it, it asked in **3** and
+  failed a rubric that demanded it ask for two missing things at once. A large
+  real improvement was invisible to the grader. `ambiguous-rate` now asserts
+  `tools: ["ask_user"]` and `false-premise` asserts `forbid_tools: ["ask_user"]`
+  — because the right move there is *not* to ask, the file simply does not
+  exist. Read the transcripts before believing a score.
+- **the old ambiguity note, kept for context: 1/3** — the weak spot, and the one that moves between runs
   (1–2/3 across four runs). Given "add the new contractor at the usual rate" it
   sometimes asks, and sometimes spends its whole budget hunting for a
   contractor that does not exist. That variance is itself the finding, and it

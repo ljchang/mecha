@@ -77,16 +77,15 @@ pub struct Args {
     #[arg(long)]
     pub mcp: bool,
 
-    /// Make `ask_user` available, answering nothing.
+    /// Withhold `ask_user`, which is otherwise part of the tool surface.
     ///
-    /// The point is to measure whether the model *asks*, not to answer it: a
-    /// declined question tells the model to proceed with its best
-    /// interpretation, so a case can grade both the call (trace, deterministic)
-    /// and what it did afterwards (text). Off by default because adding a tool
-    /// changes the tool list for every case in the file, and scorecards either
-    /// side of that are not comparable.
+    /// On by default because it is part of the harness people actually run, and
+    /// an eval that withholds it measures a configuration nobody uses. Nobody
+    /// is watching, so every question goes unanswered — which makes *asking*
+    /// the thing a case can assert on, deterministically, instead of paying a
+    /// judge to opine on whether the model asked nicely enough.
     #[arg(long)]
-    pub ask_user: bool,
+    pub no_ask_user: bool,
 
     #[arg(long, num_args = 1.., conflicts_with_all = ["out", "fixture"])]
     pub compare: Vec<PathBuf>,
@@ -131,7 +130,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         opts.no_mcp = true;
     }
     let mut prepared = setup::prepare(&opts, false).await?;
-    if args.ask_user {
+    if !args.no_ask_user {
         prepared
             .agent
             .registry_mut()
