@@ -3,7 +3,7 @@
 use crate::{render, setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::message::{Message, StopReason};
-use mecha_core::session::{Record, Session, SessionMeta};
+use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use std::io::{IsTerminal, Read};
 
 #[derive(clap::Args, Debug)]
@@ -62,6 +62,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 title: Some(first_words(&prompt)),
             },
         )?);
+    }
+
+    // Written on create *and* on resume: a session picked up under different
+    // flags is exactly the case this record exists to catch.
+    if let Some(s) = &session {
+        s.append(&Record::Config(RunConfig::of(
+            &prepared.agent,
+            &prepared.config,
+            &prepared.provider_name,
+        )))?;
     }
 
     let user = Message::user(&prompt);

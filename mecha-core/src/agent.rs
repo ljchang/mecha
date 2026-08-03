@@ -456,6 +456,16 @@ impl Agent {
         &self.registry
     }
 
+    /// The resolved system prompt actually being sent — not the config's
+    /// `system_prompt`, which may name a file rather than hold the text.
+    pub fn system(&self) -> Option<&str> {
+        self.system.as_deref()
+    }
+
+    pub fn config(&self) -> &AgentConfig {
+        &self.cfg
+    }
+
     /// Run until the model stops calling tools.
     ///
     /// `messages` is the live conversation: it is appended to in place, so a

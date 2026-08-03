@@ -4,7 +4,7 @@ use crate::{render, setup, GlobalOpts};
 use anyhow::Result;
 use mecha_core::agent::Conversation;
 use mecha_core::message::{Message, Usage};
-use mecha_core::session::{Record, Session, SessionMeta};
+use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
@@ -46,6 +46,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 title: None,
             },
         )?);
+    }
+
+    // On create and on resume both: a session picked up under different flags
+    // is exactly what this record exists to catch.
+    if let Some(s) = &session {
+        s.append(&Record::Config(RunConfig::of(
+            &prepared.agent,
+            &prepared.config,
+            &prepared.provider_name,
+        )))?;
     }
 
     println!(
