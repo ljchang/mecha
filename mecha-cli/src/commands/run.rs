@@ -107,6 +107,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     if let Some(s) = &session {
         s.append_messages(&convo.messages[history_len..])?;
+        // Taint too, and for the same reason `chat` and `tui` record it: it
+        // cannot be recovered by reading the transcript back, because it keys
+        // off *provenance* and the transcript stores only content. `run`
+        // supports `--resume`, so without this, resuming a one-shot that had
+        // read a hostile page hands the model that page with the interlock
+        // disarmed — the exact hole that was closed for the other two
+        // front-ends and left open here.
+        s.append(&Record::Taint(convo.taint))?;
         s.append(&Record::Summary { usage: outcome.usage.clone(), turns: outcome.turns })?;
     }
 
