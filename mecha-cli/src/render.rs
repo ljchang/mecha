@@ -110,6 +110,22 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                     println!("{} {}", style.red(&format!("✗ {name}")), style.dim(&reason));
                 }
 
+                AgentEvent::Compacted { messages_before, messages_after, .. } if !opts.quiet => {
+                    if mid_line {
+                        println!();
+                        mid_line = false;
+                    }
+                    // Worth saying out loud even when not verbose: the agent's
+                    // memory of the session just changed, and a later answer
+                    // that forgets something has an explanation here.
+                    eprintln!(
+                        "{}",
+                        style.dim(&format!(
+                            "compacted {messages_before} messages into {messages_after} to fit the context"
+                        ))
+                    );
+                }
+
                 AgentEvent::TurnUsage(usage) if opts.verbose => {
                     println!("{}", style.dim(&format!("  {}", format_usage(&usage))));
                 }

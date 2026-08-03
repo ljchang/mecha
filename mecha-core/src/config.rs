@@ -131,6 +131,18 @@ pub struct AgentConfig {
     pub max_output_tokens: Option<u64>,
     /// Stop once one run has cost this much. Requires prices on the provider.
     pub max_cost_usd: Option<f64>,
+    /// Summarise the middle of the conversation once the prompt passes this
+    /// many tokens.
+    ///
+    /// Measured against what the provider *reported* for the last turn rather
+    /// than an estimate, so it tracks the real prompt including cached tokens.
+    /// Unset by default: compaction is lossy, and silently paraphrasing
+    /// someone's conversation because it got long is a decision they should
+    /// make. Set it to roughly two thirds of the model's context window.
+    pub compact_at_tokens: Option<u64>,
+    /// Turns kept verbatim after a compaction. The recent ones are where the
+    /// work is; a summary of the last two turns is worse than the turns.
+    pub compact_keep_recent: usize,
 }
 
 impl Default for AgentConfig {
@@ -150,6 +162,8 @@ impl Default for AgentConfig {
             // than no ceiling. Set them once you run things unattended.
             max_output_tokens: None,
             max_cost_usd: None,
+            compact_at_tokens: None,
+            compact_keep_recent: 6,
         }
     }
 }
@@ -433,6 +447,8 @@ struct AgentLayer {
     force_final_answer: Option<bool>,
     max_output_tokens: Option<u64>,
     max_cost_usd: Option<f64>,
+    compact_at_tokens: Option<u64>,
+    compact_keep_recent: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -510,6 +526,12 @@ impl ConfigLayer {
             }
             if a.max_cost_usd.is_some() {
                 t.max_cost_usd = a.max_cost_usd;
+            }
+            if a.compact_at_tokens.is_some() {
+                t.compact_at_tokens = a.compact_at_tokens;
+            }
+            if let Some(v) = a.compact_keep_recent {
+                t.compact_keep_recent = v;
             }
         }
         if let Some(x) = self.tools {

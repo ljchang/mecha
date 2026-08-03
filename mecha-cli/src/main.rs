@@ -85,6 +85,11 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_thinking: bool,
 
+    /// Summarise older turns once the prompt passes this many tokens. Roughly
+    /// two thirds of the model's context window is a reasonable setting.
+    #[arg(long, global = true)]
+    pub compact_at: Option<u64>,
+
     /// Print tool calls, results, and token usage as they happen.
     #[arg(long, short = 'v', global = true)]
     pub verbose: bool,

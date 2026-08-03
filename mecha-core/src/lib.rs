@@ -46,6 +46,7 @@
 
 pub mod agent;
 pub mod batch;
+pub mod compact;
 pub mod config;
 pub mod eval;
 pub mod mcp;

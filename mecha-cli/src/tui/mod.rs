@@ -69,6 +69,10 @@ struct App {
     running: Option<Running>,
     pending: Option<approve::Request>,
     usage: Usage,
+    /// What the provider said the last prompt cost. Shown because context
+    /// pressure is invisible until it is fatal, and a user who can watch it
+    /// climb can decide to /clear or set --compact-at before it bites.
+    prompt_tokens: u64,
     should_quit: bool,
     /// Ctrl-C at an idle prompt: once to warn, twice to leave.
     quit_armed: bool,
@@ -97,14 +101,22 @@ impl App {
                     Style::new().fg(Color::DarkGray),
                 ));
             }
-            None => spans.push(Span::styled(
-                format!(
-                    " {} in / {} out ",
-                    self.usage.total_input(),
-                    self.usage.output_tokens
-                ),
-                Style::new().fg(Color::DarkGray),
-            )),
+            None => {
+                spans.push(Span::styled(
+                    format!(
+                        " {} in / {} out ",
+                        self.usage.total_input(),
+                        self.usage.output_tokens
+                    ),
+                    Style::new().fg(Color::DarkGray),
+                ));
+                if self.prompt_tokens > 0 {
+                    spans.push(Span::styled(
+                        format!("· context {} ", human_tokens(self.prompt_tokens)),
+                        Style::new().fg(Color::DarkGray),
+                    ));
+                }
+            }
         }
 
         if !self.transcript.follow {
@@ -155,6 +167,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         running: None,
         pending: None,
         usage: Usage::default(),
+        prompt_tokens: 0,
         should_quit: false,
         quit_armed: false,
     };
@@ -229,8 +242,17 @@ async fn run_loop(
             Some(Ok(event)) = keys.next() => on_terminal_event(app, event, &mut events_tx, &mut events_rx, agent, session)?,
 
             Some(event) = events_rx.recv() => {
-                if let AgentEvent::TurnUsage(u) = &event {
-                    app.usage.add(u);
+                match &event {
+                    AgentEvent::TurnUsage(u) => {
+                        app.usage.add(u);
+                        app.prompt_tokens = u.total_input();
+                    }
+                    AgentEvent::Compacted { messages_before, messages_after, .. } => {
+                        app.transcript.push(Entry::Notice(format!(
+                            "compacted {messages_before} messages into {messages_after} to fit the context"
+                        )));
+                    }
+                    _ => {}
                 }
                 app.transcript.absorb(&event);
             }
@@ -589,6 +611,15 @@ fn draw_approval(frame: &mut Frame, request: &approve::Request) {
         ),
         area,
     );
+}
+
+/// 12400 -> "12.4k". A running token count is glanced at, not read.
+fn human_tokens(n: u64) -> String {
+    if n < 1000 {
+        n.to_string()
+    } else {
+        format!("{:.1}k", n as f64 / 1000.0)
+    }
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {

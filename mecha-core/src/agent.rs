@@ -31,6 +31,8 @@ pub enum AgentEvent {
     TurnUsage(Usage),
     /// Text the user queued mid-run has just entered the conversation.
     QueuedInput(String),
+    /// The transcript was summarised to fit the context window.
+    Compacted { messages_before: usize, messages_after: usize, prompt_tokens: u64 },
     Done(Box<RunOutcome>),
 }
 
@@ -451,6 +453,11 @@ impl Agent {
         let mut trace: Vec<ToolCallTrace> = Vec::new();
         let mut malformed = 0u32;
         let mut blocked_sends = 0u32;
+        // What the provider said the prompt actually cost last turn. The
+        // honest measure of context pressure: it counts the cached tokens too,
+        // which an estimate over `messages` would miss.
+        let mut prompt_tokens = 0u64;
+        let mut compaction_gave_up = false;
 
         // Carried in from the transcript, not started fresh. Everything the
         // conversation has already seen still applies — this is the whole
@@ -487,6 +494,34 @@ impl Agent {
             for queued in cx.take_queued_input() {
                 emit(&events, AgentEvent::QueuedInput(queued.clone()));
                 append_user_text(messages, queued);
+            }
+
+            // Summarise the middle if the last prompt came back too big. Done
+            // here, between turns, because it rewrites the transcript and there
+            // is no safe moment to do that while a turn is in flight.
+            if let Some(limit) = self.cfg.compact_at_tokens {
+                if prompt_tokens >= limit && !compaction_gave_up {
+                    match self.compact(cx, messages, &events).await {
+                        Ok(Some(spent)) => usage.add(&spent),
+                        // Nothing legal to drop — a short conversation holding
+                        // one enormous tool result, usually. Cheap to
+                        // re-evaluate next turn, since it costs no request.
+                        Ok(None) => tracing::debug!(
+                            prompt_tokens,
+                            "over the compaction threshold with nothing safe to drop"
+                        ),
+                        // A failed summary is not a reason to abandon the run:
+                        // the oversized request might still succeed, and if it
+                        // does not, the provider's own error is clearer than
+                        // ours. But stop trying — each attempt is a request of
+                        // its own, and retrying a failure every turn would cost
+                        // more than the compaction was going to save.
+                        Err(e) => {
+                            tracing::warn!(error = %e, "compaction failed; continuing uncompacted");
+                            compaction_gave_up = true;
+                        }
+                    }
+                }
             }
 
             // Any ceiling — turns, tokens, or dollars — ends the run the same
@@ -570,6 +605,7 @@ impl Agent {
                 }
             };
             usage.add(&response.usage);
+            prompt_tokens = response.usage.total_input();
             malformed += response.malformed_tool_args;
             emit(&events, AgentEvent::TurnUsage(response.usage.clone()));
 
@@ -629,6 +665,95 @@ impl Agent {
                 }
             }
         }
+    }
+
+    /// Summarise the middle of the transcript so the conversation keeps fitting.
+    ///
+    /// Returns the tokens the summary itself cost, or `None` when there was
+    /// nothing safe and worthwhile to drop.
+    ///
+    /// The taint is untouched on purpose, and it is the one thing here that
+    /// must not be got wrong: summarising away the *text* of a hostile page
+    /// does not un-read it, and the model's context is still downstream of it.
+    /// Taint lives on the `Conversation`, which this function never sees — the
+    /// type is doing the work.
+    async fn compact(
+        &self,
+        cx: &RunContext,
+        messages: &mut Vec<Message>,
+        events: &Option<UnboundedSender<AgentEvent>>,
+    ) -> Result<Option<Usage>> {
+        let before = messages.len();
+        let target = before.saturating_sub(self.cfg.compact_keep_recent.max(1));
+
+        let Some(cut) = crate::compact::cut_point(messages, target) else {
+            return Ok(None);
+        };
+        if !crate::compact::worth_compacting(messages, cut) {
+            return Ok(None);
+        }
+
+        // One plain-text message, not a replay of the structured transcript.
+        // Replaying it means sending `tool_result`s on a request that declares
+        // no tools, which llama-server answers with an empty completion.
+        let rendered = crate::compact::render_for_summary(&messages[..cut], 2_000);
+        let prompt = vec![Message::user(format!(
+            "{rendered}\n---\n{}",
+            crate::compact::SUMMARY_INSTRUCTION
+        ))];
+
+        let request = CompletionRequest {
+            model: self.model.clone(),
+            // Not the agent's own system prompt: that one tells it to use tools
+            // and would invite it to resume the task instead of describing it.
+            system: Some(crate::compact::SUMMARY_SYSTEM.to_string()),
+            messages: prompt,
+            tools: Vec::new(),
+            max_tokens: self.cfg.max_tokens.min(8192),
+            effort: self.cfg.effort,
+            thinking: false,
+            // The prefix is about to change, so there is nothing to reuse.
+            cache_prompt: false,
+        };
+
+        let response = match self.complete(cx, &request, events).await? {
+            Completion::Finished(response) => *response,
+            // Cancelled mid-summary. Leave the transcript alone: a half-written
+            // summary is worse than an oversized conversation, and the run is
+            // ending anyway.
+            Completion::Interrupted(_) => return Ok(None),
+        };
+
+        let summary = response.message.text();
+        if summary.trim().is_empty() {
+            anyhow::bail!("the summariser returned nothing");
+        }
+
+        let rebuilt = crate::compact::rebuild(messages, cut, &summary);
+
+        // Checked before it is installed, not after. The rebuild is unit
+        // tested, but this is the real transcript, and a guard that fires only
+        // once the damage is done is not a guard — the caller treats an error
+        // here as "carry on uncompacted", which would then carry on with a
+        // transcript the API will reject.
+        let orphans = crate::compact::orphaned_tool_results(&rebuilt);
+        anyhow::ensure!(
+            orphans.is_empty(),
+            "refusing to compact: it would have orphaned {} tool result(s)",
+            orphans.len()
+        );
+        *messages = rebuilt;
+
+        tracing::info!(before, after = messages.len(), "compacted the transcript");
+        emit(
+            events,
+            AgentEvent::Compacted {
+                messages_before: before,
+                messages_after: messages.len(),
+                prompt_tokens: response.usage.total_input(),
+            },
+        );
+        Ok(Some(response.usage))
     }
 
     /// One last turn with no tools available.
@@ -1733,6 +1858,84 @@ mod tests {
         // It completed; it just had nothing to say. Don't misreport that.
         assert_eq!(outcome.stop_cause, StopCause::Completed);
         assert!(!outcome.exhausted);
+    }
+
+    // --- compaction ---
+
+    #[tokio::test]
+    async fn the_loop_compacts_when_the_prompt_grows_and_keeps_the_taint() {
+        // Scripted turns all report a large prompt, so the threshold trips
+        // after the first one. The summariser is just the next scripted turn —
+        // what matters is that the transcript shrinks, the task survives, and
+        // nothing is orphaned.
+        // Every turn carries text as well as a call, so whichever one the
+        // summariser consumes has something to return.
+        let mut turns: Vec<CompletionResponse> = Vec::new();
+        for i in 0..10 {
+            turns.push(assistant(
+                vec![
+                    Block::text(format!("step {i}")),
+                    Block::ToolUse {
+                        id: format!("t{i}"),
+                        name: "echo".into(),
+                        input: json!({"value": "x"}),
+                    },
+                ],
+                StopReason::ToolUse,
+            ));
+        }
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (mut agent, _) = agent_with(turns, PermissionMode::Allow);
+        agent.cfg.compact_at_tokens = Some(1);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.max_turns = 6;
+        agent.cfg.force_final_answer = false;
+
+        let mut convo = Conversation::user("the original task");
+        // Something the conversation already knows, which compaction must not
+        // quietly discard: summarising the text of a hostile page does not
+        // un-read it.
+        convo.taint.untrusted = true;
+
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert!(convo.taint.untrusted, "compaction must not launder the taint");
+        assert!(
+            convo.messages[0].text().contains("the original task"),
+            "the task has to survive, or the agent forgets what it is doing"
+        );
+        assert!(convo.messages[0].text().contains("compacted"));
+        assert!(
+            crate::compact::orphaned_tool_results(&convo.messages).is_empty(),
+            "a live transcript must never carry an orphaned tool result"
+        );
+        assert!(!outcome.text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn compaction_is_off_unless_a_threshold_is_set() {
+        // It is lossy, so it must never happen to someone who did not ask.
+        let (agent, _) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t".into(),
+                        name: "echo".into(),
+                        input: json!({"value": "x"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        assert!(agent.cfg.compact_at_tokens.is_none());
+
+        let mut convo = Conversation::user("go");
+        agent.run(&mut convo, None).await.unwrap();
+        // user, assistant(tool_use), user(tool_result), assistant(text)
+        assert_eq!(convo.len(), 4, "nothing should have been summarised away");
     }
 
     // --- interruption and steering ---

@@ -183,6 +183,31 @@ an AppArmor profile. `mecha tools` prints the active sandbox, and
 - Tool order in the registry is stable (`BTreeMap`) because the tool list is the
   front of the cached prefix — reordering it invalidates the cache every turn.
 
+## Compaction
+
+Every turn sends the whole history, so a long enough session stops being able to
+send anything. `[agent] compact_at_tokens` (or `--compact-at`) summarises the
+middle of the transcript once the *reported* prompt size passes it — reported,
+not estimated, so it counts cached tokens too. Off by default: compaction is
+lossy, and paraphrasing someone's conversation because it got long is their
+decision.
+
+Three things that decide the design:
+
+- **The cut has to be legal, not convenient.** A `tool_result` whose `tool_use`
+  is gone is a 400, and that is the whole run. Tool results arrive in the user
+  message right after the assistant turn that asked for them, so the only safe
+  place to resume is an assistant message. `compact.rs` is pure and unit-tested
+  for exactly this; the loop re-checks the rebuilt transcript before installing
+  it, because a guard that fires after the damage is not a guard.
+- **The summariser gets prose, not a replay.** Sending the real messages means
+  sending `tool_result`s on a request that declares no tools, and llama-server
+  answers that with an empty completion. Found by running it, not by reading the
+  spec.
+- **Taint survives compaction.** Summarising away the text of a hostile page
+  does not un-read it. Taint lives on `Conversation`, which the compaction code
+  never touches — the type does the work, and there is a test.
+
 ## The eval rig
 
 `eval/cases.jsonl` is graded on the tool-call trace first, text second. Four

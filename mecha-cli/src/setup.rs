@@ -129,6 +129,9 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     if opts.max_cost.is_some() {
         cfg.agent.max_cost_usd = opts.max_cost;
     }
+    if opts.compact_at.is_some() {
+        cfg.agent.compact_at_tokens = opts.compact_at;
+    }
     if opts.no_thinking {
         cfg.agent.thinking = false;
         // Disabling thinking above `high` effort is rejected by the API. The

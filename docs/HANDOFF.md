@@ -21,10 +21,11 @@ A working agent harness, used and measured rather than just compiled.
 | Budgets | `max_turns`, `max_output_tokens`, `max_cost_usd`, cost accounting |
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
 | Interfaces | `run`, `chat`, `tui` (live input line, steer while it works), `batch` |
+| Context | Compaction with tool-call-safe cut points, taint preserved |
 | Sessions | Append-only JSONL, resume |
 | Eval | 34 cases, 14 tags, scorecard, `--compare`, sandboxes, LLM judge |
 
-63 tests. `cargo clippy --all-targets` is clean and should stay that way.
+71 tests. `cargo clippy --all-targets` is clean and should stay that way.
 
 ## Environment as left
 
@@ -295,6 +296,25 @@ agent needs — it cannot silently poison its own memory. **Do not build a secon
 memory store beside it.**
 
 **Triggers.** Cron, file watchers, inbound webhooks. Gated on sandboxing.
+
+### ~~Context compaction~~ — done
+
+`[agent] compact_at_tokens` / `--compact-at`, off by default. Verified against
+llama-server on the 16-link audit chain with a 1200-token threshold: it
+compacted four times and still answered 16 entries / 847, matching the gold. The
+summaries carried the running total forward, which is the part that could have
+destroyed the task silently.
+
+The one real bug came from running it, not from the unit tests: replaying the
+structured transcript to the summariser means sending `tool_result`s on a
+request that declares no tools, and llama-server returns an empty completion.
+The summariser now gets flattened prose. Assume the same is true of any
+provider — the structured replay was never worth the fidelity.
+
+Still open: the threshold is an absolute token count because nothing here knows
+any model's context window. A `context_window` on `ProviderConfig` would let it
+be a fraction, and would want the same treatment as pricing — configured, never
+guessed.
 
 ### 2. Smaller, high-value items
 
