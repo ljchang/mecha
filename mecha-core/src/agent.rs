@@ -615,6 +615,33 @@ impl Agent {
             // is no safe moment to do that while a turn is in flight.
             if let Some(limit) = cx.compact_at_tokens.or(self.cfg.compact_at_tokens) {
                 if prompt_tokens >= limit && !compaction_gave_up {
+                    // Cheap pass first: shorten old tool *results* and keep the
+                    // calls. Costs no request, and it is the half that does not
+                    // lose the agent's place — the sequence of calls is what
+                    // says which files it already visited, and summarising the
+                    // middle throws that away along with the bulk.
+                    let thinned = crate::compact::thin_old_results(
+                        messages,
+                        self.cfg.compact_keep_recent.max(1) * 2,
+                        crate::compact::THINNED_RESULT_CHARS,
+                    );
+                    if thinned > 0 {
+                        tracing::info!(thinned, "shortened old tool results");
+                        emit(
+                            &events,
+                            AgentEvent::Compacted {
+                                messages_before: messages.len(),
+                                messages_after: messages.len(),
+                                prompt_tokens,
+                            },
+                        );
+                        // Give it a turn to take effect before paying for a
+                        // summary: the next reported prompt size says whether
+                        // this was enough, and a summary is lossy where this is
+                        // merely lossy about the middle of a file.
+                        continue;
+                    }
+
                     match self.compact(cx, messages, &events).await {
                         Ok(Some(spent)) => {
                             usage.add(&spent);
