@@ -141,6 +141,54 @@ pub fn rebuild(messages: &[Message], cut: usize, summary: &str) -> Vec<Message> 
     out
 }
 
+/// Appended to a result whose middle was removed, so the model can tell the
+/// difference between a short file and a shortened one.
+pub const TRUNCATION_MARKER: &str = "\n… [earlier output truncated to save context]";
+
+/// How much of a tool result survives thinning.
+///
+/// Generous enough that a small file — the common case in agent work — is kept
+/// whole, and the head is where structured output puts the part worth having.
+pub const THINNED_RESULT_CHARS: usize = 240;
+
+/// Shorten old tool *results*, leaving the tool *calls* that produced them.
+///
+/// This is the cheap half of compaction and it should be tried first, because a
+/// call and its result differ enormously in both size and value:
+///
+/// ```text
+/// tool_use    {"path": "entry-9e1b.md"}          ~15 tokens  ← the position
+/// tool_result "# Audit entry 11\namount: 43…"     ~80 tokens  ← the bulk
+/// ```
+///
+/// Position lives in the calls, which are tiny. Tokens live in the results,
+/// which are not. Replacing the middle of a transcript wholesale throws away
+/// both, which is why a summarised traversal loses its place: the agent can no
+/// longer see which entries it already visited. Thinning keeps that sequence
+/// *structurally*, so it does not depend on a summariser noticing it mattered.
+///
+/// Costs no request, so it can run before deciding whether a summary is needed
+/// at all. Returns how many results were shortened.
+pub fn thin_old_results(messages: &mut [Message], keep_recent: usize, keep_chars: usize) -> usize {
+    let cutoff = messages.len().saturating_sub(keep_recent);
+    let mut thinned = 0;
+
+    for message in messages.iter_mut().take(cutoff) {
+        for block in &mut message.content {
+            let Block::ToolResult { content, .. } = block else { continue };
+            // Already thinned: leave it, or repeated passes would eat the head
+            // a chunk at a time.
+            if content.ends_with(TRUNCATION_MARKER) || content.chars().count() <= keep_chars {
+                continue;
+            }
+            let head: String = content.chars().take(keep_chars).collect();
+            *content = format!("{head}{TRUNCATION_MARKER}");
+            thinned += 1;
+        }
+    }
+    thinned
+}
+
 /// Whether compacting would actually remove anything worth the round trip.
 ///
 /// A summarising call costs a request and its tokens; doing it to drop two
@@ -194,6 +242,94 @@ pub fn orphaned_tool_results(messages: &[Message]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn call(id: &str, path: &str) -> Message {
+        Message::assistant(vec![Block::ToolUse {
+            id: id.into(),
+            name: "fs_read".into(),
+            input: serde_json::json!({"path": path}),
+        }])
+    }
+
+    fn result(id: &str, body: &str) -> Message {
+        Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: id.into(),
+            content: body.into(),
+            is_error: false,
+        }])
+    }
+
+    /// A traversal: read a file, get its contents, move on.
+    fn walk(n: usize) -> Vec<Message> {
+        let mut m = vec![Message::user("follow the chain")];
+        for i in 0..n {
+            m.push(call(&format!("t{i}"), &format!("entry-{i}.md")));
+            m.push(result(&format!("t{i}"), &"x".repeat(500)));
+        }
+        m
+    }
+
+    #[test]
+    fn thinning_keeps_every_call_and_shortens_only_the_results() {
+        let mut m = walk(8);
+        let before_calls: Vec<_> = m.iter().flat_map(|m| m.tool_uses()).map(|(_, _, i)| i.clone()).collect();
+
+        let thinned = thin_old_results(&mut m, 4, 240);
+
+        assert!(thinned > 0);
+        // The sequence of calls is what says where the agent got to, and it is
+        // untouched — that is the whole point of thinning rather than cutting.
+        let after_calls: Vec<_> = m.iter().flat_map(|m| m.tool_uses()).map(|(_, _, i)| i.clone()).collect();
+        assert_eq!(before_calls, after_calls, "thinning disturbed the tool calls");
+        assert_eq!(m.len(), 17, "thinning removed messages");
+    }
+
+    #[test]
+    fn recent_results_are_left_alone() {
+        let mut m = walk(8);
+        thin_old_results(&mut m, 4, 240);
+
+        let last_result = m.last().unwrap().content.iter().find_map(|b| match b {
+            Block::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        });
+        assert_eq!(last_result.unwrap().len(), 500, "the newest result was thinned");
+    }
+
+    #[test]
+    fn thinning_is_idempotent() {
+        // Repeated passes must not eat the surviving head a chunk at a time —
+        // compaction runs every turn once the threshold is crossed.
+        let mut m = walk(8);
+        thin_old_results(&mut m, 4, 240);
+        let after_one: Vec<String> = m.iter().map(|m| format!("{:?}", m.content)).collect();
+
+        let second = thin_old_results(&mut m, 4, 240);
+        let after_two: Vec<String> = m.iter().map(|m| format!("{:?}", m.content)).collect();
+
+        assert_eq!(second, 0, "a second pass thinned already-thinned results");
+        assert_eq!(after_one, after_two);
+    }
+
+    #[test]
+    fn a_result_shorter_than_the_budget_is_not_touched() {
+        let mut m = vec![Message::user("go"), call("t0", "a.md"), result("t0", "amount: 43")];
+        assert_eq!(thin_old_results(&mut m, 0, 240), 0);
+        assert!(!format!("{:?}", m[2].content).contains("truncated"));
+    }
+
+    #[test]
+    fn thinning_says_it_thinned_so_the_model_can_tell() {
+        // A silently shortened file reads as a short file, and the model would
+        // conclude the rest of it does not exist.
+        let mut m = walk(2);
+        thin_old_results(&mut m, 0, 240);
+        let body = m[2].content.iter().find_map(|b| match b {
+            Block::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        });
+        assert!(body.unwrap().ends_with(TRUNCATION_MARKER));
+    }
     use serde_json::json;
 
     /// A transcript in the shape the loop actually produces: a task, then
