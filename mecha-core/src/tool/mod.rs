@@ -4,6 +4,7 @@
 //! registry holds them; MCP servers and native Rust functions both land here as
 //! the same trait object, so the agent loop never learns the difference.
 
+pub mod ask;
 pub mod builtin;
 pub mod todo;
 
@@ -283,6 +284,20 @@ impl Registry {
     /// prefix, so reordering it would invalidate the cache on every request.
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools.values().map(|t| t.spec()).collect()
+    }
+
+    /// Specs a given phase permits, in the same stable order.
+    ///
+    /// Note what this does to the prompt cache: planning sends a shorter tool
+    /// list, so switching phase changes the front of the prefix and the next
+    /// turn re-pays for it. That is the price of the tools being genuinely
+    /// absent rather than merely refused, and it is the right trade.
+    pub fn specs_for(&self, phase: crate::agent::Phase) -> Vec<ToolSpec> {
+        self.tools
+            .values()
+            .filter(|t| phase.allows(t.read_only()))
+            .map(|t| t.spec())
+            .collect()
     }
 
     /// Register the built-ins permitted by config.
