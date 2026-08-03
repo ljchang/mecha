@@ -271,6 +271,28 @@ pub enum TrifectaPolicy {
     Allow,
 }
 
+/// Capabilities to force on a server's tools. Absent flags leave the server's
+/// own declaration alone; there is deliberately no way to switch one off.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CapabilityOverride {
+    pub private_data: bool,
+    pub untrusted_input: bool,
+    pub external_send: bool,
+    pub destructive: bool,
+}
+
+impl From<CapabilityOverride> for crate::tool::Capabilities {
+    fn from(o: CapabilityOverride) -> Self {
+        crate::tool::Capabilities {
+            private_data: o.private_data,
+            untrusted_input: o.untrusted_input,
+            external_send: o.external_send,
+            destructive: o.destructive,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
@@ -339,6 +361,20 @@ pub struct McpServerConfig {
     /// API, confined, while `shell` still has no way off the machine. With one
     /// shared switch you would have to open `shell` to satisfy the server.
     pub network: Option<bool>,
+    /// Capabilities forced onto every tool this server exposes, on top of
+    /// whatever it declares for itself.
+    ///
+    /// MCP capability flags come from the server's own `annotations`, which
+    /// means a third-party server decides how much the interlock distrusts it.
+    /// An unannotated tool is treated as private-but-trusted — wrong in the
+    /// dangerous direction for anything that reaches the open world. A Google
+    /// Docs server is the worked example: a document someone shared with you is
+    /// third-party text, and writing into a document an attacker can read is an
+    /// exfiltration channel, so it is all three legs at once and says none of
+    /// them.
+    ///
+    /// Only ever widens — see [`crate::tool::Capabilities::union`].
+    pub capabilities: CapabilityOverride,
     /// Skip this server without deleting its config.
     pub disabled: bool,
 }

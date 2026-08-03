@@ -12,13 +12,14 @@
 //! keeping the partial answer and the session.
 
 mod approve;
+mod command;
 mod transcript;
 
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers, MouseEventKind,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
 };
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -352,6 +353,15 @@ fn on_terminal_event(
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             on_key(app, key, events_tx, events_rx, agent, session)
         }
+        // Inserted whole, never submitted. Dropping a file onto the terminal
+        // arrives here too: terminals send the *path* as pasted text, so a drop
+        // is a paste as far as this is concerned.
+        Event::Paste(text) => {
+            app.quit_armed = false;
+            app.input.insert_str(app.cursor, &text);
+            app.cursor += text.len();
+            Ok(())
+        }
         Event::Mouse(mouse) => {
             match mouse.kind {
                 MouseEventKind::ScrollUp => app.transcript.scroll_up(3),
@@ -461,6 +471,81 @@ fn on_key(
     Ok(())
 }
 
+
+/// Carry out a slash command. Everything here is local to the session — none of
+/// it reaches the model.
+fn run_command(
+    app: &mut App,
+    cmd: command::Command,
+    agent: &Arc<Agent>,
+    session: Option<&Session>,
+) -> Result<()> {
+    use command::Command;
+
+    let mut say = |text: String| app.transcript.push(Entry::Notice(text));
+
+    match cmd {
+        Command::Help => say(command::HELP.to_string()),
+
+        Command::Tools => {
+            let mut lines = String::new();
+            for tool in agent.registry().iter() {
+                lines.push_str(&format!(
+                    "  {:<24} {}\n",
+                    tool.name(),
+                    tool.description().lines().next().unwrap_or("")
+                ));
+            }
+            say(lines.trim_end().to_string());
+        }
+
+        Command::Usage => say(format!(
+            "{} · {} in the last prompt",
+            crate::render::format_usage(&app.usage),
+            app.prompt_tokens
+        )),
+
+        Command::Session => say(match session {
+            Some(s) => format!("{}", s.path.display()),
+            None => "not recording a transcript (--no-session)".to_string(),
+        }),
+
+        Command::Clear => {
+            // A whole new conversation, not just an emptied message list: taint
+            // is a property of the conversation, so dropping the context has to
+            // drop what entered it. Keeping the taint here would leave the
+            // interlock armed by a page nothing in context has read any more.
+            app.convo = Conversation::new();
+            app.usage = Usage::default();
+            app.prompt_tokens = 0;
+            app.transcript.push(Entry::Notice(
+                "cleared — new conversation, and the taint went with it".into(),
+            ));
+        }
+
+        Command::Quit => app.should_quit = true,
+
+        // Switching is not wired up yet; showing is, and saying so is better
+        // than accepting the command and silently doing nothing.
+        Command::Model(None) => say(format!("model {}", agent.model())),
+        Command::Model(Some(_)) | Command::Provider(Some(_)) => say(
+            "switching model or provider needs rebuilding the agent — not wired up yet".into(),
+        ),
+        Command::Provider(None) => say(format!("provider {}", agent.provider_id())),
+        Command::Mode(_) => {
+            say("switching permission mode is not wired up yet; use --yes or --read-only".into())
+        }
+
+        Command::BadMode(word) => {
+            say(format!("no such mode {word:?} (ask | allow | read-only)"))
+        }
+        Command::Unknown(name) => {
+            say(format!("no such command /{name} — /help lists them"))
+        }
+    }
+    Ok(())
+}
+
 /// Either start a run or steer the one already going — the same key, and from
 /// the user's side the same gesture.
 fn submit(
@@ -471,6 +556,13 @@ fn submit(
     agent: &Arc<Agent>,
     session: Option<&Session>,
 ) -> Result<()> {
+    // Commands are handled before steering: a `/clear` typed mid-run is far
+    // more likely to be a mistake than an instruction meant for the model, and
+    // sending it as steering would put a slash command into the transcript.
+    if let Some(cmd) = command::parse(&text) {
+        return run_command(app, cmd, agent, session);
+    }
+
     if let Some(run) = &app.running {
         // Steering. The loop picks this up at the top of its next turn and
         // folds it in beside the tool results, so the model reads it without
@@ -549,10 +641,46 @@ fn next_boundary(s: &str, at: usize) -> usize {
     s[at..].chars().next().map_or(at, |c| at + c.len_utf8())
 }
 
+/// Where the cursor sits in the wrapped input box, and how many rows the text
+/// needs: `(column, row, rows)`.
+///
+/// Split out and made pure because pasted text can contain newlines, and the
+/// arithmetic that assumed it could not put the cursor in the wrong place the
+/// moment anyone pasted a snippet. A newline is a hard break; everything else
+/// wraps at `width`.
+fn input_layout(text: &str, cursor: usize, width: u16) -> (u16, u16, u16) {
+    let width = width.max(1);
+    let (mut col, mut row) = (0u16, 0u16);
+    let (mut cursor_col, mut cursor_row) = (0u16, 0u16);
+
+    for (offset, ch) in text.char_indices() {
+        if offset == cursor {
+            (cursor_col, cursor_row) = (col, row);
+        }
+        if ch == '\n' {
+            col = 0;
+            row += 1;
+        } else {
+            col += 1;
+            if col >= width {
+                col = 0;
+                row += 1;
+            }
+        }
+    }
+    if cursor >= text.len() {
+        (cursor_col, cursor_row) = (col, row);
+    }
+
+    (cursor_col, cursor_row, row + 1)
+}
+
 fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: usize) {
     // The input box grows with what has been typed rather than scrolling
     // sideways, so a long steering instruction stays readable while writing it.
-    let input_height = (app.input.len() as u16 / frame.area().width.max(1) + 1).clamp(1, 6) + 2;
+    let inner_width = frame.area().width.saturating_sub(2);
+    let (cursor_col, cursor_row, rows) = input_layout(&app.input, app.cursor, inner_width);
+    let input_height = rows.clamp(1, 6) + 2;
     let chunks = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(1),
@@ -578,12 +706,11 @@ fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: us
         );
     frame.render_widget(input, chunks[2]);
 
-    // Cursor position inside the bordered box, wrapping as the text does.
-    let inner = chunks[2].width.saturating_sub(2).max(1);
-    let before = app.input[..app.cursor].chars().count() as u16;
+    // Cursor position inside the bordered box, wrapping as the text does and
+    // breaking where the text does.
     frame.set_cursor_position((
-        chunks[2].x + 1 + before % inner,
-        chunks[2].y + 1 + before / inner,
+        chunks[2].x + 1 + cursor_col,
+        chunks[2].y + 1 + cursor_row.min(rows.clamp(1, 6).saturating_sub(1)),
     ));
 
     if let Some(request) = &app.pending {
@@ -655,21 +782,77 @@ fn enter() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>> {
         let _ = crossterm::execute!(
             std::io::stdout(),
             LeaveAlternateScreen,
-            DisableMouseCapture
+            DisableMouseCapture,
+            DisableBracketedPaste
         );
         previous(info);
     }));
 
     enable_raw_mode().context("this needs a terminal")?;
     let mut stdout = std::io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // Without bracketed paste, a pasted newline arrives as `KeyCode::Enter` and
+    // *submits*: paste three lines and you have fired off three half-written
+    // prompts. It also makes a dragged-and-dropped file path arrive as one
+    // event rather than a burst of keystrokes.
+    crossterm::execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     Ok(Terminal::new(CrosstermBackend::new(stdout))?)
 }
 
 fn leave(terminal: &mut Terminal<impl Backend>) -> Result<()> {
     disable_raw_mode()?;
-    crossterm::execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
+    crossterm::execute!(
+        std::io::stdout(),
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        DisableBracketedPaste
+    )?;
     terminal.show_cursor()?;
     println!();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::input_layout;
+
+    #[test]
+    fn the_cursor_tracks_plain_wrapping() {
+        // 10 columns: "abcdefghij" fills a row, so the eleventh character is at
+        // the start of the next one.
+        assert_eq!(input_layout("abcdefghijk", 11, 10), (1, 1, 2));
+        assert_eq!(input_layout("abc", 3, 10), (3, 0, 1));
+        assert_eq!(input_layout("", 0, 10), (0, 0, 1));
+    }
+
+    #[test]
+    fn a_pasted_newline_breaks_the_line_instead_of_being_counted_as_a_character() {
+        // The bug this pins: the old arithmetic divided the character count by
+        // the width, so any pasted snippet put the cursor somewhere else
+        // entirely and the box was drawn too short.
+        let text = "one\ntwo";
+        assert_eq!(input_layout(text, text.len(), 40), (3, 1, 2));
+
+        let three = "a\nb\nc";
+        assert_eq!(input_layout(three, three.len(), 40), (1, 2, 3));
+    }
+
+    #[test]
+    fn a_cursor_in_the_middle_of_pasted_text_lands_on_the_right_row() {
+        let text = "one\ntwo\nthree";
+        // Just after the second newline: start of the third row.
+        assert_eq!(input_layout(text, 8, 40), (0, 2, 3));
+    }
+
+    #[test]
+    fn a_zero_width_terminal_does_not_divide_by_zero() {
+        // A pty with no window size reports 0 columns, and this used to be the
+        // arithmetic that ran first.
+        let (_, _, rows) = input_layout("abc", 3, 0);
+        assert!(rows >= 1);
+    }
 }
