@@ -546,11 +546,24 @@ that could have destroyed the task silently.
   remained — but never for position in a sequence, and "which entries I have
   already visited" is neither a fact about the world nor a failed attempt.
 
-  The obvious fix is one clause in that instruction asking for progress through
-  any traversal. **It is not made, deliberately**: there is now a 1/5 baseline
-  to beat, and a prompt change shipped without re-running against it is exactly
-  the guess this rig exists to replace. Budget ~35 minutes of local compute for
-  the before/after.
+  The clause was written and measured, and **it did not demonstrably help**:
+
+  | | `chain-total-compacted` | `compaction-carries-the-task` |
+  |---|---|---|
+  | before the clause | 1/3 | 3/3 |
+  | after the clause | 2/5 | 5/5 |
+  | uncompacted control | 5/5 | — |
+
+  1/3 against 2/5 is noise at this sample size, and pooling every compacted run
+  gives 3/8. Compaction still costs this task roughly sixty points against a
+  control that does not miss. The clause is **kept but unvalidated** — it is
+  theoretically motivated, it did not regress the fact-recall case, and it is
+  cheap; that is the whole of the case for it. Do not cite it as a fix.
+
+  What would settle it is n≈15 per arm, about two hours of local compute, or a
+  sharper diagnostic than pass rate: log whether the summary text actually
+  contains a position, since the failure mode (restarting the chain, stopping
+  early) is observable directly and does not need a pass/fail to detect.
 
 ---
 
