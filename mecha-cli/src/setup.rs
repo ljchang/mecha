@@ -21,6 +21,9 @@ pub struct Prepared {
     pub provider_name: String,
     pub model: String,
     pub workspace: PathBuf,
+    /// The resolved config, for commands that need to build a *second*
+    /// connection — `eval` and its judge model.
+    pub config: Config,
     /// Held for the lifetime of the run: dropping a client kills its server.
     pub _mcp: Vec<Arc<McpClient>>,
 }
@@ -29,6 +32,7 @@ pub struct Prepared {
 /// what an agent *would* have without needing provider credentials.
 pub struct PreparedTools {
     pub registry: Registry,
+    pub sandbox: Arc<mecha_core::sandbox::Sandbox>,
     pub workspace: PathBuf,
     pub config: Config,
     pub approver: Arc<dyn Approver>,
@@ -38,7 +42,27 @@ pub struct PreparedTools {
 /// Build an agent. `interactive` decides whether an un-approved tool call can
 /// prompt a human or must fall back to the configured [`PermissionMode`].
 pub async fn prepare(opts: &GlobalOpts, interactive: bool) -> Result<Prepared> {
-    let tools = prepare_tools(opts, interactive).await?;
+    build(prepare_tools(opts, interactive).await?, opts)
+}
+
+/// Build an agent that asks a caller-supplied approver.
+///
+/// The TUI needs this: its approver talks to the event loop over a channel, and
+/// `prepare` would otherwise install one that writes prompts straight to a
+/// terminal the interface has taken over. The approver is still only consulted
+/// in `Ask` mode — a run configured read-only stays read-only.
+pub async fn prepare_with_approver(
+    opts: &GlobalOpts,
+    approver: Arc<dyn Approver>,
+) -> Result<Prepared> {
+    let mut tools = prepare_tools(opts, true).await?;
+    if tools.config.tools.permission_mode == PermissionMode::Ask {
+        tools.approver = approver;
+    }
+    build(tools, opts)
+}
+
+fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     let cfg = tools.config;
 
     let (provider_name, provider_cfg) = cfg.provider(opts.provider.as_deref())?;
@@ -82,6 +106,7 @@ pub async fn prepare(opts: &GlobalOpts, interactive: bool) -> Result<Prepared> {
         provider_name,
         model,
         workspace: tools.workspace,
+        config: cfg,
         _mcp: tools._mcp,
     })
 }
@@ -139,7 +164,8 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         .with_context(|| format!("workspace {} does not exist", workspace.display()))?;
 
     // --- tools ---
-    let mut registry = Registry::new().with_builtins(&cfg.tools);
+    let sandbox = Arc::new(mecha_core::sandbox::Sandbox::new(cfg.sandbox.clone()));
+    let mut registry = Registry::new().with_builtins(&cfg.tools, Arc::clone(&sandbox));
 
     // Search is only registered when a backend is configured — an agent with a
     // `web_search` tool that always errors is worse than no tool at all.
@@ -157,7 +183,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     }
     let mut clients = Vec::new();
     if !opts.no_mcp && !cfg.mcp.is_empty() {
-        let (tools, connected, errors) = mcp::connect_all(&cfg.mcp).await;
+        let (tools, connected, errors) = mcp::connect_all(&cfg.mcp, &sandbox, &workspace).await;
         for error in errors {
             // A dead server is worth saying out loud, but it shouldn't stop the
             // run — the other tools still work.
@@ -180,7 +206,18 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             Arc::new(ModeApprover { mode: cfg.tools.permission_mode })
         };
 
-    Ok(PreparedTools { registry, workspace, config: cfg, approver, _mcp: clients })
+    // Prove the sandbox works before the agent can call anything, and refuse
+    // to start if it doesn't. Falling back to unconfined execution would be
+    // worse than never having configured one: `shell` declares narrower
+    // capabilities when confined, and the loop's interlock trusts that claim.
+    if sandbox.is_enabled() && registry.get("shell").is_some() {
+        sandbox
+            .preflight(&workspace)
+            .await
+            .context("sandbox preflight failed — refusing to run `shell` unconfined")?;
+    }
+
+    Ok(PreparedTools { registry, sandbox, workspace, config: cfg, approver, _mcp: clients })
 }
 
 /// Build the search chain in configured order, skipping backends that cannot

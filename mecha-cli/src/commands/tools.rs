@@ -26,10 +26,21 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let specs: Vec<_> = registry
             .iter()
             .map(|t| {
+                // Capabilities are in the JSON because this is the auditable
+                // view: `shell` declaring `external_send: false` is a claim the
+                // sandbox is making, and it should be inspectable without
+                // reading source.
+                let caps = t.capabilities();
                 serde_json::json!({
                     "name": t.name(),
                     "description": t.description(),
                     "read_only": t.read_only(),
+                    "capabilities": {
+                        "private_data": caps.private_data,
+                        "untrusted_input": caps.untrusted_input,
+                        "external_send": caps.external_send,
+                        "destructive": caps.destructive,
+                    },
                     "input_schema": t.input_schema(),
                 })
             })
@@ -59,6 +70,61 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     println!("{} tools · workspace {}", registry.len(), prepared.workspace.display());
+
+    // The sandbox decides what `shell` actually is, so say so plainly. An
+    // operator who thinks commands are confined when they aren't is the exact
+    // failure this whole subsystem exists to prevent.
+    if registry.get("shell").is_some() {
+        let sandbox = &prepared.sandbox;
+        if sandbox.is_enabled() {
+            println!(
+                "\nshell sandbox: {} · network {} · reads {}",
+                sandbox.backend().as_str(),
+                if sandbox.can_reach_network() { "on" } else { "off" },
+                if sandbox.reaches_beyond_workspace() {
+                    "beyond the workspace"
+                } else {
+                    "the workspace only"
+                }
+            );
+        } else {
+            println!(
+                "\nshell sandbox: none — commands run as you, with your credentials, \
+                 and the path jail does not cover them.\n  \
+                 Set [sandbox] kind = \"bwrap\" (or \"docker\") to confine them."
+            );
+        }
+    }
+
+    // An MCP server is somebody else's code on your machine. Say which ones
+    // are confined and which are not, because that is the fact an operator
+    // most needs and is least likely to remember.
+    if !prepared.config.mcp.is_empty() {
+        println!("\nmcp servers");
+        for server in prepared.config.mcp.iter().filter(|s| !s.disabled) {
+            let confinement = if !server.sandbox {
+                "unconfined — runs as you".to_string()
+            } else if !prepared.sandbox.is_enabled() {
+                // It refuses to start in this state, so don't describe a
+                // confinement it does not have.
+                "will not start — asks for confinement, no backend set".to_string()
+            } else {
+                let network = server.network.unwrap_or(prepared.sandbox.can_reach_network());
+                format!(
+                    "{} · network {}",
+                    prepared.sandbox.backend().as_str(),
+                    if network { "on" } else { "off" }
+                )
+            };
+            println!("  {}  →  {}", server.name, confinement);
+            if !server.env_passthrough.is_empty() {
+                println!("      env passed through: {}", server.env_passthrough.join(", "));
+            }
+            if server.sandbox && !prepared.sandbox.is_enabled() {
+                println!("      ⚠ set [sandbox] kind, or drop `sandbox = true`");
+            }
+        }
+    }
 
     // Subagents need a provider to build, which this command deliberately does
     // not require. List the profiles from config instead — that also shows the

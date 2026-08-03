@@ -11,15 +11,20 @@
 //! ```no_run
 //! # async fn example() -> anyhow::Result<()> {
 //! use mecha_core::{agent::Agent, config::Config, message::Message};
+//! use mecha_core::sandbox::Sandbox;
 //! use mecha_core::tool::{ModeApprover, Registry, ToolCtx};
 //! use std::sync::Arc;
 //!
 //! let cfg = Config::load(&std::env::current_dir()?)?;
 //! let (_, provider_cfg) = cfg.provider(None)?;
 //!
+//! // How `shell` is confined. It decides that tool's declared capabilities,
+//! // so it is built before the registry rather than consulted at call time.
+//! let sandbox = Arc::new(Sandbox::new(cfg.sandbox.clone()));
+//!
 //! let agent = Agent::new(
 //!     mecha_core::provider::build(provider_cfg)?,
-//!     Registry::new().with_builtins(&cfg.tools),
+//!     Registry::new().with_builtins(&cfg.tools, sandbox),
 //!     Arc::new(ModeApprover { mode: cfg.tools.permission_mode }),
 //!     ToolCtx {
 //!         workspace: std::env::current_dir()?,
@@ -44,6 +49,7 @@ pub mod eval;
 pub mod mcp;
 pub mod message;
 pub mod provider;
+pub mod sandbox;
 pub mod search;
 pub mod session;
 pub mod subagent;

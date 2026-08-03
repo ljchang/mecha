@@ -116,7 +116,8 @@ pub trait Tool: Send + Sync {
     }
 }
 
-/// What a tool is allowed to touch, and who decides.
+/// What a tool is allowed to touch.
+#[derive(Debug, Clone)]
 pub struct ToolCtx {
     /// Filesystem tools refuse paths outside this root.
     pub workspace: PathBuf,
@@ -135,6 +136,13 @@ impl Default for ToolCtx {
 }
 
 impl ToolCtx {
+    /// The same policy pointed at a different root. Used to give one run — an
+    /// eval case, a batch item — its own isolated copy of a workspace without
+    /// rebuilding the agent around it.
+    pub fn with_workspace(&self, workspace: impl Into<PathBuf>) -> Self {
+        ToolCtx { workspace: workspace.into(), ..self.clone() }
+    }
+
     /// Resolve a model-supplied path against the workspace and prove it stays
     /// inside. The path is untrusted input: `..`, symlinks, and absolute paths
     /// all have to be checked after canonicalization, not before.
@@ -260,8 +268,12 @@ impl Registry {
     }
 
     /// Register the built-ins permitted by config.
-    pub fn with_builtins(mut self, cfg: &ToolsConfig) -> Self {
-        for tool in builtin::all() {
+    ///
+    /// The sandbox is passed in rather than read from config here because it
+    /// changes what `shell` *is* — an unconfined shell and a confined one
+    /// declare different capabilities, and the loop's interlock reads them.
+    pub fn with_builtins(mut self, cfg: &ToolsConfig, sandbox: Arc<crate::sandbox::Sandbox>) -> Self {
+        for tool in builtin::all(sandbox) {
             let name = tool.name();
             let allowed = cfg.enabled.is_empty() || cfg.enabled.iter().any(|e| e == name);
             let blocked = cfg.disabled.iter().any(|d| d == name);

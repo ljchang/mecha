@@ -6,11 +6,13 @@
 //! the agent loop.
 
 use crate::config::McpServerConfig;
+use crate::sandbox::Sandbox;
 use crate::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -32,11 +34,47 @@ pub struct McpClient {
 
 impl McpClient {
     /// Spawn the server, perform the initialize handshake, and return a client.
-    pub async fn connect(cfg: &McpServerConfig) -> Result<Arc<Self>> {
-        let mut command = tokio::process::Command::new(&cfg.command);
+    ///
+    /// An MCP server is third-party code running on your machine, which makes
+    /// it a larger hole than `shell` ever was: `shell` at least runs commands a
+    /// model asked for out loud, where a server runs whatever its author wrote.
+    /// So it gets the same treatment — a named environment rather than an
+    /// inherited one, and optional confinement.
+    pub async fn connect(cfg: &McpServerConfig, sandbox: &Sandbox, workspace: &Path) -> Result<Arc<Self>> {
+        // Same rule as `shell`: asking to be confined and silently not being
+        // confined is the worst outcome, because the decision was made on the
+        // belief that it held.
+        if cfg.sandbox && !sandbox.is_enabled() {
+            bail!(
+                "MCP server `{}` is configured with `sandbox = true`, but no sandbox \
+                 backend is set. Set [sandbox] kind = \"bwrap\" or \"docker\", or drop \
+                 `sandbox = true` to accept that it runs unconfined.",
+                cfg.name
+            );
+        }
+
+        let mut command = if cfg.sandbox {
+            let confined = match cfg.network {
+                Some(network) => sandbox.with_network(network),
+                None => sandbox.clone(),
+            };
+            confined
+                .wrap_argv(&cfg.command, &cfg.args, workspace, workspace)
+                .with_context(|| format!("confining MCP server `{}`", cfg.name))?
+        } else {
+            let mut c = tokio::process::Command::new(&cfg.command);
+            c.args(&cfg.args);
+            c
+        };
+
+        // Clear first, then add back. `envs()` alone layers on top of the
+        // inherited environment, which is how a server ends up holding your
+        // provider keys without anyone deciding it should.
+        command.env_clear();
+        command.envs(Sandbox::child_env(&cfg.env_passthrough));
+        command.envs(&cfg.env);
+
         command
-            .args(&cfg.args)
-            .envs(&cfg.env)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             // The MCP convention is that stderr is the server's log, not part
@@ -276,13 +314,15 @@ impl Tool for McpTool {
 /// reported and skipped — one broken entry shouldn't sink the whole session.
 pub async fn connect_all(
     configs: &[McpServerConfig],
+    sandbox: &Sandbox,
+    workspace: &Path,
 ) -> (Vec<Arc<dyn Tool>>, Vec<Arc<McpClient>>, Vec<String>) {
     let mut tools = Vec::new();
     let mut clients = Vec::new();
     let mut errors = Vec::new();
 
     for cfg in configs.iter().filter(|c| !c.disabled) {
-        match McpClient::connect(cfg).await {
+        match McpClient::connect(cfg, sandbox, workspace).await {
             Ok(client) => match client.list_tools().await {
                 Ok(mut t) => {
                     tools.append(&mut t);

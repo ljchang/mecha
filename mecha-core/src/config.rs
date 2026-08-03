@@ -22,6 +22,8 @@ pub struct Config {
     pub agent: AgentConfig,
     pub tools: ToolsConfig,
     pub security: SecurityConfig,
+    /// How `shell` is confined. See [`crate::sandbox`].
+    pub sandbox: crate::sandbox::SandboxConfig,
     /// MCP servers to connect to at startup.
     #[serde(rename = "mcp")]
     pub mcp: Vec<McpServerConfig>,
@@ -55,6 +57,7 @@ impl Default for Config {
             agent: AgentConfig::default(),
             tools: ToolsConfig::default(),
             security: SecurityConfig::default(),
+            sandbox: crate::sandbox::SandboxConfig::default(),
             mcp: Vec::new(),
             subagents: Vec::new(),
             search: Vec::new(),
@@ -299,7 +302,29 @@ pub struct McpServerConfig {
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
+    /// Values handed to the server explicitly. Use this for a token the server
+    /// needs, so granting it is a decision written down rather than a
+    /// side-effect of what happened to be exported.
     pub env: BTreeMap<String, String>,
+    /// Variables inherited from mecha's own environment, by name.
+    ///
+    /// Empty by default, and that default is the point: an MCP server is
+    /// third-party code, and a process that inherits your whole environment
+    /// inherits every provider key in it. `PATH`, `HOME`, `LANG`, `LC_ALL` and
+    /// `TZ` always pass through — without them most runtimes cannot start.
+    pub env_passthrough: Vec<String>,
+    /// Confine this server with the configured `[sandbox]` backend.
+    ///
+    /// Off by default because a confined server sees only the workspace and,
+    /// unless allowed, no network — which is wrong for most of the servers
+    /// people actually run. Worth turning on for anything you did not write.
+    pub sandbox: bool,
+    /// Network for this server alone, overriding `[sandbox] network`.
+    ///
+    /// The case this exists for: a third-party server that has to reach its own
+    /// API, confined, while `shell` still has no way off the machine. With one
+    /// shared switch you would have to open `shell` to satisfy the server.
+    pub network: Option<bool>,
     /// Skip this server without deleting its config.
     pub disabled: bool,
 }
@@ -392,6 +417,7 @@ struct ConfigLayer {
     subagents: Option<Vec<crate::subagent::SubagentProfile>>,
     #[serde(rename = "search")]
     search: Option<Vec<SearchBackendConfig>>,
+    sandbox: Option<SandboxLayer>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -418,6 +444,19 @@ struct SecurityLayer {
     blocked_domains: Option<Vec<String>>,
     mark_untrusted_output: Option<bool>,
     block_sends_after_private: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SandboxLayer {
+    kind: Option<crate::sandbox::Backend>,
+    network: Option<bool>,
+    writable: Option<Vec<PathBuf>>,
+    readable: Option<Vec<PathBuf>>,
+    env: Option<Vec<String>>,
+    image: Option<String>,
+    memory_mb: Option<u64>,
+    cpus: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -510,6 +549,33 @@ impl ConfigLayer {
             }
             if let Some(v) = x.block_sends_after_private {
                 t.block_sends_after_private = v;
+            }
+        }
+        if let Some(x) = self.sandbox {
+            let t = &mut cfg.sandbox;
+            if let Some(v) = x.kind {
+                t.kind = v;
+            }
+            if let Some(v) = x.network {
+                t.network = v;
+            }
+            if let Some(v) = x.writable {
+                t.writable = v;
+            }
+            if let Some(v) = x.readable {
+                t.readable = v;
+            }
+            if let Some(v) = x.env {
+                t.env = v;
+            }
+            if let Some(v) = x.image {
+                t.image = v;
+            }
+            if x.memory_mb.is_some() {
+                t.memory_mb = x.memory_mb;
+            }
+            if x.cpus.is_some() {
+                t.cpus = x.cpus;
             }
         }
         // MCP servers replace wholesale — merging lists by name would make it

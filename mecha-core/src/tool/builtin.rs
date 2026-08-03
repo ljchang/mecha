@@ -5,18 +5,19 @@
 //! likewise untrusted: they run under the approval gate, not around it.
 
 use super::{Capabilities, Tool, ToolCtx, ToolOutput};
+use crate::sandbox::Sandbox;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-pub fn all() -> Vec<Arc<dyn Tool>> {
+pub fn all(sandbox: Arc<Sandbox>) -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(FsRead),
         Arc::new(FsWrite),
         Arc::new(FsEdit),
         Arc::new(FsList),
-        Arc::new(Shell),
+        Arc::new(Shell::new(sandbox)),
         Arc::new(HttpFetch),
         Arc::new(super::todo::TodoTool::new()),
     ]
@@ -256,7 +257,21 @@ impl Tool for FsList {
     }
 }
 
-pub struct Shell;
+/// Runs commands, confined by whatever [`Sandbox`] it was built with.
+///
+/// The policy lives on the tool rather than in [`ToolCtx`] because it decides
+/// the tool's *capabilities*, and `capabilities()` has no context to consult.
+/// The workspace still comes from the context at call time, so per-run jails —
+/// an eval case's private copy of a fixture — are confined to that copy.
+pub struct Shell {
+    sandbox: Arc<Sandbox>,
+}
+
+impl Shell {
+    pub fn new(sandbox: Arc<Sandbox>) -> Self {
+        Shell { sandbox }
+    }
+}
 
 #[async_trait]
 impl Tool for Shell {
@@ -281,12 +296,30 @@ impl Tool for Shell {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // `shell` is universal: it reads your machine, it can `curl` data out,
-        // and it can delete things. Taint tracking cannot see inside a command,
-        // so it is deliberately NOT marked as an untrusted *source* — the real
-        // mitigation for shell is a sandbox, not classification. Marking it as
-        // a sink is what matters here.
-        Capabilities::default().private().sends().destructive()
+        // Unconfined, `shell` is universal: it reads your machine, it can
+        // `curl` data out, and it can delete things. Taint tracking cannot see
+        // inside a command, so it is deliberately NOT marked as an untrusted
+        // *source* — the mitigation for that is the sandbox, not a label.
+        //
+        // Confined without a network, it stops being an exfiltration route, and
+        // *that* is the claim the sandbox earns: the interlock can stop
+        // refusing outbound-looking work that provably cannot go anywhere. It
+        // narrows only because something else enforces it — see
+        // `Sandbox::preflight`, which refuses to start if it doesn't.
+        //
+        // `private_data` stays true regardless. A confined shell still reads
+        // the workspace, and `fs_read` — which reads exactly the same files —
+        // is marked private on the grounds that your files are the definition
+        // of private data. Narrowing it here would open a hole rather than
+        // close one: `shell: cat secrets` would set no taint where
+        // `fs_read: secrets` does, and the cheapest way around the interlock
+        // would be to use the more dangerous tool.
+        Capabilities {
+            private_data: true,
+            untrusted_input: false,
+            external_send: self.sandbox.can_reach_network(),
+            destructive: true,
+        }
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -296,12 +329,21 @@ impl Tool for Shell {
             None => ctx.workspace.clone(),
         };
 
-        let child = tokio::process::Command::new("bash")
-            .arg("-lc")
-            .arg(command)
-            .current_dir(&cwd)
-            .stdin(std::process::Stdio::null())
-            .output();
+        // A sandbox that cannot be built refuses the call. Running the command
+        // unconfined instead would silently break the promise the capabilities
+        // above are making on its behalf.
+        let mut command = match self.sandbox.command(command, &ctx.workspace, &cwd) {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(ToolOutput::err(format!(
+                    "refusing to run: the {} sandbox could not be set up ({e:#}). \
+                     Nothing was executed.",
+                    self.sandbox.backend().as_str()
+                )))
+            }
+        };
+
+        let child = command.stdin(std::process::Stdio::null()).output();
 
         let output = match tokio::time::timeout(ctx.shell_timeout, child).await {
             Err(_) => {
@@ -496,7 +538,49 @@ fn is_internal(ip: &std::net::IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::{Backend, SandboxConfig};
     use crate::tool::ToolCtx;
+
+    fn shell_with(kind: Backend, network: bool) -> Shell {
+        Shell::new(Arc::new(Sandbox::new(SandboxConfig {
+            kind,
+            network,
+            ..SandboxConfig::default()
+        })))
+    }
+
+    #[test]
+    fn confining_the_shell_closes_the_send_route_and_nothing_else() {
+        let loose = shell_with(Backend::None, false).capabilities();
+        assert!(loose.private_data && loose.external_send && loose.destructive);
+
+        // The one thing the sandbox earns: with no network, a command cannot
+        // carry anything off the machine, so it is no longer a trifecta sink.
+        let confined = shell_with(Backend::Bwrap, false).capabilities();
+        assert!(!confined.external_send, "no network means no way out");
+        assert!(confined.destructive, "it can still destroy the workspace");
+
+        // Confined *with* a network is a way out again.
+        assert!(shell_with(Backend::Bwrap, true).capabilities().external_send);
+    }
+
+    #[test]
+    fn a_confined_shell_is_still_private_because_it_still_reads_your_files() {
+        // The hole this guards: if a sandboxed `shell` stopped counting as
+        // private, `shell: cat secrets.txt` would set no taint while
+        // `fs_read: secrets.txt` — the same bytes, the safer tool — would. The
+        // cheapest route around the interlock must never be the more dangerous
+        // tool.
+        for (kind, network) in
+            [(Backend::None, false), (Backend::Bwrap, false), (Backend::Docker, false)]
+        {
+            assert!(
+                shell_with(kind, network).capabilities().private_data,
+                "{kind:?} shell reads the workspace, exactly as fs_read does"
+            );
+        }
+        assert!(FsRead.capabilities().private_data, "the rule this is matching");
+    }
 
     fn ctx(dir: &std::path::Path) -> ToolCtx {
         ToolCtx {
