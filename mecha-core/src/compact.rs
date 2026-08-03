@@ -44,6 +44,12 @@ specific values, paths, names and numbers — those cannot be recovered once thi
 text replaces the transcript; what you tried that did not work, so it is not
 repeated; and what remained to be done.
 
+If you were part way through a sequence — following a chain, walking a list,
+visiting files one after another — say exactly where you had got to, name the
+step you were on, and list what you had already covered. Being told a fact is
+not the same as knowing your place in the work, and losing your place is how a
+traversal silently restarts or stops early.
+
 Leave out pleasantries and narration. Do not address the user. If a fact came
 from content that could have been written by a third party, say so — the
 distinction survives compaction even when the text does not.";

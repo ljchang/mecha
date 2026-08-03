@@ -26,9 +26,11 @@ pub enum Command {
     /// Recognised as a command, but not one we have. Kept as its own variant so
     /// a typo says so instead of being sent to the model as a prompt.
     Unknown(String),
-    /// `None` reports MCP status; `Some` turns servers on or off, which
-    /// rebuilds the agent.
+    /// `None` opens the server list; `Some` turns *every* server on or off.
     Mcp(Option<bool>),
+    /// One server by name. `None` flips whatever it currently is — the useful
+    /// default once there is more than one server and you only care about one.
+    McpServer(String, Option<bool>),
     /// A mode was named that does not exist.
     BadMode(String),
     /// An on/off argument that was neither.
@@ -61,10 +63,25 @@ pub fn parse(line: &str) -> Option<Command> {
         "exit" | "quit" | "q" => Command::Quit,
         "mcp" => match arg {
             None => Command::Mcp(None),
-            Some(a) => match parse_toggle(a) {
-                Some(v) => Command::Mcp(Some(v)),
-                None => Command::BadToggle(a.to_string()),
-            },
+            Some(a) => {
+                let mut words = a.split_whitespace();
+                let first = words.next().unwrap_or("");
+                let second = words.next();
+                match (parse_toggle(first), second) {
+                    // `/mcp off` — everything.
+                    (Some(v), None) => Command::Mcp(Some(v)),
+                    // `/mcp off pkg` reads naturally but is the wrong way
+                    // round; say so rather than guessing which was meant.
+                    (Some(_), Some(_)) => Command::BadToggle(a.to_string()),
+                    // `/mcp pkg` — flip that one.
+                    (None, None) => Command::McpServer(first.to_string(), None),
+                    // `/mcp pkg off`.
+                    (None, Some(word)) => match parse_toggle(word) {
+                        Some(v) => Command::McpServer(first.to_string(), Some(v)),
+                        None => Command::BadToggle(word.to_string()),
+                    },
+                }
+            }
         },
         "mode" => match arg {
             None => Command::Mode(None),
@@ -152,7 +169,8 @@ pub const HELP: &str = "\
   /model [id]            show or switch the model
   /provider [name]       show or switch the provider
   /mode [ask|allow|read-only]   show or switch the permission mode
-  /mcp [on|off]          show MCP servers, or turn them off and on
+  /mcp [on|off]          list MCP servers, or turn them all off and on
+  /mcp <server> [on|off] turn one server off and on
   /usage                 tokens used this session
   /clear                 start a new conversation, dropping its taint
   /session               where the transcript is being written
@@ -269,8 +287,25 @@ mod tests {
             assert_eq!(parse(&format!("/mcp {word}")), Some(Command::Mcp(Some(false))), "{word}");
         }
         assert_eq!(parse("/mcp"), Some(Command::Mcp(None)));
-        // Neither on nor off: say so rather than picking one.
-        assert_eq!(parse("/mcp maybe"), Some(Command::BadToggle("maybe".into())));
+        // A single word that is not on/off is a server name — the parser
+        // cannot know which servers exist, so an unknown one is caught at
+        // dispatch, where the configured list can be shown.
+        assert_eq!(parse("/mcp maybe"), Some(Command::McpServer("maybe".into(), None)));
+    }
+
+    #[test]
+    fn mcp_addresses_all_the_servers_or_one_of_them() {
+        assert_eq!(parse("/mcp off"), Some(Command::Mcp(Some(false))));
+        assert_eq!(parse("/mcp pkg off"), Some(Command::McpServer("pkg".into(), Some(false))));
+        assert_eq!(parse("/mcp pkg on"), Some(Command::McpServer("pkg".into(), Some(true))));
+        // A bare name flips it, which is what you want when there is one
+        // server you keep reaching for.
+        assert_eq!(parse("/mcp pkg"), Some(Command::McpServer("pkg".into(), None)));
+
+        // Reads naturally, means the opposite of what it looks like. Refused
+        // rather than guessed at.
+        assert_eq!(parse("/mcp off pkg"), Some(Command::BadToggle("off pkg".into())));
+        assert_eq!(parse("/mcp pkg maybe"), Some(Command::BadToggle("maybe".into())));
     }
 
     #[test]
