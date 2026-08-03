@@ -152,3 +152,151 @@ impl Session {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::Block;
+
+    fn tmpdir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mecha-session-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn meta_with_id(id: &str) -> SessionMeta {
+        SessionMeta {
+            id: id.to_string(),
+            created_at: Utc::now(),
+            provider: "scripted".into(),
+            model: "test-model".into(),
+            workspace: PathBuf::from("/tmp"),
+            title: None,
+        }
+    }
+
+    #[test]
+    fn a_transcript_round_trips_its_messages_and_its_taint() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-round")).unwrap();
+        session
+            .append_messages(&[
+                Message::user("summarise this page"),
+                Message::assistant(vec![Block::text("done")]),
+            ])
+            .unwrap();
+        session
+            .append(&Record::Taint(Taint { private: true, untrusted: true }))
+            .unwrap();
+
+        let (meta, convo) = Session::load(&session.path).unwrap();
+
+        assert_eq!(meta.model, "test-model");
+        assert_eq!(convo.messages.len(), 2);
+        assert_eq!(convo.messages[0].text(), "summarise this page");
+        assert_eq!(convo.messages[1].text(), "done");
+        // The whole point of recording it: provenance cannot be recovered by
+        // re-reading the content, so a resumed conversation that had read a
+        // hostile page must come back with the interlock still armed.
+        assert!(convo.taint.trifecta_armed());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn taint_records_merge_so_a_later_clean_one_cannot_disarm_the_interlock() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-merge")).unwrap();
+
+        // The order a real run writes them in: one leg arrives, then the other,
+        // and the loop may checkpoint again with nothing new to say.
+        session
+            .append(&Record::Taint(Taint { untrusted: true, private: false }))
+            .unwrap();
+        session
+            .append(&Record::Taint(Taint { private: true, untrusted: false }))
+            .unwrap();
+        session.append(&Record::Taint(Taint::default())).unwrap();
+
+        let (_, convo) = Session::load(&session.path).unwrap();
+
+        // Replacing rather than merging would leave this clean, and resuming
+        // would hand the model the attacker's page with the guard switched off.
+        assert!(convo.taint.private, "an earlier private leg was dropped");
+        assert!(convo.taint.untrusted, "an earlier untrusted leg was dropped");
+        assert!(convo.taint.trifecta_armed());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_transcript_written_before_taint_was_recorded_loads_clean() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-old")).unwrap();
+        session.append_messages(&[Message::user("hello")]).unwrap();
+
+        let (_, convo) = Session::load(&session.path).unwrap();
+
+        assert_eq!(convo.messages.len(), 1);
+        assert!(!convo.taint.private);
+        assert!(!convo.taint.untrusted);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_truncated_final_line_does_not_lose_the_rest_of_the_transcript() {
+        use std::io::Write;
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-killed")).unwrap();
+        session.append_messages(&[Message::user("first")]).unwrap();
+        session
+            .append(&Record::Taint(Taint { private: true, untrusted: false }))
+            .unwrap();
+
+        // What a killed process leaves behind: a half-written final record.
+        let mut file = std::fs::OpenOptions::new().append(true).open(&session.path).unwrap();
+        write!(file, "{{\"record\":\"message\",\"role\":\"assis").unwrap();
+        drop(file);
+
+        let (_, convo) = Session::load(&session.path).unwrap();
+
+        assert_eq!(convo.messages.len(), 1);
+        assert_eq!(convo.messages[0].text(), "first");
+        assert!(convo.taint.private, "a torn last line lost the taint before it");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_transcript_with_no_header_is_refused() {
+        let dir = tmpdir();
+        let path = dir.join("headerless.jsonl");
+        let line = serde_json::to_string(&Record::Message(Message::user("orphan"))).unwrap();
+        std::fs::write(&path, format!("{line}\n")).unwrap();
+
+        let err = Session::load(&path).unwrap_err().to_string();
+        assert!(err.contains("no session header"), "unexpected error: {err}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_ambiguous_id_prefix_is_an_error_rather_than_a_guess() {
+        let dir = tmpdir();
+        Session::create(&dir, meta_with_id("20260101T000000-aaaaaaaa")).unwrap();
+        Session::create(&dir, meta_with_id("20260101T000000-bbbbbbbb")).unwrap();
+
+        let err = Session::find(&dir, "20260101").unwrap_err().to_string();
+        assert!(err.contains("matches 2 sessions"), "unexpected error: {err}");
+
+        // A full id still resolves, and resuming the wrong transcript is the
+        // failure being guarded against.
+        let path = Session::find(&dir, "20260101T000000-aaaaaaaa").unwrap();
+        assert!(path.ends_with("20260101T000000-aaaaaaaa.jsonl"));
+
+        assert!(Session::find(&dir, "nothing-like-this").is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

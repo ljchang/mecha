@@ -479,3 +479,228 @@ impl StreamAccumulator {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client() -> Anthropic {
+        Anthropic {
+            http: reqwest::Client::new(),
+            api_key: "test-key".into(),
+            base_url: "http://localhost:1".into(),
+            default_model: DEFAULT_MODEL.into(),
+        }
+    }
+
+    fn req() -> CompletionRequest {
+        CompletionRequest {
+            model: DEFAULT_MODEL.into(),
+            system: None,
+            messages: vec![Message::user("hi")],
+            tools: Vec::new(),
+            max_tokens: 1024,
+            effort: None,
+            thinking: true,
+            cache_prompt: false,
+        }
+    }
+
+    fn spec(name: &str) -> ToolSpec {
+        ToolSpec {
+            name: name.into(),
+            description: "does a thing".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+
+    /// Anywhere in the tree, at any depth — a knob smuggled into a nested
+    /// object 400s exactly as loudly as one at the top level.
+    fn mentions_key(v: &Value, key: &str) -> bool {
+        match v {
+            Value::Object(map) => {
+                map.contains_key(key) || map.values().any(|v| mentions_key(v, key))
+            }
+            Value::Array(items) => items.iter().any(|v| mentions_key(v, key)),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn the_sampling_knobs_are_never_sent_whatever_the_request_asks_for() {
+        // The Claude 5 family rejects these outright, so the guarantee has to
+        // hold across every shape of request rather than the common one.
+        for thinking in [true, false] {
+            for effort in [None, Some(Effort::Low), Some(Effort::High)] {
+                for cache_prompt in [true, false] {
+                    let r = CompletionRequest {
+                        system: Some("be brief".into()),
+                        tools: vec![spec("fs_read")],
+                        thinking,
+                        effort,
+                        cache_prompt,
+                        ..req()
+                    };
+                    let body = client().body(&r, false).unwrap();
+                    for knob in ["temperature", "top_p", "top_k", "budget_tokens"] {
+                        assert!(
+                            !mentions_key(&body, knob),
+                            "{knob} was sent (thinking={thinking}, effort={effort:?})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_cache_breakpoint_goes_on_the_last_system_block_and_nothing_after_it() {
+        let r = CompletionRequest {
+            system: Some("you are a harness".into()),
+            tools: vec![spec("fs_read"), spec("shell")],
+            cache_prompt: true,
+            ..req()
+        };
+        let body = client().body(&r, false).unwrap();
+
+        // Render order is tools -> system -> messages, so one marker on the
+        // last system block covers the tool definitions too. Prompt caching is
+        // a prefix match: a marker on the tools instead would leave the system
+        // prompt outside the cached span.
+        let system = body["system"].as_array().unwrap();
+        assert_eq!(system.len(), 1);
+        assert_eq!(system[0]["cache_control"], json!({"type": "ephemeral"}));
+
+        for tool in body["tools"].as_array().unwrap() {
+            assert!(tool.get("cache_control").is_none(), "a tool carried the breakpoint too");
+        }
+        assert!(
+            !mentions_key(&body["messages"], "cache_control"),
+            "the messages are volatile and must stay outside the cached prefix"
+        );
+    }
+
+    #[test]
+    fn with_no_system_prompt_the_breakpoint_falls_to_the_last_tool() {
+        let r = CompletionRequest {
+            system: None,
+            tools: vec![spec("fs_read"), spec("shell")],
+            cache_prompt: true,
+            ..req()
+        };
+        let body = client().body(&r, false).unwrap();
+        let tools = body["tools"].as_array().unwrap();
+
+        assert!(tools[0].get("cache_control").is_none(), "the breakpoint must be last, not first");
+        assert_eq!(tools[1]["cache_control"], json!({"type": "ephemeral"}));
+    }
+
+    #[test]
+    fn nothing_is_marked_cacheable_unless_it_was_asked_for() {
+        let r = CompletionRequest {
+            system: Some("you are a harness".into()),
+            tools: vec![spec("fs_read")],
+            cache_prompt: false,
+            ..req()
+        };
+        assert!(!mentions_key(&client().body(&r, false).unwrap(), "cache_control"));
+    }
+
+    #[test]
+    fn thinking_is_adaptive_rather_than_a_token_budget() {
+        let body = client().body(&CompletionRequest { thinking: true, ..req() }, false).unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+    }
+
+    #[test]
+    fn disabling_thinking_above_high_effort_is_refused_before_the_request_is_sent() {
+        // On Opus 5 the API rejects this combination. Failing here costs a
+        // function call; failing there costs a round trip and returns an error
+        // that does not say which knob to move.
+        for effort in [Effort::XHigh, Effort::Max] {
+            let r = CompletionRequest { thinking: false, effort: Some(effort), ..req() };
+            let err = client().body(&r, false).unwrap_err().to_string();
+            assert!(err.contains(effort.as_str()), "the error should name the effort: {err}");
+            assert!(err.contains("high"), "the error should say what to do: {err}");
+        }
+
+        // At `high` and below it is accepted, and must actually be sent.
+        for effort in [None, Some(Effort::Low), Some(Effort::Medium), Some(Effort::High)] {
+            let r = CompletionRequest { thinking: false, effort, ..req() };
+            let body = client().body(&r, false).unwrap();
+            assert_eq!(body["thinking"], json!({"type": "disabled"}));
+        }
+    }
+
+    #[test]
+    fn a_thinking_block_with_no_signature_is_dropped_rather_than_replayed() {
+        // Signatures are opaque and checked. Sending a reconstructed one 400s
+        // the *next* turn, which is a confusing place to discover it.
+        let dropped = encode_block(&Block::Thinking { text: "reasoning".into(), signature: None });
+        assert!(dropped.is_none());
+
+        let kept = encode_block(&Block::Thinking {
+            text: "reasoning".into(),
+            signature: Some("sig-abc".into()),
+        })
+        .unwrap();
+        assert_eq!(kept["signature"], "sig-abc");
+        assert_eq!(kept["thinking"], "reasoning");
+    }
+
+    #[test]
+    fn tool_results_and_a_steer_ride_in_one_user_message() {
+        // There is no legal slot for a user message between a `tool_use` and
+        // its result, so steering text has to travel as another block of the
+        // message already carrying the results.
+        let encoded = encode_message(&Message::tool_results(vec![
+            Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "42".into(),
+                is_error: false,
+            },
+            Block::text("actually, focus on X"),
+        ]));
+
+        assert_eq!(encoded["role"], "user");
+        let content = encoded["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[1]["type"], "text");
+    }
+
+    #[test]
+    fn a_refusal_arrives_as_an_ordinary_response_and_shows_up_in_the_stop_reason() {
+        // HTTP 200. Reading `content` without checking the stop reason gets you
+        // an empty string and no idea why.
+        let v = json!({
+            "content": [],
+            "model": DEFAULT_MODEL,
+            "stop_reason": "refusal",
+            "stop_details": {"category": "policy", "explanation": "declined"},
+            "usage": {"input_tokens": 12, "output_tokens": 0},
+        });
+
+        let resp = decode_response(&v).unwrap();
+        assert_eq!(resp.stop_reason, StopReason::Refusal);
+        let refusal = resp.refusal.expect("a refusal must carry its details");
+        assert_eq!(refusal.category.as_deref(), Some("policy"));
+        assert_eq!(resp.usage.input_tokens, 12);
+    }
+
+    #[test]
+    fn an_ordinary_response_carries_no_refusal() {
+        let v = json!({
+            "content": [{"type": "text", "text": "hello"}],
+            "model": DEFAULT_MODEL,
+            "stop_reason": "end_turn",
+            "stop_details": null,
+            "usage": {"input_tokens": 5, "output_tokens": 2},
+        });
+
+        let resp = decode_response(&v).unwrap();
+        assert_eq!(resp.stop_reason, StopReason::EndTurn);
+        assert!(resp.refusal.is_none());
+        assert_eq!(resp.message.text(), "hello");
+    }
+}

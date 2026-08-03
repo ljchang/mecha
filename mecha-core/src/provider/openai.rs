@@ -339,3 +339,197 @@ impl Accumulator {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sink() -> (StreamSink, tokio::sync::mpsc::UnboundedReceiver<StreamEvent>) {
+        tokio::sync::mpsc::unbounded_channel()
+    }
+
+    /// One SSE chunk carrying a delta for choice 0.
+    fn chunk(delta: Value) -> Value {
+        json!({"choices": [{"index": 0, "delta": delta}]})
+    }
+
+    fn call_delta(index: u64, id: Option<&str>, name: Option<&str>, args: &str) -> Value {
+        let mut function = serde_json::Map::new();
+        if let Some(name) = name {
+            function.insert("name".into(), json!(name));
+        }
+        function.insert("arguments".into(), json!(args));
+
+        let mut call = serde_json::Map::new();
+        call.insert("index".into(), json!(index));
+        if let Some(id) = id {
+            call.insert("id".into(), json!(id));
+        }
+        call.insert("type".into(), json!("function"));
+        call.insert("function".into(), Value::Object(function));
+
+        chunk(json!({"tool_calls": [Value::Object(call)]}))
+    }
+
+    #[test]
+    fn tool_call_arguments_split_across_chunks_reassemble_into_one_object() {
+        // Arguments arrive as partial JSON that only parses once complete, and
+        // the name can be split too. Every fragment has to land in the same
+        // slot or the call is silently corrupted rather than loudly broken.
+        let (tx, _rx) = sink();
+        let mut acc = Accumulator::default();
+
+        acc.push(&call_delta(0, Some("call_1"), Some("fs_"), ""), &tx);
+        acc.push(&call_delta(0, None, Some("read"), "{\"pa"), &tx);
+        acc.push(&call_delta(0, None, None, "th\": \"notes/"), &tx);
+        acc.push(&call_delta(0, None, None, "a.md\"}"), &tx);
+
+        let resp = acc.finish();
+        let calls = resp.message.tool_uses();
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "call_1");
+        assert_eq!(calls[0].1, "fs_read");
+        assert_eq!(calls[0].2, &json!({"path": "notes/a.md"}));
+        assert_eq!(resp.malformed_tool_args, 0);
+    }
+
+    #[test]
+    fn parallel_tool_calls_are_kept_apart_by_their_index() {
+        // Interleaved on purpose: the index is the only thing tying a fragment
+        // to its call, and merging two calls produces arguments that parse.
+        let (tx, _rx) = sink();
+        let mut acc = Accumulator::default();
+
+        acc.push(&call_delta(0, Some("call_a"), Some("fs_read"), "{\"path\":"), &tx);
+        acc.push(&call_delta(1, Some("call_b"), Some("shell"), "{\"cmd\":"), &tx);
+        acc.push(&call_delta(0, None, None, " \"a.md\"}"), &tx);
+        acc.push(&call_delta(1, None, None, " \"ls\"}"), &tx);
+
+        let resp = acc.finish();
+        let calls = resp.message.tool_uses();
+
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1, "fs_read");
+        assert_eq!(calls[0].2, &json!({"path": "a.md"}));
+        assert_eq!(calls[1].1, "shell");
+        assert_eq!(calls[1].2, &json!({"cmd": "ls"}));
+    }
+
+    #[test]
+    fn a_call_with_no_arguments_becomes_an_empty_object_not_a_parse_failure() {
+        let (tx, _rx) = sink();
+        let mut acc = Accumulator::default();
+        acc.push(&call_delta(0, Some("call_1"), Some("todo_read"), ""), &tx);
+
+        let resp = acc.finish();
+        assert_eq!(resp.message.tool_uses()[0].2, &json!({}));
+        assert_eq!(resp.malformed_tool_args, 0);
+    }
+
+    #[test]
+    fn malformed_arguments_are_counted_and_handed_back_rather_than_killing_the_turn() {
+        let (tx, _rx) = sink();
+        let mut acc = Accumulator::default();
+        acc.push(&call_delta(0, Some("call_1"), Some("fs_read"), "{\"path\": "), &tx);
+
+        let resp = acc.finish();
+
+        // The model gets an error result it can retry from, and the count is
+        // the reliability signal worth comparing models on.
+        assert_eq!(resp.malformed_tool_args, 1);
+        assert!(resp.message.tool_uses()[0].2.get("__malformed_arguments").is_some());
+    }
+
+    #[test]
+    fn tool_calls_are_still_decoded_when_the_server_says_the_turn_merely_stopped() {
+        // llama-server reports `finish_reason: "stop"` alongside tool_calls.
+        // The loop re-classifies any turn containing tool_use blocks, but that
+        // only works if the blocks survive decoding in the first place.
+        let (tx, _rx) = sink();
+        let mut acc = Accumulator::default();
+        acc.push(&call_delta(0, Some("call_1"), Some("fs_read"), "{\"path\": \"a.md\"}"), &tx);
+        acc.push(&json!({"choices": [{"index": 0, "finish_reason": "stop", "delta": {}}]}), &tx);
+
+        let resp = acc.finish();
+        assert_eq!(resp.stop_reason, StopReason::EndTurn);
+        assert_eq!(resp.message.tool_uses().len(), 1, "the calls were dropped with the label");
+
+        // And the same on the non-streaming path.
+        let v = json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "fs_read", "arguments": "{\"path\": \"a.md\"}"},
+                    }],
+                },
+            }],
+            "model": "local",
+        });
+        let resp = decode_response(&v).unwrap();
+        assert_eq!(resp.stop_reason, StopReason::EndTurn);
+        assert_eq!(resp.message.tool_uses().len(), 1);
+    }
+
+    #[test]
+    fn text_and_tool_calls_in_one_turn_both_survive() {
+        let (tx, _rx) = sink();
+        let mut acc = Accumulator::default();
+        acc.push(&chunk(json!({"content": "let me look. "})), &tx);
+        acc.push(&call_delta(0, Some("call_1"), Some("fs_read"), "{}"), &tx);
+        acc.push(&chunk(json!({"content": "one moment."})), &tx);
+
+        let resp = acc.finish();
+        assert_eq!(resp.message.text(), "let me look. one moment.");
+        assert_eq!(resp.message.tool_uses().len(), 1);
+    }
+
+    #[test]
+    fn tool_results_become_their_own_messages_and_a_steer_follows_them() {
+        // The OpenAI half of the steering placement: results are `role: "tool"`
+        // messages, and the queued text trails them as a `role: "user"` — never
+        // ahead, which would put a user message between the assistant's call
+        // and its result.
+        let mut out = Vec::new();
+        encode_message(
+            &Message::tool_results(vec![
+                Block::ToolResult { tool_use_id: "t1".into(), content: "42".into(), is_error: false },
+                Block::ToolResult { tool_use_id: "t2".into(), content: "7".into(), is_error: false },
+                Block::text("actually, focus on X"),
+            ]),
+            &mut out,
+        );
+
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0]["role"], "tool");
+        assert_eq!(out[0]["tool_call_id"], "t1");
+        assert_eq!(out[1]["role"], "tool");
+        assert_eq!(out[1]["tool_call_id"], "t2");
+        assert_eq!(out[2]["role"], "user");
+        assert_eq!(out[2]["content"], "actually, focus on X");
+    }
+
+    #[test]
+    fn an_assistant_turn_carries_its_tool_calls_inline_with_arguments_as_a_string() {
+        let mut out = Vec::new();
+        encode_message(
+            &Message::assistant(vec![Block::ToolUse {
+                id: "call_1".into(),
+                name: "fs_read".into(),
+                input: json!({"path": "a.md"}),
+            }]),
+            &mut out,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "assistant");
+        assert_eq!(out[0]["content"], Value::Null);
+        // A JSON *string*, not an object — sending the object is a 400 here.
+        let args = out[0]["tool_calls"][0]["function"]["arguments"].as_str().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(args).unwrap(), json!({"path": "a.md"}));
+    }
+}
