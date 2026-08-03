@@ -554,7 +554,11 @@ fn on_key(
                 }
                 return Ok(());
             }
-            KeyCode::Char(c) if has_options && c.is_ascii_digit() => {
+            // Only while nothing has been typed. Otherwise an answer that
+            // begins with a digit — "3 files, not 2" — selects option 3 before
+            // its second character arrives, and the typed route is only
+            // available to answers that happen not to start with a number.
+            KeyCode::Char(c) if has_options && c.is_ascii_digit() && app.input.is_empty() => {
                 let choice = c.to_digit(10).unwrap_or(0) as usize;
                 if choice >= 1 {
                     if let Some(q) = app.asking.take() {
