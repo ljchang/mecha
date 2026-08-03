@@ -11,8 +11,10 @@ use crate::provider::{Provider, StreamEvent};
 use crate::tool::{Approver, Decision, Registry, ToolCtx, ToolOutput};
 use anyhow::Result;
 use serde_json::Value;
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio_util::sync::CancellationToken;
 
 /// Everything the loop wants to tell an observer. The CLI renders these; a
 /// batch runner ignores all but the last.
@@ -27,7 +29,159 @@ pub enum AgentEvent {
     ToolDenied { name: String, reason: String },
     ToolResult { id: String, name: String, is_error: bool, content: String },
     TurnUsage(Usage),
+    /// Text the user queued mid-run has just entered the conversation.
+    QueuedInput(String),
     Done(Box<RunOutcome>),
+}
+
+/// "1 turn", "3 turns". These strings are read by people.
+pub fn turns_phrase(n: u32) -> String {
+    if n == 1 {
+        "1 turn".to_string()
+    } else {
+        format!("{n} turns")
+    }
+}
+
+/// What one provider call produced.
+enum Completion {
+    Finished(Box<CompletionResponse>),
+    /// Cancelled part-way, carrying whatever text had already arrived.
+    Interrupted(String),
+}
+
+/// Add user text to the conversation without breaking it.
+///
+/// Appending a second user *message* would leave two in a row, which some
+/// providers reject outright. Folding the text into the existing user turn — the
+/// one carrying the tool results — is valid everywhere and reads the same to the
+/// model.
+fn append_user_text(messages: &mut Vec<Message>, text: String) {
+    match messages.last_mut() {
+        Some(last) if last.role == Role::User => last.content.push(Block::text(text)),
+        _ => messages.push(Message::user(text)),
+    }
+}
+
+/// What the loop consults that is properly per-*run* rather than per-agent:
+/// what tools may touch, who approves the ones that aren't read-only, and what
+/// this particular run is allowed to spend.
+///
+/// All three used to be fixed when the [`Agent`] was built, which is fine for a
+/// REPL and wrong for anything fanning out: an eval case that writes files needs
+/// its own copy of the fixture and permission to write to it, while the case
+/// running beside it needs neither, and a task that genuinely takes twenty steps
+/// should say so rather than depending on a global flag. Bundling them keeps the
+/// decisions together — a private workspace nobody is allowed to write to is not
+/// a sandbox, it is a confusing denial.
+#[derive(Clone)]
+pub struct RunContext {
+    pub tools: Arc<ToolCtx>,
+    pub approver: Arc<dyn Approver>,
+    pub budget: Budget,
+    /// Cancels this run. `None` means it cannot be interrupted.
+    ///
+    /// Opt-in rather than always-on, because making a run cancellable changes
+    /// how the request is made: the loop has to stream in order to keep the
+    /// half-written turn it was cancelled in the middle of. A batch worker that
+    /// nobody can interrupt should not silently switch transports.
+    ///
+    /// Sharing one token across several runs is a feature — that is how a whole
+    /// batch is cancelled at once.
+    pub cancel: Option<CancellationToken>,
+    /// Text the user typed while the agent was working — **steering**, as
+    /// distinct from stopping it.
+    ///
+    /// Drained at the top of each turn and folded into the message that already
+    /// carries the tool results, so the model sees "here is what your tools
+    /// returned, and also: actually, focus on X" as one user turn and carries on
+    /// working. The run is never stopped and restarted, and no context is lost.
+    ///
+    /// That placement is not a detail. Between an assistant's `tool_use` and its
+    /// results there is no valid place to put a user message — the API requires
+    /// a result for every call — so the first legal opening is the results
+    /// message itself, and taking it is what makes steering mid-run possible at
+    /// all rather than merely queued until the run ends.
+    ///
+    /// The cost is latency: a steer waits for the in-flight model call and the
+    /// tools it asked for. Interrupting sooner would mean discarding a turn the
+    /// user already paid for.
+    pub queued_input: Option<Arc<Mutex<VecDeque<String>>>>,
+}
+
+/// Per-run ceilings. Every `None` falls through to the agent's own config, so a
+/// caller overrides only what it actually means to change.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Budget {
+    pub max_turns: Option<u32>,
+    pub max_output_tokens: Option<u64>,
+    pub max_cost_usd: Option<f64>,
+}
+
+impl Budget {
+    pub fn turns(max_turns: u32) -> Self {
+        Budget { max_turns: Some(max_turns), ..Budget::default() }
+    }
+}
+
+impl RunContext {
+    pub fn new(tools: ToolCtx, approver: Arc<dyn Approver>) -> Self {
+        RunContext {
+            tools: Arc::new(tools),
+            approver,
+            budget: Budget::default(),
+            cancel: None,
+            queued_input: None,
+        }
+    }
+
+    /// Same policy, different root and approver — the sandboxed-run shape.
+    pub fn sandboxed(
+        &self,
+        workspace: impl Into<std::path::PathBuf>,
+        approver: Arc<dyn Approver>,
+    ) -> Self {
+        RunContext {
+            tools: Arc::new(self.tools.with_workspace(workspace)),
+            approver,
+            ..self.clone()
+        }
+    }
+
+    pub fn with_budget(mut self, budget: Budget) -> Self {
+        self.budget = budget;
+        self
+    }
+
+    /// Make this run interruptible. Cancelling the token stops it at the next
+    /// safe point, keeping whatever it had already produced.
+    pub fn with_cancel(mut self, token: CancellationToken) -> Self {
+        self.cancel = Some(token);
+        self
+    }
+
+    /// Attach a queue the caller can push into while the run is in flight.
+    pub fn with_queued_input(mut self, queue: Arc<Mutex<VecDeque<String>>>) -> Self {
+        self.queued_input = Some(queue);
+        self
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(CancellationToken::is_cancelled)
+    }
+
+    /// Everything the user typed since the last turn, in order.
+    fn take_queued_input(&self) -> Vec<String> {
+        let Some(queue) = &self.queued_input else { return Vec::new() };
+        // A poisoned lock means a panic while holding it. Dropping the queued
+        // text is worse than continuing without it, so recover rather than
+        // propagate: the run is still valid, it just has nothing to add.
+        let mut queue = match queue.lock() {
+            Ok(q) => q,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        queue.drain(..).filter(|s| !s.trim().is_empty()).collect()
+    }
 }
 
 /// What has entered this conversation so far.
@@ -75,6 +229,8 @@ pub enum StopCause {
     MaxTurns,
     OutputTokenBudget,
     CostBudget,
+    /// Someone cancelled it — a user pressing Ctrl-C, a shutdown, a timeout.
+    Interrupted,
 }
 
 impl StopCause {
@@ -89,6 +245,7 @@ impl StopCause {
             StopCause::MaxTurns => "hit the turn limit",
             StopCause::OutputTokenBudget => "hit the output-token budget",
             StopCause::CostBudget => "hit the cost budget",
+            StopCause::Interrupted => "was interrupted",
         }
     }
 }
@@ -120,8 +277,8 @@ pub struct RunOutcome {
 pub struct Agent {
     provider: Box<dyn Provider>,
     registry: Registry,
-    approver: Arc<dyn Approver>,
-    ctx: ToolCtx,
+    /// What a run gets unless the caller supplies its own.
+    cx: Arc<RunContext>,
     cfg: AgentConfig,
     model: String,
     system: Option<String>,
@@ -139,7 +296,30 @@ impl Agent {
     ) -> Result<Self> {
         let model = model.unwrap_or_else(|| provider.default_model().to_string());
         let system = cfg.resolve_system_prompt()?;
-        Ok(Agent { provider, registry, approver, ctx, cfg, model, system, pricing: None })
+        Ok(Agent {
+            provider,
+            registry,
+            cx: Arc::new(RunContext::new(ctx, approver)),
+            cfg,
+            model,
+            system,
+            pricing: None,
+        })
+    }
+
+    /// The context a bare [`Agent::run`] will use.
+    pub fn context(&self) -> &Arc<RunContext> {
+        &self.cx
+    }
+
+    pub fn ctx(&self) -> &ToolCtx {
+        &self.cx.tools
+    }
+
+    /// Adjust the default context in place. Copy-on-write, so any run already
+    /// holding a clone of the old context is unaffected.
+    pub fn ctx_mut(&mut self) -> &mut ToolCtx {
+        Arc::make_mut(&mut Arc::make_mut(&mut self.cx).tools)
     }
 
     /// Attach per-million-token prices so cost budgets and reporting work.
@@ -153,14 +333,15 @@ impl Agent {
         self.pricing.map(|p| usage.cost_usd(&p))
     }
 
-    /// Has the run exceeded a configured ceiling?
-    fn over_budget(&self, usage: &Usage) -> Option<StopCause> {
-        if let Some(limit) = self.cfg.max_output_tokens {
+    /// Has the run exceeded a ceiling? The run's own budget wins where it has
+    /// an opinion; otherwise the agent's config decides.
+    fn over_budget(&self, budget: &Budget, usage: &Usage) -> Option<StopCause> {
+        if let Some(limit) = budget.max_output_tokens.or(self.cfg.max_output_tokens) {
             if usage.output_tokens >= limit {
                 return Some(StopCause::OutputTokenBudget);
             }
         }
-        if let Some(limit) = self.cfg.max_cost_usd {
+        if let Some(limit) = budget.max_cost_usd.or(self.cfg.max_cost_usd) {
             if self.cost(usage).is_some_and(|c| c >= limit) {
                 return Some(StopCause::CostBudget);
             }
@@ -185,6 +366,20 @@ impl Agent {
         messages: &mut Vec<Message>,
         events: Option<UnboundedSender<AgentEvent>>,
     ) -> Result<RunOutcome> {
+        self.run_in(&Arc::clone(&self.cx), messages, events).await
+    }
+
+    /// Run against a caller-supplied context instead of the agent's own.
+    ///
+    /// The same agent — same provider connection, same registry, same prompt
+    /// cache — can then serve concurrent runs that are jailed to different
+    /// directories under different permissions.
+    pub async fn run_in(
+        &self,
+        cx: &RunContext,
+        messages: &mut Vec<Message>,
+        events: Option<UnboundedSender<AgentEvent>>,
+    ) -> Result<RunOutcome> {
         let mut usage = Usage::default();
         let mut turns = 0;
         let mut trace: Vec<ToolCallTrace> = Vec::new();
@@ -193,19 +388,46 @@ impl Agent {
         let mut blocked_sends = 0u32;
 
         loop {
+            // Checked before the budget ceilings and handled differently from
+            // them: a budget stop spends one more turn forcing an answer out,
+            // but someone who pressed Ctrl-C is not asking for another model
+            // call. Stop where we are and hand back what there is.
+            if cx.cancelled() {
+                tracing::info!(turns, "interrupted");
+                let outcome = self.interrupted(
+                    messages.last().map(Message::text).unwrap_or_default(),
+                    usage,
+                    turns,
+                    trace,
+                    malformed,
+                    blocked_sends,
+                    taint,
+                );
+                emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
+                return Ok(outcome);
+            }
+
+            // Anything the user typed while the previous turn was running.
+            // This lands *inside* the message carrying the tool results, so
+            // the model is steered without the run being stopped and restarted.
+            for queued in cx.take_queued_input() {
+                emit(&events, AgentEvent::QueuedInput(queued.clone()));
+                append_user_text(messages, queued);
+            }
+
             // Any ceiling — turns, tokens, or dollars — ends the run the same
             // way: one last tool-less turn so there is an answer to return.
-            let ceiling = if turns >= self.cfg.max_turns {
+            let ceiling = if turns >= cx.budget.max_turns.unwrap_or(self.cfg.max_turns) {
                 Some(StopCause::MaxTurns)
             } else {
-                self.over_budget(&usage)
+                self.over_budget(&cx.budget, &usage)
             };
 
             if let Some(cause) = ceiling {
                 tracing::info!(cause = cause.describe(), turns, "stopping early");
                 let mut text = messages.last().map(Message::text).unwrap_or_default();
                 if self.cfg.force_final_answer {
-                    match self.final_answer(messages, &events).await {
+                    match self.final_answer(cx, messages, &events).await {
                         Ok(Some(answer)) => text = answer,
                         Ok(None) => {}
                         Err(e) => tracing::warn!(error = %e, "final-answer turn failed"),
@@ -218,8 +440,9 @@ impl Agent {
                 // guess about.
                 if text.trim().is_empty() {
                     text = format!(
-                        "No answer was produced: the run {} after {turns} turns.",
-                        cause.describe()
+                        "No answer was produced: the run {} after {}.",
+                        cause.describe(),
+                        turns_phrase(turns)
                     );
                 }
 
@@ -255,7 +478,23 @@ impl Agent {
                 cache_prompt: self.cfg.cache_prompt,
             };
 
-            let response = self.complete(&request, &events).await?;
+            let response = match self.complete(cx, &request, &events).await? {
+                Completion::Finished(response) => *response,
+                // Cancelled with the answer half-written. Keep it: a partial
+                // answer is worth more than a discarded one, and the user can
+                // see how far it got.
+                Completion::Interrupted(partial) => {
+                    tracing::info!(turns, "interrupted mid-stream");
+                    if !partial.trim().is_empty() {
+                        messages.push(Message::assistant(vec![Block::text(partial.clone())]));
+                    }
+                    let outcome = self.interrupted(
+                        partial, usage, turns, trace, malformed, blocked_sends, taint,
+                    );
+                    emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
+                    return Ok(outcome);
+                }
+            };
             usage.add(&response.usage);
             malformed += response.malformed_tool_args;
             emit(&events, AgentEvent::TurnUsage(response.usage.clone()));
@@ -266,10 +505,23 @@ impl Agent {
             }
             messages.push(response.message.clone());
 
-            match response.stop_reason {
+            // A turn that contains tool calls is a tool turn, whatever the
+            // provider called it. Local servers do report `stop` alongside
+            // `tool_calls`, and taking that at face value drops the calls,
+            // ends the run, and returns an empty answer — observed against
+            // llama-server. It is never correct to ignore a tool_use block
+            // anyway: the next request 400s without a result for every id.
+            let stop_reason = if !response.message.tool_uses().is_empty() {
+                StopReason::ToolUse
+            } else {
+                response.stop_reason
+            };
+
+            match stop_reason {
                 StopReason::ToolUse => {
                     let results = self
                         .run_tools(
+                            cx,
                             &response.message,
                             &events,
                             &mut trace,
@@ -306,6 +558,7 @@ impl Agent {
     /// nothing" into "here is what I found, and here is what I could not".
     async fn final_answer(
         &self,
+        cx: &RunContext,
         messages: &mut Vec<Message>,
         events: &Option<UnboundedSender<AgentEvent>>,
     ) -> Result<Option<String>> {
@@ -329,7 +582,14 @@ impl Agent {
             cache_prompt: self.cfg.cache_prompt,
         };
 
-        let response = self.complete(&request, events).await?;
+        let response = match self.complete(cx, &request, events).await? {
+            Completion::Finished(response) => *response,
+            // Interrupted even during the forced last answer. Nothing more to
+            // do: the caller already knows the run is being cut short.
+            Completion::Interrupted(partial) => {
+                return Ok(Some(partial).filter(|p| !p.trim().is_empty()))
+            }
+        };
         let text = response.message.text();
         messages.push(response.message);
 
@@ -353,6 +613,22 @@ impl Agent {
         taint: Taint,
     ) -> RunOutcome {
         let cost = self.cost(&usage);
+
+        // The same guarantee the early-stop path already makes: a caller gets
+        // words, or it gets told why it didn't. An empty string is
+        // indistinguishable from a successful run with nothing to say, and a
+        // grader reading it marks the model down for the harness's silence.
+        let text = if text.trim().is_empty() {
+            format!(
+                "No answer was produced: the model ended its turn after {} \
+                 without saying anything (stop reason: {:?}).",
+                turns_phrase(turns),
+                response.stop_reason
+            )
+        } else {
+            text
+        };
+
         RunOutcome {
             text,
             stop_reason: response.stop_reason,
@@ -373,38 +649,124 @@ impl Agent {
     /// listening.
     async fn complete(
         &self,
+        cx: &RunContext,
         request: &CompletionRequest,
         events: &Option<UnboundedSender<AgentEvent>>,
-    ) -> Result<CompletionResponse> {
-        let Some(events) = events.clone() else {
-            return self.provider.complete(request, None).await;
-        };
+    ) -> Result<Completion> {
+        // Nothing to stream for and nobody to interrupt it: let the provider
+        // decide how to make the request, exactly as before.
+        if events.is_none() && cx.cancel.is_none() {
+            return Ok(Completion::Finished(Box::new(
+                self.provider.complete(request, None).await?,
+            )));
+        }
+
+        // Text seen so far, kept out here so it survives the provider future
+        // being dropped. This is the whole reason a cancellable run streams:
+        // without it, cancelling throws away everything the model had written.
+        let partial = Arc::new(Mutex::new(String::new()));
 
         let (tx, mut rx) = unbounded_channel::<StreamEvent>();
-        let forwarder = tokio::spawn(async move {
-            while let Some(ev) = rx.recv().await {
-                let mapped = match ev {
-                    StreamEvent::TextDelta(t) => AgentEvent::TextDelta(t),
-                    StreamEvent::ThinkingDelta(t) => AgentEvent::ThinkingDelta(t),
-                    // Surfaced through ToolCall once arguments are complete.
-                    StreamEvent::ToolUseStart { .. } => continue,
-                };
-                let _ = events.send(mapped);
-            }
-        });
+        let forwarder = {
+            let partial = Arc::clone(&partial);
+            let events = events.clone();
+            tokio::spawn(async move {
+                while let Some(ev) = rx.recv().await {
+                    let mapped = match ev {
+                        StreamEvent::TextDelta(t) => {
+                            if let Ok(mut buf) = partial.lock() {
+                                buf.push_str(&t);
+                            }
+                            AgentEvent::TextDelta(t)
+                        }
+                        StreamEvent::ThinkingDelta(t) => AgentEvent::ThinkingDelta(t),
+                        // Surfaced through ToolCall once arguments are complete.
+                        StreamEvent::ToolUseStart { .. } => continue,
+                    };
+                    if let Some(events) = &events {
+                        let _ = events.send(mapped);
+                    }
+                }
+            })
+        };
 
-        let result = self.provider.complete(request, Some(&tx)).await;
+        let result = match &cx.cancel {
+            None => self.provider.complete(request, Some(&tx)).await.map(Some),
+            Some(token) => {
+                tokio::select! {
+                    // Losing the race drops the provider future, which is what
+                    // aborts the in-flight HTTP request. Cancellation in Rust
+                    // is a dropped future; there is nothing else to abort.
+                    response = self.provider.complete(request, Some(&tx)) => response.map(Some),
+                    _ = token.cancelled() => Ok(None),
+                }
+            }
+        };
+
         drop(tx);
         let _ = forwarder.await;
-        result
+
+        match result? {
+            Some(response) => Ok(Completion::Finished(Box::new(response))),
+            None => {
+                let text = partial.lock().map(|b| b.clone()).unwrap_or_default();
+                Ok(Completion::Interrupted(text))
+            }
+        }
+    }
+
+    /// The outcome of a run somebody stopped.
+    #[allow(clippy::too_many_arguments)]
+    fn interrupted(
+        &self,
+        text: String,
+        usage: Usage,
+        turns: u32,
+        tool_calls: Vec<ToolCallTrace>,
+        malformed_tool_args: u32,
+        blocked_sends: u32,
+        taint: Taint,
+    ) -> RunOutcome {
+        // Say it was interrupted in the text itself, not only in `stop_cause`.
+        // Whatever is here gets read by a human or fed to a grader, and a
+        // truncated answer that does not admit to being truncated is the worst
+        // of the options.
+        let text = if text.trim().is_empty() {
+            format!("[interrupted after {}, with no answer produced]", turns_phrase(turns))
+        } else {
+            format!(
+                "{}\n\n[interrupted after {} — this answer is incomplete]",
+                text.trim_end(),
+                turns_phrase(turns)
+            )
+        };
+
+        RunOutcome {
+            text,
+            stop_reason: StopReason::Other,
+            usage: usage.clone(),
+            turns,
+            refusal: None,
+            // The answer is partial, so callers that gate on this — the batch
+            // runner's `ok`, for one — must not count it as a success.
+            exhausted: true,
+            tool_calls,
+            malformed_tool_args,
+            blocked_sends,
+            taint,
+            stop_cause: StopCause::Interrupted,
+            cost_usd: self.cost(&usage),
+        }
     }
 
     /// Approve, then execute, every tool call in the assistant turn.
     ///
     /// Approval is sequential because it may block on a human. Execution is
     /// concurrent, because by then all the decisions are made.
+    #[allow(clippy::too_many_arguments)]
     async fn run_tools(
         &self,
+        cx: &RunContext,
         assistant: &Message,
         events: &Option<UnboundedSender<AgentEvent>>,
         trace: &mut Vec<ToolCallTrace>,
@@ -471,10 +833,10 @@ impl Agent {
             // leak guard stops private data leaving at all. The second is off
             // by default because it breaks ordinary work.
             let injection_risk = taint.trifecta_armed();
-            let leak_risk = self.ctx.security.block_sends_after_private && taint.private;
+            let leak_risk = cx.tools.security.block_sends_after_private && taint.private;
 
             if caps.external_send && (injection_risk || leak_risk) {
-                match self.ctx.security.trifecta {
+                match cx.tools.security.trifecta {
                     TrifectaPolicy::Block => {
                         let reason = if injection_risk {
                             format!(
@@ -530,7 +892,7 @@ impl Agent {
             }
 
             if !tool.read_only() || force_approval {
-                if let Decision::Deny(reason) = self.approver.approve(tool.as_ref(), input).await {
+                if let Decision::Deny(reason) = cx.approver.approve(tool.as_ref(), input).await {
                     emit(
                         events,
                         AgentEvent::ToolDenied { name: name.clone(), reason: reason.clone() },
@@ -556,7 +918,7 @@ impl Agent {
 
         let executed = futures::future::join_all(approved.into_iter().map(
             |(i, tool, id, name, input)| async move {
-                let out = match tool.call(input, &self.ctx).await {
+                let out = match tool.call(input, &cx.tools).await {
                     Ok(out) => out,
                     // A tool that returns Err failed in a way it didn't
                     // anticipate; tell the model so it can try something else.
@@ -579,7 +941,7 @@ impl Agent {
                 // what follows is data, not instructions.
                 if caps.untrusted_input
                     && out.external
-                    && self.ctx.security.mark_untrusted_output
+                    && cx.tools.security.mark_untrusted_output
                 {
                     out.content = format!(
                         "<untrusted-content source=\"{name}\">\n\
@@ -896,7 +1258,7 @@ mod tests {
         agent.registry.insert(Arc::new(PrivateTool));
         agent.registry.insert(Arc::new(UntrustedTool));
         agent.registry.insert(Arc::new(SendTool));
-        agent.ctx.security.trifecta = policy;
+        agent.ctx_mut().security.trifecta = policy;
         agent
     }
 
@@ -1074,7 +1436,7 @@ mod tests {
         );
         agent.registry.insert(Arc::new(PrivateTool));
         agent.registry.insert(Arc::new(SendTool)); // panics if it ever runs
-        agent.ctx.security.block_sends_after_private = true;
+        agent.ctx_mut().security.block_sends_after_private = true;
 
         let mut messages = vec![Message::user("look that up for me")];
         let outcome = agent.run(&mut messages, None).await.unwrap();
@@ -1170,6 +1532,375 @@ mod tests {
 
         assert!(ran.load(Ordering::SeqCst), "Allow should have let the send run");
         assert_eq!(outcome.blocked_sends, 0);
+    }
+
+    #[tokio::test]
+    async fn tool_calls_are_run_even_when_the_provider_mislabels_the_stop_reason() {
+        // llama-server reports `finish_reason: "stop"` alongside tool_calls.
+        // Believing it drops the calls, ends the run, and returns an empty
+        // answer — which then reads as a model failure rather than a harness
+        // one. Seen in an eval run before this was fixed.
+        let (agent, _) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "echo".into(),
+                        input: json!({"value": "pong"}),
+                    }],
+                    // The lie.
+                    StopReason::EndTurn,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+
+        let mut messages = vec![Message::user("ping")];
+        let outcome = agent.run(&mut messages, None).await.unwrap();
+
+        assert_eq!(outcome.text, "done");
+        assert_eq!(outcome.tool_calls.len(), 1, "the call should still have run");
+        match &messages[2].content[0] {
+            Block::ToolResult { content, .. } => assert_eq!(content, "pong"),
+            other => panic!("expected the tool result, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_completed_run_never_returns_an_empty_answer_either() {
+        // The early-stop path already guaranteed this; a normal stop did not,
+        // so a silent final turn reached the caller as "".
+        let (agent, _) = agent_with(
+            vec![assistant(vec![], StopReason::EndTurn)],
+            PermissionMode::Allow,
+        );
+        let mut messages = vec![Message::user("go")];
+        let outcome = agent.run(&mut messages, None).await.unwrap();
+
+        assert!(!outcome.text.trim().is_empty());
+        assert!(outcome.text.contains("without saying anything"), "{}", outcome.text);
+        // It completed; it just had nothing to say. Don't misreport that.
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+        assert!(!outcome.exhausted);
+    }
+
+    // --- interruption and steering ---
+
+    fn looping_agent(turns: usize, mode: PermissionMode) -> Agent {
+        let looping = || {
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "again"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<_> = (0..turns).map(|_| looping()).collect();
+        turns.push(assistant(vec![Block::text("finished on my own")], StopReason::EndTurn));
+        agent_with(turns, mode).0
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_run_stops_at_the_next_turn_and_says_so() {
+        let agent = looping_agent(20, PermissionMode::Allow);
+        let token = CancellationToken::new();
+        let cx = agent.context().as_ref().clone().with_cancel(token.clone());
+
+        // Cancel before it starts: the loop must notice at the top of a turn
+        // rather than running to completion.
+        token.cancel();
+
+        let mut messages = vec![Message::user("go")];
+        let outcome = agent.run_in(&cx, &mut messages, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Interrupted);
+        assert_eq!(outcome.turns, 0);
+        assert!(outcome.exhausted, "a partial answer must not read as success");
+        assert!(outcome.text.contains("interrupted"), "{}", outcome.text);
+    }
+
+    /// Streams two deltas, then the user presses Ctrl-C, then it hangs forever.
+    /// Cancelling from inside the provider makes the race deterministic.
+    struct StreamsThenHangs(CancellationToken);
+    #[async_trait]
+    impl Provider for StreamsThenHangs {
+        fn id(&self) -> &str { "hangs" }
+        fn default_model(&self) -> &str { "hangs-1" }
+        async fn complete(
+            &self,
+            _req: &CompletionRequest,
+            sink: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            let sink = sink.expect("a cancellable run must stream, or there is no partial to keep");
+            let _ = sink.send(StreamEvent::TextDelta("Here is what I".into()));
+            let _ = sink.send(StreamEvent::TextDelta(" found so far".into()));
+            self.0.cancel();
+            futures::future::pending::<()>().await;
+            unreachable!("the run should have been cancelled")
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_mid_stream_keeps_the_half_written_answer() {
+        let token = CancellationToken::new();
+        let agent = Agent::new(
+            Box::new(StreamsThenHangs(token.clone())),
+            Registry::new(),
+            Arc::new(ModeApprover { mode: PermissionMode::Allow }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+            AgentConfig::default(),
+            None,
+        )
+        .unwrap();
+
+        let cx = agent.context().as_ref().clone().with_cancel(token);
+        let mut messages = vec![Message::user("go")];
+        let outcome = agent.run_in(&cx, &mut messages, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Interrupted);
+        // Everything the model had written by the time it was stopped survives.
+        assert!(
+            outcome.text.starts_with("Here is what I found so far"),
+            "partial text was lost: {:?}",
+            outcome.text
+        );
+        assert!(outcome.text.contains("incomplete"), "{}", outcome.text);
+
+        // And it is in the transcript, so the conversation can carry on from
+        // where it was cut off rather than pretending the turn never happened.
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].role, Role::Assistant);
+        assert_eq!(messages[1].text(), "Here is what I found so far");
+    }
+
+    #[tokio::test]
+    async fn an_uncancelled_run_is_unaffected_by_having_a_token() {
+        // The token exists but nobody pulls it: the run must finish normally.
+        // Without this the test above could pass for the wrong reason.
+        let agent = looping_agent(2, PermissionMode::Allow);
+        let cx = agent.context().as_ref().clone().with_cancel(CancellationToken::new());
+
+        let mut messages = vec![Message::user("go")];
+        let outcome = agent.run_in(&cx, &mut messages, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+        assert_eq!(outcome.text, "finished on my own");
+    }
+
+    /// Stands in for the user typing while a tool is running: it pushes into
+    /// the steering queue the first time it is called. Seeding the queue before
+    /// the run starts would test a different, easier path — there are no tool
+    /// results to join yet at that point.
+    struct TypesWhileWorking(Arc<Mutex<VecDeque<String>>>);
+    #[async_trait]
+    impl Tool for TypesWhileWorking {
+        fn name(&self) -> &str { "echo" }
+        fn description(&self) -> &str { "Echoes, and the user types meanwhile." }
+        fn input_schema(&self) -> Value { json!({"type": "object"}) }
+        fn read_only(&self) -> bool { true }
+        async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            let mut q = self.0.lock().unwrap();
+            if q.is_empty() {
+                q.push_back("actually, look at the other file".to_string());
+            }
+            Ok(ToolOutput::ok("echoed"))
+        }
+    }
+
+    #[tokio::test]
+    async fn steering_rides_along_with_the_tool_results_instead_of_stopping_the_run() {
+        // The point of steering: the user redirects the agent *without* the run
+        // being stopped and restarted. The text has to reach the model inside
+        // the turn that is already in flight.
+        let mut agent = looping_agent(3, PermissionMode::Allow);
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        agent.registry.insert(Arc::new(TypesWhileWorking(Arc::clone(&queue))));
+        let cx = agent.context().as_ref().clone().with_queued_input(Arc::clone(&queue));
+
+        let mut messages = vec![Message::user("go")];
+        let outcome = agent.run_in(&cx, &mut messages, None).await.unwrap();
+
+        // It ran to completion. Steering is not a stop.
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+        assert_eq!(outcome.text, "finished on my own");
+
+        // And the steer landed in the message carrying the tool results, not as
+        // a turn of its own — two consecutive user messages would be invalid.
+        let steered = messages
+            .iter()
+            .find(|m| m.text().contains("actually, look at the other file"))
+            .expect("the queued text should be in the conversation");
+        assert_eq!(steered.role, Role::User);
+        assert!(
+            steered.content.iter().any(|b| matches!(b, Block::ToolResult { .. })),
+            "the steer should share a message with the tool results, got {:?}",
+            steered.content
+        );
+
+        // Nowhere in the transcript are there two user messages in a row.
+        for pair in messages.windows(2) {
+            assert!(
+                !(pair[0].role == Role::User && pair[1].role == Role::User),
+                "consecutive user messages: {:?}",
+                pair.iter().map(|m| m.role).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn steering_before_any_tool_call_becomes_its_own_message() {
+        // The other branch: with no tool-results message to join, the text has
+        // to stand alone. The last message here is the user's own opener, so it
+        // folds into that instead of doubling up.
+        let agent = looping_agent(0, PermissionMode::Allow);
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        queue.lock().unwrap().push_back("one more thing".to_string());
+        let cx = agent.context().as_ref().clone().with_queued_input(Arc::clone(&queue));
+
+        let mut messages = vec![Message::user("go")];
+        agent.run_in(&cx, &mut messages, None).await.unwrap();
+
+        assert_eq!(messages[0].role, Role::User);
+        assert!(messages[0].text().contains("go"));
+        assert!(messages[0].text().contains("one more thing"));
+    }
+
+    #[tokio::test]
+    async fn the_queue_is_drained_so_a_steer_is_delivered_once() {
+        // A steer left in the queue would be re-sent on every subsequent turn,
+        // which reads to the model as the user repeating themselves.
+        let agent = looping_agent(4, PermissionMode::Allow);
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        queue.lock().unwrap().push_back("focus on X".to_string());
+        let cx = agent.context().as_ref().clone().with_queued_input(Arc::clone(&queue));
+
+        let mut messages = vec![Message::user("go")];
+        agent.run_in(&cx, &mut messages, None).await.unwrap();
+
+        let mentions = messages.iter().filter(|m| m.text().contains("focus on X")).count();
+        assert_eq!(mentions, 1, "the steer should appear exactly once");
+        assert!(queue.lock().unwrap().is_empty());
+    }
+
+    // --- per-run contexts ---
+
+    /// Writes a file into whatever workspace its context names, and reports
+    /// where it landed. Both halves of a per-run context are visible in the
+    /// result: the jail decides the path, the approver decides whether it runs.
+    struct WriteHere;
+    #[async_trait]
+    impl Tool for WriteHere {
+        fn name(&self) -> &str { "write_here" }
+        fn description(&self) -> &str { "Writes marker.txt into the workspace." }
+        fn input_schema(&self) -> Value { json!({"type": "object"}) }
+        async fn call(&self, _i: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+            let path = ctx.resolve("marker.txt")?;
+            std::fs::write(&path, "written")?;
+            Ok(ToolOutput::ok(path.display().to_string()))
+        }
+    }
+
+    fn writing_agent(mode: PermissionMode) -> Agent {
+        let (mut agent, _) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "w".into(),
+                        name: "write_here".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            mode,
+        );
+        agent.registry.insert(Arc::new(WriteHere));
+        agent
+    }
+
+    #[tokio::test]
+    async fn a_run_context_overrides_both_the_jail_and_the_approver() {
+        // The agent's own context is read-only and points somewhere else; the
+        // run's context is a private directory it may write to. This is the
+        // shape a mutating eval case needs.
+        let sandbox = std::env::temp_dir().join(format!(
+            "mecha-run-ctx-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&sandbox).unwrap();
+
+        let agent = writing_agent(PermissionMode::ReadOnly);
+        let cx = agent
+            .context()
+            .sandboxed(&sandbox, Arc::new(ModeApprover { mode: PermissionMode::Allow }));
+
+        let mut messages = vec![Message::user("write it")];
+        let outcome = agent.run_in(&cx, &mut messages, None).await.unwrap();
+
+        assert_eq!(outcome.text, "done");
+        let marker = sandbox.join("marker.txt");
+        assert!(marker.exists(), "the write should have landed in the sandbox");
+        // The agent's default context is untouched by the override.
+        assert_ne!(agent.ctx().workspace, sandbox);
+
+        std::fs::remove_dir_all(&sandbox).ok();
+    }
+
+    #[tokio::test]
+    async fn a_run_can_raise_the_turn_budget_above_the_agents_own() {
+        // A genuinely long task has to be able to ask for the turns it needs,
+        // rather than every caller having to raise the global ceiling for one
+        // case and quietly change what every other case is allowed to do.
+        let looping = || {
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "again"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (mut agent, _) =
+            agent_with((0..10).map(|_| looping()).collect(), PermissionMode::Allow);
+        agent.cfg.max_turns = 3;
+        agent.cfg.force_final_answer = false;
+
+        let cx = Arc::clone(agent.context()).as_ref().clone().with_budget(Budget::turns(7));
+        let mut messages = vec![Message::user("go")];
+        let outcome = agent.run_in(&cx, &mut messages, None).await.unwrap();
+        assert_eq!(outcome.turns, 7, "the run's budget should win over the agent's");
+
+        // And with no override, the agent's own ceiling still applies.
+        let mut messages = vec![Message::user("go")];
+        let outcome = agent.run(&mut messages, None).await.unwrap();
+        assert_eq!(outcome.turns, 3);
+    }
+
+    #[tokio::test]
+    async fn the_agents_own_context_still_applies_to_a_bare_run() {
+        // Same agent, same tool, no override: the default read-only policy has
+        // to still bite, or the override above proves nothing.
+        let agent = writing_agent(PermissionMode::ReadOnly);
+        let mut messages = vec![Message::user("write it")];
+        agent.run(&mut messages, None).await.unwrap();
+
+        match &messages[2].content[0] {
+            Block::ToolResult { is_error, content, .. } => {
+                assert!(is_error);
+                assert!(content.contains("Denied"), "{content}");
+            }
+            other => panic!("expected a denial, got {other:?}"),
+        }
     }
 
     #[tokio::test]

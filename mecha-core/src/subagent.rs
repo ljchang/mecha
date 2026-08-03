@@ -22,7 +22,7 @@
 //! parent's context, the child cannot send, and the two halves of the trifecta
 //! can be kept in separate agents entirely.
 
-use crate::agent::Agent;
+use crate::agent::{Agent, RunContext};
 use crate::message::Message;
 use crate::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
 use anyhow::Result;
@@ -146,7 +146,7 @@ impl Tool for Subagent {
         self.capabilities
     }
 
-    async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+    async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(task) = input.get("task").and_then(Value::as_str) else {
             return Ok(ToolOutput::err("missing required string argument `task`"));
         };
@@ -155,7 +155,27 @@ impl Tool for Subagent {
         // is the context-isolation half of why subagents are useful.
         let mut messages = vec![Message::user(task)];
 
-        let outcome = match self.agent.run(&mut messages, None).await {
+        // The child works in the *caller's* workspace, not the one that existed
+        // when it was built — otherwise a parent running against a per-run
+        // sandbox delegates to a child still pointed at the original directory,
+        // which is both wrong and a hole in the jail. Permissions stay the
+        // child's own: the allowlist is the point of a subagent.
+        let cx = RunContext {
+            tools: Arc::new(ctx.clone()),
+            approver: Arc::clone(&self.agent.context().approver),
+            // The child's own `max_turns` comes from its profile, via its
+            // config — a parent's remaining budget is not the child's business.
+            budget: Default::default(),
+            // Cancelling the parent cancels the child with it: the child is
+            // one of the parent's tool calls, and a Ctrl-C that left a
+            // subagent running would be a lie.
+            cancel: self.agent.context().cancel.clone(),
+            // Steering is addressed to the parent. The child was given a
+            // self-contained task and has no conversation to redirect.
+            queued_input: None,
+        };
+
+        let outcome = match self.agent.run_in(&cx, &mut messages, None).await {
             Ok(o) => o,
             Err(e) => {
                 return Ok(ToolOutput::err(format!(

@@ -130,22 +130,34 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                         );
                     }
                     if outcome.exhausted {
-                        let fix = match outcome.stop_cause {
-                            mecha_core::agent::StopCause::MaxTurns => "raise --max-turns",
-                            mecha_core::agent::StopCause::OutputTokenBudget => {
-                                "raise --max-output-tokens"
+                        use mecha_core::agent::StopCause;
+                        // An interruption is the user getting what they asked
+                        // for, so it is reported plainly and without a
+                        // suggested fix. Every other early stop is the harness
+                        // cutting the run short against the user's wishes, and
+                        // is worth telling them how to prevent.
+                        let line = match outcome.stop_cause {
+                            StopCause::Interrupted => {
+                                format!(
+                                    "interrupted after {}",
+                                    mecha_core::agent::turns_phrase(outcome.turns)
+                                )
                             }
-                            mecha_core::agent::StopCause::CostBudget => "raise --max-cost",
-                            mecha_core::agent::StopCause::Completed => "",
+                            other => {
+                                let fix = match other {
+                                    StopCause::MaxTurns => "raise --max-turns",
+                                    StopCause::OutputTokenBudget => "raise --max-output-tokens",
+                                    StopCause::CostBudget => "raise --max-cost",
+                                    StopCause::Completed | StopCause::Interrupted => "",
+                                };
+                                format!(
+                                    "{} after {} — the answer may be incomplete ({fix})",
+                                    other.describe(),
+                                    mecha_core::agent::turns_phrase(outcome.turns)
+                                )
+                            }
                         };
-                        eprintln!(
-                            "{}",
-                            style.red(&format!(
-                                "{} after {} turns — the answer may be incomplete ({fix})",
-                                outcome.stop_cause.describe(),
-                                outcome.turns
-                            ))
-                        );
+                        eprintln!("{}", style.red(&line));
                     }
                     if opts.verbose {
                         let cost = outcome
