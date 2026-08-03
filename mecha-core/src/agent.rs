@@ -461,6 +461,16 @@ impl Agent {
         self.provider.id()
     }
 
+    /// Swap the approver the agent's own context uses.
+    ///
+    /// Copy-on-write, like [`Agent::ctx_mut`]: a run already holding a clone of
+    /// the old context keeps the permissions it started under. Changing what a
+    /// tool call is allowed to do *while that call is in flight* would be a
+    /// worse surprise than waiting for the turn to end.
+    pub fn set_approver(&mut self, approver: Arc<dyn Approver>) {
+        Arc::make_mut(&mut self.cx).approver = approver;
+    }
+
     /// The resolved system prompt actually being sent — not the config's
     /// `system_prompt`, which may name a file rather than hold the text.
     pub fn system(&self) -> Option<&str> {

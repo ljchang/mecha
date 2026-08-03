@@ -25,7 +25,10 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use futures::StreamExt;
+use command::mode_name;
 use mecha_core::agent::{Agent, AgentEvent, Conversation, RunOutcome};
+use mecha_core::config::PermissionMode;
+use mecha_core::tool::{Approver, ModeApprover};
 use mecha_core::message::{Message, Usage};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use ratatui::prelude::*;
@@ -58,6 +61,49 @@ struct Running {
     persisted: usize,
 }
 
+/// Everything a provider or MCP change replaces at once.
+///
+/// Bundled because they have to move together: a new agent comes with a new
+/// model name, a new provider name, and a new set of MCP child processes, and
+/// leaving any of them behind would show one thing in the status bar while
+/// another answered.
+struct Live {
+    agent: Arc<Agent>,
+    model: String,
+    provider: String,
+    /// The options this agent was built from — the *current* ones, not the ones
+    /// the process started with. Switches compose off this: without it,
+    /// `/mcp off` followed by `/model x` would quietly turn MCP back on,
+    /// because the rebuild would start from the original flags again.
+    opts: GlobalOpts,
+    /// Held for the lifetime of the session: dropping a client kills its
+    /// server, so the *old* set must outlive the switch that replaced it only
+    /// until the new one is up.
+    _mcp: Vec<Arc<mecha_core::mcp::McpClient>>,
+}
+
+impl Live {
+    fn new(p: setup::Prepared, opts: GlobalOpts) -> Self {
+        Live {
+            agent: Arc::new(p.agent),
+            model: p.model,
+            provider: p.provider_name,
+            opts,
+            _mcp: p._mcp,
+        }
+    }
+}
+
+/// A change that cannot be made from a key handler, because it is async and
+/// because it must not happen while a run is in flight.
+#[derive(Debug, Clone)]
+enum Switch {
+    Model(String),
+    Provider(String),
+    Mode(PermissionMode),
+    Mcp(bool),
+}
+
 struct App {
     transcript: Transcript,
     input: String,
@@ -77,6 +123,12 @@ struct App {
     should_quit: bool,
     /// Ctrl-C at an idle prompt: once to warn, twice to leave.
     quit_armed: bool,
+    /// Requested by a slash command, applied by the event loop once it is safe.
+    pending_switch: Option<Switch>,
+    /// What the approver is currently doing, for `/mode` to report.
+    mode: PermissionMode,
+    /// Whether MCP servers are connected, for `/mcp` to report.
+    mcp_on: bool,
 }
 
 impl App {
@@ -130,8 +182,12 @@ impl App {
 pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bool) -> Result<()> {
     // The approver has to exist before the agent is built, since the agent
     // takes ownership of it.
-    let (approver, mut approvals) = approve::TuiApprover::new();
-    let prepared = setup::prepare_with_approver(global, Arc::new(approver)).await?;
+    let (tui_approver, mut approvals) = approve::TuiApprover::new();
+    // Retained: switching back to `ask` mode has to reinstate *this* approver,
+    // the one wired to the event loop, not a fresh terminal one that would
+    // fight the interface for stdin.
+    let approver: Arc<dyn Approver> = Arc::new(tui_approver);
+    let prepared = setup::prepare_with_approver(global, Arc::clone(&approver)).await?;
 
     let session_dir = Session::default_dir()?;
     // One conversation for the session, so the taint accumulates across turns
@@ -181,6 +237,9 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         prompt_tokens: 0,
         should_quit: false,
         quit_armed: false,
+        pending_switch: None,
+        mode: prepared.config.tools.permission_mode,
+        mcp_on: !global.no_mcp && !prepared.config.mcp.is_empty(),
     };
 
     if !app.convo.is_empty() {
@@ -198,16 +257,15 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
             .push(Entry::Notice(format!("resumed {} messages{carried}", app.convo.len())));
     }
 
-    let agent = Arc::new(prepared.agent);
+    let mut live = Live::new(prepared, global.clone());
     let mut terminal = enter()?;
     let result = run_loop(
         &mut terminal,
         &mut app,
-        &agent,
+        &mut live,
         &mut approvals,
         session.as_ref(),
-        &prepared.model,
-        &prepared.provider_name,
+        &approver,
     )
     .await;
     leave(&mut terminal)?;
@@ -222,11 +280,10 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
 async fn run_loop(
     terminal: &mut Terminal<impl Backend>,
     app: &mut App,
-    agent: &Arc<Agent>,
+    live: &mut Live,
     approvals: &mut mpsc::UnboundedReceiver<approve::Request>,
     session: Option<&Session>,
-    model: &str,
-    provider: &str,
+    approver: &Arc<dyn Approver>,
 ) -> Result<()> {
     let mut keys = EventStream::new();
     // Agent events arrive on a channel that is replaced per run. Holding a
@@ -234,10 +291,19 @@ async fn run_loop(
     // something to poll rather than a closed branch.
     let (mut events_tx, mut events_rx) = mpsc::unbounded_channel::<AgentEvent>();
 
-    let tools = agent.registry().len();
-
     loop {
-        terminal.draw(|frame| draw(frame, app, model, provider, tools))?;
+        // Recomputed each frame: a `/provider` or `/mcp` switch changes the
+        // tool list underneath us.
+        let (model, provider, tools) =
+            (live.model.clone(), live.provider.clone(), live.agent.registry().len());
+        terminal.draw(|frame| draw(frame, app, &model, &provider, tools))?;
+
+        // Applied here rather than in the key handler: rebuilding is async, and
+        // a run in flight must finish under the settings it started with.
+        if let Some(switch) = app.pending_switch.take() {
+            apply_switch(switch, app, live, approver, session).await?;
+            continue;
+        }
 
         if app.should_quit {
             return Ok(());
@@ -250,7 +316,7 @@ async fn run_loop(
         ));
 
         tokio::select! {
-            Some(Ok(event)) = keys.next() => on_terminal_event(app, event, &mut events_tx, &mut events_rx, agent, session)?,
+            Some(Ok(event)) = keys.next() => on_terminal_event(app, event, &mut events_tx, &mut events_rx, &live.agent, session)?,
 
             Some(event) = events_rx.recv() => {
                 match &event {
@@ -472,6 +538,124 @@ fn on_key(
 }
 
 
+
+/// Apply a queued switch. Called from the event loop, never from a key handler:
+/// rebuilding is async, and none of it is safe with a run in flight.
+///
+/// Three things every switch here has to respect, each learned somewhere else
+/// in this codebase:
+///
+///   * **The tool list is the front of the cached prefix.** Changing it — which
+///     `/provider` and `/mcp` both do — invalidates the prompt cache, so the
+///     next turn re-pays for the whole prefix. Said out loud rather than
+///     absorbed silently, because on a metered provider it is money.
+///   * **A switch is a configuration change, so it gets a `Record::Config`.**
+///     Without one the transcript claims the whole session ran under the
+///     settings it started with, and a replay of it would be diffing against a
+///     recording that never happened.
+///   * **Taint does not un-happen.** Dropping the servers that fetched
+///     something hostile does not unread it, and the interlock stays armed.
+///     `/clear` is the only thing that resets it, because that drops the
+///     context too.
+async fn apply_switch(
+    switch: Switch,
+    app: &mut App,
+    live: &mut Live,
+    approver: &Arc<dyn Approver>,
+    session: Option<&Session>,
+) -> Result<()> {
+    if app.running.is_some() {
+        app.transcript
+            .push(Entry::Notice("busy — stop the run first (^C)".into()));
+        return Ok(());
+    }
+
+    // Permission mode needs no rebuild: the approver is behind an `Arc` in the
+    // run context, and swapping it is copy-on-write.
+    if let Switch::Mode(mode) = switch {
+        let Some(agent) = Arc::get_mut(&mut live.agent) else {
+            app.transcript
+                .push(Entry::Notice("cannot change mode while the agent is shared".into()));
+            return Ok(());
+        };
+        let next: Arc<dyn Approver> = match mode {
+            PermissionMode::Ask => Arc::clone(approver),
+            other => Arc::new(ModeApprover { mode: other }),
+        };
+        agent.set_approver(next);
+        app.mode = mode;
+        app.transcript
+            .push(Entry::Notice(format!("mode {}", mode_name(mode))));
+        record_config(session, live, app.mode)?;
+        return Ok(());
+    }
+
+    // Everything else means building a new agent, starting from what is
+    // running now rather than from what the process was launched with.
+    let mut opts = live.opts.clone();
+    let what = match &switch {
+        Switch::Model(id) => {
+            opts.model = Some(id.clone());
+            format!("model {id}")
+        }
+        Switch::Provider(name) => {
+            opts.provider = Some(name.clone());
+            // The new provider brings its own default model; carrying the old
+            // one across would ask for a model the new backend has never heard
+            // of.
+            opts.model = None;
+            format!("provider {name}")
+        }
+        Switch::Mcp(on) => {
+            opts.no_mcp = !on;
+            if *on { "MCP on".to_string() } else { "MCP off".to_string() }
+        }
+        Switch::Mode(_) => unreachable!("handled above"),
+    };
+
+    app.transcript.push(Entry::Notice(format!("switching to {what}…")));
+
+    let prepared = match setup::prepare_with_approver(&opts, Arc::clone(approver)).await {
+        Ok(p) => p,
+        // Keep the working agent. A failed switch that also broke the session
+        // would punish a typo far out of proportion.
+        Err(e) => {
+            app.transcript
+                .push(Entry::Notice(format!("could not switch: {e:#} — staying on {}", live.model)));
+            return Ok(());
+        }
+    };
+
+    let tools_changed = prepared.agent.registry().len() != live.agent.registry().len();
+    *live = Live::new(prepared, opts);
+    app.mcp_on = !live.opts.no_mcp;
+
+    app.transcript.push(Entry::Notice(format!(
+        "now {} ({}) · {} tools{}",
+        live.model,
+        live.provider,
+        live.agent.registry().len(),
+        if tools_changed { " · prompt cache reset" } else { "" }
+    )));
+
+    record_config(session, live, app.mode)?;
+    Ok(())
+}
+
+/// Append the configuration a run will now use, so the transcript does not
+/// claim the whole session ran under whatever it started with.
+fn record_config(session: Option<&Session>, live: &Live, mode: PermissionMode) -> Result<()> {
+    let Some(s) = session else { return Ok(()) };
+    let cfg = mecha_core::config::Config::load(
+        live.opts.workspace.as_deref().unwrap_or(std::path::Path::new(".")),
+    )?;
+    let mut record = RunConfig::of(&live.agent, &cfg, &live.provider);
+    // The file cannot know about a `/mode` switch, and a replay that read the
+    // file's mode would be reproducing permissions this session never ran under.
+    record.permission_mode = mode;
+    s.append(&Record::Config(record))
+}
+
 /// Carry out a slash command. Everything here is local to the session — none of
 /// it reaches the model.
 fn run_command(
@@ -525,16 +709,23 @@ fn run_command(
 
         Command::Quit => app.should_quit = true,
 
-        // Switching is not wired up yet; showing is, and saying so is better
-        // than accepting the command and silently doing nothing.
         Command::Model(None) => say(format!("model {}", agent.model())),
-        Command::Model(Some(_)) | Command::Provider(Some(_)) => say(
-            "switching model or provider needs rebuilding the agent — not wired up yet".into(),
-        ),
         Command::Provider(None) => say(format!("provider {}", agent.provider_id())),
-        Command::Mode(_) => {
-            say("switching permission mode is not wired up yet; use --yes or --read-only".into())
-        }
+        Command::Mode(None) => say(format!("mode {}", mode_name(app.mode))),
+        Command::Mcp(None) => say(if app.mcp_on {
+            "MCP servers connected — /mcp off to drop them".into()
+        } else {
+            "MCP servers off".into()
+        }),
+
+        // Everything that changes the agent goes through the event loop: these
+        // are async, and none of them may happen with a run in flight.
+        Command::Model(Some(id)) => app.pending_switch = Some(Switch::Model(id)),
+        Command::Provider(Some(name)) => app.pending_switch = Some(Switch::Provider(name)),
+        Command::Mode(Some(m)) => app.pending_switch = Some(Switch::Mode(m)),
+        Command::Mcp(Some(on)) => app.pending_switch = Some(Switch::Mcp(on)),
+
+        Command::BadToggle(word) => say(format!("say on or off, not {word:?}")),
 
         Command::BadMode(word) => {
             say(format!("no such mode {word:?} (ask | allow | read-only)"))
