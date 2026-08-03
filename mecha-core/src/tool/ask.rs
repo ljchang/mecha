@@ -53,9 +53,14 @@ impl Tool for AskUserTool {
     fn description(&self) -> &str {
         "Ask the user a question and wait for their answer. Use this when the task is \
          ambiguous and guessing would waste the work — an unknown name, two readings of \
-         the request, a missing value. Offer 2-4 concrete `options` when the choice is \
-         between known alternatives; leave them out for an open question. Prefer asking \
-         early over discovering halfway through that you assumed wrong."
+         the request, a missing value. Prefer asking early over discovering halfway \
+         through that you assumed wrong.\n\
+         \n\
+         Offer 2-4 concrete `options` only when you are confident the answer is one of \
+         them. Leave them out when the space is not really enumerable — an open question \
+         invites the answer you did not think of. The user can always reply with \
+         something outside your list, including that the question itself is wrong, so do \
+         not add a catch-all option and do not treat a list as exhaustive."
     }
 
     fn input_schema(&self) -> Value {
@@ -200,6 +205,34 @@ mod tests {
 
         // An empty row in a picker is a row you can select and nothing happens.
         assert_eq!(canned.seen.lock().unwrap()[0].1, vec!["A", "B"]);
+    }
+
+    #[tokio::test]
+    async fn an_answer_outside_the_offered_list_comes_back_untouched() {
+        // The failure this guards: a model enumerates two options that are both
+        // wrong, and the harness quietly coerces the reply to the nearest one.
+        // A forced choice between wrong answers is worse than no question — the
+        // `false-premise` eval case exists because "your question is wrong" is
+        // sometimes the correct answer.
+        let (tool, _) = tool(Some("neither — you are in the wrong repository"));
+        let out = tool
+            .call(
+                json!({"question": "which file?", "options": ["a.md", "b.md"]}),
+                &ToolCtx::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!out.is_error);
+        assert_eq!(out.content, "neither — you are in the wrong repository");
+    }
+
+    #[test]
+    fn the_description_does_not_teach_the_model_to_force_a_choice() {
+        let (tool, _) = tool(None);
+        let d = tool.description();
+        assert!(d.contains("not really enumerable") || d.contains("not add a catch-all"));
+        assert!(d.contains("outside your list"), "the model is never told the list is not binding");
     }
 
     #[test]
