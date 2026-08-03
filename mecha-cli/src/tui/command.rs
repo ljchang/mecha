@@ -26,8 +26,13 @@ pub enum Command {
     /// Recognised as a command, but not one we have. Kept as its own variant so
     /// a typo says so instead of being sent to the model as a prompt.
     Unknown(String),
+    /// `None` reports MCP status; `Some` turns servers on or off, which
+    /// rebuilds the agent.
+    Mcp(Option<bool>),
     /// A mode was named that does not exist.
     BadMode(String),
+    /// An on/off argument that was neither.
+    BadToggle(String),
 }
 
 /// Parse a line of input as a command, or `None` if it is an ordinary message.
@@ -54,6 +59,13 @@ pub fn parse(line: &str) -> Option<Command> {
         "clear" | "new" => Command::Clear,
         "session" => Command::Session,
         "exit" | "quit" | "q" => Command::Quit,
+        "mcp" => match arg {
+            None => Command::Mcp(None),
+            Some(a) => match parse_toggle(a) {
+                Some(v) => Command::Mcp(Some(v)),
+                None => Command::BadToggle(a.to_string()),
+            },
+        },
         "mode" => match arg {
             None => Command::Mode(None),
             Some(a) => match parse_mode(a) {
@@ -76,12 +88,29 @@ fn parse_mode(s: &str) -> Option<PermissionMode> {
     }
 }
 
+fn parse_toggle(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "on" | "yes" | "true" | "enable" => Some(true),
+        "off" | "no" | "false" | "disable" => Some(false),
+        _ => None,
+    }
+}
+
+pub fn mode_name(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Ask => "ask",
+        PermissionMode::Allow => "allow",
+        PermissionMode::ReadOnly => "read-only",
+    }
+}
+
 pub const HELP: &str = "\
   /help                  this list
   /tools                 tools this agent can call
   /model [id]            show or switch the model
   /provider [name]       show or switch the provider
   /mode [ask|allow|read-only]   show or switch the permission mode
+  /mcp [on|off]          show MCP servers, or turn them off and on
   /usage                 tokens used this session
   /clear                 start a new conversation, dropping its taint
   /session               where the transcript is being written
@@ -145,6 +174,19 @@ mod tests {
         }
         assert_eq!(parse("/mode ask"), Some(Command::Mode(Some(PermissionMode::Ask))));
         assert_eq!(parse("/mode"), Some(Command::Mode(None)));
+    }
+
+    #[test]
+    fn mcp_toggles_on_the_words_people_actually_type() {
+        for word in ["on", "yes", "true", "enable", "ON"] {
+            assert_eq!(parse(&format!("/mcp {word}")), Some(Command::Mcp(Some(true))), "{word}");
+        }
+        for word in ["off", "no", "false", "disable"] {
+            assert_eq!(parse(&format!("/mcp {word}")), Some(Command::Mcp(Some(false))), "{word}");
+        }
+        assert_eq!(parse("/mcp"), Some(Command::Mcp(None)));
+        // Neither on nor off: say so rather than picking one.
+        assert_eq!(parse("/mcp maybe"), Some(Command::BadToggle("maybe".into())));
     }
 
     #[test]

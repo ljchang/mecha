@@ -286,6 +286,28 @@ this is unblocked.
 **TUI polish.** The `todo` list is not a live pane, and nested subagent calls
 render flat rather than as a tool-call tree.
 
+The TUI now has slash commands (`/help /tools /model /provider /mode /mcp
+/usage /clear /session /exit`) and can switch model, provider, permission mode
+and MCP servers mid-session. Three rules that switching had to respect, each of
+which is a bug if forgotten:
+
+- **Switches compose.** They rebuild from the options currently in force, held
+  on `Live`, not from the flags the process launched with. Rebuilding from the
+  launch flags means `/mcp off` followed by `/model x` quietly turns MCP back
+  on.
+- **Every switch appends a `Record::Config`**, with the *live* permission mode
+  rather than the file's — a replay reading the file would reproduce
+  permissions the session never ran under.
+- **A switch is idle-only, and taint does not un-happen.** Dropping the servers
+  that fetched something hostile does not unread it; only `/clear` resets
+  taint, because only `/clear` drops the context too.
+
+Still to build: `ask_user` (a tool that blocks on a human, reusing the approval
+modal's plumbing) and phase-gated planning. Together those are what turns
+`/mode plan` from a permission label into a real planning phase — and `ask_user`
+would let the `ambiguity` cases be graded on the trace instead of by a judge,
+which is the rig's weakest and noisiest tag.
+
 ### 4. Open security gaps
 
 - **A confined MCP server sees the workspace**, so a filesystem server confined
