@@ -180,10 +180,14 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                             .cost_usd
                             .map(|c| format!(" · ${c:.4}"))
                             .unwrap_or_default();
+                        // An interrupted run knows what the prompt cost but not
+                        // what the cut turn produced, so the figure is a floor.
+                        // Printing it bare would read as a measurement.
+                        let at_least = if outcome.usage_complete { "" } else { "at least " };
                         println!(
                             "{}",
                             style.dim(&format!(
-                                "  {} turns · {}{cost}",
+                                "  {} turns · {at_least}{}{cost}",
                                 outcome.turns,
                                 format_usage(&outcome.usage)
                             ))

@@ -6,33 +6,25 @@ State of the project and what to build next. Written to be picked up cold.
 
 ## Where the work is
 
-**All of it is on `main`**, nine commits, fast-forwarded from the
-`harden-and-measure` branch (which still exists and is now identical — delete it
-whenever). The working tree is clean. **Nothing is pushed**: `main` is nine
-commits ahead of `origin/main`.
+**All of it is on `main`**, and `main` is level with `origin/main`. The working
+tree is clean.
 
-```
-ecd3769  Rewrite the handoff around what a cold pickup actually needs
-c7a5813  Record that the Anthropic provider is now verified against the live API
-ba5c6cb  Compact the transcript so long sessions keep fitting
-a100616  Make taint a property of the conversation, not of one run
-d6b24ed  Update CLAUDE.md and the handoff for what these four commits changed
-2c898ac  Add `mecha tui`, where the input line stays live while the agent works
-7c1a02b  Harder eval cases: sandboxed workspaces, real test runs, an LLM judge
-857f47d  Give each run its own context, and let it be interrupted or steered
-7b40aa7  Confine `shell` and MCP servers instead of only labelling them
-```
-
-Each commit was verified to build and pass tests **in isolation** (stash the
-rest, build, test, commit), so the history bisects rather than merely ending in
-a good state. Build order forced the sandbox commit first even though it was
-written last.
+The nine commits through `b0191f8` built the harness; each was verified to build
+and pass tests **in isolation** (stash the rest, build, test, commit), so the
+history bisects rather than merely ending in a good state. Two commits since
+then are about testing what those nine claimed.
 
 First thing to run in a fresh context:
 
 ```bash
-cargo test && cargo clippy --all-targets -- -D warnings   # 72 tests, no warnings
+cargo test && cargo clippy --all-targets -- -D warnings
 ```
+
+Expect **121 unit tests, 12 integration tests, 1 doctest**, no warnings. The
+integration tests need docker (with `debian:stable-slim` and `python:3-slim`
+local) and `python3`; without them they skip and say so. In CI, set
+`MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of quietly
+passing.
 
 ## What exists
 
@@ -53,9 +45,36 @@ A working agent harness, used and measured rather than just compiled.
 | Context | Compaction with tool-call-safe cut points, taint preserved |
 | Interfaces | `run`, `chat`, `tui` (live input line, steer while it works), `batch`, `eval` |
 | Sessions | Append-only JSONL, resume, taint recorded |
-| Eval | 34 cases, 15 tags, scorecard, `--compare`, sandboxes, verify commands, LLM judge |
+| Eval | 35 cases, 16 tags, scorecard, `--compare`, sandboxes, verify commands, LLM judge, multi-turn cases, run-metadata checks |
 
-72 tests. `cargo clippy --all-targets` is clean and should stay that way.
+`cargo clippy --all-targets` is clean and should stay that way.
+
+### What the tests actually cover
+
+Six of this project's load-bearing claims used to be backed by a paragraph in
+this file describing a run that happened once, by hand, in a session that was
+over. They now re-run:
+
+| Claim | Where |
+|---|---|
+| A transcript round-trips its taint, and taint records *merge* on load | `session.rs` |
+| The MCP child environment is an allowlist, not an inheritance | `mcp.rs` + `tests/mcp_server.rs` |
+| The Anthropic body never sends what 400s, and the cache breakpoint is placed right | `provider/anthropic.rs` |
+| Fragmented tool-call arguments reassemble; calls survive a mislabelled `finish_reason` | `provider/openai.rs` |
+| A broken sandbox fails preflight instead of degrading to unconfined | `tests/sandbox_backends.rs` |
+| A confined command/server loses the network, your home, and your environment | both integration files |
+
+The split that matters: **unit tests for your own code, integration tests for
+what needs real execution, eval cases for what needs a real model.** A
+`ScriptedProvider` replays what you *believe* a provider does, so it cannot
+catch a provider violating that belief — which is where every expensive
+provider bug here came from. Conversely an eval case cannot tell you *which*
+layer broke, which is how a dropped-tool-call harness bug once graded as a model
+failure.
+
+Still uncovered: the whole `mecha-cli` crate, and bwrap's actual confinement
+(it fails on this machine, so that test asserts the quality of the error message
+rather than the happy path).
 
 ## Environment as left
 
@@ -135,7 +154,14 @@ in the same tag:
 
 - **long-horizon 2/2**, at ~17.5 turns — it walks a 16-link chain without
   losing the running total, and does not take the shortcut of summing the
-  decoys.
+  decoys. **This no longer reproduces.** On 2026-08-03 the same case failed on
+  qwen3.6-35b-a3b: it walked the chain correctly for 11 links, then *invented*
+  `next: END` on `entry-9e1b.md` (which actually points to `entry-6189.md`),
+  and summed its own truncated list correctly to 576. The gold was
+  re-derived from the fixture and is right — 16 entries, 847. So this is a
+  model failure, and `long-horizon` belongs with `ambiguity` as a tag that
+  moves between runs rather than one that is saturated. Treat the 2/2 above as
+  one sample, not a baseline.
 - **codegen 2/2** — implements `median`, finds the one-line duration-parsing
   bug, and runs the tests itself. Graded by running them, not by asking.
 - **synthesis 2/2** — finds the majority figure and the outlier, and notices
@@ -201,14 +227,19 @@ What the driver has to decide, none of which is obvious:
   tools. Structural, so it can't be prompted away.
 - **pass@k in the eval** — cases are graded per-run, so a flaky judge or a
   borderline case shows up as noise. Running each case k times would cost k×
-  and is worth it for the `ambiguity` tag specifically.
+  and is worth it for the `ambiguity` tag specifically. Now also worth it for
+  `long-horizon`, which moves more than this file used to claim.
 - **`context_window` on `ProviderConfig`** — the compaction threshold is an
   absolute token count because nothing here knows any model's window. Would let
   it be a fraction, and wants the same treatment as pricing: configured, never
   guessed.
-- **Usage on an interrupted run** — reports **zero**, because token counts
-  arrive in the final SSE frame that never comes. The tokens were spent.
-  Estimate them or report unknown, but not zero.
+- **A multi-turn interlock case.** The machinery exists — `"prompt": [...]`,
+  `expect.taint`, `expect.blocked_sends` — but nothing in the eval registry is
+  an untrusted *source*. `fs_read` is private-but-trusted, so the two
+  `injection` cases test the model's resistance, not the interlock. It needs a
+  fixture tool that returns local content marked `.from_outside()`, or a case
+  that requires the network. **That decision is unmade**, and it is the last
+  thing standing between here and grading the trifecta end to end.
 
 ### 3. The remaining surfaces
 
@@ -272,10 +303,24 @@ to a child still pointed at the original directory.
 ### The eval rig
 
 `"sandbox": true` stages a private fixture copy per case and allows writes;
-`"max_turns": N` gives a case its own turn budget; `expect.verify` runs a
-command in the case's workspace afterwards and grades the exit code;
-`expect.judge` grades a rubric with a second model (`--judge-provider`,
-`--judge-model`).
+`"max_turns": N` gives a case its own turn budget; `"compact_at_tokens": N`
+forces compaction for one case alone; `expect.verify` runs a command in the
+case's workspace afterwards and grades the exit code; `expect.judge` grades a
+rubric with a second model (`--judge-provider`, `--judge-model`).
+
+`"prompt"` takes a string *or* a list of strings. A list runs on one
+`Conversation`, which is what makes anything cross-turn expressible at all —
+taint accumulating, a transcript growing past the compaction threshold. It is
+untagged in serde, so no existing case changed. `RunContext` gained
+`compact_at_tokens` for the same reason it already carried the budget and the
+jail: one agent serves many runs, and a case that means to exercise compaction
+must not force every other case to compact too.
+
+`expect.stop_cause` / `taint` / `blocked_sends` / `min_compactions` grade the
+*harness* rather than the model. None of it is visible in the answer text.
+`min_compactions` exists specifically so a compaction case fails loudly when
+the transcript never crossed the threshold, rather than passing and reporting
+fidelity it never tested.
 
 - **Grade the artifact, not the claim.** For codegen, `verify` runs the tests.
   The command hashes the test file first, so a model that edits the tests until
@@ -295,6 +340,15 @@ partial assistant turn appended so the session resumes from the cut.
 - **Cancellation is a dropped future.** `Agent::complete` selects between the
   provider call and the token; losing the race drops the provider future, which
   aborts the in-flight HTTP request. There is nothing else to abort.
+- **What the dropped future takes with it.** Not just the text — the usage
+  frame too, which is why an interrupted run used to report **zero** tokens
+  after spending them. Providers now emit `StreamEvent::Usage` as counts
+  arrive, and the loop keeps them in the same place it keeps the partial text:
+  outside the future. Input is known from the very first frame, which is the
+  expensive half when a cached prefix is in play. The cut turn's *output* is
+  still unknown, so `RunOutcome::usage_complete` is false and the CLI prints
+  "at least" — a floor that admits to being one, rather than a guess dressed as
+  a measurement in the same field a cost budget reads.
 - **A cancellable run streams**, even when nobody is watching, because that is
   the only way to have the half-written answer when the request is dropped.
   This is why the field is opt-in: a batch worker nobody can interrupt should
@@ -423,6 +477,13 @@ that could have destroyed the task silently.
   does not un-read it. Taint lives on `Conversation`, which the compaction code
   never touches, so the type does the work — but there is a test, because it is
   the invariant that would be easiest to break later.
+- **Fidelity is not legality, and only one of them is unit-testable.** The cut
+  points are pure functions with tests. Whether a summary carried the running
+  total forward can only be answered by a model that had to use it, which is
+  what `chain-total-compacted` (`compact_at_tokens: 1200`,
+  `min_compactions: 1`) is for. As of 2026-08-03 that case fails — but so does
+  its uncompacted control, so it currently says nothing about compaction. Fix
+  the control first.
 
 ---
 
@@ -474,6 +535,20 @@ Recorded so they aren't hit twice.
   judge spent the entire budget on reasoning and returned empty content with
   `finish_reason: length`. It is 4096 now, and an unparseable verdict reports
   the stop reason rather than just the empty string.
+- **A test can pass for a reason you did not write.** The first version of the
+  broken-sandbox test named `image:` before `..cfg` in a helper, so Rust's
+  struct-update ordering silently overrode the caller's deliberately broken
+  image and the test ran against a working one. It failed only because it
+  *passed* when it should not have. Put the forced fields where they cannot
+  shadow the caller's, and comment why.
+- **A negative assertion needs a machine where the positive holds.** The
+  confinement tests assert no network and no `~/.ssh`; both would pass
+  vacuously on a host that had neither. Check the host has them before
+  believing the sandbox took them away.
+- **Grade the control before believing the treatment.** `chain-total-compacted`
+  failed on its first run, which looked like a compaction-fidelity finding —
+  until the uncompacted `chain-total` failed the same way. A case that isolates
+  one variable proves nothing while its control is red.
 
 **Providers**
 

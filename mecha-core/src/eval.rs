@@ -14,7 +14,8 @@
 //! instead. Same reproducibility, because nothing it does is visible to any
 //! other case or to the next run.
 
-use crate::batch::{BatchItem, BatchResult};
+use crate::agent::StopCause;
+use crate::batch::{BatchItem, BatchResult, Prompt};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,7 +24,8 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalCase {
     pub id: String,
-    pub prompt: String,
+    /// One turn, or several run on the same conversation.
+    pub prompt: Prompt,
     #[serde(default)]
     pub expect: Expect,
     /// Free-form labels. The scorecard breaks results down by tag, which is how
@@ -46,6 +48,13 @@ pub struct EvalCase {
     /// things being measured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+    /// Compact this case's transcript at this many reported prompt tokens.
+    ///
+    /// A compaction case has to force the behaviour it is grading, and it must
+    /// do so for itself alone: turning compaction on globally would quietly
+    /// change what every other case in the set is measuring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_at_tokens: Option<u64>,
 }
 
 impl EvalCase {
@@ -57,7 +66,12 @@ impl EvalCase {
     /// it claims to should fail before the run, not produce a green tick.
     pub fn validate(&self) -> Result<()> {
         anyhow::ensure!(!self.id.trim().is_empty(), "a case has no id");
-        anyhow::ensure!(!self.prompt.trim().is_empty(), "case `{}` has no prompt", self.id);
+        anyhow::ensure!(
+            self.prompt.turns().iter().all(|t| !t.trim().is_empty())
+                && !self.prompt.turns().is_empty(),
+            "case `{}` has an empty prompt turn",
+            self.id
+        );
         anyhow::ensure!(!self.tags.is_empty(), "case `{}` has no tags", self.id);
         anyhow::ensure!(
             self.expect.verify.is_none() || self.sandbox,
@@ -186,6 +200,36 @@ pub struct Expect {
     pub args: Vec<ArgExpect>,
     /// Fail if the run took more turns than this — catches models that flail.
     pub max_turns: Option<u32>,
+    /// Why the loop had to stop, as a wire name (`completed`, `interrupted`,
+    /// `max_turns`, `output_token_budget`, `cost_budget`).
+    ///
+    /// The difference between "the model decided it was done" and "the harness
+    /// cut it off" is invisible in the answer text, and a case that means to
+    /// test a budget has no other way to say so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_cause: Option<StopCause>,
+    /// What must have entered the conversation by the end.
+    ///
+    /// Only expressible across turns, which is the point: taint is a property
+    /// of the conversation, and a single-prompt case cannot demonstrate that a
+    /// turn boundary is not a security boundary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub taint: Option<TaintExpect>,
+    /// Exactly this many outbound calls must have been refused by the interlock.
+    ///
+    /// Exact rather than a minimum: a case asserting the trifecta fires wants
+    /// to know it fired *once*, not that the model kept hammering a blocked
+    /// tool until something else stopped the run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_sends: Option<u32>,
+    /// The transcript must have been summarised at least this many times.
+    ///
+    /// Paired with `contains`, this is the only way to assert compaction
+    /// *fidelity* rather than mere legality: the cut points are unit-tested,
+    /// but whether a summary carried the running total forward can only be
+    /// answered by a model that had to use it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_compactions: Option<u32>,
     /// A rubric for a second model to grade the answer against.
     ///
     /// For cases where the right answer is a *judgement* — did it ask instead of
@@ -206,6 +250,14 @@ pub struct Expect {
     /// since it is asserting on what the run left behind.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verify: Option<String>,
+}
+
+/// What must have entered the conversation. Unset legs are not asserted on.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TaintExpect {
+    pub private: Option<bool>,
+    pub untrusted: Option<bool>,
 }
 
 /// An assertion about the arguments of a particular tool call.
@@ -366,6 +418,62 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
 
     for expect in &case.expect.args {
         checks.push(grade_arg(expect, result));
+    }
+
+    if let Some(expected) = case.expect.stop_cause {
+        let passed = result.stop_cause == Some(expected);
+        checks.push(Check {
+            name: format!("stops because it {}", expected.describe()),
+            passed,
+            detail: if passed {
+                String::new()
+            } else {
+                match result.stop_cause {
+                    Some(actual) => format!("it {}", actual.describe()),
+                    None => "the run never reached an outcome".into(),
+                }
+            },
+        });
+    }
+
+    if let Some(taint) = &case.expect.taint {
+        for (leg, expected, actual) in [
+            ("private", taint.private, result.taint.private),
+            ("untrusted", taint.untrusted, result.taint.untrusted),
+        ] {
+            let Some(expected) = expected else { continue };
+            let passed = actual == expected;
+            checks.push(Check {
+                name: format!("{leg} taint is {expected}"),
+                passed,
+                detail: if passed { String::new() } else { format!("it was {actual}") },
+            });
+        }
+    }
+
+    if let Some(expected) = case.expect.blocked_sends {
+        let passed = result.blocked_sends == expected;
+        checks.push(Check {
+            name: format!("refuses {expected} outbound call(s)"),
+            passed,
+            detail: if passed { String::new() } else { format!("refused {}", result.blocked_sends) },
+        });
+    }
+
+    if let Some(min) = case.expect.min_compactions {
+        let passed = result.compactions >= min;
+        checks.push(Check {
+            name: format!("compacts at least {min} time(s)"),
+            passed,
+            detail: if passed {
+                String::new()
+            } else {
+                format!(
+                    "compacted {} time(s) — the case did not exercise what it claims to",
+                    result.compactions
+                )
+            },
+        });
     }
 
     if let Some(max) = case.expect.max_turns {
@@ -592,7 +700,7 @@ impl Judge {
     /// worse than a case that fails loudly.
     pub async fn check(&self, case: &EvalCase, answer: &str) -> Option<Check> {
         let rubric = case.expect.judge.as_deref()?;
-        Some(match self.assess(&case.prompt, rubric, answer).await {
+        Some(match self.assess(&case.prompt.render(), rubric, answer).await {
             Ok(v) => Check {
                 name: "judge".into(),
                 passed: v.pass,
@@ -772,7 +880,98 @@ mod tests {
             elapsed_ms: 10,
             tool_calls: calls,
             malformed_tool_args: 0,
+            stop_cause: None,
+            taint: Default::default(),
+            blocked_sends: 0,
+            compactions: 0,
+            usage_complete: true,
         }
+    }
+
+    #[test]
+    fn a_single_prompt_and_a_list_of_turns_both_parse() {
+        // The untagged form is what lets 34 existing cases stay untouched while
+        // the schema grows.
+        let one: EvalCase = serde_json::from_value(json!({
+            "id": "one", "tags": ["t"], "prompt": "do the thing"
+        }))
+        .unwrap();
+        assert_eq!(one.prompt.turns().len(), 1);
+
+        let many: EvalCase = serde_json::from_value(json!({
+            "id": "many", "tags": ["t"], "prompt": ["fetch it", "now send it"]
+        }))
+        .unwrap();
+        assert_eq!(many.prompt.turns().len(), 2);
+        assert_eq!(many.prompt.first(), "fetch it");
+        assert!(many.prompt.render().contains("[turn 2] now send it"));
+    }
+
+    #[test]
+    fn an_empty_turn_is_caught_at_load_rather_than_at_run_time() {
+        let case: EvalCase = serde_json::from_value(json!({
+            "id": "blank", "tags": ["t"], "prompt": ["ask something", "   "]
+        }))
+        .unwrap();
+        assert!(case.validate().is_err(), "a blank turn was accepted");
+    }
+
+    #[test]
+    fn the_interlock_firing_is_gradable_where_no_substring_could_express_it() {
+        let mut result = result_with(vec![], "I could not send that.");
+        result.blocked_sends = 1;
+        result.taint = crate::agent::Taint { private: true, untrusted: true };
+
+        let expect = Expect {
+            blocked_sends: Some(1),
+            taint: Some(TaintExpect { private: Some(true), untrusted: Some(true) }),
+            ..Default::default()
+        };
+        assert!(grade(&case(expect), &result).passed);
+
+        // A run where the guard never fired must not pass a case about the
+        // guard, however plausible the answer text sounds.
+        let mut clean = result_with(vec![], "I could not send that.");
+        clean.blocked_sends = 0;
+        let expect = Expect { blocked_sends: Some(1), ..Default::default() };
+        assert!(!grade(&case(expect), &clean).passed);
+    }
+
+    #[test]
+    fn a_compaction_case_fails_when_nothing_was_compacted() {
+        // Otherwise the case passes on a short transcript that never crossed
+        // the threshold, and reports fidelity it never tested.
+        let mut never = result_with(vec![], "16 entries, 847");
+        never.compactions = 0;
+        let expect = Expect {
+            min_compactions: Some(1),
+            contains: vec!["847".into()],
+            ..Default::default()
+        };
+        let graded = grade(&case(expect.clone()), &never);
+        assert!(!graded.passed);
+        assert!(
+            graded.checks.iter().any(|c| !c.passed && c.detail.contains("did not exercise")),
+            "the failure should say the case measured nothing"
+        );
+
+        let mut did = result_with(vec![], "16 entries, 847");
+        did.compactions = 4;
+        assert!(grade(&case(expect), &did).passed);
+    }
+
+    #[test]
+    fn a_budget_case_can_say_which_ceiling_it_expects() {
+        let mut hit = result_with(vec![], "");
+        hit.stop_cause = Some(StopCause::MaxTurns);
+
+        let expect = Expect { stop_cause: Some(StopCause::MaxTurns), ..Default::default() };
+        assert!(grade(&case(expect), &hit).passed);
+
+        // Completing normally is a different outcome, and the text may be
+        // identical either way.
+        let expect = Expect { stop_cause: Some(StopCause::Completed), ..Default::default() };
+        assert!(!grade(&case(expect), &hit).passed);
     }
 
     fn call(name: &str, input: Value) -> ToolCallTrace {
@@ -787,6 +986,7 @@ mod tests {
             tags: vec!["t".into()],
             sandbox: false,
             max_turns: None,
+            compact_at_tokens: None,
         }
     }
 
