@@ -556,10 +556,35 @@ that could have destroyed the task silently.
   remained — but never for position in a sequence, and "which entries I have
   already visited" is neither a fact about the world nor a failed attempt.
 
-  The clause was written and measured, and **it did not demonstrably help**:
+  Two things were tried. Measured on qwen3.6-35b-a3b at `compact_at_tokens:
+  1200`:
 
-  | | `chain-total-compacted` | `compaction-carries-the-task` |
+  | arm | `chain-total-compacted` | `carries-the-task` |
   |---|---|---|
+  | original summariser | 1/3 | 3/3 |
+  | + a clause asking for traversal position | 2/5 | 5/5 |
+  | + tiered thinning | **4/5** | 5/5 |
+  | uncompacted control | 5/5 | — |
+
+  **The prompt clause did nothing** (1/3 → 2/5 is noise). **Thinning appears to
+  close most of the gap**, but be careful with that number: 4/5 against the
+  pooled 3/8 of both earlier arms is p≈0.27, which is not significance at n=5.
+  What makes it more believable than the clause is not the p-value but the
+  mechanism — the claim is "the sequence of tool calls survives", and that is a
+  unit test rather than a hope about what a summariser noticed. Run n≈15 per arm
+  if the number needs to be citable.
+
+  The design is in `thin_old_results`: a call and its result differ enormously
+  in size *and* value, so shorten the results and keep the calls. Position stops
+  being something a summary has to preserve and becomes something the transcript
+  structurally still contains.
+
+  Still unused, and the cheapest thing left: **`TodoTool` keeps its list in a
+  `Mutex`, not in the messages, so it already survives compaction entirely.** An
+  agent told to maintain a todo list through multi-step work would never lose
+  its place, for free. Nothing currently tells it to.
+
+---|---|---|
   | before the clause | 1/3 | 3/3 |
   | after the clause | 2/5 | 5/5 |
   | uncompacted control | 5/5 | — |
