@@ -52,6 +52,7 @@ pub mod eval;
 pub mod mcp;
 pub mod message;
 pub mod provider;
+pub mod replay;
 pub mod sandbox;
 pub mod search;
 pub mod session;

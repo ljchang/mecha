@@ -26,7 +26,7 @@ use crossterm::terminal::{
 use futures::StreamExt;
 use mecha_core::agent::{Agent, AgentEvent, Conversation, RunOutcome};
 use mecha_core::message::{Message, Usage};
-use mecha_core::session::{Record, Session, SessionMeta};
+use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use std::collections::VecDeque;
@@ -155,6 +155,16 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
                 title: None,
             },
         )?);
+    }
+
+    // On create and on resume both: a session picked up under different flags
+    // is exactly what this record exists to catch.
+    if let Some(s) = &session {
+        s.append(&Record::Config(RunConfig::of(
+            &prepared.agent,
+            &prepared.config,
+            &prepared.provider_name,
+        )))?;
     }
 
     let mut app = App {

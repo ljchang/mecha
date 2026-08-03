@@ -186,7 +186,32 @@ sandboxing — are done. Their design notes are further down, kept as reference
 rather than as a checklist. What follows is genuinely independent; pick by what
 you want to use.
 
-### 1. Trajectory replay — the agreed next job
+### 1. Trajectory replay — started
+
+`session.rs` now records a `RunConfig` on every attach (create *and* resume),
+and `replay.rs` extracts a `Trajectory` from a transcript and diffs two of them.
+Both are pure and unit-tested. What remains is the half that runs:
+
+- **A `ReplayRegistry`** — `Tool` impls that answer from the recording instead
+  of executing. This is the whole point: replaying live tools re-reads a
+  filesystem and a web that have both moved, so a difference tells you nothing
+  about the harness.
+- **`mecha replay <session>`** — load, re-run, print the diff.
+- **Two flags, because both are policy rather than fact.**
+  `--on-divergence=stop|error|live`: once the model calls something the
+  recording does not have, every later recorded result answers a question
+  nobody asked, so `stop` is the honest default. And whether an
+  `Divergence::Arguments` counts as a regression at all — the same file by a
+  different path spelling is not a behaviour change, which is why `diff`
+  separates it from structural divergence rather than deciding for the caller.
+
+**Replay is pass@k-shaped, not exact-match-shaped.** A local server's sampler is
+outside this process's knowledge — that is why `chain-total` is 5/5 rather than
+deterministic — so one divergent replay is a sample, not a regression. Build the
+driver assuming k runs from the start; retrofitting it is how the eval rig ended
+up needing pass@k added later.
+
+### The design notes that got it here
 
 Re-run a saved session against a different model or harness version and diff.
 Sessions are already JSONL, so this is mostly a driver.

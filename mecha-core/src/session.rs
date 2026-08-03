@@ -4,8 +4,9 @@
 //! per message. Append-only, so a crashed run still leaves a readable
 //! transcript, and `mecha sessions resume` can pick it back up.
 
-use crate::agent::{Conversation, Taint};
-use crate::message::{Message, Usage};
+use crate::agent::{Agent, Conversation, Taint};
+use crate::config::{Config, PermissionMode, TrifectaPolicy};
+use crate::message::{Effort, Message, Usage};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,14 @@ pub enum Record {
     /// Written when a run finishes, so `sessions show` can report cost without
     /// replaying the whole transcript.
     Summary { usage: Usage, turns: u32 },
+    /// Everything that shaped the request, written each time a process
+    /// attaches to the session — on creation and again on every resume.
+    ///
+    /// Not folded into the header, because a session resumed under different
+    /// flags would make a header written at creation a lie about every turn
+    /// after the first. Within one process the configuration cannot change, so
+    /// one record per attach is exactly the granularity that can differ.
+    Config(RunConfig),
     /// What had entered the conversation by this point.
     ///
     /// Recorded because it cannot be recovered by reading the transcript back:
@@ -27,6 +36,120 @@ pub enum Record {
     /// resuming a session that had read a hostile page would hand the model
     /// that page again with the interlock disarmed.
     Taint(Taint),
+}
+
+/// What a run was configured with, recorded so it can be replayed.
+///
+/// The rule behind the field list: **anything that shapes the request or
+/// constrains the run is a confound if it is not recorded.** That is not
+/// theoretical here — compaction on versus off measured 1/5 against 5/5 on the
+/// same task, so a replay that did not know whether compaction was enabled
+/// would compare two incomparable runs and report a model regression.
+///
+/// The system prompt is stored in full rather than hashed. A hash tells you
+/// only *that* something differed; the text lets a replay rebuild the request.
+/// It is no more sensitive than the transcript sitting beside it.
+///
+/// Not recorded, and not recordable: the sampler. A local server's temperature
+/// and top-p are outside this process's knowledge, which is why the same case
+/// scores 5/5 rather than deterministically. Replay against any non-greedy
+/// provider therefore has to be pass@k-shaped rather than exact-match-shaped.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunConfig {
+    /// Which harness produced this. The axis every replay diff is measured on.
+    pub mecha_version: String,
+    pub provider: String,
+    pub model: String,
+    pub workspace: PathBuf,
+    /// The resolved text, not the path it may have come from.
+    pub system_prompt: Option<String>,
+    /// Tool names in registry order — which is the order they are sent, and the
+    /// front of the cached prefix. A tool added, removed or renamed between
+    /// recording and replay changes what the model could have done.
+    pub tools: Vec<String>,
+
+    // What the request looks like.
+    pub effort: Option<Effort>,
+    pub thinking: bool,
+    /// No effect on semantics; large effect on the token counts a replay diffs.
+    pub cache_prompt: bool,
+    pub max_tokens: u32,
+
+    // Ceilings. A run that hit one looks exactly like a model that gave up.
+    pub max_turns: u32,
+    pub max_output_tokens: Option<u64>,
+    pub max_cost_usd: Option<f64>,
+    pub compact_at_tokens: Option<u64>,
+    pub compact_keep_recent: usize,
+
+    // Policy: what the model was allowed to do at all.
+    /// A denied call redirects the whole trajectory, so replaying a read-only
+    /// session under `--yes` compares nothing.
+    pub permission_mode: PermissionMode,
+    pub trifecta: TrifectaPolicy,
+    /// `none` | `bwrap` | `docker`. Load-bearing beyond the obvious: `shell`
+    /// declares *narrower* capabilities when confined, and the interlock
+    /// believes them, so the same prompt can be refused in one and allowed in
+    /// the other.
+    pub sandbox: String,
+    pub sandbox_network: bool,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        RunConfig {
+            mecha_version: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            workspace: PathBuf::new(),
+            system_prompt: None,
+            tools: Vec::new(),
+            effort: None,
+            thinking: false,
+            cache_prompt: false,
+            max_tokens: 0,
+            max_turns: 0,
+            max_output_tokens: None,
+            max_cost_usd: None,
+            compact_at_tokens: None,
+            compact_keep_recent: 0,
+            permission_mode: PermissionMode::Ask,
+            trifecta: TrifectaPolicy::Block,
+            sandbox: "none".into(),
+            sandbox_network: false,
+        }
+    }
+}
+
+impl RunConfig {
+    /// Read it off the built agent rather than off the config file, so what is
+    /// recorded is what is actually being sent — flags, layered TOML and
+    /// defaults already resolved.
+    pub fn of(agent: &Agent, config: &Config, provider: &str) -> Self {
+        let cfg = agent.config();
+        RunConfig {
+            mecha_version: crate::VERSION.to_string(),
+            provider: provider.to_string(),
+            model: agent.model().to_string(),
+            workspace: agent.ctx().workspace.clone(),
+            system_prompt: agent.system().map(str::to_string),
+            tools: agent.registry().iter().map(|t| t.name().to_string()).collect(),
+            effort: cfg.effort,
+            thinking: cfg.thinking,
+            cache_prompt: cfg.cache_prompt,
+            max_tokens: cfg.max_tokens,
+            max_turns: cfg.max_turns,
+            max_output_tokens: cfg.max_output_tokens,
+            max_cost_usd: cfg.max_cost_usd,
+            compact_at_tokens: cfg.compact_at_tokens,
+            compact_keep_recent: cfg.compact_keep_recent,
+            permission_mode: config.tools.permission_mode,
+            trifecta: config.security.trifecta,
+            sandbox: config.sandbox.kind.as_str().to_string(),
+            sandbox_network: config.sandbox.network,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,13 +233,33 @@ impl Session {
                 // Merged rather than replaced: taint only ever grows, and a
                 // transcript written by an older build has none at all.
                 Ok(Record::Taint(t)) => taint.merge(t),
-                Ok(Record::Summary { .. }) => {}
+                Ok(Record::Summary { .. }) | Ok(Record::Config(_)) => {}
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
         }
 
         let meta = meta.with_context(|| format!("{} has no session header", path.display()))?;
         Ok((meta, Conversation::resumed(messages, taint)))
+    }
+
+    /// Every run configuration in a transcript, in the order the runs happened.
+    ///
+    /// A replay driver needs this per run rather than per session: resuming
+    /// under different flags is a normal thing to do, and the turns before and
+    /// after are not comparable. An empty result means a transcript written
+    /// before this was recorded — which cannot be replayed faithfully, because
+    /// the system prompt and tool list that shaped it are gone.
+    pub fn run_configs(path: &Path) -> Result<Vec<RunConfig>> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        Ok(text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| match serde_json::from_str::<Record>(l) {
+                Ok(Record::Config(c)) => Some(c),
+                _ => None,
+            })
+            .collect())
     }
 
     /// Sessions in `dir`, newest first.
@@ -264,6 +407,46 @@ mod tests {
         assert_eq!(convo.messages.len(), 1);
         assert_eq!(convo.messages[0].text(), "first");
         assert!(convo.taint.private, "a torn last line lost the taint before it");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_configs_come_back_in_order_one_per_attach() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-cfg")).unwrap();
+
+        // What a resume under different flags looks like on disk.
+        let first = RunConfig { compact_at_tokens: None, ..RunConfig::default() };
+        let second = RunConfig { compact_at_tokens: Some(1200), ..RunConfig::default() };
+        session.append(&Record::Config(first)).unwrap();
+        session.append_messages(&[Message::user("first run")]).unwrap();
+        session.append(&Record::Config(second)).unwrap();
+
+        let configs = Session::run_configs(&session.path).unwrap();
+
+        assert_eq!(configs.len(), 2, "one record per attach, in order");
+        assert_eq!(configs[0].compact_at_tokens, None);
+        // The turns before and after are not comparable, and only a per-attach
+        // record can say where the line is.
+        assert_eq!(configs[1].compact_at_tokens, Some(1200));
+
+        // And the messages still load, unbothered by the new record type.
+        let (_, convo) = Session::load(&session.path).unwrap();
+        assert_eq!(convo.messages.len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_transcript_recorded_before_this_existed_reports_no_configs() {
+        // Not an error: it is the honest answer, and it is what tells a replay
+        // driver the recording cannot be reproduced faithfully.
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-legacy")).unwrap();
+        session.append_messages(&[Message::user("hello")]).unwrap();
+
+        assert!(Session::run_configs(&session.path).unwrap().is_empty());
 
         std::fs::remove_dir_all(&dir).ok();
     }
