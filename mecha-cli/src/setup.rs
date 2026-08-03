@@ -185,8 +185,17 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         }
     }
     let mut clients = Vec::new();
-    if !opts.no_mcp && !cfg.mcp.is_empty() {
-        let (tools, connected, errors) = mcp::connect_all(&cfg.mcp, &sandbox, &workspace).await;
+    // Named servers are dropped before connecting rather than after: a server
+    // that is off should not have been spawned, since spawning it is what runs
+    // third-party code.
+    let wanted: Vec<_> = cfg
+        .mcp
+        .iter()
+        .filter(|c| !opts.no_mcp_servers.iter().any(|n| n == &c.name))
+        .cloned()
+        .collect();
+    if !opts.no_mcp && !wanted.is_empty() {
+        let (tools, connected, errors) = mcp::connect_all(&wanted, &sandbox, &workspace).await;
         for error in errors {
             // A dead server is worth saying out loud, but it shouldn't stop the
             // run — the other tools still work.

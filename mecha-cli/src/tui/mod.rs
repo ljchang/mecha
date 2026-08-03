@@ -129,6 +129,7 @@ enum Switch {
     Provider(String),
     Mode(PermissionMode),
     Mcp(bool),
+    McpServer(String, bool),
 }
 
 struct App {
@@ -154,8 +155,10 @@ struct App {
     pending_switch: Option<Switch>,
     /// What the approver is currently doing, for `/mode` to report.
     mode: PermissionMode,
-    /// Whether MCP servers are connected, for `/mcp` to report.
+    /// Whether MCP servers are connected at all, for `/mcp` to report.
     mcp_on: bool,
+    /// Every configured server and whether it is currently connected.
+    mcp_servers: Vec<(String, bool)>,
     /// Which tools the next run may see. Toggled with shift+tab.
     phase: Phase,
     /// A question the model is waiting on. Takes every key while it is up, the
@@ -294,6 +297,17 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         pending_switch: None,
         mode: prepared.config.tools.permission_mode,
         mcp_on: !global.no_mcp && !prepared.config.mcp.is_empty(),
+        mcp_servers: prepared
+            .config
+            .mcp
+            .iter()
+            .map(|m| {
+                let off = m.disabled
+                    || global.no_mcp
+                    || global.no_mcp_servers.iter().any(|n| n == &m.name);
+                (m.name.clone(), !off)
+            })
+            .collect(),
         phase: Phase::default(),
         asking: None,
         picker: None,
@@ -770,7 +784,23 @@ async fn apply_switch(
         }
         Switch::Mcp(on) => {
             opts.no_mcp = !on;
+            // Turning them all on clears the individual exclusions too, or
+            // "all on" would silently leave one off.
+            if *on {
+                opts.no_mcp_servers.clear();
+            }
             if *on { "MCP on".to_string() } else { "MCP off".to_string() }
+        }
+        Switch::McpServer(name, on) => {
+            opts.no_mcp_servers.retain(|n| n != name);
+            if !on {
+                opts.no_mcp_servers.push(name.clone());
+            } else {
+                // Naming one server to turn on has to lift the blanket switch,
+                // or nothing happens and the reason is invisible.
+                opts.no_mcp = false;
+            }
+            format!("{name} {}", if *on { "on" } else { "off" })
         }
         Switch::Mode(_) => unreachable!("handled above"),
     };
@@ -791,6 +821,9 @@ async fn apply_switch(
     let tools_changed = prepared.agent.registry().len() != live.agent.registry().len();
     *live = Live::new(prepared, opts);
     app.mcp_on = !live.opts.no_mcp;
+    for (name, on) in &mut app.mcp_servers {
+        *on = !live.opts.no_mcp && !live.opts.no_mcp_servers.iter().any(|n| n == name);
+    }
 
     app.transcript.push(Entry::Notice(format!(
         "now {} ({}) · {} tools{}",
@@ -931,20 +964,48 @@ fn run_command(
             });
         }
         Command::Mcp(None) => {
-            app.picker = Some(Picker {
-                title: " MCP servers · ↑↓ then enter ".into(),
-                items: vec![
-                    (
-                        format!("on         connect them{}", if app.mcp_on { "  ← current" } else { "" }),
-                        Command::Mcp(Some(true)),
-                    ),
-                    (
-                        format!("off        drop them{}", if app.mcp_on { "" } else { "  ← current" }),
-                        Command::Mcp(Some(false)),
-                    ),
-                ],
-                selected: usize::from(!app.mcp_on),
-            });
+            if app.mcp_servers.is_empty() {
+                say("no MCP servers configured — see `mecha config path`".into());
+            } else {
+                let mut items = vec![
+                    ("all on".to_string(), Command::Mcp(Some(true))),
+                    ("all off".to_string(), Command::Mcp(Some(false))),
+                ];
+                // Each server flips individually: with more than one of them,
+                // "all" is rarely the granularity you want.
+                for (name, on) in &app.mcp_servers {
+                    items.push((
+                        format!("{:<14} {}", name, if *on { "on" } else { "off" }),
+                        Command::McpServer(name.clone(), Some(!on)),
+                    ));
+                }
+                app.picker = Some(Picker {
+                    title: " MCP servers · enter flips the one you pick ".into(),
+                    items,
+                    selected: 2,
+                });
+            }
+        }
+
+        Command::McpServer(name, want) => {
+            match app.mcp_servers.iter().find(|(n, _)| *n == name) {
+                Some((_, on)) => {
+                    let target = want.unwrap_or(!on);
+                    if target == *on {
+                        say(format!("{name} is already {}", if target { "on" } else { "off" }));
+                    } else {
+                        app.pending_switch = Some(Switch::McpServer(name, target));
+                    }
+                }
+                None => say(format!(
+                    "no MCP server named {name:?} — configured: {}",
+                    app.mcp_servers
+                        .iter()
+                        .map(|(n, _)| n.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            }
         }
 
         // Everything that changes the agent goes through the event loop: these

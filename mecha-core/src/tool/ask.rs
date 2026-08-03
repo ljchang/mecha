@@ -120,9 +120,15 @@ impl Tool for AskUserTool {
             // An error result rather than an `Err`: the model should be able to
             // carry on with its best guess and say that it did, not have the
             // run die because someone pressed escape.
+            // Measured, and the first wording was actively harmful: telling the
+            // model to "proceed with your best interpretation" made it invent a
+            // contractor name and rate — precisely the failure the case that
+            // caught it exists to detect. A decline must not read as
+            // permission to guess.
             None => Ok(ToolOutput::err(
-                "The user did not answer. Proceed with your best interpretation, \
-                 and say plainly which one you chose.",
+                "The user did not answer. Do not invent the missing information. If the \
+                 task can be done without it, do it and state plainly what you assumed; \
+                 otherwise say what you still need and stop.",
             )),
         }
     }
@@ -181,7 +187,7 @@ mod tests {
         // An error *result*, not an `Err`: pressing escape should not end the
         // run, it should hand the model something it can act on.
         assert!(out.is_error);
-        assert!(out.content.contains("best interpretation"), "{}", out.content);
+        assert!(out.content.contains("Do not invent"), "{}", out.content);
     }
 
     #[tokio::test]

@@ -16,6 +16,7 @@
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::agent::{Budget, RunContext};
+use mecha_core::tool::ask::{AskUserTool, Asker};
 use mecha_core::config::PermissionMode;
 use mecha_core::eval::{grade, stage_workspace, EvalCase, GradedCase, Judge, Scorecard};
 use mecha_core::tool::ModeApprover;
@@ -66,6 +67,17 @@ pub struct Args {
     pub keep_workspaces: bool,
 
     /// Compare previously written scorecards side by side instead of running.
+    /// Make `ask_user` available, answering nothing.
+    ///
+    /// The point is to measure whether the model *asks*, not to answer it: a
+    /// declined question tells the model to proceed with its best
+    /// interpretation, so a case can grade both the call (trace, deterministic)
+    /// and what it did afterwards (text). Off by default because adding a tool
+    /// changes the tool list for every case in the file, and scorecards either
+    /// side of that are not comparable.
+    #[arg(long)]
+    pub ask_user: bool,
+
     #[arg(long, num_args = 1.., conflicts_with_all = ["out", "fixture"])]
     pub compare: Vec<PathBuf>,
 }
@@ -103,7 +115,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         yes: false,
         ..global.clone()
     };
-    let prepared = setup::prepare(&opts, false).await?;
+    let mut prepared = setup::prepare(&opts, false).await?;
+    if args.ask_user {
+        prepared
+            .agent
+            .registry_mut()
+            .insert(Arc::new(AskUserTool::new(Arc::new(NoOneToAsk))));
+    }
 
     // Build the judge before running anything. A case set that cannot be
     // graded should fail in the first second, not after an hour of inference.
@@ -237,6 +255,18 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Nobody is watching an eval run, so every question goes unanswered — which is
+/// the honest thing for the tool to report, and leaves the model to proceed and
+/// say which reading it chose.
+struct NoOneToAsk;
+
+#[async_trait::async_trait]
+impl Asker for NoOneToAsk {
+    async fn ask(&self, _question: &str, _options: &[String]) -> Option<String> {
+        None
+    }
 }
 
 /// Build the per-case contexts: a private staged workspace for sandboxed cases,

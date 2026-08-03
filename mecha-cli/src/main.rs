@@ -80,6 +80,11 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_mcp: bool,
 
+    /// Skip these MCP servers by name (repeatable). `--no-mcp` skips all of
+    /// them; this is for turning one off while the rest stay.
+    #[arg(long = "no-mcp-server", global = true)]
+    pub no_mcp_servers: Vec<String>,
+
     /// Turn off reasoning. Cheaper and faster, but noticeably worse on
     /// multi-step work.
     #[arg(long, global = true)]
