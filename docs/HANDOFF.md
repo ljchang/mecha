@@ -42,11 +42,32 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
 `start-gemma26.sh`).
 Config is `~/.mecha/config.toml` (providers `local`, `small`, `gemma26`).
 
-`ANTHROPIC_API_KEY` has never been set in this environment. **No Anthropic
-request has ever been made through this code.** The Anthropic provider is
-written to spec and compiles, but is unverified against the live API — treat
-the first real call as a test, and check streaming, thinking blocks, and cache
-breakpoints specifically.
+**The Anthropic provider is now verified against the live API** (2026-08-03),
+which it had never been. Five checks, all passing:
+
+| Check | Result |
+|---|---|
+| Plain call | works |
+| Prompt cache | 3398 tokens written, then **3398 read** on the next call — the breakpoint placement (tools → system → messages, marker on the last system block) is right |
+| Tool round-trip | works, cache hit on both turns |
+| Thinking blocks across a tool turn (Opus 5) | signatures echo back correctly — a wrong signature would 400 on turn two |
+| Ctrl-C mid-stream | cut off cleanly, partial kept, exit 3 |
+
+Still unverified: the refusal path (`stop_reason: "refusal"` at HTTP 200) — not
+worth deliberately eliciting.
+
+No prices are set for the Anthropic provider, so `cost_usd` is `None` and
+`--max-cost` silently never fires. Current rates, for
+`[providers.anthropic]`:
+
+```toml
+input_price_per_mtok = 5.0     # claude-opus-5
+output_price_per_mtok = 25.0
+```
+
+Sonnet 5 is $3/$15 ($2/$10 introductory through 2026-08-31). We send
+`cache_control` with no `ttl`, so the 5-minute tier applies and mecha's default
+multipliers (1.25 write, 0.1 read) are already correct.
 
 ## What the measurements say
 
