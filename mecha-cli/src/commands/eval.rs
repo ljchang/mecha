@@ -7,12 +7,22 @@
 //! Runs are forced read-only against a fixture workspace. That makes them
 //! reproducible, safe at high concurrency, and comparable across models —
 //! without it, case N's writes change what case N+1 sees.
+//!
+//! A case marked `sandbox` opts out of exactly that, and pays for it: it gets a
+//! throwaway copy of the fixture all to itself, with writing tools enabled. The
+//! shared fixture is still never mutated, so the two kinds of case can run in
+//! the same pass at the same concurrency.
 
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
-use mecha_core::eval::{grade, EvalCase, GradedCase, Scorecard};
+use mecha_core::agent::{Budget, RunContext};
+use mecha_core::config::PermissionMode;
+use mecha_core::eval::{grade, stage_workspace, EvalCase, GradedCase, Judge, Scorecard};
+use mecha_core::tool::ModeApprover;
+use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -40,6 +50,20 @@ pub struct Args {
     /// Show every failed check, not just the count.
     #[arg(long)]
     pub failures: bool,
+
+    /// Model that grades `expect.judge` rubrics. Defaults to the model under
+    /// test, which is worth avoiding — see the warning it prints.
+    #[arg(long)]
+    pub judge_model: Option<String>,
+
+    /// Provider entry the judge model runs on. Defaults to the one under test.
+    #[arg(long)]
+    pub judge_provider: Option<String>,
+
+    /// Keep the staged workspaces of sandboxed cases instead of deleting them.
+    /// The only way to see what a failing case actually wrote.
+    #[arg(long)]
+    pub keep_workspaces: bool,
 
     /// Compare previously written scorecards side by side instead of running.
     #[arg(long, num_args = 1.., conflicts_with_all = ["out", "fixture"])]
@@ -81,6 +105,17 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     };
     let prepared = setup::prepare(&opts, false).await?;
 
+    // Build the judge before running anything. A case set that cannot be
+    // graded should fail in the first second, not after an hour of inference.
+    let judge = build_judge(&args, &prepared, &cases)?;
+
+    // Stage a private workspace for every sandboxed case, up front, so a
+    // staging failure is not discovered halfway through the run.
+    let sandbox_root =
+        std::env::temp_dir().join(format!("mecha-eval-{}", std::process::id()));
+    let contexts = prepare_contexts(&cases, &fixture, &sandbox_root, &prepared)?;
+    let sandboxed = cases.iter().filter(|c| c.sandbox).count();
+
     eprintln!(
         "mecha eval: {} cases · {} ({}) · {} tools · fixture {}",
         cases.len(),
@@ -89,27 +124,78 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         prepared.agent.registry().len(),
         fixture.display()
     );
+    if sandboxed > 0 {
+        eprintln!("  {sandboxed} sandboxed case(s) staged under {}", sandbox_root.display());
+    }
+    if let Some(j) = &judge {
+        eprintln!("  judge: {}", j.model());
+    }
+
+    // A verify command is a test run, not a tool call, so it gets its own
+    // ceiling rather than borrowing the one meant for the agent's shell.
+    let verify_timeout = std::time::Duration::from_secs(
+        prepared.config.tools.shell_timeout_secs.max(120),
+    );
 
     let items: Vec<_> = cases.iter().map(EvalCase::to_item).collect();
     let started = std::time::Instant::now();
     let total = items.len();
     let mut done = 0usize;
 
-    let results =
-        mecha_core::batch::run(&prepared.agent, items, args.concurrency, |result| {
+    let results = mecha_core::batch::run_with(
+        &prepared.agent,
+        items,
+        args.concurrency,
+        |item| contexts.get(&item.id).cloned(),
+        |result| {
             done += 1;
             eprint!("\r  {done}/{total} ");
             let _ = std::io::Write::flush(&mut std::io::stderr());
             let _ = result;
-        })
-        .await;
+        },
+    )
+    .await;
     eprintln!();
 
     // Results come back in completion order; grade against the matching case.
     let mut graded: Vec<GradedCase> = Vec::new();
     for result in &results {
         let Some(case) = cases.iter().find(|c| c.id == result.id) else { continue };
-        graded.push(grade(case, result));
+        let mut g = grade(case, result);
+
+        // What the run left behind, checked before anything a model says about
+        // it. For a codegen case this is the only check that isn't hearsay.
+        if let Some(command) = &case.expect.verify {
+            // `validate` guarantees a verify case is sandboxed, so a missing
+            // context is a bug here rather than a case-file mistake. Fail the
+            // check saying so — falling back to the shared fixture would run
+            // the command against the very directory sandboxing protects.
+            g.add_check(match contexts.get(&case.id) {
+                Some(cx) => {
+                    mecha_core::eval::verify_workspace(
+                        command,
+                        &cx.tools.workspace,
+                        verify_timeout,
+                    )
+                    .await
+                }
+                None => mecha_core::eval::Check {
+                    name: "verify".into(),
+                    passed: false,
+                    detail: "no staged workspace for this case (internal error)".into(),
+                },
+            });
+        }
+
+        // The judge runs after the deterministic checks, one case at a time.
+        // Sequential on purpose: it is a second model on the same hardware, and
+        // racing it against nothing buys nothing.
+        if let Some(judge) = &judge {
+            if let Some(check) = judge.check(case, &result.text).await {
+                g.add_check(check);
+            }
+        }
+        graded.push(g);
     }
     // Report in case-file order so two runs read the same way.
     graded.sort_by_key(|g| cases.iter().position(|c| c.id == g.id).unwrap_or(usize::MAX));
@@ -136,11 +222,107 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         eprintln!("\nwrote {}", path.display());
     }
 
+    if sandbox_root.exists() {
+        if args.keep_workspaces {
+            eprintln!("staged workspaces kept in {}", sandbox_root.display());
+        } else if let Err(e) = std::fs::remove_dir_all(&sandbox_root) {
+            // Leftover temp directories are untidy, not wrong. Say so and
+            // carry on rather than failing a run that already has its answer.
+            eprintln!("mecha: could not clean up {}: {e}", sandbox_root.display());
+        }
+    }
+
     // Non-zero when anything failed, so this can gate CI.
     if scorecard.passed < scorecard.total {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Build the per-case contexts: a private staged workspace for sandboxed cases,
+/// a raised turn budget for cases that ask for one, or both.
+///
+/// Cases needing neither get no entry and run on the agent's own context.
+fn prepare_contexts(
+    cases: &[EvalCase],
+    fixture: &Path,
+    root: &Path,
+    prepared: &setup::Prepared,
+) -> Result<HashMap<String, Arc<RunContext>>> {
+    let mut contexts = HashMap::new();
+
+    for case in cases.iter().filter(|c| c.sandbox || c.max_turns.is_some()) {
+        let base = prepared.agent.context();
+
+        let cx = if case.sandbox {
+            let dir = root.join(safe_dir_name(&case.id));
+            stage_workspace(fixture, &dir)
+                .with_context(|| format!("staging a workspace for case `{}`", case.id))?;
+
+            // Canonicalize now: the path jail compares canonical paths, and a
+            // temp directory reached through a symlink would otherwise make the
+            // jail refuse every path the case touches.
+            let dir = dir
+                .canonicalize()
+                .with_context(|| format!("resolving {}", dir.display()))?;
+
+            base.sandboxed(dir, Arc::new(ModeApprover { mode: PermissionMode::Allow }))
+        } else {
+            base.as_ref().clone()
+        };
+
+        let budget = Budget { max_turns: case.max_turns, ..Budget::default() };
+        contexts.insert(case.id.clone(), Arc::new(cx.with_budget(budget)));
+    }
+    Ok(contexts)
+}
+
+/// Case ids become directory names, and a `/` in one would silently stage the
+/// workspace somewhere other than where cleanup looks for it.
+fn safe_dir_name(id: &str) -> String {
+    id.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect()
+}
+
+/// Build the judge, if any case needs one.
+fn build_judge(
+    args: &Args,
+    prepared: &setup::Prepared,
+    cases: &[EvalCase],
+) -> Result<Option<Judge>> {
+    let needed: Vec<&str> = cases
+        .iter()
+        .filter(|c| c.expect.judge.is_some())
+        .map(|c| c.id.as_str())
+        .collect();
+    if needed.is_empty() {
+        return Ok(None);
+    }
+
+    let name = args.judge_provider.as_deref();
+    let (provider_name, provider_cfg) = prepared.config.provider(name).with_context(|| {
+        format!(
+            "{} case(s) need a judge ({}), but no usable provider was found",
+            needed.len(),
+            needed.join(", ")
+        )
+    })?;
+    let provider = mecha_core::provider::build(provider_cfg)?;
+
+    let model = args.judge_model.clone().or_else(|| provider_cfg.model.clone());
+    let judge = Judge::new(provider, model);
+
+    // Not fatal, but it does undermine the result: a model asked whether its
+    // own answer was good is not an independent check.
+    if judge.model() == prepared.model && provider_name == prepared.provider_name {
+        eprintln!(
+            "mecha: the judge is the model under test ({}). Its verdicts are not \
+             independent — pass --judge-model or --judge-provider.",
+            judge.model()
+        );
+    }
+    Ok(Some(judge))
 }
 
 fn load_cases(path: &Path, tags: &[String]) -> Result<Vec<EvalCase>> {
@@ -157,6 +339,8 @@ fn load_cases(path: &Path, tags: &[String]) -> Result<Vec<EvalCase>> {
         }
         let case: EvalCase = serde_json::from_str(line)
             .with_context(|| format!("{}:{}: not a valid eval case", path.display(), i + 1))?;
+        case.validate()
+            .with_context(|| format!("{}:{}", path.display(), i + 1))?;
         if tags.is_empty() || case.tags.iter().any(|t| tags.contains(t)) {
             cases.push(case);
         }
