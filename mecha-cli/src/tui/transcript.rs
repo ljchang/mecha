@@ -18,8 +18,14 @@ pub enum Entry {
     Thinking(String),
     ToolCall { name: String, summary: String },
     ToolResult { name: String, is_error: bool, content: String },
-    /// The harness talking about itself: denials, interruptions, errors.
+    /// The harness talking about itself: what a command did, what was cleared.
+    /// May be several lines; each one is rendered as a line, because a
+    /// multi-line string pushed as a single `Line` gets reflowed into a blob
+    /// the moment the paragraph wraps it.
     Notice(String),
+    /// Something went wrong. Separated from `Notice` only so that help text and
+    /// a failed run do not arrive in the same alarming colour.
+    Error(String),
 }
 
 #[derive(Default)]
@@ -71,7 +77,7 @@ impl Transcript {
                 }
             }
             AgentEvent::ToolDenied { name, reason } => {
-                self.push(Entry::Notice(format!("{name} denied — {reason}")))
+                self.push(Entry::Error(format!("{name} denied — {reason}")))
             }
             AgentEvent::QueuedInput(text) => self.push(Entry::Steer(text.clone())),
             _ => {}
@@ -129,7 +135,14 @@ impl Transcript {
                     ]));
                 }
                 Entry::Notice(text) => {
-                    out.push(Line::styled(text.clone(), Style::new().fg(Color::Red)));
+                    for line in text.split('\n') {
+                        out.push(Line::styled(line.to_string(), Style::new().fg(Color::DarkGray)));
+                    }
+                }
+                Entry::Error(text) => {
+                    for line in text.split('\n') {
+                        out.push(Line::styled(line.to_string(), Style::new().fg(Color::Red)));
+                    }
                 }
             }
         }

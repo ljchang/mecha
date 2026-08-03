@@ -94,6 +94,32 @@ impl Live {
     }
 }
 
+/// A modal list of things to switch to.
+///
+/// Built rather than typed because the useful question is "what can I switch
+/// to", and a command that only accepts an exact string cannot answer it. The
+/// choices come from the configured providers: those are the entries that
+/// actually exist, each already carrying the model it serves.
+struct Picker {
+    title: String,
+    /// Label and the command choosing it runs. Commands rather than switches so
+    /// a menu can open another menu — `/help` lists the commands, and picking
+    /// `/model` from it opens the model list.
+    items: Vec<(String, command::Command)>,
+    selected: usize,
+}
+
+impl Picker {
+    fn move_by(&mut self, delta: isize) {
+        if self.items.is_empty() {
+            return;
+        }
+        let len = self.items.len() as isize;
+        // Wraps, because a list this short is faster to cycle than to bound.
+        self.selected = (((self.selected as isize + delta) % len + len) % len) as usize;
+    }
+}
+
 /// A change that cannot be made from a key handler, because it is async and
 /// because it must not happen while a run is in flight.
 #[derive(Debug, Clone)]
@@ -129,6 +155,10 @@ struct App {
     mode: PermissionMode,
     /// Whether MCP servers are connected, for `/mcp` to report.
     mcp_on: bool,
+    /// Open modal list, if any. Takes every key while it is up.
+    picker: Option<Picker>,
+    /// Every provider entry in config, as (name, model). Fixed for the session.
+    providers: Vec<(String, String)>,
 }
 
 impl App {
@@ -240,6 +270,13 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         pending_switch: None,
         mode: prepared.config.tools.permission_mode,
         mcp_on: !global.no_mcp && !prepared.config.mcp.is_empty(),
+        picker: None,
+        providers: prepared
+            .config
+            .providers
+            .iter()
+            .map(|(name, cfg)| (name.clone(), cfg.model.clone().unwrap_or_default()))
+            .collect(),
     };
 
     if !app.convo.is_empty() {
@@ -397,7 +434,7 @@ fn finish_run(
             }
         }
         Err(e) => {
-            app.transcript.push(Entry::Notice(format!("error: {e:#}")));
+            app.transcript.push(Entry::Error(format!("error: {e:#}")));
             // Drop the dangling user turn so the next request doesn't resend it.
             app.convo.messages.truncate(persisted.saturating_sub(1));
         }
@@ -469,6 +506,29 @@ fn on_key(
             }
             // Unrecognised key: put it back and keep waiting.
             None => app.pending = Some(request),
+        }
+        return Ok(());
+    }
+
+    // A modal list owns the keyboard while it is up, for the same reason the
+    // approval modal does: a keystroke meant for the list must not also reach
+    // the input line behind it.
+    if let Some(picker) = &mut app.picker {
+        match key.code {
+            KeyCode::Up => picker.move_by(-1),
+            KeyCode::Down => picker.move_by(1),
+            KeyCode::Esc | KeyCode::Char('q') => {
+                app.picker = None;
+            }
+            KeyCode::Enter => {
+                if let Some(picker) = app.picker.take() {
+                    let chosen = picker.selected;
+                    if let Some((_, cmd)) = picker.items.into_iter().nth(chosen) {
+                        return run_command(app, cmd, agent, session);
+                    }
+                }
+            }
+            _ => {}
         }
         return Ok(());
     }
@@ -621,7 +681,7 @@ async fn apply_switch(
         // would punish a typo far out of proportion.
         Err(e) => {
             app.transcript
-                .push(Entry::Notice(format!("could not switch: {e:#} — staying on {}", live.model)));
+                .push(Entry::Error(format!("could not switch: {e:#} — staying on {}", live.model)));
             return Ok(());
         }
     };
@@ -669,7 +729,22 @@ fn run_command(
     let mut say = |text: String| app.transcript.push(Entry::Notice(text));
 
     match cmd {
-        Command::Help => say(command::HELP.to_string()),
+        Command::Help => {
+            app.picker = Some(Picker {
+                title: " commands · ↑↓ then enter, esc to cancel ".into(),
+                items: vec![
+                    ("model      switch model or provider".into(), Command::Model(None)),
+                    ("mode       ask · allow · read-only".into(), Command::Mode(None)),
+                    ("mcp        turn MCP servers on or off".into(), Command::Mcp(None)),
+                    ("tools      what this agent can call".into(), Command::Tools),
+                    ("usage      tokens used this session".into(), Command::Usage),
+                    ("clear      new conversation, drops taint".into(), Command::Clear),
+                    ("session    where the transcript is".into(), Command::Session),
+                    ("exit       quit".into(), Command::Quit),
+                ],
+                selected: 0,
+            });
+        }
 
         Command::Tools => {
             let mut lines = String::new();
@@ -709,14 +784,66 @@ fn run_command(
 
         Command::Quit => app.should_quit = true,
 
-        Command::Model(None) => say(format!("model {}", agent.model())),
-        Command::Provider(None) => say(format!("provider {}", agent.provider_id())),
-        Command::Mode(None) => say(format!("mode {}", mode_name(app.mode))),
-        Command::Mcp(None) => say(if app.mcp_on {
-            "MCP servers connected — /mcp off to drop them".into()
-        } else {
-            "MCP servers off".into()
-        }),
+        Command::Model(None) | Command::Provider(None) => {
+            let current = agent.provider_id();
+            let items: Vec<(String, Command)> = app
+                .providers
+                .iter()
+                .map(|(name, model)| {
+                    let here = if name == current { "  ← current" } else { "" };
+                    (
+                        format!("{name:<10} {model}{here}"),
+                        Command::Provider(Some(name.clone())),
+                    )
+                })
+                .collect();
+
+            if items.is_empty() {
+                say("no providers configured — see `mecha config path`".into());
+            } else {
+                let selected = app.providers.iter().position(|(n, _)| n == current).unwrap_or(0);
+                app.picker = Some(Picker {
+                    title: " switch model · ↑↓ then enter, esc to cancel ".into(),
+                    items,
+                    selected,
+                });
+            }
+        }
+        Command::Mode(None) => {
+            let modes = [PermissionMode::Ask, PermissionMode::Allow, PermissionMode::ReadOnly];
+            let describe = |m: PermissionMode| match m {
+                PermissionMode::Ask => "ask        approve each write or command",
+                PermissionMode::Allow => "allow      run everything without asking",
+                PermissionMode::ReadOnly => "read-only  refuse anything that writes",
+            };
+            app.picker = Some(Picker {
+                title: " permission mode · ↑↓ then enter ".into(),
+                items: modes
+                    .iter()
+                    .map(|m| {
+                        let here = if *m == app.mode { "  ← current" } else { "" };
+                        (format!("{}{here}", describe(*m)), Command::Mode(Some(*m)))
+                    })
+                    .collect(),
+                selected: modes.iter().position(|m| *m == app.mode).unwrap_or(0),
+            });
+        }
+        Command::Mcp(None) => {
+            app.picker = Some(Picker {
+                title: " MCP servers · ↑↓ then enter ".into(),
+                items: vec![
+                    (
+                        format!("on         connect them{}", if app.mcp_on { "  ← current" } else { "" }),
+                        Command::Mcp(Some(true)),
+                    ),
+                    (
+                        format!("off        drop them{}", if app.mcp_on { "" } else { "  ← current" }),
+                        Command::Mcp(Some(false)),
+                    ),
+                ],
+                selected: usize::from(!app.mcp_on),
+            });
+        }
 
         // Everything that changes the agent goes through the event loop: these
         // are async, and none of them may happen with a run in flight.
@@ -731,7 +858,7 @@ fn run_command(
             say(format!("no such mode {word:?} (ask | allow | read-only)"))
         }
         Command::Unknown(name) => {
-            say(format!("no such command /{name} — /help lists them"))
+            say(format!("no such command /{name}\n{}", command::HELP))
         }
     }
     Ok(())
@@ -904,9 +1031,41 @@ fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: us
         chunks[2].y + 1 + cursor_row.min(rows.clamp(1, 6).saturating_sub(1)),
     ));
 
+    if let Some(picker) = &app.picker {
+        draw_picker(frame, picker);
+    }
     if let Some(request) = &app.pending {
         draw_approval(frame, request);
     }
+}
+
+fn draw_picker(frame: &mut Frame, picker: &Picker) {
+    let height = (picker.items.len() as u16).clamp(1, 12) + 2;
+    let area = centered(frame.area(), 64, height);
+    frame.render_widget(Clear, area);
+
+    let body: Vec<Line> = picker
+        .items
+        .iter()
+        .enumerate()
+        .map(|(i, (label, _))| {
+            if i == picker.selected {
+                Line::styled(format!("› {label}"), Style::new().fg(Color::Black).bg(Color::Cyan))
+            } else {
+                Line::styled(format!("  {label}"), Style::new().fg(Color::White))
+            }
+        })
+        .collect();
+
+    frame.render_widget(
+        Paragraph::new(body).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::new().fg(Color::Cyan))
+                .title(picker.title.as_str()),
+        ),
+        area,
+    );
 }
 
 fn draw_approval(frame: &mut Frame, request: &approve::Request) {
@@ -1010,6 +1169,40 @@ fn leave(terminal: &mut Terminal<impl Backend>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::input_layout;
+
+    use super::Picker;
+
+    fn picker(n: usize) -> Picker {
+        Picker {
+            title: String::new(),
+            items: (0..n).map(|i| (i.to_string(), super::command::Command::Usage)).collect(),
+            selected: 0,
+        }
+    }
+
+    #[test]
+    fn the_selection_wraps_at_both_ends() {
+        // A list this short is faster to cycle than to bound, and stopping dead
+        // at the last entry reads as a stuck key.
+        let mut p = picker(3);
+        p.move_by(1);
+        assert_eq!(p.selected, 1);
+        p.move_by(1);
+        p.move_by(1);
+        assert_eq!(p.selected, 0, "did not wrap forwards");
+
+        p.move_by(-1);
+        assert_eq!(p.selected, 2, "did not wrap backwards");
+    }
+
+    #[test]
+    fn an_empty_list_does_not_panic_or_move() {
+        // `% 0` panics, and a config with no providers is a real state.
+        let mut p = picker(0);
+        p.move_by(1);
+        p.move_by(-1);
+        assert_eq!(p.selected, 0);
+    }
 
     #[test]
     fn the_cursor_tracks_plain_wrapping() {
