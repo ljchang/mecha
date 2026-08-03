@@ -91,7 +91,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let renderer =
             render::spawn(rx, render::RenderOpts { verbose: global.verbose, quiet: false });
 
-        let result = prepared.agent.run(&mut messages, Some(tx.clone())).await;
+        let result = crate::interrupt::run_interruptible(
+            &prepared.agent,
+            prepared.agent.context(),
+            &mut messages,
+            Some(tx.clone()),
+        )
+        .await;
         drop(tx);
         let _ = renderer.await;
         println!();

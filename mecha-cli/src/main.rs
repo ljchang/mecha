@@ -2,8 +2,10 @@
 
 mod approve;
 mod commands;
+mod interrupt;
 mod render;
 mod setup;
+mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -88,6 +90,18 @@ pub struct GlobalOpts {
     pub verbose: bool,
 }
 
+/// Same shape as `chat`, so switching between them is muscle memory.
+#[derive(clap::Args, Debug)]
+pub struct TuiArgs {
+    /// Continue a saved session by id or unique prefix.
+    #[arg(long)]
+    pub resume: Option<String>,
+
+    /// Don't write a transcript.
+    #[arg(long)]
+    pub no_session: bool,
+}
+
 #[derive(Subcommand)]
 pub enum Command {
     /// Run one task and print the answer.
@@ -95,6 +109,10 @@ pub enum Command {
 
     /// Interactive session in the terminal.
     Chat(commands::chat::Args),
+
+    /// Full-screen session. The input line stays live while the agent works,
+    /// so a message typed mid-run steers it instead of waiting for it.
+    Tui(TuiArgs),
 
     /// Run the same agent over a JSONL file of prompts.
     Batch(commands::batch::Args),
@@ -137,6 +155,7 @@ async fn dispatch() -> Result<()> {
     match cli.command {
         Command::Run(args) => commands::run::execute(&cli.global, args).await,
         Command::Chat(args) => commands::chat::execute(&cli.global, args).await,
+        Command::Tui(args) => tui::execute(&cli.global, args.resume, args.no_session).await,
         Command::Batch(args) => commands::batch::execute(&cli.global, args).await,
         Command::Eval(args) => commands::eval::execute(&cli.global, args).await,
         Command::Tools(args) => commands::tools::execute(&cli.global, args).await,

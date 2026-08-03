@@ -80,10 +80,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         Some((tx, handle))
     };
 
-    let outcome = prepared
-        .agent
-        .run(&mut messages, events.as_ref().map(|(tx, _)| tx.clone()))
-        .await?;
+    let outcome = crate::interrupt::run_interruptible(
+        &prepared.agent,
+        prepared.agent.context(),
+        &mut messages,
+        events.as_ref().map(|(tx, _)| tx.clone()),
+    )
+    .await?;
 
     // Closing the sender ends the render task; wait so its output lands before
     // anything we print below.

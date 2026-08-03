@@ -56,8 +56,8 @@ impl Approver for TerminalApprover {
 }
 
 /// A one-line gist of what the call will do. The full arguments are available
-/// with `--verbose`; this is what someone reads before typing `y`.
-fn summarize(tool: &str, input: &Value) -> String {
+/// with `--verbose`; this is what someone reads before deciding.
+pub fn summarize(tool: &str, input: &Value) -> String {
     let field = |key: &str| input.get(key).and_then(Value::as_str);
 
     let text = match tool {
