@@ -6,10 +6,13 @@ State of the project and what to build next. Written to be picked up cold.
 
 ## Where the work is
 
-**Branch `harden-and-measure`, 8 commits ahead of `main`, nothing merged.** The
-working tree is clean. `main` is still at `40ce7a7`.
+**All of it is on `main`**, nine commits, fast-forwarded from the
+`harden-and-measure` branch (which still exists and is now identical — delete it
+whenever). The working tree is clean. **Nothing is pushed**: `main` is nine
+commits ahead of `origin/main`.
 
 ```
+ecd3769  Rewrite the handoff around what a cold pickup actually needs
 c7a5813  Record that the Anthropic provider is now verified against the live API
 ba5c6cb  Compact the transcript so long sessions keep fitting
 a100616  Make taint a property of the conversation, not of one run
@@ -24,11 +27,6 @@ Each commit was verified to build and pass tests **in isolation** (stash the
 rest, build, test, commit), so the history bisects rather than merely ending in
 a good state. Build order forced the sandbox commit first even though it was
 written last.
-
-**Decide whether to fast-forward `main` onto this branch.** The repo's prior
-history commits straight to `main`; the branch exists because the default
-guidance is not to commit to a default branch unasked. Nothing depends on the
-branch staying separate.
 
 First thing to run in a fresh context:
 
