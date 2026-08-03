@@ -9,10 +9,8 @@ State of the project and what to build next. Written to be picked up cold.
 **All of it is on `main`**, and `main` is level with `origin/main`. The working
 tree is clean.
 
-The nine commits through `b0191f8` built the harness; each was verified to build
-and pass tests **in isolation** (stash the rest, build, test, commit), so the
-history bisects rather than merely ending in a good state. Two commits since
-then are about testing what those nine claimed.
+Every commit was verified to build and pass tests **in isolation**, so the
+history bisects rather than merely ending in a good state.
 
 First thing to run in a fresh context:
 
@@ -20,11 +18,17 @@ First thing to run in a fresh context:
 cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
-Expect **121 unit tests, 12 integration tests, 1 doctest**, no warnings. The
-integration tests need docker (with `debian:stable-slim` and `python:3-slim`
-local) and `python3`; without them they skip and say so. In CI, set
-`MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of quietly
-passing.
+Expect **149 core + 20 CLI unit tests, 13 integration tests, 1 doctest** — 183,
+no warnings. The integration tests need docker (with `debian:stable-slim` and
+`python:3-slim` local) and `python3`; without them they skip and say so. In CI,
+set `MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of
+quietly passing.
+
+**The system prompt is wired now.** `~/.mecha/config.toml` points
+`[agent] system_prompt_file` at `prompts/agent.md`. It was not, for the whole
+life of the project before this — `RunConfig` recorded `system_prompt: null`,
+and the model had none of that file's guidance. Check it is still set before
+concluding anything about model behaviour.
 
 ## What exists
 
@@ -34,18 +38,22 @@ A working agent harness, used and measured rather than just compiled.
 |---|---|
 | Providers | Anthropic (raw HTTP, **verified live**) + OpenAI-compatible (llama-server, vLLM, Ollama) |
 | Agent loop | Streaming, tool dispatch, parallel execution, forced final answer |
-| Tools | `fs_read/write/edit/list`, `shell`, `http_fetch`, `todo`, `web_search` |
-| MCP | stdio client; remote tools become ordinary `Tool` impls |
+| Tools | `fs_read/write/edit/list`, `shell`, `http_fetch`, `todo`, `web_search`, `ask_user` |
+| Planning | `Phase::Plan` hides writing tools structurally — not offered, not dispatchable |
+| MCP | stdio client; per-server on/off; capability overrides that only widen |
+| Memory | pkg wired as an MCP server — the user's mail, Slack, calendar, conversations |
 | Subagents | `Agent` wrapped as a `Tool`, allowlisted registry, per-profile model |
 | Search | `SearchBackend` trait — Exa, Tavily, SearXNG — with fall-through |
 | Security | Path jail, SSRF guard, trifecta interlock, leak guard, capability model |
 | Sandbox | `shell` and MCP servers confined via bubblewrap or docker; no network by default |
 | Budgets | `max_turns`, `max_output_tokens`, `max_cost_usd`, cost accounting |
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
-| Context | Compaction with tool-call-safe cut points, taint preserved |
-| Interfaces | `run`, `chat`, `tui` (live input line, steer while it works), `batch`, `eval` |
-| Sessions | Append-only JSONL, resume, taint recorded |
-| Eval | 35 cases, 16 tags, scorecard, `--compare`, sandboxes, verify commands, LLM judge, multi-turn cases, run-metadata checks |
+| Context | Two-pass compaction: thin tool results, then summarise. Taint preserved |
+| Interfaces | `run`, `chat`, `tui`, `batch`, `eval` |
+| TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning |
+| Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
+| Replay | `replay.rs` extracts and diffs trajectories (pure half only — no driver yet) |
+| Eval | 36 cases, 17 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks |
 
 `cargo clippy --all-targets` is clean and should stay that way.
 
@@ -191,70 +199,80 @@ comparing across the boundary.
 
 ## What to do next
 
-The three items that used to gate everything — measurement, interruptibility,
-sandboxing — are done. Their design notes are further down, kept as reference
-rather than as a checklist. What follows is genuinely independent; pick by what
-you want to use.
+Ordered by what I would actually do first, not by size.
 
-### 1. Trajectory replay — started
+### 1. Tell the model to keep a todo list — the cheapest thing on this list
 
-`session.rs` now records a `RunConfig` on every attach (create *and* resume),
-and `replay.rs` extracts a `Trajectory` from a transcript and diffs two of them.
-Both are pure and unit-tested. What remains is the half that runs:
+`TodoTool` keeps its items in a `Mutex`, **not in the messages**, so the list
+already survives compaction completely. An agent maintaining one through
+multi-step work would never lose its place — no new machinery, no tokens, no
+request. Nothing currently tells it to; it is a paragraph in `prompts/agent.md`.
+
+There is a rig to check it against: `chain-total-compacted` sits at 4/5 with the
+uncompacted control at 5/5. If this closes the last of that gap it is the
+cheapest fix in the whole compaction story, and if it does not, that is a
+five-minute answer. Do this before anything else.
+
+### 2. Pin the sampler, then build the replay driver
+
+Every measurement this project has produced was taken at llama-server's default
+temperature, unstated. That is why the same case scores 5/5 rather than
+deterministically, why the eval rig needs pass@k, and why `replay.rs` documents
+itself as pass@k-shaped.
+
+Adding provider-scoped sampling config — `[providers.local] temperature = 0.0`,
+passed through by the OpenAI-compatible provider and absent from the Anthropic
+one, which rejects it — makes evals cheaper and changes what replay can be.
+Do it **before** the driver, not after.
+
+Then the driver. `session.rs` records a `RunConfig` on every attach and
+`replay.rs` extracts and diffs trajectories; both are pure and unit-tested. What
+remains is the half that runs:
 
 - **A `ReplayRegistry`** — `Tool` impls that answer from the recording instead
-  of executing. This is the whole point: replaying live tools re-reads a
-  filesystem and a web that have both moved, so a difference tells you nothing
-  about the harness.
+  of executing. Replaying against live tools re-reads a filesystem and a web
+  that have both moved, so a difference would tell you nothing about the
+  harness.
 - **`mecha replay <session>`** — load, re-run, print the diff.
 - **Two flags, because both are policy rather than fact.**
-  `--on-divergence=stop|error|live`: once the model calls something the
-  recording does not have, every later recorded result answers a question
-  nobody asked, so `stop` is the honest default. And whether an
-  `Divergence::Arguments` counts as a regression at all — the same file by a
-  different path spelling is not a behaviour change, which is why `diff`
+  `--on-divergence=stop|error|live` — after a divergence every later recorded
+  result answers a question nobody asked, so `stop` is the honest default. And
+  whether `Divergence::Arguments` counts as a regression at all: the same file
+  by a different path spelling is not a behaviour change, which is why `diff`
   separates it from structural divergence rather than deciding for the caller.
 
-**Replay is pass@k-shaped, not exact-match-shaped.** A local server's sampler is
-outside this process's knowledge — that is why `chain-total` is 5/5 rather than
-deterministic — so one divergent replay is a sample, not a regression. Build the
-driver assuming k runs from the start; retrofitting it is how the eval rig ended
-up needing pass@k added later.
+Why it is worth doing: this project's case set has **saturated once already**,
+and the replacement cost a full session of hand-writing cases, four of whose
+graders were wrong before they were right. Replay turns every real session into
+a regression case.
 
-### The design notes that got it here
+### 3. pkg, going deeper
 
-Re-run a saved session against a different model or harness version and diff.
-Sessions are already JSONL, so this is mostly a driver.
+pkg is connected and the prompt tells the model when to use it. What is not
+decided is *retrieval timing*. Automatic retrieval every turn would arm the
+untrusted leg permanently — pkg holds mail and Slack, so that marking is correct
+— and with any private read, outbound tools are then blocked. On demand is the
+current answer and it is defensible; session-start retrieval is the obvious
+alternative and needs a decision rather than a default.
 
-Why it is worth doing before the other surfaces: this project's case set has
-**saturated once already**, and the replacement took a full session of
-hand-writing cases, four of whose graders were wrong before they were right.
-Replay turns every real session into a regression case for free — the scalable
-version of what was done by hand.
+The other half is the persistent todo the user asked for: **pkg-backed, not a
+second store.** Its `fact_candidate` staging queue is the guardrail that makes
+agent writes safe, and building a parallel memory beside it is the thing the
+original design note warns against.
 
-What the driver has to decide, none of which is obvious:
-
-- **What "the same" means.** A replayed run will not reproduce the original
-  tool results (files changed, the web moved). Either replay against a staged
-  workspace, or replay the *recorded* tool results and only compare the model's
-  choices — the second is closer to a regression test and much cheaper.
-- **What to diff.** Final text is the weakest signal, exactly as in the eval
-  rig. Diff the tool-call trace first: which tools, in what order, with what
-  arguments. `ToolCallTrace` is already recorded and already serialised.
-- **Where it lives.** It is the same shape as `mecha eval` — load cases, fan
-  out, grade, scorecard — so most of `eval.rs` and `batch.rs` should be reused
-  rather than duplicated. A replayed session is an `EvalCase` whose expectations
-  are derived from the recorded run.
-
-### 2. Smaller, high-value items
+### 4. Smaller, high-value items
 
 - **Hooks** — pre-tool / post-tool / session lifecycle. Lets policy, redaction,
   and logging attach without touching the loop.
 - **Structured-output abstraction** — a `structured_output` knob on `Provider`
   that each backend spells natively (GBNF for llama.cpp, `guided_json` for
   vLLM, `output_config.format` for Anthropic). Don't hardcode GBNF.
-- **Phase-gated tools** — a state machine where planning cannot call write
-  tools. Structural, so it can't be prompted away.
+- **TUI polish** — the `todo` list is not a live pane, and nested subagent calls
+  render flat rather than as a tool-call tree. Both were asked for.
+- **Public benchmarks** — tau-bench fits best (it grades tool-call traces, which
+  is what this rig grades); SWE-bench Verified next, since the `codegen` cases
+  already use its shape. Both free. Worth a sprint once the case set stops
+  discriminating.
 - **pass@k in the eval** — cases are graded per-run, so a flaky judge or a
   borderline case shows up as noise. Running each case k times would cost k×
   and is worth it for the `ambiguity` tag specifically. Now also worth it for
@@ -271,7 +289,7 @@ What the driver has to decide, none of which is obvious:
   that requires the network. **That decision is unmade**, and it is the last
   thing standing between here and grading the trifecta end to end.
 
-### 3. The remaining surfaces
+### 5. The remaining surfaces
 
 Roughly independent of each other.
 
@@ -318,7 +336,16 @@ modal's plumbing) and phase-gated planning. Together those are what turns
 would let the `ambiguity` cases be graded on the trace instead of by a judge,
 which is the rig's weakest and noisiest tag.
 
-### 4. Open security gaps
+### 6. Open security gaps
+
+- **`mecha run` used to record no taint at all**, which meant `--resume` on a
+  one-shot laundered it. Fixed, but the shape of that bug is worth remembering:
+  the guarantee was implemented in two of three front-ends and nobody checked
+  the third. When something is enforced per-interface, enumerate the interfaces.
+- **Evals inherited whatever MCP servers were configured locally** until
+  `--mcp` made them opt-in. A scorecard that depends on today's machine is not
+  comparable to yesterday's. Adding pkg to config silently changed the tool
+  surface mid-experiment and invalidated an A/B in flight.
 
 - **A confined MCP server sees the workspace**, so a filesystem server confined
   this way is confined against your home directory, not against your project.
@@ -660,6 +687,29 @@ Recorded so they aren't hit twice.
   confinement tests assert no network and no `~/.ssh`; both would pass
   vacuously on a host that had neither. Check the host has them before
   believing the sandbox took them away.
+- **Read the transcripts before believing the score.** The clean A/B on
+  `ask_user` said it made no difference: 6/9 either way. The transcripts said
+  otherwise, and they were right — without the tool the model burned **30 tool
+  calls** and died on the turn ceiling *with a correct answer*; with it, it
+  asked in **3** and failed a rubric demanding it ask for two missing things at
+  once. Identical scores, opposite reasons, and a large real improvement
+  invisible to the grader. Rewriting the cases to assert on the trace
+  (`tools: ["ask_user"]`, and `forbid_tools: ["ask_user"]` where asking is the
+  *wrong* move) took the tag from 6/9 to 8/9.
+- **A tool's failure text is part of its behaviour.** `ask_user`'s decline
+  originally said "proceed with your best interpretation", and the model duly
+  invented a contractor name and rate — precisely the failure the case exists to
+  catch. A decline must not read as permission to guess.
+- **Changing the tool surface invalidates the comparison, including
+  accidentally.** Adding pkg to `~/.mecha/config.toml` gave every eval case five
+  extra tools in the middle of an A/B. Same trap as the fixture change, entered
+  from a different door.
+- **An override that widens should not narrow something unrelated.** Forcing
+  `untrusted_input` on an MCP server also revoked `read_only`, on the reasoning
+  that a distrusted tool should not skip the approval gate. But distrusting what
+  a tool *returns* says nothing about whether it *writes* — and the result was
+  every memory retrieval demanding approval. Only a forced `destructive`
+  contradicts read-only.
 - **Grade the control before believing the treatment.** `chain-total-compacted`
   failed on its first run, which looked like a compaction finding — until the
   uncompacted control failed too, which made it look like nothing. Both readings
