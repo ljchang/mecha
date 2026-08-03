@@ -222,15 +222,28 @@ kinds of check, in descending order of how much they are worth:
   right answer is a judgement. Not deterministic: the same answer can be graded
   differently across runs, so treat a single judge failure as a prompt to read
   the answer, not as a result.
+- **Run-metadata checks** — `expect.stop_cause`, `expect.taint`,
+  `expect.blocked_sends`, `expect.min_compactions`. Deterministic like the trace
+  checks, and the only way to grade the *harness* rather than the model: whether
+  the interlock fired, whether a budget was what stopped the run, whether a
+  summary was ever taken. None of it is visible in the answer text, and a case
+  that asserts an outcome it never exercised is worse than no case.
 - Everything a model says about its own work is hearsay. Grade the artifact.
 
-Two things a case can ask for beyond the defaults:
+What a case can ask for beyond the defaults:
 
 - `"sandbox": true` — a private copy of the fixture, with writes allowed.
   Required for `verify`. The shared fixture is never mutated.
 - `"max_turns": N` — a per-case turn budget. A case that genuinely takes twenty
   steps says so, rather than everyone raising the global ceiling for one case
   and quietly changing what every other case may do.
+- `"compact_at_tokens": N` — force compaction for this case alone. Same reason:
+  turning it on globally would change what every other case is measuring.
+- `"prompt": ["...", "..."]` — several turns on **one conversation**. A single
+  prompt cannot express anything that only goes wrong across turns, which is
+  most of what the harness guarantees: taint accumulating, a transcript growing
+  past the compaction threshold. `prompt` stays a bare string for one turn, so
+  no existing case had to change.
 
 Fixtures under `eval/workspace/{audit,reports,kata}` are generated:
 `python3 scripts/build-eval-fixtures.py` rewrites them, prints the gold answers
@@ -244,3 +257,27 @@ wrong one measures nothing.
 to test loop behavior (tool dispatch, denials, exhaustion, error recovery)
 without network access. `mecha tools` also runs without any provider configured,
 which makes it a good MCP-server smoke test.
+
+Three layers, and the split is deliberate:
+
+- **Unit tests** for anything that is a function of your own code — the
+  Anthropic request body, the OpenAI stream decoder, session round-trips, the
+  compaction cut. Free, deterministic, and they never expire. Note the limit:
+  a `ScriptedProvider` replays what you *believe* providers do, so it is
+  structurally blind to a provider violating that belief — which is where this
+  project's expensive bugs came from.
+- **Integration tests** (`mecha-core/tests/`) for what is deterministic but
+  needs real execution: docker actually confining a command, an MCP server
+  actually receiving an environment. A `nosy_mcp_server.py` fixture reports
+  everything it can see, so confinement is measured rather than asserted about
+  an argv. These skip when the backend is absent — and
+  `MECHA_TEST_REQUIRE_BACKENDS=1` turns every skip into a failure, because in
+  CI a silently skipped test reads exactly like a passing one.
+- **Eval cases** for what only emerges with a real model in the loop:
+  compaction fidelity, multi-turn behaviour. Expensive and non-deterministic;
+  use them where the other two cannot reach.
+
+Verify a fix by making it **fail on the old behaviour**. Where the assertion is
+about the environment rather than about scripted state, establish the same
+thing by checking the negative is not vacuous — the confinement tests only mean
+something on a machine that *does* have `~/.ssh` and *can* reach the network.

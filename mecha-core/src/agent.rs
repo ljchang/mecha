@@ -48,8 +48,10 @@ pub fn turns_phrase(n: u32) -> String {
 /// What one provider call produced.
 enum Completion {
     Finished(Box<CompletionResponse>),
-    /// Cancelled part-way, carrying whatever text had already arrived.
-    Interrupted(String),
+    /// Cancelled part-way, carrying whatever text and usage had already
+    /// arrived. Both are collected outside the provider future, which is the
+    /// only reason either survives it being dropped.
+    Interrupted(String, Usage),
 }
 
 /// Add user text to the conversation without breaking it.
@@ -91,6 +93,12 @@ pub struct RunContext {
     /// Sharing one token across several runs is a feature — that is how a whole
     /// batch is cancelled at once.
     pub cancel: Option<CancellationToken>,
+    /// Compaction threshold for this run, overriding the agent's own.
+    ///
+    /// Here rather than only in `AgentConfig` for the same reason the budget
+    /// and the jail are: one agent serves many runs, and a case that means to
+    /// exercise compaction cannot ask every other case to compact too.
+    pub compact_at_tokens: Option<u64>,
     /// Text the user typed while the agent was working — **steering**, as
     /// distinct from stopping it.
     ///
@@ -133,6 +141,7 @@ impl RunContext {
             approver,
             budget: Budget::default(),
             cancel: None,
+            compact_at_tokens: None,
             queued_input: None,
         }
     }
@@ -157,6 +166,13 @@ impl RunContext {
 
     /// Make this run interruptible. Cancelling the token stops it at the next
     /// safe point, keeping whatever it had already produced.
+    /// Compact this run at `limit` reported prompt tokens, whatever the agent
+    /// is configured for.
+    pub fn with_compact_at(mut self, limit: Option<u64>) -> Self {
+        self.compact_at_tokens = limit;
+        self
+    }
+
     pub fn with_cancel(mut self, token: CancellationToken) -> Self {
         self.cancel = Some(token);
         self
@@ -340,6 +356,21 @@ pub struct RunOutcome {
     pub stop_cause: StopCause,
     /// Cost of this run, when the provider has prices configured.
     pub cost_usd: Option<f64>,
+    /// How many times the transcript was summarised to keep it sendable.
+    ///
+    /// Reported because compaction is lossy: an answer produced after four
+    /// compactions is a different claim about the harness than the same answer
+    /// produced without any, and only one of them tests that summaries carry
+    /// the task forward.
+    pub compactions: u32,
+    /// False when `usage` is a *lower bound* rather than a measurement.
+    ///
+    /// A run cancelled mid-stream keeps the input tokens, which arrive in the
+    /// first frame, but not the output tokens of the cut turn, which arrive in
+    /// a frame that never comes. Reporting the shortfall as zero would be a
+    /// quiet lie in the same field a budget reads; saying the number is partial
+    /// costs one bool.
+    pub usage_complete: bool,
 }
 
 pub struct Agent {
@@ -458,6 +489,7 @@ impl Agent {
         // which an estimate over `messages` would miss.
         let mut prompt_tokens = 0u64;
         let mut compaction_gave_up = false;
+        let mut compactions = 0u32;
 
         // Carried in from the transcript, not started fresh. Everything the
         // conversation has already seen still applies — this is the whole
@@ -483,6 +515,7 @@ impl Agent {
                     malformed,
                     blocked_sends,
                     taint,
+                    compactions,
                 );
                 emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
                 return Ok(outcome);
@@ -499,10 +532,13 @@ impl Agent {
             // Summarise the middle if the last prompt came back too big. Done
             // here, between turns, because it rewrites the transcript and there
             // is no safe moment to do that while a turn is in flight.
-            if let Some(limit) = self.cfg.compact_at_tokens {
+            if let Some(limit) = cx.compact_at_tokens.or(self.cfg.compact_at_tokens) {
                 if prompt_tokens >= limit && !compaction_gave_up {
                     match self.compact(cx, messages, &events).await {
-                        Ok(Some(spent)) => usage.add(&spent),
+                        Ok(Some(spent)) => {
+                            usage.add(&spent);
+                            compactions += 1;
+                        }
                         // Nothing legal to drop — a short conversation holding
                         // one enormous tool result, usually. Cheap to
                         // re-evaluate next turn, since it costs no request.
@@ -569,6 +605,8 @@ impl Agent {
                     taint,
                     stop_cause: cause,
                     cost_usd: cost,
+                    compactions,
+                    usage_complete: true,
                 };
                 emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
                 return Ok(outcome);
@@ -592,13 +630,16 @@ impl Agent {
                 // Cancelled with the answer half-written. Keep it: a partial
                 // answer is worth more than a discarded one, and the user can
                 // see how far it got.
-                Completion::Interrupted(partial) => {
+                Completion::Interrupted(partial, spent) => {
                     tracing::info!(turns, "interrupted mid-stream");
                     if !partial.trim().is_empty() {
                         messages.push(Message::assistant(vec![Block::text(partial.clone())]));
                     }
+                    // What the cut turn had already cost, on top of the turns
+                    // that completed.
+                    usage.add(&spent);
                     let outcome = self.interrupted(
-                        partial, usage, turns, trace, malformed, blocked_sends, taint,
+                        partial, usage, turns, trace, malformed, blocked_sends, taint, compactions,
                     );
                     emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
                     return Ok(outcome);
@@ -649,7 +690,7 @@ impl Agent {
                     // has a matching tool_result, so this must never be empty
                     // when the model asked for tools.
                     if results.is_empty() {
-                        let outcome = self.finish(text, &response, usage, turns, trace, malformed, blocked_sends, taint);
+                        let outcome = self.finish(text, &response, usage, turns, trace, malformed, blocked_sends, taint, compactions);
                         emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
                         return Ok(outcome);
                     }
@@ -659,7 +700,7 @@ impl Agent {
                 // conversation as-is resumes it; no extra user message.
                 StopReason::PauseTurn => continue,
                 _ => {
-                    let outcome = self.finish(text, &response, usage, turns, trace, malformed, blocked_sends, taint);
+                    let outcome = self.finish(text, &response, usage, turns, trace, malformed, blocked_sends, taint, compactions);
                     emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
                     return Ok(outcome);
                 }
@@ -721,7 +762,7 @@ impl Agent {
             // Cancelled mid-summary. Leave the transcript alone: a half-written
             // summary is worse than an oversized conversation, and the run is
             // ending anyway.
-            Completion::Interrupted(_) => return Ok(None),
+            Completion::Interrupted(..) => return Ok(None),
         };
 
         let summary = response.message.text();
@@ -791,7 +832,7 @@ impl Agent {
             Completion::Finished(response) => *response,
             // Interrupted even during the forced last answer. Nothing more to
             // do: the caller already knows the run is being cut short.
-            Completion::Interrupted(partial) => {
+            Completion::Interrupted(partial, _) => {
                 return Ok(Some(partial).filter(|p| !p.trim().is_empty()))
             }
         };
@@ -816,6 +857,7 @@ impl Agent {
         malformed_tool_args: u32,
         blocked_sends: u32,
         taint: Taint,
+        compactions: u32,
     ) -> RunOutcome {
         let cost = self.cost(&usage);
 
@@ -846,6 +888,8 @@ impl Agent {
             blocked_sends,
             taint,
             stop_cause: StopCause::Completed,
+            compactions,
+            usage_complete: true,
             cost_usd: cost,
         }
     }
@@ -870,10 +914,14 @@ impl Agent {
         // being dropped. This is the whole reason a cancellable run streams:
         // without it, cancelling throws away everything the model had written.
         let partial = Arc::new(Mutex::new(String::new()));
+        // Usage is kept out here for the same reason as the text: the frame
+        // carrying the totals is the one a cancelled run never receives.
+        let spent = Arc::new(Mutex::new(Usage::default()));
 
         let (tx, mut rx) = unbounded_channel::<StreamEvent>();
         let forwarder = {
             let partial = Arc::clone(&partial);
+            let spent = Arc::clone(&spent);
             let events = events.clone();
             tokio::spawn(async move {
                 while let Some(ev) = rx.recv().await {
@@ -885,6 +933,13 @@ impl Agent {
                             AgentEvent::TextDelta(t)
                         }
                         StreamEvent::ThinkingDelta(t) => AgentEvent::ThinkingDelta(t),
+                        // Cumulative, so the latest replaces rather than adds.
+                        StreamEvent::Usage(u) => {
+                            if let Ok(mut slot) = spent.lock() {
+                                *slot = u;
+                            }
+                            continue;
+                        }
                         // Surfaced through ToolCall once arguments are complete.
                         StreamEvent::ToolUseStart { .. } => continue,
                     };
@@ -915,7 +970,8 @@ impl Agent {
             Some(response) => Ok(Completion::Finished(Box::new(response))),
             None => {
                 let text = partial.lock().map(|b| b.clone()).unwrap_or_default();
-                Ok(Completion::Interrupted(text))
+                let spent = spent.lock().map(|u| u.clone()).unwrap_or_default();
+                Ok(Completion::Interrupted(text, spent))
             }
         }
     }
@@ -931,6 +987,7 @@ impl Agent {
         malformed_tool_args: u32,
         blocked_sends: u32,
         taint: Taint,
+        compactions: u32,
     ) -> RunOutcome {
         // Say it was interrupted in the text itself, not only in `stop_cause`.
         // Whatever is here gets read by a human or fed to a grader, and a
@@ -960,7 +1017,10 @@ impl Agent {
             blocked_sends,
             taint,
             stop_cause: StopCause::Interrupted,
+            compactions,
             cost_usd: self.cost(&usage),
+            // Input is known from the first frame; the cut turn's output is not.
+            usage_complete: false,
         }
     }
 
@@ -1988,6 +2048,13 @@ mod tests {
             sink: Option<&StreamSink>,
         ) -> Result<CompletionResponse> {
             let sink = sink.expect("a cancellable run must stream, or there is no partial to keep");
+            // Real providers report the prompt's cost in the first frame, long
+            // before the totals that only arrive at the end.
+            let _ = sink.send(StreamEvent::Usage(Usage {
+                input_tokens: 120,
+                cache_read_input_tokens: 3000,
+                ..Usage::default()
+            }));
             let _ = sink.send(StreamEvent::TextDelta("Here is what I".into()));
             let _ = sink.send(StreamEvent::TextDelta(" found so far".into()));
             self.0.cancel();
@@ -2025,6 +2092,15 @@ mod tests {
             outcome.text
         );
         assert!(outcome.text.contains("incomplete"), "{}", outcome.text);
+
+        // The tokens were spent, so reporting zero would be wrong in the same
+        // field a cost budget reads. Input is known from the first frame; the
+        // cut turn's output is not, and `usage_complete` says so rather than
+        // letting a floor pass for a measurement.
+        assert_eq!(outcome.usage.input_tokens, 120, "the prompt's cost was thrown away");
+        assert_eq!(outcome.usage.cache_read_input_tokens, 3000);
+        assert_eq!(outcome.usage.total_input(), 3120);
+        assert!(!outcome.usage_complete, "a partial count was reported as complete");
 
         // And it is in the transcript, so the conversation can carry on from
         // where it was cut off rather than pretending the turn never happened.

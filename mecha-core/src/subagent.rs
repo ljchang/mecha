@@ -171,6 +171,9 @@ impl Tool for Subagent {
             // one of the parent's tool calls, and a Ctrl-C that left a
             // subagent running would be a lie.
             cancel: self.agent.context().cancel.clone(),
+            // The child has its own transcript, and its own config decides
+            // when to summarise it.
+            compact_at_tokens: None,
             // Steering is addressed to the parent. The child was given a
             // self-contained task and has no conversation to redirect.
             queued_input: None,

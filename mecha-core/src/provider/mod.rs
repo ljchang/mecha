@@ -7,7 +7,7 @@
 pub mod anthropic;
 pub mod openai;
 
-use crate::message::{CompletionRequest, CompletionResponse};
+use crate::message::{CompletionRequest, CompletionResponse, Usage};
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc::UnboundedSender;
@@ -19,6 +19,15 @@ pub enum StreamEvent {
     ThinkingDelta(String),
     /// A tool call has begun; arguments are still streaming.
     ToolUseStart { name: String },
+    /// Everything known about this turn's token usage *so far*, cumulative.
+    ///
+    /// Emitted as it arrives rather than only at the end, because cancelling a
+    /// run drops the provider future and with it the final frame that carries
+    /// the totals. Without this, a run interrupted on its first turn reports
+    /// zero tokens — and the tokens were spent. Input is usually known from the
+    /// very first frame, which is the expensive half when a cached prefix is in
+    /// play.
+    Usage(Usage),
 }
 
 pub type StreamSink = UnboundedSender<StreamEvent>;

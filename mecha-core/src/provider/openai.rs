@@ -281,6 +281,12 @@ impl Accumulator {
         if let Some(u) = v.get("usage") {
             if !u.is_null() {
                 self.usage = decode_usage(Some(u));
+                // Reported as it arrives, so cancelling mid-stream does not
+                // throw away the count with the dropped future. This dialect
+                // usually sends it only in the final chunk (`include_usage`),
+                // so there is often nothing to salvage — but when there is, it
+                // beats reporting zero.
+                let _ = sink.send(StreamEvent::Usage(self.usage.clone()));
             }
         }
         let Some(choice) = v.pointer("/choices/0") else { return };

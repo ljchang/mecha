@@ -351,6 +351,10 @@ impl StreamAccumulator {
                 if let Some(m) = event.get("message") {
                     self.model = m.get("model").and_then(Value::as_str).unwrap_or_default().to_string();
                     self.usage.add(&decode_usage(m.get("usage")));
+                    // Input tokens — including both cache tiers — are known
+                    // from this first frame. Report them now so a run cancelled
+                    // mid-stream still knows what the prompt cost.
+                    let _ = sink.send(StreamEvent::Usage(self.usage.clone()));
                 }
             }
             "content_block_start" => {
@@ -414,6 +418,7 @@ impl StreamAccumulator {
                     }
                 }
                 self.usage.add(&decode_usage(event.get("usage")));
+                let _ = sink.send(StreamEvent::Usage(self.usage.clone()));
             }
             "error" => {
                 bail!(

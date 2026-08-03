@@ -251,7 +251,10 @@ fn prepare_contexts(
 ) -> Result<HashMap<String, Arc<RunContext>>> {
     let mut contexts = HashMap::new();
 
-    for case in cases.iter().filter(|c| c.sandbox || c.max_turns.is_some()) {
+    for case in cases
+        .iter()
+        .filter(|c| c.sandbox || c.max_turns.is_some() || c.compact_at_tokens.is_some())
+    {
         let base = prepared.agent.context();
 
         let cx = if case.sandbox {
@@ -272,7 +275,8 @@ fn prepare_contexts(
         };
 
         let budget = Budget { max_turns: case.max_turns, ..Budget::default() };
-        contexts.insert(case.id.clone(), Arc::new(cx.with_budget(budget)));
+        let cx = cx.with_budget(budget).with_compact_at(case.compact_at_tokens);
+        contexts.insert(case.id.clone(), Arc::new(cx));
     }
     Ok(contexts)
 }
