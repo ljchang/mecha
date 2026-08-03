@@ -33,14 +33,19 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    /// Spawn the server, perform the initialize handshake, and return a client.
+    /// The child process as it will be spawned: confinement decided, and the
+    /// environment built.
     ///
-    /// An MCP server is third-party code running on your machine, which makes
-    /// it a larger hole than `shell` ever was: `shell` at least runs commands a
-    /// model asked for out loud, where a server runs whatever its author wrote.
-    /// So it gets the same treatment — a named environment rather than an
-    /// inherited one, and optional confinement.
-    pub async fn connect(cfg: &McpServerConfig, sandbox: &Sandbox, workspace: &Path) -> Result<Arc<Self>> {
+    /// Split out from [`McpClient::connect`] so the environment policy can be
+    /// asserted on. It is worth asserting on: `envs()` *adds to* the inherited
+    /// environment rather than replacing it, so the bug this prevents looks
+    /// entirely correct at the call site while every server on the machine
+    /// quietly holds your provider keys.
+    fn build_command(
+        cfg: &McpServerConfig,
+        sandbox: &Sandbox,
+        workspace: &Path,
+    ) -> Result<tokio::process::Command> {
         // Same rule as `shell`: asking to be confined and silently not being
         // confined is the worst outcome, because the decision was made on the
         // belief that it held.
@@ -73,6 +78,19 @@ impl McpClient {
         command.env_clear();
         command.envs(Sandbox::child_env(&cfg.env_passthrough));
         command.envs(&cfg.env);
+
+        Ok(command)
+    }
+
+    /// Spawn the server, perform the initialize handshake, and return a client.
+    ///
+    /// An MCP server is third-party code running on your machine, which makes
+    /// it a larger hole than `shell` ever was: `shell` at least runs commands a
+    /// model asked for out loud, where a server runs whatever its author wrote.
+    /// So it gets the same treatment — a named environment rather than an
+    /// inherited one, and optional confinement.
+    pub async fn connect(cfg: &McpServerConfig, sandbox: &Sandbox, workspace: &Path) -> Result<Arc<Self>> {
+        let mut command = Self::build_command(cfg, sandbox, workspace)?;
 
         command
             .stdin(std::process::Stdio::piped())
@@ -335,4 +353,112 @@ pub async fn connect_all(
     }
 
     (tools, clients, errors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sandbox::SandboxConfig;
+
+    /// Always passed through, because most runtimes cannot start without them.
+    const BASE: [&str; 5] = ["PATH", "HOME", "LANG", "LC_ALL", "TZ"];
+
+    fn unconfined() -> Sandbox {
+        Sandbox::new(SandboxConfig::default())
+    }
+
+    #[test]
+    fn asking_for_confinement_with_no_backend_is_an_error_not_a_warning() {
+        let cfg = McpServerConfig {
+            name: "nosy".into(),
+            command: "/usr/bin/env".into(),
+            sandbox: true,
+            ..Default::default()
+        };
+
+        // Same rule as `shell`: running unconfined after being told to confine
+        // would have every downstream decision resting on a belief nothing is
+        // enforcing.
+        let err = McpClient::build_command(&cfg, &unconfined(), Path::new("/tmp"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no sandbox backend is set"), "unexpected error: {err}");
+        assert!(err.contains("nosy"), "the error should name the server: {err}");
+    }
+
+    #[test]
+    fn an_unconfined_server_is_spawned_directly_rather_than_wrapped() {
+        let cfg = McpServerConfig {
+            name: "plain".into(),
+            command: "/usr/bin/env".into(),
+            args: vec!["-0".into()],
+            ..Default::default()
+        };
+
+        let cmd = McpClient::build_command(&cfg, &unconfined(), Path::new("/tmp")).unwrap();
+        let std = cmd.as_std();
+
+        assert_eq!(std.get_program(), "/usr/bin/env");
+        let args: Vec<_> = std.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert_eq!(args, vec!["-0"]);
+    }
+
+    /// The measurement that motivated `env_clear()`, as a test: spawn a server
+    /// that reports its own environment and check what actually crossed.
+    ///
+    /// Asserted as a subset rather than against a hand-listed set of secrets,
+    /// because the leak was never about one variable — `envs()` layered onto
+    /// the inherited environment, so *everything* crossed, provider keys
+    /// included, and the call site looked right.
+    #[tokio::test]
+    async fn the_child_environment_is_an_allowlist_not_an_inheritance() {
+        let ours: std::collections::BTreeSet<String> = std::env::vars().map(|(k, _)| k).collect();
+
+        // Something we hold that is not in the base set — under `cargo test`
+        // there are many. Naming it makes it cross; its neighbours must not.
+        let Some(passthrough) = ours.iter().find(|k| !BASE.contains(&k.as_str())).cloned() else {
+            return; // An environment this bare has nothing to leak.
+        };
+
+        let cfg = McpServerConfig {
+            name: "nosy".into(),
+            command: "/usr/bin/env".into(),
+            // NUL-separated: a value containing a newline cannot be mistaken
+            // for another variable.
+            args: vec!["-0".into()],
+            env: [("MECHA_EXPLICIT_TOKEN".to_string(), "granted".to_string())]
+                .into_iter()
+                .collect(),
+            env_passthrough: vec![passthrough.clone()],
+            ..Default::default()
+        };
+
+        let mut cmd = McpClient::build_command(&cfg, &unconfined(), Path::new("/tmp")).unwrap();
+        let out = cmd.stdout(std::process::Stdio::piped()).output().await.unwrap();
+        assert!(out.status.success(), "env did not run");
+
+        let child: std::collections::BTreeSet<String> = String::from_utf8_lossy(&out.stdout)
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .filter_map(|entry| entry.split_once('=').map(|(k, _)| k.to_string()))
+            .collect();
+
+        let allowed: std::collections::BTreeSet<String> = BASE
+            .iter()
+            .map(|s| s.to_string())
+            .chain([passthrough.clone(), "MECHA_EXPLICIT_TOKEN".to_string()])
+            .collect();
+
+        let leaked: Vec<_> = child.difference(&allowed).collect();
+        assert!(leaked.is_empty(), "these crossed without being named: {leaked:?}");
+
+        assert!(child.contains(&passthrough), "a named passthrough did not cross");
+        assert!(child.contains("MECHA_EXPLICIT_TOKEN"), "an explicit value did not cross");
+        assert!(
+            child.len() < ours.len(),
+            "the child holds as much as we do ({} vs {}) — the environment was inherited",
+            child.len(),
+            ours.len()
+        );
+    }
 }
