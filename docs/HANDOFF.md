@@ -17,11 +17,14 @@ A working agent harness, used and measured rather than just compiled.
 | Subagents | `Agent` wrapped as a `Tool`, allowlisted registry, per-profile model |
 | Search | `SearchBackend` trait — Exa, Tavily, SearXNG — with fall-through |
 | Security | Path jail, SSRF guard, trifecta interlock, leak guard, capability model |
+| Sandbox | `shell` and MCP servers confined via bubblewrap or docker; no network by default |
 | Budgets | `max_turns`, `max_output_tokens`, `max_cost_usd`, cost accounting |
+| Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
+| Interfaces | `run`, `chat`, `tui` (live input line, steer while it works), `batch` |
 | Sessions | Append-only JSONL, resume |
-| Eval | 25 cases, 10 tags, scorecard, `--compare` |
+| Eval | 34 cases, 14 tags, scorecard, `--compare`, sandboxes, LLM judge |
 
-36 tests. `cargo clippy --all-targets` is clean and should stay that way.
+61 tests. `cargo clippy --all-targets` is clean and should stay that way.
 
 ## Environment as left
 
@@ -46,10 +49,11 @@ breakpoints specifically.
 
 ## What the measurements say
 
-All four models score 23–24/25 with zero malformed arguments and zero invented
-tools. **The case set has saturated** — it is a floor test, not a ranking test.
+On the original 25 grounded cases, all four models score 23–24/25 with zero
+malformed arguments and zero invented tools. **That set saturated** — it is a
+floor test, not a ranking test, and it stays in the file as exactly that.
 
-Two conclusions hold anyway:
+Two conclusions hold from it anyway:
 
 1. **MoE wins on this hardware.** Decode tracks *active* parameters. The dense
    27B is 8× slower than the 3B-active MoE for identical accuracy.
@@ -58,72 +62,208 @@ Two conclusions hold anyway:
    zero across the board. Don't conclude anything about a model's tool
    reliability from an unconstrained sampler.
 
-Everything in the case set is *grounded* — the data is in the workspace and the
-job is to find it, combine it, report. It says nothing about long-horizon
-planning, ambiguity, or code generation.
+The nine cases added since (`long-horizon`, `codegen`, `synthesis`,
+`ambiguity`) do discriminate. qwen3.6-35b-a3b judged by gemma-4-26b-a4b scores
+**32/34** on the full set (`results/qwen-hard-v2.json`), and both failures are
+in the same tag:
+
+- **long-horizon 2/2**, at ~17.5 turns — it walks a 16-link chain without
+  losing the running total, and does not take the shortcut of summing the
+  decoys.
+- **codegen 2/2** — implements `median`, finds the one-line duration-parsing
+  bug, and runs the tests itself. Graded by running them, not by asking.
+- **synthesis 2/2** — finds the majority figure and the outlier, and notices
+  which report supersedes which.
+- **ambiguity 1/3** — the weak spot, and the one that moves between runs
+  (1–2/3 across four runs). Given "add the new contractor at the usual rate" it
+  sometimes asks, and sometimes spends its whole budget hunting for a
+  contractor that does not exist. That variance is itself the finding, and it
+  is the case to watch when comparing models.
+
+Only `ambiguity` and `synthesis` have a judge in the loop, and judges disagree
+with themselves across runs. Read the answer before believing a single verdict.
+
+**Scorecards in `results/` from before this change are not comparable to ones
+after it.** The new fixtures took the shared workspace from 11 files to 44, so
+every case that searches the whole workspace got harder — two of them started
+failing on turn ceilings calibrated against the smaller tree. If you add
+fixtures, expect to recalibrate, and re-baseline every model rather than
+comparing across the boundary.
 
 ---
 
 ## Next features
 
-Ordered by dependency, not by appeal. The first three unlock or gate the rest.
+The three items that gated everything else — measurement, interruptibility,
+sandboxing — are done and kept below for their design notes rather than as a
+checklist. What is left is genuinely independent; pick by what you want to use.
 
-### 1. Harder eval cases
+### ~~Harder eval cases~~ — done
 
-**Why first:** everything downstream is a judgement call until you can measure.
-You currently cannot choose a parent model, and cannot tell whether a harness
-change helped.
+Kept here because the *design* is what matters, not the checkbox.
 
-Needs cases that are not grounded lookups:
+`RunContext` now carries the three things that are per-run rather than
+per-agent: the path jail, the approver, and the budget. `Agent::run_in` takes
+one; `Agent::run` uses the agent's own. One agent — one provider connection,
+one cached prefix — therefore serves concurrent runs jailed to different
+directories under different permissions. Subagents inherit the *caller's*
+workspace rather than the one that existed when they were built, which also
+closed a real hole: a parent in a sandbox used to delegate to a child still
+pointed at the original directory.
 
-- **Long-horizon** — a task needing 15+ steps with state carried across them.
-- **Ambiguity** — an under-specified request where the right move is to ask, or
-  to state an assumption. Grade the *judgement*, not the answer.
-- **Code generation** — write a function, run the tests, fix what fails. This
-  needs a fixture with a real test command, so `--read-only` has to be
-  relaxed for these cases and each one needs an isolated workspace copy.
-- **Multi-source synthesis** — combine six documents that partly disagree.
+On top of that: `"sandbox": true` stages a private fixture copy per case and
+allows writes; `"max_turns": N` gives a case its own turn budget;
+`expect.verify` runs a command in the case's workspace afterwards and grades
+the exit code; `expect.judge` grades a rubric with a second model
+(`--judge-provider`, `--judge-model`).
 
-Two known limits of the current rig to fix alongside:
+Three things worth keeping in mind about that machinery:
 
-- Cases are forced read-only against a shared fixture. Mutating cases need a
-  per-case temp copy — currently `ToolCtx` is per-agent, not per-run, so this
-  needs `run()` to take a context or `Agent` to hold `Arc<ToolCtx>`.
-- Substring grading won't survive open-ended answers. Add an **LLM-as-judge**
-  check type (`expect.judge: "..."`) that runs a rubric against a second model.
-  Keep it alongside substring checks, not replacing them — deterministic
-  checks are worth more where they apply.
+- **Grade the artifact, not the claim.** For codegen, `verify` runs the tests.
+  The command hashes the test file first, so a model that edits the tests until
+  they pass fails.
+- **A judge that cannot answer must fail the case, never skip it.** A case
+  whose only real assertion silently evaporates is worse than one that fails
+  loudly.
+- **Fixtures are generated** (`scripts/build-eval-fixtures.py`), which is how
+  the gold answers get computed rather than guessed, and how the katas are
+  checked to fail-as-shipped *and* be solvable.
 
-### 2. Interruptibility
+Still open here: the case set is graded per-run, so a flaky judge or a
+borderline case shows up as noise. Running each case k times and reporting
+pass@k would cost k× and be worth it for the `ambiguity` tag.
 
-**Why before the TUI:** it needs a cancellation token threaded through
-`Agent::run` and every provider call. Retrofitting that after a UI is built on
-top is much worse than doing it first.
+### ~~Interruptibility~~ — done
 
-- `tokio_util::sync::CancellationToken` (or a `Notify`) into `run()`.
-- Cancel mid-stream: abort the HTTP request, keep the partial assistant turn,
-  append a note that it was interrupted.
-- Queued input: user types while the agent works; message lands at the next
-  turn boundary rather than being dropped.
+`RunContext` gained two optional fields, both `None` by default so nothing
+changes for a caller that doesn't want them.
 
-### 3. Sandboxing
+**`cancel: Option<CancellationToken>`.** Cancelling stops the run at the next
+safe point and keeps what it has: `StopCause::Interrupted`, the partial text in
+`RunOutcome.text` with a note saying it is incomplete, and the partial assistant
+turn appended to `messages` so the session can be resumed from where it was cut.
 
-**Why before triggers or email:** `shell` currently runs as you, with your
-credentials, and the path jail does not cover it — a `shell` call can `cd`
-anywhere. That is acceptable for a supervised CLI and *not* acceptable for an
-agent woken by an incoming email.
+Three decisions worth not re-litigating:
 
-Options in rough order of effort: bubblewrap/`unshare` namespaces, a Docker
-exec into a scratch container, or a full self-hosted sandbox. The capability
-model already marks `shell` as private+sends+destructive; this is the missing
-enforcement behind that label.
+- **Cancellation is a dropped future.** `Agent::complete` selects between the
+  provider call and the token; losing the race drops the provider future, which
+  aborts the in-flight HTTP request. There is nothing else to abort.
+- **A cancellable run streams**, even when nobody is watching, because that is
+  the only way to have the half-written answer when the request is dropped.
+  This is why the field is opt-in: a batch worker nobody can interrupt should
+  not silently change transport.
+- **Tools run to completion.** The cancellation points are the turn boundary
+  and mid-stream, not mid-tool. Interrupting a `shell` call half way through a
+  write is worse than waiting for it.
 
-### 4. The remaining surfaces
+Verified against llama-server: interrupting a count-to-400 cut it off at 246
+with the partial answer kept in both the terminal and the transcript.
 
-Roughly independent of each other; all depend on 1–3.
+**`queued_input: Option<Arc<Mutex<VecDeque<String>>>>` — steering.** Text the
+user types mid-run is drained at the top of each turn and folded into the
+message that already carries the tool results, so the model sees "here is what
+your tools returned, and also: actually, focus on X" as one user turn and keeps
+working. The run is never stopped and restarted. That placement is forced and
+also correct: between an assistant's `tool_use` and its results there is no
+legal place for a user message, so the results message is the first opening, and
+taking it is the difference between steering a run and queueing until it ends.
+Both encoders preserve it (Anthropic as a second content block, OpenAI as a
+trailing `role: "user"` message after the `role: "tool"` ones).
 
-**TUI (ratatui).** Streaming panes, tool-call tree, approval modal, the `todo`
-list rendered live. `AgentEvent` already carries everything needed.
+`mecha tui` is the front-end for it — see below. `mecha chat` deliberately has
+no steering: a readline REPL cannot read stdin while a run streams without a
+second reader on the same descriptor, and whichever one is blocked when the run
+ends steals the user's next prompt line.
+
+Still open: an interrupted run reports **zero usage**, because token counts
+arrive in the final SSE frame that never comes. The tokens were spent. Either
+estimate them or report them as unknown rather than as zero.
+
+### ~~Sandboxing~~ — done
+
+`[sandbox] kind = "bwrap" | "docker" | "none"`. A confined command gets the
+workspace, a read-only system, no home, no environment beyond a named
+allowlist, and by default no network. Default is still `none`, because turning
+it on cannot be right for every machine — but `mecha tools` says so out loud.
+
+Verified end-to-end through the agent, docker backend: uid 1000, `~/.ssh` absent,
+container hostname, 6 environment variables, DNS dead, and files written into
+the workspace owned by the user rather than root (`--user`, without which the
+agent leaves root-owned files you cannot delete).
+
+Three things worth not re-deriving:
+
+- **A broken sandbox stops the run.** `preflight` runs a real command through
+  the real backend at startup. Falling back to unconfined execution would be
+  worse than never configuring one, because `shell`'s declared capabilities
+  narrow when confined and the interlock trusts them.
+- **Only `external_send` narrows**; `private_data` stays true. A confined shell
+  still reads the workspace, and `fs_read` is private for exactly those bytes.
+  I had this wrong first: narrowing it would have made `shell: cat secrets` set
+  no taint where `fs_read: secrets` does, so the cheapest way around the
+  interlock would have been the more dangerous tool. There is a test named
+  after that hole.
+- **`bwrap` does not work on this machine.** Installed, `unprivileged_userns_clone=1`,
+  and still fails with `setting up uid map: Permission denied`, because Ubuntu
+  23.10+ added `kernel.apparmor_restrict_unprivileged_userns=1` and ships no
+  AppArmor profile for bwrap. The docker backend exists because of this. The
+  error message says all of that when it fires.
+
+**MCP servers are covered too**, and were the bigger hole: third-party code, not
+commands a model asked for out loud.
+
+- `env_passthrough` replaced inheritance. A nosy test server went from 64
+  variables including two API keys to 3 and none. This is a **breaking change**
+  for any server that relied on inheriting a token — name it in
+  `env_passthrough` or set it in `env`.
+- `sandbox = true` per server confines it with the global backend, and
+  per-server `network` overrides the global switch, because otherwise reaching
+  one server's API would mean giving `shell` the network. Verified: a confined
+  server reports a container hostname, no `~/.ssh`, no secrets.
+- Asking for confinement with no backend set is a **startup error**, not a
+  warning. `mecha tools` lists every server and says which are unconfined.
+
+Still open on this axis:
+
+- **A confined MCP server sees the workspace**, so a filesystem server confined
+  this way is confined against your home directory, not against your project.
+  That is the right trade for most servers and worth knowing.
+- **HTTP/SSE MCP transports** are not implemented, and when they are, none of
+  this applies to them — there is no child process to confine, and the trust
+  question moves to the endpoint.
+- **Subagent workspaces.** A subagent inherits the caller's workspace; there is
+  no way to give a child a *narrower* jail than its parent, which is the
+  natural next capability restriction.
+
+### 1. The remaining surfaces
+
+Roughly independent of each other.
+
+**~~TUI (ratatui)~~ — done, `mecha tui`.** One event loop owns the terminal for
+the whole session and the agent runs in a task beside it, so the input line
+stays live: Enter starts a run when idle and *steers* one that is already
+going. Ctrl-C cancels the run rather than killing the process; Ctrl-C again at
+an idle prompt quits. Approval is a modal, because the terminal approver's
+`read_line` would fight the event loop for stdin and its prompt would tear the
+frame — `setup::prepare_with_approver` exists for that, and only swaps the
+approver in `Ask` mode.
+
+Verified by driving it under a pty (`script` + `stty`, since a pty with no
+window size renders every frame into a 0x0 area and looks broken). The steering
+case that matters:
+
+```
+● shell  sleep 6 && echo one
+● shell  sleep 6 && echo two
+● shell  sleep 6 && echo three
+↳ change of plan: skip the rest and just reply with the single word PIVOT  (steering)
+PIVOT
+```
+
+The fourth command never ran, and the run was never stopped and restarted.
+
+Not done: the `todo` list is not rendered as a live pane, and there is no
+tool-call *tree* — nested subagent calls appear flat.
 
 **Slack DM.** Socket Mode app in an existing workspace (no new workspace
 required). The hard requirement: it must share one session store with the CLI,
@@ -142,7 +282,7 @@ memory store beside it.**
 
 **Triggers.** Cron, file watchers, inbound webhooks. Gated on sandboxing.
 
-### 5. Smaller, high-value items
+### 2. Smaller, high-value items
 
 - **Hooks** — pre-tool / post-tool / session lifecycle. Lets policy, redaction,
   and logging attach without touching the loop.
@@ -183,12 +323,45 @@ Recorded so they aren't hit twice:
 
 - **A wrong gold answer measures nothing.** One was shipped ($2,450 vs the
   correct $1,750) by double-counting a base rate. Verify arithmetic with a
-  script.
+  script — `scripts/build-eval-fixtures.py` now computes them.
+- **A grading ceiling can measure the ceiling.** Two ambiguity cases were given
+  turn budgets tight enough that the model got cut off mid-exploration, so the
+  case graded budget exhaustion rather than judgement. Discovering that a
+  request is under-specified takes reading; leave room for it.
+- **Substring grading measures formatting, again.** "There is no `budget.csv`"
+  matched none of ten hand-listed negation phrasings, all of which were mine.
+  The negation phrasing space is unbounded — that case is judge-only now. Reach
+  for `expect.judge` when you catch yourself enumerating synonyms.
+- **A judge needs room to think before it answers.** With `max_tokens: 512`
+  the judge model spent the entire budget on reasoning and returned empty
+  content with `finish_reason: length`. It is 4096 now, and an unparseable
+  verdict reports the stop reason rather than just the empty string.
+- **`shell` is enabled inside sandboxed eval cases**, because a codegen case has
+  to run its tests. The staged workspace is a copy, so the *fixture* is safe,
+  but the command still runs as you — the case file is trusted input. This is
+  the same gap that gates feature 2.
+- **A case with more than one right answer has none.** `pick-search` asked
+  "which file mentions Wasita" when three do, and asserted one of them. It only
+  surfaced when a model named the other two. Grep the fixture before writing
+  the gold.
+- **Never believe `finish_reason`.** llama-server reports `stop` alongside
+  `tool_calls`. The loop believed it, dropped the calls, ended the run and
+  returned an empty string — which graded as a model failure and was a harness
+  failure. The loop now treats any turn containing tool_use blocks as a tool
+  turn, and a completed run with nothing to say says so rather than returning
+  "". Assume the same class of bug exists for other local servers.
 - **Substring grading measures formatting.** `"$2,520"` failed a check for
   `2520`; `"do **not** agree"` failed `not agree`. Both answers were right.
   `eval::normalize` handles it now — extend that, don't work around it.
 - **Wrapping our own errors as untrusted content** made the model invent
   explanations for its own harness's behaviour. Provenance, not capability.
+- **`Command::envs()` does not replace the environment, it adds to it.** Every
+  MCP server was inheriting mecha's full environment, provider keys included,
+  and nothing about the call site looked wrong. `env_clear()` first.
+- **A sandbox that silently degrades is worse than none.** The first version
+  fell back to running unconfined when the backend was missing. Since `shell`
+  declares narrower capabilities when confined, that combination would have had
+  the interlock trusting a claim nothing was enforcing. It now refuses to start.
 - **`pkill -f llama-server` kills your own shell**, because the pattern matches
   the command line running it. Use `pkill -x llama-server`.
 - **`hf download repo --include X Y`** silently ignores `--include` when
