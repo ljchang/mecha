@@ -231,10 +231,16 @@ impl McpClient {
                 let hint = |k: &str| hints.get(k).and_then(Value::as_bool).unwrap_or(false);
 
                 Some(Arc::new(McpTool {
-                    // A forced capability means we do not believe the server's
-                    // account of itself, so its read-only claim goes with it:
-                    // an approval gate is the cheaper of the two mistakes.
-                    read_only: hint("readOnlyHint") && self.forced == Capabilities::default(),
+                    // Only a forced `destructive` contradicts a read-only
+                    // claim; the others are orthogonal to it and dropping the
+                    // exemption for them was wrong. `untrusted_input` says the
+                    // content coming *out* may be attacker-influenced, and
+                    // `external_send` says data can leave — neither implies the
+                    // tool changes anything, and `http_fetch` is read-only
+                    // while being a send sink for exactly that reason. Blanket
+                    // narrowing here made every pkg retrieval prompt for
+                    // approval, which is unusable for memory read at turn start.
+                    read_only: hint("readOnlyHint") && !self.forced.destructive,
                     // `openWorldHint` means the tool talks to the wider world:
                     // that makes it both a source of attacker-influenced content
                     // and a way for data to leave.

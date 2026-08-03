@@ -132,8 +132,19 @@ async fn a_servers_own_account_of_itself_can_be_widened_but_never_narrowed() {
     let touch = tool_named(&tools, "nosy__touch").await;
     assert!(touch.capabilities().destructive, "a declared capability was narrowed");
 
-    // A tool we have stopped believing does not keep its approval exemption.
-    assert!(!environ.read_only(), "a distrusted tool still skips the approval gate");
+    // Distrusting what a tool *returns* says nothing about whether it writes.
+    // These are orthogonal, and conflating them made every retrieval from a
+    // read-only knowledge-graph server prompt for approval.
+    assert!(environ.read_only(), "an untrusted-input override wrongly revoked read-only");
+
+    // A forced `destructive` does contradict it, and there the exemption goes.
+    let cfg = McpServerConfig {
+        capabilities: CapabilityOverride { destructive: true, ..Default::default() },
+        ..server("python3", &fixture_server())
+    };
+    let strict = McpClient::connect(&cfg, &unconfined(), &dir).await.unwrap();
+    let environ = tool_named(&strict.list_tools().await.unwrap(), "nosy__environ").await;
+    assert!(!environ.read_only(), "a tool forced destructive kept its approval exemption");
 
     std::fs::remove_dir_all(&dir).ok();
 }
