@@ -12,6 +12,7 @@
 //! keeping the partial answer and the session.
 
 mod approve;
+mod ask;
 mod command;
 mod transcript;
 
@@ -26,7 +27,7 @@ use crossterm::terminal::{
 };
 use futures::StreamExt;
 use command::mode_name;
-use mecha_core::agent::{Agent, AgentEvent, Conversation, RunOutcome};
+use mecha_core::agent::{Agent, AgentEvent, Conversation, Phase, RunOutcome};
 use mecha_core::config::PermissionMode;
 use mecha_core::tool::{Approver, ModeApprover};
 use mecha_core::message::{Message, Usage};
@@ -155,6 +156,12 @@ struct App {
     mode: PermissionMode,
     /// Whether MCP servers are connected, for `/mcp` to report.
     mcp_on: bool,
+    /// Which tools the next run may see. Toggled with shift+tab.
+    phase: Phase,
+    /// A question the model is waiting on. Takes every key while it is up, the
+    /// same as an approval — and for the same reason, since the run is blocked
+    /// on it either way.
+    asking: Option<ask::Question>,
     /// Open modal list, if any. Takes every key while it is up.
     picker: Option<Picker>,
     /// Every provider entry in config, as (name, model). Fixed for the session.
@@ -167,6 +174,15 @@ impl App {
             Span::styled(format!(" {model} "), Style::new().fg(Color::Black).bg(Color::Cyan)),
             Span::styled(format!(" {provider} · {tools} tools "), Style::new().fg(Color::DarkGray)),
         ];
+
+        // Only shown while planning: a badge that is always there stops being
+        // read, and execute is the state people expect to be in.
+        if self.phase == Phase::Plan {
+            spans.push(Span::styled(
+                " plan ",
+                Style::new().fg(Color::Black).bg(Color::Magenta),
+            ));
+        }
 
         match &self.running {
             Some(run) => {
@@ -213,11 +229,19 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     // The approver has to exist before the agent is built, since the agent
     // takes ownership of it.
     let (tui_approver, mut approvals) = approve::TuiApprover::new();
+    // Only the TUI registers this: a batch worker or an eval case has nobody to
+    // answer, and a tool that blocks forever is worse than one that is absent.
+    let (asker, mut questions) = ask::TuiAsker::new();
+    let asker: Arc<dyn mecha_core::tool::ask::Asker> = Arc::new(asker);
     // Retained: switching back to `ask` mode has to reinstate *this* approver,
     // the one wired to the event loop, not a fresh terminal one that would
     // fight the interface for stdin.
     let approver: Arc<dyn Approver> = Arc::new(tui_approver);
-    let prepared = setup::prepare_with_approver(global, Arc::clone(&approver)).await?;
+    let mut prepared = setup::prepare_with_approver(global, Arc::clone(&approver)).await?;
+    prepared
+        .agent
+        .registry_mut()
+        .insert(Arc::new(mecha_core::tool::ask::AskUserTool::new(Arc::clone(&asker))));
 
     let session_dir = Session::default_dir()?;
     // One conversation for the session, so the taint accumulates across turns
@@ -270,6 +294,8 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         pending_switch: None,
         mode: prepared.config.tools.permission_mode,
         mcp_on: !global.no_mcp && !prepared.config.mcp.is_empty(),
+        phase: Phase::default(),
+        asking: None,
         picker: None,
         providers: prepared
             .config
@@ -301,6 +327,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         &mut app,
         &mut live,
         &mut approvals,
+        &mut questions,
         session.as_ref(),
         &approver,
     )
@@ -319,6 +346,7 @@ async fn run_loop(
     app: &mut App,
     live: &mut Live,
     approvals: &mut mpsc::UnboundedReceiver<approve::Request>,
+    questions: &mut mpsc::UnboundedReceiver<ask::Question>,
     session: Option<&Session>,
     approver: &Arc<dyn Approver>,
 ) -> Result<()> {
@@ -372,6 +400,7 @@ async fn run_loop(
             }
 
             Some(request) = approvals.recv() => app.pending = Some(request),
+            Some(question) = questions.recv() => app.asking = Some(question),
 
             // A finished run: collect the outcome and take the conversation back.
             outcome = wait_for_run(&mut app.running), if app.running.is_some() => {
@@ -510,6 +539,51 @@ fn on_key(
         return Ok(());
     }
 
+    // A question owns the keyboard, but only for the keys that answer it:
+    // an open question is answered by typing, so ordinary editing has to fall
+    // through to the input line below.
+    if app.asking.is_some() {
+        let has_options = app.asking.as_ref().is_some_and(|q| !q.options.is_empty());
+        match key.code {
+            KeyCode::Esc => {
+                // Declining is a legitimate answer; the tool tells the model to
+                // proceed with its best interpretation and say which it chose.
+                if let Some(q) = app.asking.take() {
+                    let _ = q.reply.send(None);
+                    app.transcript.push(Entry::Notice("left it to the model".into()));
+                }
+                return Ok(());
+            }
+            KeyCode::Char(c) if has_options && c.is_ascii_digit() => {
+                let choice = c.to_digit(10).unwrap_or(0) as usize;
+                if choice >= 1 {
+                    if let Some(q) = app.asking.take() {
+                        match q.options.get(choice - 1) {
+                            Some(answer) => {
+                                app.transcript.push(Entry::User(answer.clone()));
+                                let _ = q.reply.send(Some(answer.clone()));
+                            }
+                            None => app.asking = Some(q),
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            KeyCode::Enter if !app.input.trim().is_empty() => {
+                let answer = app.input.trim().to_string();
+                app.input.clear();
+                app.cursor = 0;
+                if let Some(q) = app.asking.take() {
+                    app.transcript.push(Entry::User(answer.clone()));
+                    let _ = q.reply.send(Some(answer));
+                }
+                return Ok(());
+            }
+            // Anything else edits the answer being typed.
+            _ => {}
+        }
+    }
+
     // A modal list owns the keyboard while it is up, for the same reason the
     // approval modal does: a keystroke meant for the list must not also reach
     // the input line behind it.
@@ -550,6 +624,30 @@ fn on_key(
         },
 
         KeyCode::Char('d') if ctrl && app.input.is_empty() => app.should_quit = true,
+
+        // Fill in as much as every candidate agrees on. Repeated presses
+        // converge rather than cycling through guesses.
+        KeyCode::Tab => {
+            let candidates = command::completions(&app.input);
+            let filled = command::common_prefix(&candidates);
+            if !filled.is_empty() {
+                app.input = format!("/{filled}");
+                app.cursor = app.input.len();
+            }
+        }
+
+        // Shift+Tab. Toggling rather than a command because it is the one
+        // setting worth changing without breaking stride.
+        KeyCode::BackTab => {
+            app.phase = match app.phase {
+                Phase::Execute => Phase::Plan,
+                Phase::Plan => Phase::Execute,
+            };
+            app.transcript.push(Entry::Notice(match app.phase {
+                Phase::Plan => "planning — writing tools are not offered".into(),
+                Phase::Execute => "executing — every tool is available".into(),
+            }));
+        }
 
         KeyCode::Enter => {
             let text = app.input.trim().to_string();
@@ -911,6 +1009,7 @@ fn submit(
         .as_ref()
         .clone()
         .with_cancel(cancel.clone())
+        .with_phase(app.phase)
         .with_queued_input(Arc::clone(&queue));
 
     let agent = Arc::clone(agent);
@@ -1014,7 +1113,25 @@ fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: us
         Some(_) => (Color::Yellow, " steer "),
         None => (Color::Cyan, " message "),
     };
-    let input = Paragraph::new(app.input.as_str())
+    // Ghost completion: the rest of what every candidate agrees on, dim, after
+    // the cursor. Shown rather than applied, so typing on never fights it.
+    let candidates = command::completions(&app.input);
+    let ghost = command::common_prefix(&candidates)
+        .strip_prefix(app.input.trim_start_matches('/'))
+        .unwrap_or_default()
+        .to_string();
+
+    let body = if ghost.is_empty() {
+        Line::from(app.input.as_str())
+    } else {
+        Line::from(vec![
+            Span::raw(app.input.as_str()),
+            Span::styled(ghost.clone(), Style::new().fg(Color::DarkGray)),
+            Span::styled("  tab", Style::new().fg(Color::DarkGray)),
+        ])
+    };
+
+    let input = Paragraph::new(body)
         .wrap(Wrap { trim: false })
         .block(
             Block::default()
@@ -1031,12 +1148,74 @@ fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: us
         chunks[2].y + 1 + cursor_row.min(rows.clamp(1, 6).saturating_sub(1)),
     ));
 
+    // What else could still be meant, listed under the box. Only while the
+    // name is being typed — once there is an argument the question is settled.
+    if !candidates.is_empty() && candidates.len() > 1 {
+        let hint = format!("  {}", candidates.join("  "));
+        let area = Rect {
+            x: chunks[2].x,
+            y: chunks[2].y.saturating_sub(1),
+            width: chunks[2].width,
+            height: 1,
+        };
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(Line::styled(hint, Style::new().fg(Color::DarkGray))),
+            area,
+        );
+    }
+
+    if let Some(question) = &app.asking {
+        draw_question(frame, question);
+    }
     if let Some(picker) = &app.picker {
         draw_picker(frame, picker);
     }
     if let Some(request) = &app.pending {
         draw_approval(frame, request);
     }
+}
+
+fn draw_question(frame: &mut Frame, q: &ask::Question) {
+    // question + blank + options + blank + hint, inside two borders — plus a
+    // row for the question wrapping, which it does at any real width. Getting
+    // this one short silently clips the line telling you how to answer.
+    const WIDTH: u16 = 74;
+    let question_rows = (q.question.len() as u16 / (WIDTH - 2).max(1)) + 1;
+    let height = (q.options.len() as u16).clamp(0, 8) + question_rows + 5;
+    let area = centered(frame.area(), WIDTH, height);
+    frame.render_widget(Clear, area);
+
+    let mut body = vec![
+        Line::styled(q.question.as_str(), Style::new().fg(Color::White).bold()),
+        Line::raw(""),
+    ];
+    for (i, option) in q.options.iter().enumerate() {
+        body.push(Line::from(vec![
+            Span::styled(format!(" {} ", i + 1), Style::new().fg(Color::Black).bg(Color::Green)),
+            Span::raw(" "),
+            Span::styled(option.clone(), Style::new().fg(Color::White)),
+        ]));
+    }
+    body.push(Line::raw(""));
+    body.push(Line::styled(
+        if q.options.is_empty() {
+            "type an answer and press enter · esc to let it decide"
+        } else {
+            "press a number, or type an answer · esc to let it decide"
+        },
+        Style::new().fg(Color::DarkGray),
+    ));
+
+    frame.render_widget(
+        Paragraph::new(body).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::new().fg(Color::Green))
+                .title(" the agent is asking "),
+        ),
+        area,
+    );
 }
 
 fn draw_picker(frame: &mut Frame, picker: &Picker) {

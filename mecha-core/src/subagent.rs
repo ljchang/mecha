@@ -174,6 +174,9 @@ impl Tool for Subagent {
             // The child has its own transcript, and its own config decides
             // when to summarise it.
             compact_at_tokens: None,
+            // A subagent inherits the caller's phase: delegating from a
+            // planning run must not be the way to get a write executed.
+            phase: self.agent.context().phase,
             // Steering is addressed to the parent. The child was given a
             // self-contained task and has no conversation to redirect.
             queued_input: None,

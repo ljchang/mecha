@@ -96,6 +96,48 @@ fn parse_toggle(s: &str) -> Option<bool> {
     }
 }
 
+/// Every command name, in the order they are offered for completion.
+///
+/// One list, so completion and `HELP` cannot drift apart — there is a test that
+/// every name here parses, and another that everything `HELP` advertises is
+/// here.
+pub const NAMES: [&str; 9] =
+    ["help", "tools", "model", "provider", "mode", "mcp", "usage", "clear", "session"];
+
+/// Command names that could still be meant by what has been typed.
+///
+/// Empty for anything that is not a command being typed: once there is
+/// whitespace the name is settled and the user is onto arguments, and once
+/// there is an exact match there is nothing left to suggest.
+pub fn completions(input: &str) -> Vec<&'static str> {
+    let Some(rest) = input.strip_prefix('/') else { return Vec::new() };
+    if rest.contains(char::is_whitespace) {
+        return Vec::new();
+    }
+    let rest = rest.to_ascii_lowercase();
+    NAMES.iter().copied().filter(|n| n.starts_with(&rest) && *n != rest).collect()
+}
+
+/// The longest prefix every candidate shares — what Tab should fill in.
+///
+/// Completing to the *common* prefix rather than the first match is what makes
+/// repeated Tab presses converge instead of cycling through guesses.
+pub fn common_prefix(candidates: &[&str]) -> String {
+    let Some(first) = candidates.first() else { return String::new() };
+    let mut len = first.len();
+    for c in &candidates[1..] {
+        len = len.min(
+            first
+                .chars()
+                .zip(c.chars())
+                .take_while(|(a, b)| a == b)
+                .map(|(a, _)| a.len_utf8())
+                .sum(),
+        );
+    }
+    first[..len].to_string()
+}
+
 pub fn mode_name(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Ask => "ask",
@@ -119,6 +161,48 @@ pub const HELP: &str = "\
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_only_fires_while_the_name_is_still_being_typed() {
+        assert_eq!(completions("/mo"), vec!["model", "mode"]);
+        assert_eq!(completions("/mod"), vec!["model", "mode"]);
+        assert_eq!(completions("/mode"), vec!["model"], "an exact match still offers longer names");
+        assert_eq!(completions("/c"), vec!["clear"]);
+
+        // Not a command, or past the name: nothing to suggest.
+        assert!(completions("summarise this").is_empty());
+        assert!(completions("/model claude").is_empty(), "arguments are not command names");
+        assert!(completions("/zzz").is_empty());
+    }
+
+    #[test]
+    fn tab_fills_in_what_every_candidate_agrees_on() {
+        // `/mo` -> `mode`, the longest prefix "model" and "mode" agree on.
+        // Completing to the first match instead would make a second Tab undo
+        // the first.
+        assert_eq!(common_prefix(&completions("/mo")), "mode");
+        assert_eq!(common_prefix(&["session", "settings"]), "se");
+        assert_eq!(common_prefix(&completions("/u")), "usage");
+        assert_eq!(common_prefix(&[]), "");
+    }
+
+    #[test]
+    fn the_name_list_and_the_help_text_cannot_drift_apart() {
+        for name in NAMES {
+            assert!(
+                !matches!(parse(&format!("/{name}")), None | Some(Command::Unknown(_))),
+                "{name} is offered for completion but does not parse"
+            );
+        }
+        for line in HELP.lines() {
+            let Some(advertised) = line.split_whitespace().next() else { continue };
+            let advertised = advertised.trim_start_matches('/');
+            if advertised == "exit" {
+                continue; // an alias, deliberately not offered first
+            }
+            assert!(NAMES.contains(&advertised), "{advertised} is documented but not completable");
+        }
+    }
 
     #[test]
     fn an_ordinary_message_is_not_a_command() {

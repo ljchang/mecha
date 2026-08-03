@@ -45,6 +45,45 @@ pub fn turns_phrase(n: u32) -> String {
     }
 }
 
+/// Which half of the work a run is doing.
+///
+/// The difference from [`crate::config::PermissionMode::ReadOnly`] is the whole
+/// point, and it is worth stating: read-only mode *offers* a writing tool and
+/// refuses the call. Planning does not offer it at all. A tool absent from the
+/// request cannot be argued for, talked around, or reached by a model that has
+/// seen it in an earlier turn — which is what "structural" has to mean if it is
+/// to survive contact with a persuasive transcript.
+///
+/// Both halves are enforced. Filtering only the advertised list would leave a
+/// model free to call a tool it remembers from before the phase changed, so
+/// dispatch refuses too.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    /// Everything is available.
+    #[default]
+    Execute,
+    /// Read-only tools only. For working out what to do before doing it.
+    Plan,
+}
+
+impl Phase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Phase::Execute => "execute",
+            Phase::Plan => "plan",
+        }
+    }
+
+    /// Whether a tool may be offered and called in this phase.
+    pub fn allows(self, read_only: bool) -> bool {
+        match self {
+            Phase::Execute => true,
+            Phase::Plan => read_only,
+        }
+    }
+}
+
 /// What one provider call produced.
 enum Completion {
     Finished(Box<CompletionResponse>),
@@ -93,6 +132,8 @@ pub struct RunContext {
     /// Sharing one token across several runs is a feature — that is how a whole
     /// batch is cancelled at once.
     pub cancel: Option<CancellationToken>,
+    /// Which tools this run may see at all. See [`Phase`].
+    pub phase: Phase,
     /// Compaction threshold for this run, overriding the agent's own.
     ///
     /// Here rather than only in `AgentConfig` for the same reason the budget
@@ -141,6 +182,7 @@ impl RunContext {
             approver,
             budget: Budget::default(),
             cancel: None,
+            phase: Phase::default(),
             compact_at_tokens: None,
             queued_input: None,
         }
@@ -166,6 +208,12 @@ impl RunContext {
 
     /// Make this run interruptible. Cancelling the token stops it at the next
     /// safe point, keeping whatever it had already produced.
+    /// Run in `phase`, hiding whatever it does not permit.
+    pub fn with_phase(mut self, phase: Phase) -> Self {
+        self.phase = phase;
+        self
+    }
+
     /// Compact this run at `limit` reported prompt tokens, whatever the agent
     /// is configured for.
     pub fn with_compact_at(mut self, limit: Option<u64>) -> Self {
@@ -456,6 +504,14 @@ impl Agent {
         &self.registry
     }
 
+    /// Add a tool after the agent is built.
+    ///
+    /// For tools that need something only the front-end has — `ask_user` needs
+    /// somebody to ask, and core must not assume a terminal exists.
+    pub fn registry_mut(&mut self) -> &mut Registry {
+        &mut self.registry
+    }
+
     /// The provider's own id (`anthropic`, `local`, …), for display.
     pub fn provider_id(&self) -> &str {
         self.provider.id()
@@ -643,7 +699,7 @@ impl Agent {
                 model: self.model.clone(),
                 system: self.system.clone(),
                 messages: messages.clone(),
-                tools: self.registry.specs(),
+                tools: self.registry.specs_for(cx.phase),
                 max_tokens: self.cfg.max_tokens,
                 effort: self.cfg.effort,
                 thinking: self.cfg.thinking,
@@ -1078,6 +1134,47 @@ impl Agent {
                 AgentEvent::ToolCall { id: id.clone(), name: name.clone(), input: input.clone() },
             );
 
+            // Filtering the advertised list is not enough on its own: the
+            // tool was in the prompt on an earlier turn, and the model may
+            // simply call it from memory.
+            if let Some(tool) = self.registry.get(name) {
+                if !cx.phase.allows(tool.read_only()) {
+                    let content = format!(
+                        "`{name}` is not available while planning. Work out what to do \
+                         and say so; leave the phase to carry it out."
+                    );
+                    trace.push(ToolCallTrace {
+                        name: name.clone(),
+                        input: input.clone(),
+                        is_error: true,
+                        denied: true,
+                        unknown: false,
+                    });
+                    emit(
+                        events,
+                        AgentEvent::ToolDenied {
+                            name: name.to_string(),
+                            reason: "planning phase".into(),
+                        },
+                    );
+                    emit(
+                        events,
+                        AgentEvent::ToolResult {
+                            id: id.clone(),
+                            name: name.clone(),
+                            is_error: true,
+                            content: content.clone(),
+                        },
+                    );
+                    results[i] = Some(Block::ToolResult {
+                        tool_use_id: id.clone(),
+                        content,
+                        is_error: true,
+                    });
+                    continue;
+                }
+            }
+
             let Some(tool) = self.registry.get(name) else {
                 let content = format!(
                     "no tool named `{name}`. Available: {}",
@@ -1310,6 +1407,20 @@ mod tests {
         }
     }
 
+    /// Declares itself as writing, so a phase gate has something to hide.
+    struct WriteTool;
+
+    #[async_trait]
+    impl Tool for WriteTool {
+        fn name(&self) -> &str { "fs_write" }
+        fn description(&self) -> &str { "Write a file." }
+        fn input_schema(&self) -> Value { json!({"type": "object"}) }
+        fn read_only(&self) -> bool { false }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok("written"))
+        }
+    }
+
     struct EchoTool;
 
     #[async_trait]
@@ -1343,6 +1454,7 @@ mod tests {
         });
         let mut registry = Registry::new();
         registry.insert(Arc::new(EchoTool));
+        registry.insert(Arc::new(WriteTool));
 
         struct Shared(Arc<ScriptedProvider>);
         #[async_trait]
@@ -2039,6 +2151,93 @@ mod tests {
         let mut turns: Vec<_> = (0..turns).map(|_| looping()).collect();
         turns.push(assistant(vec![Block::text("finished on my own")], StopReason::EndTurn));
         agent_with(turns, mode).0
+    }
+
+
+    #[tokio::test]
+    async fn planning_does_not_offer_the_writing_tools_at_all() {
+        // The difference from read-only mode: read-only offers the tool and
+        // refuses the call, so the model can keep arguing for it. Planning
+        // never puts it in the request.
+        let (agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("here is the plan")], StopReason::EndTurn)],
+            PermissionMode::Allow,
+        );
+        let cx = agent.context().as_ref().clone().with_phase(Phase::Plan);
+
+        let mut convo = Conversation::from(vec![Message::user("what should we do?")]);
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        let offered: Vec<&str> = seen[0].tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(offered.contains(&"echo"), "a read-only tool was hidden: {offered:?}");
+        assert!(!offered.contains(&"fs_write"), "planning offered a writing tool: {offered:?}");
+    }
+
+    #[tokio::test]
+    async fn executing_offers_everything() {
+        let (agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("done")], StopReason::EndTurn)],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        let offered: Vec<&str> = seen[0].tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(offered.contains(&"fs_write"), "{offered:?}");
+    }
+
+    #[tokio::test]
+    async fn a_writing_tool_called_from_memory_is_still_refused_while_planning() {
+        // The hole that filtering the list alone would leave: the tool was in
+        // the prompt on an earlier turn, and nothing stops the model calling it
+        // from memory. Both ends have to be closed or neither is.
+        let (agent, _) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "fs_write".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("understood, here is the plan")], StopReason::EndTurn),
+            ],
+            // Allow, so nothing but the phase can be doing the refusing.
+            PermissionMode::Allow,
+        );
+        let cx = agent.context().as_ref().clone().with_phase(Phase::Plan);
+
+        let mut convo = Conversation::from(vec![Message::user("write the file")]);
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        let call = outcome.tool_calls.iter().find(|c| c.name == "fs_write").expect("traced");
+        assert!(call.denied, "the call was allowed to run while planning");
+        assert!(call.is_error);
+
+        // And the model is told why, in terms it can act on, rather than being
+        // left to guess why nothing happened.
+        let result = convo.messages.iter().find_map(|m| {
+            m.content.iter().find_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+        });
+        let result = result.expect("a tool result must exist for every tool_use");
+        assert!(result.contains("not available while planning"), "{result}");
+    }
+
+    #[tokio::test]
+    async fn a_subagent_cannot_be_used_to_escape_the_planning_phase() {
+        // Delegating out of a planning run must not be the way to get a write
+        // executed; the child inherits the phase.
+        let (agent, _) = agent_with(vec![], PermissionMode::Allow);
+        let cx = agent.context().as_ref().clone().with_phase(Phase::Plan);
+        assert_eq!(cx.phase, Phase::Plan);
+        assert!(!cx.phase.allows(false), "planning permitted a writing tool");
+        assert!(cx.phase.allows(true), "planning hid a read-only tool");
     }
 
     #[tokio::test]
