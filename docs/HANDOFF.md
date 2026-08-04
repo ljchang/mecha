@@ -415,6 +415,63 @@ calendar *reads* → calendar writes and email through the outbox. Calendar
 writes are the trifecta in one tool (invites send; descriptions exfiltrate),
 so they do not jump the queue ahead of the outbox.
 
+### 3b. Research backlog (raised 2026-08-04, not yet acted on)
+
+`docs/CONTEXT-RESEARCH.md` is the first of these, done. The rest are open,
+and the first two have research threads running as of this writing.
+
+- **Sandboxes: is there something faster and lighter than Docker?** Current
+  state is bwrap (broken here — AppArmor's
+  `kernel.apparmor_restrict_unprivileged_userns`) or a throwaway container per
+  command, which is correct but slow to start. Worth pricing: WASM runtimes,
+  microVMs (Firecracker/libkrun), landlock + seccomp direct exec (no root, no
+  userns — the one that would work on *this* box), gVisor, and what Codex's
+  Rust sandbox actually does on Linux. **The scoping question that decides it:
+  mecha's `shell` runs arbitrary binaries (cargo, git, compilers), so a
+  Python-only WASM sandbox cannot replace it** — but it *could* back a
+  separate code-execution tool, which is the token-offloading pattern below.
+- **Compaction and tool offloading, deeper.** The context research already
+  points at spill-to-file, outline-instead-of-content, and staleness eviction.
+  The unexplored half is **programmatic tool calling** — the model writes code
+  that calls tools, and intermediate results never enter the context at all
+  (Anthropic measured 37% fewer tokens; the docs' honest version says 38% on
+  one benchmark, 0% and +8% cost on another). That needs a code sandbox, which
+  is why it is coupled to the item above.
+- **Planning, verification, and "ralph loops" for long-horizon work.**
+  Ralph-style loops re-run an agent on the same prompt until it converges.
+  mecha has no convergence primitive: no runtime notion of "done", and no
+  in-loop verification (see below). Research whether self-critique works
+  without external grounding — the prior from the context research is that
+  execution grounding is what makes a verifier real, and that self-conditioning
+  (20–30pp at turn 100) actively punishes leaving failed attempts in context.
+
+**What verification mecha already has, and the gap.** Twelve mechanisms, and
+they are all *offline or pre-execution*:
+
+| Where | Mechanism | Grounding |
+|---|---|---|
+| eval | `expect.verify` runs a command, passes iff exit 0 — and hashes the test file first, so editing tests until they pass fails | **execution** |
+| eval | trace checks (`tools`, `tools_in_order`, `forbid_tools`, `args`) | deterministic |
+| eval | run-metadata (`stop_cause`, `taint`, `blocked_sends`, `min_compactions`) — grades the harness, not the model | deterministic |
+| eval | `expect.judge` rubric | LLM |
+| fixtures | `build-eval-fixtures.py` proves each kata fails as shipped *and* is solvable by a reference fix | execution |
+| replay | divergence detection against a recorded run, structural vs argument-only | deterministic |
+| validate | counterfactual replay — does the rule change what the model does at the moment the user intervened | trace (steer/denial), LLM (followup) |
+| learn | `--holdout` keeps a slice unseen so rules are measured off their training data | deterministic |
+| proposals | the gate: a candidate that regresses any probe never reaches a human | trace |
+| hooks | `pre_tool`, fails closed | policy |
+| outbox | a human reads exactly what will be sent | human |
+| startup | `Sandbox::preflight` proves confinement works before the agent can call anything | execution |
+
+**Nothing verifies anything *during* a run.** No critic, no "did that edit
+apply", no post-condition on a tool call, no convergence test. Every loop above
+runs after the fact or before the first call. That is the actual gap behind the
+ralph-loop question — a ralph loop needs a runtime answer to "is it done yet",
+and mecha has no way to ask. The cheapest candidate from the research is
+Slipstream's shape: validate one specific artifact (they validated compaction
+summaries) with a grounded judge, measured at **+6.4–8.8 points on SWE-bench
+Verified for <1% latency**, where ~90% of what it catches is omission.
+
 ### 4. Smaller, high-value items
 
 - ~~**Hooks**~~ — built 2026-08-04. See the Reflexion section below for the
