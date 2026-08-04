@@ -225,7 +225,9 @@ knowledge of the outbox to be covered by it. Decisions that carry it:
   of sent-with-edits items into `writing`-domain reflections (trigger `edit`,
   its own reflector prompt, `mined_outbox.jsonl` ledger). Edit reflections
   have no replayable transcript point, so the counterfactual probe allowlists
-  steer/denial rather than excluding followup.
+  steer/denial rather than excluding followup. `mecha learn` consolidates the
+  writing domain with its own frame too (`learner_frames`): voice rules, a
+  positive/negative mix, and never a one-recipient rule.
 - **Subagents inherit the parent's route** (like hooks), or delegating is the
   way to send unstaged. `mecha eval` forces `--no-outbox`, like MCP and hooks,
   for the same reproducibility reason.
