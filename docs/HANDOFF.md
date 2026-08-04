@@ -429,6 +429,59 @@ model before writing the transport.
 outbox pattern belongs in core as a first-class concept, not as per-tool
 politeness. Do not start this before the outbox exists.
 
+Settled with the user 2026-08-04: **mecha is the email actor** — reads,
+drafts, and (through the outbox) actions — while pkg mines mail through its
+own ingestion to fill the graph, and never becomes the door mecha acts
+through. Same three-layer split as calendar (item 3).
+
+And the outbox is more than the safety gate — **it is the first
+correction-capture point** for the general self-learning system below: every
+staged draft the user edits before sending yields `diff(staged, sent)` as a
+contextual correction with the thread and recipient attached — structural
+capture, where flowmail needed UI for it. pkg's role in drafting is the
+relationship context flowmail's cards provided — who the recipient is, the
+register used with them — composed with the learned rules and the live
+thread.
+
+**Reflexion consolidation — mecha's general self-learning system.** Wanted by
+the user explicitly, and email drafting is only the first domain: whenever the
+user *corrects* mecha — edits a staged draft, rewrites prose it produced,
+redirects an approach — the correction is a sample, and the system's objective
+is **minimizing the edit distance between what mecha produces and what the
+user finally keeps**. The reference design is the user's own
+(`~/Github/flowmail/dev_docs/CORRECTION_SYSTEM.md`, Reflexion/LEAP-style),
+and it generalizes cleanly:
+
+- **Capture, per domain**: outbox diffs (email); in-conversation redirections
+  ("shorter", "never open with an apology"); for file-writing, the diff
+  between what a session wrote and how the user's later edits left it —
+  sessions record the former, which is what makes this capturable at all.
+  Hooks are the natural mechanism, which promotes them again (see item 4).
+- **Store**: contextual corrections in a **mecha-local store beside the
+  sessions, not pkg** — the one deliberate amendment to the one-graph rule.
+  Corrections are high-volume with a compaction lifecycle (nightly
+  `fact_candidate` review would be fatigue by design), and style is procedural
+  skill memory consumed by a prompt, not knowledge to be queried.
+- **Consolidate**: every ~N corrections, an LLM pass abstracts them into
+  durable rules per domain (flowmail's schema — `source='learned'`,
+  confidence, based_on_count — ports directly). Prompt assembly order: user's
+  own rules → learned rules → sliding window of raw recent corrections. Rules
+  are inspectable, editable, and disableable; the loop is self-sealing (a bad
+  rule → a bad draft → a correction that fixes the rule).
+- **Measure, or it isn't learning**: edit distance gives the metric this
+  project's eval culture demands. Hold out a slice of corrections at each
+  consolidation and check the new rules reduce edit distance on drafts they
+  did not train on; track the trend. A rules pass that does not move held-out
+  edit distance is prompt clutter, and this rig knows what to do with a
+  treatment that does not beat its control.
+- **Bridge to pkg**: rules that are really facts about the user ("signs off
+  'Cheers' with lab members") may graduate to staged pkg facts, where they
+  inform contexts beyond writing.
+
+Build order: outbox in core → email reads → drafting with structural
+correction capture → the consolidation pass → held-out measurement. The same
+pattern later serves triage (flowmail's Focus Queue rejection feedback).
+
 **`pkg` as memory.** Wired, and the design is now settled — see item 3, which
 supersedes the turn-start retrieval idea this paragraph used to propose
 (turn-start retrieval arms the trifecta at turn zero and was rejected for it).
