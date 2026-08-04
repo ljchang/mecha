@@ -237,17 +237,35 @@ nothing here. But **the `todo` description change alters the tool surface of
 every eval case**: re-baseline before comparing any full-set scorecard across
 this boundary.
 
-### 2. Pin the sampler, then build the replay driver
+### 2. ~~Pin the sampler~~ (done 2026-08-04), then build the replay driver
 
-Every measurement this project has produced was taken at llama-server's default
-temperature, unstated. That is why the same case scores 5/5 rather than
-deterministically, why the eval rig needs pass@k, and why `replay.rs` documents
-itself as pass@k-shaped.
+The sampler half is done, and both of this file's earlier assumptions about it
+were wrong in ways that only running it showed:
 
-Adding provider-scoped sampling config — `[providers.local] temperature = 0.0`,
-passed through by the OpenAI-compatible provider and absent from the Anthropic
-one, which rejects it — makes evals cheaper and changes what replay can be.
-Do it **before** the driver, not after.
+- **`temperature = 0.0` is unusable on qwen3.6.** Greedy decoding walks into
+  verbatim repetition loops that sampling noise would have broken: a limerick
+  request spent its entire 4096-token budget repeating one line of its own
+  reasoning, where the server-default control answered in 1677 tokens. Pinning
+  greedy would have quietly degraded every eval case with long thinking.
+- **A seed makes sampling repeatable, but only sequentially.** At
+  `temperature = 0.8, seed = 42`, identical requests repeat token-for-token —
+  reasoning included — when run one at a time, and *stop* repeating the moment
+  another request shares the batch: llama-server's continuous batching perturbs
+  the numerics, seed or no seed.
+
+So the pin is `temperature = 0.8` — the server default every prior measurement
+already ran at, so no comparability boundary — **plus `seed = 42`**, on all
+three local providers. `ProviderConfig` gained both fields; the
+OpenAI-compatible provider sends them; the Anthropic provider **refuses either
+at startup** (rejecting beats silently dropping — someone who pinned the
+sampler must not believe it is pinned where it cannot be); `RunConfig` records
+both, so a session file now says whether its run was repeatable. Verified
+end-to-end: two `mecha run`s produce byte-identical answers.
+
+What follows from the concurrency caveat: the replay driver must drive
+requests **sequentially** (it naturally would — one conversation), and the
+eval at `--concurrency 4` stays pass@k-shaped. `--concurrency 1` is now the
+deterministic mode, at ~4× the wall clock.
 
 Then the driver. `session.rs` records a `RunConfig` on every attach and
 `replay.rs` extracts and diffs trajectories; both are pure and unit-tested. What

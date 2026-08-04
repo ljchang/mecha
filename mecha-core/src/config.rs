@@ -49,6 +49,8 @@ impl Default for Config {
                 base_url: None,
                 input_price_per_mtok: None,
                 output_price_per_mtok: None,
+                temperature: None,
+                seed: None,
             },
         );
         Config {
@@ -80,6 +82,19 @@ pub struct ProviderConfig {
     /// Leave unset for a local model — the marginal cost really is zero.
     pub input_price_per_mtok: Option<f64>,
     pub output_price_per_mtok: Option<f64>,
+    /// Sampling temperature, sent verbatim by providers that accept one. Unset
+    /// means the server's default. Do not reach for 0.0 to get repeatability:
+    /// measured on qwen3.6, greedy decoding walks into verbatim repetition
+    /// loops that sampling noise would have broken. Pin the server's own
+    /// default value and set `seed` instead — same distribution, repeatable
+    /// draws. The Anthropic API rejects the parameter, so setting this on an
+    /// `anthropic` provider is a startup error rather than a silent no-op.
+    pub temperature: Option<f64>,
+    /// Sampling seed, for repeatable draws at a nonzero temperature. Only as
+    /// deterministic as the backend: llama-server repeats exactly when requests
+    /// run one at a time, and does not once concurrent requests share a batch.
+    /// Rejected on `anthropic` for the same reason as `temperature`.
+    pub seed: Option<u64>,
 }
 
 impl ProviderConfig {

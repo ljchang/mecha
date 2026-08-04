@@ -32,6 +32,14 @@ pub struct Anthropic {
 
 impl Anthropic {
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self> {
+        // Refused up front rather than silently dropped: someone who pinned the
+        // sampler for repeatable evals must not believe it is pinned here.
+        if cfg.temperature.is_some() || cfg.seed.is_some() {
+            bail!(
+                "the Anthropic API rejects `temperature` and has no `seed`; remove them \
+                 from this provider's config. Sampling cannot be pinned on this provider"
+            );
+        }
         let api_key = cfg
             .resolve_api_key()
             .context("no Anthropic credentials found. Set ANTHROPIC_API_KEY, or put api_key_env / api_key in the provider config")?;
@@ -517,6 +525,21 @@ mod tests {
             description: "does a thing".into(),
             input_schema: json!({"type": "object"}),
         }
+    }
+
+    #[test]
+    fn a_configured_temperature_is_refused_at_construction() {
+        let cfg = crate::config::ProviderConfig {
+            kind: "anthropic".into(),
+            api_key: Some("test-key".into()),
+            temperature: Some(0.0),
+            ..Default::default()
+        };
+        let err = match Anthropic::from_config(&cfg) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("a pinned temperature must not construct an Anthropic provider"),
+        };
+        assert!(err.contains("temperature"), "{err}");
     }
 
     /// Anywhere in the tree, at any depth — a knob smuggled into a nested
