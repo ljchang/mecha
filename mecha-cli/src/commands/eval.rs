@@ -66,7 +66,6 @@ pub struct Args {
     #[arg(long)]
     pub keep_workspaces: bool,
 
-    /// Compare previously written scorecards side by side instead of running.
     /// Connect MCP servers during the eval.
     ///
     /// Off by default, which is a reproducibility decision rather than a
@@ -76,6 +75,19 @@ pub struct Args {
     /// measures a model against a *fixed* tool surface.
     #[arg(long)]
     pub mcp: bool,
+
+    /// Connect exactly the MCP servers named in this TOML file (`[[mcp]]`
+    /// tables), instead of the machine's own config.
+    ///
+    /// This is how a case file measures against *fixture* servers — the same
+    /// reproducibility rule that keeps `--mcp` off by default, made positive:
+    /// the file travels with the cases, so the tool surface is the same on
+    /// every machine. Relative paths in a server's `command`/`args` resolve
+    /// against the file's directory. A server that fails to connect is fatal
+    /// here where `setup` merely warns: a case written against fixture tools
+    /// measures nothing without them.
+    #[arg(long, conflicts_with = "mcp", value_name = "PATH")]
+    pub mcp_file: Option<PathBuf>,
 
     /// Withhold `ask_user`, which is otherwise part of the tool surface.
     ///
@@ -87,6 +99,7 @@ pub struct Args {
     #[arg(long)]
     pub no_ask_user: bool,
 
+    /// Compare previously written scorecards side by side instead of running.
     #[arg(long, num_args = 1.., conflicts_with_all = ["out", "fixture"])]
     pub compare: Vec<PathBuf>,
 }
@@ -143,6 +156,27 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             .agent
             .registry_mut()
             .insert(Arc::new(AskUserTool::new(Arc::new(NoOneToAsk))));
+    }
+
+    // Held for the whole run: dropping a client kills its server.
+    let mut _fixture_mcp = Vec::new();
+    if let Some(path) = &args.mcp_file {
+        let servers = load_mcp_file(path)?;
+        let sandbox =
+            mecha_core::sandbox::Sandbox::new(prepared.config.sandbox.clone());
+        let (tools, clients, errors) =
+            mecha_core::mcp::connect_all(&servers, &sandbox, &fixture).await;
+        // Fatal where `setup` warns: a case file written against fixture
+        // tools measures nothing without them — the judge rule again.
+        anyhow::ensure!(
+            errors.is_empty(),
+            "fixture MCP server(s) failed to connect: {}",
+            errors.join("; ")
+        );
+        for tool in tools {
+            prepared.agent.registry_mut().insert(tool);
+        }
+        _fixture_mcp = clients;
     }
 
     // Build the judge before running anything. A case set that cannot be
@@ -381,6 +415,51 @@ fn build_judge(
     Ok(Some(judge))
 }
 
+/// The shape of an `--mcp-file`: just `[[mcp]]` tables, nothing else. Denying
+/// unknown fields means a whole config file pasted here fails loudly instead
+/// of silently contributing only its servers.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpFile {
+    #[serde(default)]
+    mcp: Vec<mecha_core::config::McpServerConfig>,
+}
+
+/// Parse an `--mcp-file` and resolve its relative paths.
+///
+/// A path in `command` or `args` that names an existing file *relative to the
+/// TOML's own directory* becomes absolute, so the file travels with the case
+/// set and works from any CWD. Anything else — `python3`, `--persona`, a flag
+/// value — is left alone; existence on disk is what distinguishes a path from
+/// an argument that merely looks like one.
+fn load_mcp_file(path: &Path) -> Result<Vec<mecha_core::config::McpServerConfig>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let file: McpFile = toml::from_str(&text)
+        .with_context(|| format!("{} is not an MCP server file", path.display()))?;
+    anyhow::ensure!(!file.mcp.is_empty(), "{} names no MCP servers", path.display());
+
+    let base = path.parent().unwrap_or(Path::new("."));
+    let resolve = |s: String| -> String {
+        let joined = base.join(&s);
+        if Path::new(&s).is_relative() && joined.is_file() {
+            joined.to_string_lossy().into_owned()
+        } else {
+            s
+        }
+    };
+
+    Ok(file
+        .mcp
+        .into_iter()
+        .map(|mut server| {
+            server.command = resolve(server.command);
+            server.args = server.args.into_iter().map(resolve).collect();
+            server
+        })
+        .collect())
+}
+
 fn load_cases(path: &Path, tags: &[String]) -> Result<Vec<EvalCase>> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening {}", path.display()))?;
@@ -561,4 +640,81 @@ fn compare(paths: &[PathBuf]) -> Result<()> {
     }
     println!();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch directory that cleans up after itself, so a failing test
+    /// does not leave litter that changes what the next run's `is_file`
+    /// checks see.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("mecha-eval-test-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn an_mcp_file_parses_and_resolves_paths_against_its_own_directory() {
+        let scratch = Scratch::new("resolve");
+        std::fs::write(scratch.0.join("server.py"), "# fixture").unwrap();
+        let toml_path = scratch.0.join("mcp.toml");
+        std::fs::write(
+            &toml_path,
+            r#"
+            [[mcp]]
+            name = "pkg"
+            command = "python3"
+            args = ["server.py", "--persona", "pkg"]
+
+            [mcp.capabilities]
+            untrusted_input = true
+            "#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_file(&toml_path).unwrap();
+        assert_eq!(servers.len(), 1);
+        // The existing file resolved to an absolute path...
+        assert_eq!(
+            servers[0].args[0],
+            scratch.0.join("server.py").to_string_lossy()
+        );
+        // ...and everything that is not a file beside the TOML was left alone.
+        assert_eq!(servers[0].command, "python3");
+        assert_eq!(servers[0].args[1], "--persona");
+        assert!(servers[0].capabilities.untrusted_input);
+    }
+
+    #[test]
+    fn an_mcp_file_with_unknown_fields_is_rejected() {
+        let scratch = Scratch::new("unknown");
+        let toml_path = scratch.0.join("mcp.toml");
+        // A whole config file pasted here must fail loudly, not silently
+        // contribute only its `[[mcp]]` tables.
+        std::fs::write(&toml_path, "default_provider = \"local\"\n[[mcp]]\nname = \"x\"\n")
+            .unwrap();
+        assert!(load_mcp_file(&toml_path).is_err());
+    }
+
+    #[test]
+    fn an_mcp_file_naming_no_servers_is_rejected() {
+        let scratch = Scratch::new("empty");
+        let toml_path = scratch.0.join("mcp.toml");
+        std::fs::write(&toml_path, "# nothing here\n").unwrap();
+        let err = load_mcp_file(&toml_path).unwrap_err();
+        assert!(err.to_string().contains("names no MCP servers"), "{err}");
+    }
 }

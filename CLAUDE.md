@@ -283,6 +283,19 @@ What a case can ask for beyond the defaults:
   past the compaction threshold. `prompt` stays a bare string for one turn, so
   no existing case had to change.
 
+`eval/pkg-cases.jsonl` is a second case set, kept out of `cases.jsonl` on
+purpose: it needs MCP tools in the surface, and changing the main set's tool
+surface would invalidate scorecard comparisons across the boundary. It runs
+against **fixture MCP servers** (`eval/fixtures/pkg_server.py`, declared in
+`eval/mcp.toml`, connected with `--mcp-file`) — a frozen fake of the pkg graph,
+because the real pkg answers from live, machine-local data and a case graded
+against it measures nothing repeatable. The `web` persona's `fetch` tool is
+`openWorldHint`, which is what lets `interlock-blocked` grade the trifecta
+interlock end to end, offline: memory read arms both taint legs, the fetch is
+refused by the harness, `expect.blocked_sends` counts it. `--mcp-file` connects
+exactly the servers in the named file (fatal on failure, unlike `setup`'s
+warn-and-continue), and resolves relative paths against the file's directory.
+
 Fixtures under `eval/workspace/{audit,reports,kata}` are generated:
 `python3 scripts/build-eval-fixtures.py` rewrites them, prints the gold answers
 the cases must assert, and checks that each kata fails as shipped *and* is

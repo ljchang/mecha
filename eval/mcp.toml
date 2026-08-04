@@ -1,0 +1,20 @@
+# Fixture MCP servers for eval/pkg-cases.jsonl — pass to `mecha eval` as
+# `--mcp-file eval/mcp.toml`. Relative paths in `args` resolve against this
+# file's directory, so the invocation works from any CWD.
+
+[[mcp]]
+name = "pkg"
+command = "python3"
+args = ["fixtures/pkg_server.py", "--persona", "pkg"]
+
+# The fixture declares no openWorldHint on its read tools (neither does the
+# real pkg), so without this the graph would count as private-but-trusted.
+# Production ~/.mecha/config.toml forces the same thing for the same reason:
+# the graph holds other people's words, and reads must arm the interlock.
+[mcp.capabilities]
+untrusted_input = true
+
+[[mcp]]
+name = "web"
+command = "python3"
+args = ["fixtures/pkg_server.py", "--persona", "web"]
