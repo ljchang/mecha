@@ -1,26 +1,40 @@
 //! `mecha validate` — measure whether the learned rules actually help.
 //!
-//! The counterfactual probe: for each followup-triggered reflection, rebuild
-//! the recorded conversation up to the moment the user stepped in, then ask
-//! the probe question twice — once with the current rules injected, once
-//! without — and have a judge grade both answers against what the
-//! intervention showed the user wanted. A rule set that does not move these
-//! verdicts on reflections it did not train on is prompt clutter.
+//! Every trigger gets a counterfactual probe, and the two kinds are graded
+//! differently on purpose:
 //!
-//! Scope, honestly: followups only. A steer or denial lands mid-run, between
-//! a tool call and its result, and probing there needs the replay driver to
-//! carry the run — that is the rumination milestone, not this one. And the
-//! verdicts are judge-graded, so treat a single flip as a prompt to read the
-//! two answers, not as a result — the same rule the eval rig already lives
-//! by.
+//! - **Followups** re-ask the user's corrective turn against the rebuilt
+//!   conversation, with and without the rules, and a judge grades both
+//!   answers. Judge-graded, so a single flip is a prompt to read the two
+//!   answers, not a result.
+//! - **Steers and denials** land mid-run, so their probes *replay* the
+//!   recorded prefix — recorded tool results, seeded sampler, no steering
+//!   text (extraction drops it, which makes the replay the no-steer
+//!   counterfactual by construction) — once per arm, and the verdict is
+//!   structural: did the model do the steered thing without the steer, did
+//!   it repeat the exact call the user refused. Trace-graded, no judge. See
+//!   [`mecha_core::counterfactual`] for the verdict semantics.
+//!
+//! A rule set that does not move these verdicts on reflections it did not
+//! train on is prompt clutter, and `mecha learn --holdout` exists to keep
+//! such reflections available.
 
-use crate::GlobalOpts;
+use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
-use mecha_core::config::Config;
+use mecha_core::agent::{Agent, RunContext};
+use mecha_core::config::{Config, PermissionMode};
+use mecha_core::counterfactual::{
+    denial_verdict, locate_denial, locate_steer, steer_verdict, truncate_after_run, ProbeVerdict,
+};
 use mecha_core::eval::Judge;
 use mecha_core::learning::{locate_followup, strip_rules_block, LearningStore, Trigger};
 use mecha_core::message::{CompletionRequest, Message};
+use mecha_core::replay::extract;
+use mecha_core::replay_run::{drive, replay_registry, OnDivergence};
 use mecha_core::session::Session;
+use mecha_core::tool::ModeApprover;
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -34,9 +48,14 @@ pub struct Args {
     pub judge_model: Option<String>,
 
     /// Only validate reflections not yet consumed by a learn pass — the
-    /// held-out set, once `mecha learn --holdout` exists to leave one.
+    /// held-out set `mecha learn --holdout` leaves.
     #[arg(long)]
     pub unprocessed_only: bool,
+
+    /// Probe only these triggers (comma-separated: steer, denial, followup).
+    /// Default is all three.
+    #[arg(long, value_delimiter = ',')]
+    pub trigger: Vec<String>,
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
@@ -47,14 +66,19 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         return Ok(());
     };
 
+    let wanted_triggers: Vec<&str> = if args.trigger.is_empty() {
+        vec![Trigger::Steer.as_str(), Trigger::Denial.as_str(), Trigger::Followup.as_str()]
+    } else {
+        args.trigger.iter().map(String::as_str).collect()
+    };
     let reflexions: Vec<_> = store
         .reflexions()?
         .into_iter()
-        .filter(|r| r.trigger == Trigger::Followup.as_str())
+        .filter(|r| wanted_triggers.contains(&r.trigger.as_str()))
         .filter(|r| !args.unprocessed_only || !r.is_processed)
         .collect();
     if reflexions.is_empty() {
-        println!("no followup reflections to probe");
+        println!("no reflections to probe");
         return Ok(());
     }
 
@@ -83,10 +107,23 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         judge.model()
     );
 
+    // Steer and denial probes replay against the recorded tool surface, which
+    // needs the live registry for specs — builtins, MCP servers, subagents.
+    // Built once, only when something will use it; the parent agent it builds
+    // is discarded and only its registry is borrowed, as in `mecha replay`.
+    let needs_replay =
+        reflexions.iter().any(|r| r.trigger != Trigger::Followup.as_str());
+    let prepared = if needs_replay {
+        Some(setup::prepare(&global.clone(), false).await?)
+    } else {
+        None
+    };
+
     let sessions_dir = Session::default_dir()?;
     let mut improved = 0u32;
     let mut regressed = 0u32;
     let mut unchanged = 0u32;
+    let mut inconclusive = 0u32;
     let mut skipped = 0u32;
 
     for r in &reflexions {
@@ -99,11 +136,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             }
         };
         let (_, convo) = Session::load(&path)?;
-        let Some(idx) = locate_followup(&convo.messages, &r.intervention) else {
-            eprintln!("· {}: could not locate the intervention turn; skipping", r.id);
-            skipped += 1;
-            continue;
-        };
 
         // The recorded system prompt, with any rules block of its era removed:
         // the baseline arm must be rules-free and the treatment arm must carry
@@ -117,6 +149,137 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             rules_block.clone()
         } else {
             format!("{base_system}\n\n{rules_block}")
+        };
+
+        // ── steers and denials: replay the prefix, grade the trace ──
+        if r.trigger != Trigger::Followup.as_str() {
+            let point = if r.trigger == Trigger::Steer.as_str() {
+                locate_steer(&convo.messages, &r.intervention)
+            } else {
+                locate_denial(&convo.messages, &r.intervention)
+            };
+            let Some(point) = point else {
+                eprintln!("· {}: could not locate the intervention; skipping", r.id);
+                skipped += 1;
+                continue;
+            };
+            let slice = truncate_after_run(&convo.messages, point.message_index);
+            let trajectory = extract(slice);
+            if trajectory.turns.is_empty() {
+                eprintln!("· {}: no user turns before the intervention; skipping", r.id);
+                skipped += 1;
+                continue;
+            }
+            let Some(recorded) =
+                Session::run_configs(&path)?.first().cloned()
+            else {
+                eprintln!("· {}: no RunConfig recorded; skipping", r.id);
+                skipped += 1;
+                continue;
+            };
+            let prepared = prepared.as_ref().expect("built because needs_replay");
+
+            let mut verdicts = Vec::new();
+            for system in [&base_system, &with_rules] {
+                let cancel = CancellationToken::new();
+                let registry = match replay_registry(
+                    &recorded.tools,
+                    prepared.agent.registry(),
+                    trajectory.calls.clone(),
+                    OnDivergence::Stop,
+                    cancel.clone(),
+                ) {
+                    Ok(reg) => reg,
+                    Err(e) => {
+                        eprintln!("· {}: {e:#}; skipping", r.id);
+                        break;
+                    }
+                };
+                // Nothing executes under Stop mode, so nothing needs approving.
+                let approver: Arc<dyn mecha_core::tool::Approver> =
+                    Arc::new(ModeApprover { mode: PermissionMode::Allow });
+                let mut agent_cfg = prepared.config.agent.clone();
+                agent_cfg.system_prompt = (!system.is_empty()).then(|| system.to_string());
+                agent_cfg.system_prompt_file = None;
+                agent_cfg.effort = recorded.effort;
+                agent_cfg.thinking = recorded.thinking;
+                agent_cfg.cache_prompt = recorded.cache_prompt;
+                agent_cfg.max_tokens = recorded.max_tokens;
+                agent_cfg.max_turns = recorded.max_turns;
+                agent_cfg.max_output_tokens = recorded.max_output_tokens;
+                agent_cfg.max_cost_usd = recorded.max_cost_usd;
+                agent_cfg.compact_at_tokens = recorded.compact_at_tokens;
+                agent_cfg.compact_keep_recent = recorded.compact_keep_recent;
+
+                let mut tool_ctx = mecha_core::tool::ToolCtx {
+                    workspace: recorded.workspace.clone(),
+                    ..Default::default()
+                };
+                if !recorded.workspace.exists() {
+                    // Fine for a pure replay: nothing touches the filesystem.
+                    tool_ctx.workspace = std::env::temp_dir();
+                }
+
+                let agent = Agent::new(
+                    mecha_core::provider::build(provider_cfg)?,
+                    registry,
+                    Arc::clone(&approver),
+                    tool_ctx.clone(),
+                    agent_cfg,
+                    Some(model.clone()),
+                )?;
+                let cx = RunContext::new(tool_ctx, approver)
+                    .with_cancel(cancel)
+                    .with_compact_at(recorded.compact_at_tokens);
+                match drive(&agent, &cx, &trajectory).await {
+                    Ok(report) => verdicts.push(if r.trigger == Trigger::Steer.as_str() {
+                        steer_verdict(&report, &point)
+                    } else {
+                        denial_verdict(&report, &point)
+                    }),
+                    Err(e) => {
+                        eprintln!("· {}: replay failed ({e:#}); skipping", r.id);
+                        break;
+                    }
+                }
+            }
+            let [baseline, with] = &verdicts[..] else {
+                skipped += 1;
+                continue;
+            };
+
+            let label = match (baseline, with) {
+                (ProbeVerdict::Inconclusive(why), _) | (_, ProbeVerdict::Inconclusive(why)) => {
+                    inconclusive += 1;
+                    println!("· {} [{}] inconclusive: {why}", r.id, r.trigger);
+                    continue;
+                }
+                (ProbeVerdict::Fail, ProbeVerdict::Pass) => {
+                    improved += 1;
+                    "IMPROVED"
+                }
+                (ProbeVerdict::Pass, ProbeVerdict::Fail) => {
+                    regressed += 1;
+                    "REGRESSED"
+                }
+                (both, _) => {
+                    unchanged += 1;
+                    if *both == ProbeVerdict::Pass {
+                        "unchanged (both pass)"
+                    } else {
+                        "unchanged (both fail)"
+                    }
+                }
+            };
+            println!("· {} [{}, {label}] {}", r.id, r.trigger, r.reflexion_text);
+            continue;
+        }
+
+        // ── followups: re-ask the corrective turn, judge both answers ──
+        let Some(idx) = locate_followup(&convo.messages, &r.intervention) else {
+            eprintln!("· {}: could not locate the intervention turn; skipping", r.id);
+            skipped += 1;
+            continue;
         };
 
         let mut messages: Vec<Message> = convo.messages[..idx].to_vec();
@@ -183,8 +346,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     println!(
-        "\n{improved} improved, {regressed} regressed, {unchanged} unchanged, {skipped} skipped \
-         (n={}, judge-graded — read the answers before believing a single flip)",
+        "\n{improved} improved, {regressed} regressed, {unchanged} unchanged, \
+         {inconclusive} inconclusive, {skipped} skipped (n={}; steers and denials are \
+         trace-graded, followups judge-graded — read before believing a single flip)",
         reflexions.len()
     );
     Ok(())
