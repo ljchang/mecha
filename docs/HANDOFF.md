@@ -55,7 +55,7 @@ A working agent harness, used and measured rather than just compiled.
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
 | Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/send/reject; edits mined as writing reflections |
-| Google | `mecha-google` crate: Gmail + Calendar extracted from flowmail, served as MCP; sends and calendar writes outbox-routed |
+| Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar, extracted from flowmail, served as two MCP binaries; all sends and calendar writes outbox-routed |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning` |
 | Eval | 36 cases, 17 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `pkg-cases.jsonl` — 8 memory/interlock cases against fixture MCP servers (`--mcp-file`) |
 
@@ -507,11 +507,48 @@ Decisions worth keeping:
 - The consent timeout is 120s, not flowmail's 30s — a careful reader lost
   that race.
 
-Deferred, deliberately: Outlook/Graph (flowmail has it; nothing needs it
-yet), the Gmail drafts API (flowmail never used it either — the outbox is
-the draft layer), any local cache or sync (on-demand is the right shape for
-an agent), and past-correspondence context when drafting a reply (cheap to
-add via `q=from:addr`, but unbuilt in flowmail too).
+**Outlook/Graph followed the same day**, and the crate became `mecha-mail`
+with two binaries sharing the retry, HTML→text, token-store and
+MCP-transport code. Verified against the real Dartmouth account: calendar
+with recurring meetings expanded, mail search, a batched send refused, and a
+staged message released through the outbox into the inbox.
+
+- **Device code, not loopback** — no redirect URI (so the org-approved
+  registration is untouched: its only URI is flowmail's port 8923) and no
+  forwarded port over SSH. Public client throughout. `AADSTS7000218` means
+  "Allow public client flows" is off; the error text says so.
+- **Scopes exclude `User.Read`**, so `GET /me` 403s — the account address
+  comes from Sent Items, which `Mail.Read` covers. flowmail hit this and
+  solved it the same way; its note was in the exploration and I did not
+  apply it, which cost a re-auth. **A cosmetic lookup must never be fatal
+  to `auth`** — that was the actual bug, and it is fixed.
+- **Four flowmail behaviours fixed rather than ported**, all filed upstream
+  as `ljchang/flowmail` issues 3–6: `calendarView` (recurring events vanish
+  from `/events` + start filter — the worst of them, silent data loss),
+  `/messages/{id}/reply` for threading, `$search` instead of a `$filter`
+  that 400s beside `$orderby`, and comma-splitting `to`.
+
+**Two bugs live testing found in mecha itself, both now fixed with tests:**
+
+- **The interlock was defeated by batching.** Every call in a turn was
+  gated against the taint as of the turn's *start* — taint updates only
+  after the batch executes — so "read private data and send it" in one
+  assistant turn passed both gates. Gating now uses what the turn *will*
+  arm (`turn_taint`, computed from the declared capabilities of every call
+  in the batch). Verified to fail on the old behaviour. This is the
+  guarantee the whole security model rests on; it survived pkg, the
+  fixture-server eval, and Gmail because in each of those the model
+  happened to call the tools in separate turns.
+- **The model had no clock.** Asked for "the next three days" it queried a
+  January window — six months stale, and the tool returned an empty answer
+  that looked like an empty calendar. The date now rides in the system
+  prompt (`setup.rs`, before the learned rules) and is recorded in
+  `RunConfig`, so a replay reproduces the date the run actually saw.
+
+Deferred, deliberately: the Gmail drafts API (flowmail never used it either
+— the outbox is the draft layer), any local cache or sync (on-demand is the
+right shape for an agent), and past-correspondence context when drafting a
+reply (cheap to add via `q=from:addr`, unbuilt in flowmail too).
 
 **The outbox (built 2026-08-04, verified live end to end).** `[outbox]
 tools = [...]` names tools whose calls the loop **stages instead of

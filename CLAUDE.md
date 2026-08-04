@@ -174,14 +174,32 @@ On Ubuntu 23.10+, `bwrap` fails even when installed and
 an AppArmor profile. `mecha tools` prints the active sandbox, and
 `mecha tools --json` prints each tool's capabilities.
 
-## mecha-google
+## mecha-mail
 
-A third crate, extracted from flowmail: `mecha-google/` is a **library plus a
-thin MCP binary**. The library (Gmail + Google Calendar v3 clients, desktop
-OAuth with PKCE and a loopback listener, the token lifecycle) is what a GUI
-would depend on directly; the binary serves those clients as MCP tools over
-stdio, which is how mecha consumes them — no mecha-core or mecha-cli code
-knows Google exists, only `~/.mecha/config.toml`.
+A third crate, extracted from flowmail: `mecha-mail/` is a **library plus two
+thin MCP binaries** (`mecha-google`, `mecha-outlook`). The library (Gmail +
+Google Calendar v3, Outlook mail + calendar over Graph, both OAuth flows, the
+token lifecycle) is what a GUI would depend on directly; each binary serves
+one provider's clients as MCP tools over stdio with its own credential store,
+which is how mecha consumes them — no mecha-core or mecha-cli code knows
+Google or Microsoft exists, only `~/.mecha/config.toml`.
+
+**Microsoft signs in with device code, not loopback.** It needs no redirect
+URI, so it reuses an org-approved app registration untouched, and no
+forwarded port, so it works over SSH. It is a *public client*: Entra binds
+the refresh credential to the auth method, so sending a `client_secret`
+after a device-code grant fails with `AADSTS7000215`. Scopes deliberately
+exclude `User.Read` — `GET /me` is not worth a consent prompt, so the
+account address comes from Sent Items instead (flowmail reached the same
+conclusion). And an account lookup must never be fatal to `auth`: losing a
+completed sign-in over a cosmetic detail makes the user authenticate twice.
+
+Four flowmail behaviours are fixed rather than ported, each filed upstream
+(`ljchang/flowmail` issues 3–6): Graph replies go through
+`POST /messages/{id}/reply` so they thread; the calendar reads `calendarView`
+so recurring events do not vanish from a window; search uses `$search`
+instead of a `$filter` that 400s beside `$orderby`; and `to` splits on commas
+like cc and bcc already did.
 
 What flowmail did not have and this crate does: **the token lifecycle in
 Rust** (flowmail kept storage, refresh, and retry-on-401 in its JS frontend)
