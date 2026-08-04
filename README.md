@@ -412,12 +412,26 @@ Two things worth knowing before trusting it:
   fourth reflection out of the pass, and `mecha validate --unprocessed-only`
   then probes the rules against data they never saw. The holdout is
   deterministic (every k-th by id) — a measurement set that changes between
-  runs measures nothing.
+  runs measures nothing. Followup probes re-ask the corrective turn and are
+  judge-graded; **steer and denial probes are counterfactual replays**: the
+  recorded prefix is driven again — recorded tool results, no steering text —
+  with and without the rules, and the verdict is structural: did the model do
+  the steered thing *without the steer*, did it repeat the exact call the
+  user refused. A rule is kept because it flips the counterfactual, not
+  because a model liked it.
 - **The first live probe caught a false lesson**, which is the system working
   rather than a reason to distrust it. The reflector had drawn a rule from a
   memory test the model *passed*, because extraction never showed it what the
-  assistant did next. Verdicts are judge-graded and n=1 means little: read the
-  answers before believing a flip.
+  assistant did next. Verdicts on followups are judge-graded and n=1 means
+  little: read the answers before believing a flip.
+
+The whole cycle runs nightly on its own: `scripts/ruminate.sh` chains
+reflect → validate → learn — validate *before* learn on purpose, because
+learn marks reflections processed and measuring afterwards would grade the
+rules on their own training data — and `scripts/mecha-ruminate.timer` is a
+systemd user timer that fires it at 03:30. If the local model server is down
+the night defers entirely and tomorrow catches up; every stage is idempotent,
+so a skipped night is not a failed night.
 
 ## Budgets
 
