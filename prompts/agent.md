@@ -140,6 +140,14 @@ an employer, a colleague, or a work meeting, that is Outlook.
 keeps the reply in its conversation. A send with a matching subject starts a
 new thread instead, which looks the same to you and wrong to the recipient.
 
+**To find someone's email address, search your mail for them.** If you are
+asked to write to a person and you do not have their address, search Gmail
+and Outlook for their name before asking the user for it — anyone you have
+corresponded with is in there, and the address is in the results. Ask only
+after searching has genuinely failed. Do not paste a draft into the chat as a
+substitute for staging it: write it with the tool, which puts it in the
+outbox where the user can edit and release it.
+
 Three rules for both:
 
 **The calendar is live truth.** "What's on Thursday", "when did I last meet

@@ -44,6 +44,25 @@ pub enum AgentEvent {
     Done(Box<RunOutcome>),
 }
 
+/// Does this error mean "the prompt did not fit"?
+///
+/// Every backend words it differently and none of them give it a code worth
+/// matching, so this reads the message. Being wrong in the false-positive
+/// direction costs one summarisation; being wrong the other way loses the
+/// run, which is what happened before this existed.
+pub(crate) fn is_context_overflow(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}").to_lowercase();
+    // llama-server: "exceed_context_size_error" / "exceeds the available
+    // context size". vLLM and OpenAI: "context_length_exceeded" / "maximum
+    // context length". Anthropic: "prompt is too long".
+    text.contains("exceed_context_size")
+        || text.contains("context size")
+        || text.contains("context_length_exceeded")
+        || text.contains("context length")
+        || text.contains("prompt is too long")
+        || text.contains("too many tokens")
+}
+
 /// "1 turn", "3 turns". These strings are read by people.
 pub fn turns_phrase(n: u32) -> String {
     if n == 1 {
@@ -462,6 +481,10 @@ pub struct Agent {
     model: String,
     system: Option<String>,
     pricing: Option<Pricing>,
+    /// How many tokens the model's context holds, when the provider config
+    /// says. Drives the derived compaction threshold and the CLI's
+    /// "how much room is left" line.
+    context_window: Option<u64>,
 }
 
 impl Agent {
@@ -483,6 +506,7 @@ impl Agent {
             model,
             system,
             pricing: None,
+            context_window: None,
         })
     }
 
@@ -505,6 +529,21 @@ impl Agent {
     pub fn with_pricing(mut self, pricing: Option<Pricing>) -> Self {
         self.pricing = pricing;
         self
+    }
+
+    pub fn with_context_window(mut self, window: Option<u64>) -> Self {
+        self.context_window = window;
+        self
+    }
+
+    pub fn context_window(&self) -> Option<u64> {
+        self.context_window
+    }
+
+    /// Where compaction kicks in for this run — the run's own override, then
+    /// the agent's setting, then whatever the context window implies.
+    fn compact_limit(&self, cx: &RunContext) -> Option<u64> {
+        cx.compact_at_tokens.or_else(|| self.cfg.compact_at(self.context_window))
     }
 
     /// What a run has cost so far, if prices are known.
@@ -657,7 +696,7 @@ impl Agent {
             // Summarise the middle if the last prompt came back too big. Done
             // here, between turns, because it rewrites the transcript and there
             // is no safe moment to do that while a turn is in flight.
-            if let Some(limit) = cx.compact_at_tokens.or(self.cfg.compact_at_tokens) {
+            if let Some(limit) = self.compact_limit(cx) {
                 if prompt_tokens >= limit && !compaction_gave_up {
                     // Cheap pass first: shorten old tool *results* and keep the
                     // calls. Costs no request, and it is the half that does not
@@ -766,7 +805,7 @@ impl Agent {
             turns += 1;
             emit(&events, AgentEvent::TurnStart { turn: turns });
 
-            let request = CompletionRequest {
+            let mut request = CompletionRequest {
                 model: self.model.clone(),
                 system: self.system.clone(),
                 messages: messages.clone(),
@@ -777,7 +816,40 @@ impl Agent {
                 cache_prompt: self.cfg.cache_prompt,
             };
 
-            let response = match self.complete(cx, &request, &events).await? {
+            // A prompt that overflows the model's window is refused outright,
+            // and the reactive threshold cannot always prevent it: a turn's
+            // parallel tool results land all at once, so the size checked
+            // between turns can sit well under the limit while the *next*
+            // request is well over. Recover instead of dying — compact and
+            // retry the same turn. Once only: a second overflow means
+            // compaction did not free enough, and the provider's own error is
+            // clearer than looping on it.
+            let completion = match self.complete(cx, &request, &events).await {
+                Err(e) if is_context_overflow(&e) && !compaction_gave_up => {
+                    tracing::warn!("prompt overflowed the context window; compacting to recover");
+                    crate::compact::thin_old_results(
+                        messages,
+                        self.cfg.compact_keep_recent.max(1) * 2,
+                        crate::compact::THINNED_RESULT_CHARS,
+                    );
+                    match self.compact(cx, messages, &events).await {
+                        Ok(Some(spent)) => {
+                            usage.add(&spent);
+                            compactions += 1;
+                        }
+                        Ok(None) => compaction_gave_up = true,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "recovery compaction failed");
+                            compaction_gave_up = true;
+                        }
+                    }
+                    request.messages = messages.clone();
+                    self.complete(cx, &request, &events).await?
+                }
+                other => other?,
+            };
+
+            let response = match completion {
                 Completion::Finished(response) => *response,
                 // Cancelled with the answer half-written. Keep it: a partial
                 // answer is worth more than a discarded one, and the user can
@@ -3033,6 +3105,36 @@ mod tests {
         assert!(items[0].taint.trifecta_armed(), "the item must carry the armed snapshot");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Every backend words "the prompt did not fit" differently, and this is
+    /// what decides whether a run recovers or dies. The llama-server string
+    /// is the one that actually killed a session.
+    #[test]
+    fn context_overflow_is_recognised_across_backends() {
+        let overflow = [
+            // llama-server, verbatim from the run this was written for.
+            r#"local 400 Bad Request: {"error":{"code":400,"message":"request (38869 tokens) exceeds the available context size (32768 tokens), try increasing it","type":"exceed_context_size_error"}}"#,
+            r#"{"error":{"code":"context_length_exceeded","message":"This model's maximum context length is 8192 tokens"}}"#,
+            "prompt is too long: 210000 tokens > 200000 maximum",
+        ];
+        for message in overflow {
+            assert!(
+                is_context_overflow(&anyhow::anyhow!("{message}")),
+                "must be recognised as overflow: {message}"
+            );
+        }
+
+        for other in [
+            "401 Unauthorized: invalid api key",
+            "connection refused",
+            "tool `shell` failed: no such file",
+        ] {
+            assert!(
+                !is_context_overflow(&anyhow::anyhow!("{other}")),
+                "must not be mistaken for overflow: {other}"
+            );
+        }
     }
 
     /// Batching must not defeat the interlock.

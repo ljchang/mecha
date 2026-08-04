@@ -148,6 +148,10 @@ struct App {
     /// pressure is invisible until it is fatal, and a user who can watch it
     /// climb can decide to /clear or set --compact-at before it bites.
     prompt_tokens: u64,
+    /// The model's window, when the provider config says. Turns the number
+    /// above into a fraction with a colour, which is the difference between
+    /// data and a warning.
+    context_window: Option<u64>,
     should_quit: bool,
     /// Ctrl-C at an idle prompt: once to warn, twice to leave.
     quit_armed: bool,
@@ -213,10 +217,32 @@ impl App {
                     Style::new().fg(Color::DarkGray),
                 ));
                 if self.prompt_tokens > 0 {
-                    spans.push(Span::styled(
-                        format!("· context {} ", human_tokens(self.prompt_tokens)),
-                        Style::new().fg(Color::DarkGray),
-                    ));
+                    // With the window known this is a fuel gauge, not a
+                    // curiosity: it turns "the run died at 38869 tokens" into
+                    // something visible while there is still room to act.
+                    let (text, colour) = match self.context_window {
+                        Some(window) if window > 0 => {
+                            let pct = (self.prompt_tokens * 100 / window).min(999);
+                            let colour = match pct {
+                                0..=74 => Color::DarkGray,
+                                75..=89 => Color::Yellow,
+                                _ => Color::Red,
+                            };
+                            (
+                                format!(
+                                    "· context {}/{} ({pct}%) ",
+                                    human_tokens(self.prompt_tokens),
+                                    human_tokens(window)
+                                ),
+                                colour,
+                            )
+                        }
+                        _ => (
+                            format!("· context {} ", human_tokens(self.prompt_tokens)),
+                            Color::DarkGray,
+                        ),
+                    };
+                    spans.push(Span::styled(text, Style::new().fg(colour)));
                 }
             }
         }
@@ -296,6 +322,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         pending: None,
         usage: Usage::default(),
         prompt_tokens: 0,
+        context_window: prepared.agent.context_window(),
         should_quit: false,
         quit_armed: false,
         pending_switch: None,

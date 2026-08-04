@@ -89,6 +89,7 @@ impl Default for Config {
                 output_price_per_mtok: None,
                 temperature: None,
                 seed: None,
+                context_window: None,
             },
         );
         Config {
@@ -135,6 +136,17 @@ pub struct ProviderConfig {
     /// run one at a time, and does not once concurrent requests share a batch.
     /// Rejected on `anthropic` for the same reason as `temperature`.
     pub seed: Option<u64>,
+    /// How many tokens this model's context holds — for a local server, the
+    /// `-c` it was started with.
+    ///
+    /// Nothing here can discover this: a provider reports how many tokens a
+    /// prompt *used*, never how many are left. Without it the compaction
+    /// threshold has to be an absolute number somebody remembers to set, and
+    /// when nobody does, a long session dies on a raw
+    /// `exceed_context_size_error` from the server with the whole run lost.
+    /// With it, [`AgentConfig::compact_at`] derives a threshold and the CLI
+    /// can show how much room is left.
+    pub context_window: Option<u64>,
 }
 
 impl ProviderConfig {
@@ -193,8 +205,13 @@ pub struct AgentConfig {
     /// than an estimate, so it tracks the real prompt including cached tokens.
     /// Unset by default: compaction is lossy, and silently paraphrasing
     /// someone's conversation because it got long is a decision they should
-    /// make. Set it to roughly two thirds of the model's context window.
+    /// make. Set it to roughly two thirds of the model's context window — or
+    /// set `context_window` on the provider and let
+    /// [`AgentConfig::compact_at`] work it out.
     pub compact_at_tokens: Option<u64>,
+    /// IANA timezone name for the user, e.g. `America/New_York`. Unset means
+    /// the machine's. See [`AgentConfig::timezone`].
+    pub timezone: Option<String>,
     /// Turns kept verbatim after a compaction. The recent ones are where the
     /// work is; a summary of the last two turns is worse than the turns.
     pub compact_keep_recent: usize,
@@ -218,12 +235,54 @@ impl Default for AgentConfig {
             max_output_tokens: None,
             max_cost_usd: None,
             compact_at_tokens: None,
+            timezone: None,
             compact_keep_recent: 6,
         }
     }
 }
 
 impl AgentConfig {
+    /// The user's IANA timezone (`America/New_York`), when it is not the
+    /// machine's.
+    ///
+    /// A server runs in UTC and the model has no clock, so without this every
+    /// "what's on Thursday" is answered in the wrong zone — and wrongly in a
+    /// way that looks right, since the times are internally consistent. An
+    /// IANA name rather than an offset, because an offset is wrong twice a
+    /// year.
+    pub fn timezone(&self) -> Option<chrono_tz::Tz> {
+        let name = self.timezone.as_deref()?;
+        match name.parse::<chrono_tz::Tz>() {
+            Ok(tz) => Some(tz),
+            Err(_) => {
+                tracing::warn!("unknown [agent] timezone `{name}`; using the machine's");
+                None
+            }
+        }
+    }
+
+    /// Fraction of a known context window at which to start compacting.
+    ///
+    /// Two thirds, because the threshold is checked *between* turns against
+    /// what the last one reported: the next turn still has to fit the model's
+    /// reply, and a burst of parallel tool results can add several thousand
+    /// tokens before anything gets to look again. Leaving a third of the
+    /// window is what makes the reactive check safe.
+    pub const COMPACT_FRACTION: f64 = 0.66;
+
+    /// Where compaction kicks in for a run: the explicit setting if there is
+    /// one, otherwise derived from the provider's context window.
+    ///
+    /// Deriving it is what turns compaction from something you must remember
+    /// to configure into something that just works — and the failure it
+    /// prevents is total, not gradual: one turn over the window and the
+    /// server refuses the request outright.
+    pub fn compact_at(&self, context_window: Option<u64>) -> Option<u64> {
+        self.compact_at_tokens.or_else(|| {
+            context_window.map(|w| (w as f64 * Self::COMPACT_FRACTION) as u64)
+        })
+    }
+
     pub fn resolve_system_prompt(&self) -> Result<Option<String>> {
         if let Some(path) = &self.system_prompt_file {
             let text = std::fs::read_to_string(path)
@@ -550,6 +609,7 @@ struct AgentLayer {
     max_cost_usd: Option<f64>,
     compact_at_tokens: Option<u64>,
     compact_keep_recent: Option<usize>,
+    timezone: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -633,6 +693,9 @@ impl ConfigLayer {
             }
             if let Some(v) = a.compact_keep_recent {
                 t.compact_keep_recent = v;
+            }
+            if a.timezone.is_some() {
+                t.timezone = a.timezone;
             }
         }
         if let Some(x) = self.tools {
@@ -784,6 +847,27 @@ mod tests {
         assert_eq!(cfg.hooks.len(), 1);
         assert_eq!(cfg.hooks[0].event, "pre_tool");
         assert_eq!(cfg.hooks[0].tools, ["shell"]);
+    }
+
+    /// An explicit threshold always wins; otherwise a known window derives
+    /// one. The derived value must leave real headroom — the check happens
+    /// *between* turns, so the next request has to fit the reply and whatever
+    /// a burst of parallel tool results adds.
+    #[test]
+    fn the_compaction_threshold_derives_from_a_known_context_window() {
+        let mut cfg = AgentConfig::default();
+        assert_eq!(cfg.compact_at(None), None, "unknowable stays unset");
+
+        // The DGX's llama-server runs -c 32768; two thirds of that.
+        let derived = cfg.compact_at(Some(32768)).unwrap();
+        assert_eq!(derived, 21626);
+        assert!(
+            derived < 32768 - 8192,
+            "must leave room for a reply and a burst of tool results: {derived}"
+        );
+
+        cfg.compact_at_tokens = Some(9000);
+        assert_eq!(cfg.compact_at(Some(32768)), Some(9000), "explicit wins");
     }
 
     #[test]
