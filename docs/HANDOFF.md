@@ -55,6 +55,7 @@ A working agent harness, used and measured rather than just compiled.
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
 | Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/send/reject; edits mined as writing reflections |
+| Google | `mecha-google` crate: Gmail + Calendar extracted from flowmail, served as MCP; sends and calendar writes outbox-routed |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning` |
 | Eval | 36 cases, 17 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `pkg-cases.jsonl` — 8 memory/interlock cases against fixture MCP servers (`--mcp-file`) |
 
@@ -468,11 +469,49 @@ required). The hard requirement: it must share one session store with the CLI,
 or you have two assistants that don't know each other. Decide the identity
 model before writing the transport.
 
-**Email / calendar.** Gmail + Graph APIs. **Draft-only, never send** — the
-outbox pattern belongs in core as a first-class concept, not as per-tool
-politeness. ~~Do not start this before the outbox exists.~~ **The outbox
-exists (2026-08-04)** — see the section below; email/calendar writes are now
-unblocked on their own merits.
+**~~Email / calendar~~ — built 2026-08-04, live and verified end to end.**
+`mecha-google/` is a third workspace crate: flowmail's Gmail and Google
+Calendar v3 clients plus its desktop OAuth flow, extracted (the clients had
+zero Tauri/SQLite coupling), trimmed of the sync/cache machinery, and wrapped
+in a stdio MCP binary. mecha-core and mecha-cli have **no code change** —
+`[[mcp]] name = "google"` plus `[outbox] tools` is the whole wiring, which is
+the pkg precedent paying off.
+
+Written because flowmail never had it in Rust: the **token lifecycle**
+(storage/refresh/401-retry lived in its JS frontend), retry+backoff on
+429/5xx, and an HTML→text fallback for HTML-only mail. `threads.get` is the
+one API addition — flowmail rebuilt threads from SQL.
+
+Verified live on the real account (`lukejchang@gmail.com`), in this order:
+
+| Check | Result |
+|---|---|
+| `mecha tools` | 8 google tools; reads `read-only`, all four writes `outbox: staged for review` |
+| Calendar read | real events for the coming week, via `calendar_list_events` |
+| Gmail read | real threads, bodies wrapped in `<untrusted-content>` |
+| Send | **staged, not delivered** — the model reported it as a draft awaiting release, with the item id |
+| Edit → release | edited body delivered; confirmed by finding the sent message in the mailbox |
+| **Interlock** | mail read arms `private+untrusted`; the follow-up `http_fetch` was **refused**, and the model reported the refusal accurately |
+| Learning capture | the real draft edit became a `writing` reflection (`error_type: style`) automatically, via the session-end hook |
+
+Decisions worth keeping:
+
+- **Reads are untrusted sources but not send sinks** — the labeling argument
+  is in CLAUDE.md. Config forces `untrusted_input` (mail is other people's
+  words); reads deliberately lack `openWorldHint` because the query reaches
+  only the mailbox's own custodian.
+- **`gmail.modify` was dropped from the scope list.** Nothing here archives
+  or marks read; least privilege beats saving a future consent click.
+- **Loopback port 8924**, not flowmail's 8923, so both apps' flows can exist
+  on one machine. Google Desktop clients accept any loopback port.
+- The consent timeout is 120s, not flowmail's 30s — a careful reader lost
+  that race.
+
+Deferred, deliberately: Outlook/Graph (flowmail has it; nothing needs it
+yet), the Gmail drafts API (flowmail never used it either — the outbox is
+the draft layer), any local cache or sync (on-demand is the right shape for
+an agent), and past-correspondence context when drafting a reply (cheap to
+add via `q=from:addr`, but unbuilt in flowmail too).
 
 **The outbox (built 2026-08-04, verified live end to end).** `[outbox]
 tools = [...]` names tools whose calls the loop **stages instead of
