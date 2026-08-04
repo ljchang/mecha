@@ -129,6 +129,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     if !args.mcp {
         opts.no_mcp = true;
     }
+    // Same reproducibility rule for learned rules: a scorecard that depends on
+    // what this machine learned last night is not comparable to yesterday's,
+    // or anyone else's. When the learning system itself is the thing being
+    // measured, that wants a deliberate opt-in flag, not an ambient default.
+    opts.no_learned_rules = true;
     let mut prepared = setup::prepare(&opts, false).await?;
     if !args.no_ask_user {
         prepared

@@ -582,12 +582,47 @@ domain, so `$EDITOR` and `git diff` are the editing UI from day one and a
 rules change is itself a reviewable commit — then a `/learning` TUI view
 mirroring flowmail's tabs once the stores exist.
 
-Build order: hooks (capture) → reflection store + reflection generation →
-abstraction pass → consolidation with the token budget → held-out
-measurement → cron-scheduled rumination with counterfactual replay →
-gated proposals. The outbox slots in as the email capture point when it
-lands; the behavior system needs nothing the harness does not already
-record.
+**Built 2026-08-04, the first slice** (`mecha-core/src/learning.rs`,
+`mecha-cli/src/commands/reflect.rs`):
+
+- **The store**: files under `~/.mecha/learning/` — `reflections.jsonl`
+  (append-only evidence), `mined.jsonl`, `rules/<domain>.user.toml` (never
+  written by code — flowmail's immutability constraint made structural) and
+  `rules/<domain>.learned.toml` (consolidation's file). The directory is a
+  git repo, auto-committed by passes: `git log` is the audit trail, `git
+  revert` the undo. **The user notes a database may be needed later** — the
+  CIPHER retrieval tier is the likely trigger — and the swap happens behind
+  `LearningStore`'s API when a measured workload demands it, not before.
+- **`mecha reflect`**: mines un-mined sessions for interventions (pure
+  extraction, unit-tested: steers, denials by their recorded "Denied by the
+  user:" text, follow-up candidates), asks the `Reflector` (a bare-provider
+  call shaped like the eval `Judge`) for the reusable lesson behind each,
+  appends reflections with full lineage (`session_id` points at the
+  transcript), marks sessions mined, commits. `--dry-run` and `--limit`
+  exist; idempotent, so it can run nightly.
+- **Injection**: `setup::prepare` appends the rules block (user rules first,
+  then enabled learned rules, per domain) to the end of the system prompt —
+  inside the cached prefix, changing only at consolidation time.
+  `--no-learned-rules` opts out anywhere; **eval forces it off** for the same
+  reproducibility reason it forces MCP off. Verified end-to-end: a marker
+  user rule shaped a live answer, the flag removed it, and the injected block
+  lands in the recorded `RunConfig`, so replays of rule-bearing sessions
+  reproduce them.
+- **First real run**: 56 sessions mined, 7 interventions found, 6 correctly
+  skipped as new-tasks/greetings, 1 reflection drawn — a real lesson about
+  retaining user-stated details across turns, traceable to its session.
+- **A trap found by the first dry run**: the harness's forced-final-answer
+  nudge is recorded as a *user* message, and mining almost learned from
+  mecha's own voice. The nudge is now a named constant
+  (`agent::FINAL_ANSWER_NUDGE`) that extraction filters, along with recorded
+  slash commands. Anything else that ever injects synthetic user turns must
+  get the same treatment.
+
+Still to build, in order: abstraction pass (`mecha learn`?) → consolidation
+with the token budget → held-out measurement → hooks for real-time capture →
+cron-scheduled rumination with counterfactual replay → gated proposals. The
+outbox slots in as the email capture point when it lands; the behavior system
+needed nothing the harness did not already record.
 
 **`pkg` as memory.** Wired, and the design is now settled — see item 3, which
 supersedes the turn-start retrieval idea this paragraph used to propose

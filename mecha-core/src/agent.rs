@@ -16,6 +16,14 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
+/// The message [`Agent::final_answer`] injects when the tool budget is spent.
+/// It is recorded as a user turn, so transcript mining needs to recognise it.
+pub(crate) const FINAL_ANSWER_NUDGE: &str =
+    "You have used your entire tool budget, and no more tool calls are \
+     possible. Answer now using only what you have already found. State \
+     plainly what you could not determine — an honest \"I could not find \
+     X\" is the correct answer here, not a failure.";
+
 /// Everything the loop wants to tell an observer. The CLI renders these; a
 /// batch runner ignores all but the last.
 #[derive(Debug, Clone)]
@@ -910,18 +918,18 @@ impl Agent {
     /// Removing the tools is the whole trick: the model cannot call anything,
     /// so the only move left is to answer. Turns "ran out of turns, produced
     /// nothing" into "here is what I found, and here is what I could not".
+    ///
+    /// The nudge is a named constant because it lands in the transcript as a
+    /// *user* message: anything mining transcripts for what the user said —
+    /// `learning::extract_interventions` — must be able to tell the harness's
+    /// own voice apart from a person's.
     async fn final_answer(
         &self,
         cx: &RunContext,
         messages: &mut Vec<Message>,
         events: &Option<UnboundedSender<AgentEvent>>,
     ) -> Result<Option<String>> {
-        let nudge = Message::user(
-            "You have used your entire tool budget, and no more tool calls are \
-             possible. Answer now using only what you have already found. State \
-             plainly what you could not determine — an honest \"I could not find \
-             X\" is the correct answer here, not a failure.",
-        );
+        let nudge = Message::user(FINAL_ANSWER_NUDGE);
         messages.push(nudge);
 
         let request = CompletionRequest {

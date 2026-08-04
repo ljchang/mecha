@@ -52,6 +52,7 @@ pub mod eval;
 pub mod mcp;
 pub mod message;
 pub mod provider;
+pub mod learning;
 pub mod replay;
 pub mod replay_run;
 pub mod sandbox;
