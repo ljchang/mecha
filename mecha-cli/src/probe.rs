@@ -55,8 +55,16 @@ pub async fn probe_reflection(
     };
     let point = if r.trigger == Trigger::Steer.as_str() {
         locate_steer(&convo.messages, &r.intervention)
-    } else {
+    } else if r.trigger == Trigger::Denial.as_str() {
         locate_denial(&convo.messages, &r.intervention)
+    } else {
+        // An `edit` reflection's intervention lives in an outbox item, not in
+        // any transcript — there is no prefix to replay. Explicit, so a new
+        // trigger kind cannot silently be probed as if it were a denial.
+        return Ok(ProbeResult::Skipped(format!(
+            "`{}` reflections have no replayable intervention point",
+            r.trigger
+        )));
     };
     let Some(point) = point else {
         return Ok(ProbeResult::Skipped("could not locate the intervention".into()));

@@ -100,6 +100,11 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_hooks: bool,
 
+    /// Don't route any tools through the outbox — configured [outbox] tools
+    /// execute directly under the usual gates instead of being staged.
+    #[arg(long, global = true)]
+    pub no_outbox: bool,
+
     /// Summarise older turns once the prompt passes this many tokens. Roughly
     /// two thirds of the model's context window is a reasonable setting.
     #[arg(long, global = true)]
@@ -151,6 +156,9 @@ pub enum Command {
     /// moments the user stepped in.
     Validate(commands::validate::Args),
 
+    /// Review, edit, release, or reject staged outbound actions.
+    Outbox(commands::outbox::Args),
+
     /// Review, accept, or reject rule changes staged by `mecha learn --propose`.
     Proposals(commands::proposals::Args),
 
@@ -199,6 +207,7 @@ async fn dispatch() -> Result<()> {
         Command::Reflect(args) => commands::reflect::execute(&cli.global, args).await,
         Command::Learn(args) => commands::learn::execute(&cli.global, args).await,
         Command::Validate(args) => commands::validate::execute(&cli.global, args).await,
+        Command::Outbox(args) => commands::outbox::execute(&cli.global, args).await,
         Command::Proposals(args) => commands::proposals::execute(args).await,
         Command::Replay(args) => commands::replay::execute(&cli.global, args).await,
         Command::Tools(args) => commands::tools::execute(&cli.global, args).await,

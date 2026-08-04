@@ -229,7 +229,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             let (mut improved, mut regressed, mut unchanged, mut inconclusive) =
                 (0u32, 0u32, 0u32, 0u32);
             let mut measured = 0u32;
-            for r in reflexions.iter().filter(|r| r.trigger != Trigger::Followup.as_str()) {
+            // An allowlist, not an exclusion: only steers and denials have a
+            // replayable intervention point. Followups keep the judge path in
+            // `mecha validate`; edits (outbox) have no transcript at all.
+            for r in reflexions.iter().filter(|r| {
+                r.trigger == Trigger::Steer.as_str() || r.trigger == Trigger::Denial.as_str()
+            }) {
                 match probe::probe_reflection(
                     prepared,
                     provider_cfg,

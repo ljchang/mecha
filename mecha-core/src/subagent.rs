@@ -184,6 +184,9 @@ impl Tool for Subagent {
             // Steering is addressed to the parent. The child was given a
             // self-contained task and has no conversation to redirect.
             queued_input: None,
+            // Same rule as hooks: setup installs the parent's outbox route on
+            // each child, or delegating becomes the way to send unstaged.
+            outbox: self.agent.context().outbox.clone(),
         };
 
         let outcome = match self.agent.run_in(&cx, &mut convo, None).await {

@@ -54,6 +54,7 @@ A working agent harness, used and measured rather than just compiled.
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
+| Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/send/reject; edits mined as writing reflections |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning` |
 | Eval | 36 cases, 17 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `pkg-cases.jsonl` — 8 memory/interlock cases against fixture MCP servers (`--mcp-file`) |
 
@@ -469,7 +470,41 @@ model before writing the transport.
 
 **Email / calendar.** Gmail + Graph APIs. **Draft-only, never send** — the
 outbox pattern belongs in core as a first-class concept, not as per-tool
-politeness. Do not start this before the outbox exists.
+politeness. ~~Do not start this before the outbox exists.~~ **The outbox
+exists (2026-08-04)** — see the section below; email/calendar writes are now
+unblocked on their own merits.
+
+**The outbox (built 2026-08-04, verified live end to end).** `[outbox]
+tools = [...]` names tools whose calls the loop **stages instead of
+executes** (`mecha-core/src/outbox.rs`, interception in `agent.rs`);
+`mecha outbox` reviews: list / show / edit (`$EDITOR`) / send / reject. The
+design notes live in CLAUDE.md; the decisions that were argued rather than
+mechanical:
+
+- **Interception, not a visible tool** — the model calls `email__send`
+  naturally and the harness makes it a draft, so third-party MCP tools are
+  covered with no knowledge of the outbox. Routing an unregistered name
+  warns on every start (a typo would mean the real tool runs unrouted).
+- **Staging skips the interlock and approver**: nothing leaves at stage
+  time. The item snapshots the conversation's taint; `send` warns and
+  confirms (EOF = no) on an armed snapshot. An unrouted send still hits the
+  interlock — tests pin both sides. A failed staging **fails closed**.
+- **The learning capture is wired**: `edit` preserves `args_before`, and
+  `mecha reflect` grew an outbox pass — sent-with-edits items become
+  `writing`-domain reflections (new `Trigger::Edit`, its own reflector
+  prompt ported from flowmail's edit-analysis, `mined_outbox.jsonl`
+  ledger). Verified live: a register-shaped edit ("hey can u send… thx" →
+  full polite phrasing) yielded `error_type: register`, lesson "Always use
+  full, polite phrasing…", with session lineage. A URL-only edit was
+  **skipped by the reflector as unlearnable content — which is the edit-
+  distance gate working**, not a failure. The counterfactual probe
+  allowlists steer/denial; edit reflections have no replayable transcript.
+- **Still open, deliberately**: `LEARNER_SYSTEM` is behavior-framed, so
+  `mecha learn` would consolidate writing reflections with the wrong
+  prompt — the writing-domain learner prompt is the next piece of this
+  system. The positive signal (sent *unedited* reinforces) is recorded on
+  items but not yet mined (CIPHER tier). Subagents inherit the route;
+  eval forces `--no-outbox`.
 
 Settled with the user 2026-08-04: **mecha is the email actor** — reads,
 drafts, and (through the outbox) actions — while pkg mines mail through its

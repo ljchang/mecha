@@ -85,6 +85,23 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     let hooks = mecha_core::hooks::HookSet::from_config(&cfg.hooks)?;
     let hooks = (!opts.no_hooks && !hooks.is_empty()).then(|| Arc::new(hooks));
 
+    // The outbox route. Opening the store here — not lazily at first stage —
+    // makes an unwritable outbox a startup error instead of a mid-run
+    // surprise on the one call that mattered.
+    let outbox = if !opts.no_outbox && !cfg.outbox.tools.is_empty() {
+        let root = match &cfg.outbox.dir {
+            Some(dir) => dir.clone(),
+            None => mecha_core::outbox::OutboxStore::default_root()?,
+        };
+        let store = mecha_core::outbox::OutboxStore::open(root)?;
+        Some(Arc::new(mecha_core::outbox::OutboxRoute::new(
+            store,
+            cfg.outbox.tools.iter().cloned(),
+        )))
+    } else {
+        None
+    };
+
     // Subagents are built from the same tool pool but get their own registry —
     // an allowlist, not an inheritance. Do this before the parent takes
     // ownership of the registry.
@@ -92,8 +109,15 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     for profile in &cfg.subagents {
         // A profile may point at a different provider entry entirely.
         let (_, child_provider_cfg) = cfg.provider(profile.provider.as_deref())?;
-        let child =
-            build_subagent(profile, &registry, &cfg, child_provider_cfg, &ctx, hooks.as_ref())?;
+        let child = build_subagent(
+            profile,
+            &registry,
+            &cfg,
+            child_provider_cfg,
+            &ctx,
+            hooks.as_ref(),
+            outbox.as_ref(),
+        )?;
         registry.insert(Arc::new(child));
     }
 
@@ -109,6 +133,21 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
 
     if let Some(hooks) = hooks {
         agent.set_hooks(hooks);
+    }
+    if let Some(outbox) = outbox {
+        // A typo in `[outbox] tools` means the *real* tool executes unrouted,
+        // silently — the degrading-sandbox shape. It cannot be a hard error
+        // (a routed tool's MCP server may be legitimately off today), so say
+        // it out loud on every start instead.
+        for name in outbox.routed() {
+            if agent.registry().get(name).is_none() {
+                eprintln!(
+                    "mecha: [outbox] routes `{name}`, which is not a registered tool — \
+                     check the spelling, or this routing protects nothing"
+                );
+            }
+        }
+        agent.set_outbox(outbox);
     }
 
     Ok(Prepared {
@@ -301,6 +340,7 @@ fn build_subagent(
     provider_cfg: &mecha_core::config::ProviderConfig,
     ctx: &ToolCtx,
     hooks: Option<&Arc<mecha_core::hooks::HookSet>>,
+    outbox: Option<&Arc<mecha_core::outbox::OutboxRoute>>,
 ) -> Result<Subagent> {
     let mut child_registry = Registry::new();
     for wanted in &profile.tools {
@@ -346,6 +386,11 @@ fn build_subagent(
     // way around a pre_tool policy.
     if let Some(hooks) = hooks {
         child.set_hooks(Arc::clone(hooks));
+    }
+    // Same rule for the outbox: a child's send stages like the parent's, or
+    // delegating becomes the way to send unstaged.
+    if let Some(outbox) = outbox {
+        child.set_outbox(Arc::clone(outbox));
     }
 
     Ok(Subagent::new(profile.clone(), Arc::new(child)))
