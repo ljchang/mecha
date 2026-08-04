@@ -30,6 +30,8 @@ provider/    Provider trait + anthropic.rs (raw HTTP) + openai.rs (compatible)
 tool/        Tool trait, Registry, Approver, builtin.rs
 mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
 agent.rs     the loop: ask → run tools → feed results back → repeat
+hooks.rs     user commands at lifecycle points; pre_tool can deny a call
+learning.rs  the reflection/rule store behind reflect, learn, validate
 session.rs   append-only JSONL transcripts
 batch.rs     bounded-concurrency fan-out over many prompts
 eval.rs      case types, graders, the LLM judge
@@ -171,6 +173,34 @@ On Ubuntu 23.10+, `bwrap` fails even when installed and
 `kernel.apparmor_restrict_unprivileged_userns=1`. Use `docker` there, or install
 an AppArmor profile. `mecha tools` prints the active sandbox, and
 `mecha tools --json` prints each tool's capabilities.
+
+## Hooks
+
+`[[hook]]` commands run at `pre_tool`, `post_tool` and `session_end`, with the
+event as JSON on stdin. The point is that policy, redaction and logging attach
+*without* editing the loop. Four decisions carry it:
+
+- **The order in the dispatch path is interlock → hook → approver.** A hook can
+  narrow policy and never loosen security, and a `pre_tool` denial never
+  reaches the human: mechanical policy is cheaper than an interruption, and a
+  hook cannot be talked into clicking yes.
+- **`pre_tool` fails closed.** Exit 0 allows, exit 2 denies; an undefined exit
+  code, a spawn failure or a timeout also *denies*. This is the
+  silently-degrading-sandbox rule again — a policy hook that cannot run and
+  quietly allows is worse than no hook. `post_tool` and `session_end` are
+  observers and their failures are swallowed, because an observer must not be
+  load-bearing.
+- **A hook denial reads "Blocked by a hook:", not "Denied by the user:".** The
+  learning miner keys on the second string. Machine policy is not a user
+  correction, and learning from it would teach mecha rules it was already
+  obeying. Both strings now have tests naming that.
+- **Subagents inherit the parent's hooks** (`setup::build_subagent`), or
+  delegating is the way around a `pre_tool` policy. `mecha eval` forces hooks
+  off, like MCP and learned rules: a scorecard shaped by local scripts grades
+  the machine, not the model.
+
+Config is validated even when `--no-hooks` skips installing, so a typo'd event
+name fails on every start rather than only on the runs that needed it.
 
 ## Conventions
 

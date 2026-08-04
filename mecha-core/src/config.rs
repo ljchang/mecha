@@ -34,6 +34,27 @@ pub struct Config {
     /// failure, which is what makes stacking two free tiers viable.
     #[serde(rename = "search")]
     pub search: Vec<SearchBackendConfig>,
+    /// User commands run at loop lifecycle points. See [`crate::hooks`].
+    #[serde(rename = "hook")]
+    pub hooks: Vec<HookConfig>,
+}
+
+/// One hook: a command run at a lifecycle point, with the event payload as
+/// JSON on stdin.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HookConfig {
+    /// `pre_tool` | `post_tool` | `session_end`. An unknown event is a startup
+    /// error, not a warning — a policy hook that never fires because its event
+    /// name has a typo is the silently-degrading-sandbox mistake again.
+    pub event: String,
+    /// Run via `sh -c`, as the user, in the workspace.
+    pub command: String,
+    /// Only fire for these tools (`pre_tool`/`post_tool`). Empty means all.
+    pub tools: Vec<String>,
+    /// Kill the hook after this long. The default is deliberately short: a
+    /// `pre_tool` hook is on the critical path of every call it matches.
+    pub timeout_secs: Option<u64>,
 }
 
 impl Default for Config {
@@ -63,6 +84,7 @@ impl Default for Config {
             mcp: Vec::new(),
             subagents: Vec::new(),
             search: Vec::new(),
+            hooks: Vec::new(),
         }
     }
 }

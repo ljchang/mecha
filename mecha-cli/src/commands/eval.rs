@@ -134,6 +134,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // or anyone else's. When the learning system itself is the thing being
     // measured, that wants a deliberate opt-in flag, not an ambient default.
     opts.no_learned_rules = true;
+    // And for hooks: a user's local policy scripts firing inside eval cases
+    // would grade this machine's config, not the model.
+    opts.no_hooks = true;
     let mut prepared = setup::prepare(&opts, false).await?;
     if !args.no_ask_user {
         prepared

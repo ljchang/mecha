@@ -95,6 +95,10 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_learned_rules: bool,
 
+    /// Don't run configured [[hook]] commands.
+    #[arg(long, global = true)]
+    pub no_hooks: bool,
+
     /// Summarise older turns once the prompt passes this many tokens. Roughly
     /// two thirds of the model's context window is a reasonable setting.
     #[arg(long, global = true)]

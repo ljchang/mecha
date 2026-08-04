@@ -143,6 +143,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     }
 
+    // Before the exit-code match below: those paths leave the process.
+    if let Some(s) = &session {
+        let cx = prepared.agent.context();
+        cx.hooks.session_end(&s.meta.id, &s.path, &cx.tools.workspace).await;
+    }
+
     // Distinct codes so a script can tell "the model refused" from "it ran out
     // of turns" from "everything worked".
     match outcome.stop_reason {
