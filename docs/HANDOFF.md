@@ -493,10 +493,47 @@ clutter, and this rig knows what to do with that. Bridge to pkg: rules that
 are really facts about the user ("signs off 'Cheers' with lab members")
 graduate to staged pkg facts.
 
+**Rules are scoped, not only global.** A rule carries a scope — `global`
+(a system-prompt section), `domain` (writing, email, triage), or `tool`
+("when using `fs_edit` on the user's papers, never touch the references
+section"), each scope with its own consolidation budget. Two consequences to
+respect: per-tool injection changes the tool block, which is the front of the
+cached prefix *and* the eval surface, so scoped rules also change only at
+consolidation time; and narrow scopes are what keep the global prompt small,
+which is the point of consolidation.
+
+**Nightly rumination.** Wanted by the user: mecha works on itself overnight.
+Three facts make this cheap and safe here specifically — the DGX idles at
+night and local inference has zero marginal cost; sessions already record
+every intervention; and replay executes nothing, so unattended runs are
+side-effect-free by construction. The cycle: mine the day's transcripts into
+reflections → **counterfactual replay** → abstraction/consolidation when
+thresholds hit → proposals. Counterfactual replay is the load-bearing idea:
+*an intervention is a test case*. The user steered at turn 3 → replay the
+pre-steer prefix under candidate rules and check the model now does what the
+steer asked *without being steered*. Seeded sampling makes the comparison
+meaningful; the recording is ground truth; a rule is kept because it flips
+the counterfactual, not because an LLM liked it. Needs the triggers item
+(cron) for scheduling; replay and sessions already exist.
+
+**The hyperagent layer** (Meta's HyperAgents / DGM-H, ICLR 2026 — task agent
+plus meta agent as one editable program). mecha's version keeps the Darwin
+and adds a commit gate: nightly rumination may *propose* improvements —
+prompt edits, rule changes, eventually code developed in a worktree — but a
+proposal must pass the eval suite, show counterfactual-replay or held-out
+gains, and land as **a diff the user reviews**, never self-applied. The
+validation harness DGM-H's agents had to invent for themselves (memory,
+performance tracking), mecha already has: pkg, the eval rig, scorecards,
+replay. One hard line, recorded as policy: **the security layer — interlock,
+path jail, sandbox, approver — is not proposable-against.** A self-improvement
+loop must never be able to argue its own guardrails down.
+
 Build order: hooks (capture) → reflection store + reflection generation →
 abstraction pass → consolidation with the token budget → held-out
-measurement. The outbox slots in as the email capture point when it lands;
-the behavior system needs nothing the harness does not already record.
+measurement → cron-scheduled rumination with counterfactual replay →
+gated proposals. The outbox slots in as the email capture point when it
+lands; the behavior system needs nothing the harness does not already
+record.
 
 **`pkg` as memory.** Wired, and the design is now settled — see item 3, which
 supersedes the turn-start retrieval idea this paragraph used to propose
