@@ -89,11 +89,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Reflections claimed by a pending proposal are spoken for: consuming
     // them again would either duplicate the proposal nightly until someone
     // reviews it, or double-count them into the live rules on a direct pass.
-    let claimed: std::collections::BTreeSet<String> = store
-        .proposals()?
-        .into_iter()
+    let proposals = store.proposals()?;
+    let claimed: std::collections::BTreeSet<String> = proposals
+        .iter()
         .filter(|p| p.status == "pending")
-        .flat_map(|p| p.reflexion_ids)
+        .flat_map(|p| p.reflexion_ids.iter().cloned())
         .collect();
 
     // Group unprocessed reflections by domain.
@@ -138,6 +138,30 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             true
         }
     });
+
+    // A batch identical to one some proposal already argued — most likely a
+    // gate rejection whose reflections rightly returned to the pool — is not
+    // argued again until the pool changes. Without this, an unchanged pool
+    // means a fresh near-identical proposal (and its probe cost) every night.
+    if args.propose {
+        by_domain.retain(|domain, rs| {
+            let batch: std::collections::BTreeSet<&str> =
+                rs.iter().map(|r| r.id.as_str()).collect();
+            let argued = proposals.iter().any(|p| {
+                p.domain == *domain
+                    && p.reflexion_ids.len() == batch.len()
+                    && p.reflexion_ids.iter().all(|id| batch.contains(id.as_str()))
+            });
+            if argued {
+                println!(
+                    "{domain}: this exact batch of {} reflection(s) was already argued \
+                     (see `mecha proposals`); waiting for new reflections",
+                    batch.len()
+                );
+            }
+            !argued
+        });
+    }
 
     if by_domain.is_empty() {
         println!("nothing to learn from yet");

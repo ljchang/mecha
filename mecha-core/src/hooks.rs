@@ -112,15 +112,22 @@ impl HookSet {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()?;
+        let bytes = serde_json::to_vec(payload)?;
 
-        if let Some(mut stdin) = child.stdin.take() {
-            let bytes = serde_json::to_vec(payload)?;
-            // A hook that never reads stdin must not wedge the write.
-            let _ = stdin.write_all(&bytes).await;
-            drop(stdin);
-        }
-
-        let out = tokio::time::timeout(hook.timeout, child.wait_with_output()).await??;
+        // The timeout covers the stdin write as well as the wait. A hook that
+        // never reads stdin blocks the write once the payload outgrows the
+        // pipe buffer — a pre_tool hook fed a large fs_write input would hang
+        // the run forever with the timeout never starting. Dropping the timed
+        // future drops the child, and kill_on_drop reaps it.
+        let fut = async move {
+            if let Some(mut stdin) = child.stdin.take() {
+                // Best-effort: a hook that decides without reading is fine.
+                let _ = stdin.write_all(&bytes).await;
+                drop(stdin);
+            }
+            child.wait_with_output().await
+        };
+        let out = tokio::time::timeout(hook.timeout, fut).await??;
         let mut text = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if text.is_empty() {
             text = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -258,6 +265,24 @@ mod tests {
             HookVerdict::Deny(reason) => assert!(reason.contains("failed to run"), "{reason}"),
             HookVerdict::Allow => panic!("a timeout must not be permission"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_hook_that_never_reads_a_large_payload_still_times_out() {
+        // The bug this pins: the stdin write used to sit outside the timeout,
+        // so a hook that never reads blocked write_all forever once the
+        // payload outgrew the pipe buffer — the timeout never started.
+        let mut c = cfg("pre_tool", "sleep 30");
+        c.timeout_secs = Some(1);
+        let set = HookSet::from_config(&[c]).unwrap();
+        let big = json!({"content": "x".repeat(256 * 1024)});
+        let verdict = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            set.pre_tool("fs_write", &big, std::path::Path::new(".")),
+        )
+        .await
+        .expect("the hook's own timeout must fire; the write must not wedge it");
+        assert!(matches!(verdict, HookVerdict::Deny(_)));
     }
 
     #[tokio::test]
