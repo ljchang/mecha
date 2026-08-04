@@ -8,3 +8,4 @@ pub mod replay;
 pub mod run;
 pub mod sessions;
 pub mod tools;
+pub mod validate;
