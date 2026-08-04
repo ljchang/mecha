@@ -317,19 +317,75 @@ a regression case. Still open, now cheap: point it at a longer recorded session
 as a standing regression check, and wire `--json` output into something CI can
 diff.
 
-### 3. pkg, going deeper
+### 3. pkg — design settled 2026-08-04, talked through with the user
 
-pkg is connected and the prompt tells the model when to use it. What is not
-decided is *retrieval timing*. Automatic retrieval every turn would arm the
-untrusted leg permanently — pkg holds mail and Slack, so that marking is correct
-— and with any private read, outbound tools are then blocked. On demand is the
-current answer and it is defensible; session-start retrieval is the obvious
-alternative and needs a decision rather than a default.
+The open questions here are now decisions. Recorded in full because they were
+reached by argument and would be easy to re-litigate cold.
 
-The other half is the persistent todo the user asked for: **pkg-backed, not a
-second store.** Its `fact_candidate` staging queue is the guardrail that makes
-agent writes safe, and building a parallel memory beside it is the thing the
-original design note warns against.
+**The three-layer architecture.**
+
+- **Systems of record** (Google Calendar, Gmail, GitHub) hold live truth.
+- **mecha is the actor**: it reads and (eventually, via the outbox) writes
+  those systems through MCP. "What's on Thursday" is a live-calendar query,
+  never a pkg query — pkg would answer with a summarized, possibly stale copy.
+  mecha must never "add an event" by writing to pkg: that puts a fact in the
+  graph and nothing on the calendar.
+- **pkg is the derived layer**: distilled context — who someone is, when you
+  last met, what was decided, project state. It learns about the world by
+  ingestion, after the fact. One refinement: pkg is the read model for
+  anything that has a system of record elsewhere, and the **system of record
+  only for what has no other home** — relationships, decisions, episodes,
+  tasks-as-the-user-conceives-them. (If a real task tracker is ever adopted,
+  tasks migrate to rule one.)
+
+**Retrieval timing: on demand, kept.** The decisive argument: a pkg read arms
+both taint legs at once, so session-start retrieval would mean no session
+could ever use `web_search`/`http_fetch` after turn zero. On demand pays that
+price only when memory is actually needed, only from that moment. Corollary
+worth teaching the model: **web before memory** — both orders end equally
+tainted, but only one gets the outbound work done first.
+
+**The weak link is recognition, not timing** — measured, n=2 but vivid: asked
+"my current projects" with "pull from my knowledge graph", the model answered
+beautifully from pkg; asked about "my main research focus" with the source
+unnamed, it web-searched a nonsense query, never touched pkg, flailed through
+fifteen `fs_list` calls, and died on the context window. The fix is prompt
+coverage (projects/goals/tasks/deadlines/"my X" are memory questions) plus
+trace-graded eval cases, not a retrieval scheduler.
+
+**One graph, not a separate mecha store.** `kg_upsert` already *requires* a
+`source` field (`agent:mecha`) and `kg_search` filters by tags — provenance
+scoping is built in, so separation-by-store would duplicate it while
+splitting answers like "what are my projects" forever. The user explicitly
+wants mecha writing and *curating*: staging facts and connections **in
+flight, as tasks teach them**, flagging contradictions and duplicates rather
+than silently picking a side. Review-fatigue is handled by policy, not
+architecture: the nightly review can bulk-skim `agent:mecha` while reading
+personal facts carefully. What does *not* go to pkg: how mecha should behave
+(git), raw run history (sessions JSONL), measurements (`results/`). Only what
+the user would ask a personal assistant later.
+
+**Caveats recorded with the decision:**
+
+- **Self-retrieval costs taint.** Capabilities are per-server and the override
+  only widens, so mecha reading its own notes back arms the interlock like any
+  pkg read. Records cannot vouch for themselves through an untrusted channel.
+  If it hurts, the fix is pkg-side: a read tool scoped to self-authored +
+  curated records. Not needed yet; web-first ordering covers it.
+- **`kg_upsert` stages `fact` and `alias` only — no episode kind.** Session-end
+  distillation lands as episode-shaped facts until pkg grows one. Queue with
+  the pending `readOnlyHint` annotations as one small pkg work-package.
+- **Trace-graded pkg eval cases need a fixture MCP server**, because evals are
+  deliberately `--mcp`-off and the real pkg is neither deterministic nor
+  machine-independent. This converges with the open multi-turn interlock case,
+  which needs a fixture tool returning `.from_outside()` content — one small
+  fake server can be both.
+
+**Roadmap order that falls out:** prompt widening + write habits (now) →
+hooks, with session-end distillation as the first consumer → outbox in core →
+calendar *reads* → calendar writes and email through the outbox. Calendar
+writes are the trifecta in one tool (invites send; descriptions exfiltrate),
+so they do not jump the queue ahead of the outbox.
 
 ### 4. Smaller, high-value items
 
@@ -373,11 +429,13 @@ model before writing the transport.
 outbox pattern belongs in core as a first-class concept, not as per-tool
 politeness. Do not start this before the outbox exists.
 
-**`pkg` as memory.** Wire `pkg-mcp` in as first-class memory: retrieve context
-at turn start, stage learnings via `kg_upsert` at turn end, review nightly.
-`pkg`'s `fact_candidate` staging queue is exactly the guardrail a self-learning
-agent needs — it cannot silently poison its own memory. **Do not build a second
-memory store beside it.**
+**`pkg` as memory.** Wired, and the design is now settled — see item 3, which
+supersedes the turn-start retrieval idea this paragraph used to propose
+(turn-start retrieval arms the trifecta at turn zero and was rejected for it).
+The staging queue remains the guardrail: a self-learning agent that cannot
+silently poison its own memory. **Do not build a second memory store beside
+it** — provenance scoping (`source: agent:mecha`) inside the one graph is the
+separation that matters.
 
 **Triggers.** Cron, file watchers, inbound webhooks. Sandboxing exists now, so
 this is unblocked.
