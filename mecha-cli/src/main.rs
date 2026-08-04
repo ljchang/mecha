@@ -130,6 +130,10 @@ pub enum Command {
     /// Score a model on a case set. The model bake-off rig.
     Eval(commands::eval::Args),
 
+    /// Re-run a recorded session against recorded tool results and report
+    /// where the model diverged.
+    Replay(commands::replay::Args),
+
     /// List the tools an agent would see.
     Tools(commands::tools::Args),
 
@@ -168,6 +172,7 @@ async fn dispatch() -> Result<()> {
         Command::Tui(args) => tui::execute(&cli.global, args.resume, args.no_session).await,
         Command::Batch(args) => commands::batch::execute(&cli.global, args).await,
         Command::Eval(args) => commands::eval::execute(&cli.global, args).await,
+        Command::Replay(args) => commands::replay::execute(&cli.global, args).await,
         Command::Tools(args) => commands::tools::execute(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
         Command::Config(args) => commands::config::execute(&cli.global, args).await,

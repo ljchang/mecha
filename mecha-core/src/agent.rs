@@ -232,7 +232,7 @@ impl RunContext {
         self
     }
 
-    fn cancelled(&self) -> bool {
+    pub fn cancelled(&self) -> bool {
         self.cancel.as_ref().is_some_and(CancellationToken::is_cancelled)
     }
 

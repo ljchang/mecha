@@ -267,26 +267,55 @@ requests **sequentially** (it naturally would — one conversation), and the
 eval at `--concurrency 4` stays pass@k-shaped. `--concurrency 1` is now the
 deterministic mode, at ~4× the wall clock.
 
-Then the driver. `session.rs` records a `RunConfig` on every attach and
-`replay.rs` extracts and diffs trajectories; both are pure and unit-tested. What
-remains is the half that runs:
+Then the driver — **also done 2026-08-04**. `replay_run.rs` is the impure half
+beside the pure `replay.rs`: a registry of tools that answer from the recording
+(`replay_registry`), and `drive`, which feeds the recorded user turns to an
+agent one at a time and diffs what it did. `mecha replay <session>` rebuilds
+the run from the recorded `RunConfig` — its system prompt, tool surface,
+budgets — not from today's flags, and takes `--on-divergence=stop|error|live`
+(`stop` default; `error` exits nonzero on *any* divergence, for CI; `live`
+abandons the recording and continues on real tools under the configured
+permission mode). Nine unit tests cover the mechanics, including two that
+drive a `ScriptedProvider` through a full faithful and a full divergent run.
 
-- **A `ReplayRegistry`** — `Tool` impls that answer from the recording instead
-  of executing. Replaying against live tools re-reads a filesystem and a web
-  that have both moved, so a difference would tell you nothing about the
-  harness.
-- **`mecha replay <session>`** — load, re-run, print the diff.
-- **Two flags, because both are policy rather than fact.**
-  `--on-divergence=stop|error|live` — after a divergence every later recorded
-  result answers a question nobody asked, so `stop` is the honest default. And
-  whether `Divergence::Arguments` counts as a regression at all: the same file
-  by a different path spelling is not a behaviour change, which is why `diff`
-  separates it from structural divergence rather than deciding for the caller.
+Decisions that were not obvious until it ran:
 
-Why it is worth doing: this project's case set has **saturated once already**,
+- **A structural divergence kills the recording for every tool**, via a shared
+  cursor and the run's cancellation token — the model gets a refusal, the run
+  stops at the next safe point, and later recorded turns are never fed.
+  Argument-only differences replay the recorded result and keep going; the
+  final diff reports them and the caller judges.
+- **The spec the model sees is the live tool's**, name/description/schema —
+  deliberately, because a changed description is part of what a replay
+  measures. A recorded tool missing from today's registry is an error, not a
+  silent shrink of the surface. This bit immediately: subagent tools like
+  `research` are built by full setup, not `prepare_tools`, so the command uses
+  `setup::prepare` and borrows the discarded parent agent's registry.
+- **`-p`/`-m` override the recorded provider/model**, which is the payoff:
+  cross-model replay on real work. When `-p` is given without `-m`, the model
+  falls back to the *new provider's* model, not the recorded name — sending
+  qwen's name to gemma's server was the first bug this surfaced.
+- **Replayed results carry no `external` marking** — the transcript does not
+  record per-result provenance, so a replay's taint can be less armed than the
+  recording's. Recorded interlock refusals replay verbatim regardless. Known
+  approximation, documented in the module.
+
+Verified end-to-end, all three ways it can go: a recorded qwen session with
+tool calls **replays with zero divergence** under the pinned sampler; the same
+session replayed on gemma-4-26b-a4b reported exactly one **argument-only**
+divergence (`entry-735e.md` for `audit/entry-735e.md` — the handoff's own
+example of a spelling, not a behaviour change); and replaying the todo-probe
+session on gemma stopped at call #0 with a **structural** divergence and exit
+1 under `error` — gemma opens with `todo` where qwen recorded `fs_read`.
+That last one is also a finding for item 1: **gemma obeys the todo-first
+instruction qwen ignores.** The todo result is model-specific.
+
+Why it was worth doing: this project's case set has **saturated once already**,
 and the replacement cost a full session of hand-writing cases, four of whose
 graders were wrong before they were right. Replay turns every real session into
-a regression case.
+a regression case. Still open, now cheap: point it at a longer recorded session
+as a standing regression check, and wire `--json` output into something CI can
+diff.
 
 ### 3. pkg, going deeper
 
