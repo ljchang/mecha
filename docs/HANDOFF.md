@@ -443,44 +443,60 @@ relationship context flowmail's cards provided — who the recipient is, the
 register used with them — composed with the learned rules and the live
 thread.
 
-**Reflexion consolidation — mecha's general self-learning system.** Wanted by
-the user explicitly, and email drafting is only the first domain: whenever the
-user *corrects* mecha — edits a staged draft, rewrites prose it produced,
-redirects an approach — the correction is a sample, and the system's objective
-is **minimizing the edit distance between what mecha produces and what the
-user finally keeps**. The reference design is the user's own
-(`~/Github/flowmail/dev_docs/CORRECTION_SYSTEM.md`, Reflexion/LEAP-style),
-and it generalizes cleanly:
+**Reflexion — mecha's self-learning, two systems, three stages.** Wanted by
+the user explicitly, modeled on flowmail's pair of learning loops
+(`~/Github/flowmail/dev_docs/CORRECTION_SYSTEM.md`, Reflexion/LEAP-style).
+Two distinct systems, because they learn different things from different
+signals:
 
-- **Capture, per domain**: outbox diffs (email); in-conversation redirections
-  ("shorter", "never open with an apology"); for file-writing, the diff
-  between what a session wrote and how the user's later edits left it —
-  sessions record the former, which is what makes this capturable at all.
-  Hooks are the natural mechanism, which promotes them again (see item 4).
-- **Store**: contextual corrections in a **mecha-local store beside the
-  sessions, not pkg** — the one deliberate amendment to the one-graph rule.
-  Corrections are high-volume with a compaction lifecycle (nightly
-  `fact_candidate` review would be fatigue by design), and style is procedural
-  skill memory consumed by a prompt, not knowledge to be queried.
-- **Consolidate**: every ~N corrections, an LLM pass abstracts them into
-  durable rules per domain (flowmail's schema — `source='learned'`,
-  confidence, based_on_count — ports directly). Prompt assembly order: user's
-  own rules → learned rules → sliding window of raw recent corrections. Rules
-  are inspectable, editable, and disableable; the loop is self-sealing (a bad
-  rule → a bad draft → a correction that fixes the rule).
-- **Measure, or it isn't learning**: edit distance gives the metric this
-  project's eval culture demands. Hold out a slice of corrections at each
-  consolidation and check the new rules reduce edit distance on drafts they
-  did not train on; track the trend. A rules pass that does not move held-out
-  edit distance is prompt clutter, and this rig knows what to do with a
-  treatment that does not beat its control.
-- **Bridge to pkg**: rules that are really facts about the user ("signs off
-  'Cheers' with lab members") may graduate to staged pkg facts, where they
-  inform contexts beyond writing.
+- **Writing** — learns the user's voice. Signal: the edit. Objective:
+  **minimize edit distance between what mecha produces and what the user
+  keeps.** Capture is structural: outbox `diff(staged, sent)` for email; for
+  file-writing, the diff between what a session wrote and how the user's
+  later edits left the file — sessions record the former, which is what makes
+  this capturable at all.
+- **Behavior** — learns how to perform tasks. Signal: the user stepping in.
+  Capture is *already recorded today*: a mid-run **steer** is a correction
+  with full context in the session JSONL, an approval **denial** is a
+  recorded rejected intent, and a corrective chat turn after an action is the
+  third form. Metric: steers, denials and corrections per session should fall
+  over time — observable from the transcripts alone.
 
-Build order: outbox in core → email reads → drafting with structural
-correction capture → the consolidation pass → held-out measurement. The same
-pattern later serves triage (flowmail's Focus Queue rejection feedback).
+Both run the same three-stage lifecycle, and the stages are distinct on
+purpose:
+
+1. **Reflection** — at the moment of correction, generate one short
+   contextual note: what mecha was doing, what the user changed or stopped,
+   what they evidently wanted. Raw, per-incident, cheap. Stored with a
+   context snapshot in a **mecha-local store beside the sessions, not pkg**
+   (high volume, its own lifecycle, procedural rather than queryable — the
+   one deliberate amendment to the one-graph rule).
+2. **Abstraction** — every ~N reflections per domain, an LLM pass extracts
+   durable candidate rules (flowmail's schema ports: `source='learned'`,
+   confidence, `based_on_count`). Reflections are archived, not deleted —
+   they are the evidence trail and the held-out set.
+3. **Consolidation** — the stage that keeps it honest about context: the
+   rule set has a **fixed token budget per domain**. When abstractions
+   accumulate, a consolidation pass merges overlapping rules, drops
+   superseded ones, and compresses — so learning never grows the system
+   prompt without bound. Rules change only at consolidation time, which also
+   keeps the prompt-cache prefix stable between passes.
+
+Prompt assembly order: the user's own rules → consolidated rules → a small
+sliding window of recent raw reflections. Everything inspectable, editable,
+disableable; the loop is self-sealing (a bad rule → a bad action → a
+reflection that fixes the rule). **Measure, or it isn't learning**: hold out
+a slice of reflections at each abstraction pass and check the rules move the
+metric (edit distance for writing, intervention rate for behavior) on data
+they did not train on. A pass that does not beat its control is prompt
+clutter, and this rig knows what to do with that. Bridge to pkg: rules that
+are really facts about the user ("signs off 'Cheers' with lab members")
+graduate to staged pkg facts.
+
+Build order: hooks (capture) → reflection store + reflection generation →
+abstraction pass → consolidation with the token budget → held-out
+measurement. The outbox slots in as the email capture point when it lands;
+the behavior system needs nothing the harness does not already record.
 
 **`pkg` as memory.** Wired, and the design is now settled — see item 3, which
 supersedes the turn-start retrieval idea this paragraph used to propose
