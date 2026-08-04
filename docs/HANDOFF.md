@@ -499,12 +499,20 @@ mechanical:
   **skipped by the reflector as unlearnable content — which is the edit-
   distance gate working**, not a failure. The counterfactual probe
   allowlists steer/denial; edit reflections have no replayable transcript.
-- **Still open, deliberately**: `LEARNER_SYSTEM` is behavior-framed, so
-  `mecha learn` would consolidate writing reflections with the wrong
-  prompt — the writing-domain learner prompt is the next piece of this
-  system. The positive signal (sent *unedited* reinforces) is recorded on
-  items but not yet mined (CIPHER tier). Subagents inherit the route;
-  eval forces `--no-outbox`.
+- **The writing learner exists too (2026-08-04, same day)**:
+  `learner_frames` routes the `writing` domain to its own consolidation
+  prompt (`WRITING_LEARNER_SYSTEM` — flowmail's constraints: immutable user
+  rules, ≤15, positive *and* negative rules, **no one-recipient rules**);
+  every other domain falls back to the behavior frame. Verified live on the
+  real register reflection: direct `learn --min 1` produced a voice rule,
+  the `--propose` gate staged it with the honest "no trace-gradeable
+  reflections; review by reading" evidence, `proposals accept` landed it,
+  and a run's recorded `RunConfig` carries the `### writing` section — so
+  drafting now reads the learned voice, and replays reproduce it.
+- **Still open, deliberately**: the positive signal (sent *unedited*
+  reinforces what produced it) is recorded on items but not yet mined —
+  that is the CIPHER retrieval tier's job, queued. Subagents inherit the
+  route; eval forces `--no-outbox`.
 
 Settled with the user 2026-08-04: **mecha is the email actor** — reads,
 drafts, and (through the outbox) actions — while pkg mines mail through its
