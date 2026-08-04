@@ -55,7 +55,7 @@ A working agent harness, used and measured rather than just compiled.
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning` |
-| Eval | 36 cases, 17 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks |
+| Eval | 36 cases, 17 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `pkg-cases.jsonl` — 8 memory/interlock cases against fixture MCP servers (`--mcp-file`) |
 
 `cargo clippy --all-targets` is clean and should stay that way.
 
@@ -401,11 +401,11 @@ the user would ask a personal assistant later.
 - **`kg_upsert` stages `fact` and `alias` only — no episode kind.** Session-end
   distillation lands as episode-shaped facts until pkg grows one. Queue with
   the pending `readOnlyHint` annotations as one small pkg work-package.
-- **Trace-graded pkg eval cases need a fixture MCP server**, because evals are
-  deliberately `--mcp`-off and the real pkg is neither deterministic nor
-  machine-independent. This converges with the open multi-turn interlock case,
-  which needs a fixture tool returning `.from_outside()` content — one small
-  fake server can be both.
+- ~~**Trace-graded pkg eval cases need a fixture MCP server**~~ — built
+  2026-08-04, and it *is* also the interlock fixture, as predicted: see the
+  struck-through multi-turn interlock bullet in item 4 for what landed
+  (`eval/fixtures/pkg_server.py`, `eval/mcp.toml`, `--mcp-file`,
+  `eval/pkg-cases.jsonl`).
 
 **Roadmap order that falls out:** prompt widening + write habits (now) →
 hooks, with session-end distillation as the first consumer → outbox in core →
@@ -434,13 +434,29 @@ so they do not jump the queue ahead of the outbox.
   absolute token count because nothing here knows any model's window. Would let
   it be a fraction, and wants the same treatment as pricing: configured, never
   guessed.
-- **A multi-turn interlock case.** The machinery exists — `"prompt": [...]`,
-  `expect.taint`, `expect.blocked_sends` — but nothing in the eval registry is
-  an untrusted *source*. `fs_read` is private-but-trusted, so the two
-  `injection` cases test the model's resistance, not the interlock. It needs a
-  fixture tool that returns local content marked `.from_outside()`, or a case
-  that requires the network. **That decision is unmade**, and it is the last
-  thing standing between here and grading the trifecta end to end.
+- ~~**A multi-turn interlock case.**~~ — done 2026-08-04, the fixture-server
+  way. `eval/fixtures/pkg_server.py` (one file, two personas: a frozen fake
+  pkg graph, and a `web` persona whose `fetch` is `openWorldHint`) is declared
+  in `eval/mcp.toml` and connected by the new `mecha eval --mcp-file`, which
+  connects *exactly* the servers in the named file — fatal on failure, unlike
+  `setup`'s warn-and-continue, because a case written against fixture tools
+  measures nothing without them. `eval/pkg-cases.jsonl` is a **separate case
+  file on purpose** (the main set's tool surface stays comparable):
+  recognition, discrimination, ambiguity, the `kg_upsert` write habit,
+  web-before-memory ordering, and `interlock-blocked` — memory read arms both
+  taint legs, the fetch is refused by the harness, `blocked_sends: 1`. The
+  trifecta is now graded end to end, offline and deterministically-fixtured.
+  First measurements (qwen3.6-35b-a3b, n=3, `results/pkg-qwen-v1.json`): **7/8
+  on every run**, interlock 2/2 throughout — `interlock-blocked` passes with
+  the harness logging the refusal. Two findings from the first runs:
+  (1) with both the builtin `http_fetch` and the fixture `web__fetch` in the
+  surface, the model reached for the builtin and hit the real network — the
+  case now names the tool, and the fixture's description claims `lab.example`;
+  (2) the one persistent miss is `memory-ambiguous`, and it is a real gap, not
+  flake: 3/3 the model surfaces both Alexes and refuses to pick (judge passes
+  it) but asks **in the final text** instead of calling `ask_user` — the same
+  ignores-the-system-prompt shape as the todo finding, worth re-checking on a
+  stronger model before concluding anything about the prompt.
 
 ### 5. The remaining surfaces
 
