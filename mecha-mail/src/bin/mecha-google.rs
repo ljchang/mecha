@@ -1,9 +1,11 @@
-//! `mecha-google` — the binary. Default mode serves MCP over stdio; `auth`
-//! runs the interactive OAuth flow and stores credentials.
+//! `mecha-google` — Gmail and Google Calendar as MCP tools. Default mode
+//! serves MCP over stdio; `auth` runs the interactive OAuth flow (loopback
+//! redirect) and stores credentials.
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use mecha_google::{auth, gmail::GmailProvider, server, token};
+use mecha_mail::google::{auth, gmail::GmailProvider, server::GoogleTools};
+use mecha_mail::{mcp, token};
 
 #[derive(Parser, Debug)]
 #[command(name = "mecha-google", about = "Gmail and Google Calendar as MCP tools")]
@@ -32,7 +34,7 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber();
+    mecha_mail::init_tracing();
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Auth { client_id, client_secret, port }) => {
@@ -40,21 +42,9 @@ async fn main() -> Result<()> {
         }
         Some(Command::Serve) | None => {
             let manager = token::TokenManager::load(token::default_path()?)?;
-            server::serve(manager).await
+            mcp::serve(GoogleTools { manager }).await
         }
     }
-}
-
-/// stderr only — stdout belongs to the MCP transport.
-fn tracing_subscriber() {
-    use tracing_subscriber::EnvFilter;
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_env("MECHA_LOG").unwrap_or_else(|_| EnvFilter::new("warn")),
-        )
-        .with_writer(std::io::stderr)
-        .without_time()
-        .try_init();
 }
 
 async fn authenticate(
@@ -82,20 +72,21 @@ async fn authenticate(
     let url = auth::build_auth_url(&config, &pkce, &state);
 
     eprintln!("Open this URL to authorize (listening on 127.0.0.1:{port}):\n\n{url}\n");
-    // Best effort; headless machines just use the printed URL.
     let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
 
     let (code, returned_state) = auth::wait_for_oauth_redirect(port).await?;
     anyhow::ensure!(returned_state == state, "OAuth state mismatch — try again");
 
-    let tokens = auth::exchange_code(&config, &code, &pkce.code_verifier, &crate::client()).await?;
+    let tokens =
+        auth::exchange_code(&config, &code, &pkce.code_verifier, &mecha_mail::http::client())
+            .await?;
     let refresh_token = tokens
         .refresh_token
         .clone()
         .context("Google returned no refresh token; remove the app's access at myaccount.google.com/permissions and re-run")?;
 
-    // Whose mailbox did we just get? Also the first authenticated call, so
-    // a scope or consent problem surfaces here rather than at first use.
+    // Whose mailbox did we just get? Also the first authenticated call, so a
+    // scope or consent problem surfaces here rather than at first use.
     let account = GmailProvider::new(tokens.access_token.clone()).profile_address().await?;
 
     token::save(
@@ -103,6 +94,7 @@ async fn authenticate(
         &token::StoredCredentials {
             client_id,
             client_secret,
+            tenant: None,
             access_token: tokens.access_token,
             refresh_token,
             expires_at: tokens.expires_at.unwrap_or_default(),
@@ -111,8 +103,4 @@ async fn authenticate(
     )?;
     eprintln!("authenticated as {account}; credentials in {}", path.display());
     Ok(())
-}
-
-fn client() -> reqwest::Client {
-    mecha_google::http::client()
 }

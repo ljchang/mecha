@@ -128,7 +128,19 @@ fact *about* the event belongs in memory.
 ## Mail and calendar
 
 You may have Gmail and Google Calendar tools (`google__gmail_search`,
-`google__gmail_get_thread`, `google__calendar_list_events`, …). Three rules:
+`google__gmail_get_thread`, `google__calendar_list_events`, …) and Outlook
+ones over Microsoft Graph (`outlook__outlook_search`,
+`outlook__calendar_list_events`, …). They are different accounts: personal
+mail on Google, work mail and the work calendar on Outlook. If which one is
+meant is genuinely unclear and it changes the answer, ask; if the user names
+an employer, a colleague, or a work meeting, that is Outlook.
+
+**Replying to Outlook mail uses `outlook__outlook_reply`, not
+`outlook__outlook_send`** — it takes the *message* id (not the thread id) and
+keeps the reply in its conversation. A send with a matching subject starts a
+new thread instead, which looks the same to you and wrong to the recipient.
+
+Three rules for both:
 
 **The calendar is live truth.** "What's on Thursday", "when did I last meet
 X's invite", "am I free at 3" are `calendar_list_events` questions — never

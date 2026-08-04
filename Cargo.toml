@@ -1,5 +1,5 @@
 [workspace]
-members = ["mecha-core", "mecha-cli", "mecha-google"]
+members = ["mecha-core", "mecha-cli", "mecha-mail"]
 resolver = "2"
 
 [workspace.package]

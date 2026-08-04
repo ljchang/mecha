@@ -12,11 +12,11 @@
 
 use serde_json::{json, Value};
 
-use crate::calendar::{CalendarProvider, CreateEventRequest, UpdateEventRequest};
-use crate::gmail::GmailProvider;
+use crate::google::calendar::{CalendarProvider, CreateEventRequest, UpdateEventRequest};
+use crate::google::gmail::GmailProvider;
 use crate::text::clean_body;
 use crate::token::TokenManager;
-use crate::types::{Email, GoogleError};
+use crate::types::{Email, MailError};
 
 pub fn tool_definitions() -> Vec<Value> {
     json!([
@@ -157,7 +157,7 @@ pub async fn call_tool(
     }
 }
 
-fn render(result: Result<String, GoogleError>) -> (String, bool) {
+fn render(result: Result<String, MailError>) -> (String, bool) {
     match result {
         Ok(text) => (text, false),
         Err(e) => (format!("{e}"), true),
@@ -170,7 +170,7 @@ async fn dispatch(
     name: &str,
     args: &Value,
     force_refresh: bool,
-) -> Option<Result<String, GoogleError>> {
+) -> Option<Result<String, MailError>> {
     let token = if force_refresh {
         manager.force_refresh().await
     } else {
@@ -178,14 +178,14 @@ async fn dispatch(
     };
     let token = match token {
         Ok(t) => t,
-        Err(e) => return Some(Err(GoogleError::AuthError(format!("{e:#}")))),
+        Err(e) => return Some(Err(MailError::AuthError(format!("{e:#}")))),
     };
 
     let str_arg = |key: &str| args.get(key).and_then(Value::as_str).map(|s| s.to_string());
     let result = match name {
         "gmail_search" => {
             let Some(query) = str_arg("query") else {
-                return Some(Err(GoogleError::ParseError("missing required `query`".into())));
+                return Some(Err(MailError::ParseError("missing required `query`".into())));
             };
             let max = args.get("max_results").and_then(Value::as_u64).unwrap_or(10) as u32;
             GmailProvider::new(token)
@@ -195,7 +195,7 @@ async fn dispatch(
         }
         "gmail_get_thread" => {
             let Some(thread_id) = str_arg("thread_id") else {
-                return Some(Err(GoogleError::ParseError("missing required `thread_id`".into())));
+                return Some(Err(MailError::ParseError("missing required `thread_id`".into())));
             };
             GmailProvider::new(token)
                 .get_thread(&thread_id)
@@ -206,7 +206,7 @@ async fn dispatch(
             let (Some(to), Some(subject), Some(body_md)) =
                 (str_arg("to"), str_arg("subject"), str_arg("body_markdown"))
             else {
-                return Some(Err(GoogleError::ParseError(
+                return Some(Err(MailError::ParseError(
                     "gmail_send requires `to`, `subject`, and `body_markdown`".into(),
                 )));
             };
@@ -248,7 +248,7 @@ async fn dispatch(
             let (Some(title), Some(start), Some(end)) =
                 (str_arg("title"), str_arg("start_time"), str_arg("end_time"))
             else {
-                return Some(Err(GoogleError::ParseError(
+                return Some(Err(MailError::ParseError(
                     "calendar_create_event requires `title`, `start_time`, and `end_time`"
                         .into(),
                 )));
@@ -271,7 +271,7 @@ async fn dispatch(
         }
         "calendar_update_event" => {
             let Some(event_id) = str_arg("event_id") else {
-                return Some(Err(GoogleError::ParseError("missing required `event_id`".into())));
+                return Some(Err(MailError::ParseError("missing required `event_id`".into())));
             };
             let request = UpdateEventRequest {
                 title: str_arg("title"),
@@ -294,7 +294,7 @@ async fn dispatch(
         }
         "calendar_delete_event" => {
             let Some(event_id) = str_arg("event_id") else {
-                return Some(Err(GoogleError::ParseError("missing required `event_id`".into())));
+                return Some(Err(MailError::ParseError("missing required `event_id`".into())));
             };
             let calendar_id = str_arg("calendar_id").unwrap_or_else(|| "primary".into());
             CalendarProvider::new(token)
@@ -361,67 +361,24 @@ fn render_thread(emails: &[Email]) -> String {
         .join("\n\n")
 }
 
-/// Serve MCP over stdio until stdin closes.
-pub async fn serve(manager: TokenManager) -> anyhow::Result<()> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+/// The Google surface as an MCP provider; the transport is [`crate::mcp`].
+pub struct GoogleTools {
+    pub manager: TokenManager,
+}
 
-    let stdin = BufReader::new(tokio::io::stdin());
-    let mut stdout = tokio::io::stdout();
-    let mut lines = stdin.lines();
-
-    while let Some(line) = lines.next_line().await? {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(message) = serde_json::from_str::<Value>(line) else { continue };
-        let Some(id) = message.get("id").cloned().filter(|v| !v.is_null()) else {
-            continue; // a notification; nothing to answer
-        };
-        let method = message.get("method").and_then(Value::as_str).unwrap_or_default();
-
-        let reply = match method {
-            "initialize" => json!({
-                "jsonrpc": "2.0", "id": id,
-                "result": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "mecha-google", "version": env!("CARGO_PKG_VERSION")}
-                }
-            }),
-            "tools/list" => json!({
-                "jsonrpc": "2.0", "id": id,
-                "result": {"tools": tool_definitions()}
-            }),
-            "tools/call" => {
-                let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
-                let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
-                let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-                match call_tool(&manager, name, &args).await {
-                    Some((text, is_error)) => json!({
-                        "jsonrpc": "2.0", "id": id,
-                        "result": {
-                            "content": [{"type": "text", "text": text}],
-                            "isError": is_error
-                        }
-                    }),
-                    None => json!({
-                        "jsonrpc": "2.0", "id": id,
-                        "error": {"code": -32601, "message": format!("no such tool: {name}")}
-                    }),
-                }
-            }
-            other => json!({
-                "jsonrpc": "2.0", "id": id,
-                "error": {"code": -32601, "message": format!("unsupported method: {other}")}
-            }),
-        };
-
-        stdout.write_all(reply.to_string().as_bytes()).await?;
-        stdout.write_all(b"\n").await?;
-        stdout.flush().await?;
+#[async_trait::async_trait]
+impl crate::mcp::ToolProvider for GoogleTools {
+    fn server_name(&self) -> &'static str {
+        "mecha-google"
     }
-    Ok(())
+
+    fn tools(&self) -> Vec<Value> {
+        tool_definitions()
+    }
+
+    async fn call(&self, name: &str, args: &Value) -> Option<(String, bool)> {
+        call_tool(&self.manager, name, args).await
+    }
 }
 
 #[cfg(test)]

@@ -9,15 +9,22 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::auth::{self, OAuthConfig};
+use crate::google::auth::OAuthConfig;
 
-/// Everything needed to mint access tokens, in one place: the Desktop-client
-/// credentials are non-secret by Google's own definition, and the refresh
-/// token is exactly as sensitive as the file's 0600 says it is.
+/// Everything needed to mint access tokens, in one place. A Desktop-client
+/// secret is non-secret by Google's own definition and absent entirely for
+/// Microsoft public clients; the refresh token is exactly as sensitive as
+/// the file's 0600 says it is.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredCredentials {
     pub client_id: String,
+    /// Empty for public clients (Microsoft): sending a secret after a
+    /// PKCE-minted token is rejected with AADSTS7000215.
+    #[serde(default)]
     pub client_secret: String,
+    /// The Entra tenant, for Microsoft. Absent for Google.
+    #[serde(default)]
+    pub tenant: Option<String>,
     pub access_token: String,
     pub refresh_token: String,
     /// Unix seconds.
@@ -27,12 +34,19 @@ pub struct StoredCredentials {
     pub account: Option<String>,
 }
 
-pub fn default_path() -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var("MECHA_GOOGLE_DIR") {
+/// Where one provider's credentials live: `~/.mecha/<provider>/oauth.json`,
+/// or `$<ENV>` when set. Separate stores per provider on purpose — one
+/// provider's re-auth must never disturb the other's tokens.
+pub fn provider_path(provider: &str, env_var: &str) -> Result<PathBuf> {
+    if let Ok(dir) = std::env::var(env_var) {
         return Ok(PathBuf::from(dir).join("oauth.json"));
     }
     let home = dirs::home_dir().context("cannot determine home directory")?;
-    Ok(home.join(".mecha").join("google").join("oauth.json"))
+    Ok(home.join(".mecha").join(provider).join("oauth.json"))
+}
+
+pub fn default_path() -> Result<PathBuf> {
+    provider_path("google", "MECHA_GOOGLE_DIR")
 }
 
 pub fn load(path: &Path) -> Result<StoredCredentials> {
@@ -65,13 +79,21 @@ pub fn save(path: &Path, creds: &StoredCredentials) -> Result<()> {
     Ok(())
 }
 
+/// Which provider's refresh endpoint to talk to. The stores are separate
+/// files; this is the one behavioural difference between them.
+enum Refresher {
+    Google(Box<OAuthConfig>),
+    /// Public client: tenant + client id, never a secret.
+    Microsoft { tenant: String, client_id: String },
+}
+
 /// Hands out live access tokens, refreshing behind a lock so concurrent tool
-/// calls cannot race two refreshes (Google rotates the token; the loser of
-/// that race would persist a stale one).
+/// calls cannot race two refreshes (both providers rotate the token; the
+/// loser of that race would persist a stale one).
 pub struct TokenManager {
     path: PathBuf,
     creds: Mutex<StoredCredentials>,
-    config: OAuthConfig,
+    refresher: Refresher,
 }
 
 /// Refresh this many seconds before nominal expiry — clock skew plus the
@@ -79,14 +101,35 @@ pub struct TokenManager {
 const EXPIRY_MARGIN_SECS: i64 = 120;
 
 impl TokenManager {
+    /// Load a Google credential store.
     pub fn load(path: PathBuf) -> Result<Self> {
         let creds = load(&path)?;
-        let config = auth::google_oauth_config(
+        let config = crate::google::auth::google_oauth_config(
             creds.client_id.clone(),
             creds.client_secret.clone(),
-            auth::DEFAULT_REDIRECT_PORT,
+            crate::google::auth::DEFAULT_REDIRECT_PORT,
         );
-        Ok(TokenManager { path, creds: Mutex::new(creds), config })
+        Ok(TokenManager {
+            path,
+            creds: Mutex::new(creds),
+            refresher: Refresher::Google(Box::new(config)),
+        })
+    }
+
+    /// Load a Microsoft credential store. The tenant is recorded at auth
+    /// time; without it there is no endpoint to refresh against.
+    pub fn load_microsoft(path: PathBuf) -> Result<Self> {
+        let creds = load(&path)?;
+        let tenant = creds
+            .tenant
+            .clone()
+            .context("stored credentials have no tenant — run `mecha-outlook auth` again")?;
+        let client_id = creds.client_id.clone();
+        Ok(TokenManager {
+            path,
+            creds: Mutex::new(creds),
+            refresher: Refresher::Microsoft { tenant, client_id },
+        })
     }
 
     pub async fn account(&self) -> Option<String> {
@@ -111,10 +154,24 @@ impl TokenManager {
     }
 
     async fn refresh_locked(&self, creds: &mut StoredCredentials) -> Result<String> {
-        let tokens =
-            auth::refresh_token(&self.config, &creds.refresh_token, &crate::http::client())
+        let client = crate::http::client();
+        let tokens = match &self.refresher {
+            Refresher::Google(config) => {
+                crate::google::auth::refresh_token(config, &creds.refresh_token, &client)
+                    .await
+                    .context("refreshing the Google access token")?
+            }
+            Refresher::Microsoft { tenant, client_id } => {
+                crate::microsoft::auth::refresh_token(
+                    tenant,
+                    client_id,
+                    &creds.refresh_token,
+                    &client,
+                )
                 .await
-                .context("refreshing the Google access token")?;
+                .context("refreshing the Microsoft access token")?
+            }
+        };
         creds.access_token = tokens.access_token.clone();
         if let Some(rt) = tokens.refresh_token {
             creds.refresh_token = rt;
@@ -134,6 +191,7 @@ mod tests {
         StoredCredentials {
             client_id: "id".into(),
             client_secret: "secret".into(),
+            tenant: None,
             access_token: "at".into(),
             refresh_token: "rt".into(),
             expires_at: 1_000,

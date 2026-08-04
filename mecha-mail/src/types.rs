@@ -34,7 +34,7 @@ pub struct Email {
 }
 
 #[derive(Debug, Error)]
-pub enum GoogleError {
+pub enum MailError {
     #[error("HTTP request failed: {0}")]
     HttpError(#[from] reqwest::Error),
 
@@ -48,9 +48,9 @@ pub enum GoogleError {
     AuthError(String),
 }
 
-impl GoogleError {
+impl MailError {
     /// True when a forced token refresh and one retry is the right response.
     pub fn is_auth_expiry(&self) -> bool {
-        matches!(self, GoogleError::ApiError { status: 401, .. })
+        matches!(self, MailError::ApiError { status: 401, .. })
     }
 }

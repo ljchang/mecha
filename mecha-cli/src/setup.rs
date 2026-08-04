@@ -196,6 +196,27 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         cfg.agent.system_prompt = Some(read_maybe_file(system)?);
         cfg.agent.system_prompt_file = None;
     }
+    // Today's date, because a model has no clock and every calendar or mail
+    // question is relative to one. Found by running it: asked for "the next
+    // three days" the model queried a window in January, six months stale,
+    // and the tool dutifully returned nothing wrong — just nothing useful.
+    //
+    // It goes before the learned rules so it stays adjacent to the user's own
+    // prompt, and it is the one part of the cached prefix that legitimately
+    // changes daily. `RunConfig` records it, so a replay reproduces the date
+    // the run actually saw rather than today's.
+    {
+        let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
+        let stamp = format!(
+            "Today is {}. Times you are given without a date are today's; \
+             work out relative dates (\"next Tuesday\", \"this week\") from it \
+             rather than guessing.",
+            chrono::Local::now().format("%A, %-d %B %Y")
+        );
+        cfg.agent.system_prompt =
+            Some(if base.is_empty() { stamp } else { format!("{base}\n\n{stamp}") });
+        cfg.agent.system_prompt_file = None;
+    }
     // Learned rules ride at the end of the system prompt — still inside the
     // cached prefix, and they only change at consolidation time. Read-only:
     // an agent that has learned nothing yet must not create state by starting.
