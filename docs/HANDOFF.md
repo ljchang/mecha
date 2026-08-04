@@ -528,6 +528,37 @@ replay. One hard line, recorded as policy: **the security layer — interlock,
 path jail, sandbox, approver — is not proposable-against.** A self-improvement
 loop must never be able to argue its own guardrails down.
 
+**flowmail's implementation was reviewed (2026-08-04), and it is ahead of its
+own design doc** — port these specifics rather than rediscovering them
+(`src-tauri/src/db/learning.rs`, `src-tauri/src/prompts/leap_*.toml`):
+
+- `Reflexion` rows carry `error_type`, `confidence`, `is_processed`, and a
+  `leap_run_id` linking each reflection to the abstraction run that consumed
+  it; `LeapRun` audits record `rules_before`/`rules_after` per stage. The
+  lineage from rule back to evidence is queryable.
+- The consolidation prompt's constraints, each present for a reason: **user
+  rules are immutable** (context only, never merged); an explicit 5–15 rule
+  budget; a deliberate mix of positive and **negative rules** (guardrails
+  against recurring false positives); no one-sender rules; consolidation must
+  *reduce* count.
+- **Rumination there is LEAP-in-production, not Reflexion**: it samples cases
+  with known outcomes (`sample_classified_emails` + ground-truth labels) and
+  learns principles without waiting for user corrections. mecha's analogue is
+  richer: eval cases and recorded sessions are exactly "examples with known
+  outcomes" for an overnight LEAP pass, on top of the counterfactual-replay
+  loop above.
+- `get_correction_rate_by_period` — the metric trend is a first-class query,
+  charted in the UI.
+
+**Inspectability is a requirement, not a nicety** (user: "so it can be
+inspected and edited if needed"). flowmail's `learning/` Svelte components
+(Overview, Reflexions — editable and deletable, Rules — enable/disable/edit,
+Prompts, trend charts) are the reference UI. mecha gets it in two steps:
+**files first** — reflections as JSONL beside the sessions, rules as TOML per
+domain, so `$EDITOR` and `git diff` are the editing UI from day one and a
+rules change is itself a reviewable commit — then a `/learning` TUI view
+mirroring flowmail's tabs once the stores exist.
+
 Build order: hooks (capture) → reflection store + reflection generation →
 abstraction pass → consolidation with the token budget → held-out
 measurement → cron-scheduled rumination with counterfactual replay →
