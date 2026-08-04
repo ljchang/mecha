@@ -139,6 +139,9 @@ pub enum Command {
     /// learned reflection.
     Reflect(commands::reflect::Args),
 
+    /// Absorb unprocessed reflections into the learned rule set.
+    Learn(commands::learn::Args),
+
     /// Re-run a recorded session against recorded tool results and report
     /// where the model diverged.
     Replay(commands::replay::Args),
@@ -182,6 +185,7 @@ async fn dispatch() -> Result<()> {
         Command::Batch(args) => commands::batch::execute(&cli.global, args).await,
         Command::Eval(args) => commands::eval::execute(&cli.global, args).await,
         Command::Reflect(args) => commands::reflect::execute(&cli.global, args).await,
+        Command::Learn(args) => commands::learn::execute(&cli.global, args).await,
         Command::Replay(args) => commands::replay::execute(&cli.global, args).await,
         Command::Tools(args) => commands::tools::execute(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
