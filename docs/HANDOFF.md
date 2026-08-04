@@ -18,7 +18,7 @@ First thing to run in a fresh context:
 cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
-Expect **193 core + 24 CLI unit tests, 13 integration tests, 1 doctest** — 231,
+Expect **196 core + 26 CLI unit tests, 13 integration tests, 1 doctest** — 236,
 no warnings. The integration tests need docker (with `debian:stable-slim` and
 `python:3-slim` local) and `python3`; without them they skip and say so. In CI,
 set `MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of
@@ -773,12 +773,56 @@ night costs nothing. Verified both ways: fired with the server down (clean
 defer) and with it up (full cycle against the real store, logged to
 `~/.mecha/learning/logs/`).
 
-Still to build, in order: gated proposals (rumination output as reviewable
-diffs that must pass the eval suite) → session-end **distillation to pkg**
-(the other reading of "session-end consumer": episode-shaped facts staged to
-the graph — deferred until the staged-write mechanics with pkg are settled).
-The outbox slots in as the email capture point when it lands; the behavior
-system needed nothing the harness did not already record.
+**Gated proposals (2026-08-04)** — the hyperagent commit gate, live end to
+end. `mecha learn --propose` stages its candidate instead of applying it:
+the candidate is measured by counterfactual replay (candidate vs the
+currently deployed rules, on the batch's own interventions), a candidate
+that **regresses any probe never reaches a human** — recorded as
+`rejected_by_gate` with its evidence, because a gate that leaves no trace
+teaches nobody anything — and what survives waits in
+`~/.mecha/learning/proposals/` for `mecha proposals`
+(list / show / accept / reject). Decisions that shaped it:
+
+- **Direct `mecha learn` still applies immediately.** The gate exists for
+  runs nobody watches; a human at a terminal watching the output *is* the
+  review, and the store's git history stays the undo. The nightly script now
+  passes `--propose` always.
+- **Pending proposals claim their reflections.** Both learn modes skip
+  claimed reflections, or the nightly pass would re-propose the same batch
+  every morning until someone reviewed it — and a direct pass would
+  double-count them into the live rules.
+- **Reject also retires the reflections.** They were real corrections, but
+  re-arguing them nightly against a human's explicit no is how a proposal
+  queue becomes spam. The refusal and its `--reason` are recorded on the
+  proposal; the reflections stay in the archive as evidence.
+- **Accept verifies the diff is the change.** The proposal carries
+  `rules_before`; if the live rules moved since the candidate was measured
+  (hand edit, direct learn), accepting bails and says to re-propose —
+  `--force` exists and says what it does. Same-rules comparison is on text
+  and enablement, not metadata: confidence drift is not a conflict.
+- **Proposals can only touch `rules/*.learned.toml`.** The hyperagent hard
+  line — the security layer is not proposable-against — is structural in
+  this v1, not policy: there is no code path from a proposal to anything
+  else.
+- The probe machinery moved to `mecha-cli/src/probe.rs`, shared by validate
+  and the gate — validate's arms are none-vs-live, the gate's are
+  live-vs-candidate, and the identity between a candidate block and the
+  block a run would see after acceptance is unit-tested
+  (`a_candidate_rules_block_renders_exactly_as_a_run_would_see_it`).
+
+The first live gate run was itself a finding: Opus generated an honestly
+*general* rule from the steer reflection ("if a request only calls for
+listing, don't read the files") — and the gate's steer probe failed both
+arms, because the recorded request asked for *summaries* and the steer
+reversed it mid-run. No principled rule wins that counterfactual; only an
+overfitted one does. The evidence line put exactly that judgement in front
+of the reviewer, which is the job.
+
+Still to build: session-end **distillation to pkg** (the other reading of
+"session-end consumer": episode-shaped facts staged to the graph — deferred
+until the staged-write mechanics with pkg are settled). The outbox slots in
+as the email capture point when it lands; the behavior system needed nothing
+the harness did not already record.
 
 **`pkg` as memory.** Wired, and the design is now settled — see item 3, which
 supersedes the turn-start retrieval idea this paragraph used to propose
