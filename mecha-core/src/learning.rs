@@ -103,6 +103,12 @@ pub struct LearningStore {
     root: PathBuf,
 }
 
+/// Holds the store's writer lock for as long as it lives. See
+/// [`LearningStore::lock`].
+pub struct StoreLock {
+    _file: std::fs::File,
+}
+
 impl LearningStore {
     pub fn default_root() -> Result<PathBuf> {
         if let Ok(dir) = std::env::var("MECHA_LEARNING_DIR") {
@@ -125,6 +131,12 @@ impl LearningStore {
                 .arg("--quiet")
                 .current_dir(&root)
                 .status();
+        }
+        // The writer lock file is process state, not learning history;
+        // without this, commit()'s `git add -A` would sweep it in.
+        let gitignore = root.join(".gitignore");
+        if !gitignore.exists() {
+            let _ = std::fs::write(&gitignore, ".lock\n");
         }
         Ok(LearningStore { root })
     }
@@ -216,9 +228,16 @@ impl LearningStore {
     }
 
     /// Replace a domain's learned rules. Only consolidation calls this.
+    /// Written via a temp sibling and rename: the run-start injection path
+    /// reads this file with no lock (a read must never wait on a learn pass),
+    /// so the file on disk has to be complete at every instant — a torn TOML
+    /// here would fail an unrelated run at startup.
     pub fn write_learned_rules(&self, domain: &str, rules: &[Rule]) -> Result<()> {
         let file = RulesFile { rules: rules.to_vec() };
-        std::fs::write(self.rules_path(domain, "learned"), toml::to_string_pretty(&file)?)?;
+        let path = self.rules_path(domain, "learned");
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, toml::to_string_pretty(&file)?)?;
+        std::fs::rename(&tmp, &path)?;
         Ok(())
     }
 
@@ -266,6 +285,49 @@ impl LearningStore {
              before. Follow them unless the user says otherwise in this conversation.\n\n{}",
             parts.join("\n\n")
         )))
+    }
+
+    /// Take the store's writer lock, blocking until it is free.
+    ///
+    /// Every pass that writes (reflect, learn) takes this **before reading
+    /// the state it will act on** — the read is where the race lives: two
+    /// reflects that both read `mined_sessions` before either marks would
+    /// mine the same session twice, which stopped being hypothetical the
+    /// moment reflect started running detached at every session close.
+    ///
+    /// Advisory `flock`, so it serializes mecha's own writers without doing
+    /// anything to the user's `$EDITOR` — the store's files staying humanly
+    /// editable is a requirement, not an accident. The kernel drops the lock
+    /// when the fd closes, crash included, so a dead pass can never wedge
+    /// the store. Read paths (prompt assembly, validate) do not take it:
+    /// a run start must never block on a learn pass, which is why every
+    /// rewrite in this module goes through a temp sibling and rename.
+    pub fn lock(&self) -> Result<StoreLock> {
+        Ok(self.flock(true)?.expect("blocking flock returns held"))
+    }
+
+    /// Non-blocking variant: `None` when another pass holds it.
+    pub fn try_lock(&self) -> Result<Option<StoreLock>> {
+        self.flock(false)
+    }
+
+    fn flock(&self, block: bool) -> Result<Option<StoreLock>> {
+        use std::os::unix::io::AsRawFd;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(".lock"))?;
+        let op = libc::LOCK_EX | if block { 0 } else { libc::LOCK_NB };
+        // SAFETY: flock on an fd we own, held open by the returned guard.
+        if unsafe { libc::flock(file.as_raw_fd(), op) } == 0 {
+            return Ok(Some(StoreLock { _file: file }));
+        }
+        let err = std::io::Error::last_os_error();
+        if !block && err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Ok(None);
+        }
+        Err(err).context("locking the learning store")
     }
 
     /// Best-effort commit of the store's current state. Losing git loses the
@@ -953,6 +1015,18 @@ mod tests {
             .join("mecha-learning-test")
             .join(uuid::Uuid::new_v4().to_string());
         LearningStore::open(dir).unwrap()
+    }
+
+    #[test]
+    fn the_writer_lock_excludes_a_second_pass_until_dropped() {
+        let store = temp_store();
+        let held = store.lock().unwrap();
+        // flock is per open-file-description, so a second open contends even
+        // within one process — which is also exactly the reflect-vs-reflect
+        // case, since each detached pass is its own process.
+        assert!(store.try_lock().unwrap().is_none(), "the lock did not exclude");
+        drop(held);
+        assert!(store.try_lock().unwrap().is_some(), "the lock did not release");
     }
 
     #[test]

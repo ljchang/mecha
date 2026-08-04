@@ -39,6 +39,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         None => Session::default_dir()?,
     };
     let store = LearningStore::open(LearningStore::default_root()?)?;
+    // The writer lock, taken *before* reading what has been mined — that read
+    // is where the race lives now that a session_end hook fires a detached
+    // reflect at every close: two closes in quick succession must not both
+    // see the same session as unmined. Blocking is right: the second pass
+    // waits, re-reads, finds nothing left, and exits. A dry run only reads.
+    let _lock = if args.dry_run { None } else { Some(store.lock()?) };
     let mined = store.mined_sessions()?;
 
     let sessions = Session::list(&sessions_dir)?;
@@ -102,14 +108,21 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             continue;
         }
 
+        // All-or-nothing per session. An error here is usually the provider
+        // being down — and reflect now runs unattended, where "print and mark
+        // mined anyway" turns an outage into silent permanent loss. Nothing
+        // is appended until every intervention reflected, so a retry after a
+        // partial failure cannot duplicate the ones that succeeded; the
+        // session stays unmined and the next run pays again, which local
+        // inference makes free.
         let reflector = reflector.as_ref().expect("built unless dry-run");
+        let mut pending = Vec::new();
+        let mut failed = false;
         for intervention in &interventions {
             match reflector.reflect(intervention).await {
                 Ok(Some(mut r)) => {
                     r.session_id = meta.id.clone();
-                    store.append_reflexion(&r)?;
-                    reflections_written += 1;
-                    println!("· [{}] {}", r.trigger, r.reflexion_text);
+                    pending.push(r);
                 }
                 Ok(None) => {
                     if intervention.trigger != Trigger::Followup {
@@ -119,8 +132,23 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         eprintln!("· [{}] no lesson drawn", intervention.trigger.as_str());
                     }
                 }
-                Err(e) => eprintln!("· reflection failed: {e:#}"),
+                Err(e) => {
+                    eprintln!(
+                        "· reflection failed: {e:#}\n  leaving {} unmined so a later run retries",
+                        meta.id
+                    );
+                    failed = true;
+                    break;
+                }
             }
+        }
+        if failed {
+            continue;
+        }
+        for r in &pending {
+            store.append_reflexion(r)?;
+            reflections_written += 1;
+            println!("· [{}] {}", r.trigger, r.reflexion_text);
         }
 
         store.mark_mined(&meta.id)?;

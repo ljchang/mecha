@@ -57,6 +57,11 @@ fn hold_out(ids: &[String], fraction: f64) -> std::collections::BTreeSet<String>
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let store = LearningStore::open(LearningStore::default_root()?)?;
+    // Writer lock before reading the reflections this pass will consume —
+    // a detached reflect landing mid-pass must wait, not interleave. Held
+    // across the model call on purpose: the pass is a read-modify-write of
+    // the rule set, and there is no smaller region that keeps it one.
+    let _lock = if args.dry_run { None } else { Some(store.lock()?) };
 
     anyhow::ensure!(
         (0.0..1.0).contains(&args.holdout),

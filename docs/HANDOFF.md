@@ -18,7 +18,7 @@ First thing to run in a fresh context:
 cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
-Expect **185 core + 24 CLI unit tests, 13 integration tests, 1 doctest** — 223,
+Expect **186 core + 24 CLI unit tests, 13 integration tests, 1 doctest** — 224,
 no warnings. The integration tests need docker (with `debian:stable-slim` and
 `python:3-slim` local) and `python3`; without them they skip and say so. In CI,
 set `MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of
@@ -695,10 +695,46 @@ store's git log. Two traps re-confirmed on the way: the judge thinking-budget
   split, every hook denial would become a reflection teaching mecha a rule it
   was already obeying. There is now a test on each side of it.
 
-Still to build, in order: session-end distillation as the first real hook
-consumer → cron-scheduled rumination with counterfactual replay (which also
-extends validation to steers and denials, the two `mecha validate`
-deliberately does not probe) → gated proposals. The outbox slots in as the
+**Reflect-on-close (2026-08-04)** — the first hook consumer, and the learning
+loop now drives itself: `~/.mecha/config.toml` carries a `session_end` hook
+running `nohup mecha reflect -p local >/dev/null 2>&1 &`. Detached, because
+the hook contract kills a child at its timeout and a model call does not fit
+in one; `-p local` on purpose, because a background job must never spend API
+money silently, and a dead server now costs nothing (below). Three things the
+hook forced, all verified live:
+
+- **The store has a writer lock** (`LearningStore::lock`, advisory `flock` on
+  `<root>/.lock`, kernel-released on crash). Taken by reflect and learn
+  **before reading the state they act on** — two detached reflects from two
+  closing sessions both reading `mined_sessions` before either marks would
+  mine a session twice. Read paths deliberately do not lock (a run start must
+  never wait on a learn pass), which is why `write_learned_rules` now goes
+  through temp-sibling-and-rename like `mark_reflexions_processed` already
+  did. Verified against util-linux `flock` holding the lock: reflect blocked
+  2.7s and then proceeded.
+- **A session is mined all-or-nothing.** Reflect used to print a reflection
+  failure and mark the session mined anyway — interactive-mode manners that
+  turn into silent permanent loss the moment the command runs unattended.
+  Nothing is appended until every intervention in the session reflected;
+  on any error the session stays unmined and the next run retries, so a
+  partial failure cannot duplicate the successes. Verified both ways against
+  the dead local server: the intervention session was left unmined with the
+  reason printed, then mined cleanly on the next pass with a live provider.
+- **The hook runs `mecha` from PATH** (`~/.cargo/bin/mecha`), so a stale
+  installed binary mines with stale behaviour — reinstall
+  (`cp target/release/mecha ~/.cargo/bin/`) when reflect/learn change.
+
+End-to-end check: a `mecha run` session closed, the detached reflect fired,
+and the session appeared in `mined.jsonl` with a store commit ~4s later —
+with the local provider down, because a session with no interventions never
+needs the model.
+
+Still to build, in order: cron-scheduled rumination with counterfactual
+replay (which also extends validation to steers and denials, the two
+`mecha validate` deliberately does not probe) → gated proposals →
+session-end **distillation to pkg** (the other reading of "session-end
+consumer": episode-shaped facts staged to the graph — deferred until the
+staged-write mechanics with pkg are settled). The outbox slots in as the
 email capture point when it lands; the behavior system needed nothing the
 harness did not already record.
 
