@@ -550,6 +550,29 @@ own design doc** — port these specifics rather than rediscovering them
 - `get_correction_rate_by_period` — the metric trend is a first-class query,
   charted in the UI.
 
+**The drafting system specifically is three papers layered** (reviewed in
+`ai/draft_learning.rs`, `commands/drafts.rs`, `ai/context.rs`), and each
+layer answers a different question:
+
+- **CIPHER** (per-context, retrieved): a preference inferred from each
+  significant edit — the *underlying* preference, not the edit restated —
+  stored with its email context and embedded; drafting retrieves preferences
+  from *similar* past contexts and aggregates them into one bounded
+  directive. The store is unbounded, the injection is top-k: the
+  pressure-relief valve on the context budget, and effectively a third rule
+  scope beyond global/domain/tool — *retrieved-by-similarity per task*.
+- **LEAP** (global rules): consolidated draft-domain rules.
+- **Reflexion** (recent window): the last 5 raw draft reflexions.
+
+Three details mecha's port must keep: **the positive signal** — a draft sent
+*without* edits reinforces what produced it, so learning is not
+corrections-only; **the style/fact split** — the edit-analysis pass extracts
+`factual_additions` ("always CC legal", an account number) separately from
+style, and in mecha's world those route to pkg as staged `fact_candidate`s,
+which gives the pkg bridge its concrete mechanism; and **the edit-distance
+gate** — a token-dissimilarity threshold decides whether an edit is worth
+learning from at all, so trivial touch-ups do not generate noise.
+
 **Inspectability is a requirement, not a nicety** (user: "so it can be
 inspected and edited if needed"). flowmail's `learning/` Svelte components
 (Overview, Reflexions — editable and deletable, Rules — enable/disable/edit,
