@@ -1021,6 +1021,21 @@ this is unblocked.
 **TUI polish.** The `todo` list is not a live pane, and nested subagent calls
 render flat rather than as a tool-call tree.
 
+**Detail level is fixed at launch, and should be a toggle** (asked for
+2026-08-04). Today `Transcript::new(global.verbose)` freezes it from `-v`
+(`tui/mod.rs:315`): thinking renders only when verbose (`transcript.rs:60`),
+tool results only when verbose or an error (`:71`), tool *calls* always. So
+the default is already the quiet one — what is missing is changing your mind
+mid-session, which the slash-command menu makes cheap (`/verbose`, beside
+`/mode` and `/usage`).
+
+The catch worth knowing before starting: when verbose is off the thinking
+deltas are **discarded, not buffered**, so a toggle can only affect
+subsequent turns. Claude-Code-style *retroactive* expansion — collapse a
+turn's reasoning, expand it later — means keeping the text on the entry and
+choosing at render time, which is the real work. Decide which one is wanted
+first; the cheap version is an afternoon and the useful version is not.
+
 The TUI now has slash commands (`/help /tools /model /provider /mode /mcp
 /usage /clear /session /exit`) and can switch model, provider, permission mode
 and MCP servers mid-session. Three rules that switching had to respect, each of
