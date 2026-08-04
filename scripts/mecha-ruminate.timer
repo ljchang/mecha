@@ -1,0 +1,13 @@
+# Install: cp scripts/mecha-ruminate.{service,timer} ~/.config/systemd/user/
+#          systemctl --user daemon-reload
+#          systemctl --user enable --now mecha-ruminate.timer
+#          loginctl enable-linger "$USER"
+[Unit]
+Description=Run mecha rumination nightly, catching up if the night was missed
+
+[Timer]
+OnCalendar=*-*-* 03:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

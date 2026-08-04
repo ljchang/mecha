@@ -18,7 +18,7 @@ First thing to run in a fresh context:
 cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
-Expect **186 core + 24 CLI unit tests, 13 integration tests, 1 doctest** — 224,
+Expect **193 core + 24 CLI unit tests, 13 integration tests, 1 doctest** — 231,
 no warnings. The integration tests need docker (with `debian:stable-slim` and
 `python:3-slim` local) and `python3`; without them they skip and say so. In CI,
 set `MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of
@@ -729,14 +729,56 @@ and the session appeared in `mined.jsonl` with a store commit ~4s later —
 with the local provider down, because a session with no interventions never
 needs the model.
 
-Still to build, in order: cron-scheduled rumination with counterfactual
-replay (which also extends validation to steers and denials, the two
-`mecha validate` deliberately does not probe) → gated proposals →
-session-end **distillation to pkg** (the other reading of "session-end
-consumer": episode-shaped facts staged to the graph — deferred until the
-staged-write mechanics with pkg are settled). The outbox slots in as the
-email capture point when it lands; the behavior system needed nothing the
-harness did not already record.
+**Counterfactual validation (2026-08-04)** — `mecha validate` now probes all
+three triggers, and steers/denials are graded on the trace, not by a judge
+(`mecha-core/src/counterfactual.rs`, unit-tested; the CLI orchestration in
+`validate.rs` borrows `mecha replay`'s agent rebuild). The design that fell
+out of what already existed:
+
+- **A replay of a steered session is the no-steer counterfactual by
+  construction** — `replay::extract` drops steering text because there is no
+  legal slot to re-inject it, and the recording *after* the steer is ground
+  truth for what the user wanted, because the user steered it there. So the
+  steer verdict is structural: pass iff the replay tracks the recording
+  through the steer's call index without the steer. The probe truncates the
+  transcript at the end of the intervention's run (`truncate_after_run`), so
+  later turns cannot bill divergences to a question they have nothing to do
+  with.
+- **A denial fails only on the exact refused call** — same tool, same
+  arguments. "Not that directory" denies an argument, not a capability, so
+  same-tool-different-args is the model routing *around* the denial, which is
+  compliance. Structural divergence before the intervention point is
+  **inconclusive**, not evidence: the question was never posed.
+- **Verified live on staged sessions with Opus 5 as the probe model**: the
+  steer probe came back IMPROVED — baseline read the files as its natural
+  plan, the rules arm listed names only, tracking the steered recording
+  unprompted — and the denial probe came back unchanged-both-pass, because a
+  strong model routed around the denial unaided. Both are the honest answer.
+  Determinism caveat inherited from replay: verdicts are reproducible on the
+  pinned local sampler, judge-like (read the trace) elsewhere.
+- `--trigger steer,denial,followup` filters; followups keep the judge path.
+
+**Nightly rumination (2026-08-04)** — `scripts/ruminate.sh` +
+`scripts/mecha-ruminate.{service,timer}`, installed to
+`~/.config/systemd/user/`, enabled, `OnCalendar=03:30`, `Persistent=true`,
+linger on. The cycle is reflect → validate `--unprocessed-only` → learn
+`--holdout 0.25`, and the ordering is the one deliberate choice: **validate
+before learn**, because learn marks reflections processed and measuring
+afterwards would grade the rules on their own training data. Tonight's fresh
+reflections are unseen by the current rules by construction; the holdout
+keeps a slice unseen by the next generation too. If the model server's
+health check fails the whole night defers with a log line — every stage is
+idempotent (the store lock, all-or-nothing mining, `--min`), so a skipped
+night costs nothing. Verified both ways: fired with the server down (clean
+defer) and with it up (full cycle against the real store, logged to
+`~/.mecha/learning/logs/`).
+
+Still to build, in order: gated proposals (rumination output as reviewable
+diffs that must pass the eval suite) → session-end **distillation to pkg**
+(the other reading of "session-end consumer": episode-shaped facts staged to
+the graph — deferred until the staged-write mechanics with pkg are settled).
+The outbox slots in as the email capture point when it lands; the behavior
+system needed nothing the harness did not already record.
 
 **`pkg` as memory.** Wired, and the design is now settled — see item 3, which
 supersedes the turn-start retrieval idea this paragraph used to propose

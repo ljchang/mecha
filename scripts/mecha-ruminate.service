@@ -1,0 +1,7 @@
+# Install: cp scripts/mecha-ruminate.{service,timer} ~/.config/systemd/user/
+[Unit]
+Description=mecha nightly rumination (reflect, validate, learn)
+
+[Service]
+Type=oneshot
+ExecStart=%h/Github/mecha/scripts/ruminate.sh
