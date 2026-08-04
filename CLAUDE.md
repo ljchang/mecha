@@ -202,6 +202,14 @@ event as JSON on stdin. The point is that policy, redaction and logging attach
 Config is validated even when `--no-hooks` skips installing, so a typo'd event
 name fails on every start rather than only on the runs that needed it.
 
+**A new field on `Config` is two edits, not one.** Files are parsed into
+`ConfigLayer` — every field optional, so a project file can override one
+setting — and a field added to `Config` alone makes its TOML table a *parse
+error* that kills startup, while every unit test stays green because tests
+build the types directly. That is exactly how hooks shipped unreachable.
+`every_field_of_config_is_reachable_from_a_file` now round-trips a serialised
+default through the layer to catch it.
+
 ## Conventions
 
 - Tools return `Ok(ToolOutput { is_error: true })` for expected failures — the

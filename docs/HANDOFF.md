@@ -18,7 +18,7 @@ First thing to run in a fresh context:
 cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
-Expect **183 core + 24 CLI unit tests, 13 integration tests, 1 doctest** — 221,
+Expect **185 core + 24 CLI unit tests, 13 integration tests, 1 doctest** — 223,
 no warnings. The integration tests need docker (with `debian:stable-slim` and
 `python:3-slim` local) and `python3`; without them they skip and say so. In CI,
 set `MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of
@@ -676,6 +676,19 @@ store's git log. Two traps re-confirmed on the way: the judge thinking-budget
   **fails closed** on any outcome the contract does not define, including a
   timeout. Subagents inherit the parent's set, `mecha eval` forces it off, and
   an unknown event name is a startup error even under `--no-hooks`.
+- **The feature was unreachable from config and every unit test passed.**
+  `hooks` was added to `Config` and not to `ConfigLayer`, which is what
+  actually parses a file — so `[[hook]]` anywhere was a hard parse error that
+  killed startup, while the tests, which build `HookSet` directly, were green.
+  Caught by running the binary, not by reading the code. There is now a
+  standing guard: serialise `Config::default()` and parse it back as a
+  `ConfigLayer`, which denies unknown fields, so the next field added to one
+  and not the other fails in the test suite rather than in someone's config.
+  Verified to fail on the old behaviour.
+- Verified live through the CLI afterwards, all four ways: a `pre_tool` hook
+  blocked `shell` and the model reported the block accurately; `--no-hooks`
+  let the same call through; `post_tool` received its JSON payload; and
+  `session_end` fired with the transcript path.
 - A trap found while wiring it: a hook denial says **"Blocked by a hook:"**
   where the approver says **"Denied by the user:"**, and the learning miner
   keys on the second. Machine policy is not a user correction — without that

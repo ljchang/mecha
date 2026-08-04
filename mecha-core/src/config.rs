@@ -504,6 +504,8 @@ struct ConfigLayer {
     subagents: Option<Vec<crate::subagent::SubagentProfile>>,
     #[serde(rename = "search")]
     search: Option<Vec<SearchBackendConfig>>,
+    #[serde(rename = "hook")]
+    hooks: Option<Vec<HookConfig>>,
     sandbox: Option<SandboxLayer>,
 }
 
@@ -684,6 +686,11 @@ impl ConfigLayer {
         if let Some(v) = self.search {
             cfg.search = v;
         }
+        // Wholesale, like MCP servers and for the same reason: a project that
+        // cannot turn a global hook off cannot be trusted to run anything.
+        if let Some(v) = self.hooks {
+            cfg.hooks = v;
+        }
     }
 }
 
@@ -722,5 +729,39 @@ mod tests {
         layer.apply(&mut cfg);
         assert!(cfg.providers.contains_key("anthropic"));
         assert!(cfg.providers.contains_key("local"));
+    }
+
+    #[test]
+    fn hooks_configure_from_a_file() {
+        let mut cfg = Config::default();
+        let layer: ConfigLayer = toml::from_str(
+            r#"
+            [[hook]]
+            event = "pre_tool"
+            tools = ["shell"]
+            command = "policy.sh"
+            "#,
+        )
+        .unwrap();
+        layer.apply(&mut cfg);
+        assert_eq!(cfg.hooks.len(), 1);
+        assert_eq!(cfg.hooks[0].event, "pre_tool");
+        assert_eq!(cfg.hooks[0].tools, ["shell"]);
+    }
+
+    #[test]
+    fn every_field_of_config_is_reachable_from_a_file() {
+        // The bug this exists for: `hooks` was added to `Config` and not to
+        // `ConfigLayer`, so `[[hook]]` in any config file was a hard parse
+        // error and the whole feature was unreachable — while every unit test
+        // passed, because they all built the type directly.
+        //
+        // Serialising the default config produces one entry per top-level
+        // field; `ConfigLayer` denies unknown fields, so parsing it back is a
+        // standing check that the two structs still agree. Any field added to
+        // one and not the other fails here rather than in someone's config.
+        let rendered = toml::to_string(&Config::default()).unwrap();
+        let parsed = toml::from_str::<ConfigLayer>(&rendered);
+        assert!(parsed.is_ok(), "Config has a field ConfigLayer cannot read: {parsed:?}");
     }
 }
