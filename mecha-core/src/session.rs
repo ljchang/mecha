@@ -50,10 +50,13 @@ pub enum Record {
 /// only *that* something differed; the text lets a replay rebuild the request.
 /// It is no more sensitive than the transcript sitting beside it.
 ///
-/// Not recorded, and not recordable: the sampler. A local server's temperature
-/// and top-p are outside this process's knowledge, which is why the same case
-/// scores 5/5 rather than deterministically. Replay against any non-greedy
-/// provider therefore has to be pass@k-shaped rather than exact-match-shaped.
+/// The sampler is recorded only as far as it is pinned: `temperature` and
+/// `seed` hold what this process *sent*, and `None` means the server chose.
+/// Replay against an unpinned run has to be pass@k-shaped rather than
+/// exact-match-shaped; against a pinned, seeded run driven sequentially it can
+/// expect to match. (Not greedy — temperature 0.0 walks qwen3.6 into verbatim
+/// repetition loops. And only sequentially: llama-server's continuous batching
+/// makes concurrent requests perturb each other's numerics, seed or no seed.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunConfig {
@@ -71,6 +74,10 @@ pub struct RunConfig {
 
     // What the request looks like.
     pub effort: Option<Effort>,
+    /// The temperature and seed actually sent, when the provider config pins
+    /// them. Unset means the server chose, and the run is not repeatable.
+    pub temperature: Option<f64>,
+    pub seed: Option<u64>,
     pub thinking: bool,
     /// No effect on semantics; large effect on the token counts a replay diffs.
     pub cache_prompt: bool,
@@ -106,6 +113,8 @@ impl Default for RunConfig {
             system_prompt: None,
             tools: Vec::new(),
             effort: None,
+            temperature: None,
+            seed: None,
             thinking: false,
             cache_prompt: false,
             max_tokens: 0,
@@ -136,6 +145,8 @@ impl RunConfig {
             system_prompt: agent.system().map(str::to_string),
             tools: agent.registry().iter().map(|t| t.name().to_string()).collect(),
             effort: cfg.effort,
+            temperature: config.providers.get(provider).and_then(|p| p.temperature),
+            seed: config.providers.get(provider).and_then(|p| p.seed),
             thinking: cfg.thinking,
             cache_prompt: cfg.cache_prompt,
             max_tokens: cfg.max_tokens,

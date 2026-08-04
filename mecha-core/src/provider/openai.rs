@@ -21,6 +21,8 @@ pub struct OpenAiCompatible {
     api_key: Option<String>,
     base_url: String,
     default_model: String,
+    temperature: Option<f64>,
+    seed: Option<u64>,
     id: String,
 }
 
@@ -37,6 +39,8 @@ impl OpenAiCompatible {
                 .clone()
                 .unwrap_or_else(|| "https://api.openai.com".to_string()),
             default_model: cfg.model.clone().unwrap_or_else(|| "gpt-4o-mini".to_string()),
+            temperature: cfg.temperature,
+            seed: cfg.seed,
             id: cfg.kind.clone(),
         })
     }
@@ -56,6 +60,12 @@ impl OpenAiCompatible {
             "messages": messages,
         });
         let obj = body.as_object_mut().unwrap();
+        if let Some(t) = self.temperature {
+            obj.insert("temperature".into(), json!(t));
+        }
+        if let Some(s) = self.seed {
+            obj.insert("seed".into(), json!(s));
+        }
         if stream {
             obj.insert("stream".into(), json!(true));
             obj.insert("stream_options".into(), json!({"include_usage": true}));
@@ -349,6 +359,42 @@ impl Accumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn provider(temperature: Option<f64>, seed: Option<u64>) -> OpenAiCompatible {
+        OpenAiCompatible::from_config(&ProviderConfig {
+            kind: "local".into(),
+            temperature,
+            seed,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    fn plain_req() -> CompletionRequest {
+        CompletionRequest {
+            model: "m".into(),
+            system: None,
+            messages: vec![Message::user("hi")],
+            tools: Vec::new(),
+            max_tokens: 64,
+            effort: None,
+            thinking: false,
+            cache_prompt: false,
+        }
+    }
+
+    #[test]
+    fn a_pinned_sampler_is_sent_and_an_unpinned_one_is_absent() {
+        let body = provider(Some(0.8), Some(42)).body(&plain_req(), false);
+        assert_eq!(body["temperature"], json!(0.8));
+        assert_eq!(body["seed"], json!(42));
+
+        // Absent, not defaulted: unset means "the server's choice", and
+        // inventing a value here would misrecord what was measured.
+        let body = provider(None, None).body(&plain_req(), false);
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("seed").is_none());
+    }
 
     fn sink() -> (StreamSink, tokio::sync::mpsc::UnboundedReceiver<StreamEvent>) {
         tokio::sync::mpsc::unbounded_channel()
