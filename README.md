@@ -47,8 +47,13 @@ everything that isn't a read.
 |---|---|
 | `mecha run "<task>"` | One task, one answer. `--json` for machine-readable output, `--resume <id>` to continue. |
 | `mecha chat` | Terminal REPL with history and slash commands. |
+| `mecha tui` | Full-screen. The input line stays live, so you can steer a run in flight. |
 | `mecha batch items.jsonl` | Same agent over many prompts, bounded concurrency, JSONL results. |
 | `mecha eval [cases.jsonl]` | Score a model on a case set. The bake-off rig — see below. |
+| `mecha replay <session>` | Re-drive a recorded session against today's code, or another model. |
+| `mecha reflect` | Mine transcripts for the moments you stepped in. See Learning. |
+| `mecha learn` | Turn those reflections into rules. |
+| `mecha validate` | Measure whether the rules actually changed an answer. |
 | `mecha tools` | List the tool surface. `--schema` shows exactly what the model sees. |
 | `mecha sessions list\|show\|path` | Inspect saved transcripts. |
 | `mecha config show\|path\|init` | See what settings are in effect. |
@@ -310,6 +315,53 @@ regression gate on the harness itself.
 
 Every run writes an append-only JSONL transcript to `~/.mecha/sessions`
 (override with `MECHA_SESSION_DIR`). `--no-session` opts out.
+
+## Learning
+
+mecha learns how you want work done from the moments you stepped in. The whole
+cycle is three commands, and it is safe to cron:
+
+```bash
+mecha reflect     # mine transcripts for interventions → one lesson each
+mecha learn       # absorb reflections into a consolidated rule set
+mecha validate    # measure whether those rules change an answer
+```
+
+The signal is already in the transcripts: a mid-run **steer**, a **denied**
+tool call, and a corrective **follow-up** turn are all recorded, so nothing new
+had to be captured to start. `mecha reflect` extracts them, asks a model for
+the reusable lesson behind each, and appends it with the session id that proves
+it. `mecha learn` rewrites `rules/<domain>.learned.toml` within a fixed
+character budget — consolidation is what keeps learning from growing the system
+prompt without bound — and records which reflections it consumed.
+
+The store is files under `~/.mecha/learning/`, and it is a git repo:
+
+| Path | What it is |
+|---|---|
+| `reflections.jsonl` | Append-only evidence, each pointing at its transcript |
+| `rules/<domain>.user.toml` | **Yours. Never written by code**, only read |
+| `rules/<domain>.learned.toml` | Consolidation's output — edit or delete freely |
+| `runs.jsonl` | One audit record per pass: rules before, rules after |
+
+`git log` is the learning history and `git revert` is the undo. Rules ride in
+the system prompt (user rules first, then learned ones), inside the cached
+prefix, changing only at consolidation time. `--no-learned-rules` opts out
+anywhere; `mecha eval` forces it off so a scorecard measures the model rather
+than your accumulated rules.
+
+Two things worth knowing before trusting it:
+
+- **Measure, or it isn't learning.** `mecha learn --holdout 0.25` keeps every
+  fourth reflection out of the pass, and `mecha validate --unprocessed-only`
+  then probes the rules against data they never saw. The holdout is
+  deterministic (every k-th by id) — a measurement set that changes between
+  runs measures nothing.
+- **The first live probe caught a false lesson**, which is the system working
+  rather than a reason to distrust it. The reflector had drawn a rule from a
+  memory test the model *passed*, because extraction never showed it what the
+  assistant did next. Verdicts are judge-graded and n=1 means little: read the
+  answers before believing a flip.
 
 ## Budgets
 

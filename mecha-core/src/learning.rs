@@ -321,7 +321,7 @@ impl LearningStore {
         let mut all = self.reflexions()?;
         let mut marked = 0usize;
         for r in &mut all {
-            if ids.iter().any(|id| *id == r.id) && !r.is_processed {
+            if ids.contains(&r.id) && !r.is_processed {
                 r.is_processed = true;
                 r.leap_run_id = Some(run_id.to_string());
                 marked += 1;
