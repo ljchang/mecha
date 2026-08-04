@@ -227,28 +227,49 @@ compaction* — restores 0%. **This is exactly mecha's invariant: taint lives on
 
 📄 **Large Language Monkeys**: SWE-bench Lite **15.9% pass@1 → 56% pass@250**.
 But the finding that matters is **the selection gap**: on MATH with
-Llama-3-8B, *coverage* rises 82.9% @ N=100 → ~95–98% @ N=10,000 while majority
-voting and reward-model selection **plateau at 38–40% by N≈100**. Repeated
-sampling converts to accuracy **only with an automatic verifier**.
+Llama-3-8B, *coverage* rises to ~95–98% at N=10,000 while selection methods
+plateau by roughly N≈100. Repeated sampling converts to accuracy **only with
+an automatic verifier**. ⚠️ The plateau's *height* (~38–40%) was read off a
+figure by a summarizing fetch, not a table — **medium confidence**. The
+plateau-at-~100-samples and the >55-point coverage gap are solid. The paper's
+own abstract says "several hundred samples" where its body says ~100.
 
-📄 **Inference Scaling fLaws** (Princeton) gives the theory and a constant: an
-imperfect verifier's false-positive rate **cannot be reduced by resampling** and
-imposes a compute-independent ceiling; FPR *increases* with K. *"Optimal
-sampling attempts are often fewer than 10."* Empirically, across six
-independent systems a learned selector recovers **~50% of the random-to-oracle
-gap and no more** (CodeMonkeys 45.8 → 57.4 against a 69.8 oracle; SWE-Gym 51%;
-Trae 55%).
+📄 **Inference Scaling fLaws** (Princeton) gives the theory and the constants:
+an imperfect verifier's false-positive rate **cannot be reduced by resampling**
+and imposes a compute-independent ceiling; **FPR *increases* with K**, and
+weaker models false-positive more. Optimal **K ≤ 5** at a cost ratio of 4, and
+**K = 0** once the ratio reaches 10. Empirically a learned selector recovers
+**~50% of the random-to-oracle gap and no more** (CodeMonkeys: coverage 69.8%,
+random 45.8%, **selected 57.4%**, at ~$4.58/instance and ~$2,300 total).
+
+📄 **The verifier saturates, not the sample count** — R2E-Gym is the cleanest
+evidence: a 32B model at 34.4% pass@1, where execution-based and execution-free
+verifiers **each saturate at 42–43%** and only a *hybrid* reaches 51%. Adding
+samples does not move a saturated verifier.
 
 📄 And on the least-verifiable tasks, scaling verification **actively hurts** —
 fraction of coverage gap recovered: Web-of-Lies 66.5%, AIME 57.1%, MATH 20.0%,
-**Olympiad −11.2%**.
+**Olympiad −11.2%**. Measured verifier error on MATH: **14% FPR / 17% FNR**,
+and prompt-sensitive. Also worth knowing before spending on N:
+**Consistency@50 equals Consistency@10,000 on AIME.**
 
-**Tree search is measured but collapses under a fair control.** ✅ SWE-Search
-25.7% → 31.0% at **14.1× the cost** (~$33 per additional resolved issue) — and
-its own Appendix J shows that **compute-matched against plain repeated
-sampling the +23% headline becomes +0.6 to +5.3 points**, with plain resampling
-*beating* single-shot SWE-Search on two of four models. Neither SWE-agent nor
-OpenHands uses tree search.
+**Tree search: measured gains, and the cost accounting is conspicuously
+absent.** ✅ ToT (NeurIPS 2023) Game of 24: CoT 4.0% → **74%** — but its own
+appendix prices that at $0.74/case against $0.47 for CoT best-of-100, the
+authors note **"5–100× more generated tokens than CoT"**, and they recommend
+ToT only where CoT struggles (GSM8K moves 86 → 90). LATS reports HumanEval
+92.7% with **no retrievable cost accounting at all**, which for an MCTS-over-
+trajectories method is itself the finding. Neither SWE-agent nor OpenHands uses
+tree search.
+
+⚠️ **Removed from an earlier draft of this file after a second verification
+pass could not reach the source**: specific SWE-Search figures (25.7 → 31.0 at
+14.1× cost, and an Appendix J compute-matched collapse). Also deliberately
+*not* included, for the same reason: ProcessBench's PRM-generalization numbers.
+The *direction* of that claim survives via a different source — search-based
+test-time scaling works with some PRMs and **fails** with others on
+out-of-distribution policies, with a measured ~2× length bias — but the
+numbers should not be cited.
 
 📰 Anthropic is the only lab publishing agentic best-of-N for SWE-bench
 Verified, with a stable **+6.6 to +7.5pp** — method: parallel attempts,

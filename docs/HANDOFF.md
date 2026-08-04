@@ -420,6 +420,13 @@ so they do not jump the queue ahead of the outbox.
 `docs/CONTEXT-RESEARCH.md` is the first of these, done. The rest are open,
 and the first two have research threads running as of this writing.
 
+- ~~**Sandboxes**~~ — researched 2026-08-04, see `docs/SANDBOX-RESEARCH.md`.
+  Answer: **Landlock + seccomp at 1.28 ms against `docker run`'s 192 ms**, no
+  root and no userns, so it works on this box where bwrap is blocked. WASM
+  Python is fast but structurally cannot spawn a process, so it cannot back
+  `shell` — though it could back a narrower code-execution tool, which is the
+  programmatic-tool-calling lever. A measured Pyodide-under-Node host-shell
+  escape is recorded there too. Original framing kept below.
 - **Sandboxes: is there something faster and lighter than Docker?** Current
   state is bwrap (broken here — AppArmor's
   `kernel.apparmor_restrict_unprivileged_userns`) or a throwaway container per
