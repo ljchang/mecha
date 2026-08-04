@@ -1033,8 +1033,18 @@ The catch worth knowing before starting: when verbose is off the thinking
 deltas are **discarded, not buffered**, so a toggle can only affect
 subsequent turns. Claude-Code-style *retroactive* expansion — collapse a
 turn's reasoning, expand it later — means keeping the text on the entry and
-choosing at render time, which is the real work. Decide which one is wanted
-first; the cheap version is an afternoon and the useful version is not.
+choosing at render time.
+
+**Decided 2026-08-04: the retroactive ctrl-o version is what is wanted**, not
+the cheap forward-only toggle. So `Transcript` keeps thinking text on the
+entry regardless of the flag, and `verbose` stops gating *ingest* and starts
+gating *render*. Two consequences to design for rather than discover: a long
+run's reasoning is then held in the TUI's own memory for the session (bound
+it, or a day-long session grows without limit — this is display state, so
+dropping the oldest is fine and unlike compaction loses nothing the model
+needs), and the entry needs a collapsed/expanded bit per turn plus a
+keybinding, which is where the work actually is. `-v` becomes the initial
+state of that bit rather than a different code path.
 
 The TUI now has slash commands (`/help /tools /model /provider /mode /mcp
 /usage /clear /session /exit`) and can switch model, provider, permission mode
