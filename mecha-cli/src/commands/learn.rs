@@ -19,19 +19,67 @@ pub struct Args {
     #[arg(long, default_value_t = 3)]
     pub min: usize,
 
+    /// Hold out this fraction of unprocessed reflections from the pass, so
+    /// `mecha validate --unprocessed-only` has data the rules never saw.
+    /// Deterministic (every k-th by id), because a measurement set that
+    /// changes between runs measures nothing.
+    #[arg(long, default_value_t = 0.0)]
+    pub holdout: f64,
+
     /// Show what would run without calling a model or writing anything.
     #[arg(long)]
     pub dry_run: bool,
 }
 
+/// Which reflection ids this pass leaves alone, given a holdout fraction.
+///
+/// Deterministic by construction: sort by id, then take every k-th. A random
+/// sample would give `mecha validate` a different measurement set on every
+/// pass, and a measurement set that moves measures nothing.
+///
+/// The stride floor of 2 is load-bearing. A fraction near 1 rounds to a stride
+/// of 1, which would hold out *everything* and leave the pass with nothing to
+/// learn from — a silently empty run that looks like it worked.
+fn hold_out(ids: &[String], fraction: f64) -> std::collections::BTreeSet<String> {
+    if fraction <= 0.0 {
+        return Default::default();
+    }
+    let stride = (1.0 / fraction).round().max(2.0) as usize;
+    let mut sorted: Vec<&String> = ids.iter().collect();
+    sorted.sort();
+    sorted
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| (i + 1) % stride == 0)
+        .map(|(_, id)| id.clone())
+        .collect()
+}
+
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let store = LearningStore::open(LearningStore::default_root()?)?;
+
+    anyhow::ensure!(
+        (0.0..1.0).contains(&args.holdout),
+        "--holdout must be in [0, 1), not {}",
+        args.holdout
+    );
 
     // Group unprocessed reflections by domain.
     let mut by_domain: BTreeMap<String, Vec<_>> = BTreeMap::new();
     for r in store.reflexions()? {
         if !r.is_processed {
             by_domain.entry(r.domain.clone()).or_default().push(r);
+        }
+    }
+
+    if args.holdout > 0.0 {
+        for (domain, rs) in by_domain.iter_mut() {
+            let before = rs.len();
+            let held = hold_out(&rs.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), args.holdout);
+            rs.retain(|r| !held.contains(&r.id));
+            if before != rs.len() {
+                println!("{domain}: holding out {} of {before} reflection(s)", before - rs.len());
+            }
         }
     }
     by_domain.retain(|domain, rs| {
@@ -125,4 +173,48 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hold_out;
+
+    fn ids(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("r{i:02}")).collect()
+    }
+
+    #[test]
+    fn a_zero_fraction_holds_out_nothing() {
+        assert!(hold_out(&ids(10), 0.0).is_empty());
+    }
+
+    #[test]
+    fn a_fraction_takes_every_kth_by_id() {
+        let held = hold_out(&ids(10), 0.5);
+        assert_eq!(held.len(), 5);
+        assert!(held.contains("r01") && held.contains("r09"));
+        assert!(!held.contains("r00"));
+
+        let held = hold_out(&ids(12), 0.25);
+        assert_eq!(held.len(), 3);
+        assert!(held.contains("r03") && held.contains("r07") && held.contains("r11"));
+    }
+
+    #[test]
+    fn the_order_reflections_arrive_in_does_not_change_the_holdout() {
+        // The store returns append order; validate must see the same set
+        // whatever order a later pass happens to read them in.
+        let mut shuffled = ids(9);
+        shuffled.reverse();
+        assert_eq!(hold_out(&ids(9), 0.5), hold_out(&shuffled, 0.5));
+    }
+
+    #[test]
+    fn a_large_fraction_still_leaves_something_to_learn_from() {
+        // Rounds to a stride of 1 without the floor, holding out every
+        // reflection and turning the pass into a no-op that looks like a run.
+        let held = hold_out(&ids(8), 0.9);
+        assert!(held.len() < 8, "held out everything: {held:?}");
+        assert_eq!(held.len(), 4);
+    }
 }
