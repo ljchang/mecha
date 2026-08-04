@@ -618,11 +618,25 @@ mirroring flowmail's tabs once the stores exist.
   slash commands. Anything else that ever injects synthetic user turns must
   get the same treatment.
 
-Still to build, in order: abstraction pass (`mecha learn`?) → consolidation
-with the token budget → held-out measurement → hooks for real-time capture →
-cron-scheduled rumination with counterfactual replay → gated proposals. The
-outbox slots in as the email capture point when it lands; the behavior system
-needed nothing the harness did not already record.
+**`mecha learn` (also 2026-08-04)** closes the loop: unprocessed reflections
+per domain → one combined abstraction/consolidation pass (flowmail's
+consolidation prompt already absorbs unprocessed reflexions, so at one user's
+volume a separate incremental stage buys nothing but a second prompt to
+maintain) → a rewritten `learned.toml` within `RULES_CHAR_BUDGET`, a
+`LeapRun` audit in `runs.jsonl`, reflections marked with the run that
+consumed them, and a store commit. Gated by `--min` (default 3) so it does
+not thrash on every stray reflection. Verified end to end on real data: the
+first mined reflection became the first learned rule, the lineage
+rule → run → reflection → session transcript is complete, the store's git
+log reads as the learning history, and the rule now rides in every new
+run's recorded `RunConfig`. The whole cycle is
+`mecha reflect && mecha learn` — already cron-able.
+
+Still to build, in order: held-out measurement (does a new rule set move the
+intervention rate on reflections it did not train on) → hooks for real-time
+capture → cron-scheduled rumination with counterfactual replay → gated
+proposals. The outbox slots in as the email capture point when it lands; the
+behavior system needed nothing the harness did not already record.
 
 **`pkg` as memory.** Wired, and the design is now settled — see item 3, which
 supersedes the turn-start retrieval idea this paragraph used to propose
