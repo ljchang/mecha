@@ -202,6 +202,41 @@ event as JSON on stdin. The point is that policy, redaction and logging attach
 Config is validated even when `--no-hooks` skips installing, so a typo'd event
 name fails on every start rather than only on the runs that needed it.
 
+## The outbox
+
+`[outbox] tools = [...]` names tools whose calls are **staged, not executed**:
+the loop intercepts the call (`agent.rs`, after the hook gate), writes it to
+`~/.mecha/outbox/` (`outbox.rs`), and tells the model it is a draft awaiting
+the user's release. `mecha outbox` is the review: list / show / edit (the
+repo's one `$EDITOR` shell-out) / send / reject. "Draft-only, never send" made
+structural — an email tool, including a third-party MCP server's, needs no
+knowledge of the outbox to be covered by it. Decisions that carry it:
+
+- **Staging skips the interlock and the approver, deliberately.** Nothing
+  leaves the machine at stage time; the item records the conversation's taint
+  snapshot, and review/`send` warn loudly (and confirm, EOF = no) when it was
+  drafted with the trifecta armed. An *unrouted* send still hits the interlock
+  unchanged — there is a test on each side.
+- **A failed staging fails closed.** A call that could not be staged returns
+  an error to the model; it never falls through to execution. A full disk must
+  not be the way around the review.
+- **`args_before` is never modified.** `edit` rewrites `args` only; the pair
+  is the writing-learning capture — `mecha reflect` mines `diff(staged, sent)`
+  of sent-with-edits items into `writing`-domain reflections (trigger `edit`,
+  its own reflector prompt, `mined_outbox.jsonl` ledger). Edit reflections
+  have no replayable transcript point, so the counterfactual probe allowlists
+  steer/denial rather than excluding followup.
+- **Subagents inherit the parent's route** (like hooks), or delegating is the
+  way to send unstaged. `mecha eval` forces `--no-outbox`, like MCP and hooks,
+  for the same reproducibility reason.
+- **A routed name that matches no registered tool warns on every start** — a
+  typo means the real tool executes unrouted, which is the silently-degrading
+  sandbox shape again.
+- The store follows the learning store's rules: one pretty JSON per item,
+  temp-sibling-and-rename, advisory flock (never held across `$EDITOR`;
+  staging takes no lock at all, so the agent never blocks on a review).
+  `send` holds the lock across execution so two sends cannot double-fire.
+
 **A new field on `Config` is two edits, not one.** Files are parsed into
 `ConfigLayer` — every field optional, so a project file can override one
 setting — and a field added to `Config` alone makes its TOML table a *parse

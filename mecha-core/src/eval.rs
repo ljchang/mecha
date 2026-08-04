@@ -975,7 +975,7 @@ mod tests {
     }
 
     fn call(name: &str, input: Value) -> ToolCallTrace {
-        ToolCallTrace { name: name.into(), input, is_error: false, denied: false, unknown: false }
+        ToolCallTrace { name: name.into(), input, is_error: false, denied: false, unknown: false, staged: false }
     }
 
     fn case(expect: Expect) -> EvalCase {

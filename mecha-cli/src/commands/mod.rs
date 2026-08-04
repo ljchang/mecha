@@ -3,6 +3,7 @@ pub mod chat;
 pub mod config;
 pub mod eval;
 pub mod learn;
+pub mod outbox;
 pub mod proposals;
 pub mod reflect;
 pub mod replay;

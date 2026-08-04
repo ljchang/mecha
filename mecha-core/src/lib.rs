@@ -51,6 +51,7 @@ pub mod config;
 pub mod eval;
 pub mod mcp;
 pub mod message;
+pub mod outbox;
 pub mod provider;
 pub mod counterfactual;
 pub mod hooks;

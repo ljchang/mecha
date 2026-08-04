@@ -22,6 +22,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let prepared = setup::prepare_tools(global, false).await?;
     let registry = &prepared.registry;
 
+    let outbox_routed = |name: &str| {
+        !global.no_outbox && prepared.config.outbox.tools.iter().any(|t| t == name)
+    };
+
     if args.json {
         let specs: Vec<_> = registry
             .iter()
@@ -35,6 +39,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     "name": t.name(),
                     "description": t.description(),
                     "read_only": t.read_only(),
+                    "outbox_routed": outbox_routed(t.name()),
                     "capabilities": {
                         "private_data": caps.private_data,
                         "untrusted_input": caps.untrusted_input,
@@ -56,7 +61,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     for tool in registry.iter() {
         let access = if tool.read_only() { "read-only" } else { "writes" };
-        println!("{}  [{}]", tool.name(), access);
+        let routing = if outbox_routed(tool.name()) { " · outbox: staged for review" } else { "" };
+        println!("{}  [{}{}]", tool.name(), access, routing);
         for line in tool.description().lines() {
             println!("    {line}");
         }

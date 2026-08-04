@@ -170,6 +170,10 @@ pub struct RunContext {
     /// approver — mechanical policy is cheaper than an interruption, and a
     /// hook cannot be talked into clicking yes. Empty by default and free.
     pub hooks: Arc<crate::hooks::HookSet>,
+    /// Outbox routing: tools whose calls are staged for the user's review
+    /// instead of executed. `None` (the default) routes nothing. See
+    /// [`crate::outbox`].
+    pub outbox: Option<Arc<crate::outbox::OutboxRoute>>,
 }
 
 /// Per-run ceilings. Every `None` falls through to the agent's own config, so a
@@ -198,6 +202,7 @@ impl RunContext {
             compact_at_tokens: None,
             queued_input: None,
             hooks: Arc::new(crate::hooks::HookSet::default()),
+            outbox: None,
         }
     }
 
@@ -241,6 +246,11 @@ impl RunContext {
 
     pub fn with_hooks(mut self, hooks: Arc<crate::hooks::HookSet>) -> Self {
         self.hooks = hooks;
+        self
+    }
+
+    pub fn with_outbox(mut self, route: Arc<crate::outbox::OutboxRoute>) -> Self {
+        self.outbox = Some(route);
         self
     }
 
@@ -368,6 +378,10 @@ pub struct ToolCallTrace {
     pub denied: bool,
     /// The model named a tool that does not exist.
     pub unknown: bool,
+    /// Staged in the outbox for the user's review instead of executed.
+    /// Not an error and not a denial: the draft succeeded; the send waits.
+    #[serde(default)]
+    pub staged: bool,
 }
 
 /// Why the loop stopped. `Completed` is the model deciding it was done;
@@ -539,6 +553,12 @@ impl Agent {
     /// [`Agent::set_approver`], and for the same reason.
     pub fn set_hooks(&mut self, hooks: Arc<crate::hooks::HookSet>) {
         Arc::make_mut(&mut self.cx).hooks = hooks;
+    }
+
+    /// Route the configured tools through the outbox on the agent's own
+    /// context. Copy-on-write, like [`Agent::set_hooks`].
+    pub fn set_outbox(&mut self, route: Arc<crate::outbox::OutboxRoute>) {
+        Arc::make_mut(&mut self.cx).outbox = Some(route);
     }
 
     /// Swap the approver the agent's own context uses.
@@ -1200,6 +1220,7 @@ impl Agent {
                         is_error: true,
                         denied: true,
                         unknown: false,
+                    staged: false,
                     });
                     emit(
                         events,
@@ -1255,11 +1276,16 @@ impl Agent {
                     is_error: true,
                     denied: false,
                     unknown: true,
+                    staged: false,
                 });
                 continue;
             };
 
             let caps = tool.capabilities();
+
+            // An outbox-routed call is never executed here — it is staged as a
+            // draft the user reviews out of band (below, after the hook gate).
+            let routed = cx.outbox.as_ref().is_some_and(|o| o.routes(name));
 
             // The trifecta interlock. Checked before the approver, because a
             // human clicking "yes" is exactly what an injection is trying to
@@ -1273,7 +1299,12 @@ impl Agent {
             let injection_risk = taint.trifecta_armed();
             let leak_risk = cx.tools.security.block_sends_after_private && taint.private;
 
-            if caps.external_send && (injection_risk || leak_risk) {
+            // A routed call skips the interlock: staging sends nothing — the
+            // draft lands in a local file, and release requires the user to
+            // read exactly what would leave. The item records this
+            // conversation's taint so the review can say "possibly an
+            // attacker's words" out loud.
+            if !routed && caps.external_send && (injection_risk || leak_risk) {
                 match cx.tools.security.trifecta {
                     TrifectaPolicy::Block => {
                         let reason = if injection_risk {
@@ -1313,6 +1344,7 @@ impl Agent {
                             is_error: true,
                             denied: true,
                             unknown: false,
+                    staged: false,
                         });
                         continue;
                     }
@@ -1352,9 +1384,85 @@ impl Agent {
                         is_error: true,
                         denied: true,
                         unknown: false,
+                    staged: false,
                     });
                     continue;
                 }
+            }
+
+            // Stage a routed call instead of executing it. After the hook gate
+            // (a hook narrows policy for drafts too, and fails closed) and
+            // instead of the approver — nothing executes, so there is nothing
+            // to approve; the user's review of the staged item is the
+            // approval, later and out of band.
+            if routed {
+                let route = cx.outbox.as_ref().expect("routed implies a route");
+                match route.store.stage(name, input.clone(), *taint, route.session_id()) {
+                    Ok(item) => {
+                        let content = format!(
+                            "Drafted, not sent: this call is staged in the outbox as \
+                             `{}`. The user will review it with `mecha outbox` and \
+                             release or reject it. Report it to the user as a draft \
+                             awaiting their release — never as done — and do not \
+                             retry the call.",
+                            item.id
+                        );
+                        emit(
+                            events,
+                            AgentEvent::ToolResult {
+                                id: id.clone(),
+                                name: name.clone(),
+                                is_error: false,
+                                content: content.clone(),
+                            },
+                        );
+                        results[i] = Some(Block::ToolResult {
+                            tool_use_id: id.clone(),
+                            content,
+                            is_error: false,
+                        });
+                        trace.push(ToolCallTrace {
+                            name: name.clone(),
+                            input: input.clone(),
+                            is_error: false,
+                            denied: false,
+                            unknown: false,
+                            staged: true,
+                        });
+                    }
+                    // Fail closed: a call that could not be staged must not
+                    // fall through to execution — that would make a full disk
+                    // the way around the review.
+                    Err(e) => {
+                        let content = format!(
+                            "`{name}` is routed through the outbox, and staging \
+                             failed: {e:#}. Nothing was sent. Tell the user."
+                        );
+                        emit(
+                            events,
+                            AgentEvent::ToolResult {
+                                id: id.clone(),
+                                name: name.clone(),
+                                is_error: true,
+                                content: content.clone(),
+                            },
+                        );
+                        results[i] = Some(Block::ToolResult {
+                            tool_use_id: id.clone(),
+                            content,
+                            is_error: true,
+                        });
+                        trace.push(ToolCallTrace {
+                            name: name.clone(),
+                            input: input.clone(),
+                            is_error: true,
+                            denied: false,
+                            unknown: false,
+                            staged: false,
+                        });
+                    }
+                }
+                continue;
             }
 
             if !tool.read_only() || force_approval {
@@ -1374,6 +1482,7 @@ impl Agent {
                         is_error: true,
                         denied: true,
                         unknown: false,
+                    staged: false,
                     });
                     continue;
                 }
@@ -1432,6 +1541,7 @@ impl Agent {
                 is_error: out.is_error,
                 denied: false,
                 unknown: false,
+                    staged: false,
             });
             emit(
                 events,
@@ -2792,6 +2902,187 @@ mod tests {
                 assert!(content.contains("Denied"));
             }
             other => panic!("expected a denial, got {other:?}"),
+        }
+    }
+
+    /// An outbound tool that must never actually run in these tests — staging
+    /// is supposed to happen *instead of* execution, and a panic is the
+    /// loudest possible way to prove it did.
+    struct MustNotRun;
+
+    #[async_trait]
+    impl Tool for MustNotRun {
+        fn name(&self) -> &str { "send_data" }
+        fn description(&self) -> &str { "Send data somewhere." }
+        fn input_schema(&self) -> Value { json!({"type": "object"}) }
+        fn read_only(&self) -> bool { true }
+        fn capabilities(&self) -> crate::tool::Capabilities {
+            crate::tool::Capabilities::default().sends()
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            panic!("an outbox-routed tool was executed instead of staged");
+        }
+    }
+
+    fn outbox_route(name: &str) -> (Arc<crate::outbox::OutboxRoute>, std::path::PathBuf) {
+        let root = std::env::temp_dir()
+            .join(format!("mecha-agent-outbox-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = crate::outbox::OutboxStore::open(&root).unwrap();
+        let route = Arc::new(crate::outbox::OutboxRoute::new(
+            store,
+            ["send_data".to_string()],
+        ));
+        (route, root)
+    }
+
+    fn send_turns() -> Vec<CompletionResponse> {
+        vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "send_data".into(),
+                    input: json!({"to": "x@example.com", "body": "hi"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("drafted")], StopReason::EndTurn),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_routed_call_is_staged_not_executed() {
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        let (route, root) = outbox_route("stage");
+        route.set_session_id("sess-42");
+        agent.set_outbox(Arc::clone(&route));
+
+        let mut convo = Conversation::from(vec![Message::user("send it")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        // The panicking tool never ran, the model was told it is a draft, and
+        // the trace says staged — not denied, not an error.
+        assert_eq!(outcome.text, "drafted");
+        let staged = &outcome.tool_calls[0];
+        assert!(staged.staged && !staged.denied && !staged.is_error);
+        match &convo.messages[2].content[0] {
+            Block::ToolResult { is_error, content, .. } => {
+                assert!(!is_error);
+                assert!(content.contains("Drafted, not sent"), "{content}");
+            }
+            other => panic!("expected a staged result, got {other:?}"),
+        }
+
+        // The item landed with its provenance, and staging set no taint:
+        // nothing was read from anywhere.
+        let items = route.store.items().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].tool, "send_data");
+        assert_eq!(items[0].session_id.as_deref(), Some("sess-42"));
+        assert!(!outcome.taint.private && !outcome.taint.untrusted);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The documented semantics: staging sends nothing, so a routed call is
+    /// staged even when the trifecta is armed — the interlock that would have
+    /// refused an execution does not fire, `blocked_sends` stays 0, and the
+    /// item records the armed taint for the review to warn about.
+    #[tokio::test]
+    async fn a_routed_call_stages_even_with_the_trifecta_armed() {
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        let (route, root) = outbox_route("armed");
+        agent.set_outbox(Arc::clone(&route));
+
+        let mut convo = Conversation::resumed(
+            vec![Message::user("send it")],
+            Taint { private: true, untrusted: true },
+        );
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.blocked_sends, 0, "staging is not a send");
+        assert!(outcome.tool_calls[0].staged);
+        let items = route.store.items().unwrap();
+        assert!(items[0].taint.trifecta_armed(), "the item must carry the armed snapshot");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An unrouted send with the trifecta armed still hits the interlock —
+    /// installing an outbox for one tool must not loosen anything for the rest.
+    #[tokio::test]
+    async fn an_unrouted_send_still_hits_the_interlock() {
+        struct OtherSend;
+        #[async_trait]
+        impl Tool for OtherSend {
+            fn name(&self) -> &str { "other_send" }
+            fn description(&self) -> &str { "Send data somewhere else." }
+            fn input_schema(&self) -> Value { json!({"type": "object"}) }
+            fn read_only(&self) -> bool { true }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                crate::tool::Capabilities::default().sends()
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                panic!("the interlock should have refused this");
+            }
+        }
+
+        let (mut agent, _) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "other_send".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("blocked")], StopReason::EndTurn),
+            ],
+            PermissionMode::ReadOnly,
+        );
+        agent.registry.insert(Arc::new(OtherSend));
+        let (route, root) = outbox_route("unrouted");
+        agent.set_outbox(Arc::clone(&route));
+
+        let mut convo = Conversation::resumed(
+            vec![Message::user("send it")],
+            Taint { private: true, untrusted: true },
+        );
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.blocked_sends, 1);
+        assert!(outcome.tool_calls[0].denied);
+        assert!(route.store.items().unwrap().is_empty(), "nothing staged");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A call that cannot be staged must not fall through to execution — a
+    /// full disk must not be the way around the review.
+    #[tokio::test]
+    async fn a_failed_staging_fails_closed() {
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        let (route, root) = outbox_route("failclosed");
+        agent.set_outbox(Arc::clone(&route));
+        // Remove the store's directory out from under it so the write fails.
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let mut convo = Conversation::from(vec![Message::user("send it")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        let call = &outcome.tool_calls[0];
+        assert!(call.is_error && !call.staged);
+        match &convo.messages[2].content[0] {
+            Block::ToolResult { is_error, content, .. } => {
+                assert!(is_error);
+                assert!(content.contains("staging failed"), "{content}");
+                assert!(content.contains("Nothing was sent"), "{content}");
+            }
+            other => panic!("expected a staging failure, got {other:?}"),
         }
     }
 }

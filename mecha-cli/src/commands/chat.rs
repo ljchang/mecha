@@ -56,6 +56,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             &prepared.config,
             &prepared.provider_name,
         )))?;
+        // Staged outbox items point back at the session that drafted them.
+        if let Some(route) = &prepared.agent.context().outbox {
+            route.set_session_id(&s.meta.id);
+        }
     }
 
     println!(

@@ -150,6 +150,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // And for hooks: a user's local policy scripts firing inside eval cases
     // would grade this machine's config, not the model.
     opts.no_hooks = true;
+    // And for the outbox: whether a tool executes or stages must not depend
+    // on this machine's routing config, and an eval must not fill the user's
+    // real outbox with drafts nobody will ever release.
+    opts.no_outbox = true;
     let mut prepared = setup::prepare(&opts, false).await?;
     if !args.no_ask_user {
         prepared

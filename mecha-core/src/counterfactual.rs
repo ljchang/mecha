@@ -196,7 +196,7 @@ mod tests {
         Block::ToolResult { tool_use_id: id.into(), content: content.into(), is_error }
     }
     fn trace(name: &str, input: Value) -> ToolCallTrace {
-        ToolCallTrace { name: name.into(), input, is_error: false, denied: false, unknown: false }
+        ToolCallTrace { name: name.into(), input, is_error: false, denied: false, unknown: false, staged: false }
     }
     fn report(divergences: Vec<Divergence>, replayed: Vec<ToolCallTrace>) -> ReplayReport {
         ReplayReport {

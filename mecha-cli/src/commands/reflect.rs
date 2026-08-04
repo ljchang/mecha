@@ -14,7 +14,7 @@
 use crate::GlobalOpts;
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
-use mecha_core::learning::{extract_interventions, LearningStore, Reflector, Trigger};
+use mecha_core::learning::{extract_interventions, Intervention, LearningStore, Reflector, Trigger};
 use mecha_core::session::Session;
 use std::path::PathBuf;
 
@@ -56,8 +56,23 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         todo.truncate(limit);
     }
 
-    if todo.is_empty() {
-        println!("nothing to mine: every session is already reflected on");
+    // The outbox pass mines a different kind of correction: a `sent` item
+    // whose released arguments differ from the drafted ones is the user
+    // editing mecha's writing, recorded structurally by `mecha outbox edit`.
+    // Open non-creating: reflect must not conjure an outbox as a side effect.
+    let outbox = mecha_core::outbox::OutboxStore::open_existing_default();
+    let outbox_mined = store.mined_outbox()?;
+    let outbox_todo: Vec<_> = match &outbox {
+        Some(ob) => ob
+            .items()?
+            .into_iter()
+            .filter(|i| i.status == "sent" && i.edited() && !outbox_mined.contains(&i.id))
+            .collect(),
+        None => Vec::new(),
+    };
+
+    if todo.is_empty() && outbox_todo.is_empty() {
+        println!("nothing to mine: every session and sent draft is already reflected on");
         return Ok(());
     }
 
@@ -155,20 +170,82 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         sessions_mined += 1;
     }
 
+    // The outbox pass. Per-item rather than all-or-nothing: items are
+    // independent corrections, so one reflection failure leaves only that
+    // item unmined for the next run.
+    let mut edits_mined = 0usize;
+    for item in &outbox_todo {
+        let intervention = outbox_intervention(item);
+        if args.dry_run {
+            println!("{} [edit] {} draft edited before sending", item.id, item.tool);
+            continue;
+        }
+        let reflector = reflector.as_ref().expect("built unless dry-run");
+        match reflector.reflect(&intervention).await {
+            Ok(reflected) => {
+                if let Some(mut r) = reflected {
+                    // The drafting session, when the front-end knew it — the
+                    // same lineage a behavior reflection carries.
+                    r.session_id = item.session_id.clone().unwrap_or_default();
+                    store.append_reflexion(&r)?;
+                    reflections_written += 1;
+                    println!("· [edit] {}", r.reflexion_text);
+                }
+                // Mined either way: a skip means the edit taught nothing
+                // (a typo fix), and re-arguing it nightly will not change
+                // that.
+                store.mark_outbox_mined(&item.id)?;
+                edits_mined += 1;
+            }
+            Err(e) => {
+                eprintln!(
+                    "· reflection failed: {e:#}\n  leaving outbox item {} unmined so a \
+                     later run retries",
+                    item.id
+                );
+            }
+        }
+    }
+
     if args.dry_run {
         println!(
-            "dry run: {sessions_mined} session(s) with {interventions_found} intervention(s); \
-             nothing written"
+            "dry run: {sessions_mined} session(s) with {interventions_found} intervention(s), \
+             {} edited draft(s); nothing written",
+            outbox_todo.len()
         );
     } else {
         store.commit(&format!(
-            "reflect: {sessions_mined} session(s), {reflections_written} reflection(s)"
+            "reflect: {sessions_mined} session(s), {edits_mined} draft edit(s), \
+             {reflections_written} reflection(s)"
         ));
         println!(
-            "mined {sessions_mined} session(s): {interventions_found} intervention(s), \
-             {reflections_written} reflection(s) → {}",
+            "mined {sessions_mined} session(s) and {edits_mined} draft edit(s): \
+             {interventions_found} intervention(s), {reflections_written} reflection(s) → {}",
             store.root().join("reflections.jsonl").display()
         );
     }
     Ok(())
+}
+
+/// Frame one edited-then-sent outbox item as an intervention for the
+/// writing-domain reflector: the draft is the context, the diff is what the
+/// user did, the sent version is the aftermath.
+fn outbox_intervention(item: &mecha_core::outbox::OutboxItem) -> Intervention {
+    let pretty = |v: &serde_json::Value| {
+        serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
+    };
+    Intervention {
+        trigger: Trigger::Edit,
+        context: format!(
+            "mecha drafted this `{}` call (outbox item {}):\n{}",
+            item.tool,
+            item.id,
+            pretty(&item.args_before)
+        ),
+        text: format!(
+            "the user edited the draft before releasing it:\n{}",
+            mecha_core::outbox::diff_args(&item.args_before, &item.args)
+        ),
+        aftermath: format!("the user sent the edited version:\n{}", pretty(&item.args)),
+    }
 }

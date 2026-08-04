@@ -37,6 +37,23 @@ pub struct Config {
     /// User commands run at loop lifecycle points. See [`crate::hooks`].
     #[serde(rename = "hook")]
     pub hooks: Vec<HookConfig>,
+    /// Outbound tools staged for user review instead of executed. See
+    /// [`crate::outbox`].
+    pub outbox: OutboxConfig,
+}
+
+/// Which tools are outbox-routed, and where staged items live.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OutboxConfig {
+    /// Registry names (`email__send`, `web__fetch`). A call to one of these
+    /// is staged as a draft the user reviews with `mecha outbox`; the tool
+    /// itself never runs until they release it. Empty means the outbox is
+    /// off, which is the default — routing a tool is a policy decision.
+    pub tools: Vec<String>,
+    /// Where items are staged. Defaults to `~/.mecha/outbox`
+    /// (or `$MECHA_OUTBOX_DIR`).
+    pub dir: Option<PathBuf>,
 }
 
 /// One hook: a command run at a lifecycle point, with the event payload as
@@ -85,6 +102,7 @@ impl Default for Config {
             subagents: Vec::new(),
             search: Vec::new(),
             hooks: Vec::new(),
+            outbox: OutboxConfig::default(),
         }
     }
 }
@@ -507,6 +525,14 @@ struct ConfigLayer {
     #[serde(rename = "hook")]
     hooks: Option<Vec<HookConfig>>,
     sandbox: Option<SandboxLayer>,
+    outbox: Option<OutboxLayer>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutboxLayer {
+    tools: Option<Vec<String>>,
+    dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -690,6 +716,17 @@ impl ConfigLayer {
         // cannot turn a global hook off cannot be trusted to run anything.
         if let Some(v) = self.hooks {
             cfg.hooks = v;
+        }
+        if let Some(x) = self.outbox {
+            let t = &mut cfg.outbox;
+            // Wholesale: a project must be able to un-route a tool the global
+            // config routes, and vice versa.
+            if let Some(v) = x.tools {
+                t.tools = v;
+            }
+            if x.dir.is_some() {
+                t.dir = x.dir;
+            }
         }
     }
 }
