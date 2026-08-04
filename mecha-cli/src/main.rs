@@ -3,6 +3,7 @@
 mod approve;
 mod commands;
 mod interrupt;
+mod probe;
 mod render;
 mod setup;
 mod tui;
@@ -150,6 +151,9 @@ pub enum Command {
     /// moments the user stepped in.
     Validate(commands::validate::Args),
 
+    /// Review, accept, or reject rule changes staged by `mecha learn --propose`.
+    Proposals(commands::proposals::Args),
+
     /// Re-run a recorded session against recorded tool results and report
     /// where the model diverged.
     Replay(commands::replay::Args),
@@ -195,6 +199,7 @@ async fn dispatch() -> Result<()> {
         Command::Reflect(args) => commands::reflect::execute(&cli.global, args).await,
         Command::Learn(args) => commands::learn::execute(&cli.global, args).await,
         Command::Validate(args) => commands::validate::execute(&cli.global, args).await,
+        Command::Proposals(args) => commands::proposals::execute(args).await,
         Command::Replay(args) => commands::replay::execute(&cli.global, args).await,
         Command::Tools(args) => commands::tools::execute(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,

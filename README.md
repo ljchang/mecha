@@ -433,6 +433,21 @@ systemd user timer that fires it at 03:30. If the local model server is down
 the night defers entirely and tomorrow catches up; every stage is idempotent,
 so a skipped night is not a failed night.
 
+**Unattended learning never applies its own output.** The nightly pass runs
+`learn --propose`: the candidate rule set is measured by counterfactual
+replay against the currently deployed rules, a candidate that regresses any
+probe is rejected by the gate before a human ever sees it, and what survives
+is staged as a proposal. `mecha proposals` lists them; `show` prints the
+rules diff beside the gate's evidence; `accept` applies with the same
+lineage a direct learn leaves; `reject` records the refusal and retires the
+reflections so a human's no is not re-argued nightly. Accepting checks the
+live rules still match what the candidate was measured against — a diff on
+screen that isn't the change being applied needs `--force` to say so.
+Direct `mecha learn` at a terminal still applies immediately, with the
+store's git history as undo: the gate exists for the runs nobody watches.
+Proposals can only ever touch `rules/*.learned.toml` — the security layer
+is not proposable-against, structurally.
+
 ## Budgets
 
 `max_turns` bounds how many round trips a run makes. It does not bound how

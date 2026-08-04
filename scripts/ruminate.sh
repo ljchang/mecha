@@ -40,7 +40,10 @@ echo "· reflect"
 echo "· validate (held-out + fresh, before learn consumes them)"
 "$MECHA" validate -p "$PROVIDER" --judge-provider "$JUDGE" --unprocessed-only
 
-echo "· learn"
-"$MECHA" learn -p "$PROVIDER" --holdout 0.25
+echo "· learn (propose-only: unattended learning never applies its own output)"
+"$MECHA" learn -p "$PROVIDER" --holdout 0.25 --propose
+
+echo "· proposals awaiting review"
+"$MECHA" proposals
 
 echo "── rumination done $(date -Is) ──"

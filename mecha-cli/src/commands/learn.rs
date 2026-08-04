@@ -5,11 +5,22 @@
 //! Every pass appends a `LeapRun` audit record and commits the store, so
 //! `git log` in `~/.mecha/learning` reads as the system's learning history
 //! and `git revert` undoes a pass that made things worse.
+//!
+//! `--propose` is the hyperagent gate: instead of writing `learned.toml`,
+//! the pass measures its candidate by counterfactual replay (candidate vs
+//! the currently deployed rules, on the very interventions it learned from)
+//! and stages the result as a proposal for `mecha proposals` to review. A
+//! candidate that *regresses* a probe is rejected by the gate before any
+//! human sees it. Unattended learning — the nightly timer — should always
+//! propose; direct `mecha learn` at a terminal remains apply-with-git-undo.
 
-use crate::GlobalOpts;
+use crate::{probe, setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
-use mecha_core::learning::{Learner, LearningStore, LeapRun, RULES_CHAR_BUDGET};
+use mecha_core::learning::{
+    domain_rules_section, wrap_rules_block, Learner, LearningStore, LeapRun, Proposal, Trigger,
+    RULES_CHAR_BUDGET,
+};
 use mecha_core::session::Session;
 use std::collections::BTreeMap;
 
@@ -25,6 +36,12 @@ pub struct Args {
     /// changes between runs measures nothing.
     #[arg(long, default_value_t = 0.0)]
     pub holdout: f64,
+
+    /// Stage the result as a proposal instead of writing the live rules.
+    /// The candidate is gated by counterfactual replay first; review with
+    /// `mecha proposals`.
+    #[arg(long)]
+    pub propose: bool,
 
     /// Show what would run without calling a model or writing anything.
     #[arg(long)]
@@ -69,12 +86,34 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         args.holdout
     );
 
+    // Reflections claimed by a pending proposal are spoken for: consuming
+    // them again would either duplicate the proposal nightly until someone
+    // reviews it, or double-count them into the live rules on a direct pass.
+    let claimed: std::collections::BTreeSet<String> = store
+        .proposals()?
+        .into_iter()
+        .filter(|p| p.status == "pending")
+        .flat_map(|p| p.reflexion_ids)
+        .collect();
+
     // Group unprocessed reflections by domain.
     let mut by_domain: BTreeMap<String, Vec<_>> = BTreeMap::new();
+    let mut awaiting_review = 0usize;
     for r in store.reflexions()? {
-        if !r.is_processed {
-            by_domain.entry(r.domain.clone()).or_default().push(r);
+        if r.is_processed {
+            continue;
         }
+        if claimed.contains(&r.id) {
+            awaiting_review += 1;
+            continue;
+        }
+        by_domain.entry(r.domain.clone()).or_default().push(r);
+    }
+    if awaiting_review > 0 {
+        println!(
+            "{awaiting_review} reflection(s) are claimed by pending proposal(s) — \
+             review with `mecha proposals`"
+        );
     }
 
     if args.holdout > 0.0 {
@@ -128,6 +167,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let learner = Learner::new(provider, model);
     eprintln!("learning with {} ({provider_name})", learner.model());
 
+    // The gate replays against the recorded tool surface, which needs the
+    // live registry for specs — same borrow `mecha validate` makes.
+    let prepared =
+        if args.propose { Some(setup::prepare(&global.clone(), false).await?) } else { None };
+    let sessions_dir = Session::default_dir()?;
+
     for (domain, reflexions) in &by_domain {
         let user_rules = store.user_rules(domain)?;
         let learned_before = store.learned_rules(domain)?;
@@ -146,6 +191,96 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             );
         }
 
+        let ids: Vec<String> = reflexions.iter().map(|r| r.id.clone()).collect();
+
+        // ── the gate: measure the candidate, stage it, never apply it ──
+        if args.propose {
+            let prepared = prepared.as_ref().expect("built under --propose");
+            let candidate_block = wrap_rules_block(
+                domain_rules_section(domain, &user_rules, &rules).into_iter().collect(),
+            );
+            let current_block = store.rules_prompt_block()?;
+
+            let mut lines = Vec::new();
+            let (mut improved, mut regressed, mut unchanged, mut inconclusive) =
+                (0u32, 0u32, 0u32, 0u32);
+            let mut measured = 0u32;
+            for r in reflexions.iter().filter(|r| r.trigger != Trigger::Followup.as_str()) {
+                match probe::probe_reflection(
+                    prepared,
+                    provider_cfg,
+                    learner.model(),
+                    &sessions_dir,
+                    r,
+                    current_block.as_deref(),
+                    candidate_block.as_deref(),
+                )
+                .await?
+                {
+                    probe::ProbeResult::Skipped(why) => {
+                        lines.push(format!("{} [{}]: skipped — {why}", r.id, r.trigger));
+                    }
+                    probe::ProbeResult::Verdicts(b, t) => {
+                        measured += 1;
+                        let label = probe::compare(
+                            &b,
+                            &t,
+                            &mut improved,
+                            &mut regressed,
+                            &mut unchanged,
+                            &mut inconclusive,
+                        )
+                        .unwrap_or("inconclusive");
+                        lines.push(format!("{} [{}]: {label}", r.id, r.trigger));
+                    }
+                }
+            }
+            lines.push(if measured == 0 {
+                "no trace-gradeable reflections in this batch; review by reading".into()
+            } else {
+                format!(
+                    "candidate vs current rules, replayed on the batch's own interventions: \
+                     {improved} improved, {regressed} regressed, {unchanged} unchanged, \
+                     {inconclusive} inconclusive"
+                )
+            });
+            let evidence = lines.join("\n");
+
+            // A candidate that makes any probe worse than what is deployed
+            // never reaches a human — recorded with its evidence, though,
+            // because a gate that leaves no trace teaches nobody anything.
+            let status = if regressed > 0 { "rejected_by_gate" } else { "pending" };
+            let proposal = Proposal {
+                id: Session::new_id(),
+                domain: domain.clone(),
+                status: status.into(),
+                reflexion_ids: ids,
+                rules_before: learned_before.clone(),
+                rules: rules.clone(),
+                evidence: evidence.clone(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                resolved_at: None,
+                reason: None,
+            };
+            store.write_proposal(&proposal)?;
+            println!(
+                "{domain}: proposal {} [{status}] — {} rule(s) from {} reflection(s)",
+                proposal.id,
+                proposal.rules.len(),
+                proposal.reflexion_ids.len()
+            );
+            println!("{evidence}");
+            if status == "pending" {
+                println!("review with `mecha proposals show {}`", proposal.id);
+            }
+            store.commit(&format!(
+                "propose[{domain}]: {} rule(s) from {} reflection(s), {status}",
+                proposal.rules.len(),
+                proposal.reflexion_ids.len()
+            ));
+            continue;
+        }
+
         let run = LeapRun {
             id: Session::new_id(),
             domain: domain.clone(),
@@ -156,7 +291,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         };
 
         store.write_learned_rules(domain, &rules)?;
-        let ids: Vec<String> = reflexions.iter().map(|r| r.id.clone()).collect();
         store.mark_reflexions_processed(&ids, &run.id)?;
         store.append_run(&run)?;
 

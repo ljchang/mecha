@@ -19,22 +19,14 @@
 //! train on is prompt clutter, and `mecha learn --holdout` exists to keep
 //! such reflections available.
 
-use crate::{setup, GlobalOpts};
+use crate::{probe, setup, GlobalOpts};
 use anyhow::{Context, Result};
-use mecha_core::agent::{Agent, RunContext};
-use mecha_core::config::{Config, PermissionMode};
-use mecha_core::counterfactual::{
-    denial_verdict, locate_denial, locate_steer, steer_verdict, truncate_after_run, ProbeVerdict,
-};
+use mecha_core::config::Config;
+use mecha_core::counterfactual::ProbeVerdict;
 use mecha_core::eval::Judge;
 use mecha_core::learning::{locate_followup, strip_rules_block, LearningStore, Trigger};
 use mecha_core::message::{CompletionRequest, Message};
-use mecha_core::replay::extract;
-use mecha_core::replay_run::{drive, replay_registry, OnDivergence};
 use mecha_core::session::Session;
-use mecha_core::tool::ModeApprover;
-use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -153,125 +145,47 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
         // ── steers and denials: replay the prefix, grade the trace ──
         if r.trigger != Trigger::Followup.as_str() {
-            let point = if r.trigger == Trigger::Steer.as_str() {
-                locate_steer(&convo.messages, &r.intervention)
-            } else {
-                locate_denial(&convo.messages, &r.intervention)
-            };
-            let Some(point) = point else {
-                eprintln!("· {}: could not locate the intervention; skipping", r.id);
-                skipped += 1;
-                continue;
-            };
-            let slice = truncate_after_run(&convo.messages, point.message_index);
-            let trajectory = extract(slice);
-            if trajectory.turns.is_empty() {
-                eprintln!("· {}: no user turns before the intervention; skipping", r.id);
-                skipped += 1;
-                continue;
-            }
-            let Some(recorded) =
-                Session::run_configs(&path)?.first().cloned()
-            else {
-                eprintln!("· {}: no RunConfig recorded; skipping", r.id);
-                skipped += 1;
-                continue;
-            };
             let prepared = prepared.as_ref().expect("built because needs_replay");
-
-            let mut verdicts = Vec::new();
-            for system in [&base_system, &with_rules] {
-                let cancel = CancellationToken::new();
-                let registry = match replay_registry(
-                    &recorded.tools,
-                    prepared.agent.registry(),
-                    trajectory.calls.clone(),
-                    OnDivergence::Stop,
-                    cancel.clone(),
-                ) {
-                    Ok(reg) => reg,
-                    Err(e) => {
-                        eprintln!("· {}: {e:#}; skipping", r.id);
-                        break;
-                    }
-                };
-                // Nothing executes under Stop mode, so nothing needs approving.
-                let approver: Arc<dyn mecha_core::tool::Approver> =
-                    Arc::new(ModeApprover { mode: PermissionMode::Allow });
-                let mut agent_cfg = prepared.config.agent.clone();
-                agent_cfg.system_prompt = (!system.is_empty()).then(|| system.to_string());
-                agent_cfg.system_prompt_file = None;
-                agent_cfg.effort = recorded.effort;
-                agent_cfg.thinking = recorded.thinking;
-                agent_cfg.cache_prompt = recorded.cache_prompt;
-                agent_cfg.max_tokens = recorded.max_tokens;
-                agent_cfg.max_turns = recorded.max_turns;
-                agent_cfg.max_output_tokens = recorded.max_output_tokens;
-                agent_cfg.max_cost_usd = recorded.max_cost_usd;
-                agent_cfg.compact_at_tokens = recorded.compact_at_tokens;
-                agent_cfg.compact_keep_recent = recorded.compact_keep_recent;
-
-                let mut tool_ctx = mecha_core::tool::ToolCtx {
-                    workspace: recorded.workspace.clone(),
-                    ..Default::default()
-                };
-                if !recorded.workspace.exists() {
-                    // Fine for a pure replay: nothing touches the filesystem.
-                    tool_ctx.workspace = std::env::temp_dir();
+            match probe::probe_reflection(
+                prepared,
+                provider_cfg,
+                &model,
+                &sessions_dir,
+                r,
+                None,
+                Some(&rules_block),
+            )
+            .await?
+            {
+                probe::ProbeResult::Skipped(why) => {
+                    eprintln!("· {}: {why}; skipping", r.id);
+                    skipped += 1;
                 }
-
-                let agent = Agent::new(
-                    mecha_core::provider::build(provider_cfg)?,
-                    registry,
-                    Arc::clone(&approver),
-                    tool_ctx.clone(),
-                    agent_cfg,
-                    Some(model.clone()),
-                )?;
-                let cx = RunContext::new(tool_ctx, approver)
-                    .with_cancel(cancel)
-                    .with_compact_at(recorded.compact_at_tokens);
-                match drive(&agent, &cx, &trajectory).await {
-                    Ok(report) => verdicts.push(if r.trigger == Trigger::Steer.as_str() {
-                        steer_verdict(&report, &point)
-                    } else {
-                        denial_verdict(&report, &point)
-                    }),
-                    Err(e) => {
-                        eprintln!("· {}: replay failed ({e:#}); skipping", r.id);
-                        break;
+                probe::ProbeResult::Verdicts(baseline, with) => {
+                    match probe::compare(
+                        &baseline,
+                        &with,
+                        &mut improved,
+                        &mut regressed,
+                        &mut unchanged,
+                        &mut inconclusive,
+                    ) {
+                        Some(label) => {
+                            println!("· {} [{}, {label}] {}", r.id, r.trigger, r.reflexion_text)
+                        }
+                        None => {
+                            let why = [&baseline, &with]
+                                .iter()
+                                .find_map(|v| match v {
+                                    ProbeVerdict::Inconclusive(w) => Some(w.clone()),
+                                    _ => None,
+                                })
+                                .unwrap_or_default();
+                            println!("· {} [{}] inconclusive: {why}", r.id, r.trigger);
+                        }
                     }
                 }
             }
-            let [baseline, with] = &verdicts[..] else {
-                skipped += 1;
-                continue;
-            };
-
-            let label = match (baseline, with) {
-                (ProbeVerdict::Inconclusive(why), _) | (_, ProbeVerdict::Inconclusive(why)) => {
-                    inconclusive += 1;
-                    println!("· {} [{}] inconclusive: {why}", r.id, r.trigger);
-                    continue;
-                }
-                (ProbeVerdict::Fail, ProbeVerdict::Pass) => {
-                    improved += 1;
-                    "IMPROVED"
-                }
-                (ProbeVerdict::Pass, ProbeVerdict::Fail) => {
-                    regressed += 1;
-                    "REGRESSED"
-                }
-                (both, _) => {
-                    unchanged += 1;
-                    if *both == ProbeVerdict::Pass {
-                        "unchanged (both pass)"
-                    } else {
-                        "unchanged (both fail)"
-                    }
-                }
-            };
-            println!("· {} [{}, {label}] {}", r.id, r.trigger, r.reflexion_text);
             continue;
         }
 

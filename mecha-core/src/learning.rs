@@ -266,25 +266,9 @@ impl LearningStore {
         for domain in self.domains() {
             let user = self.user_rules(&domain)?;
             let learned = self.learned_rules(&domain)?;
-            let mut lines: Vec<String> = Vec::new();
-            for r in user.iter().filter(|r| r.enabled) {
-                lines.push(format!("- {}", r.text));
-            }
-            for r in learned.iter().filter(|r| r.enabled) {
-                lines.push(format!("- {}", r.text));
-            }
-            if !lines.is_empty() {
-                parts.push(format!("### {domain}\n{}", lines.join("\n")));
-            }
+            parts.extend(domain_rules_section(&domain, &user, &learned));
         }
-        if parts.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(format!(
-            "{RULES_BLOCK_HEADING}\n\nRules distilled from how this user has corrected you \
-             before. Follow them unless the user says otherwise in this conversation.\n\n{}",
-            parts.join("\n\n")
-        )))
+        Ok(wrap_rules_block(parts))
     }
 
     /// Take the store's writer lock, blocking until it is free.
@@ -371,7 +355,89 @@ pub struct LeapRun {
     pub created_at: String,
 }
 
+// ─── Proposals ──────────────────────────────────────────────────────────────
+
+/// A rule change waiting for the user, with the evidence that argues for it.
+///
+/// The hyperagent gate, made concrete: unattended learning may *propose* a
+/// rewritten rule set, but the live `learned.toml` changes only when a human
+/// accepts — a self-improvement loop must never apply its own output. The
+/// proposal carries `rules_before` as well as `rules`, so the diff shown at
+/// review time is the diff that was measured, and acceptance can detect that
+/// the live rules moved underneath it in the meantime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Proposal {
+    pub id: String,
+    pub domain: String,
+    /// `pending` | `accepted` | `rejected` | `rejected_by_gate`.
+    pub status: String,
+    /// The reflections this proposal was learned from. Marked processed only
+    /// when the proposal is resolved — a rejected-by-gate set returns to the
+    /// pool and is re-argued when the pool changes.
+    pub reflexion_ids: Vec<String>,
+    /// The learned rules as they stood when the candidate was generated.
+    pub rules_before: Vec<Rule>,
+    /// The candidate rule set.
+    pub rules: Vec<Rule>,
+    /// What the gate measured, human-readable. Empty means nothing in the
+    /// batch was trace-gradeable — review by reading, not by score.
+    pub evidence: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub resolved_at: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 impl LearningStore {
+    /// Write (or rewrite) one proposal, atomically — `mecha proposals list`
+    /// must never read a half-written file from a nightly pass.
+    pub fn write_proposal(&self, p: &Proposal) -> Result<()> {
+        let dir = self.root.join("proposals");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{}.json", p.id));
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(p)?)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    /// Every proposal, oldest first.
+    pub fn proposals(&self) -> Result<Vec<Proposal>> {
+        let dir = self.root.join("proposals");
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            match serde_json::from_str(&std::fs::read_to_string(&path)?) {
+                Ok(p) => out.push(p),
+                Err(e) => tracing::warn!("skipping unreadable proposal {}: {e}", path.display()),
+            }
+        }
+        out.sort_by(|a: &Proposal, b: &Proposal| a.id.cmp(&b.id));
+        Ok(out)
+    }
+
+    /// Find one proposal by id or unique prefix. Ambiguity is an error rather
+    /// than a guess, same as session lookup.
+    pub fn proposal(&self, id: &str) -> Result<Proposal> {
+        let all = self.proposals()?;
+        let matches: Vec<&Proposal> = all.iter().filter(|p| p.id.starts_with(id)).collect();
+        match matches.len() {
+            0 => anyhow::bail!("no proposal matching `{id}`"),
+            1 => Ok(matches[0].clone()),
+            n => anyhow::bail!(
+                "`{id}` matches {n} proposals: {}",
+                matches.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", ")
+            ),
+        }
+    }
+
     pub fn append_run(&self, run: &LeapRun) -> Result<()> {
         self.append_line("runs.jsonl", &serde_json::to_string(run)?)
     }
@@ -698,6 +764,30 @@ pub fn locate_followup(messages: &[Message], intervention_text: &str) -> Option<
 /// rules must not get them twice, or keep stale ones in its baseline arm.
 pub const RULES_BLOCK_HEADING: &str = "## Learned rules";
 
+/// One domain's section of the rules block, from explicit rule sets rather
+/// than the store — which is what lets a proposal gate render a *candidate*
+/// set exactly as a run would see it, before anything is written anywhere.
+pub fn domain_rules_section(domain: &str, user: &[Rule], learned: &[Rule]) -> Option<String> {
+    let lines: Vec<String> = user
+        .iter()
+        .chain(learned.iter())
+        .filter(|r| r.enabled)
+        .map(|r| format!("- {}", r.text))
+        .collect();
+    (!lines.is_empty()).then(|| format!("### {domain}\n{}", lines.join("\n")))
+}
+
+/// Wrap rendered sections in the heading a run's system prompt carries.
+pub fn wrap_rules_block(sections: Vec<String>) -> Option<String> {
+    (!sections.is_empty()).then(|| {
+        format!(
+            "{RULES_BLOCK_HEADING}\n\nRules distilled from how this user has corrected you \
+             before. Follow them unless the user says otherwise in this conversation.\n\n{}",
+            sections.join("\n\n")
+        )
+    })
+}
+
 /// Remove a previously injected rules block from a recorded system prompt.
 pub fn strip_rules_block(system: &str) -> String {
     match system.find(RULES_BLOCK_HEADING) {
@@ -1015,6 +1105,93 @@ mod tests {
             .join("mecha-learning-test")
             .join(uuid::Uuid::new_v4().to_string());
         LearningStore::open(dir).unwrap()
+    }
+
+    #[test]
+    fn proposals_round_trip_and_resolve_in_place() {
+        let store = temp_store();
+        let p = Proposal {
+            id: "20260804T060000-p1".into(),
+            domain: "behavior".into(),
+            status: "pending".into(),
+            reflexion_ids: vec!["r1".into()],
+            rules_before: Vec::new(),
+            rules: vec![Rule {
+                text: "Never edit reports/".into(),
+                enabled: true,
+                confidence: Some(0.9),
+                based_on_count: Some(1),
+            }],
+            evidence: "steer probe improved".into(),
+            created_at: "2026-08-04T06:00:00Z".into(),
+            resolved_at: None,
+            reason: None,
+        };
+        store.write_proposal(&p).unwrap();
+        assert_eq!(store.proposals().unwrap().len(), 1);
+
+        // Prefix lookup finds it; a wrong prefix is an error, not a guess.
+        let found = store.proposal("20260804T060000").unwrap();
+        assert_eq!(found.rules[0].text, "Never edit reports/");
+        assert!(store.proposal("nope").is_err());
+
+        // Resolving rewrites the same file rather than growing a second copy.
+        let mut resolved = found;
+        resolved.status = "accepted".into();
+        resolved.resolved_at = Some("2026-08-04T07:00:00Z".into());
+        store.write_proposal(&resolved).unwrap();
+        let all = store.proposals().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].status, "accepted");
+    }
+
+    #[test]
+    fn an_ambiguous_proposal_prefix_is_an_error() {
+        let store = temp_store();
+        for id in ["20260804T060000-aa", "20260804T060000-ab"] {
+            store
+                .write_proposal(&Proposal {
+                    id: id.into(),
+                    domain: "behavior".into(),
+                    status: "pending".into(),
+                    reflexion_ids: Vec::new(),
+                    rules_before: Vec::new(),
+                    rules: Vec::new(),
+                    evidence: String::new(),
+                    created_at: String::new(),
+                    resolved_at: None,
+                    reason: None,
+                })
+                .unwrap();
+        }
+        let err = store.proposal("20260804T060000").unwrap_err().to_string();
+        assert!(err.contains("matches 2"), "{err}");
+        assert!(store.proposal("20260804T060000-aa").is_ok());
+    }
+
+    #[test]
+    fn a_candidate_rules_block_renders_exactly_as_a_run_would_see_it() {
+        let store = temp_store();
+        std::fs::write(
+            store.root().join("rules/behavior.user.toml"),
+            "[[rules]]\ntext = \"User rule first.\"\n",
+        )
+        .unwrap();
+        store
+            .write_learned_rules(
+                "behavior",
+                &[Rule { text: "Learned.".into(), enabled: true, confidence: None, based_on_count: None }],
+            )
+            .unwrap();
+        let live = store.rules_prompt_block().unwrap().unwrap();
+
+        // The same sets rendered explicitly must produce the same block —
+        // that identity is what makes a gate's measurement of a candidate
+        // mean anything about the deployment that follows acceptance.
+        let user = store.user_rules("behavior").unwrap();
+        let learned = store.learned_rules("behavior").unwrap();
+        let sections = domain_rules_section("behavior", &user, &learned).into_iter().collect();
+        assert_eq!(wrap_rules_block(sections).unwrap(), live);
     }
 
     #[test]
