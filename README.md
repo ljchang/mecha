@@ -368,6 +368,21 @@ mecha learn       # absorb reflections into a consolidated rule set
 mecha validate    # measure whether those rules change an answer
 ```
 
+The cycle can also drive itself — a `session_end` hook fires reflect the
+moment a session closes, detached so the hook timeout never kills a model
+call in flight:
+
+```toml
+[[hook]]
+event = "session_end"
+command = "nohup mecha reflect -p local >/dev/null 2>&1 &"
+```
+
+Concurrent closes are safe: every writing pass takes the store's writer lock
+*before* reading what has been mined, and a session whose reflections fail —
+a provider being down, usually — is left unmined for a later run to retry
+rather than marked and silently lost.
+
 The signal is already in the transcripts: a mid-run **steer**, a **denied**
 tool call, and a corrective **follow-up** turn are all recorded, so nothing new
 had to be captured to start. `mecha reflect` extracts them, asks a model for
