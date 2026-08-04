@@ -76,12 +76,13 @@ impl Tool for TodoTool {
     }
 
     fn description(&self) -> &str {
-        "Record and update your task list for multi-step work. Pass the COMPLETE list \
-         every time — it replaces what was there, so include finished items with status \
-         `completed`. Write the list once before you start, then update it as you go: \
-         exactly one item should be `in_progress` at a time, and an item should be marked \
-         `completed` as soon as it is done rather than in a batch at the end. Skip this \
-         tool entirely for anything that takes one or two steps."
+        "Record and update your task list for multi-step work. If a task will take more \
+         than three tool calls, call this FIRST, before any other tool, and keep the list \
+         updated as you work. Pass the COMPLETE list every time — it replaces what was \
+         there, so include finished items with status `completed`. Exactly one item should \
+         be `in_progress` at a time, and an item should be marked `completed` as soon as \
+         it is done rather than in a batch at the end. Skip this tool only for work of \
+         one or two steps."
     }
 
     fn input_schema(&self) -> Value {
