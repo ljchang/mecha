@@ -201,17 +201,41 @@ comparing across the boundary.
 
 Ordered by what I would actually do first, not by size.
 
-### 1. Tell the model to keep a todo list — the cheapest thing on this list
+### 1. ~~Tell the model to keep a todo list~~ — done 2026-08-04, and the answer is no
 
-`TodoTool` keeps its items in a `Mutex`, **not in the messages**, so the list
-already survives compaction completely. An agent maintaining one through
-multi-step work would never lose its place — no new machinery, no tokens, no
-request. Nothing currently tells it to; it is a paragraph in `prompts/agent.md`.
+The paragraph is in `prompts/agent.md` (imperative: "your first tool call is
+`todo`") and `todo`'s description now says to call it first for anything over
+three tool calls. qwen3.6-35b-a3b called `todo` **zero times in 20 eval
+case-runs** either way, and `chain-total-compacted` stayed **4/5 in both arms**
+(thinning-only baseline: 4/5, control 5/5). Three probes localised why, and
+they also say the gap this targeted is already closed:
 
-There is a rig to check it against: `chain-total-compacted` sits at 4/5 with the
-uncompacted control at 5/5. If this closes the last of that gap it is the
-cheapest fix in the whole compaction story, and if it does not, that is a
-five-minute answer. Do this before anything else.
+- The model keeps a list *flawlessly* when the **user turn** asks for one —
+  updates every step, batches `todo` with the action in the same turn — and
+  ignores the identical directive in the system prompt. Delivery was verified
+  in the recorded `RunConfig` both times: an instruction-following gap in the
+  model, not a wiring bug.
+- Moving the directive into the tool description got adoption once, on
+  genuinely sequential work — as a single static item it never updated. A
+  checkmark, not a position ledger.
+- Across all **15 compacted chain runs** taken 2026-08-03/04, **no failure was
+  a position failure**: every walk read exactly 16 entries, no restarts, no
+  early END. Thinning already fixed the mode todo was meant to fix. The three
+  misses were all in the *total* (877 and 717 for 847) with position and count
+  right — once by summing its own **correct** 16-row table wrong. The residual
+  mode is value accumulation, which a *running total kept in the list* would
+  address, and which this model will not maintain from prompting alone.
+
+Also learned along the way: the model has **no read path** to the `Mutex` — it
+sees the list only through the echo in its most recent `todo` result. Survival
+through compaction therefore depends on updating often enough that a fresh echo
+sits in the un-summarised tail. If this is ever revisited, the machinery worth
+considering is re-injecting the list at compaction time, not more prompting.
+
+Both changes are kept — a stronger model may well follow them, and they cost
+nothing here. But **the `todo` description change alters the tool surface of
+every eval case**: re-baseline before comparing any full-set scorecard across
+this boundary.
 
 ### 2. Pin the sampler, then build the replay driver
 
@@ -591,7 +615,15 @@ that could have destroyed the task silently.
   | original summariser | 1/3 | 3/3 |
   | + a clause asking for traversal position | 2/5 | 5/5 |
   | + tiered thinning | **4/5** | 5/5 |
+  | + todo instruction, prompt only (2026-08-04) | 4/5 | 5/5 |
+  | + todo instruction, prompt + tool description (2026-08-04) | 4/5 | 5/5 |
   | uncompacted control | 5/5 | — |
+
+  The two todo arms are not really separate treatments: the model never called
+  `todo` inside the eval in either one, so both are further samples of the
+  thinning arm — which pools to **12/15**, and every failure in the pool is a
+  wrong *total* over a correctly-completed walk. See item 1 of "What to do
+  next" for the full finding.
 
   **The prompt clause did nothing** (1/3 → 2/5 is noise). **Thinning appears to
   close most of the gap**, but be careful with that number: 4/5 against the
@@ -606,26 +638,9 @@ that could have destroyed the task silently.
   being something a summary has to preserve and becomes something the transcript
   structurally still contains.
 
-  Still unused, and the cheapest thing left: **`TodoTool` keeps its list in a
-  `Mutex`, not in the messages, so it already survives compaction entirely.** An
-  agent told to maintain a todo list through multi-step work would never lose
-  its place, for free. Nothing currently tells it to.
-
----|---|---|
-  | before the clause | 1/3 | 3/3 |
-  | after the clause | 2/5 | 5/5 |
-  | uncompacted control | 5/5 | — |
-
-  1/3 against 2/5 is noise at this sample size, and pooling every compacted run
-  gives 3/8. Compaction still costs this task roughly sixty points against a
-  control that does not miss. The clause is **kept but unvalidated** — it is
-  theoretically motivated, it did not regress the fact-recall case, and it is
-  cheap; that is the whole of the case for it. Do not cite it as a fix.
-
-  What would settle it is n≈15 per arm, about two hours of local compute, or a
-  sharper diagnostic than pass rate: log whether the summary text actually
-  contains a position, since the failure mode (restarting the chain, stopping
-  early) is observable directly and does not need a pass/fail to detect.
+  The todo-list idea was tried and measured on 2026-08-04 — the model ignores
+  the instruction, and the position-loss mode it targeted is already fixed by
+  thinning. The finding, with mechanism, is item 1 of "What to do next".
 
 ---
 
