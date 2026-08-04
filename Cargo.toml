@@ -13,6 +13,9 @@ repository = "https://github.com/ljchang/mecha"
 anyhow = "1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+# IANA zones, so "3pm Thursday" survives a DST boundary. A fixed offset in
+# config would be wrong twice a year, silently.
+chrono-tz = "0.10"
 dirs = "6"
 futures = "0.3"
 libc = "0.2"

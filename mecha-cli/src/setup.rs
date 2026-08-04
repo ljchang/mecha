@@ -129,7 +129,8 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         cfg.agent.clone(),
         Some(model.clone()),
     )?
-    .with_pricing(provider_cfg.pricing());
+    .with_pricing(provider_cfg.pricing())
+    .with_context_window(provider_cfg.context_window);
 
     if let Some(hooks) = hooks {
         agent.set_hooks(hooks);
@@ -207,12 +208,27 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     // the run actually saw rather than today's.
     {
         let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
-        let stamp = format!(
-            "Today is {}. Times you are given without a date are today's; \
-             work out relative dates (\"next Tuesday\", \"this week\") from it \
-             rather than guessing.",
-            chrono::Local::now().format("%A, %-d %B %Y")
-        );
+        // In the user's zone, not the machine's. A server runs in UTC, and
+        // answering "what's on Thursday" four hours off is wrong in the worst
+        // way — internally consistent, so it reads as correct.
+        let stamp = match cfg.agent.timezone() {
+            Some(tz) => {
+                let now = chrono::Utc::now().with_timezone(&tz);
+                format!(
+                    "Today is {}, and the user's timezone is {tz} (currently {}). \
+                     Give times in that zone unless asked otherwise, and work out \
+                     relative dates (\"next Tuesday\", \"this week\") from today \
+                     rather than guessing.",
+                    now.format("%A, %-d %B %Y"),
+                    now.format("%Z, UTC%:z")
+                )
+            }
+            None => format!(
+                "Today is {}. Work out relative dates (\"next Tuesday\", \
+                 \"this week\") from it rather than guessing.",
+                chrono::Local::now().format("%A, %-d %B %Y")
+            ),
+        };
         cfg.agent.system_prompt =
             Some(if base.is_empty() { stamp } else { format!("{base}\n\n{stamp}") });
         cfg.agent.system_prompt_file = None;

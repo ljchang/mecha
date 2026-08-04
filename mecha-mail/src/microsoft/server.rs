@@ -264,12 +264,19 @@ async fn dispatch(
             OutlookCalendarProvider::new(token)
                 .list_events(&calendar_id, &time_min, &time_max)
                 .await
-                .map(|events| {
+                .map(|mut events| {
                     if events.is_empty() {
-                        format!("no events between {time_min} and {time_max}")
-                    } else {
-                        serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".into())
+                        return format!("no events between {time_min} and {time_max}");
                     }
+                    // In the user's zone before the model ever sees them: a
+                    // model handed UTC reports UTC, and a noon meeting
+                    // announced at 4pm reads as correct.
+                    let tz = crate::time::configured_zone();
+                    for e in &mut events {
+                        e.start_time = crate::time::in_zone(&e.start_time, tz);
+                        e.end_time = crate::time::in_zone(&e.end_time, tz);
+                    }
+                    serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".into())
                 })
         }
         "calendar_create_event" => {

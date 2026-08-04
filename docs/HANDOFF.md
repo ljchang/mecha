@@ -528,6 +528,30 @@ staged message released through the outbox into the inbox.
   `/messages/{id}/reply` for threading, `$search` instead of a `$filter`
   that 400s beside `$orderby`, and comma-splitting `to`.
 
+**Three more found by using it (2026-08-04, after the mail work landed):**
+
+- **Sessions died on context overflow with no warning.** `compact_at_tokens`
+  was unset, so compaction never ran at all; a run hit 38869 tokens against
+  llama-server's `-c 32768` and the raw `exceed_context_size_error` ended it.
+  Now: `context_window` on `ProviderConfig`, a threshold derived from it at
+  two thirds, a TUI fuel gauge that colours at 75% and 90%, and
+  **recovery** — the loop recognises the refusal across backends and
+  compacts and retries the turn once rather than dying.
+- **Every calendar answer was four hours off.** Graph and Google return UTC,
+  the DGX runs UTC, and the model reported UTC — so a noon meeting was
+  announced at 4pm, internally consistent and therefore invisible.
+  `[agent] timezone` (IANA, not an offset) now rides in the system prompt,
+  and `MECHA_TZ` reaches the mail servers so they render event times in it.
+  Introduced by the date fix an hour earlier, which gave the model the date
+  and not the zone.
+- **It asked for an address it could have looked up.** Told to write to
+  Grace, it checked pkg, found no email, and asked — holding `gmail_search`
+  and `outlook_search` the whole time. Prompt guidance added; her address is
+  now in pkg too, along with two aliases and a flagged duplicate (pkg had
+  her as two person nodes). Residual: the model then drafted from personal
+  Gmail for a work colleague despite the prompt saying otherwise — the
+  known instruction-following gap, not a wiring one.
+
 **Two bugs live testing found in mecha itself, both now fixed with tests:**
 
 - **The interlock was defeated by batching.** Every call in a turn was

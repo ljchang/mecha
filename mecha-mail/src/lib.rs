@@ -16,6 +16,7 @@ pub mod http;
 pub mod mcp;
 pub mod microsoft;
 pub mod text;
+pub mod time;
 pub mod token;
 pub mod types;
 

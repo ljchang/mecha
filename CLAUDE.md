@@ -303,6 +303,41 @@ default through the layer to catch it.
 - Tool order in the registry is stable (`BTreeMap`) because the tool list is the
   front of the cached prefix — reordering it invalidates the cache every turn.
 
+## Context, and knowing how much is left
+
+`[providers.X] context_window` is what the model's context holds — for a
+local server, the `-c` it was started with. Nothing can discover it: a
+provider reports what a prompt *cost*, never what is left. Three things
+depend on it, and without it all three degrade silently:
+
+- **`AgentConfig::compact_at`** derives a compaction threshold (two thirds of
+  the window) when `compact_at_tokens` is unset, which turns compaction from
+  something you must remember to configure into something that works. The
+  fraction leaves a third free because the check happens *between* turns:
+  the next request still has to fit a reply and whatever a burst of parallel
+  tool results adds.
+- **The TUI status line** becomes a fuel gauge — `context 29.3k/32.8k (89%)`,
+  yellow at 75%, red at 90% — instead of a number with nothing to compare to.
+- **Overflow recovery.** A prompt that does not fit is refused outright, and
+  the reactive threshold cannot always prevent it. `is_context_overflow`
+  recognises the refusal across backends by message text (no backend gives it
+  a usable code), and the loop compacts and retries the same turn *once*. A
+  false positive costs one summary; a false negative loses the whole run,
+  which is what used to happen.
+
+If you change the server's `-c`, change `context_window` to match — a stale
+value is worse than none, because the derived threshold trusts it.
+
+## Timezones
+
+`[agent] timezone` is an IANA name (`America/New_York`). The machine runs
+UTC and the model has no clock, so without it every "what's on Thursday" is
+answered four hours off — and wrongly in the worst way, since the times stay
+internally consistent and read as correct. It rides in the system prompt with
+today's date, and the mail servers get it as `MECHA_TZ` in their `[[mcp]]`
+`env` so they render event times in it before the model ever sees them. An
+IANA name rather than an offset, because an offset is wrong twice a year.
+
 ## Compaction
 
 Every turn sends the whole history, so a long enough session stops being able to
