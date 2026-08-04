@@ -632,11 +632,35 @@ log reads as the learning history, and the rule now rides in every new
 run's recorded `RunConfig`. The whole cycle is
 `mecha reflect && mecha learn` — already cron-able.
 
-Still to build, in order: held-out measurement (does a new rule set move the
-intervention rate on reflections it did not train on) → hooks for real-time
-capture → cron-scheduled rumination with counterfactual replay → gated
-proposals. The outbox slots in as the email capture point when it lands; the
-behavior system needed nothing the harness did not already record.
+**`mecha validate` (also 2026-08-04)** is the measurement stage: for each
+followup-triggered reflection it rebuilds the recorded conversation up to
+the moment the user stepped in, asks the probe question twice — with and
+without the current rules — and a judge grades both answers against what the
+intervention established the user wanted. Followups only, deliberately: a
+steer or denial lands mid-run between a call and its result, and probing
+there needs the replay driver to carry the run — that is the rumination
+milestone. Verdicts are judge-graded; read the answers before believing a
+single flip.
+
+**Its first live probe caught a false lesson, which is the system working:**
+the verdict came back "both fail", the source transcript said why — the
+followup ("what number did I ask you to remember?") was a *memory test the
+model passed*, `8675309` recalled perfectly. The reflector had invented a
+lesson from a success, because extraction never showed it what the assistant
+did *next*. Fixed structurally: `Intervention.aftermath` carries the
+assistant's post-intervention response, the reflector is told a satisfied
+message is not a failure, and re-mining the same session now draws nothing.
+The poisoned reflection and its rule were reverted with the reason in the
+store's git log. Two traps re-confirmed on the way: the judge thinking-budget
+(4096 was measured insufficient for these heavier rubrics; validate uses
+16384), and n=1 verdicts meaning nothing until the source is read.
+
+Still to build, in order: `mecha learn --holdout` so validate has a genuine
+held-out set once reflections have volume → hooks for real-time capture →
+cron-scheduled rumination with counterfactual replay (which also extends
+validation to steers and denials) → gated proposals. The outbox slots in as
+the email capture point when it lands; the behavior system needed nothing
+the harness did not already record.
 
 **`pkg` as memory.** Wired, and the design is now settled — see item 3, which
 supersedes the turn-start retrieval idea this paragraph used to propose
