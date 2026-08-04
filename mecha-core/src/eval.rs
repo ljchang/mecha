@@ -720,7 +720,7 @@ impl Judge {
 /// Models wrap JSON in prose and code fences however they like, so locating the
 /// object is the caller's problem. Braces inside strings don't count, or a
 /// `reason` mentioning `{` would truncate the object.
-fn extract_json(text: &str) -> Option<String> {
+pub(crate) fn extract_json(text: &str) -> Option<String> {
     let bytes: Vec<char> = text.chars().collect();
     let start = bytes.iter().position(|&c| c == '{')?;
 

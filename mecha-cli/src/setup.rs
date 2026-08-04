@@ -147,6 +147,19 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         cfg.agent.system_prompt = Some(read_maybe_file(system)?);
         cfg.agent.system_prompt_file = None;
     }
+    // Learned rules ride at the end of the system prompt — still inside the
+    // cached prefix, and they only change at consolidation time. Read-only:
+    // an agent that has learned nothing yet must not create state by starting.
+    if !opts.no_learned_rules {
+        if let Some(store) = mecha_core::learning::LearningStore::open_existing_default() {
+            if let Some(block) = store.rules_prompt_block()? {
+                let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
+                cfg.agent.system_prompt =
+                    Some(if base.is_empty() { block } else { format!("{base}\n\n{block}") });
+                cfg.agent.system_prompt_file = None;
+            }
+        }
+    }
     if !opts.tools.is_empty() {
         cfg.tools.enabled = opts.tools.clone();
     }
