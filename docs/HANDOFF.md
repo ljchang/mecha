@@ -18,7 +18,7 @@ First thing to run in a fresh context:
 cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
-Expect **196 core + 26 CLI unit tests, 13 integration tests, 1 doctest** — 236,
+Expect **198 core + 26 CLI unit tests, 13 integration tests, 1 doctest** — 238,
 no warnings. The integration tests need docker (with `debian:stable-slim` and
 `python:3-slim` local) and `python3`; without them they skip and say so. In CI,
 set `MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of
@@ -54,7 +54,7 @@ A working agent harness, used and measured rather than just compiled.
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
-| Learning | `reflect` → `learn` (`--holdout`) → `validate`; a git-backed file store under `~/.mecha/learning` |
+| Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning` |
 | Eval | 36 cases, 17 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks |
 
 `cargo clippy --all-targets` is clean and should stay that way.
@@ -92,10 +92,34 @@ Running on the DGX Spark (GB10, aarch64, 128GB unified):
 
 | Port | Model | Notes |
 |---|---|---|
-| 8080 | Qwen3.6-35B-A3B | MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`) |
-| 8081 | gemma-4-E4B | separate `mtp-*.gguf` draft — **was down at last check** |
-| 8082 | gemma-4-26B-A4B | separate `mtp-*.gguf` draft; used as the eval judge |
+| 8080 | Qwen3.6-35B-A3B | MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`) — restarted 2026-08-04, healthy |
+| 8081 | gemma-4-E4B | separate `mtp-*.gguf` draft — **down**, nothing currently depends on it |
+| 8082 | gemma-4-26B-A4B | separate `mtp-*.gguf` draft; the eval judge and nightly validate's judge — restarted 2026-08-04, healthy |
 | 8888 | SearXNG | Docker, JSON format enabled |
+
+Both llama-servers were found dead on 2026-08-04 (machine likely rebooted;
+ollama's own llama-server was running and is *not* ours) and were restarted
+with the scripts below. **The nightly timer depends on 8080** — its health
+check defers the whole night when it is down, safely, but a permanently dead
+server means no learning happens; check `~/.mecha/learning/logs/` if
+mornings look quiet.
+
+### Standing machinery now installed on this machine
+
+- **Reflect-on-close**: `~/.mecha/config.toml` carries a `session_end` hook
+  running `nohup mecha reflect -p local ... &` — every recorded session is
+  mined minutes after it closes.
+- **Nightly rumination**: `mecha-ruminate.timer` (systemd user, 03:30,
+  `Persistent=true`, linger on) runs `scripts/ruminate.sh`: reflect →
+  validate `--unprocessed-only` (judge: gemma26) → learn `--holdout 0.25
+  --propose`. Logs land in `~/.mecha/learning/logs/<date>.log`; pending
+  proposals wait in `mecha proposals`.
+- **Both consume `~/.cargo/bin/mecha`**, not the repo build — reinstall
+  (`cp target/release/mecha ~/.cargo/bin/`) after changing anything in the
+  learning path, or the automation runs stale behaviour.
+- The learning store (`~/.mecha/learning`) currently holds **zero live
+  rules** — the one early rule was reverted with its poisoned reflection —
+  so everything from here accumulates from real usage through the gate.
 
 Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
 `start-gemma26.sh`). Config is `~/.mecha/config.toml` (providers `local`,
@@ -1167,6 +1191,29 @@ that could have destroyed the task silently.
 ## Traps already hit
 
 Recorded so they aren't hit twice.
+
+**The learning system** (all found by pre-push review or by running it)
+
+- **A timeout that starts after the blocking part is not a timeout.** The
+  hook runner wrote the JSON payload to the child's stdin *before* entering
+  the timed wait — so a hook that never read stdin blocked `write_all`
+  forever once the payload outgrew the pipe buffer, and the run hung with
+  the timeout never started. Wrap the write and the wait in one timed
+  future. The general shape: audit what sits *outside* every timeout.
+- **A "did it repeat the call" scan must start at the decision point.** The
+  denial verdict scanned the whole replayed trajectory, and the faithful
+  prefix legitimately contains whatever the recording contains — including,
+  sometimes, an earlier instance of the very call later denied.
+- **An unattended generator with a rejection path is a loop.** Gate-rejected
+  reflections return to the pool by design, so an unchanged pool re-argued
+  the same batch every night. Deduplicate on the exact batch, not on time.
+- **A field added to `Config` but not `ConfigLayer` is a parse error that
+  every unit test misses** — see the hooks section; there is a standing
+  round-trip guard now.
+- **Interactive-mode manners become data loss unattended.** Reflect printed
+  a provider error and marked the session mined anyway; fine with a human
+  watching, silent permanent loss from a hook. Mining is all-or-nothing per
+  session now.
 
 **Measuring**
 
