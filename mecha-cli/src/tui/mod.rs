@@ -350,6 +350,8 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
 
     if let Some(s) = &session {
         println!("session {} · {}", s.meta.id, crate::render::format_usage(&app.usage));
+        let cx = live.agent.context();
+        cx.hooks.session_end(&s.meta.id, &s.path, &cx.tools.workspace).await;
     }
     result
 }

@@ -177,6 +177,10 @@ impl Tool for Subagent {
             // A subagent inherits the caller's phase: delegating from a
             // planning run must not be the way to get a write executed.
             phase: self.agent.context().phase,
+            // The child agent's own hooks — the front-end that installs hooks
+            // on the parent must install them on each child too (setup does),
+            // or delegating becomes the way around a pre_tool policy.
+            hooks: Arc::clone(&self.agent.context().hooks),
             // Steering is addressed to the parent. The child was given a
             // self-contained task and has no conversation to redirect.
             queued_input: None,

@@ -80,6 +80,11 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         security: cfg.security.clone(),
     };
 
+    // Validated even when --no-hooks skips installing them: a typo in a hook's
+    // event name should fail on every start, not only on the runs that use it.
+    let hooks = mecha_core::hooks::HookSet::from_config(&cfg.hooks)?;
+    let hooks = (!opts.no_hooks && !hooks.is_empty()).then(|| Arc::new(hooks));
+
     // Subagents are built from the same tool pool but get their own registry —
     // an allowlist, not an inheritance. Do this before the parent takes
     // ownership of the registry.
@@ -87,11 +92,12 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     for profile in &cfg.subagents {
         // A profile may point at a different provider entry entirely.
         let (_, child_provider_cfg) = cfg.provider(profile.provider.as_deref())?;
-        let child = build_subagent(profile, &registry, &cfg, child_provider_cfg, &ctx)?;
+        let child =
+            build_subagent(profile, &registry, &cfg, child_provider_cfg, &ctx, hooks.as_ref())?;
         registry.insert(Arc::new(child));
     }
 
-    let agent = Agent::new(
+    let mut agent = Agent::new(
         provider,
         registry,
         tools.approver,
@@ -100,6 +106,10 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         Some(model.clone()),
     )?
     .with_pricing(provider_cfg.pricing());
+
+    if let Some(hooks) = hooks {
+        agent.set_hooks(hooks);
+    }
 
     Ok(Prepared {
         agent,
@@ -290,6 +300,7 @@ fn build_subagent(
     cfg: &Config,
     provider_cfg: &mecha_core::config::ProviderConfig,
     ctx: &ToolCtx,
+    hooks: Option<&Arc<mecha_core::hooks::HookSet>>,
 ) -> Result<Subagent> {
     let mut child_registry = Registry::new();
     for wanted in &profile.tools {
@@ -318,7 +329,7 @@ fn build_subagent(
     child_cfg.system_prompt = profile.system_prompt.clone();
     child_cfg.system_prompt_file = None;
 
-    let child = Agent::new(
+    let mut child = Agent::new(
         mecha_core::provider::build(provider_cfg)?,
         child_registry,
         Arc::new(ModeApprover { mode }),
@@ -331,6 +342,11 @@ fn build_subagent(
         // Profile model wins; otherwise the child uses its provider's default.
         profile.model.clone().or_else(|| provider_cfg.model.clone()),
     )?;
+    // The parent's hooks apply to the child too, or delegating would be the
+    // way around a pre_tool policy.
+    if let Some(hooks) = hooks {
+        child.set_hooks(Arc::clone(hooks));
+    }
 
     Ok(Subagent::new(profile.clone(), Arc::new(child)))
 }

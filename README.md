@@ -98,7 +98,48 @@ shell_timeout_secs = 120
 [[mcp]]
 name = "pkg"
 command = "~/Github/personalized_knowledge_graph/target/release/pkg-mcp"
+
+[[hook]]
+event = "pre_tool"                    # pre_tool | post_tool | session_end
+tools = ["shell"]                     # empty means every tool
+command = "~/.mecha/hooks/no-force-push.sh"
 ```
+
+## Hooks
+
+Commands that attach to the loop at lifecycle points, so policy, redaction and
+logging do not have to be patched into `agent.rs`. Each hook runs via `sh -c`
+as you, in the workspace, with the event as one JSON object on stdin.
+
+| Event | Payload | Can it decide? |
+|---|---|---|
+| `pre_tool` | `tool`, `input` | Yes — exit 2 denies the call |
+| `post_tool` | `tool`, `input`, `is_error`, `content` (first 4000 chars) | No |
+| `session_end` | `session_id`, `path` | No |
+
+Four rules, each of which is a bug if forgotten:
+
+- **`pre_tool` fails closed.** Exit 0 allows, exit 2 denies with the hook's
+  output as the reason. *Every other outcome also denies* — an undefined exit
+  code, a crash, a timeout (10s by default, `timeout_secs` to change it). A
+  policy hook that cannot run and silently allows is the same mistake as a
+  sandbox that degrades to unconfined.
+- **Hooks run before the human, and after the interlock.** A `pre_tool` denial
+  never reaches the approver: mechanical policy is cheaper than an
+  interruption, and a hook cannot be talked into clicking yes. The trifecta
+  interlock still sits in front of everything — a hook can narrow policy, never
+  loosen security.
+- **Observers cannot be load-bearing.** `post_tool` and `session_end` failures
+  are logged and swallowed. If something must be able to stop a call, it is a
+  `pre_tool` hook.
+- **Subagents inherit the parent's hooks**, or delegating would be the way
+  around a `pre_tool` policy.
+
+A typo'd event name is a startup error rather than a warning, and it is checked
+even under `--no-hooks` — a policy hook that never fires because of a spelling
+should fail on every start, not only on the runs that needed it. `mecha eval`
+forces hooks off for the same reason it forces MCP off: a scorecard shaped by
+this machine's local scripts is not comparable to anyone else's.
 
 ## Tools
 

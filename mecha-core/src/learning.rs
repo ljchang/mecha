@@ -881,6 +881,24 @@ mod tests {
     }
 
     #[test]
+    fn a_hook_denial_is_not_a_user_correction() {
+        // A machine denying a call is policy, not a person stepping in.
+        // Learning from it would teach mecha rules it was already obeying —
+        // and the only thing keeping the two apart is the wording, so this
+        // test is really pinning `agent.rs`'s two denial strings apart.
+        let messages = vec![
+            Message::user("clean up"),
+            Message::assistant(vec![tool_use("t1")]),
+            Message::tool_results(vec![result(
+                "t1",
+                "Blocked by a hook: not in this workspace",
+                true,
+            )]),
+        ];
+        assert!(extract_interventions(&messages).is_empty());
+    }
+
+    #[test]
     fn an_ordinary_tool_error_is_not_an_intervention() {
         let messages = vec![
             Message::user("read it"),

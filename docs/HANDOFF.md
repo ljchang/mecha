@@ -18,7 +18,7 @@ First thing to run in a fresh context:
 cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
-Expect **149 core + 20 CLI unit tests, 13 integration tests, 1 doctest** — 183,
+Expect **183 core + 24 CLI unit tests, 13 integration tests, 1 doctest** — 221,
 no warnings. The integration tests need docker (with `debian:stable-slim` and
 `python:3-slim` local) and `python3`; without them they skip and say so. In CI,
 set `MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of
@@ -52,7 +52,9 @@ A working agent harness, used and measured rather than just compiled.
 | Interfaces | `run`, `chat`, `tui`, `batch`, `eval` |
 | TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
-| Replay | `replay.rs` extracts and diffs trajectories (pure half only — no driver yet) |
+| Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
+| Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
+| Learning | `reflect` → `learn` (`--holdout`) → `validate`; a git-backed file store under `~/.mecha/learning` |
 | Eval | 36 cases, 17 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks |
 
 `cargo clippy --all-targets` is clean and should stay that way.
@@ -389,8 +391,8 @@ so they do not jump the queue ahead of the outbox.
 
 ### 4. Smaller, high-value items
 
-- **Hooks** — pre-tool / post-tool / session lifecycle. Lets policy, redaction,
-  and logging attach without touching the loop.
+- ~~**Hooks**~~ — built 2026-08-04. See the Reflexion section below for the
+  decisions; the first consumer still to write is session-end distillation.
 - **Structured-output abstraction** — a `structured_output` knob on `Provider`
   that each backend spells natively (GBNF for llama.cpp, `guided_json` for
   vLLM, `output_config.format` for Anthropic). Don't hardcode GBNF.
@@ -655,12 +657,37 @@ store's git log. Two traps re-confirmed on the way: the judge thinking-budget
 (4096 was measured insufficient for these heavier rubrics; validate uses
 16384), and n=1 verdicts meaning nothing until the source is read.
 
-Still to build, in order: `mecha learn --holdout` so validate has a genuine
-held-out set once reflections have volume → hooks for real-time capture →
-cron-scheduled rumination with counterfactual replay (which also extends
-validation to steers and denials) → gated proposals. The outbox slots in as
-the email capture point when it lands; the behavior system needed nothing
-the harness did not already record.
+**`mecha learn --holdout` and hooks (2026-08-04), the next two items:**
+
+- **`--holdout <fraction>`** keeps every k-th unprocessed reflection out of
+  the pass, so `mecha validate --unprocessed-only` probes rules against data
+  they never saw. Deterministic by id rather than random, because a
+  measurement set that changes between runs measures nothing; held-out
+  reflections simply stay unprocessed, so there is nothing to undo. The stride
+  has a **floor of 2**: a fraction near 1 rounds to a stride of 1, which would
+  hold out *everything* and leave a pass that learns from nothing while
+  looking like it ran. Unit-tested, including that the order the store returns
+  reflections in does not change the set.
+- **Hooks** (`hooks.rs`, `[[hook]]`) — `pre_tool`, `post_tool`, `session_end`,
+  each a shell command taking the event as JSON on stdin. The design notes are
+  in CLAUDE.md; the two that were decisions rather than mechanics: `pre_tool`
+  sits **between the interlock and the approver** (a hook narrows policy,
+  never loosens security, and cannot be talked into clicking yes), and it
+  **fails closed** on any outcome the contract does not define, including a
+  timeout. Subagents inherit the parent's set, `mecha eval` forces it off, and
+  an unknown event name is a startup error even under `--no-hooks`.
+- A trap found while wiring it: a hook denial says **"Blocked by a hook:"**
+  where the approver says **"Denied by the user:"**, and the learning miner
+  keys on the second. Machine policy is not a user correction — without that
+  split, every hook denial would become a reflection teaching mecha a rule it
+  was already obeying. There is now a test on each side of it.
+
+Still to build, in order: session-end distillation as the first real hook
+consumer → cron-scheduled rumination with counterfactual replay (which also
+extends validation to steers and denials, the two `mecha validate`
+deliberately does not probe) → gated proposals. The outbox slots in as the
+email capture point when it lands; the behavior system needed nothing the
+harness did not already record.
 
 **`pkg` as memory.** Wired, and the design is now settled — see item 3, which
 supersedes the turn-start retrieval idea this paragraph used to propose

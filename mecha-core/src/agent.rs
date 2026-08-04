@@ -166,6 +166,10 @@ pub struct RunContext {
     /// tools it asked for. Interrupting sooner would mean discarding a turn the
     /// user already paid for.
     pub queued_input: Option<Arc<Mutex<VecDeque<String>>>>,
+    /// Lifecycle hooks. `pre_tool` runs after the interlock and before the
+    /// approver — mechanical policy is cheaper than an interruption, and a
+    /// hook cannot be talked into clicking yes. Empty by default and free.
+    pub hooks: Arc<crate::hooks::HookSet>,
 }
 
 /// Per-run ceilings. Every `None` falls through to the agent's own config, so a
@@ -193,6 +197,7 @@ impl RunContext {
             phase: Phase::default(),
             compact_at_tokens: None,
             queued_input: None,
+            hooks: Arc::new(crate::hooks::HookSet::default()),
         }
     }
 
@@ -231,6 +236,11 @@ impl RunContext {
 
     pub fn with_cancel(mut self, token: CancellationToken) -> Self {
         self.cancel = Some(token);
+        self
+    }
+
+    pub fn with_hooks(mut self, hooks: Arc<crate::hooks::HookSet>) -> Self {
+        self.hooks = hooks;
         self
     }
 
@@ -523,6 +533,12 @@ impl Agent {
     /// The provider's own id (`anthropic`, `local`, …), for display.
     pub fn provider_id(&self) -> &str {
         self.provider.id()
+    }
+
+    /// Install lifecycle hooks on the agent's own context. Copy-on-write like
+    /// [`Agent::set_approver`], and for the same reason.
+    pub fn set_hooks(&mut self, hooks: Arc<crate::hooks::HookSet>) {
+        Arc::make_mut(&mut self.cx).hooks = hooks;
     }
 
     /// Swap the approver the agent's own context uses.
@@ -1313,6 +1329,34 @@ impl Agent {
                 }
             }
 
+            // Hooks decide before the human is asked: a mechanical denial is
+            // cheaper than an interruption, and a hook cannot be talked into
+            // clicking yes. The interlock above still ran first — a hook can
+            // narrow policy, never loosen security.
+            if cx.hooks.watches_tools() {
+                if let crate::hooks::HookVerdict::Deny(reason) =
+                    cx.hooks.pre_tool(name, input, &cx.tools.workspace).await
+                {
+                    emit(
+                        events,
+                        AgentEvent::ToolDenied { name: name.clone(), reason: reason.clone() },
+                    );
+                    results[i] = Some(Block::ToolResult {
+                        tool_use_id: id.clone(),
+                        content: format!("Blocked by a hook: {reason}"),
+                        is_error: true,
+                    });
+                    trace.push(ToolCallTrace {
+                        name: name.clone(),
+                        input: input.clone(),
+                        is_error: true,
+                        denied: true,
+                        unknown: false,
+                    });
+                    continue;
+                }
+            }
+
             if !tool.read_only() || force_approval {
                 if let Decision::Deny(reason) = cx.approver.approve(tool.as_ref(), input).await {
                     emit(
@@ -1374,6 +1418,12 @@ impl Agent {
                         out.content
                     );
                 }
+            }
+
+            if cx.hooks.watches_tools() {
+                cx.hooks
+                    .post_tool(&name, &calls[i].2, out.is_error, &out.content, &cx.tools.workspace)
+                    .await;
             }
 
             trace.push(ToolCallTrace {
@@ -1621,6 +1671,117 @@ mod tests {
 
         assert!(outcome.exhausted);
         assert_eq!(outcome.turns, 3);
+    }
+
+    // --- hooks ---
+
+    /// Records whether it was actually executed. A flag rather than a panic,
+    /// because the same tool has to serve the negative control — and a panic
+    /// inside a tool unwinds through the test instead of failing an assertion.
+    struct WatchedTool(Arc<std::sync::atomic::AtomicBool>);
+    #[async_trait]
+    impl Tool for WatchedTool {
+        fn name(&self) -> &str { "watched" }
+        fn description(&self) -> &str { "Records that it ran." }
+        fn input_schema(&self) -> Value { json!({"type": "object"}) }
+        fn read_only(&self) -> bool { true }
+        async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolOutput::ok("ran"))
+        }
+    }
+
+    fn hooked(command: &str, tools: Vec<String>) -> Arc<crate::hooks::HookSet> {
+        Arc::new(
+            crate::hooks::HookSet::from_config(&[crate::config::HookConfig {
+                event: "pre_tool".into(),
+                command: command.into(),
+                tools,
+                timeout_secs: Some(5),
+            }])
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_pre_tool_denial_stops_dispatch_and_the_model_recovers() {
+        let script = || {
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "watched".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("understood")], StopReason::EndTurn),
+            ]
+        };
+
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mut agent, _) = agent_with(script(), PermissionMode::Allow);
+        agent.registry.insert(Arc::new(WatchedTool(Arc::clone(&ran))));
+        agent.set_hooks(hooked("echo not in this workspace; exit 2", Vec::new()));
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst), "the tool ran anyway");
+        assert_eq!(outcome.text, "understood");
+        match &convo.messages[2].content[0] {
+            Block::ToolResult { content, is_error, .. } => {
+                assert!(is_error);
+                assert_eq!(content, "Blocked by a hook: not in this workspace");
+            }
+            other => panic!("expected an error tool result, got {other:?}"),
+        }
+        let call = outcome.tool_calls.iter().find(|c| c.name == "watched").unwrap();
+        assert!(call.denied);
+
+        // The same script with no hooks installed reaches the tool — which is
+        // what makes the assertion above about the hook rather than the script.
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mut agent, _) = agent_with(script(), PermissionMode::Allow);
+        agent.registry.insert(Arc::new(WatchedTool(Arc::clone(&ran))));
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(ran.load(std::sync::atomic::Ordering::SeqCst), "the control never ran the tool");
+    }
+
+    #[tokio::test]
+    async fn a_hook_decides_before_the_human_is_asked() {
+        // Both gates would deny. The recorded reason says which one ran first,
+        // and it must be the hook: a mechanical denial is cheaper than an
+        // interruption, and a hook cannot be talked into clicking yes.
+        let (mut agent, _) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "fs_write".into(),
+                        input: json!({"path": "x"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("ok")], StopReason::EndTurn),
+            ],
+            PermissionMode::ReadOnly,
+        );
+        agent.set_hooks(hooked("echo policy says no; exit 2", vec!["fs_write".into()]));
+
+        let mut convo = Conversation::from(vec![Message::user("write it")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        match &convo.messages[2].content[0] {
+            Block::ToolResult { content, .. } => {
+                assert_eq!(content, "Blocked by a hook: policy says no");
+                // And not the approver's wording, which the learning miner
+                // reads as a user correction.
+                assert!(!content.starts_with("Denied by the user:"));
+            }
+            other => panic!("expected an error tool result, got {other:?}"),
+        }
     }
 
     // --- lethal trifecta ---

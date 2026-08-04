@@ -136,6 +136,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     if let Some(s) = &session {
         println!("\nsession {} · {}", s.meta.id, render::format_usage(&total));
+        let cx = prepared.agent.context();
+        cx.hooks.session_end(&s.meta.id, &s.path, &cx.tools.workspace).await;
     }
     Ok(())
 }
