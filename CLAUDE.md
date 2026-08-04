@@ -174,6 +174,33 @@ On Ubuntu 23.10+, `bwrap` fails even when installed and
 an AppArmor profile. `mecha tools` prints the active sandbox, and
 `mecha tools --json` prints each tool's capabilities.
 
+## mecha-google
+
+A third crate, extracted from flowmail: `mecha-google/` is a **library plus a
+thin MCP binary**. The library (Gmail + Google Calendar v3 clients, desktop
+OAuth with PKCE and a loopback listener, the token lifecycle) is what a GUI
+would depend on directly; the binary serves those clients as MCP tools over
+stdio, which is how mecha consumes them — no mecha-core or mecha-cli code
+knows Google exists, only `~/.mecha/config.toml`.
+
+What flowmail did not have and this crate does: **the token lifecycle in
+Rust** (flowmail kept storage, refresh, and retry-on-401 in its JS frontend)
+— `oauth.json` at mode 0600, refresh ahead of expiry behind a lock so two
+concurrent tool calls cannot race two refreshes, one forced refresh and
+retry on a 401; **retry with backoff** on 429/5xx; and an **HTML→text
+fallback**, because flowmail took only the `text/plain` part and an
+HTML-only email reached the model as an empty body.
+
+The capability labeling is the part worth not re-litigating: **reads are
+untrusted sources but not send sinks.** Mail bodies are other people's words,
+so config forces `untrusted_input` exactly as it does for pkg — reading mail
+arms the interlock. But a search query travels only to googleapis.com, which
+already custodies the mailbox, so reads carry `readOnlyHint` and *not*
+`openWorldHint`; that is the difference from `http_fetch`, whose payload can
+reach any host. Sends and calendar writes do reach third parties (recipients,
+invitees), carry `openWorldHint`, and are named in `[outbox] tools`, so they
+stage rather than deliver.
+
 ## Hooks
 
 `[[hook]]` commands run at `pre_tool`, `post_tool` and `session_end`, with the
