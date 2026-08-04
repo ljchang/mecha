@@ -1199,6 +1199,29 @@ impl Agent {
         let mut approved = Vec::new();
         let mut results: Vec<Option<Block>> = vec![None; calls.len()];
 
+        // What this turn will arm, gated against *before* any of it runs.
+        //
+        // Every call in a turn is gated in this loop, but `taint` is only
+        // updated after the whole batch executes — so without this, a model
+        // that reads a secret and sends it **in the same turn** sees a clean
+        // slate at both gates and the interlock never fires. That is the
+        // whole guarantee, defeated by batching. Found by running it: an
+        // outlook read and an `http_fetch` in one turn went through.
+        //
+        // Provenance (`ToolOutput::external`) cannot be known before the
+        // call, so the declared `untrusted_input` capability stands in for
+        // it here. That is deliberately conservative: this value only ever
+        // *blocks* a send, never marks the conversation — the real taint is
+        // still recorded from what actually came back.
+        let mut turn_taint = *taint;
+        for (_, name, _) in &calls {
+            if let Some(tool) = self.registry.get(name) {
+                let caps = tool.capabilities();
+                turn_taint.private |= caps.private_data;
+                turn_taint.untrusted |= caps.untrusted_input;
+            }
+        }
+
         for (i, (id, name, input)) in calls.iter().enumerate() {
             emit(
                 events,
@@ -1296,8 +1319,10 @@ impl Agent {
             // trifecta interlock stops an injection driving exfiltration; the
             // leak guard stops private data leaving at all. The second is off
             // by default because it breaks ordinary work.
-            let injection_risk = taint.trifecta_armed();
-            let leak_risk = cx.tools.security.block_sends_after_private && taint.private;
+            // `turn_taint`, not `taint`: see its definition — a send batched
+            // alongside the read that arms it must not slip through.
+            let injection_risk = turn_taint.trifecta_armed();
+            let leak_risk = cx.tools.security.block_sends_after_private && turn_taint.private;
 
             // A routed call skips the interlock: staging sends nothing — the
             // draft lands in a local file, and release requires the user to
@@ -3008,6 +3033,86 @@ mod tests {
         assert!(items[0].taint.trifecta_armed(), "the item must carry the armed snapshot");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Batching must not defeat the interlock.
+    ///
+    /// Taint is updated only after a turn's calls execute, so a model that
+    /// reads private data and sends in the *same* turn used to see a clean
+    /// slate at both gates. Found live: an Outlook read and an `http_fetch`
+    /// in one turn both went through. Fails on the old behaviour.
+    #[tokio::test]
+    async fn a_send_batched_with_the_read_that_arms_it_is_refused() {
+        struct PrivateRead;
+        #[async_trait]
+        impl Tool for PrivateRead {
+            fn name(&self) -> &str { "read_secret" }
+            fn description(&self) -> &str { "Read the user's private data." }
+            fn input_schema(&self) -> Value { json!({"type": "object"}) }
+            fn read_only(&self) -> bool { true }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                crate::tool::Capabilities::default().private()
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("hunter2"))
+            }
+        }
+        struct Exfil;
+        #[async_trait]
+        impl Tool for Exfil {
+            fn name(&self) -> &str { "exfil" }
+            fn description(&self) -> &str { "Send data somewhere." }
+            fn input_schema(&self) -> Value { json!({"type": "object"}) }
+            fn read_only(&self) -> bool { true }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                crate::tool::Capabilities::default().sends()
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                panic!("the interlock must refuse a send batched with a private read");
+            }
+        }
+
+        let (mut agent, _) = agent_with(
+            vec![
+                // Both calls in ONE assistant turn — the batching that used
+                // to slip past.
+                assistant(
+                    vec![
+                        Block::ToolUse {
+                            id: "t1".into(),
+                            name: "read_secret".into(),
+                            input: json!({}),
+                        },
+                        Block::ToolUse {
+                            id: "t2".into(),
+                            name: "exfil".into(),
+                            input: json!({}),
+                        },
+                    ],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("blocked")], StopReason::EndTurn),
+            ],
+            PermissionMode::ReadOnly,
+        );
+        agent.registry.insert(Arc::new(PrivateRead));
+        agent.registry.insert(Arc::new(Exfil));
+
+        // Untrusted content is already in context — the realistic setup: a
+        // hostile page read on an earlier turn is now telling the model to
+        // fetch a secret and send it.
+        let mut convo = Conversation::resumed(
+            vec![Message::user("do it")],
+            Taint { private: false, untrusted: true },
+        );
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.blocked_sends, 1, "the batched send must be refused");
+        let exfil = outcome.tool_calls.iter().find(|c| c.name == "exfil").unwrap();
+        assert!(exfil.denied);
+        // The read itself is fine — only the send is refused.
+        let read = outcome.tool_calls.iter().find(|c| c.name == "read_secret").unwrap();
+        assert!(!read.denied);
     }
 
     /// An unrouted send with the trifecta armed still hits the interlock —

@@ -13,7 +13,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::types::GoogleError;
+use crate::types::MailError;
 
 /// The loopback port mecha-google listens on for the OAuth redirect. Google
 /// Desktop-type clients accept any loopback port; this one just needs to not
@@ -99,7 +99,7 @@ pub async fn exchange_code(
     code: &str,
     code_verifier: &str,
     client: &reqwest::Client,
-) -> Result<OAuthTokens, GoogleError> {
+) -> Result<OAuthTokens, MailError> {
     let mut params: Vec<(&str, &str)> = vec![
         ("grant_type", "authorization_code"),
         ("code", code),
@@ -114,7 +114,7 @@ pub async fn exchange_code(
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        return Err(GoogleError::ApiError {
+        return Err(MailError::ApiError {
             status,
             message: extract_token_error_description(&body),
         });
@@ -128,7 +128,7 @@ pub async fn refresh_token(
     config: &OAuthConfig,
     refresh_tok: &str,
     client: &reqwest::Client,
-) -> Result<OAuthTokens, GoogleError> {
+) -> Result<OAuthTokens, MailError> {
     let mut params: Vec<(&str, &str)> = vec![
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_tok),
@@ -141,7 +141,7 @@ pub async fn refresh_token(
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        return Err(GoogleError::ApiError {
+        return Err(MailError::ApiError {
             status,
             message: extract_token_error_description(&body),
         });
@@ -152,7 +152,7 @@ pub async fn refresh_token(
     Ok(parse_token_response(resp.json().await?, Some(refresh_tok)))
 }
 
-fn parse_token_response(json: serde_json::Value, prior_refresh: Option<&str>) -> OAuthTokens {
+pub fn parse_token_response(json: serde_json::Value, prior_refresh: Option<&str>) -> OAuthTokens {
     let expires_in = json["expires_in"].as_i64().unwrap_or(3600);
     OAuthTokens {
         access_token: json["access_token"].as_str().unwrap_or_default().to_string(),
@@ -194,16 +194,16 @@ fn extract_token_error_description(body: &str) -> String {
 /// Returns the authorization code and state from the callback query params.
 /// Times out after 120 seconds — a human is reading a consent screen, and
 /// flowmail's 30s regularly lost the race to a careful reader.
-pub async fn wait_for_oauth_redirect(port: u16) -> Result<(String, String), GoogleError> {
+pub async fn wait_for_oauth_redirect(port: u16) -> Result<(String, String), MailError> {
     let addr = format!("127.0.0.1:{port}");
     let server =
-        tiny_http::Server::http(&addr).map_err(|e| GoogleError::AuthError(e.to_string()))?;
+        tiny_http::Server::http(&addr).map_err(|e| MailError::AuthError(e.to_string()))?;
 
     let request = server
         .recv_timeout(std::time::Duration::from_secs(120))
-        .map_err(|e| GoogleError::AuthError(format!("Failed to receive redirect: {e}")))?
+        .map_err(|e| MailError::AuthError(format!("Failed to receive redirect: {e}")))?
         .ok_or_else(|| {
-            GoogleError::AuthError(
+            MailError::AuthError(
                 "OAuth timed out — no redirect within 120 seconds. Run `auth` again.".to_string(),
             )
         })?;
@@ -212,7 +212,7 @@ pub async fn wait_for_oauth_redirect(port: u16) -> Result<(String, String), Goog
     let query = url
         .split('?')
         .nth(1)
-        .ok_or_else(|| GoogleError::AuthError("No query parameters in redirect".to_string()))?;
+        .ok_or_else(|| MailError::AuthError("No query parameters in redirect".to_string()))?;
 
     let mut code = None;
     let mut state = None;
@@ -244,10 +244,10 @@ pub async fn wait_for_oauth_redirect(port: u16) -> Result<(String, String), Goog
 
     if let Some(err) = error {
         let msg = error_description.unwrap_or(err);
-        return Err(GoogleError::AuthError(format!("OAuth error: {msg}")));
+        return Err(MailError::AuthError(format!("OAuth error: {msg}")));
     }
 
-    let code = code.ok_or_else(|| GoogleError::AuthError("No code in redirect".to_string()))?;
+    let code = code.ok_or_else(|| MailError::AuthError("No code in redirect".to_string()))?;
     Ok((code, state.unwrap_or_default()))
 }
 

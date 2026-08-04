@@ -8,9 +8,9 @@
 
 use serde_json::{json, Value};
 
-use crate::gmail::urlencode;
+use crate::google::gmail::urlencode;
 use crate::http::send_with_retry;
-use crate::types::GoogleError;
+use crate::types::MailError;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Calendar {
@@ -74,7 +74,7 @@ impl CalendarProvider {
     /// Calendars the account can at least see. flowmail filtered to
     /// writer/owner because it pushes; we list everything readable and report
     /// the role, so the model knows which calendars a write could target.
-    pub async fn list_calendars(&self) -> Result<Vec<Calendar>, GoogleError> {
+    pub async fn list_calendars(&self) -> Result<Vec<Calendar>, MailError> {
         let resp = send_with_retry(
             self.client
                 .get("https://www.googleapis.com/calendar/v3/users/me/calendarList")
@@ -84,7 +84,7 @@ impl CalendarProvider {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(GoogleError::ApiError { status, message: body });
+            return Err(MailError::ApiError { status, message: body });
         }
 
         let body: Value = resp.json().await?;
@@ -109,7 +109,7 @@ impl CalendarProvider {
         calendar_id: &str,
         time_min: &str,
         time_max: &str,
-    ) -> Result<Vec<CalendarEvent>, GoogleError> {
+    ) -> Result<Vec<CalendarEvent>, MailError> {
         let base_url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events",
             urlencode(calendar_id)
@@ -137,7 +137,7 @@ impl CalendarProvider {
             if !resp.status().is_success() {
                 let status = resp.status().as_u16();
                 let body = resp.text().await.unwrap_or_default();
-                return Err(GoogleError::ApiError { status, message: body });
+                return Err(MailError::ApiError { status, message: body });
             }
 
             let body: Value = resp.json().await?;
@@ -158,7 +158,7 @@ impl CalendarProvider {
         &self,
         calendar_id: &str,
         event: &CreateEventRequest,
-    ) -> Result<CalendarEvent, GoogleError> {
+    ) -> Result<CalendarEvent, MailError> {
         let (start_json, end_json) = if event.all_day {
             // All-day events use "date", not "dateTime".
             (
@@ -200,7 +200,7 @@ impl CalendarProvider {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(GoogleError::ApiError { status, message: body });
+            return Err(MailError::ApiError { status, message: body });
         }
 
         let result: Value = resp.json().await?;
@@ -212,7 +212,7 @@ impl CalendarProvider {
         calendar_id: &str,
         event_id: &str,
         event: &UpdateEventRequest,
-    ) -> Result<CalendarEvent, GoogleError> {
+    ) -> Result<CalendarEvent, MailError> {
         let mut body = json!({});
         if let Some(ref title) = event.title {
             body["summary"] = json!(title);
@@ -257,7 +257,7 @@ impl CalendarProvider {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(GoogleError::ApiError { status, message: body });
+            return Err(MailError::ApiError { status, message: body });
         }
 
         let result: Value = resp.json().await?;
@@ -268,7 +268,7 @@ impl CalendarProvider {
         &self,
         calendar_id: &str,
         event_id: &str,
-    ) -> Result<(), GoogleError> {
+    ) -> Result<(), MailError> {
         let url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
             urlencode(calendar_id),
@@ -283,7 +283,7 @@ impl CalendarProvider {
             return Ok(());
         }
         let body = resp.text().await.unwrap_or_default();
-        Err(GoogleError::ApiError { status, message: body })
+        Err(MailError::ApiError { status, message: body })
     }
 }
 

@@ -1,20 +1,26 @@
 [package]
-name = "mecha-google"
-description = "Gmail and Google Calendar client, extracted from flowmail, with a stdio MCP server on top."
+name = "mecha-mail"
+description = "Gmail, Outlook, and their calendars — extracted from flowmail — with stdio MCP servers on top."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# The library is the piece a future flowmail depends on directly; the binary
-# is the MCP face mecha (or any MCP client) connects to.
+# The library is the piece a future flowmail depends on directly; each binary
+# is the MCP face for one provider, so a deployment can wire either or both
+# and their credentials stay in separate stores.
 [[bin]]
 name = "mecha-google"
-path = "src/main.rs"
+path = "src/bin/mecha-google.rs"
+
+[[bin]]
+name = "mecha-outlook"
+path = "src/bin/mecha-outlook.rs"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 base64 = "0.22"
 chrono.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
@@ -28,7 +34,7 @@ serde_json.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
 tiny_http = "0.12"
-# io-std on top of the workspace set: stdout is this binary's MCP transport.
+# io-std on top of the workspace set: stdout is each binary's MCP transport.
 tokio = { workspace = true, features = ["io-std"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

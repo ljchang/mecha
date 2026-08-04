@@ -7,7 +7,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use crate::types::GoogleError;
+use crate::types::MailError;
 
 pub fn client() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -41,7 +41,7 @@ pub(crate) fn retry_after(status: Option<u16>, attempt: u32) -> Option<Duration>
 /// attempt; a non-cloneable (streaming) request gets exactly one try.
 pub async fn send_with_retry(
     builder: reqwest::RequestBuilder,
-) -> Result<reqwest::Response, GoogleError> {
+) -> Result<reqwest::Response, MailError> {
     let mut attempt = 0u32;
     loop {
         let this_try = match builder.try_clone() {

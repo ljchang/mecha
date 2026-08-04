@@ -8,7 +8,7 @@ use base64::{engine::general_purpose::URL_SAFE, Engine};
 use serde_json::Value;
 
 use crate::http::send_with_retry;
-use crate::types::{Email, GoogleError};
+use crate::types::{Email, MailError};
 
 #[derive(Clone)]
 pub struct GmailProvider {
@@ -25,7 +25,7 @@ impl GmailProvider {
         format!("Bearer {}", self.access_token)
     }
 
-    async fn get_json(&self, url: &str) -> Result<Value, GoogleError> {
+    async fn get_json(&self, url: &str) -> Result<Value, MailError> {
         let resp = send_with_retry(
             self.client.get(url).header("Authorization", self.auth_header()),
         )
@@ -33,13 +33,13 @@ impl GmailProvider {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(GoogleError::ApiError { status, message: body });
+            return Err(MailError::ApiError { status, message: body });
         }
-        resp.json::<Value>().await.map_err(GoogleError::from)
+        resp.json::<Value>().await.map_err(MailError::from)
     }
 
     /// Fetch a single Gmail message by id, full format.
-    async fn get_message(&self, message_id: &str) -> Result<Value, GoogleError> {
+    async fn get_message(&self, message_id: &str) -> Result<Value, MailError> {
         self.get_json(&format!(
             "https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}?format=full"
         ))
@@ -81,7 +81,7 @@ impl GmailProvider {
 
     /// Search: list matching message ids (cheap), then fetch them
     /// concurrently. `query` is Gmail search syntax (`from:`, `after:`, …).
-    pub async fn search(&self, query: &str, max_results: u32) -> Result<Vec<Email>, GoogleError> {
+    pub async fn search(&self, query: &str, max_results: u32) -> Result<Vec<Email>, MailError> {
         let page_size = max_results.clamp(1, 100);
         let mut message_ids: Vec<String> = Vec::new();
         let mut page_token: Option<String> = None;
@@ -121,7 +121,7 @@ impl GmailProvider {
 
     /// Fetch a whole conversation in one round trip — the payload flowmail
     /// reconstructed from its SQL cache.
-    pub async fn get_thread(&self, thread_id: &str) -> Result<Vec<Email>, GoogleError> {
+    pub async fn get_thread(&self, thread_id: &str) -> Result<Vec<Email>, MailError> {
         let json = self
             .get_json(&format!(
                 "https://gmail.googleapis.com/gmail/v1/users/me/threads/{thread_id}?format=full"
@@ -129,7 +129,7 @@ impl GmailProvider {
             .await?;
         let messages = json["messages"]
             .as_array()
-            .ok_or_else(|| GoogleError::ParseError("thread has no messages array".into()))?;
+            .ok_or_else(|| MailError::ParseError("thread has no messages array".into()))?;
         Ok(messages.iter().map(parse_gmail_message).collect())
     }
 
@@ -145,7 +145,7 @@ impl GmailProvider {
         cc: Option<&str>,
         bcc: Option<&str>,
         in_reply_to: Option<&str>,
-    ) -> Result<String, GoogleError> {
+    ) -> Result<String, MailError> {
         let raw_message = build_gmail_raw_message(to, subject, body, cc, bcc, in_reply_to);
         let encoded = URL_SAFE.encode(raw_message.as_bytes());
 
@@ -165,20 +165,20 @@ impl GmailProvider {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(GoogleError::ApiError { status, message: body });
+            return Err(MailError::ApiError { status, message: body });
         }
         let json: Value = resp.json().await?;
         Ok(json["id"].as_str().unwrap_or_default().to_string())
     }
 
     /// The authenticated account's address — doubles as the auth smoke test.
-    pub async fn profile_address(&self) -> Result<String, GoogleError> {
+    pub async fn profile_address(&self) -> Result<String, MailError> {
         let json =
             self.get_json("https://gmail.googleapis.com/gmail/v1/users/me/profile").await?;
         json["emailAddress"]
             .as_str()
             .map(|s| s.to_string())
-            .ok_or_else(|| GoogleError::ParseError("profile has no emailAddress".into()))
+            .ok_or_else(|| MailError::ParseError("profile has no emailAddress".into()))
     }
 }
 
