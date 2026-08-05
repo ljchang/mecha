@@ -74,7 +74,11 @@ def send(message):
 
 
 def reply(request_id, result):
-    send({"jsonrpc": "2.0", "id": request_id, "result": result})
+    # The id is echoed back as a *string* on purpose: it is a dialect real
+    # servers speak, and answering this way makes every test in the suite
+    # prove the client routes it. A client that only matches numeric ids
+    # times out against this fixture on the very first handshake.
+    send({"jsonrpc": "2.0", "id": str(request_id), "result": result})
 
 
 def fail(request_id, message):
@@ -123,7 +127,15 @@ def main():
                 },
             )
         elif method == "tools/list":
-            reply(request_id, {"tools": TOOLS})
+            # One tool per page: a client that does not follow nextCursor
+            # sees a third of the surface, and the handshake test's
+            # assertions on all three tools catch it.
+            params = message.get("params") or {}
+            start = int(params.get("cursor") or 0)
+            page = {"tools": TOOLS[start : start + 1]}
+            if start + 1 < len(TOOLS):
+                page["nextCursor"] = str(start + 1)
+            reply(request_id, page)
         elif method == "tools/call":
             params = message.get("params") or {}
             text = call_tool(params.get("name"), params.get("arguments") or {})
