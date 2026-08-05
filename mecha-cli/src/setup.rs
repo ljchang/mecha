@@ -27,6 +27,8 @@ pub struct Prepared {
     /// The active sandbox, for surfaces that describe what `shell` actually
     /// is — the TUI's /tools modal. The tools themselves already hold it.
     pub sandbox: Arc<mecha_core::sandbox::Sandbox>,
+    /// The todo tool the agent is actually using, for the TUI's live pane.
+    pub todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
     /// Held for the lifetime of the run: dropping a client kills its server.
     pub _mcp: Vec<Arc<McpClient>>,
 }
@@ -39,6 +41,10 @@ pub struct PreparedTools {
     pub workspace: PathBuf,
     pub config: Config,
     pub approver: Arc<dyn Approver>,
+    /// A concrete handle onto the registered todo tool, so a UI can poll
+    /// `items()` live. `None` when the tool is disabled or an MCP server
+    /// shadowed it.
+    pub todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
     pub _mcp: Vec<Arc<McpClient>>,
 }
 
@@ -182,6 +188,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         workspace: tools.workspace,
         config: cfg,
         sandbox: tools.sandbox,
+        todo: tools.todo,
         _mcp: tools._mcp,
     })
 }
@@ -314,6 +321,20 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     let sandbox = Arc::new(mecha_core::sandbox::Sandbox::new(cfg.sandbox.clone()));
     let mut registry = Registry::new().with_builtins(&cfg.tools, Arc::clone(&sandbox));
 
+    // A concrete handle onto the todo tool, for a UI that renders the list
+    // live — `TodoTool::items()` exists for exactly that, but the registry
+    // type-erases on insert. Shadow-insert a fresh instance (same type, so
+    // the spec the model sees is byte-identical and the prompt-cache prefix
+    // and eval surface are untouched) and keep the handle. Gated on the name:
+    // config may have disabled the tool, and then there is nothing to watch.
+    // Before subagents are built, so a child that allowlists `todo` shares
+    // the same list.
+    let todo = registry.get("todo").is_some().then(|| {
+        let handle = Arc::new(mecha_core::tool::todo::TodoTool::new());
+        registry.insert(Arc::clone(&handle) as Arc<dyn mecha_core::tool::Tool>);
+        handle
+    });
+
     // Search is only registered when a backend is configured — an agent with a
     // `web_search` tool that always errors is worse than no tool at all.
     if !cfg.search.is_empty() {
@@ -362,6 +383,19 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             Arc::new(ModeApprover { mode: cfg.tools.permission_mode })
         };
 
+    // An MCP server may legitimately shadow `todo` (registered after the
+    // built-ins, deliberately). The handle would then be live but frozen —
+    // watching a list nothing writes to — so drop it unless the registered
+    // tool is still ours.
+    let todo = todo.filter(|handle| {
+        registry.get("todo").is_some_and(|registered| {
+            // Data pointers, not Arc::ptr_eq: comparing a concrete Arc with a
+            // trait-object Arc through ptr_eq compares vtables too, which is
+            // the documented footgun.
+            std::ptr::eq(Arc::as_ptr(registered) as *const (), Arc::as_ptr(handle) as *const ())
+        })
+    });
+
     // Prove the sandbox works before the agent can call anything, and refuse
     // to start if it doesn't. Falling back to unconfined execution would be
     // worse than never having configured one: `shell` declares narrower
@@ -373,7 +407,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             .context("sandbox preflight failed — refusing to run `shell` unconfined")?;
     }
 
-    Ok(PreparedTools { registry, sandbox, workspace, config: cfg, approver, _mcp: clients })
+    Ok(PreparedTools { registry, sandbox, workspace, config: cfg, approver, todo, _mcp: clients })
 }
 
 /// Build the search chain in configured order, skipping backends that cannot

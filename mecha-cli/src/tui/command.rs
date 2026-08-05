@@ -22,6 +22,8 @@ pub enum Command {
     Usage,
     Clear,
     Session,
+    /// Show or hide the live todo pane.
+    Todo,
     Quit,
     /// Recognised as a command, but not one we have. Kept as its own variant so
     /// a typo says so instead of being sent to the model as a prompt.
@@ -60,6 +62,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "usage" => Command::Usage,
         "clear" | "new" => Command::Clear,
         "session" => Command::Session,
+        "todo" => Command::Todo,
         "exit" | "quit" | "q" => Command::Quit,
         "mcp" => match arg {
             None => Command::Mcp(None),
@@ -190,8 +193,8 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 9] =
-    ["help", "tools", "model", "provider", "mode", "mcp", "usage", "clear", "session"];
+pub const NAMES: [&str; 10] =
+    ["help", "tools", "model", "provider", "mode", "mcp", "usage", "clear", "session", "todo"];
 
 /// Command names that could still be meant by what has been typed.
 ///
@@ -248,6 +251,7 @@ pub const HELP: &str = "\
   /usage                 tokens used this session
   /clear                 start a new conversation, dropping its taint
   /session               where the transcript is being written
+  /todo                  show or hide the live task pane
   /exit                  quit";
 
 #[cfg(test)]
