@@ -18,8 +18,8 @@ First thing to run in a fresh context:
 cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
-Expect **275 core + 62 CLI + 65 mail unit tests, 13 integration tests, 1
-doctest** — 416,
+Expect **315 core + 73 CLI + 66 mail unit tests, 13 integration tests, 1
+doctest** — 468,
 no warnings. The integration tests need docker (with `debian:stable-slim` and
 `python:3-slim` local) and `python3`; without them they skip and say so. In CI,
 set `MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of
@@ -57,6 +57,7 @@ A working agent harness, used and measured rather than just compiled.
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
 | Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/send/reject; edits mined as writing reflections |
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar, extracted from flowmail; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed |
+| Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, systemd unit in `scripts/` |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B) |
 | Eval | 36 cases, 17 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `pkg-cases.jsonl` — 8 memory/interlock cases against fixture MCP servers (`--mcp-file`) |
 
@@ -131,6 +132,11 @@ mornings look quiet.
   proposals`. Validate now also appends every probe's outcome to the
   store's `validations.jsonl` ledger, which is what the retirement scan
   reads — see "Rule tenure (2026-08-05)" below.
+- **Triggers are built but nothing schedules them on this machine yet.**
+  `mecha trigger daemon` is not installed — `scripts/mecha-triggers.service`
+  is written and untried. Installing it is three lines (the file says which),
+  and until then triggers only fire when someone runs `mecha trigger tick` or
+  `run` by hand.
 - **Both consume `~/.cargo/bin/mecha`**, not the repo build — reinstall
   (`cp target/release/mecha ~/.cargo/bin/`) after changing anything in the
   learning path, or the automation runs stale behaviour.
@@ -906,8 +912,10 @@ thresholds hit → proposals. Counterfactual replay is the load-bearing idea:
 pre-steer prefix under candidate rules and check the model now does what the
 steer asked *without being steered*. Seeded sampling makes the comparison
 meaningful; the recording is ground truth; a rule is kept because it flips
-the counterfactual, not because an LLM liked it. Needs the triggers item
-(cron) for scheduling; replay and sessions already exist.
+the counterfactual, not because an LLM liked it. Scheduling is a solved
+problem twice over now — the systemd timer it actually runs on, and
+`mecha trigger`, which deliberately did *not* absorb it (a trigger's action is
+a prompt, and rumination is a sequence of CLI commands).
 
 **The hyperagent layer** (Meta's HyperAgents / DGM-H, ICLR 2026 — task agent
 plus meta agent as one editable program). mecha's version keeps the Darwin
@@ -1304,8 +1312,93 @@ silently poison its own memory. **Do not build a second memory store beside
 it** — provenance scoping (`source: agent:mecha`) inside the one graph is the
 separation that matters.
 
-**Triggers.** Cron, file watchers, inbound webhooks. Sandboxing exists now, so
-this is unblocked.
+**~~Triggers~~ — cron built 2026-08-05.** `mecha trigger` runs a prompt on a
+schedule with nobody watching: `add`, `list`, `show`, `next`, `run`, `tick`,
+`daemon`, `runs`. The design notes are in CLAUDE.md's Triggers section; what
+was argued rather than mechanical:
+
+- **`tick` is the primitive; `daemon` is a loop over it** — the user chose
+  this shape over a daemon-only or systemd-units-per-trigger design. Due-ness
+  is a function of the ledger and the clock, so a crontab line, a systemd
+  timer (`scripts/mecha-triggers.service`) and the built-in loop all reach the
+  same answer, and `tick --dry-run` is an honest preview rather than a second
+  implementation of the schedule.
+- **Due-ness is computed backwards** — `prev_at_or_before(now)` names the most
+  recent slot and it fires if that slot is newer than the last one accounted
+  for. A machine asleep for a week owes **one** briefing, not forty, at no
+  extra cost; a late tick loses nothing. `catch_up` (`always` | `never` | a
+  duration) decides whether a stale slot still runs, and a skip is written to
+  the ledger — "why did I not get my briefing" has to be answerable.
+- **Triggers are not project-configurable, and a trigger run reads the global
+  config only** (`Config::load_global`). `[[hook]]`, `[[mcp]]` and
+  `[[subagent]]` can all come from a `mecha.toml` that arrived with a cloned
+  repository; a scheduled unattended agent run must not. Verified live from
+  the recorded `RunConfig`: a project file disabling `fs_read`/`shell` had no
+  effect on a trigger fired from that directory, and there is a unit test
+  asserting the *difference* between the two load paths.
+- **Read-only unless the file says otherwise**, with `--yes` at `add` time
+  being the written-down decision to widen it. The important consequence:
+  outbox-routed calls still stage under read-only, because staging executes
+  nothing — so draft-my-replies-overnight is both the safe shape and the
+  useful one. `ask_user` is absent by construction, since only a front-end
+  that owns a human ever registers it.
+- **A manual run is evidence, not a fire** (no slot recorded, so it never
+  advances the schedule), **one run per trigger at a time** (non-blocking
+  flock, released by the kernel if the process dies), and the timeout —
+  and a SIGTERM to the daemon — **cancel** rather than abort, so the partial
+  answer and the ledger row survive. All three verified live.
+- **The cron parser is hand-rolled** because every crate surveyed speaks
+  Quartz's dialect where the first field is *seconds*: `0 7 * * *` would parse
+  as something other than 7am rather than failing. DST is handled in both
+  directions — a job in the spring-forward gap fires at the first instant that
+  exists, one in the repeated autumn hour fires once — with tests naming both.
+- **Prompt-only, deliberately.** The user chose this over command triggers:
+  scheduled *commands* are what cron is for, and giving one a home here would
+  mean re-answering how it is confined and which environment it sees.
+  `scripts/ruminate.sh` therefore stays its own systemd timer.
+
+Verified end to end on the local model: a manual fire, a daemon fire landing
+exactly on its slot and not re-firing on later ticks, `notify` delivering the
+answer on stdin, taint recorded on the ledger row, and a SIGTERM mid-run
+recorded as `was interrupted` with the partial answer kept.
+
+**The TUI surface followed the same day.** `/triggers` is a modal in the
+`/tools` shape — list, then a detail view carrying the prompt, the settings,
+recent ledger rows and the last briefing read back from its transcript — with
+`e` edit, `space` on/off, `r` run now, `c` cancel a run in flight, `x` delete
+behind a confirmation. Every action shells out to `mecha trigger ...`: one
+implementation of firing, nothing the TUI can do that the CLI cannot, and a
+twenty-minute run cannot freeze the event loop. Driven end to end under tmux
+(`-x 130 -y 45`), including the `$EDITOR` suspend and a deliberately broken
+edit being refused with the file left intact.
+
+Two things it forced, both worth keeping:
+
+- **Asking "is it running?" must not touch the flock.** `try_claim` acquires
+  and drops, so a UI polling it would occasionally hold the lock exactly when
+  the scheduler fired and turn a legitimate fire into a spurious overlap skip.
+  Watching must not perturb what is watched, so an advisory `<name>.running`
+  marker carries UI state beside the lock rather than instead of it.
+- **`kill(pid, 0)` needs its range checked, and that *is* the function.** A
+  marker holding a non-positive pid would report a long-dead run as alive
+  forever: `0` means "my process group" and `-1` means "everything I may
+  signal", which always succeeds. Found by a test using `u32::MAX`, which
+  sign-flips to exactly that case.
+
+Cancellation is a **sentinel file the runner polls**, not a signal, because the
+run may be inside the daemon's own process where SIGTERM would stop the whole
+scheduler. `mecha trigger cancel <name>` is the CLI half. Verified live: the
+run stopped at its next safe point, kept its partial answer, and recorded
+`was interrupted`.
+
+Still open: **file watchers and inbound webhooks** — the other two trigger
+kinds this section originally named. A watcher wants debounce and a
+"what changed" payload in the prompt; a webhook is a listening socket, which
+is a different security question (the payload is third-party text, so it must
+arrive as `untrusted` — the interlock's rules apply to the *prompt* for the
+first time). Also unbuilt: a trigger whose run failed has no retry, on purpose
+— the next slot is the retry, and a failing trigger that hammers a provider
+unattended is worse than one that misses a morning.
 
 **~~TUI polish~~ — built 2026-08-05** (see item 4 and the addendum at the top
 of `docs/TUI-RESEARCH.md`). The live todo pane, nested subagent rendering, and
