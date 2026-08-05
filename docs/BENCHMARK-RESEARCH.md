@@ -1,0 +1,350 @@
+# Public benchmarks, and whether any of them can compare *harnesses*
+
+Research pass, 2026-08-05. Three questions, asked in this order because the
+third one changes what the first two are worth:
+
+1. Which public agent benchmarks are any good?
+2. What do they cost in wall clock and money?
+3. Is there a leaderboard that would let mecha be compared against other
+   harnesses **on the same model**?
+
+---
+
+## The answer to (3) first, because it is the load-bearing one
+
+Almost every leaderboard varies the *model* and leaves the harness
+uncontrolled — which is exactly backwards for this project. mecha's whole
+premise is that the harness is the thing being built, and a leaderboard that
+reports "GPT-5.6: 89.5%" tells you nothing about a harness.
+
+**Three exceptions exist, and two of them are directly usable.**
+
+| Leaderboard | Separates harness from model? | Usable here |
+|---|---|---|
+| [Terminal-Bench 2.0/2.1](https://www.tbench.ai/leaderboard/terminal-bench/2.0) | **Yes** — `Agent`, `Model`, `Agent Org`, `Model Org` are separate columns; entries are audited and trajectories are public | **yes, and it has our exact model** |
+| [SWE-bench Bash Only](https://www.swebench.com/) | **Yes, inverted** — the harness is *fixed* (mini-swe-agent) so the model is the only variable | as a **baseline to beat**, not to submit to |
+| [HAL](https://hal.cs.princeton.edu/) (Princeton, ICLR 2026) | **Yes** — same model appears under different agents, with dollar cost per run | yes, and it wants submissions |
+
+### The headline finding
+
+**Qwen3.6-35B-A3B is already on the Terminal-Bench 2.0 leaderboard.** That is
+the exact model on port 8080 — not a sibling, not a different quant, the same
+model name.
+
+| Rank | Agent harness | Model | Accuracy |
+|---|---|---|---|
+| 116 | little-coder | **Qwen3.6-35B-A3B** | **24.6% ± 3.2** |
+| 121 | little-coder | **Qwen3.6-35B-A3B** | 23.0% |
+| 138 | little-coder | Qwen3.5-9B | 9.2% ± 2.4 |
+| 119 | Terminus 2 | Qwen 3 Coder 480B | 23.9% ± 2.8 |
+| 110 | Dakou Agent | Qwen 3 Coder 480B | 27.2% ± 2.6 |
+| 60 | Terminus 2 | GLM 5 | 52.4% ± 2.6 |
+| 86 | Terminus 2 | DeepSeek-V3.2 | 39.6% ± 2.8 |
+| 126 | Terminus 2 | GPT-OSS-120B | 18.7% ± 2.7 |
+| 50 | Claude Code | Claude Opus 4.6 | 58.0% ± 2.9 |
+| 1 | NexAU-AHE | GPT-5.5 | 84.7% ± 2.1 |
+
+(Leaderboard read 2026-08-05; two `little-coder` × Qwen3.6-35B-A3B entries
+exist with different scores, which is itself a useful reminder about variance.)
+
+So the comparison the user asked for is available: **run mecha on
+Terminal-Bench 2.0 with qwen3.6-35b-a3b and the number lands beside 24.6%,
+with the model held exactly constant.** That is the single most informative
+measurement available to this project, and it is the recommendation.
+
+### How much can a harness actually move a score?
+
+Worth calibrating expectations before spending the wall clock. The
+Terminal-Bench paper ([arXiv:2601.11868](https://arxiv.org/abs/2601.11868),
+ICLR 2026) ablates it directly and the conclusion is not flattering to
+harnesses:
+
+> Codex CLI resolution rate increases by 52% when using GPT-5.2 instead of
+> GPT-5-Nano, while Gemini-2.5-Pro sees a 17% increase in resolution rate when
+> paired with Terminus 2 instead of OpenHands, implying that **model selection
+> is usually more important than agent scaffold**.
+
+Read honestly: swapping the harness moved one model by **17%**, swapping the
+model moved one harness by **52%**. A harness is worth roughly a third of what
+a model is worth, on this benchmark. Secondary sources claim scaffolds move
+SWE-bench by 10–20 points; that number appears in blog posts rather than in a
+paper here and is repeated with that caveat attached.
+
+17% is still a large, real effect, and it is the effect this project is
+actually trying to produce. But a scorecard that comes back at 22% instead of
+24.6% is not evidence that mecha is broken, and one at 30% would be a genuinely
+notable result rather than a rounding error.
+
+---
+
+## The benchmarks, ranked by fit
+
+| Benchmark | Tasks | Grades | Harness-separable | Rough cost/run | Fit here |
+|---|---|---|---|---|---|
+| **Terminal-Bench 2.0** | 89 | terminal work, verified by tests | **yes, first-class** | $1–100 API; free locally | **best fit** |
+| **SWE-bench Bash Only** | 500 (Verified) | patch passes the repo's tests | harness fixed = baseline | free locally, slow | **best baseline** |
+| **AgentDojo** | 97 tasks + 629 security cases | utility **and** injection resistance jointly | yes | cheap | **the interlock's benchmark** |
+| **τ²-bench** | 375 across 4 domains | tool-agent-user interaction, `pass^k` | partly | 2× (user simulator) | good, noisy |
+| **HAL** | 9 benchmarks | accuracy vs **dollar cost** | yes | ~$1.84/rollout | submit later |
+| **BFCL v4** | large | function-calling correctness (AST) | no — a model benchmark | very cheap | sanity check only |
+| **SWE-bench Verified** (full agent board) | 500 | same as above | **no** | expensive | skip |
+
+### Terminal-Bench 2.0 — the recommendation
+
+**89 tasks** (4 easy / 55 medium / 30 hard, 16 categories), selected from 229
+crowd-sourced candidates by 93 contributors, each **manually verified by three
+human reviewers** for solvability, realism and specification quality. Apache
+2.0. Each task is a container, an English instruction, a test script, and an
+oracle solution — the same shape as mecha's own `expect.verify` cases, which is
+not a coincidence: outcome-graded, not answer-graded.
+
+**Why it fits mecha specifically:** it grades an agent that has a shell in a
+container and has to actually finish work. That is precisely mecha's surface —
+`shell` plus the file tools plus the sandbox — and the harness properties this
+project has invested in (path jail, sandbox confinement, budgets, compaction,
+loop behaviour) are the ones that show up.
+
+**Running it.** The harness is [Harbor](https://harborframework.com):
+
+```bash
+uv tool install harbor
+harbor run -d terminal-bench/terminal-bench-2 -a oracle          # sanity check
+harbor run -d terminal-bench/terminal-bench-2 \
+  --agent-import-path "path.to.agent:MechaAgent" -k 5
+```
+
+Docker required locally; Daytona for cloud fan-out (`--env daytona -n 32`).
+
+**Wrapping mecha.** Two interfaces, and mecha should use the second:
+
+- `BaseAgent` — external: `name()`, `version()`, `setup()`, `run()`, driving a
+  `BaseEnvironment` by executing bash. This would make Harbor the thing running
+  commands, with mecha as a planner. Wrong shape.
+- `BaseInstalledAgent` — `install()` (via `exec_as_root` / `exec_as_agent`),
+  `run()`, `populate_context_post_run()` (parses trajectory files into an
+  `AgentContext`). This installs the `mecha` binary *inside the task container*
+  and runs it there, which is the honest configuration: mecha's own sandbox,
+  path jail and tools are what get measured.
+
+`populate_context_post_run` is the piece that already exists here — mecha's
+session JSONL is a trajectory file, and the adapter is a parser over it.
+
+**Cost and wall clock, honestly.** The paper: most trials finish in **under 20
+minutes**, most use **fewer than 25 model calls and under 10M tokens**, and
+extreme cases run 2 hours and ~100M tokens. A full run costs "one to a hundred
+dollars depending on the model's price."
+
+On the DGX with a local model the money is zero and the wall clock is the
+constraint. 89 tasks × k=5 = **445 rollouts**. At a 10-minute average that is
+~74 hours sequential. Two things follow:
+
+- **k=1 first** (89 rollouts, ~15 hours) to shake out the adapter, then k=5
+  once for a leaderboard-comparable number.
+- **Concurrency breaks the seed.** `HANDOFF.md` already records this:
+  llama-server's continuous batching perturbs numerics, so a seeded run only
+  replays token-for-token at `--concurrency 1`. For a benchmark that is fine —
+  pass^k *wants* independent samples — but do not expect a Terminal-Bench run
+  to be reproducible the way a `mecha eval --concurrency 1` run is, and say so
+  in whatever gets published.
+
+**Leaderboard submission** is currently *"coming soon"* per the docs; the
+HuggingFace mirror README describes a PR-based path. Worth confirming before
+counting on it. Nothing stops the comparison itself — the 24.6% figure is
+public and the run is reproducible locally either way.
+
+**Version discipline:** 2.0 and 2.1 have separate leaderboards. Pick one, and
+compare only within it. There is also a Terminal-Bench Hard and a
+Long-Horizon-Terminal-Bench (46 tasks, ~9.9M tokens and 85 minutes *per task*,
+53–71 hours for one pass) — the latter is out of reach here and is noted only
+so nobody starts it by accident.
+
+### SWE-bench Bash Only — the baseline to beat
+
+The interesting split is not the main leaderboard. It is **Bash Only**, which
+fixes the harness to [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)
+— ~100 lines of Python, bash as the *only* tool, and deliberately **not using
+the model's tool-calling interface at all**, so it runs with any model. It
+scores >74% on SWE-bench Verified with a frontier model.
+
+That makes it the cleanest available control in the whole survey: it is the
+minimum viable harness. Anything mecha does beyond it — the tool set, the path
+jail, compaction, budgets, learned rules — is the hypothesis. If mecha does not
+beat mini-swe-agent on the same model, the extra machinery is not paying for
+itself on this workload, and that is worth knowing.
+
+Note it also runs under bubblewrap, docker/podman, and singularity, so its
+confinement story overlaps mecha's and can be configured to match rather than
+confound.
+
+Cost warning: SWE-bench Verified is 500 instances. HAL uses **SWE-bench
+Verified Mini** (50 instances) for exactly this reason, and even there reports
+$259–$1,790 per model with frontier APIs. Locally, use the 50-instance subset
+first.
+
+**Caveats, which are serious:** the benchmark is mature and heavily exposed in
+public training data; contamination and saturation are real and acknowledged by
+the people hosting the leaderboard. Frontier scores near 95% mean almost
+nothing now. For a 35B local model in the 15–30% band, contamination pressure
+is lower and the signal is better — Qwen3-32B at 15.2% and DeepSeek-R1-0528 at
+30.3% on a 100-instance sample are the neighbourhood to expect.
+
+### AgentDojo — the one that grades what mecha is actually built around
+
+**97 realistic tasks across four suites (workspace, Slack, travel, banking) and
+629 security test cases**, and it measures **utility and security jointly**:
+benign utility, utility under attack, and attack success rate. Published, and
+the environment is explicitly extensible for new defenses.
+
+No other benchmark in this survey grades the thing this project has spent the
+most design effort on. mecha's trifecta interlock, the `external`/capability
+split, the taint-on-`Conversation` fix, the batching hole that was found and
+closed — all of that is currently evidenced by unit tests and one fixture-based
+eval case (`interlock-blocked`). AgentDojo would turn it into a number
+comparable with the literature, and — the part that matters — it would measure
+the **cost** of the defense, because an interlock that refuses too much shows
+up as lost benign utility.
+
+That is the honest risk, and it is why this is worth running rather than
+assuming: mecha's interlock is deliberately blunt. It refuses *any*
+`external_send` once both taint legs are armed. On a benchmark where the task
+*is* "read this email and send a reply", a blunt interlock may score well on
+ASR and badly on utility. Finding that out is the point.
+
+Cheap to run relative to the others (no container-per-task compilation, short
+episodes). Reachable via UK AISI's `inspect_evals`, which is a second harness
+to integrate against — worth checking whether their agent interface is easier
+to satisfy than writing a native adapter.
+
+### τ²-bench — good, and noisier than it looks
+
+**375 tasks: airline 50, telecom 114, retail 114, banking 97.** Dual-control —
+in the telecom domain both the user *and* the agent can call tools. Text and
+voice modes.
+
+Two reasons it is a strong fit on paper: it grades **tool-call traces against
+verifiable database outcomes**, which is exactly what `eval/cases.jsonl` does;
+and **`pass^k` is its metric** — all k runs must pass — which is the metric
+mecha implemented on 2026-08-05. The τ-bench line "61% pass^1 → <25% pass^8" is
+already quoted in `HANDOFF.md` as the justification for that work. Running
+τ²-bench would be measuring mecha with its own yardstick, borrowed from the
+people who made it.
+
+Three cautions:
+
+- **A user-simulator LLM is in the loop**, so every task costs two models'
+  tokens and inherits the simulator's variance. On the DGX that means two local
+  servers or one serving both roles.
+- **The public leaderboard reports Pass^1**, not pass^k, despite pass^k being
+  the contribution. Comparing requires care about which is quoted.
+- **A grading change in v1.0.1 (July 2026) altered banking scores, and results
+  across that boundary are explicitly not comparable.** Pin the version, and
+  record it — the same rule this project already applies to its own scorecards
+  after the fixture expansion.
+
+### HAL — the right leaderboard to *submit* to, later
+
+Princeton's Holistic Agent Leaderboard: 9 benchmarks (AssistantBench, GAIA,
+Online Mind2Web, CORE-Bench Hard, SciCode, ScienceAgentBench, SWE-bench
+Verified Mini, τ-bench Airline, USACO), 21,730 rollouts across 9 models for
+~$40,000 — about **$1.84 per rollout**. ICLR 2026.
+
+Two things make it the right eventual home:
+
+- It reports **Pareto frontiers of accuracy vs cost** rather than a 1-D
+  ranking, and it shows the same model under different agents with different
+  costs. That is the comparison this project wants, made explicit.
+- It takes agent submissions through `princeton-pli/hal-harness`.
+
+Its headline finding is also worth carrying into mecha's own eval design:
+**higher reasoning effort reduced accuracy in the majority of runs.** That is
+directly testable here — the TUI has a reasoning toggle and `eval` has
+`--runs k` — and it would be a cheap, genuinely interesting local experiment
+independent of any submission.
+
+### BFCL v4 — a sanity check, not a harness benchmark
+
+Berkeley Function Calling Leaderboard: AST-based grading of function calls,
+now with agentic sections (web search, memory, format sensitivity). Cheap and
+fast.
+
+It measures the **model**, not the harness — mecha would contribute nothing but
+a wrapper. Its one use here is diagnostic: this project already knows
+`llama-server --jinja` grammar-constrains tool calls and that malformed-argument
+counts are consequently zero. BFCL's format-sensitivity section is the public
+version of that finding, and a quick run would confirm the local stack is not
+leaving accuracy on the table in argument construction before blaming the
+harness for a low Terminal-Bench score.
+
+---
+
+## Recommended order
+
+1. **Terminal-Bench 2.0, k=1, qwen3.6-35b-a3b.** ~15 hours. Deliverable: a
+   `BaseInstalledAgent` adapter and a number to put beside little-coder's
+   24.6%. Everything else is downstream of this working.
+2. **Same, k=5.** ~74 hours, one weekend. Now it is leaderboard-comparable and
+   has a confidence interval, which every published entry carries.
+3. **AgentDojo.** The only measurement of the security model that is comparable
+   to anything outside this repo, and the only one that will price the
+   interlock's false-refusal cost.
+4. **SWE-bench Verified Mini (50) under mini-swe-agent, then under mecha.** The
+   minimum-viable-harness control. Cheap to state, expensive to argue with.
+5. **τ²-bench, one domain (airline, 50 tasks)** before committing to 375.
+6. **HAL submission** once 1–4 have produced numbers worth publishing.
+
+Two things to build once, that all of the above need:
+
+- **An adapter layer.** Harbor's `BaseInstalledAgent`, `inspect_evals`' agent
+  interface, and `hal-harness` all want "install this binary, run it with this
+  prompt, hand back a trajectory". mecha already emits session JSONL; the
+  adapters are parsers over it. Write it as one crate-external Python shim, not
+  three.
+- **A `--benchmark` posture.** Every one of these must run with MCP, hooks,
+  outbox and learned rules **off**, exactly as `mecha eval` already forces —
+  a scorecard shaped by local machinery grades this machine, not the harness.
+  Fallback (if §2 of `PRIOR-ART-RESEARCH.md` gets built) must be off too.
+
+---
+
+## Caveats worth carrying
+
+- **Contamination and saturation.** SWE-bench Verified frontier scores are
+  approaching 95% and the hosts themselves flag training-data exposure.
+  Terminal-Bench 2.0 is newer and harder (top entry 84.7%), which is part of
+  why it is the recommendation.
+- **Everything here is one number with a wide interval.** Published entries
+  carry ±2–3 points at k=5 on 89 tasks. A 2-point difference is noise. This
+  project already learned that at a smaller scale — a single `chain-largest`
+  failure that looked like a regression was variance at n=5.
+- **A leaderboard entry is not a controlled experiment.** Two `little-coder` ×
+  Qwen3.6-35B-A3B rows differ by 1.6 points. Reasoning effort, context window,
+  quantization and sampler are all uncontrolled across entries and mostly
+  unreported. The comparison is indicative, not decisive — and mecha's local
+  server settings (`-c`, MTP draft, `temperature 0.8`, `seed 42`) should be
+  published alongside any number so someone else can say the same about ours.
+- **These benchmarks grade task completion, not the properties this project
+  cares most about.** Nothing on Terminal-Bench measures whether taint survived
+  compaction, whether the outbox staged a send, or whether a learned rule came
+  from a poisoned reflection. `eval/cases.jsonl`'s run-metadata checks remain
+  the only instrument for those, and public benchmarks do not replace them.
+  AgentDojo is the one partial exception.
+
+---
+
+## Not researched
+
+- **Whether Terminal-Bench's leaderboard submission is actually open.** The
+  docs say "coming soon"; the HuggingFace mirror describes a PR path. Confirm
+  before planning around a public entry.
+- **What `little-coder` is.** It is the harness holding the directly comparable
+  Qwen3.6-35B-A3B slot, and reading it before running would be worth an hour —
+  a harness scoring 24.6% where 9B models score 9.2% is doing something.
+- **`inspect_evals` as a general adapter target.** UK AISI's harness hosts
+  AgentDojo and many others; if its agent interface is easy to satisfy, it may
+  be a cheaper integration than per-benchmark adapters.
+- **OSWorld, WebArena, GAIA-2, MLE-bench, Cybench, SWE-Lancer, SWE-bench Pro,
+  Long-Horizon-Terminal-Bench.** Surveyed only as names. None is a better first
+  move than Terminal-Bench, and LHTB (53–71 hours for a single pass) is
+  actively out of reach on this hardware.
+- **Aider's polyglot leaderboard**, which fixes its own harness across models —
+  possibly a second cheap control alongside mini-swe-agent, unexamined.
