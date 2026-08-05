@@ -1,0 +1,5 @@
+{
+  "label": "Getting started",
+  "position": 2,
+  "link": { "type": "generated-index", "description": "Install mecha, point it at a provider, and make the first run work." }
+}
