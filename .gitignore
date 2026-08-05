@@ -45,3 +45,14 @@ Thumbs.db
 *~
 .idea/
 .vscode/
+
+# Anything mined from real correspondence stays out of a public repository.
+# The analysis lives in ~/.mecha/analysis/, outside every checkout, which is
+# the actual control; these patterns are a backstop for a stray copy landing
+# here by accident. Design conclusions may be committed — figures, volumes and
+# personal policy may not.
+/private/
+/analysis/
+*-evidence.md
+*.mbox
+*.eml
