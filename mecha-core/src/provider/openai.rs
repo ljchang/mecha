@@ -144,12 +144,14 @@ impl Provider for OpenAiCompatible {
         };
 
         let mut acc = Accumulator::default();
-        let mut buf = String::new();
+        let mut buf = crate::provider::sse::SseBuffer::default();
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            buf.push_str(&String::from_utf8_lossy(&chunk?));
-            while let Some(idx) = buf.find('\n') {
-                let line: String = buf.drain(..idx + 1).collect();
+            buf.push(&chunk?);
+            // Lines are split on bytes, not decoded text: a network chunk can
+            // end mid-character, and only a complete line is guaranteed to be
+            // complete UTF-8.
+            while let Some(line) = buf.next_segment(b"\n") {
                 let Some(data) = line.trim().strip_prefix("data:") else { continue };
                 let data = data.trim();
                 if data.is_empty() || data == "[DONE]" {

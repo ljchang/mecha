@@ -227,14 +227,15 @@ impl Anthropic {
         let resp = self.send(&body).await?;
 
         let mut acc = StreamAccumulator::default();
-        let mut buf = String::new();
+        let mut buf = crate::provider::sse::SseBuffer::default();
         let mut stream = resp.bytes_stream();
 
         while let Some(chunk) = stream.next().await {
-            buf.push_str(&String::from_utf8_lossy(&chunk?));
-            // SSE frames are separated by a blank line.
-            while let Some(idx) = buf.find("\n\n") {
-                let frame: String = buf.drain(..idx + 2).collect();
+            buf.push(&chunk?);
+            // SSE frames are separated by a blank line. Split on bytes, not
+            // decoded text: a network chunk can end mid-character, and only a
+            // complete frame is guaranteed to be complete UTF-8.
+            while let Some(frame) = buf.next_segment(b"\n\n") {
                 for line in frame.lines() {
                     let Some(data) = line.strip_prefix("data:") else { continue };
                     let data = data.trim();

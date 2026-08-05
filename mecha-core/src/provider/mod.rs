@@ -7,6 +7,7 @@
 pub mod anthropic;
 pub mod openai;
 pub mod retry;
+pub(crate) mod sse;
 
 use crate::message::{CompletionRequest, CompletionResponse, Usage};
 use anyhow::Result;
