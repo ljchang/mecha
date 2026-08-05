@@ -515,7 +515,23 @@ a runtime "is it done yet", and the answer must be a command's exit code.
   that each backend spells natively (GBNF for llama.cpp, `guided_json` for
   vLLM, `output_config.format` for Anthropic). Don't hardcode GBNF.
 - **TUI polish** — the `todo` list is not a live pane, and nested subagent calls
-  render flat rather than as a tool-call tree. Both were asked for.
+  render flat rather than as a tool-call tree. Both were asked for. Surveyed
+  2026-08-05 against codex, pi, opencode, crush and Claude Code — see
+  `docs/TUI-RESEARCH.md`. mecha's TUI holds up better than expected (fuel
+  gauge, silent follow-mode re-arm, bracketed paste, panic-safe restore, the
+  plan badge shown only while planning). Three findings worth acting on:
+  `Transcript::draw` **re-wraps the entire transcript every frame**
+  (`transcript.rs:154`), where codex — same ratatui stack — keeps immutable
+  history cells plus one mutable active cell; **steer and queue want to be two
+  keys** (codex: Enter steers the running turn, Tab queues the next), which is
+  openclaw's queue modes surfaced where the choice is actually made; and
+  **branching** (`/fork`, codex's `Esc Esc` walk-back, pi's in-place session
+  tree) is the item mecha is most ready for and least likely to build — the
+  replay and counterfactual machinery already exists, and no surveyed project
+  has that half. Cheap wins listed there: a `?` overlay, a live verbose toggle,
+  `@` path completion reusing `command.rs`, `!` shell escape, `/export`,
+  terminal title, and `TestBackend` frame snapshots (the TUI has six unit tests
+  and none renders a frame).
 - ~~**Public benchmarks** — tau-bench fits best~~ — researched 2026-08-05, see
   `docs/BENCHMARK-RESEARCH.md`, and the answer changed. **Terminal-Bench 2.0**
   is the first move, not tau-bench, for one reason: its leaderboard has
