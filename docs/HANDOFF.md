@@ -99,6 +99,17 @@ Running on the DGX Spark (GB10, aarch64, 128GB unified):
 | 8082 | gemma-4-26B-A4B | separate `mtp-*.gguf` draft; the eval judge and nightly validate's judge — restarted 2026-08-04, healthy |
 | 8888 | SearXNG | Docker, JSON format enabled |
 
+**Both servers now run `-np 1`, and the flag is load-bearing (2026-08-05).**
+The llama-server build in use defaults to **4 parallel slots**, which silently
+splits `-c` across them: every request since the 2026-08-04 restart ran
+against **8192 tokens of context, not 32768**, while mecha's `context_window`
+said otherwise. Past 8192 the server context-shifts instead of erroring, so
+the model saw a mangled transcript and returned *empty completions* — the
+mysterious empty-EndTurn deaths in the k=5 compaction runs were this, not a
+mecha regression, and every scorecard taken between the two restarts is
+confounded. Check `curl :8080/props | jq .total_slots` is 1 before believing
+any measurement.
+
 Both llama-servers were found dead on 2026-08-04 (machine likely rebooted;
 ollama's own llama-server was running and is *not* ours) and were restarted
 with the scripts below. **The nightly timer depends on 8080** — its health
