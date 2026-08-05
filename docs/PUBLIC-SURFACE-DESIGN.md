@@ -13,7 +13,9 @@ wins and the research doc keeps the reasoning.
 
 | Question | Decision | Consequence |
 |---|---|---|
-| Own server, or a platform? | **Own server.** One Rust binary, SQLite in WAL, on a VPS. | Total header control, which is what makes the CSP work at all. A box to patch forever. |
+| Own server, or a platform? | **Own server on a VPS.** One Rust binary, SQLite in WAL, its own ACME. No CDN in front to begin with. | Total header control, nobody else terminating TLS, testable locally because it is just a program. A box to patch forever. |
+| Where does the code live? | **Its own repository**, three deployables. | §2.1. Two languages and a marimo dependency do not belong in mecha's `cargo test --workspace` CI. |
+| How does mecha reach it? | **MCP for `publish`; CLI for `drain`.** | §2.2. Outbox routing is by tool *name* in the dispatch path, so staging works with zero mecha-core changes — and the common case (nothing new) must cost zero tokens, which rules out an agent tool. |
 | How does mecha talk to it? | **API key, not OAuth.** Two scoped keys, minted by mecha, stored hashed on the server. | Mirrors the two forced-command SSH keys. OAuth buys delegation between parties, and there is only one party. |
 | Which direction do packets go? | **Push–pull, unchanged.** mecha publishes and drains; the server never initiates. | The home machine's attack surface is unchanged by shipping this. |
 | Versioning | **Immutable versions + a moving alias.** Every publish is a new version; the share URL points at the alias. | The property the user liked in Claude artifacts, and the only way "republish" is safe. |
@@ -43,22 +45,106 @@ wins and the research doc keeps the reasoning.
   │ ~/.mecha/                │        │                              │
   │  ├ frontdoor/types/      │        │  serves three origins:       │
   │  ├ bundles/<id>/<ver>/   │        │   gate / artifacts / compute │
-  │  └ surface/key           │        └──────────────────────────────┘
+  │  └ surface/*.key         │        └──────────────────────────────┘
   └──────────────────────────┘                     ▲
                                                    │ HTTPS
                                               the world
 ```
 
-**`mecha-surface` is a new crate in this workspace, and it must never depend on
-`mecha-core`.** It shares one thing — `mecha-manifest`, the request-type and
-bundle types — and nothing else. That is checkable in CI with a single grep of
-its `Cargo.toml`, and it is what lets "assume the public box is lost" stay a
-claim about code rather than a hope. The deployed artifact is one static
-binary, systemd, unattended-upgrades.
+The publish path at home has one more boundary inside it (§2.3):
 
-Keeping it in the workspace rather than its own repository is a reversal of
-nothing: extraction later costs a `git subtree split`, and until someone else
-wants it, a second repository is two CI configs for one program.
+```
+  notebook.py ──▶ surface-render ──▶ a directory ──▶ surface-publish ──▶ POST
+                  (sandboxed:         of bytes        (holds the key,
+                   no network,                         executes nothing,
+                   no key,                             runs the vendoring
+                   executes the                        gate)
+                   notebook)
+```
+
+### 2.1 Its own repository, and three deployables
+
+An earlier draft of this document put the server in mecha's Cargo workspace and
+argued that a second repository was two CI configs for one program. **That was
+wrong, and reading `marimo-book` is what showed why: this is not one program.**
+
+| Deployable | Language | Runs on | Holds |
+|---|---|---|---|
+| **`surface-server`** | Rust, one static binary | the VPS | request queue, published bytes, a TLS cert |
+| **`surface-render`** | Python | home, sandboxed, **no network, no key** | executes notebook code |
+| **`surface-publish`** | Python, thin | home | the publish API key; executes nothing |
+
+Three reasons the repository boundary is the right one:
+
+- **Two languages.** The render pipeline *is* marimo and marimo-book, both
+  Python. A Rust wrapper would shell out to Python to do all the work. Putting
+  a Python package with pytest, ruff and a marimo dependency inside a repo
+  whose CI is `cargo test --workspace && cargo clippy` grows a Python matrix
+  onto the agent harness for something unrelated to it.
+- **Different release cadences.** The server is deployed to a machine; mecha is
+  a tool you `cargo install`. Coupling their versions means a docs typo in
+  mecha is a reason to think about the VPS.
+- **The property we keep claiming becomes trivially checkable.** "The public
+  box has none of mecha's code and none of its credentials" is a sentence you
+  verify by looking at what is deployed, and a separate repository makes it
+  obvious rather than a matter of build discipline.
+
+The one hard invariant survives regardless: **nothing in this repository may
+depend on `mecha-core`.** The shared contract is the manifest, and it is
+**data** — TOML plus a generated JSON Schema — not a shared type. Each side
+parses it in its own language. That is a feature: it forces the contract to be
+inspectable rather than a struct two crates happen to agree on, and it is what
+lets validation happen independently at the edge and at home.
+
+### 2.2 MCP for `publish`, CLI for `drain`
+
+The mecha-mail shape applies, with one deliberate exception.
+
+**`publish` and friends are MCP tools**, served by `surface-publish`, for three
+concrete reasons rather than for consistency:
+
+- **Outbox routing is by tool name in the dispatch path.** `agent.rs` asks
+  `cx.outbox.routes(name)` before execution and stages if it matches — with no
+  knowledge of where the tool came from. So naming `publish` in
+  `[outbox] tools` gives us "an agent drafts a page, a human releases it" with
+  **zero changes to mecha-core**. That is the same argument that made an email
+  tool outbox-coverable without the outbox knowing what email is.
+- **`[[mcp]] capabilities` overrides already exist** and only ever widen, so
+  config can force `untrusted_input` on anything that reads back from the
+  surface.
+- **The agent loop stays ignorant**, which is the project's founding
+  invariant. A native tool would put the surface's URL scheme inside
+  mecha-core.
+
+And the reusability that motivated all this: any MCP-speaking agent — Claude
+Code, anything else — can publish to the same surface without knowing mecha
+exists.
+
+**`drain` is a CLI, not a tool.** The common case is "nothing new", and it must
+cost zero tokens; a trigger runs `surface drain` on a schedule and only spawns
+an agent run when the queue was non-empty. Making it a tool would put a model
+in the polling loop, which is the same mistake as putting one in the request
+path, one hop later.
+
+### 2.3 Render and publish are split, because rendering executes the notebook
+
+Not an accident of packaging — a trust boundary, and the thing most likely to
+be got wrong by merging them.
+
+`MarimoIslandGenerator.build()` **executes the notebook** to capture initial
+state. So the renderer runs arbitrary Python. If the same process also held the
+publish API key and had network access, a compromised dependency anywhere in a
+notebook's import graph would have both.
+
+So: **`surface-render` executes notebook code in the sandbox with no network
+and no key, and emits a directory. `surface-publish` takes a directory, runs
+the vendoring check, and POSTs it — holding the key, executing nothing.** Same
+instinct the sandbox already encodes for `shell`: narrow what the dangerous
+thing can reach, rather than trusting it.
+
+The vendoring gate (§7.2) belongs in `surface-publish`, on the far side of that
+boundary, so the check runs on bytes rather than on the process that produced
+them.
 
 ---
 
@@ -833,7 +919,20 @@ before the step that depends on them.
    compute) and none are chosen. Blocks step 8, nothing earlier.
 2. **Which VPS, and who patches it.** The failure mode of forgetting is not
    "the site is down", it is "the site is someone else's". Unattended-upgrades
-   plus a `GET /v1/health` check from a trigger is the minimum.
+   plus a `GET /v1/health` check from a trigger is the minimum, and the health
+   check should be a trigger that stages a warning rather than something you
+   remember to run.
+
+   Settled alongside it: **no CDN in front, to start.** A proxy that terminates
+   TLS sees the plaintext of every request and response, which is the one thing
+   "control our own infrastructure" is actually about. The binary does its own
+   ACME (TLS-ALPN-01 for three fixed hostnames — DNS-01 only becomes necessary
+   if per-bundle wildcard subdomains ever happen), sets its own headers so the
+   CSP lives with the code and is unit-testable, and rate-limits in process
+   because there is exactly one write endpoint. The cost is honest: no DDoS
+   absorption. For a personal booking page that is an annoyance, not a crisis,
+   and putting a CDN in front later changes nothing about the origin — which
+   is the point of keeping it a plain program.
 3. **Does `mecha-surface` render the booking page, or does it serve a published
    bundle?** Serving a bundle keeps the server dumber; rendering lets
    availability be fresher than the last publish. Probably: serve a bundle,
