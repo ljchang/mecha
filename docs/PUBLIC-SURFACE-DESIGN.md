@@ -14,7 +14,7 @@ wins and the research doc keeps the reasoning.
 | Question | Decision | Consequence |
 |---|---|---|
 | Own server, or a platform? | **Own server on a VPS.** One Rust binary, SQLite in WAL, its own ACME. No CDN in front to begin with. | Total header control, nobody else terminating TLS, testable locally because it is just a program. A box to patch forever. |
-| Where does the code live? | **Its own repository**, three deployables. | §2.1. Two languages and a marimo dependency do not belong in mecha's `cargo test --workspace` CI. |
+| Where does the code live? | **`mecha-factory`, its own repository**, three deployables. | §2.1. Two languages and a marimo dependency do not belong in mecha's `cargo test --workspace` CI. Free on crates.io, PyPI and GitHub as of 2026-08-05. |
 | How does mecha reach it? | **MCP for `publish`; CLI for `drain`.** | §2.2. Outbox routing is by tool *name* in the dispatch path, so staging works with zero mecha-core changes — and the common case (nothing new) must cost zero tokens, which rules out an agent tool. |
 | How does mecha talk to it? | **API key, not OAuth.** Two scoped keys, minted by mecha, stored hashed on the server. | Mirrors the two forced-command SSH keys. OAuth buys delegation between parties, and there is only one party. |
 | Which direction do packets go? | **Push–pull, unchanged.** mecha publishes and drains; the server never initiates. | The home machine's attack surface is unchanged by shipping this. |
@@ -22,7 +22,7 @@ wins and the research doc keeps the reasoning.
 | Read-back | **Bundles are built in the run's workspace and mirrored to `~/.mecha/bundles/`.** | An agent can read what it published, with no hole in the path jail. |
 | Templates | **Yes, and they are the extension point** — `report`, `notebook`, `booking`, plus request-type starters. | Adding a kind of output or a kind of ask is writing a directory, not writing code. |
 | marimo | **First-class. Three render modes, and only the third needs its own origin.** | Section 7. `marimo-book` already implements the modes and settles the asset question. |
-| Where notebooks live | **Ours by default; molab as a second target** (`target = surface \| molab \| both`). | §7.7. molab is for notebooks that could go in a public GitHub repo; it has no publish API, no expiry, no revocation and no documented versioning. |
+| Where notebooks live | **Ours by default; molab as a second target** (`target = factory \| molab \| both`). | §7.7. molab is for notebooks that could go in a public GitHub repo; it has no publish API, no expiry, no revocation and no documented versioning. |
 | Injection defense | **Four layers, in mecha, not on the server. The classifier is never a gate.** | Section 8. The server filters *shape*; only mecha can filter *meaning*, and a model on the public box would put a provider key on the box we assumed lost. |
 | Scheduling | **Book-me first, then group availability *seeded by mine*.** | Section 9. The seeding makes the group case strictly easier than when2meet. |
 | WebMCP | **Design for it, ship it later, behind a flag.** | Section 10. The manifest already emits everything it needs. |
@@ -35,7 +35,7 @@ wins and the research doc keeps the reasoning.
 ```
         home (spark-8c43)                    the public box
   ┌──────────────────────────┐        ┌──────────────────────────────┐
-  │ mecha                    │        │ mecha-surface (one binary)   │
+  │ mecha                    │        │ mecha-factory (one binary)   │
   │  ├ tools: publish ───────┼──POST─▶│  /v1/bundles     ← publish   │
   │  │        (outbox-routed)│        │  /v1/types       ← schemas   │
   │  ├ trigger: drain ◀──────┼──GET───│  /v1/queue       ← drain     │
@@ -45,7 +45,7 @@ wins and the research doc keeps the reasoning.
   │ ~/.mecha/                │        │                              │
   │  ├ frontdoor/types/      │        │  serves three origins:       │
   │  ├ bundles/<id>/<ver>/   │        │   gate / artifacts / compute │
-  │  └ surface/*.key         │        └──────────────────────────────┘
+  │  └ factory/*.key         │        └──────────────────────────────┘
   └──────────────────────────┘                     ▲
                                                    │ HTTPS
                                               the world
@@ -54,7 +54,7 @@ wins and the research doc keeps the reasoning.
 The publish path at home has one more boundary inside it (§2.3):
 
 ```
-  notebook.py ──▶ surface-render ──▶ a directory ──▶ surface-publish ──▶ POST
+  notebook.py ──▶ factory-render ──▶ a directory ──▶ factory-publish ──▶ POST
                   (sandboxed:         of bytes        (holds the key,
                    no network,                         executes nothing,
                    no key,                             runs the vendoring
@@ -70,9 +70,18 @@ wrong, and reading `marimo-book` is what showed why: this is not one program.**
 
 | Deployable | Language | Runs on | Holds |
 |---|---|---|---|
-| **`surface-server`** | Rust, one static binary | the VPS | request queue, published bytes, a TLS cert |
-| **`surface-render`** | Python | home, sandboxed, **no network, no key** | executes notebook code |
-| **`surface-publish`** | Python, thin | home | the publish API key; executes nothing |
+| **`mecha-factory`** (bin `factory`) | Rust, one static binary | the VPS | request queue, published bytes, a TLS cert |
+| **`mecha-factory-render`** | Python | home, sandboxed, **no network, no key** | executes notebook code |
+| **`mecha-factory-publish`** | Python, thin | home | the publish API key; executes nothing |
+
+**The name.** A factory is where machines are built and shipped from — and it
+is deliberately *not* the machine. That is exactly the relationship this
+repository has to mecha: same family, separate deployment, and forbidden from
+depending on `mecha-core`. It also reads correctly in both directions, which
+was the test every candidate name had to pass: orders come in, product goes
+out. The mild caveat, recorded so nobody is surprised: "factory" leans
+outbound, and half this repository is inbound typed requests. Orders-in
+carries it, but it is the one place the metaphor has to stretch.
 
 Three reasons the repository boundary is the right one:
 
@@ -100,7 +109,7 @@ lets validation happen independently at the edge and at home.
 
 The mecha-mail shape applies, with one deliberate exception.
 
-**`publish` and friends are MCP tools**, served by `surface-publish`, for three
+**`publish` and friends are MCP tools**, served by `mecha-factory-publish`, for three
 concrete reasons rather than for consistency:
 
 - **Outbox routing is by tool name in the dispatch path.** `agent.rs` asks
@@ -121,7 +130,7 @@ Code, anything else — can publish to the same surface without knowing mecha
 exists.
 
 **`drain` is a CLI, not a tool.** The common case is "nothing new", and it must
-cost zero tokens; a trigger runs `surface drain` on a schedule and only spawns
+cost zero tokens; a trigger runs `factory drain` on a schedule and only spawns
 an agent run when the queue was non-empty. Making it a tool would put a model
 in the polling loop, which is the same mistake as putting one in the request
 path, one hop later.
@@ -136,13 +145,14 @@ state. So the renderer runs arbitrary Python. If the same process also held the
 publish API key and had network access, a compromised dependency anywhere in a
 notebook's import graph would have both.
 
-So: **`surface-render` executes notebook code in the sandbox with no network
-and no key, and emits a directory. `surface-publish` takes a directory, runs
+So: **`mecha-factory-render` executes notebook code in the sandbox with no
+network and no key, and emits a directory. `mecha-factory-publish` takes a
+directory, runs
 the vendoring check, and POSTs it — holding the key, executing nothing.** Same
 instinct the sandbox already encodes for `shell`: narrow what the dangerous
 thing can reach, rather than trusting it.
 
-The vendoring gate (§7.2) belongs in `surface-publish`, on the far side of that
+The vendoring gate (§7.2) belongs in `mecha-factory-publish`, on the far side of that
 boundary, so the check runs on bytes rather than on the process that produced
 them.
 
@@ -213,10 +223,10 @@ Two keys, two scopes, mirroring the two `rrsync` forced commands:
 
 | Key | Scope | Lives |
 |---|---|---|
-| `mk_pub_…` | `PUT /v1/types`, `POST /v1/bundles*` | `~/.mecha/surface/publish.key`, mode 0600 |
-| `mk_drn_…` | `GET /v1/queue`, `POST /v1/queue/ack` | `~/.mecha/surface/drain.key`, mode 0600 |
+| `mk_pub_…` | `PUT /v1/types`, `POST /v1/bundles*` | `~/.mecha/factory/publish.key`, mode 0600 |
+| `mk_drn_…` | `GET /v1/queue`, `POST /v1/queue/ack` | `~/.mecha/factory/drain.key`, mode 0600 |
 
-Minted by `mecha surface key create --scope publish`, printed once, stored on
+Minted by `factory key create --scope publish`, printed once, stored on
 the server as an Argon2id hash. **The server holds no key that reaches home**,
 which stays the single property to verify by inspection. Rotation is: mint,
 install, revoke — the server keeps both live until the old one is revoked.
@@ -290,7 +300,7 @@ Three rules for templates, each of which is a bug if undone:
 - **The template declares the content class; the publisher enforces the
   policy.** A template cannot ask for a laxer CSP than its class allows, and a
   `compute` template cannot be published to the artifact origin. The check is
-  at publish time, in `mecha-surface`, not in the template.
+  at publish time, in `mecha-factory`, not in the template.
 - **`vendor = true` means the publish *fails* on a surviving external
   reference.** Not warns. This is the one enforcement the whole artifact
   security model rests on, and a warning is how it silently stops holding.
@@ -563,7 +573,7 @@ iframe is a stronger isolation boundary than same-origin WASM. The price is
 that the notebook must be public and molab sees every viewer, so this is right
 for a methods demo and wrong for anything else.
 
-**The decision: `target` becomes a bundle field**, `surface` (default) |
+**The decision: `target` becomes a bundle field**, `factory` (default) |
 `molab` | `both`, with a rule that is easy to apply and hard to get wrong:
 
 > **molab is for notebooks you would put in a public GitHub repository
@@ -571,7 +581,7 @@ for a methods demo and wrong for anything else.
 
 So: unpublished data, anything an agent publishes unattended, anything needing
 expiry or revocation, anything that must still resolve in three years →
-`surface`. Teaching material, methods demos, reproductions of published work,
+`factory`. Teaching material, methods demos, reproductions of published work,
 anything that wants a GPU → `molab`, and often `both`.
 
 **`both` is the shape marimo-book already demonstrates**, and it is probably
@@ -629,7 +639,7 @@ pay for again.
   publish path. The `report` template wants the *pipeline* — cells to HTML,
   precompute, anywidget mounts — not the theme.
 
-**The integration shape**, then: `mecha-surface` never runs Python. The
+**The integration shape**, then: `mecha-factory` never runs Python. The
 `notebook` and `report` templates shell out to marimo / marimo-book **at
 publish time, on the home machine**, inside the run's workspace, and what
 crosses to the public box is a vendored, checked, immutable directory of bytes.
@@ -762,7 +772,7 @@ The user wants both halves, in this order.
 The one-sided page. `availability(windows, busy[], holds[], bookings[], now)`
 is pure and deterministic; the page is a published bundle regenerated on a
 trigger; the claim is an `O_EXCL` create at the origin (SQLite transaction in
-`mecha-surface`, `holds/<slot>.hold` in the local store). A booking is a typed
+`mecha-factory`, `holds/<slot>.hold` in the local store). A booking is a typed
 request whose state machine has one extra deterministic step — the claim —
 before `queued`.
 
@@ -900,7 +910,7 @@ Each step is useful alone, and the first four need no public box at all.
    origin's headers — verified locally under a real CSP before there is a VPS
    to configure. The step most likely to surprise us.
 8. **Batch review in the outbox**, grouped by type.
-9. **`mecha-surface`**: the four verbs, two scoped keys, SQLite, the three
+9. **`mecha-factory`**: the four verbs, two scoped keys, SQLite, the three
    origins, the CSPs. The first step that creates a box to patch forever.
 10. **Verification, the templated acknowledgment, and the state machine end to
     end**, with one request type. The quarantine layers land here.
@@ -933,7 +943,7 @@ before the step that depends on them.
    absorption. For a personal booking page that is an annoyance, not a crisis,
    and putting a CDN in front later changes nothing about the origin — which
    is the point of keeping it a plain program.
-3. **Does `mecha-surface` render the booking page, or does it serve a published
+3. **Does `mecha-factory` render the booking page, or does it serve a published
    bundle?** Serving a bundle keeps the server dumber; rendering lets
    availability be fresher than the last publish. Probably: serve a bundle,
    with the *slot list* as a small JSON the server can refresh independently.
