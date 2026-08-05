@@ -32,6 +32,7 @@ mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
 agent.rs     the loop: ask → run tools → feed results back → repeat
 hooks.rs     user commands at lifecycle points; pre_tool can deny a call
 learning.rs  the reflection/rule store behind reflect, learn, validate
+distill.rs   session → episode, staged to the knowledge graph over MCP
 session.rs   append-only JSONL transcripts
 batch.rs     bounded-concurrency fan-out over many prompts
 eval.rs      case types, graders, the LLM judge
@@ -161,6 +162,19 @@ recorded before the field existed all classify `untrusted`, and there is
 deliberately no knob — a switch that lets third-party text into every future
 prompt is the silently-degrading-sandbox shape. Excluded reflections stay in
 the archive as evidence; they are simply never candidates.
+
+**Distillation is not learning, and its provenance rule differs on purpose.**
+`mecha distill` (`distill.rs`) summarises each closed session into an episode
+staged to the knowledge graph through pkg's `kg_upsert` — evidence, not
+belief: pkg's extractor turns it into candidates that wait in the *user's*
+review queue, and mecha reads pkg back through the `untrusted_input`
+override, so an episode never enters a future prompt as trusted text the way
+a learned rule does. A tainted session therefore still distills — losing the
+record of a real afternoon because a web page was open would gut the memory —
+and the taint snapshot is recorded on the episode's `meta` instead, where
+review can see it. Unknown taint is recorded as unknown, never clean.
+Idempotent at both ends: `distilled.jsonl` in the learning store (same
+writer lock), and pkg's `(source, source_id)` key makes a re-push an update.
 
 Known gap: `shell` is universal and taint tracking can't see inside a command,
 so it is not treated as an untrusted *source*. The mitigation is the sandbox.

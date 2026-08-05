@@ -269,7 +269,9 @@ impl McpClient {
             .collect())
     }
 
-    async fn call_tool(&self, name: &str, arguments: Value) -> Result<ToolOutput> {
+    // pub(crate) for `distill`, which pushes episodes through a graph
+    // server's `kg_upsert` without a run (and so without a `ToolCtx`).
+    pub(crate) async fn call_tool(&self, name: &str, arguments: Value) -> Result<ToolOutput> {
         let result = self
             .request("tools/call", json!({"name": name, "arguments": arguments}))
             .await?;
