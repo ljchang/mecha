@@ -73,6 +73,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     println!("/help for commands, Ctrl-D to exit.\n");
 
     let mut editor = DefaultEditor::new()?;
+    // History survives the process, and it lives beside the transcripts on
+    // purpose: the sessions directory is owner-only, and a typed prompt
+    // deserves the same protection as the transcript that records it.
+    // Best-effort throughout — a first run has no file, and losing history
+    // must never lose the chat.
+    let history_path = {
+        let _ = mecha_core::create_private_dir(&session_dir);
+        session_dir.join("chat_history")
+    };
+    let _ = editor.load_history(&history_path);
     let mut total = Usage::default();
 
     loop {
@@ -89,6 +99,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             continue;
         }
         let _ = editor.add_history_entry(input);
+        // Saved per line rather than at exit, so a killed process keeps what
+        // was typed before it died.
+        if history_path.exists() {
+            let _ = editor.append_history(&history_path);
+        } else {
+            let _ = editor.save_history(&history_path);
+        }
 
         if let Some(command) = input.strip_prefix('/') {
             match handle_command(command, &prepared, &mut convo, &total, session.as_ref()) {
