@@ -24,6 +24,9 @@ pub struct Prepared {
     /// The resolved config, for commands that need to build a *second*
     /// connection — `eval` and its judge model.
     pub config: Config,
+    /// The active sandbox, for surfaces that describe what `shell` actually
+    /// is — the TUI's /tools modal. The tools themselves already hold it.
+    pub sandbox: Arc<mecha_core::sandbox::Sandbox>,
     /// Held for the lifetime of the run: dropping a client kills its server.
     pub _mcp: Vec<Arc<McpClient>>,
 }
@@ -178,8 +181,29 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         model,
         workspace: tools.workspace,
         config: cfg,
+        sandbox: tools.sandbox,
         _mcp: tools._mcp,
     })
+}
+
+/// One line saying what `shell` actually is right now. Shared between
+/// `mecha tools` and the TUI's /tools modal, so the two cannot disagree about
+/// the fact an operator most needs.
+pub fn sandbox_line(sandbox: &mecha_core::sandbox::Sandbox) -> String {
+    if sandbox.is_enabled() {
+        format!(
+            "sandbox: {} · network {} · reads {}",
+            sandbox.backend().as_str(),
+            if sandbox.can_reach_network() { "on" } else { "off" },
+            if sandbox.reaches_beyond_workspace() {
+                "beyond the workspace"
+            } else {
+                "the workspace only"
+            }
+        )
+    } else {
+        "sandbox: none — commands run as you, with your credentials".to_string()
+    }
 }
 
 /// Resolve config, workspace, tools, and the approval policy.

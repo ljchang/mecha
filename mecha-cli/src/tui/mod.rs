@@ -14,6 +14,7 @@
 mod approve;
 mod ask;
 mod command;
+mod tools;
 mod transcript;
 
 use crate::{setup, GlobalOpts};
@@ -175,6 +176,11 @@ struct App {
     /// The help overlay is up. It exists to be glanced at and dismissed, so
     /// any key closes it.
     help: bool,
+    /// The /tools modal, when open. Takes every key while it is up.
+    tools: Option<tools::ToolsModal>,
+    /// What `shell` actually is, computed once — the sandbox is config-driven
+    /// and a provider switch rebuilds it identically.
+    sandbox_line: String,
     /// Every provider entry in config, as (name, model). Fixed for the session.
     providers: Vec<(String, String)>,
     /// Whether the terminal speaks the kitty keyboard protocol, which is what
@@ -351,6 +357,8 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         asking: None,
         picker: None,
         help: false,
+        tools: None,
+        sandbox_line: setup::sandbox_line(&prepared.sandbox),
         providers: prepared
             .config
             .providers
@@ -659,6 +667,26 @@ fn on_key(
         }
     }
 
+    // The tools modal owns the keyboard while it is up, like the picker below.
+    if let Some(modal) = &mut app.tools {
+        match key.code {
+            KeyCode::Up if !modal.detail => modal.move_by(-1),
+            KeyCode::Down if !modal.detail => modal.move_by(1),
+            // Enter opens the detail; from the detail it steps back out, so
+            // enter-enter-enter walks in and out rather than dead-ending.
+            KeyCode::Enter => modal.detail = !modal.detail,
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if modal.detail {
+                    modal.detail = false;
+                } else {
+                    app.tools = None;
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     // A modal list owns the keyboard while it is up, for the same reason the
     // approval modal does: a keystroke meant for the list must not also reach
     // the input line behind it.
@@ -962,15 +990,24 @@ fn run_command(
         Command::Help => app.help = true,
 
         Command::Tools => {
-            let mut lines = String::new();
-            for tool in agent.registry().iter() {
-                lines.push_str(&format!(
-                    "  {:<24} {}\n",
-                    tool.name(),
-                    tool.description().lines().next().unwrap_or("")
-                ));
-            }
-            say(lines.trim_end().to_string());
+            let outbox = agent.context().outbox.clone();
+            let rows = agent
+                .registry()
+                .iter()
+                .map(|t| tools::ToolRow {
+                    name: t.name().to_string(),
+                    read_only: t.read_only(),
+                    outbox: outbox.as_ref().is_some_and(|o| o.routes(t.name())),
+                    caps: t.capabilities(),
+                    description: t.description().to_string(),
+                })
+                .collect();
+            app.tools = Some(tools::ToolsModal {
+                rows,
+                selected: 0,
+                detail: false,
+                sandbox_line: app.sandbox_line.clone(),
+            });
         }
 
         Command::Usage => say(format!(
@@ -1314,6 +1351,9 @@ fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: us
     // more than the reference card, so they draw over it.
     if app.help {
         draw_help(frame, app.kitty_keyboard);
+    }
+    if let Some(modal) = &app.tools {
+        modal.draw(frame);
     }
     if let Some(question) = &app.asking {
         draw_question(frame, question);
