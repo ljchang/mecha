@@ -137,6 +137,27 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // ownership of the registry.
     let mut registry = tools.registry;
     for profile in &cfg.subagents {
+        // `--tool` narrows the pool deliberately, and a subagent whose profile
+        // names something the narrowing excluded is not a misconfiguration —
+        // it is a subagent the caller has just said they do not want. Skip it,
+        // loudly. Failing here instead made `--tool` unusable on any machine
+        // with a subagent configured: `mecha run --tool fs_read` died on
+        // `research` needing `web_search`, which is not what the flag means.
+        //
+        // The distinction is what keeps `build_subagent`'s error worth having:
+        // a name that is missing *without* an active allowlist is still a
+        // typo, and still fatal.
+        {
+            let excluded = excluded_by_allowlist(&profile.tools, &opts.tools);
+            if !excluded.is_empty() {
+                eprintln!(
+                    "mecha: subagent `{}` not registered — `--tool` excludes {}",
+                    profile.name,
+                    excluded.join(", ")
+                );
+                continue;
+            }
+        }
         // A profile may point at a different provider entry entirely.
         let (_, child_provider_cfg) = cfg.provider(profile.provider.as_deref())?;
         let child = build_subagent(
@@ -170,8 +191,16 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         // silently — the degrading-sandbox shape. It cannot be a hard error
         // (a routed tool's MCP server may be legitimately off today), so say
         // it out loud on every start instead.
+        //
+        // Except when `--tool` excluded it: that is the caller naming exactly
+        // what they want, not a mistake, and a warning that fires every
+        // morning on a deliberately narrowed run is how a real typo later
+        // gets ignored.
         for name in outbox.routed() {
-            if agent.registry().get(name).is_none() {
+            let narrowed_out =
+                !excluded_by_allowlist(std::slice::from_ref(&name.to_string()), &opts.tools)
+                    .is_empty();
+            if agent.registry().get(name).is_none() && !narrowed_out {
                 eprintln!(
                     "mecha: [outbox] routes `{name}`, which is not a registered tool — \
                      check the spelling, or this routing protects nothing"
@@ -191,6 +220,22 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         todo: tools.todo,
         _mcp: tools._mcp,
     })
+}
+
+/// Which of `wanted` an active `--tool` allowlist leaves out.
+///
+/// Empty when there is no allowlist, which is the load-bearing case: `--tool`
+/// unset means "every tool", not "no tools", and reading it the other way is
+/// what made `--tool` unusable on any machine with a subagent configured.
+fn excluded_by_allowlist<'a>(wanted: &'a [String], allowlist: &[String]) -> Vec<&'a str> {
+    if allowlist.is_empty() {
+        return Vec::new();
+    }
+    wanted
+        .iter()
+        .filter(|t| !allowlist.iter().any(|kept| kept == *t))
+        .map(String::as_str)
+        .collect()
 }
 
 /// One line saying what `shell` actually is right now. Shared between
@@ -534,5 +579,39 @@ pub fn read_maybe_file(value: &str) -> Result<String> {
         Some(path) => std::fs::read_to_string(path)
             .with_context(|| format!("reading system prompt from {path}")),
         None => Ok(value.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::excluded_by_allowlist;
+
+    /// The bug this pins: `--tool fs_read` used to abort the whole run because
+    /// the configured `research` subagent wants `web_search`. Narrowing the
+    /// tool surface is the caller saying what they want, not a typo — the
+    /// subagent is dropped, and only a name missing *without* an allowlist is
+    /// still an error.
+    #[test]
+    fn an_absent_allowlist_excludes_nothing_and_a_present_one_excludes_what_it_omits() {
+        let wanted: Vec<String> =
+            ["web_search", "http_fetch", "todo"].iter().map(|s| s.to_string()).collect();
+
+        assert!(
+            excluded_by_allowlist(&wanted, &[]).is_empty(),
+            "no --tool means every tool, not no tools"
+        );
+
+        let narrow: Vec<String> = vec!["fs_read".into()];
+        assert_eq!(
+            excluded_by_allowlist(&wanted, &narrow),
+            vec!["web_search", "http_fetch", "todo"]
+        );
+
+        let full: Vec<String> =
+            ["web_search", "http_fetch", "todo", "fs_read"].iter().map(|s| s.to_string()).collect();
+        assert!(
+            excluded_by_allowlist(&wanted, &full).is_empty(),
+            "an allowlist that covers the profile keeps it"
+        );
     }
 }
