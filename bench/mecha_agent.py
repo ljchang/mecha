@@ -81,13 +81,20 @@ class MechaAgent(BaseInstalledAgent):
         # get different gateways per task, so it is discovered here rather
         # than assumed; /proc/net/route is the fallback for images without
         # iproute2 (the gateway field is little-endian hex).
+        # The fallback avoids every non-POSIX construct: `${var:6:2}` is bash
+        # (slim images' /bin/sh is dash), and awk's strtonum is gawk (slim
+        # images ship mawk). `cut` plus printf-with-hex works in dash and
+        # busybox alike, and the images that need the fallback — the ones
+        # without iproute2 — are exactly the slim ones.
         gateway = (
             await self.exec_as_agent(
                 environment,
                 "if command -v ip >/dev/null 2>&1; then "
                 "ip route | awk '/^default/ {print $3; exit}'; "
                 "else gw=$(awk '$2==\"00000000\" {print $3; exit}' /proc/net/route); "
-                'printf "%d.%d.%d.%d" "0x${gw:6:2}" "0x${gw:4:2}" "0x${gw:2:2}" "0x${gw:0:2}"; '
+                'printf "%d.%d.%d.%d" '
+                '"0x$(echo "$gw" | cut -c7-8)" "0x$(echo "$gw" | cut -c5-6)" '
+                '"0x$(echo "$gw" | cut -c3-4)" "0x$(echo "$gw" | cut -c1-2)"; '
                 "fi",
             )
         ).stdout.strip()
@@ -131,11 +138,15 @@ shell_timeout_secs = 600
             # harbor names models provider/model; the config holds the
             # provider, mecha gets the model half.
             model = f"-m {shlex.quote(self.model_name.split('/', 1)[1])} "
+        # The declared CLI_FLAGS (max_turns) — declaring them without applying
+        # them here would make the kwargs silent no-ops.
+        flags = self.build_cli_flags()
+        flags = f"{flags} " if flags else ""
 
         try:
             await self.exec_as_agent(
                 environment,
-                f"/installed-agent/mecha run --yes {model}{shlex.quote(instruction)}",
+                f"/installed-agent/mecha run --yes {model}{flags}{shlex.quote(instruction)}",
                 env={"MECHA_SESSION_DIR": SESSION_DIR},
             )
         finally:

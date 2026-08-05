@@ -479,12 +479,29 @@ impl LoopGuard {
         }
     }
 
-    /// Record one executed call; true when this exact call-and-result was
-    /// already seen in the window.
-    fn observe(&mut self, name: &str, input: &Value, result: &str) -> bool {
+    /// Record one *turn's* executed calls; true when any of them repeats an
+    /// identical call-and-result from a previous turn in the window.
+    ///
+    /// Per turn, not per call: a model that emits the same call twice in one
+    /// parallel batch is being wasteful, not stuck — the next turn may
+    /// proceed fine, and killing that run would grade waste as a loop. The
+    /// loop this guard exists for is across turns.
+    fn observe_turn(&mut self, turn: impl IntoIterator<Item = u64>) -> bool {
         if !self.armed {
             return false;
         }
+        let digests: Vec<u64> = turn.into_iter().collect();
+        let repeated = digests.iter().any(|d| self.recent.contains(d));
+        for digest in digests {
+            self.recent.push_back(digest);
+            if self.recent.len() > Self::WINDOW {
+                self.recent.pop_front();
+            }
+        }
+        repeated
+    }
+
+    fn digest(name: &str, input: &Value, result: &str) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         name.hash(&mut hasher);
@@ -494,14 +511,7 @@ impl LoopGuard {
         // collision needs two different calls in a window of three.
         input.to_string().hash(&mut hasher);
         result.hash(&mut hasher);
-        let digest = hasher.finish();
-
-        let repeated = self.recent.contains(&digest);
-        self.recent.push_back(digest);
-        if self.recent.len() > Self::WINDOW {
-            self.recent.pop_front();
-        }
-        repeated
+        hasher.finish()
     }
 }
 
@@ -1045,20 +1055,21 @@ impl Agent {
                         .into_iter()
                         .map(|(id, name, input)| (id, (name, input)))
                         .collect();
-                    for block in &results {
-                        let Block::ToolResult { tool_use_id, content, .. } = block else {
-                            continue;
-                        };
-                        let Some(&(name, input)) = inputs.get(tool_use_id.as_str()) else {
-                            continue;
-                        };
-                        if loop_guard.observe(name, input, content) {
-                            tracing::warn!(
-                                tool = name,
-                                "identical call and result repeated after a compaction; stopping"
-                            );
-                            loop_detected = true;
-                        }
+                    let turn_digests: Vec<u64> = results
+                        .iter()
+                        .filter_map(|block| {
+                            let Block::ToolResult { tool_use_id, content, .. } = block else {
+                                return None;
+                            };
+                            let &(name, input) = inputs.get(tool_use_id.as_str())?;
+                            Some(LoopGuard::digest(name, input, content))
+                        })
+                        .collect();
+                    if loop_guard.observe_turn(turn_digests) {
+                        tracing::warn!(
+                            "identical call and result repeated after a compaction; stopping"
+                        );
+                        loop_detected = true;
                     }
                     messages.push(Message::tool_results(results));
                 }
@@ -3005,6 +3016,39 @@ mod tests {
         let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert_eq!(outcome.stop_cause, StopCause::Completed, "a poll graded as stuck");
+        assert_eq!(outcome.text, "done");
+    }
+
+    #[tokio::test]
+    async fn duplicate_calls_within_one_batch_are_waste_not_a_loop() {
+        // Models do emit the same call twice in one parallel batch. That is
+        // wasteful, not stuck — the next turn may proceed fine, and a guard
+        // that kills the run here grades waste as a loop.
+        let mut turns = three_calls();
+        turns.push(assistant(vec![Block::text("a summary")], StopReason::EndTurn));
+        turns.push(assistant(vec![Block::text("NONE")], StopReason::EndTurn));
+        turns.push(assistant(
+            vec![
+                Block::ToolUse {
+                    id: "d0".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "same"}),
+                },
+                Block::ToolUse {
+                    id: "d1".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "same"}),
+                },
+            ],
+            StopReason::ToolUse,
+        ));
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (agent, _) = compacting_agent(turns);
+        let mut convo = Conversation::user("audit the entries");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Completed, "a same-batch dup tripped the guard");
         assert_eq!(outcome.text, "done");
     }
 
