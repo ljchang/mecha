@@ -19,8 +19,8 @@ wins and the research doc keeps the reasoning.
 | Versioning | **Immutable versions + a moving alias.** Every publish is a new version; the share URL points at the alias. | The property the user liked in Claude artifacts, and the only way "republish" is safe. |
 | Read-back | **Bundles are built in the run's workspace and mirrored to `~/.mecha/bundles/`.** | An agent can read what it published, with no hole in the path jail. |
 | Templates | **Yes, and they are the extension point** — `report`, `notebook`, `booking`, plus request-type starters. | Adding a kind of output or a kind of ask is writing a directory, not writing code. |
-| marimo | **First-class, its own content class, its own origin.** | Section 7 is the whole answer; it is the hardest technical part of this project. |
-| Injection defense | **Four layers, and the classifier is never a gate.** | Section 8. Structure decides; detection only annotates. |
+| marimo | **First-class. Three render modes, and only the third needs its own origin.** | Section 7. `marimo-book` already implements the modes and settles the asset question. |
+| Injection defense | **Four layers, in mecha, not on the server. The classifier is never a gate.** | Section 8. The server filters *shape*; only mecha can filter *meaning*, and a model on the public box would put a provider key on the box we assumed lost. |
 | Scheduling | **Book-me first, then group availability *seeded by mine*.** | Section 9. The seeding makes the group case strictly easier than when2meet. |
 | WebMCP | **Design for it, ship it later, behind a flag.** | Section 10. The manifest already emits everything it needs. |
 | Compliance | **Deferred.** | Keep `retain_days` in the manifest so it stays cheap to turn on. Revisit before the form is linked from a public page. |
@@ -174,12 +174,18 @@ families, because there are two directions.
 
 ```
 templates/
-  report/        outbound, class=static       a research report / briefing
-  notebook/      outbound, class=compute      a marimo WASM notebook
-  dashboard/     outbound, class=interactive  charts, no network, no eval
-  booking/       inbound + outbound           availability page + the claim
-  request/       inbound                      the generic typed form
+  report/        outbound, class=static|interactive   prose + computed figures
+  notebook/      outbound, class=compute              a whole marimo notebook
+  dashboard/     outbound, class=interactive          charts, no network, no eval
+  booking/       inbound + outbound                   availability page + claim
+  request/       inbound                              the generic typed form
 ```
+
+`report` spans two classes on purpose: it is `static` until a discrete widget
+appears, and `interactive` once precompute ships a lookup table and a shim
+(§7.5). The publisher decides the class from what was actually emitted, not
+from what the template declared — declaring `static` and emitting a `<script>`
+must fail the publish, not silently upgrade it.
 
 Each declares what it needs and what it emits:
 
@@ -283,40 +289,128 @@ Notes on the choices, because each cost something to decide:
   the right constraint for something meant to be reproducible anyway.
 - **`frame-ancestors 'none'`** so a notebook cannot be framed by the gate.
 
-### 7.2 The vendoring problem, which is not yet settled
+### 7.2 The vendoring problem, now settled
 
-marimo's documentation does not say whether `export html-wasm` emits a
-self-contained tree or references a CDN, and the evidence points both ways: the
-self-hosting guide says "serve the assets in the `assets` directory next to the
-HTML file", which implies local; an open feature request asks for a
-*stand-alone HTML with CDN assets* as a new option, which implies the current
-export is the local one; an open bug reports the notebook failing offline,
-which implies something is still fetched; and the islands embed path
-demonstrably loads `@marimo-team/islands` from `cdn.jsdelivr.net`. Pyodide's
-own wheels are fetched on demand for any package not in the base distribution,
-which is a third fetch path again.
+The research doc left this open because marimo's documentation is silent and
+its issue tracker contradicts itself. **`marimo-book` answers it**, because the
+user already built and shipped a static marimo publisher and its source records
+what actually happens.
 
-**So this is established by running it, not by reading the docs** — the rule
-this project already applies to provider behaviour. The recipe:
+What is external in a marimo-book build, enumerated from the source rather than
+guessed:
+
+| Reference | Where from | Vendorable |
+|---|---|---|
+| marimo islands frontend bundle | `MarimoIslandGenerator.render_head()` → jsdelivr, by default | yes — rewrite the emitted `<script>`/`<link>` |
+| Pyodide | loaded by that bundle on first paint | yes — pinned copy, rewrite the loader path |
+| MathJax | `cdn.jsdelivr.net/npm/mathjax@3/…`, hard-coded | yes — one file |
+| Plotly | `cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/…`, lazy | yes — one file, already version-pinned |
+| Gravatar (blog avatars) | `gravatar.com` | drop it; a default avatar is a local asset |
+| third-party wheels | micropip/Pyodide at runtime | yes — declare and vendor at publish time |
+
+So it is **four hosts and six references, all version-pinned** — a bounded
+afternoon, not a research project. The rule stands unchanged and is now known
+to be achievable: **the publisher rewrites external references to vendored
+copies and fails the publish if any survive.** Pin the Pyodide version per
+bundle so a notebook published today still runs when Pyodide moves.
+
+marimo-book never needed this because it deploys to GitHub Pages, which cannot
+set response headers and therefore has no CSP to satisfy. We can set headers,
+which is the whole reason our artifacts are safe to open — so the vendoring
+pass is **new work we add on top of marimo-book**, not something to borrow from
+it. That asymmetry is worth stating plainly so nobody wonders why the existing
+tool doesn't already do it.
+
+The verification recipe stays, as a publish-time gate rather than a one-off:
 
 ```bash
-marimo export html-wasm nb.py -o /tmp/nb --mode run
-grep -rIoE 'https?://[^"'\''` )]+' /tmp/nb | sort -u    # must be empty
+grep -rIoE 'https?://[^"'\''` )]+' "$bundle" | sort -u    # must be empty
 ```
 
-Whatever that turns up, the design does not change: **the publisher rewrites
-external references to vendored copies and fails the publish if any survive.**
-If marimo cannot be made to emit a self-contained tree, we vendor Pyodide and
-the frontend bundle ourselves and rewrite the loader paths — a known, bounded
-job, and one worth doing once because it also makes notebooks work offline and
-survive a CDN outage. Pin the Pyodide version per bundle so a notebook
-published today still runs when Pyodide 0.30 lands.
+### 7.3 The `data:` URL problem, which is new and specific
 
-Third-party wheels are the sharp edge: a notebook importing something outside
-the base distribution triggers a runtime fetch. The rule is **declare the
-dependencies at publish time and vendor the wheels into the bundle**, and let
-the publish fail loudly rather than shipping a page that works on your laptop
-and breaks under `connect-src 'self'`.
+marimo-book's source records a trap that would have cost us a day. Under
+marimo's `ScriptRuntimeContext`, `virtual_files_supported=False`, so every
+anywidget's ES module is emitted as a `data:text/javascript;base64,…` URL — and
+marimo's own islands runtime then **refuses to load them** ("Refusing to load
+anywidget module from untrusted URL"; only `@file/…` is trusted). marimo-book
+works around this with its own shim that `import()`s the data URL directly.
+
+That workaround collides with our CSP: dynamic `import()` of a `data:` URL is
+governed by `script-src`, and `data:` is not permitted by default. Two options,
+and the first is clearly right:
+
+- **Rewrite the data URLs into vendored files at publish time**, turning them
+  into ordinary `'self'` resources. This is the same pass §7.2 already needs,
+  extended by one rule, and it keeps `data:` out of `script-src` entirely.
+- Allow `data:` in `script-src` on the compute origin only. Cheaper, and it
+  re-opens a script-execution channel on the one origin that already has
+  `wasm-unsafe-eval`. Don't.
+
+### 7.4 Two notebook paths, because they answer different questions
+
+The other thing marimo-book's source settles: **islands and `export html-wasm`
+are not interchangeable, and the difference is dependencies.**
+
+The islands runtime has two package paths — `loadPackagesFromImports`, which
+AST-scans cell source for Pyodide-bundled packages, and a `micropip.install`
+call over a list **hard-coded into the JS bundle**. Nothing reads PEP 723. So a
+pure-Python package on PyPI that isn't in Pyodide's distribution (`nltools` is
+the case that motivated the finding) silently fails to import, with no hook on
+the host page to fix it. `marimo export html-wasm` *does* read PEP 723.
+
+Hence two templates rather than one:
+
+| Template | Path | When | Class |
+|---|---|---|---|
+| `notebook` | `marimo export html-wasm --mode run` | share a whole notebook; arbitrary deps | `compute` |
+| `report` | marimo-book's static / precompute pipeline | prose with computed figures | `static` or `interactive` |
+
+The second is the discovery worth the most here, and §7.5 is about it.
+
+### 7.5 Most "interactive" notebooks do not need WASM at all
+
+marimo-book has a **kernel-free reactivity path**, and it maps exactly onto the
+content classes this design already had — which is a good sign that the classes
+are real and not invented.
+
+- **`static`** — outputs baked at build time. No script, no runtime, no Python
+  in the browser. The strictest CSP applies unchanged.
+- **`static` + precompute** — a discrete widget (`mo.ui.slider` with explicit
+  steps, `dropdown`, `radio`, `checkbox`, `switch`) is detected by AST scan, the
+  notebook is re-exported once **per value** at build time, and the outputs ship
+  as a JSON lookup table that a small shim swaps on interaction. The reader gets
+  a working slider. **There is no Pyodide, no `wasm-unsafe-eval`, no COOP/COEP,
+  and no third origin** — this is the `interactive` class, and it can live
+  beside the reports.
+- **`wasm`** — islands or the export path; real Python in the browser;
+  `compute` class, own origin, all of §7.1.
+
+The rule that falls out is about *defaults*, not about capability:
+
+> **Publish at the lowest class that answers the question — and `compute` is a
+> first-class answer, not a fallback.** A figure driven by one slider with
+> twelve steps is `interactive`: a build-time loop, no Pyodide, no third
+> origin. A notebook where the reader edits an array, runs a fit, or explores
+> something we did not anticipate is `compute`, and that case is a
+> requirement rather than an escape hatch — it is the reason §7.1 exists and
+> the reason the third origin gets built at all.
+
+Both ship. Precompute is not a way to avoid solving WASM; it is a way to stop
+*every* page paying WASM's cost. The build order does the WASM path at step 7,
+before there is a VPS to configure, precisely so that "notebooks work under a
+real CSP" is proven early rather than assumed.
+
+Where precompute stops, stated honestly so nobody is surprised into a bad
+build: it is a Cartesian product over discrete value sets, so *k* widgets with
+*n* values each is *n^k* re-exports. Fine for one slider with twelve steps;
+hopeless for four widgets, a continuous slider, a text input, or anything whose
+value set is not statically extractable. The publisher should compute that
+product up front, refuse above a configured ceiling, and say plainly which
+widget to make discrete — or that this page wants `compute`. **A page that
+falls off precompute's edge should land on WASM, not on a static screenshot.**
+
+### 7.6 The isolation problem
 
 ### 7.3 The isolation problem
 
@@ -335,12 +429,90 @@ can reach another's storage. Two answers, and the cheap one is right for now:
 
 `--mode run`, never `--mode edit`, for anything published.
 
+### 7.7 What to borrow from marimo-book, and what not to
+
+`ljchang/marimo-book` (MIT, alpha, in production behind dartbrains.org) is a
+static-site generator for marimo notebooks built on Material for MkDocs, with
+zensical migration planned. It is the same author, the same problem, one layer
+up — and it has already paid for a set of lessons this design would otherwise
+pay for again.
+
+**Borrow directly:**
+
+- **The three render modes** (`static` / `wasm` / `cached`, per-entry override
+  in `book.yml`). This is our content class, already implemented, already with
+  a config surface someone has lived with. Take the semantics and the naming.
+- **The precompute pipeline** (§7.5). It is the single largest reduction in how
+  often we need the `compute` origin at all.
+- **The content-hashed incremental build cache** (`rendered_store.py`): only
+  changed chapters re-render. This is our content-addressed bundle version by
+  another name, and a working implementation of it.
+- **`checks.py`** as the skeleton for the publish-time gate. It already walks
+  the built tree looking for problems; "no external reference survives" is one
+  more check in a place that exists.
+- **The anywidget shim and the `data:` URL rewrite** (§7.3) — the workaround is
+  the borrowable part; our version writes files instead of importing data URLs.
+- **The traps, which are the cheapest thing to inherit**: bound the render with
+  a timeout so a hung notebook cannot stall a build; strip non-deterministic
+  stderr before diffing outputs, or cache keys thrash; hoist the notebook's
+  first `# H1` or the theme injects a second one; stage a copy of the notebook
+  with PEP 723 injected rather than editing the original.
+
+**Do not borrow:**
+
+- **The CDN posture.** marimo-book targets GitHub Pages, where headers are
+  impossible and a CDN is the only sane choice. We set headers, so we vendor.
+  Same author, same tool, opposite constraint — and it is the reason §7.2 is
+  work rather than configuration.
+- **Material for MkDocs as the artifact shell.** Right for a 30-chapter book,
+  heavy for a two-page report, and it drags a Python build chain into the
+  publish path. The `report` template wants the *pipeline* — cells to HTML,
+  precompute, anywidget mounts — not the theme.
+
+**The integration shape**, then: `mecha-surface` never runs Python. The
+`notebook` and `report` templates shell out to marimo / marimo-book **at
+publish time, on the home machine**, inside the run's workspace, and what
+crosses to the public box is a vendored, checked, immutable directory of bytes.
+That keeps the public box a static file server plus one `write` endpoint, which
+is the whole reason it is auditable.
+
 ---
 
 ## 8. The quarantine layer
 
-The user asked for this explicitly. Four layers, and the ordering is the
-design: each one below is only a backstop for the one above.
+Four layers, and the ordering is the design: each one below is only a backstop
+for the one above.
+
+### Where the split falls: the server filters shape, mecha filters meaning
+
+The separate hosting server does solve a great deal, and it is worth being
+precise about which half, because the boundary is also the reason the
+quarantine lives at home.
+
+**The server filters *shape*, for free, deterministically, with no model:**
+which request type this is, that every field validates, that lengths and enums
+and dates are in range, that the capacity and season and minimum-notice rules
+pass, that the slot claim is atomic, that the sender verified an address, that
+the rate limit holds. That is most of the defense in this design, it is
+auditable by reading a few hundred lines, and it happens before a byte reaches
+the house.
+
+**The server cannot filter *meaning*.** A prompt injection is well-formed
+UTF-8 inside a valid `text` field of correct length. No amount of structural
+validation distinguishes "I'm applying to your lab because I loved your 2024
+paper" from the same sentence with an instruction appended. Deciding what may
+reach a privileged context is a judgement that can only be made where the
+privileged context is.
+
+And the decisive reason not to move it outward: **a model on the public box is
+a provider key on the box we have agreed to assume is lost.** It would also
+re-open the token faucet — an unauthenticated form that spends money per
+submission — which is the failure the whole posture exists to avoid. Keeping
+the extractor at home means it runs *after* verification has already gated the
+spend, so only real requests ever cost anything.
+
+So the layering is: the server is layer 0's enforcement point, and layers 1–3
+below all run in mecha, on drained records that arrive `.from_outside()`.
 
 ### Layer 0 — structure (the actual defense)
 
@@ -556,20 +728,25 @@ Each step is useful alone, and the first four need no public box at all.
 4. **Mine twelve months of mail for the real request types.** Read-only,
    no new code, ends with evidence instead of a guess. *An afternoon* — and it
    should happen before step 2 freezes any field list.
-5. **The bundle store and the `report` template**, published to
-   `tailscale serve <dir>`. No public box, no inbound, no origin decisions.
-   Proves publish, versioning, aliasing and workspace read-back.
-6. **The `notebook` template and the vendoring check** (§7.2). Do this early:
-   it is the step most likely to surprise us, and it is better to find out
-   before there is a VPS to configure.
-7. **Batch review in the outbox**, grouped by type.
-8. **`mecha-surface`**: the four verbs, two scoped keys, SQLite, the three
+5. **The bundle store, and a plain markdown `report`**, published to
+   `tailscale serve <dir>`. No public box, no inbound, no origin decisions,
+   no Python. Proves publish, versioning, aliasing and workspace read-back.
+6. **The vendoring pass and the publish-time external-reference gate**
+   (§7.2, §7.3), then `report` on marimo-book's static + precompute pipeline
+   (§7.5). Before the notebook path on purpose: it covers the common case,
+   needs no third origin, and the vendoring it forces is the prerequisite for
+   WASM anyway.
+7. **The `notebook` template** on `marimo export html-wasm`, and the `compute`
+   origin's headers — verified locally under a real CSP before there is a VPS
+   to configure. The step most likely to surprise us.
+8. **Batch review in the outbox**, grouped by type.
+9. **`mecha-surface`**: the four verbs, two scoped keys, SQLite, the three
    origins, the CSPs. The first step that creates a box to patch forever.
-9. **Verification, the templated acknowledgment, and the state machine
-   end to end**, with one request type.
-10. **Booking**, then **group availability**.
+10. **Verification, the templated acknowledgment, and the state machine end to
+    end**, with one request type. The quarantine layers land here.
+11. **Booking**, then **group availability**.
 
-Steps 1–7 are reversible. Step 8 is the commitment.
+Steps 1–8 are reversible. Step 9 is the commitment.
 
 ---
 
@@ -618,3 +795,6 @@ before the step that depends on them.
 - [Creating and managing ChatGPT Sites — OpenAI Help Center](https://help.openai.com/en/articles/20001339-creating-and-managing-chatgpt-sites)
 - [ChatGPT Sites Terms — OpenAI](https://openai.com/policies/chatgpt-sites-terms/)
 - [Wildcard TLS via DNS-01](https://www.alexcoorp.fr/en/patterns/tls-dns-01/)
+- [`ljchang/marimo-book` — source; the render modes, precompute pipeline, islands/PEP 723 finding, anywidget `data:` URL workaround, and the enumerated CDN references all come from reading it](https://github.com/ljchang/marimo-book)
+- [marimo-book documentation](https://marimobook.org/)
+- [dartbrains — marimo-book in production](https://github.com/ljchang/dartbrains)
