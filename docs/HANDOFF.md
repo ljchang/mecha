@@ -468,8 +468,19 @@ and the first two have research threads running as of this writing.
   The unexplored half is **programmatic tool calling** — the model writes code
   that calls tools, and intermediate results never enter the context at all
   (Anthropic measured 37% fewer tokens; the docs' honest version says 38% on
-  one benchmark, 0% and +8% cost on another). That needs a code sandbox, which
-  is why it is coupled to the item above.
+  one benchmark, 0% and +8% cost on another). ~~That needs a code sandbox,
+  which is why it is coupled to the item above.~~ **It is no longer blocked:**
+  [monty](https://github.com/pydantic/monty) is a Python interpreter written in
+  Rust, evaluated 2026-08-05 in the addendum to `docs/SANDBOX-RESEARCH.md`.
+  Startup **0.004 ms**, no host runtime to escape into (the Pyodide-under-Node
+  escape class does not exist), and — the part that matters — **the only bridge
+  to the host is external functions the embedder registers**, so "every code-
+  mode call routes back through the registry" stops being discipline and
+  becomes the architecture. Two things to get right: taint must update *within*
+  a program (the batching hole in a new place), and approval does not obviously
+  scale to a program making thirty calls. Experimental, no classes, no
+  third-party packages — so it backs a `code` tool, never `shell` and never
+  data analysis.
 - **Planning, verification, and "ralph loops" for long-horizon work.**
   Ralph-style loops re-run an agent on the same prompt until it converges.
   mecha has no convergence primitive: no runtime notion of "done", and no
@@ -1457,7 +1468,17 @@ that could have destroyed the task silently.
   | + tiered thinning | **4/5** | 5/5 |
   | + todo instruction, prompt only (2026-08-04) | 4/5 | 5/5 |
   | + todo instruction, prompt + tool description (2026-08-04) | 4/5 | 5/5 |
+  | 4-slot server era, either validation arm (confounded — see Environment) | 2/5 | 5/5 |
+  | + eviction + validation + own-budget summariser, `-np 1` (2026-08-05) | **5/5** | 5/5 |
   | uncompacted control | 5/5 | — |
+
+  The 2026-08-05 arm (`results/compaction-k5-np1.json`) is the first in which
+  the compacted case matches its uncompacted control. It bundles four changes
+  (eviction, summary validation, the summariser's own budget, spill-capped
+  results) plus the server fix, so it does not isolate any one of them — but
+  the 2/5 rows above it were the same code measured against the quartered
+  8192-token server, which is what "a stale `context_window` is worse than
+  none" looks like when the *server* moves the window.
 
   The two todo arms are not really separate treatments: the model never called
   `todo` inside the eval in either one, so both are further samples of the
