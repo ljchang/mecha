@@ -698,8 +698,14 @@ impl Agent {
             // is no safe moment to do that while a turn is in flight.
             if let Some(limit) = self.compact_limit(cx) {
                 if prompt_tokens >= limit && !compaction_gave_up {
-                    // Cheap pass first: shorten old tool *results* and keep the
-                    // calls. Costs no request, and it is the half that does not
+                    // Cheapest pass first: evict results a later call has
+                    // superseded. Lossless — the newest result still says
+                    // everything the transcript knows — and it removes the
+                    // *stale* copy, which misleads where mere bulk only
+                    // costs tokens.
+                    let evicted = crate::compact::evict_superseded_results(messages);
+                    // Then shorten old tool *results* and keep the calls.
+                    // Costs no request, and it is the half that does not
                     // lose the agent's place — the sequence of calls is what
                     // says which files it already visited, and summarising the
                     // middle throws that away along with the bulk.
@@ -708,8 +714,8 @@ impl Agent {
                         self.cfg.compact_keep_recent.max(1) * 2,
                         crate::compact::THINNED_RESULT_CHARS,
                     );
-                    if thinned > 0 {
-                        tracing::info!(thinned, "shortened old tool results");
+                    if evicted + thinned > 0 {
+                        tracing::info!(evicted, thinned, "evicted and shortened old tool results");
                         emit(
                             &events,
                             AgentEvent::Compacted {
@@ -827,6 +833,7 @@ impl Agent {
             let completion = match self.complete(cx, &request, &events).await {
                 Err(e) if is_context_overflow(&e) && !compaction_gave_up => {
                     tracing::warn!("prompt overflowed the context window; compacting to recover");
+                    crate::compact::evict_superseded_results(messages);
                     crate::compact::thin_old_results(
                         messages,
                         self.cfg.compact_keep_recent.max(1) * 2,
@@ -2536,6 +2543,54 @@ mod tests {
         agent.run(&mut convo, None).await.unwrap();
         // user, assistant(tool_use), user(tool_result), assistant(text)
         assert_eq!(convo.len(), 4, "nothing should have been summarised away");
+    }
+
+    #[tokio::test]
+    async fn under_pressure_the_loop_evicts_stale_results_without_paying_for_a_summary() {
+        // The model asks the same question twice; once the threshold trips,
+        // the older answer is stale — semantically related to the current
+        // state and wrong about it, the measurably worst kind of context —
+        // and evicting it costs no request. The scripted turns all report a
+        // prompt over the threshold, so the check runs between every turn.
+        let calls = |id: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "echo".into(),
+                    input: json!({"value": "same question"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (mut agent, _) = agent_with(
+            vec![calls("t0"), calls("t1"), assistant(vec![Block::text("done")], StopReason::EndTurn)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.compact_at_tokens = Some(1);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.force_final_answer = false;
+
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        let bodies: Vec<String> = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            bodies[0].starts_with(crate::compact::SUPERSEDED_MARKER),
+            "the older duplicate should have been evicted, got {:?}",
+            bodies[0]
+        );
+        assert_eq!(bodies[1], "same question", "the newest answer is authoritative");
+        // Freeing the stale copy is lossless bookkeeping, not compaction: no
+        // summariser request was spent and nothing was paraphrased.
+        assert_eq!(outcome.compactions, 0);
     }
 
     // --- interruption and steering ---
