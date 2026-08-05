@@ -265,11 +265,12 @@ plus a set of floors.
 
 **Ask about policy, not about items.** The elicitation that makes this work is
 not "approve this draft" repeated forty times; it is one question whose answer
-governs a class. The mail evidence is unusually clear here: **four booleans
-resolve most decisions across the four highest-volume request types** — does
-this require travel, is it a Friday, do I know an author, am I recruiting and
-funded this cycle. Asked once, "am I recruiting this cycle?" disposes of a
-year of lab-join requests. That ratio — one answer, many decisions — is the
+governs a class. The mail evidence is unusually clear here: **a handful of
+booleans resolve most decisions across the four highest-volume request types**
+— a travel constraint, a standing recurring commitment, a
+conflict-of-interest check, and a capacity-and-funding flag. Asked once, a
+single capacity answer disposes of a year of lab-join requests. (The specific
+values are the user's private policy and live with the evidence, not here.) That ratio — one answer, many decisions — is the
 thing to optimise, and it is why the typed request matters: a policy answer
 can act on a typed field and cannot act on free prose.
 
