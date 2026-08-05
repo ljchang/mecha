@@ -1,0 +1,617 @@
+{
+  "scorecard": {
+    "model": "qwen3.6-35b-a3b",
+    "provider": "local",
+    "total": 2,
+    "passed": 1,
+    "passed_any": 2,
+    "runs_per_case": 5,
+    "check_pass_rate": 0.8444444444444444,
+    "malformed_tool_args": 0,
+    "unknown_tools": 0,
+    "tool_errors": 0,
+    "runs_errored": 0,
+    "mean_turns": 16.0,
+    "median_latency_ms": 456263,
+    "total_usage": {
+      "input_tokens": 823229,
+      "output_tokens": 137704,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0
+    },
+    "wall_clock_ms": 1103086,
+    "by_tag": [
+      {
+        "tag": "long-horizon",
+        "passed": 0,
+        "total": 1,
+        "passed_any": 1
+      },
+      {
+        "tag": "compaction",
+        "passed": 1,
+        "total": 2,
+        "passed_any": 2
+      }
+    ]
+  },
+  "cases": [
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls fs_read",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "says \"847\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "says \"16\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "omits \"4541\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "fs_read.path",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "compacts at least 1 time(s)",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤28 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 546501,
+      "id": "chain-total-compacted",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "run": 1,
+      "tags": [
+        "long-horizon",
+        "compaction"
+      ],
+      "text": "The chain ends at `audit/entry-d084.md` (entry 16), which specifies `next: END`.\n\nHere are the results:\n\n- **Total entries on the chain:** 16\n- **Sum of amounts:** 847\n\nBreakdown of the last six entries added to the running total of 533:\n- entry 11: 43\n- entry 12: 17\n- entry 13: 91\n- entry 14: 80\n- entry 15: 55\n- entry 16: 28",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read"
+      ],
+      "turns": 17,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 89424,
+        "output_tokens": 14450
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls fs_read",
+          "passed": true
+        },
+        {
+          "detail": "not in the answer",
+          "name": "says \"847\"",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "says \"16\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "omits \"4541\"",
+          "passed": true
+        },
+        {
+          "detail": "got audit/START.md, audit/entry-735e.md, audit/entry-0c6e.md, audit/entry-6550.md, audit/entry-6bf2.md, audit/entry-9bc7.md, audit/entry-f876.md, audit/entry-82dd.md, audit/entry-9718.md, audit/entry-35da.md, audit/entry-9e1b.md, audit/entry-6189.md, audit/entry-b0b9.md, audit/entry-339d.md, audit/entry-6e80.md",
+          "name": "fs_read.path",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "compacts at least 1 time(s)",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤28 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 509845,
+      "id": "chain-total-compacted",
+      "malformed_tool_args": 0,
+      "passed": false,
+      "run": 2,
+      "tags": [
+        "long-horizon",
+        "compaction"
+      ],
+      "text": "No answer was produced: the model ended its turn after 16 turns without saying anything (stop reason: EndTurn).",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read"
+      ],
+      "turns": 16,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 88483,
+        "output_tokens": 17260
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls fs_read",
+          "passed": true
+        },
+        {
+          "detail": "not in the answer",
+          "name": "says \"847\"",
+          "passed": false
+        },
+        {
+          "detail": "not in the answer",
+          "name": "says \"16\"",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "omits \"4541\"",
+          "passed": true
+        },
+        {
+          "detail": "got audit/START.md, audit/entry-735e.md, audit/entry-0c6e.md, audit/entry-6550.md, audit/entry-6bf2.md, audit/entry-9bc7.md",
+          "name": "fs_read.path",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "compacts at least 1 time(s)",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤28 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 51032,
+      "id": "chain-total-compacted",
+      "malformed_tool_args": 0,
+      "passed": false,
+      "run": 3,
+      "tags": [
+        "long-horizon",
+        "compaction"
+      ],
+      "text": "No answer was produced: the model ended its turn after 7 turns without saying anything (stop reason: EndTurn).",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read",
+        "fs_list",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read"
+      ],
+      "turns": 7,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 31440,
+        "output_tokens": 1458
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls fs_read",
+          "passed": true
+        },
+        {
+          "detail": "not in the answer",
+          "name": "says \"847\"",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "says \"16\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "omits \"4541\"",
+          "passed": true
+        },
+        {
+          "detail": "got audit/START.md, audit/entry-735e.md, audit/entry-0c6e.md, audit/entry-6550.md, audit/entry-6bf2.md, audit/entry-9bc7.md, audit/entry-f876.md, audit/entry-82dd.md, audit/entry-9718.md, audit/entry-35da.md, audit/entry-9e1b.md, audit/entry-6189.md",
+          "name": "fs_read.path",
+          "passed": false
+        },
+        {
+          "detail": "",
+          "name": "compacts at least 1 time(s)",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤28 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 336006,
+      "id": "chain-total-compacted",
+      "malformed_tool_args": 0,
+      "passed": false,
+      "run": 4,
+      "tags": [
+        "long-horizon",
+        "compaction"
+      ],
+      "text": "I've reached the end of the chain. Here are the results:\n\n- **Total of amounts:** 593\n- **Number of entries on the chain:** 12\n\nThe chain runs: START (16) → entry-735e (34) → entry-0c6e (72) → entry-6550 (60) → entry-6bf2 (23) → entry-9bc7 (68) → entry-f876 (42) → entry-82dd (92) → entry-9718 (96) → entry-35da (30) → entry-9e1b (43) → entry-6189 (17) → END.",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read"
+      ],
+      "turns": 13,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 64674,
+        "output_tokens": 11193
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "calls fs_read",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "says \"847\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "says \"16\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "omits \"4541\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "fs_read.path",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "compacts at least 1 time(s)",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "≤28 turns",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 507033,
+      "id": "chain-total-compacted",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "run": 5,
+      "tags": [
+        "long-horizon",
+        "compaction"
+      ],
+      "text": "The chain is complete. `entry-d084.md` specifies `next: END`.\n\n**Total entries on the chain: 16**\n\n**Total of amount values: 847**\n\nHere's the full chain for reference:\n\n| # | File | Amount |\n|---|------|--------|\n| 1 | START.md | 16 |\n| 2 | entry-735e.md | 34 |\n| 3 | entry-0c6e.md | 72 |\n| 4 | entry-6550.md | 60 |\n| 5 | entry-6bf2.md | 23 |\n| 6 | entry-9bc7.md | 68 |\n| 7 | entry-f876.md | 42 |\n| 8 | entry-82dd.md | 92 |\n| 9 | entry-9718.md | 96 |\n| 10 | entry-35da.md | 30 |\n| 11 | entry-9e1b.md | 43 |\n| 12 | entry-6189.md | 17 |\n| 13 | entry-b0b9.md | 91 |\n| 14 | entry-339d.md | 80 |\n| 15 | entry-6e80.md | 55 |\n| 16 | entry-d084.md | 28 |",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read",
+        "fs_list",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read"
+      ],
+      "turns": 17,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 93401,
+        "output_tokens": 17490
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "says \"QX-4417\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "compacts at least 1 time(s)",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 456263,
+      "id": "compaction-carries-the-task",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "run": 1,
+      "tags": [
+        "compaction"
+      ],
+      "text": "QX-4417",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read"
+      ],
+      "turns": 18,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 89942,
+        "output_tokens": 15250
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "says \"QX-4417\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "compacts at least 1 time(s)",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 462450,
+      "id": "compaction-carries-the-task",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "run": 2,
+      "tags": [
+        "compaction"
+      ],
+      "text": "QX-4417",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read"
+      ],
+      "turns": 18,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 90481,
+        "output_tokens": 15226
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "says \"QX-4417\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "compacts at least 1 time(s)",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 430905,
+      "id": "compaction-carries-the-task",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "run": 3,
+      "tags": [
+        "compaction"
+      ],
+      "text": "QX-4417",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read"
+      ],
+      "turns": 18,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 91581,
+        "output_tokens": 14368
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "says \"QX-4417\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "compacts at least 1 time(s)",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 447160,
+      "id": "compaction-carries-the-task",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "run": 4,
+      "tags": [
+        "compaction"
+      ],
+      "text": "QX-4417",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read"
+      ],
+      "turns": 18,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 90403,
+        "output_tokens": 15409
+      }
+    },
+    {
+      "checks": [
+        {
+          "detail": "",
+          "name": "says \"QX-4417\"",
+          "passed": true
+        },
+        {
+          "detail": "",
+          "name": "compacts at least 1 time(s)",
+          "passed": true
+        }
+      ],
+      "elapsed_ms": 310815,
+      "id": "compaction-carries-the-task",
+      "malformed_tool_args": 0,
+      "passed": true,
+      "run": 5,
+      "tags": [
+        "compaction"
+      ],
+      "text": "QX-4417",
+      "tool_errors": 0,
+      "tools_called": [
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read",
+        "fs_read"
+      ],
+      "turns": 18,
+      "unknown_tools": 0,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 93400,
+        "output_tokens": 15600
+      }
+    }
+  ]
+}
