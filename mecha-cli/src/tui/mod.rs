@@ -16,6 +16,7 @@ mod ask;
 mod command;
 mod tools;
 mod transcript;
+mod triggers;
 
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
@@ -184,6 +185,11 @@ struct App {
     help: bool,
     /// The /tools modal, when open. Takes every key while it is up.
     tools: Option<tools::ToolsModal>,
+    /// The /triggers modal, when open. Takes every key while it is up.
+    scheduled: Option<triggers::TriggersModal>,
+    /// A trigger file to open in $EDITOR, deferred to the event loop for the
+    /// same reason `pending_editor` is: suspending the TUI needs the terminal.
+    pending_trigger_edit: Option<String>,
     /// Where a finished `!command` posts its output. The receiver lives in
     /// the event loop; running the command on a task keeps the input line
     /// live while it does.
@@ -383,6 +389,8 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         workspace: prepared.workspace.clone(),
         todo_visible: true,
         pending_editor: false,
+        scheduled: None,
+        pending_trigger_edit: None,
         shell_tx,
         providers: prepared
             .config
@@ -481,6 +489,12 @@ async fn run_loop(
         if app.pending_editor {
             app.pending_editor = false;
             suspend_and_edit(terminal, app)?;
+            continue;
+        }
+
+        // Editing a trigger file, same deferral and the same suspend dance.
+        if let Some(name) = app.pending_trigger_edit.take() {
+            suspend_and_edit_trigger(terminal, app, &name)?;
             continue;
         }
 
@@ -729,6 +743,11 @@ fn on_key(
             _ => {}
         }
         return Ok(());
+    }
+
+    // The triggers modal, same rule as /tools: it owns the keyboard.
+    if app.scheduled.is_some() {
+        return handle_triggers_key(app, key);
     }
 
     // A modal list owns the keyboard while it is up, for the same reason the
@@ -1076,6 +1095,11 @@ fn run_command(
             });
         }
 
+        Command::Triggers => match triggers::load(5) {
+            Ok(rows) => app.scheduled = Some(triggers::TriggersModal::new(rows)),
+            Err(e) => say(format!("triggers: {e:#}")),
+        },
+
         Command::Usage => say(format!(
             "{} · {} in the last prompt",
             crate::render::format_usage(&app.usage),
@@ -1299,6 +1323,180 @@ fn submit(
     Ok(())
 }
 
+/// Keys for the /triggers modal.
+///
+/// Split out rather than inlined because it does more than move a cursor: each
+/// action shells out and then reloads the rows, and that is worth reading in
+/// one place. Every mutation goes through `mecha trigger ...`, so the modal can
+/// do exactly what the command line can and no more.
+fn handle_triggers_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let Some(modal) = &mut app.scheduled else { return Ok(()) };
+
+    // A pending confirmation swallows the keyboard: y does the thing, anything
+    // else backs out. Deliberately not "any key confirms".
+    if let Some(confirm) = modal.confirm.take() {
+        if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+            let outcome = trigger_cli(&["rm", &confirm.name]);
+            modal.status = Some(match outcome {
+                Ok(_) => format!("deleted `{}`", confirm.name),
+                Err(e) => format!("could not delete `{}`: {e}", confirm.name),
+            });
+            reload_triggers(app);
+        }
+        return Ok(());
+    }
+
+    // Any keypress clears the last action's message: it has been read, and a
+    // stale "started `morning`" over a later action is worse than no message.
+    modal.status = None;
+
+    match key.code {
+        KeyCode::Up => {
+            if modal.detail {
+                modal.scroll_detail(-1)
+            } else {
+                modal.move_by(-1)
+            }
+        }
+        KeyCode::Down => {
+            if modal.detail {
+                modal.scroll_detail(1)
+            } else {
+                modal.move_by(1)
+            }
+        }
+        KeyCode::PageUp if modal.detail => modal.scroll_detail(-10),
+        KeyCode::PageDown if modal.detail => modal.scroll_detail(10),
+        KeyCode::Enter => {
+            modal.detail = !modal.detail;
+            modal.detail_scroll = 0;
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            if modal.detail {
+                modal.detail = false;
+            } else {
+                app.scheduled = None;
+            }
+        }
+        // Editing suspends the whole TUI, so it cannot happen here — defer it
+        // to the event loop, which owns the terminal.
+        KeyCode::Char('e') => {
+            if let Some(name) = modal.selected_name() {
+                app.pending_trigger_edit = Some(name.to_string());
+            }
+        }
+        KeyCode::Char(' ') => {
+            if let Some(row) = modal.selected_row() {
+                let (verb, name) = (if row.enabled { "disable" } else { "enable" }, row.name.clone());
+                let outcome = trigger_cli(&[verb, &name]);
+                modal.status = Some(match outcome {
+                    Ok(_) => format!("{verb}d `{name}`"),
+                    Err(e) => format!("could not {verb} `{name}`: {e}"),
+                });
+                reload_triggers(app);
+            }
+        }
+        // Run now: spawned detached, never awaited. A briefing takes half a
+        // minute and a codegen trigger could take twenty, and the interface
+        // has to stay live — the ledger and the session are where the result
+        // lands, and the modal shows both on reload.
+        KeyCode::Char('r') => {
+            if let Some(name) = modal.selected_name().map(str::to_string) {
+                modal.status = Some(match spawn_trigger_run(&name) {
+                    Ok(_) => format!("started `{name}` — reopen /triggers to see how it went"),
+                    Err(e) => format!("could not start `{name}`: {e}"),
+                });
+                reload_triggers(app);
+            }
+        }
+        // Cancel the run in flight. Not a signal — see `TriggerStore::
+        // request_cancel`; it stops at the next safe point and keeps its
+        // partial answer.
+        KeyCode::Char('c') => {
+            if let Some(name) = modal.selected_name().map(str::to_string) {
+                modal.status = Some(match trigger_cli(&["cancel", &name]) {
+                    Ok(out) => out.trim().to_string(),
+                    Err(e) => format!("could not cancel `{name}`: {e}"),
+                });
+                reload_triggers(app);
+            }
+        }
+        // Deleting is the one thing here that cannot be undone by pressing the
+        // same key again, so it is the one thing that asks.
+        KeyCode::Char('x') => {
+            if let Some(row) = modal.selected_row() {
+                modal.confirm = Some(triggers::Confirm {
+                    name: row.name.clone(),
+                    prompt: format!(
+                        "Delete trigger `{}`? Its file goes; its ledger rows stay as the record.",
+                        row.name
+                    ),
+                });
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Rebuild the modal's rows, keeping the cursor where it was.
+fn reload_triggers(app: &mut App) {
+    let (selected, detail, status) = match &app.scheduled {
+        Some(m) => (m.selected, m.detail, m.status.clone()),
+        None => return,
+    };
+    match triggers::load(5) {
+        Ok(rows) => {
+            let selected = selected.min(rows.len().saturating_sub(1));
+            app.scheduled = Some(triggers::TriggersModal {
+                selected,
+                detail: detail && !rows.is_empty(),
+                status,
+                ..triggers::TriggersModal::new(rows)
+            });
+        }
+        Err(e) => {
+            app.scheduled = None;
+            app.transcript.push(Entry::Error(format!("triggers: {e:#}")));
+        }
+    }
+}
+
+/// Run `mecha trigger ...` and return its output.
+///
+/// `current_exe` rather than a bare `mecha`, so a TUI started from
+/// `target/debug` drives the build it is part of and not whatever is on PATH —
+/// otherwise testing a change to triggers would silently exercise the
+/// installed binary.
+fn trigger_cli(args: &[&str]) -> Result<String> {
+    let exe = std::env::current_exe().context("cannot find my own binary")?;
+    let out = std::process::Command::new(exe)
+        .arg("trigger")
+        .args(args)
+        .output()
+        .context("running mecha trigger")?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("{}", err.trim().lines().next().unwrap_or("failed"))
+    }
+}
+
+/// Start a run and do not wait for it. Output goes nowhere: the TUI owns the
+/// screen, and the run's real record is its session and its ledger row.
+fn spawn_trigger_run(name: &str) -> Result<()> {
+    let exe = std::env::current_exe().context("cannot find my own binary")?;
+    std::process::Command::new(exe)
+        .args(["trigger", "run", name])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("starting the run")?;
+    Ok(())
+}
+
 /// Hand the terminal to `$EDITOR` with the current input, and take both back.
 ///
 /// The suspend mirrors `leave()` and the restore mirrors `enter()`, minus the
@@ -1350,6 +1548,61 @@ fn suspend_and_edit(terminal: &mut Terminal<impl Backend>, app: &mut App) -> Res
             .transcript
             .push(Entry::Error(format!("editor: {e:#} — the input is unchanged"))),
     }
+    Ok(())
+}
+
+/// Edit a trigger's file in `$EDITOR`, then reload the modal.
+///
+/// The suspend is the same dance as `suspend_and_edit`; what differs is where
+/// the text goes. Saving goes through `mecha trigger edit`'s own validation
+/// path — a file that does not parse is refused and the old one kept — so a
+/// mistyped schedule cannot silently disarm a trigger.
+fn suspend_and_edit_trigger(
+    terminal: &mut Terminal<impl Backend>,
+    app: &mut App,
+    name: &str,
+) -> Result<()> {
+    disable_raw_mode()?;
+    if kitty_pushed() {
+        crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
+    }
+    crossterm::execute!(
+        std::io::stdout(),
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        DisableBracketedPaste
+    )?;
+
+    let result = trigger_cli(&["edit", name]);
+
+    enable_raw_mode()?;
+    crossterm::execute!(
+        std::io::stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
+    if kitty_pushed() {
+        crossterm::execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
+    terminal.clear()?;
+
+    if let Some(modal) = &mut app.scheduled {
+        modal.status = Some(match &result {
+            Ok(_) => format!("saved `{name}`"),
+            Err(e) => format!("`{name}` not saved: {e}"),
+        });
+    }
+    // Loud as well as in the title: an edit that was rejected must not be
+    // something you only find out about at 07:00 tomorrow.
+    if let Err(e) = result {
+        app.transcript
+            .push(Entry::Error(format!("trigger `{name}` was not saved: {e}")));
+    }
+    reload_triggers(app);
     Ok(())
 }
 
@@ -1608,6 +1861,9 @@ fn draw(
         draw_help(frame, app.kitty_keyboard);
     }
     if let Some(modal) = &app.tools {
+        modal.draw(frame);
+    }
+    if let Some(modal) = &app.scheduled {
         modal.draw(frame);
     }
     if let Some(question) = &app.asking {
@@ -1967,6 +2223,8 @@ mod tests {
             workspace: std::env::temp_dir(),
             todo_visible: true,
             pending_editor: false,
+            scheduled: None,
+            pending_trigger_edit: None,
             shell_tx,
             providers: Vec::new(),
             kitty_keyboard: false,
