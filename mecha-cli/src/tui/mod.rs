@@ -172,6 +172,9 @@ struct App {
     asking: Option<ask::Question>,
     /// Open modal list, if any. Takes every key while it is up.
     picker: Option<Picker>,
+    /// The help overlay is up. It exists to be glanced at and dismissed, so
+    /// any key closes it.
+    help: bool,
     /// Every provider entry in config, as (name, model). Fixed for the session.
     providers: Vec<(String, String)>,
     /// Whether the terminal speaks the kitty keyboard protocol, which is what
@@ -347,6 +350,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         phase: Phase::default(),
         asking: None,
         picker: None,
+        help: false,
         providers: prepared
             .config
             .providers
@@ -678,6 +682,14 @@ fn on_key(
         return Ok(());
     }
 
+    // The help overlay takes the next key, whatever it is: it exists to be
+    // glanced at and dismissed. Checked after the real modals — an approval
+    // or a question arriving while help is up still gets its answer.
+    if app.help {
+        app.help = false;
+        return Ok(());
+    }
+
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     match key.code {
@@ -756,6 +768,10 @@ fn on_key(
                 submit(app, text, events_tx, events_rx, agent, session)?;
             }
         }
+
+        // Only on an empty line: with anything typed, `?` is a character in a
+        // question the user is writing.
+        KeyCode::Char('?') if app.input.is_empty() => app.help = true,
 
         KeyCode::Char(c) => {
             app.quit_armed = false;
@@ -943,22 +959,7 @@ fn run_command(
     let mut say = |text: String| app.transcript.push(Entry::Notice(text));
 
     match cmd {
-        Command::Help => {
-            app.picker = Some(Picker {
-                title: " commands · ↑↓ then enter, esc to cancel ".into(),
-                items: vec![
-                    ("model      switch model or provider".into(), Command::Model(None)),
-                    ("mode       ask · allow · read-only".into(), Command::Mode(None)),
-                    ("mcp        turn MCP servers on or off".into(), Command::Mcp(None)),
-                    ("tools      what this agent can call".into(), Command::Tools),
-                    ("usage      tokens used this session".into(), Command::Usage),
-                    ("clear      new conversation, drops taint".into(), Command::Clear),
-                    ("session    where the transcript is".into(), Command::Session),
-                    ("exit       quit".into(), Command::Quit),
-                ],
-                selected: 0,
-            });
-        }
+        Command::Help => app.help = true,
 
         Command::Tools => {
             let mut lines = String::new();
@@ -1309,6 +1310,11 @@ fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: us
         );
     }
 
+    // Help first: a question or an approval arriving while it is up matters
+    // more than the reference card, so they draw over it.
+    if app.help {
+        draw_help(frame, app.kitty_keyboard);
+    }
     if let Some(question) = &app.asking {
         draw_question(frame, question);
     }
@@ -1318,6 +1324,57 @@ fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: us
     if let Some(request) = &app.pending {
         draw_approval(frame, request);
     }
+}
+
+/// The middle tier of progressive disclosure: the status line hints at 3–4
+/// keys in the moment, this lists all of them, and the docs hold the rest.
+fn draw_help(frame: &mut Frame, kitty: bool) {
+    // Shift+Enter only where it can actually arrive — advertising it on a
+    // terminal without the kitty protocol would teach a key that submits.
+    let newline_keys = if kitty { "shift+enter · alt+enter" } else { "alt+enter" };
+    let keys: Vec<(&str, String)> = vec![
+        ("enter", "send · while running, steer the run".into()),
+        (newline_keys, "insert a newline".into()),
+        ("tab", "complete a slash command".into()),
+        ("shift+tab", "toggle planning (writing tools hidden)".into()),
+        ("^o", "show or hide thinking and tool output".into()),
+        ("^c", "stop the run · twice at idle to quit".into()),
+        ("^d", "quit, when the input is empty".into()),
+        ("esc", "jump back to the newest output".into()),
+        ("pgup pgdn wheel", "scroll the transcript".into()),
+        ("↑ ↓", "input history".into()),
+        ("?", "this overlay, on an empty line".into()),
+    ];
+
+    let mut body: Vec<Line> = keys
+        .iter()
+        .map(|(key, what)| {
+            Line::from(vec![
+                Span::styled(format!("  {key:<18}"), Style::new().fg(Color::Cyan)),
+                Span::styled(what.clone(), Style::new().fg(Color::White)),
+            ])
+        })
+        .collect();
+    body.push(Line::raw(""));
+    for line in command::HELP.lines() {
+        body.push(Line::styled(line.to_string(), Style::new().fg(Color::DarkGray)));
+    }
+
+    let area = centered(
+        frame.area(),
+        70,
+        (body.len() as u16).saturating_add(2).min(frame.area().height),
+    );
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(body).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::new().fg(Color::Cyan))
+                .title(" help · any key to close "),
+        ),
+        area,
+    );
 }
 
 fn draw_question(frame: &mut Frame, q: &ask::Question) {
