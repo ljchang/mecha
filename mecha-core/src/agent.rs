@@ -996,9 +996,60 @@ impl Agent {
             Completion::Interrupted(..) => return Ok(None),
         };
 
-        let summary = response.message.text();
+        let mut summary = response.message.text();
         if summary.trim().is_empty() {
             anyhow::bail!("the summariser returned nothing");
+        }
+        // A summary cut off by the token limit is a guaranteed omission, and
+        // it loses the *end* — which is where "what remained to be done"
+        // lives. Deterministic and free to check, unlike everything a
+        // validator can say. The caller treats this as "carry on uncompacted".
+        anyhow::ensure!(
+            response.stop_reason != crate::message::StopReason::MaxTokens,
+            "the summary hit the {}-token limit before finishing; it would have \
+             installed truncated",
+            request.max_tokens
+        );
+        let mut spent = response.usage.clone();
+
+        // The Slipstream shape: a grounded comparison of the summary against
+        // the text it replaces, asking only for omissions, with one
+        // regeneration that names them. The producer cannot see its own gaps;
+        // a reader with both texts in front of it can. This is not a
+        // completion gate — an unusable verdict is a warning, not a veto,
+        // because a run that needs to compact to survive must still compact.
+        if self.cfg.compact_validate {
+            match self.validate_summary(cx, &rendered, &summary, events).await {
+                Ok((usage, Some(omissions))) => {
+                    spent.add(&usage);
+                    tracing::info!(
+                        omissions = omissions.len(),
+                        "summary failed validation; regenerating with the omissions named"
+                    );
+                    let retry = vec![Message::user(format!(
+                        "{rendered}\n---\n{}",
+                        crate::compact::retry_instruction(&omissions)
+                    ))];
+                    let request = CompletionRequest { messages: retry, ..request };
+                    if let Completion::Finished(second) =
+                        self.complete(cx, &request, events).await?
+                    {
+                        spent.add(&second.usage);
+                        let text = second.message.text();
+                        // A failed retry keeps the first summary: validated-
+                        // with-known-gaps beats empty or truncated.
+                        if !text.trim().is_empty()
+                            && second.stop_reason != crate::message::StopReason::MaxTokens
+                        {
+                            summary = text;
+                        }
+                    }
+                }
+                Ok((usage, None)) => spent.add(&usage),
+                // The validator is quality improvement, not a guard: its
+                // failure must not cost the run the compaction.
+                Err(e) => tracing::warn!(error = %e, "summary validation failed; installing unvalidated"),
+            }
         }
 
         let rebuilt = crate::compact::rebuild(messages, cut, &summary);
@@ -1025,7 +1076,48 @@ impl Agent {
                 prompt_tokens: response.usage.total_input(),
             },
         );
-        Ok(Some(response.usage))
+        Ok(Some(spent))
+    }
+
+    /// Ask a second, tool-less call what the summary lost.
+    ///
+    /// Returns the tokens it cost and the omissions it found — `None` for
+    /// "nothing missing" *and* for "no usable verdict", which the caller
+    /// treats identically on purpose: only a positive finding is worth a
+    /// regeneration.
+    async fn validate_summary(
+        &self,
+        cx: &RunContext,
+        rendered: &str,
+        summary: &str,
+        events: &Option<UnboundedSender<AgentEvent>>,
+    ) -> Result<(Usage, Option<Vec<String>>)> {
+        let request = CompletionRequest {
+            model: self.model.clone(),
+            system: Some(crate::compact::VALIDATE_SYSTEM.to_string()),
+            messages: vec![Message::user(crate::compact::validate_instruction(
+                rendered, summary,
+            ))],
+            tools: Vec::new(),
+            max_tokens: self.cfg.max_tokens.min(8192),
+            effort: self.cfg.effort,
+            thinking: false,
+            cache_prompt: false,
+        };
+        let response = match self.complete(cx, &request, events).await? {
+            Completion::Finished(response) => *response,
+            // Cancelled mid-verdict: the run is ending, install what exists.
+            Completion::Interrupted(..) => return Ok((Usage::default(), None)),
+        };
+        let verdict = match crate::compact::parse_omissions(&response.message.text()) {
+            Some(crate::compact::SummaryVerdict::Missing(omissions)) => Some(omissions),
+            Some(crate::compact::SummaryVerdict::Complete) => None,
+            None => {
+                tracing::warn!("the summary validator returned no usable verdict");
+                None
+            }
+        };
+        Ok((response.usage, verdict))
     }
 
     /// One last turn with no tools available.
@@ -2498,6 +2590,9 @@ mod tests {
         agent.cfg.compact_keep_recent = 2;
         agent.cfg.max_turns = 6;
         agent.cfg.force_final_answer = false;
+        // Off so the scripted-turn arithmetic stays about compaction itself;
+        // validation has its own tests below.
+        agent.cfg.compact_validate = false;
 
         let mut convo = Conversation::user("the original task");
         // Something the conversation already knows, which compaction must not
@@ -2543,6 +2638,116 @@ mod tests {
         agent.run(&mut convo, None).await.unwrap();
         // user, assistant(tool_use), user(tool_result), assistant(text)
         assert_eq!(convo.len(), 4, "nothing should have been summarised away");
+    }
+
+    /// Three distinct tool turns: enough transcript for `worth_compacting`,
+    /// nothing for eviction or thinning to shortcut.
+    fn three_calls() -> Vec<CompletionResponse> {
+        (0..3)
+            .map(|i| {
+                assistant(
+                    vec![Block::ToolUse {
+                        id: format!("t{i}"),
+                        name: "echo".into(),
+                        input: json!({"value": format!("v{i}")}),
+                    }],
+                    StopReason::ToolUse,
+                )
+            })
+            .collect()
+    }
+
+    fn compacting_agent(turns: Vec<CompletionResponse>) -> (Agent, Arc<ScriptedProvider>) {
+        let (mut agent, provider) = agent_with(turns, PermissionMode::Allow);
+        agent.cfg.compact_at_tokens = Some(1);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.force_final_answer = false;
+        (agent, provider)
+    }
+
+    #[tokio::test]
+    async fn a_summary_that_fails_validation_is_regenerated_with_the_omissions_named() {
+        let mut turns = three_calls();
+        turns.push(assistant(vec![Block::text("bad summary")], StopReason::EndTurn));
+        turns.push(assistant(
+            vec![Block::text("- the amount 847 from entry three")],
+            StopReason::EndTurn,
+        ));
+        turns.push(assistant(
+            vec![Block::text("good summary: amount 847")],
+            StopReason::EndTurn,
+        ));
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (agent, provider) = compacting_agent(turns);
+        let mut convo = Conversation::user("audit the entries");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        // The regenerated summary is what got installed...
+        assert!(convo.messages[0].text().contains("good summary: amount 847"));
+        assert!(!convo.messages[0].text().contains("bad summary"));
+        assert_eq!(outcome.compactions, 1, "a regeneration is still one compaction");
+
+        // ...the validator was shown both texts...
+        let seen = provider.seen.lock().unwrap();
+        let validation = seen
+            .iter()
+            .find(|r| r.system.as_deref() == Some(crate::compact::VALIDATE_SYSTEM))
+            .expect("no validation request was made");
+        assert!(validation.messages[0].text().contains("bad summary"));
+
+        // ...and the retry was told exactly what the first attempt lost,
+        // because the summariser cannot see its own gaps unaided.
+        let retry = seen
+            .iter()
+            .filter(|r| r.system.as_deref() == Some(crate::compact::SUMMARY_SYSTEM))
+            .nth(1)
+            .expect("no regeneration request was made");
+        assert!(retry.messages[0].text().contains("the amount 847 from entry three"));
+    }
+
+    #[tokio::test]
+    async fn a_validated_summary_installs_without_a_second_summariser_call() {
+        let mut turns = three_calls();
+        turns.push(assistant(vec![Block::text("first summary")], StopReason::EndTurn));
+        turns.push(assistant(vec![Block::text("NONE")], StopReason::EndTurn));
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (agent, provider) = compacting_agent(turns);
+        let mut convo = Conversation::user("audit the entries");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert!(convo.messages[0].text().contains("first summary"));
+        assert_eq!(outcome.compactions, 1);
+        let summaries = provider
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.system.as_deref() == Some(crate::compact::SUMMARY_SYSTEM))
+            .count();
+        assert_eq!(summaries, 1, "a passing verdict must not trigger a regeneration");
+    }
+
+    #[tokio::test]
+    async fn a_truncated_summary_is_never_installed() {
+        // MaxTokens on the summariser means the summary lost its ending —
+        // "what remained to be done" — and a deterministic check catches it
+        // for free. The old behaviour installed it silently.
+        let mut turns = three_calls();
+        turns.push(assistant(vec![Block::text("half a summ")], StopReason::MaxTokens));
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (agent, _) = compacting_agent(turns);
+        let mut convo = Conversation::user("audit the entries");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.compactions, 0);
+        assert!(
+            !convo.messages[0].text().contains("half a summ"),
+            "a truncated summary reached the transcript"
+        );
+        assert_eq!(outcome.text, "done", "the run should carry on uncompacted");
     }
 
     #[tokio::test]

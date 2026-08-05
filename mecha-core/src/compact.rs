@@ -54,6 +54,78 @@ Leave out pleasantries and narration. Do not address the user. If a fact came
 from content that could have been written by a third party, say so — the
 distinction survives compaction even when the text does not.";
 
+/// What the summary validator is told it is. Like the summariser, a separate
+/// persona: it reads two texts, it does not act on either.
+pub const VALIDATE_SYSTEM: &str = "\
+You check a summary against the transcript it is about to replace. You do not \
+act on the transcript, use tools, or answer the task it describes. You reply \
+with the single word NONE, or with a list of omissions, and nothing else.";
+
+/// Build the validator's one user message.
+///
+/// The validator sees the same flattened rendering the summariser saw — that
+/// is the ground truth the summary can be held to. It is asked only about
+/// *omission*, because that is how summaries actually fail: measured here,
+/// the summariser preserved a stated fact 3/3 while losing the traversal
+/// position 4/5, and measured elsewhere ~90% of compaction failures are
+/// omissions. Asking a checker to critique style invites rewrites; asking
+/// what is missing invites a list, which is what the retry needs.
+pub fn validate_instruction(rendered: &str, summary: &str) -> String {
+    format!(
+        "<transcript>\n{rendered}\n</transcript>\n\n<summary>\n{summary}\n</summary>\n\n\
+         The summary is about to replace the transcript. List anything that \
+         appears in the transcript, matters for continuing the work, and is \
+         missing from the summary: specific values, paths, names and numbers; \
+         decisions and their reasons; what failed; and position in any \
+         sequence — the step in progress and what was already covered.\n\n\
+         Reply with the single word NONE if nothing task-critical is missing. \
+         Otherwise list the missing items, one per line. Do not rewrite the \
+         summary and do not comment on its style."
+    )
+}
+
+/// What the validator said about a summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SummaryVerdict {
+    Complete,
+    Missing(Vec<String>),
+}
+
+/// Read a verdict out of the validator's reply. `None` means it said nothing
+/// usable — the caller treats that as no verdict, not as a failure, because a
+/// validator that cannot run must not be able to veto a compaction the run
+/// may need to survive.
+pub fn parse_omissions(text: &str) -> Option<SummaryVerdict> {
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if lines.is_empty() {
+        return None;
+    }
+    // A whole line saying "none" (however decorated) is a pass. Substrings do
+    // not count: "none of the paths survive" is a finding, not a pass.
+    if lines
+        .iter()
+        .any(|l| l.trim_matches(['-', '*', '.', '!', ':', ' ']).eq_ignore_ascii_case("none"))
+    {
+        return Some(SummaryVerdict::Complete);
+    }
+    Some(SummaryVerdict::Missing(
+        lines.iter().map(|l| l.trim_start_matches(['-', '*', ' ']).to_string()).collect(),
+    ))
+}
+
+/// The summariser's second attempt: the same instruction, plus what the first
+/// attempt lost. Naming the omissions is the whole intervention — the
+/// summariser cannot see its own gaps, and a bare "try again" would sample
+/// the same blind spot.
+pub fn retry_instruction(omissions: &[String]) -> String {
+    format!(
+        "{SUMMARY_INSTRUCTION}\n\nA check of your previous summary against the \
+         transcript found it omitted the following. The rewritten summary must \
+         include them:\n{}",
+        omissions.iter().map(|o| format!("- {o}")).collect::<Vec<_>>().join("\n")
+    )
+}
+
 /// Flatten messages into plain text for the summariser.
 ///
 /// Deliberately *not* a replay of the structured transcript. Sending the real
@@ -424,6 +496,38 @@ mod tests {
                 _ => None,
             })
             .unwrap()
+    }
+
+    #[test]
+    fn a_verdict_parses_through_the_ways_models_actually_phrase_it() {
+        use SummaryVerdict::*;
+        // Passes, however decorated.
+        for text in ["NONE", "none", "None.", "**NONE**", "Verdict:\nNONE"] {
+            assert_eq!(parse_omissions(text), Some(Complete), "{text:?}");
+        }
+        // "none" as a substring is a finding, not a pass.
+        let found = parse_omissions("none of the file paths survive the summary").unwrap();
+        assert!(matches!(found, Missing(_)));
+
+        // Omission lists come back, bullets stripped, ready for the retry.
+        let found = parse_omissions("- the amount 847\n- the path audit/entry-d084.md").unwrap();
+        assert_eq!(
+            found,
+            Missing(vec!["the amount 847".into(), "the path audit/entry-d084.md".into()])
+        );
+
+        // Nothing usable is no verdict — the caller must not treat it as a
+        // veto, because a run may need this compaction to survive.
+        assert_eq!(parse_omissions(""), None);
+        assert_eq!(parse_omissions("   \n  "), None);
+    }
+
+    #[test]
+    fn the_retry_instruction_names_every_omission_and_keeps_the_original_brief() {
+        let retry = retry_instruction(&["the amount 847".into(), "the QX-4417 reference".into()]);
+        assert!(retry.contains(SUMMARY_INSTRUCTION), "the retry must still say how to summarise");
+        assert!(retry.contains("- the amount 847"));
+        assert!(retry.contains("- the QX-4417 reference"));
     }
 
     #[test]
