@@ -290,6 +290,17 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     // an agent that has learned nothing yet must not create state by starting.
     if !opts.no_learned_rules {
         if let Some(store) = mecha_core::learning::LearningStore::open_existing_default() {
+            // The cap's warning half (the gate in `mecha learn` is the
+            // refusal half): a domain over budget degrades every run this
+            // block rides in, so it is said where the run starts — the
+            // routed-name-matches-no-tool precedent.
+            for (domain, n) in store.over_budget_domains().unwrap_or_default() {
+                eprintln!(
+                    "mecha: learned rules for `{domain}` number {n}, over the cap of {} — \
+                     adherence degrades; `mecha learn` will consolidate before it may add",
+                    mecha_core::learning::MAX_ACTIVE_RULES_PER_DOMAIN
+                );
+            }
             if let Some(block) = store.rules_prompt_block()? {
                 let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
                 cfg.agent.system_prompt =
