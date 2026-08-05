@@ -357,8 +357,18 @@ pub fn evict_superseded_results(messages: &mut [Message]) -> usize {
 fn target_of(name: &str, input: &serde_json::Value) -> String {
     match input.get("path").and_then(serde_json::Value::as_str) {
         // Deliberately not prefixed with the tool name: the newest operation
-        // on a path speaks for the path, whichever tool performed it.
-        Some(path) => format!("path\u{0}{path}"),
+        // on a path speaks for the path, whichever tool performed it. But a
+        // *ranged* read speaks only for its slice — `offset`/`limit` join the
+        // key, or reading lines 100–110 would evict the full read of the same
+        // file, and successive range reads (exactly what the spillover marker
+        // tells the model to do) would evict each other while holding
+        // different content. A write carries no range, so it still supersedes
+        // the unranged read.
+        Some(path) => format!(
+            "path\u{0}{path}\u{0}{}\u{0}{}",
+            input.get("offset").and_then(serde_json::Value::as_u64).unwrap_or(0),
+            input.get("limit").and_then(serde_json::Value::as_u64).unwrap_or(0),
+        ),
         // `serde_json::Map` is a BTreeMap, so this string is canonical even if
         // the model orders the arguments differently between calls.
         None => format!("{name}\u{0}{input}"),
@@ -586,6 +596,36 @@ mod tests {
         assert_eq!(evict_superseded_results(&mut m), 0);
         assert_eq!(body_of(&m[2]), "good contents");
         assert_eq!(body_of(&m[4]), "permission denied");
+    }
+
+    #[test]
+    fn a_ranged_read_speaks_only_for_its_slice() {
+        let ranged = |id: &str, offset: u64| {
+            Message::assistant(vec![Block::ToolUse {
+                id: id.into(),
+                name: "fs_read".into(),
+                input: serde_json::json!({"path": "big.txt", "offset": offset, "limit": 10}),
+            }])
+        };
+        let mut m = vec![
+            Message::user("go"),
+            call("t0", "big.txt"), // the full read
+            result("t0", "the whole file"),
+            ranged("t1", 100),
+            result("t1", "lines 100-110"),
+            ranged("t2", 200),
+            result("t2", "lines 200-210"),
+        ];
+        // Three different slices of one file: nothing supersedes anything —
+        // each result holds content none of the others has.
+        assert_eq!(evict_superseded_results(&mut m), 0);
+
+        // The same slice twice is a re-read, and the newest speaks for it.
+        m.push(ranged("t3", 100));
+        m.push(result("t3", "lines 100-110 again"));
+        assert_eq!(evict_superseded_results(&mut m), 1);
+        assert!(body_of(&m[4]).starts_with(SUPERSEDED_MARKER), "the older 100-slice");
+        assert_eq!(body_of(&m[2]), "the whole file", "the full read survived");
     }
 
     #[test]

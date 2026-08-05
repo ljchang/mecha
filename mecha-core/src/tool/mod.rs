@@ -174,6 +174,12 @@ pub struct ToolCtx {
     /// is not the way to get a write executed from a planning run. Stamped by
     /// `Agent::run_in`, like `events`.
     pub phase: crate::agent::Phase,
+    /// The `tool_use` id of the call this context was built for. Stamped per
+    /// dispatch (only when `events` is watched), so a tool that contains a
+    /// run can tag its forwarded events with the call that spawned it — two
+    /// subagents running in parallel are otherwise indistinguishable to a
+    /// renderer.
+    pub call_id: Option<String>,
 }
 
 impl Default for ToolCtx {
@@ -187,6 +193,7 @@ impl Default for ToolCtx {
             events: None,
             cancel: None,
             phase: crate::agent::Phase::default(),
+            call_id: None,
         }
     }
 }
@@ -294,7 +301,13 @@ pub fn cap_result(content: String, cap: usize, spill_dir: Option<&Path>, tool: &
 
     let saved = spill_dir.and_then(|dir| {
         std::fs::create_dir_all(dir).ok()?;
-        let file = dir.join(format!("{}-{}.txt", safe_name(tool), safe_name(id)));
+        // A random component, because the call id alone can collide: batch
+        // items and non-sandboxed eval cases share one context, and a local
+        // server under a pinned seed can hand identical requests identical
+        // call ids. A collision would silently overwrite, leaving one
+        // conversation's marker pointing at another conversation's content.
+        let tag = &uuid::Uuid::new_v4().to_string()[..8];
+        let file = dir.join(format!("{}-{}-{tag}.txt", safe_name(tool), safe_name(id)));
         std::fs::write(&file, &content).ok()?;
         Some(file)
     });
@@ -458,8 +471,10 @@ mod cap_tests {
         // The transcript copy is bounded...
         assert!(out.len() < body.len());
         assert!(out.starts_with("line 1\n"));
-        // ...the disk copy is not: byte-identical, so nothing was lost.
-        let file = dir.join("shell-t1.txt");
+        // ...the disk copy is not: byte-identical, so nothing was lost. The
+        // name carries a random tag, so it is discovered rather than assumed.
+        let file = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+        assert!(file.file_name().unwrap().to_str().unwrap().starts_with("shell-t1-"));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), body);
 
         // The marker gives the model a single call back to the rest: the

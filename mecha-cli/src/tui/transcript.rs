@@ -14,15 +14,29 @@ use ratatui::widgets::{Paragraph, Wrap};
 /// talking to, 1 is a tool that is itself an agent, and so on. Rendering
 /// indents by it, which is the whole difference between a subagent's work and
 /// the parent's.
+///
+/// `group` is *which* subagent call it happened inside — the chain of parent
+/// `tool_use` ids (`"tA"`, `"tA/c3"`, …). Depth says how far to indent;
+/// group says where to insert, which matters the moment two delegations run
+/// in parallel and their events interleave. `None` means top-level, or an
+/// unattributable nested event, both of which simply append.
 pub enum Entry {
     User(String),
     /// Typed while the agent was working, so it reads differently: it did not
     /// start this run, it redirected one already underway.
     Steer(String),
-    Assistant { text: String, depth: u8 },
-    Thinking { text: String, depth: u8 },
-    ToolCall { name: String, summary: String, depth: u8 },
-    ToolResult { name: String, is_error: bool, content: String, depth: u8 },
+    Assistant { text: String, depth: u8, group: Option<String> },
+    Thinking { text: String, depth: u8, group: Option<String> },
+    ToolCall {
+        name: String,
+        summary: String,
+        depth: u8,
+        /// This call's own `tool_use` id — the anchor its children's `group`
+        /// points at.
+        id: Option<String>,
+        group: Option<String>,
+    },
+    ToolResult { name: String, is_error: bool, content: String, depth: u8, group: Option<String> },
     /// A `!command` the user ran themselves. Local to the session: the model
     /// never sees it, no taint, no approval — it is the user's own terminal.
     Shell { cmd: String, output: String, status: Option<i32> },
@@ -81,69 +95,115 @@ impl Transcript {
         self.cache.push(Cell::default());
     }
 
-    /// The tail entry changed in place (a delta folded in): its cached render
-    /// is now a lie.
-    fn invalidate_last(&mut self) {
-        if let Some(cell) = self.cache.last_mut() {
+    /// Insert mid-transcript, keeping the cache in lockstep. The fresh cell
+    /// is stale by construction; every other cell's render is untouched by an
+    /// insertion, so nothing else invalidates.
+    fn insert(&mut self, index: usize, entry: Entry) {
+        self.entries.insert(index, entry);
+        self.cache.insert(index, Cell::default());
+    }
+
+    /// An entry changed in place (a delta folded in): its cached render is
+    /// now a lie.
+    fn invalidate_at(&mut self, index: usize) {
+        if let Some(cell) = self.cache.get_mut(index) {
             cell.key = None;
         }
+    }
+
+    /// Where the next entry belonging to `group` goes: right after the last
+    /// entry already in the group, or after the tool call that anchors it.
+    /// `None` — top-level, or unattributable — appends, which is also the
+    /// pre-grouping behaviour.
+    fn slot(&self, group: &Option<String>) -> usize {
+        let Some(group) = group else { return self.entries.len() };
+        self.entries
+            .iter()
+            .rposition(|e| {
+                entry_group(e) == Some(group.as_str()) || entry_owns(e).as_deref() == Some(group)
+            })
+            .map(|i| i + 1)
+            .unwrap_or(self.entries.len())
     }
 
     /// Fold streaming output into the entry it belongs to, so a turn arriving
     /// as two hundred deltas is one paragraph rather than two hundred.
     pub fn absorb(&mut self, event: &AgentEvent) {
-        self.absorb_at(event, 0);
+        self.absorb_at(event, 0, None);
     }
 
-    /// The depth-aware half of [`absorb`]: a `Nested` event unwraps one level
-    /// and recurses, so a subagent's turn renders indented under the tool call
-    /// that spawned it — and a grandchild's a step further, since it arrives
-    /// wrapped twice.
+    /// The depth-and-group-aware half of [`absorb`]: a `Nested` event unwraps
+    /// one level and recurses, so a subagent's turn renders indented under
+    /// the tool call that spawned it — and *inserted* there, not appended,
+    /// because two delegations running in parallel interleave their events
+    /// and depth alone cannot tell them apart. The group key is the chain of
+    /// parent `tool_use` ids, so a grandchild lands under its own parent too.
     ///
     /// [`absorb`]: Transcript::absorb
-    fn absorb_at(&mut self, event: &AgentEvent, depth: u8) {
+    fn absorb_at(&mut self, event: &AgentEvent, depth: u8, group: Option<String>) {
         match event {
-            AgentEvent::Nested { event, .. } => self.absorb_at(event, depth.saturating_add(1)),
-            AgentEvent::TextDelta(t) => {
-                let folded = match self.entries.last_mut() {
-                    Some(Entry::Assistant { text, depth: d }) if *d == depth => {
-                        text.push_str(t);
-                        true
-                    }
-                    _ => false,
+            AgentEvent::Nested { id, event, .. } => {
+                let child_group = match (&group, id) {
+                    (None, Some(id)) => Some(id.clone()),
+                    (Some(g), Some(id)) => Some(format!("{g}/{id}")),
+                    // No id — an old recording, or a wrapper that did not
+                    // tag: nothing to attribute to, so keep the parent's
+                    // group and fall back to append-in-order.
+                    (_, None) => group.clone(),
                 };
-                if folded {
-                    self.invalidate_last();
-                } else {
-                    self.push(Entry::Assistant { text: t.clone(), depth });
+                self.absorb_at(event, depth.saturating_add(1), child_group)
+            }
+            AgentEvent::TextDelta(t) => {
+                let at = self.slot(&group);
+                if let Some(i) = at.checked_sub(1) {
+                    if let Entry::Assistant { text, depth: d, group: g } = &mut self.entries[i] {
+                        if *d == depth && *g == group {
+                            text.push_str(t);
+                            self.invalidate_at(i);
+                            return;
+                        }
+                    }
                 }
+                self.insert(at, Entry::Assistant { text: t.clone(), depth, group });
             }
             AgentEvent::ThinkingDelta(t) => {
-                let folded = match self.entries.last_mut() {
-                    Some(Entry::Thinking { text, depth: d }) if *d == depth => {
-                        text.push_str(t);
-                        true
+                let at = self.slot(&group);
+                if let Some(i) = at.checked_sub(1) {
+                    if let Entry::Thinking { text, depth: d, group: g } = &mut self.entries[i] {
+                        if *d == depth && *g == group {
+                            text.push_str(t);
+                            self.invalidate_at(i);
+                            return;
+                        }
                     }
-                    _ => false,
-                };
-                if folded {
-                    self.invalidate_last();
-                } else {
-                    self.push(Entry::Thinking { text: t.clone(), depth });
                 }
+                self.insert(at, Entry::Thinking { text: t.clone(), depth, group });
             }
-            AgentEvent::ToolCall { name, input, .. } => self.push(Entry::ToolCall {
-                name: name.clone(),
-                summary: crate::approve::summarize(name, input),
-                depth,
-            }),
+            AgentEvent::ToolCall { id, name, input } => {
+                let at = self.slot(&group);
+                self.insert(
+                    at,
+                    Entry::ToolCall {
+                        name: name.clone(),
+                        summary: crate::approve::summarize(name, input),
+                        depth,
+                        id: Some(id.clone()),
+                        group,
+                    },
+                );
+            }
             AgentEvent::ToolResult { name, is_error, content, .. } => {
-                self.push(Entry::ToolResult {
-                    name: name.clone(),
-                    is_error: *is_error,
-                    content: content.clone(),
-                    depth,
-                });
+                let at = self.slot(&group);
+                self.insert(
+                    at,
+                    Entry::ToolResult {
+                        name: name.clone(),
+                        is_error: *is_error,
+                        content: content.clone(),
+                        depth,
+                        group,
+                    },
+                );
             }
             AgentEvent::ToolDenied { name, reason } => self.push(Entry::Error(format!(
                 "{}{name} denied — {reason}",
@@ -173,6 +233,29 @@ impl Transcript {
             .filter(|e| self.visible(e))
             .flat_map(entry_lines)
             .collect()
+    }
+}
+
+/// The group an entry belongs *to* — whose children it sits among.
+fn entry_group(entry: &Entry) -> Option<&str> {
+    match entry {
+        Entry::Assistant { group, .. }
+        | Entry::Thinking { group, .. }
+        | Entry::ToolCall { group, .. }
+        | Entry::ToolResult { group, .. } => group.as_deref(),
+        _ => None,
+    }
+}
+
+/// The group an entry *anchors* — what its own children will carry: the
+/// entry's group chain extended by its own call id.
+fn entry_owns(entry: &Entry) -> Option<String> {
+    match entry {
+        Entry::ToolCall { id: Some(id), group, .. } => Some(match group {
+            Some(g) => format!("{g}/{id}"),
+            None => id.clone(),
+        }),
+        _ => None,
     }
 }
 
@@ -208,7 +291,7 @@ fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
                         Span::styled("  (steering)", Style::new().fg(Color::DarkGray)),
                     ]));
                 }
-                Entry::Assistant { text, depth } => {
+                Entry::Assistant { text, depth, .. } => {
                     // A subagent's prose is rendered like detail, not like the
                     // answer: the answer is whatever the parent says about it.
                     let style = if *depth == 0 {
@@ -220,7 +303,7 @@ fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
                         out.push(Line::styled(format!("{}{line}", indent(*depth)), style));
                     }
                 }
-                Entry::Thinking { text, depth } => {
+                Entry::Thinking { text, depth, .. } => {
                     for line in text.split('\n') {
                         out.push(Line::styled(
                             format!("{}{line}", indent(*depth)),
@@ -228,7 +311,7 @@ fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
                         ));
                     }
                 }
-                Entry::ToolCall { name, summary, depth } => {
+                Entry::ToolCall { name, summary, depth, .. } => {
                     out.push(Line::from(vec![
                         Span::raw(indent(*depth)),
                         Span::styled("● ", Style::new().fg(Color::Magenta)),
@@ -237,7 +320,7 @@ fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
                         Span::styled(truncate(summary, 200), Style::new().fg(Color::DarkGray)),
                     ]));
                 }
-                Entry::ToolResult { name, is_error, content, depth } => {
+                Entry::ToolResult { name, is_error, content, depth, .. } => {
                     let colour = if *is_error { Color::Red } else { Color::DarkGray };
                     out.push(Line::from(vec![
                         Span::raw(indent(*depth)),
@@ -412,8 +495,24 @@ mod tests {
         AgentEvent::ToolCall { id: "t1".into(), name: name.into(), input: json!({}) }
     }
 
+    /// An *untagged* wrapper — no call id, as an old recording would send —
+    /// exercising the append-in-order fallback.
     fn nested(tool: &str, event: AgentEvent) -> AgentEvent {
-        AgentEvent::Nested { tool: tool.into(), event: Box::new(event) }
+        AgentEvent::Nested { tool: tool.into(), id: None, event: Box::new(event) }
+    }
+
+    /// A tagged wrapper, as the subagent actually sends: the parent call's
+    /// tool_use id rides on every event.
+    fn nested_in(tool: &str, id: &str, event: AgentEvent) -> AgentEvent {
+        AgentEvent::Nested { tool: tool.into(), id: Some(id.into()), event: Box::new(event) }
+    }
+
+    fn call_with_id(name: &str, id: &str) -> AgentEvent {
+        AgentEvent::ToolCall { id: id.into(), name: name.into(), input: json!({}) }
+    }
+
+    fn delta(text: &str) -> AgentEvent {
+        AgentEvent::TextDelta(text.into())
     }
 
     #[test]
@@ -617,7 +716,7 @@ mod tests {
             .entries
             .iter()
             .filter_map(|e| match e {
-                Entry::Assistant { text, depth } => Some((text.clone(), *depth)),
+                Entry::Assistant { text, depth, .. } => Some((text.clone(), *depth)),
                 _ => None,
             })
             .collect();
@@ -629,5 +728,88 @@ mod tests {
                 (" continues".into(), 0),
             ]
         );
+    }
+
+    #[test]
+    fn parallel_subagents_keep_their_events_under_their_own_call() {
+        // Two delegations in one turn interleave their events (dispatch runs
+        // the batch concurrently). Before grouping, everything appended:
+        // child B's rows landed under child A's header, and in verbose both
+        // children's prose folded into one paragraph.
+        let mut t = Transcript::new(true);
+        t.absorb(&call_with_id("helper", "tA"));
+        t.absorb(&call_with_id("helper", "tB"));
+        // Interleaved, worst case: A, B, A, B.
+        t.absorb(&nested_in("helper", "tA", call_with_id("echo", "c1")));
+        t.absorb(&nested_in("helper", "tB", call_with_id("fs_read", "c1")));
+        t.absorb(&nested_in("helper", "tA", delta("A says")));
+        t.absorb(&nested_in("helper", "tB", delta("B says")));
+        t.absorb(&nested_in("helper", "tA", delta(" more")));
+
+        let order: Vec<String> = t
+            .entries
+            .iter()
+            .map(|e| match e {
+                Entry::ToolCall { name, id, .. } => {
+                    format!("{name}#{}", id.as_deref().unwrap_or("?"))
+                }
+                Entry::Assistant { text, .. } => format!("text:{text}"),
+                _ => "other".into(),
+            })
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                "helper#tA",
+                "echo#c1",
+                "text:A says more", // folded within its own group, not across
+                "helper#tB",
+                "fs_read#c1",
+                "text:B says",
+            ],
+            "each child's work must sit under its own delegation"
+        );
+    }
+
+    #[test]
+    fn a_grandchilds_group_chains_through_both_parents() {
+        let mut t = Transcript::new(false);
+        t.absorb(&call_with_id("outer", "tA"));
+        // The outer child calls its own subagent, which calls a tool: the
+        // inner wrapper's id is the *outer child's* tool_use id for it.
+        t.absorb(&nested_in("outer", "tA", call_with_id("inner", "s1")));
+        t.absorb(&nested_in(
+            "outer",
+            "tA",
+            nested_in("inner", "s1", call_with_id("fs_read", "g1")),
+        ));
+
+        match &t.entries[2] {
+            Entry::ToolCall { name, depth, group, .. } => {
+                assert_eq!(name, "fs_read");
+                assert_eq!(*depth, 2);
+                assert_eq!(group.as_deref(), Some("tA/s1"), "the chain names both parents");
+            }
+            _ => panic!("expected the grandchild's call third"),
+        }
+    }
+
+    #[test]
+    fn the_cache_survives_mid_transcript_insertion() {
+        // Grouped insertion is the one path that adds entries anywhere but
+        // the end — the cache must stay in lockstep or every later cell
+        // renders the wrong entry.
+        let mut t = busy_transcript(5);
+        t.absorb(&call_with_id("helper", "tA"));
+        t.push(Entry::Notice("after".into()));
+        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "before insert");
+
+        // This inserts *above* the notice.
+        t.absorb(&nested_in("helper", "tA", call_with_id("echo", "c1")));
+        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "after insert");
+
+        t.absorb(&nested_in("helper", "tA", delta("child prose")));
+        t.absorb(&nested_in("helper", "tA", delta(" folded")));
+        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "after grouped fold");
     }
 }

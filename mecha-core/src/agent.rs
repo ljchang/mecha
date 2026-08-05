@@ -44,9 +44,11 @@ pub enum AgentEvent {
     Done(Box<RunOutcome>),
     /// Something happening inside a tool that contains a run of its own — a
     /// subagent's turn, seen from the parent. `tool` is the parent-visible
-    /// tool name; the boxed event is the child's own. A grandchild arrives
-    /// already wrapped, so depth is the nesting count.
-    Nested { tool: String, event: Box<AgentEvent> },
+    /// tool name; `id` is the parent's `tool_use` id for the call, which is
+    /// what keeps two parallel delegations attributable; the boxed event is
+    /// the child's own. A grandchild arrives already wrapped, so depth is
+    /// the nesting count.
+    Nested { tool: String, id: Option<String>, event: Box<AgentEvent> },
 }
 
 /// Does this error mean "the prompt did not fit"?
@@ -61,8 +63,13 @@ pub(crate) fn is_context_overflow(error: &anyhow::Error) -> bool {
     // "exceed_context_size_error" / "exceeds the available context size".
     // vLLM and OpenAI: "context_length_exceeded" / "maximum context length".
     // Anthropic: "prompt is too long".
-    if let Some(class) = error.downcast_ref::<crate::provider::retry::ProviderError>() {
-        return *class == crate::provider::retry::ProviderError::ContextOverflow;
+    // Never an early false on a non-overflow class: a misclassification
+    // upstream must not disable the recovery this exists for. Being wrong
+    // toward "yes" costs one summarisation; toward "no" it costs the run.
+    if error.downcast_ref::<crate::provider::retry::ProviderError>()
+        == Some(&crate::provider::retry::ProviderError::ContextOverflow)
+    {
+        return true;
     }
     crate::provider::retry::overflow_text(&format!("{error:#}"))
 }
@@ -1824,14 +1831,26 @@ impl Agent {
         }
 
         let executed = futures::future::join_all(approved.into_iter().map(
-            |(i, tool, id, name, input)| async move {
-                let out = match tool.call(input, &cx.tools).await {
-                    Ok(out) => out,
-                    // A tool that returns Err failed in a way it didn't
-                    // anticipate; tell the model so it can try something else.
-                    Err(e) => ToolOutput::err(format!("tool `{name}` failed: {e:#}")),
+            |(i, tool, id, name, input)| {
+                // Stamp the call's own id onto the context it runs under, so
+                // a tool that contains a run — a subagent — can tag the
+                // events it forwards. Only when somebody is watching: the
+                // clone buys nothing on a run without an event channel.
+                let tool_ctx = if cx.tools.events.is_some() {
+                    Arc::new(ToolCtx { call_id: Some(id.clone()), ..(*cx.tools).clone() })
+                } else {
+                    Arc::clone(&cx.tools)
                 };
-                (i, id, name, out)
+                async move {
+                    let out = match tool.call(input, &tool_ctx).await {
+                        Ok(out) => out,
+                        // A tool that returns Err failed in a way it didn't
+                        // anticipate; tell the model so it can try something
+                        // else.
+                        Err(e) => ToolOutput::err(format!("tool `{name}` failed: {e:#}")),
+                    };
+                    (i, id, name, out)
+                }
             },
         ))
         .await;
@@ -3348,14 +3367,17 @@ mod tests {
             "nested events must land between the parent's ToolCall and its ToolResult: \
              call={call} result={result} nested={nested:?}"
         );
-        // The wrapped events are the child's own, not a paraphrase.
+        // The wrapped events are the child's own, not a paraphrase — and they
+        // carry the parent call's id, which is what keeps two parallel
+        // delegations attributable.
         assert!(
             events.iter().any(|e| matches!(
                 e,
-                AgentEvent::Nested { tool, event } if tool == "helper"
+                AgentEvent::Nested { tool, id, event } if tool == "helper"
+                    && id.as_deref() == Some("p1")
                     && matches!(event.as_ref(), AgentEvent::ToolCall { name, .. } if name == "echo")
             )),
-            "the child's echo call should be visible inside a Nested event"
+            "the child's echo call should be visible inside a Nested event tagged with the parent's call id"
         );
     }
 
