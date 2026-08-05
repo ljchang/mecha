@@ -509,8 +509,6 @@ falls off precompute's edge should land on WASM, not on a static screenshot.**
 
 ### 7.6 The isolation problem
 
-### 7.3 The isolation problem
-
 Notebooks are code. Under `wasm-unsafe-eval` one notebook on a shared origin
 can reach another's storage. Two answers, and the cheap one is right for now:
 
