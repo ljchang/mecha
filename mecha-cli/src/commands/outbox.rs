@@ -141,24 +141,11 @@ fn edit(store: &OutboxStore, id: &str) -> Result<()> {
         bail!("outbox item {} is {}, not pending", item.id, item.status);
     }
 
-    let scratch = std::env::temp_dir().join(format!("mecha-outbox-edit-{}.json", item.id));
-    std::fs::write(&scratch, pretty(&item.args))
-        .with_context(|| format!("writing {}", scratch.display()))?;
-
-    let editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "vi".to_string());
-    let status = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("{editor} {}", shell_quote(&scratch.to_string_lossy())))
-        .status()
-        .with_context(|| format!("launching {editor}"))?;
-    if !status.success() {
-        bail!("{editor} exited with {status}; the item is unchanged");
-    }
-
-    let text = std::fs::read_to_string(&scratch)?;
-    let _ = std::fs::remove_file(&scratch);
+    let text = crate::editor::edit_text(
+        &pretty(&item.args),
+        &format!("mecha-outbox-edit-{}.json", item.id),
+    )
+    .context("the item is unchanged")?;
     // A parse failure keeps the original: better to make the user re-edit
     // than to stage arguments that are not what they meant.
     let args: Value = serde_json::from_str(&text)
@@ -268,14 +255,8 @@ fn indent(s: &str) -> String {
     s.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
 }
 
-/// Single-quote a path for `sh -c`, so spaces in a temp dir cannot split it.
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
 
     #[test]
@@ -293,9 +274,4 @@ mod tests {
         assert!(same.contains("no textual change"), "{same}");
     }
 
-    #[test]
-    fn shell_quoting_survives_spaces_and_quotes() {
-        assert_eq!(shell_quote("/tmp/a b.json"), "'/tmp/a b.json'");
-        assert_eq!(shell_quote("it's"), r"'it'\''s'");
-    }
 }
