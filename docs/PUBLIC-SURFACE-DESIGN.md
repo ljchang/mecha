@@ -356,16 +356,71 @@ actual problem, and it is why tasks are not a side feature.
   the same failure as an unanswered message, one turn later.
 - **Direct capture.** The user says so.
 
-**Its own store, following the rules the other three already follow** — one
-pretty JSON per item, temp-sibling-and-rename, advisory flock never held across
-anything slow, and a ledger that answers "why didn't that happen". A fourth
-instance of an existing pattern, not a new one.
+**Stored in pkg, which is the right home and was nearly rejected for a bad
+reason.** An earlier draft of this section said tasks must not live in the
+knowledge graph because mecha reads pkg back through the `untrusted_input`
+override and "escalation logic must not run on untrusted data". That
+overstates it. Every send in this design is outbox-routed, so the blast radius
+of a poisoned task is **a draft in a review queue**, not an action — which is
+the same containment the whole system already rests on. And pkg is not an open
+sewer: its extractor turns content into *candidates that wait in the user's
+review queue*, so entries are already human-gated on the way in.
 
-**Deliberately not in pkg.** The knowledge graph is marked `untrusted_input` by
-config on purpose, and mecha reads it back through that override. Escalation
-logic must not run on untrusted data: a row that says "due tomorrow" has to be
-trustworthy, and anything arriving `.from_outside()` is by definition not. Push
-episodes to pkg as evidence; keep the tasks that drive behaviour at home.
+What pkg buys is the thing a flat store cannot: **tasks are inherently
+relational.** A letter deadline belongs to a student; a grant report belongs to
+a grant, a program officer and a budget line; a review belongs to a journal and
+possibly a conflicted author. That is a graph, and modelling it as rows in a
+JSON directory throws away exactly the structure that makes "what breaks if
+this slips" answerable. This is not wired into mecha today — `kg_upsert` is
+used by `distill` for episodes and nothing reads tasks back — so it is new
+work, but it is new work in the right place.
+
+Three consequences to accept deliberately rather than discover:
+
+- **Tasks arrive `.from_outside()` and arm the untrusted taint leg**, because
+  the capability override is per-server and only ever widens — correctly, and
+  it should not gain a per-record exception. In practice this changes little:
+  any run that reads tasks is also reading mail, so the trifecta was already
+  armed and every send was already staged.
+- **Carry an `Origin` on every task**, exactly as reflections do:
+  `user` (typed by the user, in the TUI or the CLI), `derived` (extracted from
+  a message), `external` (created by anything else). **Only `user`-origin tasks
+  drive escalation unattended**; a `derived` task must be confirmed once before
+  it can chase anybody. That is the provenance discipline the learning store
+  already uses, applied to a new subject, and it is the real answer to the
+  concern the earlier draft was reaching for.
+- **pkg is a separate process**, so tasks are unavailable when it is down and
+  every read is an MCP round trip. If the TUI's list feels slow, the fix is a
+  short-lived local cache with pkg as the record — never a second source of
+  truth, for the same reason `/triggers` reads its detail view back from the
+  session transcript.
+
+### 3.3 `/tasks` in the TUI
+
+The user wants to see open tasks and deadlines, add them, and complete or
+remove them, without leaving the terminal.
+
+**It follows `/triggers` exactly: the modal drives the CLI, not the store.**
+Every action shells out to `mecha task ...` as a child process. The reasoning
+transfers and is doubly true here — `/triggers` does it because firing a
+trigger can run for twenty minutes and would freeze the event loop, and tasks
+do it because the store is behind an MCP round trip to another process. Going
+through the CLI also means one implementation, and no way for the TUI to do
+something the command line cannot.
+
+So `mecha task` is the primitive and the modal is a view over it:
+`add`, `list`, `done`, `rm`, `defer`, with `list` sorted by deadline and
+showing what breaks if it slips. The panel is the `due` line of the morning
+surface (§3.1), rendered live.
+
+Two details worth fixing now because they are cheap and annoying to retrofit:
+
+- **A derived task shows its source**, and the modal can open it. This is what
+  makes the list trustworthy: a task the user does not recognise is one
+  keystroke from the message that produced it.
+- **Deleting a derived task records a negative example** rather than silently
+  forgetting, so extraction gets better instead of repeating the same mistake
+  every week.
 
 **Recurrence reuses `cron.rs`.** Annual reports, term-bound obligations, a
 review load that resets. The parser is already hand-rolled precisely because
