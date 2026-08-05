@@ -113,6 +113,17 @@ fn parse_toggle(s: &str) -> Option<bool> {
     }
 }
 
+/// The `!command` shell escape: the command to run locally, or `None` if the
+/// line is an ordinary message.
+///
+/// A bare `!` (or `!` followed by only whitespace) is not a command — same
+/// rule as the bare `/`, and for the same reason: an exclamation someone
+/// typed should not make the input line quietly lossy.
+pub fn shell_escape(line: &str) -> Option<&str> {
+    let rest = line.trim().strip_prefix('!')?.trim();
+    (!rest.is_empty()).then_some(rest)
+}
+
 /// Every command name, in the order they are offered for completion.
 ///
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
@@ -226,6 +237,18 @@ mod tests {
     fn an_ordinary_message_is_not_a_command() {
         assert_eq!(parse("summarise the README"), None);
         assert_eq!(parse("what does a/b mean?"), None);
+    }
+
+    #[test]
+    fn the_shell_escape_needs_a_command_after_the_bang() {
+        assert_eq!(shell_escape("!ls -la"), Some("ls -la"));
+        assert_eq!(shell_escape("  !git status  "), Some("git status"));
+
+        // A lone `!` is punctuation someone typed, not a command.
+        assert_eq!(shell_escape("!"), None);
+        assert_eq!(shell_escape("!   "), None);
+        assert_eq!(shell_escape("fix it!"), None);
+        assert_eq!(shell_escape("hello"), None);
     }
 
     #[test]

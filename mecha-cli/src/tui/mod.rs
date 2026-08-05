@@ -178,6 +178,10 @@ struct App {
     help: bool,
     /// The /tools modal, when open. Takes every key while it is up.
     tools: Option<tools::ToolsModal>,
+    /// Where a finished `!command` posts its output. The receiver lives in
+    /// the event loop; running the command on a task keeps the input line
+    /// live while it does.
+    shell_tx: mpsc::UnboundedSender<Entry>,
     /// What `shell` actually is, computed once — the sandbox is config-driven
     /// and a provider switch rebuilds it identically.
     sandbox_line: String,
@@ -325,6 +329,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         }
     }
 
+    let (shell_tx, mut shell_rx) = mpsc::unbounded_channel::<Entry>();
     let mut app = App {
         transcript: Transcript::new(global.verbose),
         input: String::new(),
@@ -359,6 +364,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         help: false,
         tools: None,
         sandbox_line: setup::sandbox_line(&prepared.sandbox),
+        shell_tx,
         providers: prepared
             .config
             .providers
@@ -392,6 +398,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         &mut live,
         &mut approvals,
         &mut questions,
+        &mut shell_rx,
         session.as_ref(),
         &approver,
     )
@@ -413,6 +420,7 @@ async fn run_loop(
     live: &mut Live,
     approvals: &mut mpsc::UnboundedReceiver<approve::Request>,
     questions: &mut mpsc::UnboundedReceiver<ask::Question>,
+    shell_results: &mut mpsc::UnboundedReceiver<Entry>,
     session: Option<&Session>,
     approver: &Arc<dyn Approver>,
 ) -> Result<()> {
@@ -475,6 +483,9 @@ async fn run_loop(
 
             Some(request) = approvals.recv() => app.pending = Some(request),
             Some(question) = questions.recv() => app.asking = Some(question),
+            // A `!command` finished; its output enters the transcript and
+            // nothing else — the model never sees it.
+            Some(entry) = shell_results.recv() => app.transcript.push(entry),
 
             // A finished run: collect the outcome and take the conversation back.
             outcome = wait_for_run(&mut app.running), if app.running.is_some() => {
@@ -1154,6 +1165,14 @@ fn submit(
     agent: &Arc<Agent>,
     session: Option<&Session>,
 ) -> Result<()> {
+    // The shell escape is handled before steering, like slash commands: a
+    // `!git status` typed mid-run is the user checking on the world, not an
+    // instruction meant for the model.
+    if let Some(cmd) = command::shell_escape(&text) {
+        run_shell_escape(app, agent, cmd.to_string());
+        return Ok(());
+    }
+
     // Commands are handled before steering: a `/clear` typed mid-run is far
     // more likely to be a mistake than an instruction meant for the model, and
     // sending it as steering would put a slash command into the transcript.
@@ -1212,6 +1231,61 @@ fn submit(
         persisted,
     });
     Ok(())
+}
+
+/// Run a `!command` in the workspace, on a task so the input line stays live.
+///
+/// Deliberately none of what a tool call gets: no approval (the user typed the
+/// command themselves — approving your own keystrokes is theatre), no taint
+/// (nothing reaches the model), no session record (it is the user's own
+/// terminal, not part of the conversation). Useful precisely because of what
+/// it is not.
+fn run_shell_escape(app: &mut App, agent: &Arc<Agent>, cmd: String) {
+    let workspace = agent.context().tools.workspace.clone();
+    let tx = app.shell_tx.clone();
+    app.transcript.push(Entry::Notice(format!("running !{cmd}")));
+    tokio::spawn(async move {
+        let result = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .current_dir(&workspace)
+            // The TUI owns the terminal; a child that inherits stdin would
+            // silently eat keystrokes meant for the input line.
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await;
+
+        let entry = match result {
+            Ok(out) => {
+                let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+                if !out.stderr.is_empty() {
+                    if !text.is_empty() && !text.ends_with('\n') {
+                        text.push('\n');
+                    }
+                    text.push_str(&String::from_utf8_lossy(&out.stderr));
+                }
+                Entry::Shell { cmd, output: clip_output(&text), status: out.status.code() }
+            }
+            Err(e) => Entry::Error(format!("!{cmd}: {e}")),
+        };
+        // The receiver only closes when the TUI is exiting; output arriving
+        // after that has nowhere sensible to go anyway.
+        let _ = tx.send(entry);
+    });
+}
+
+/// Keep a local command's output readable in the transcript, which is a view
+/// and not a pager. The full output was never captured for the model — this
+/// is only about the screen.
+fn clip_output(s: &str) -> String {
+    const MAX_LINES: usize = 200;
+    let total = s.lines().count();
+    if total <= MAX_LINES {
+        return s.trim_end().to_string();
+    }
+    let mut out: String = s.lines().take(MAX_LINES).collect::<Vec<_>>().join("\n");
+    out.push_str(&format!("\n… ({} more lines)", total - MAX_LINES));
+    out
 }
 
 fn recall(app: &mut App, direction: i32) {
@@ -1384,6 +1458,7 @@ fn draw_help(frame: &mut Frame, kitty: bool) {
         ("pgup pgdn wheel", "scroll the transcript".into()),
         ("↑ ↓", "input history".into()),
         ("?", "this overlay, on an empty line".into()),
+        ("!command", "run it locally — the model never sees it".into()),
     ];
 
     let mut body: Vec<Line> = keys
