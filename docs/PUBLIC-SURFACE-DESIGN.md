@@ -20,6 +20,7 @@ wins and the research doc keeps the reasoning.
 | Read-back | **Bundles are built in the run's workspace and mirrored to `~/.mecha/bundles/`.** | An agent can read what it published, with no hole in the path jail. |
 | Templates | **Yes, and they are the extension point** — `report`, `notebook`, `booking`, plus request-type starters. | Adding a kind of output or a kind of ask is writing a directory, not writing code. |
 | marimo | **First-class. Three render modes, and only the third needs its own origin.** | Section 7. `marimo-book` already implements the modes and settles the asset question. |
+| Where notebooks live | **Ours by default; molab as a second target** (`target = surface \| molab \| both`). | §7.7. molab is for notebooks that could go in a public GitHub repo; it has no publish API, no expiry, no revocation and no documented versioning. |
 | Injection defense | **Four layers, in mecha, not on the server. The classifier is never a gate.** | Section 8. The server filters *shape*; only mecha can filter *meaning*, and a model on the public box would put a provider key on the box we assumed lost. |
 | Scheduling | **Book-me first, then group availability *seeded by mine*.** | Section 9. The seeding makes the group case strictly easier than when2meet. |
 | WebMCP | **Design for it, ship it later, behind a flag.** | Section 10. The manifest already emits everything it needs. |
@@ -429,7 +430,80 @@ can reach another's storage. Two answers, and the cheap one is right for now:
 
 `--mode run`, never `--mode edit`, for anything published.
 
-### 7.7 What to borrow from marimo-book, and what not to
+### 7.7 molab: a target, not the platform
+
+Worth taking seriously, because it would delete the hardest section of this
+document. **WASM is an artifact; molab is a session** — that framing is the
+whole answer, and they are complementary rather than alternatives.
+
+**What molab gives.** Free cloud-hosted marimo notebooks: 4 CPUs and 32 GB by
+default, an optional RTX Pro 6000 Blackwell, real server-side Python so
+arbitrary dependencies just work (no Pyodide, no wheel vendoring, no
+`wasm-unsafe-eval`), GitHub mirroring, share-as-app and share-as-slides,
+iframe embedding, and `marimo pair` for driving a live notebook from a coding
+agent. For heavy or GPU work it is straightforwardly better than anything we
+would build.
+
+**What it costs, checked against this design's own requirements:**
+
+| Requirement | molab |
+|---|---|
+| Private by default | **No.** "Public but undiscoverable", like a secret Gist |
+| Expiry, revocation, per-recipient URLs | **None** — the three W3C TAG gaps P14 exists to close |
+| Viewer cannot execute or copy | **No.** Anyone with the link can run it and fork it |
+| Agent can publish unattended | **No documented API or CLI** |
+| Versioned | **Not documented** — the property singled out as important |
+| Permanent | 12-hour sessions, 90-minute idle shutdown; storage "limited" |
+| Stated data terms | **Not documented** |
+
+Two of those are decisive on their own. **No publish API means the `publish`
+verb has no implementation**, which breaks the loop that started this entire
+thread — a scheduled run produces something and gets a URL. And **"public but
+undiscoverable" is not private**: for a notebook over unpublished data it is a
+capability URL that never expires, cannot be revoked, and is identical for
+every recipient.
+
+**What it actually removes is smaller than it looks.** Only the `compute`
+class. The gate origin, the artifact origin, inbound requests, verification,
+the quarantine, the state machine and booking are all untouched — and even the
+vendoring pass survives, because MathJax and Plotly are needed by the `static`
+and `interactive` classes regardless of how notebooks are hosted.
+
+**One property in its favour that is easy to miss, and it is a real one.**
+Embedding a molab notebook by iframe means our CSP relaxes from
+`script-src 'wasm-unsafe-eval'` — script execution on *our* origin — to
+`frame-src https://molab.marimo.io`, execution on *theirs*. A cross-origin
+iframe is a stronger isolation boundary than same-origin WASM. The price is
+that the notebook must be public and molab sees every viewer, so this is right
+for a methods demo and wrong for anything else.
+
+**The decision: `target` becomes a bundle field**, `surface` (default) |
+`molab` | `both`, with a rule that is easy to apply and hard to get wrong:
+
+> **molab is for notebooks you would put in a public GitHub repository
+> anyway.** If it cannot go in a public repo, it cannot go on molab.
+
+So: unpublished data, anything an agent publishes unattended, anything needing
+expiry or revocation, anything that must still resolve in three years →
+`surface`. Teaching material, methods demos, reproductions of published work,
+anything that wants a GPU → `molab`, and often `both`.
+
+**`both` is the shape marimo-book already demonstrates**, and it is probably
+the common case: publish the read-only rendering ourselves — permanent,
+versioned, access-controlled, no third party — and put a *launch button* on it
+pointing at molab for the reader who wants a live kernel. `launch_buttons.py`
+already generates exactly that URL. The artifact stays ours; molab is the
+escape hatch, not the record.
+
+This does not change the WASM decision. A WASM bundle works forever, offline,
+with no cold start, no session limit and no third party — which is what makes
+it an *artifact*. molab is a live kernel with real compute behind it, which is
+what makes it a *session*. We want both, for different notebooks, and the
+build order is unchanged: the vendoring pass and the `compute` origin still
+come before there is a VPS to configure, because they are what make a notebook
+something you can send someone.
+
+### 7.8 What to borrow from marimo-book, and what not to
 
 `ljchang/marimo-book` (MIT, alpha, in production behind dartbrains.org) is a
 static-site generator for marimo notebooks built on Material for MkDocs, with
@@ -798,3 +872,5 @@ before the step that depends on them.
 - [`ljchang/marimo-book` — source; the render modes, precompute pipeline, islands/PEP 723 finding, anywidget `data:` URL workaround, and the enumerated CDN references all come from reading it](https://github.com/ljchang/marimo-book)
 - [marimo-book documentation](https://marimobook.org/)
 - [dartbrains — marimo-book in production](https://github.com/ljchang/dartbrains)
+- [Run in the cloud with molab — marimo docs](https://docs.marimo.io/guides/molab/)
+- [molab, now with GPUs — marimo blog](https://marimo.io/blog/reintroducing-molab)
