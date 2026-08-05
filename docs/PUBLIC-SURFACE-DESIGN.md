@@ -256,6 +256,77 @@ Outbound bundles get a much smaller machine: `built → published → aliased`,
 plus `superseded` when a newer version takes the alias. Nothing is ever
 deleted; the alias moves.
 
+### 3.1 The autonomy ratchet
+
+The stated goal of the whole project is that this **gets easier over time** —
+that mecha gets what it needs from the user and handles the rest. That is a
+design requirement, not an aspiration, and it decomposes into two mechanisms
+plus a set of floors.
+
+**Ask about policy, not about items.** The elicitation that makes this work is
+not "approve this draft" repeated forty times; it is one question whose answer
+governs a class. The mail evidence is unusually clear here: **four booleans
+resolve most decisions across the four highest-volume request types** — does
+this require travel, is it a Friday, do I know an author, am I recruiting and
+funded this cycle. Asked once, "am I recruiting this cycle?" disposes of a
+year of lab-join requests. That ratio — one answer, many decisions — is the
+thing to optimise, and it is why the typed request matters: a policy answer
+can act on a typed field and cannot act on free prose.
+
+This needs a component that does not exist. **`ask_user` is absent from
+unattended runs by construction** — it is only ever registered by a front-end
+that owns a human — so a trigger cannot ask anything today; it can only stage.
+So: a **question queue**, the inbound twin of the outbox. The outbox stages
+what mecha would say to the world; the question queue stages what mecha needs
+to ask the user. Same discipline — durable store, batched review, a ledger
+that answers "why didn't that happen" — and a hard rule that a question must
+name the class it unblocks and how many pending items it would resolve. A
+question that unblocks one item is a draft, not a question.
+
+**Autonomy is earned by measurement, per category, and revoked by evidence.**
+This is the project's existing philosophy applied to a new subject: *acceptance
+is not tenure*. A category that has been approved without edit N times running
+is a candidate for auto-send — **proposed through a gate the user accepts**,
+exactly as learned rules are, never a config flag someone sets optimistically.
+One edit or one rejection drops it back to reviewed immediately. The
+validation-ledger machinery already does the measuring half of this for
+learned rules; the shape transfers without inventing anything.
+
+**Floors that never graduate**, because "handles the rest" is the highest-trust
+operation in the system:
+
+- A first message to a **new correspondent** stays reviewed. Autonomy is per
+  category *and* conditioned on an existing relationship.
+- Anything drafted with the **trifecta armed** stays reviewed. The outbox
+  already records the taint snapshot on every item, so this is a check rather
+  than new machinery.
+- Anything containing a **commitment** — a date, a promise, a letter, a
+  recommendation, an agreement to serve — never graduates. Declines and
+  acknowledgments can; obligations cannot.
+- A category whose recent **edit rate** is non-zero is not a candidate,
+  regardless of streak length.
+
+**What the user sees each morning**, and the shape of it is how you tell
+whether this is working:
+
+```
+questions   n, each unblocking a named class      ← rare, high value
+drafts      m, batched by type                    ← should shrink over time
+handled     k, with a ledger row each             ← should grow over time
+```
+
+If `drafts` is not falling and `handled` is not rising over months, the ratchet
+is not ratcheting and the system is a nicer inbox rather than a smaller one.
+**The metric is the fraction of messages that never needed the user** — never
+drafts produced, which is a vanity number that rises as the classifier gets
+worse.
+
+**And the invariant that keeps the whole thing honest: cap the review queue.**
+If more than a set number of drafts are pending on any morning, that is a bug
+in the classification, not a demand on the user. Overload is what produced the
+silence in the first place; a design that relocates the pile into a prettier
+queue has solved nothing.
+
 ---
 
 ## 4. The protocol
