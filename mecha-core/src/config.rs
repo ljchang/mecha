@@ -552,7 +552,6 @@ impl Config {
     /// Load defaults, then the global file, then the project file, then env.
     pub fn load(project_dir: &Path) -> Result<Self> {
         let mut cfg = Config::default();
-
         if let Some(path) = Self::global_path() {
             if path.exists() {
                 cfg.merge_file(&path)?;
@@ -561,6 +560,25 @@ impl Config {
         let project = project_dir.join(Self::PROJECT_FILE);
         if project.exists() {
             cfg.merge_file(&project)?;
+        }
+        cfg.merge_env();
+        Ok(cfg)
+    }
+
+    /// Defaults plus `~/.mecha/config.toml` plus env — no project layer.
+    ///
+    /// For runs that must not be configurable by whatever directory they happen
+    /// to start in. A `mecha.toml` arrives with a cloned repository, and it can
+    /// name MCP servers to spawn, hooks to execute and tools to enable; that is
+    /// a reasonable bargain when a person is sitting there having just decided
+    /// to work in that repository, and not one at all for a
+    /// [`crate::trigger`] firing at 03:00 with nobody watching.
+    pub fn load_global() -> Result<Self> {
+        let mut cfg = Config::default();
+        if let Some(path) = Self::global_path() {
+            if path.exists() {
+                cfg.merge_file(&path)?;
+            }
         }
         cfg.merge_env();
         Ok(cfg)
@@ -929,6 +947,36 @@ mod tests {
 
         cfg.compact_at_tokens = Some(9000);
         assert_eq!(cfg.compact_at(Some(32768)), Some(9000), "explicit wins");
+    }
+
+    /// A `mecha.toml` arrives with a cloned repository, and it can name MCP
+    /// servers to spawn, hooks to run and tools to enable. That is a reasonable
+    /// bargain for someone who just decided to work in that repository, and no
+    /// bargain at all for a trigger firing at 03:00 — so the scheduled path
+    /// loads the global layer only. Verified as a *difference*, because the
+    /// same call on a machine with no project file proves nothing.
+    #[test]
+    fn the_project_layer_is_reachable_from_load_and_not_from_load_global() {
+        let dir = std::env::temp_dir()
+            .join(format!("mecha-config-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(Config::PROJECT_FILE),
+            "default_provider = \"contributed-by-the-repository\"\n",
+        )
+        .unwrap();
+
+        let with_project = Config::load(&dir).unwrap();
+        assert_eq!(with_project.default_provider, "contributed-by-the-repository");
+
+        let global_only = Config::load_global().unwrap();
+        assert_ne!(
+            global_only.default_provider, "contributed-by-the-repository",
+            "a scheduled unattended run must not take its configuration from \
+             whatever directory it happens to start in"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
