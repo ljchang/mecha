@@ -2,6 +2,7 @@
 
 mod approve;
 mod commands;
+mod editor;
 mod interrupt;
 mod probe;
 mod render;
