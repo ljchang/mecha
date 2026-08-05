@@ -19,10 +19,14 @@ policies specifically.
 > deterministic ledger scan staging `enabled = false` + `retired_*` through
 > the existing proposal gate, wired into `ruminate.sh` after learn); and
 > `mecha eval --ab-rules`, the paired-arm task-outcome A/B reporting flips
-> as its own artifact. Still open: R3's hard cap on the always-loaded block
-> (the soft `RULES_CHAR_BUDGET` warning stands), and nothing yet retires on
-> the R1 staleness signal — by design; see R2's "what this deliberately is
-> not".
+> as its own artifact. R3 has since shipped too: `MAX_ACTIVE_RULES_PER_DOMAIN`
+> caps a domain at 15 *active* learned rules (user rules uncounted — they are
+> the user's own budget), `budget_refuses` rejects any candidate set that grows
+> past the cap, and `over_budget_domains` reports an already-over set. The size
+> half, `RULES_CHAR_BUDGET`, stays a warning: over budget, `learn` keeps the
+> set and says the next pass should consolidate harder. Still open: nothing yet
+> retires on the R1 staleness signal — by design; see R2's "what this
+> deliberately is not".
 
 ---
 
@@ -278,6 +282,10 @@ to main"). Low usage is a review signal; only *measured harm* argues for
 retirement, and a human accepts the argument.
 
 ### R3 — Cap the always-loaded block
+
+**Shipped.** The count half landed as `MAX_ACTIVE_RULES_PER_DOMAIN = 15` with
+`budget_refuses`; the paragraph below is the original proposal, kept for the
+reasoning behind the number.
 
 A per-domain budget on `rules_prompt_block` (count or tokens; the drift
 paper capped at ~50 entries — for a system prompt, 15–20 per domain is
