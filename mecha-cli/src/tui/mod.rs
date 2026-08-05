@@ -185,6 +185,8 @@ struct App {
     /// What `shell` actually is, computed once — the sandbox is config-driven
     /// and a provider switch rebuilds it identically.
     sandbox_line: String,
+    /// The workspace root, for `@path` completion. Fixed for the session.
+    workspace: std::path::PathBuf,
     /// Every provider entry in config, as (name, model). Fixed for the session.
     providers: Vec<(String, String)>,
     /// Whether the terminal speaks the kitty keyboard protocol, which is what
@@ -364,6 +366,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         help: false,
         tools: None,
         sandbox_line: setup::sandbox_line(&prepared.sandbox),
+        workspace: prepared.workspace.clone(),
         shell_tx,
         providers: prepared
             .config
@@ -762,13 +765,24 @@ fn on_key(
         }
 
         // Fill in as much as every candidate agrees on. Repeated presses
-        // converge rather than cycling through guesses.
+        // converge rather than cycling through guesses — and on a lone
+        // directory candidate the fill ends in `/`, so the next press
+        // descends.
         KeyCode::Tab => {
-            let candidates = command::completions(&app.input);
-            let filled = command::common_prefix(&candidates);
-            if !filled.is_empty() {
-                app.input = format!("/{filled}");
-                app.cursor = app.input.len();
+            if let Some((start, partial)) = command::at_token(&app.input, app.cursor) {
+                let candidates = command::path_candidates(partial, &app.workspace);
+                let filled = command::common_prefix(&candidates);
+                if filled.len() > partial.len() {
+                    app.input.replace_range(start..app.cursor, &filled);
+                    app.cursor = start + filled.len();
+                }
+            } else {
+                let candidates = command::completions(&app.input);
+                let filled = command::common_prefix(&candidates);
+                if !filled.is_empty() {
+                    app.input = format!("/{filled}");
+                    app.cursor = app.input.len();
+                }
             }
         }
 
@@ -1371,9 +1385,19 @@ fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: us
     };
     // Ghost completion: the rest of what every candidate agrees on, dim, after
     // the cursor. Shown rather than applied, so typing on never fights it.
-    let candidates = command::completions(&app.input);
+    // Two candidate sources, one mechanism: an `@path` token at the cursor
+    // completes against the workspace, anything else against command names.
+    let (candidates, typed) = match command::at_token(&app.input, app.cursor) {
+        Some((_, partial)) => {
+            (command::path_candidates(partial, &app.workspace), partial.to_string())
+        }
+        None => (
+            command::completions(&app.input).into_iter().map(str::to_string).collect(),
+            app.input.trim_start_matches('/').to_string(),
+        ),
+    };
     let ghost = command::common_prefix(&candidates)
-        .strip_prefix(app.input.trim_start_matches('/'))
+        .strip_prefix(&typed)
         .unwrap_or_default()
         .to_string();
 
@@ -1407,7 +1431,13 @@ fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: us
     // What else could still be meant, listed under the box. Only while the
     // name is being typed — once there is an argument the question is settled.
     if !candidates.is_empty() && candidates.len() > 1 {
-        let hint = format!("  {}", candidates.join("  "));
+        // One row: past a dozen entries the answer is a narrower partial,
+        // not a longer menu.
+        let shown = candidates.len().min(12);
+        let mut hint = format!("  {}", candidates[..shown].join("  "));
+        if candidates.len() > shown {
+            hint.push_str(&format!("  … +{}", candidates.len() - shown));
+        }
         let area = Rect {
             x: chunks[2].x,
             y: chunks[2].y.saturating_sub(1),
@@ -1449,7 +1479,7 @@ fn draw_help(frame: &mut Frame, kitty: bool) {
     let keys: Vec<(&str, String)> = vec![
         ("enter", "send · while running, steer the run".into()),
         (newline_keys, "insert a newline".into()),
-        ("tab", "complete a slash command".into()),
+        ("tab", "complete a /command or an @path".into()),
         ("shift+tab", "toggle planning (writing tools hidden)".into()),
         ("^o", "show or hide thinking and tool output".into()),
         ("^c", "stop the run · twice at idle to quit".into()),
