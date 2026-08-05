@@ -754,12 +754,19 @@ fn on_key(
         return Ok(());
     }
 
-    // The help overlay takes the next key, whatever it is: it exists to be
-    // glanced at and dismissed. Checked after the real modals — an approval
-    // or a question arriving while help is up still gets its answer.
+    // The help overlay closes on the next key — but a printable key was
+    // meant for the input, not the overlay, so it falls through: someone
+    // typing "?why" opens help on the ? and must not lose the w. A second ?
+    // just closes (or the overlay would reopen and the key would toggle
+    // nothing). Checked after the real modals — an approval or a question
+    // arriving while help is up still gets its answer.
     if app.help {
         app.help = false;
-        return Ok(());
+        match key.code {
+            KeyCode::Char(c) if c != '?' => {}
+            KeyCode::Backspace => {}
+            _ => return Ok(()),
+        }
     }
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -1403,14 +1410,29 @@ fn run_shell_escape(app: &mut App, agent: &Arc<Agent>, cmd: String) {
 /// Keep a local command's output readable in the transcript, which is a view
 /// and not a pager. The full output was never captured for the model — this
 /// is only about the screen.
+///
+/// Both axes, because they fail differently: many lines scroll the useful
+/// part away, and one enormous line (`!cat` on a minified file) sits whole in
+/// memory and wraps for thousands of rows.
 fn clip_output(s: &str) -> String {
     const MAX_LINES: usize = 200;
+    const MAX_BYTES: usize = 16_000;
+
     let total = s.lines().count();
-    if total <= MAX_LINES {
-        return s.trim_end().to_string();
+    let mut out: String = if total <= MAX_LINES {
+        s.trim_end().to_string()
+    } else {
+        let mut kept: String = s.lines().take(MAX_LINES).collect::<Vec<_>>().join("\n");
+        kept.push_str(&format!("\n… ({} more lines)", total - MAX_LINES));
+        kept
+    };
+
+    if out.len() > MAX_BYTES {
+        let cut = (0..=MAX_BYTES).rev().find(|&i| out.is_char_boundary(i)).unwrap_or(0);
+        let dropped = out.len() - cut;
+        out.truncate(cut);
+        out.push_str(&format!("\n… ({dropped} more bytes)"));
     }
-    let mut out: String = s.lines().take(MAX_LINES).collect::<Vec<_>>().join("\n");
-    out.push_str(&format!("\n… ({} more lines)", total - MAX_LINES));
     out
 }
 
@@ -2077,6 +2099,27 @@ mod tests {
         app.todo_visible = false;
         let vetoed = frame_text(&mut app, 80, 24, Some(&items));
         assert!(!vetoed.contains("todo 2/12"), "{vetoed}");
+    }
+
+    #[test]
+    fn shell_output_is_clipped_on_both_axes() {
+        // Many lines and one enormous line fail differently: the first
+        // scrolls the useful part away, the second sits whole in memory and
+        // wraps for thousands of rows.
+        let many = (0..500).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let clipped = super::clip_output(&many);
+        assert!(clipped.lines().count() <= 201, "kept {} lines", clipped.lines().count());
+        assert!(clipped.contains("more lines"), "{clipped}");
+
+        let huge = "x".repeat(100_000);
+        let clipped = super::clip_output(&huge);
+        assert!(clipped.len() < 17_000, "kept {} bytes", clipped.len());
+        assert!(clipped.contains("more bytes"), "says what was dropped");
+
+        // A multi-byte char at the cut must not split.
+        let unicode = "é".repeat(20_000);
+        let clipped = super::clip_output(&unicode);
+        assert!(clipped.len() < 17_000);
     }
 
     #[test]
