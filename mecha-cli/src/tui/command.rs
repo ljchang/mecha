@@ -124,6 +124,67 @@ pub fn shell_escape(line: &str) -> Option<&str> {
     (!rest.is_empty()).then_some(rest)
 }
 
+/// The `@path` token containing the cursor, if there is one: the byte offset
+/// where the partial path starts (just after the `@`) and the partial itself.
+///
+/// Cursor-relative, not line-relative, because the mention can sit anywhere
+/// in a message — "summarise @docs/HAND" completes mid-sentence.
+pub fn at_token(input: &str, cursor: usize) -> Option<(usize, &str)> {
+    let cursor = cursor.min(input.len());
+    let before = &input[..cursor];
+    let token_start = before
+        .rfind(|c: char| c.is_whitespace())
+        .map(|i| i + before[i..].chars().next().map_or(1, char::len_utf8))
+        .unwrap_or(0);
+    let token = &before[token_start..];
+    token.starts_with('@').then(|| (token_start + 1, &token[1..]))
+}
+
+/// Workspace entries the partial path could still mean. Directories come with
+/// a trailing `/`, so accepting one and pressing Tab again descends.
+///
+/// Dotfiles complete only when asked for by name, and `.git`/`target` only
+/// when something is typed — completing into a build directory from an empty
+/// partial is how a four-gigabyte listing happens.
+pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String> {
+    // Absolute and parent-escaping partials get nothing: completion serves
+    // the workspace, and the UI should not teach paths the path jail will
+    // refuse anyway.
+    if partial.starts_with('/') || partial.split('/').any(|c| c == "..") {
+        return Vec::new();
+    }
+    let (dir_part, file_part) = match partial.rfind('/') {
+        Some(i) => (&partial[..=i], &partial[i + 1..]),
+        None => ("", partial),
+    };
+    let Ok(entries) = std::fs::read_dir(workspace.join(dir_part)) else {
+        return Vec::new();
+    };
+
+    let mut out: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(file_part) {
+                return None;
+            }
+            if name.starts_with('.') && !file_part.starts_with('.') {
+                return None;
+            }
+            if (name == ".git" || name == "target") && file_part.is_empty() {
+                return None;
+            }
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            Some(format!("{dir_part}{name}{}", if is_dir { "/" } else { "" }))
+        })
+        .collect();
+    out.sort();
+    // A cap, said out loud by the caller being unable to see past it — a
+    // directory this wide needs a narrower partial, not a longer menu.
+    out.truncate(200);
+    out
+}
+
 /// Every command name, in the order they are offered for completion.
 ///
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
@@ -149,15 +210,17 @@ pub fn completions(input: &str) -> Vec<&'static str> {
 /// The longest prefix every candidate shares — what Tab should fill in.
 ///
 /// Completing to the *common* prefix rather than the first match is what makes
-/// repeated Tab presses converge instead of cycling through guesses.
-pub fn common_prefix(candidates: &[&str]) -> String {
-    let Some(first) = candidates.first() else { return String::new() };
+/// repeated Tab presses converge instead of cycling through guesses. Generic
+/// so it serves both the `&'static str` command names and the owned path
+/// candidates.
+pub fn common_prefix<S: AsRef<str>>(candidates: &[S]) -> String {
+    let Some(first) = candidates.first().map(AsRef::as_ref) else { return String::new() };
     let mut len = first.len();
     for c in &candidates[1..] {
         len = len.min(
             first
                 .chars()
-                .zip(c.chars())
+                .zip(c.as_ref().chars())
                 .take_while(|(a, b)| a == b)
                 .map(|(a, _)| a.len_utf8())
                 .sum(),
@@ -212,7 +275,7 @@ mod tests {
         assert_eq!(common_prefix(&completions("/mo")), "mode");
         assert_eq!(common_prefix(&["session", "settings"]), "se");
         assert_eq!(common_prefix(&completions("/u")), "usage");
-        assert_eq!(common_prefix(&[]), "");
+        assert_eq!(common_prefix::<&str>(&[]), "");
     }
 
     #[test]
@@ -237,6 +300,74 @@ mod tests {
     fn an_ordinary_message_is_not_a_command() {
         assert_eq!(parse("summarise the README"), None);
         assert_eq!(parse("what does a/b mean?"), None);
+    }
+
+    /// A throwaway directory tree for the path-completion tests.
+    fn fixture() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "mecha-completion-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        for dir in ["docs", "src", "target", ".git"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for file in ["README.md", "docs/HANDOFF.md", "docs/TUI-RESEARCH.md", ".hidden"] {
+            std::fs::write(root.join(file), "x").unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn the_at_token_is_found_anywhere_in_the_message() {
+        // Mentions complete mid-sentence, not only at the start of the line.
+        assert_eq!(at_token("@doc", 4), Some((1, "doc")));
+        assert_eq!(at_token("summarise @docs/HAND", 20), Some((11, "docs/HAND")));
+        assert_eq!(at_token("read @", 6), Some((6, "")));
+
+        // No @-token at the cursor: nothing to complete.
+        assert_eq!(at_token("plain text", 10), None);
+        assert_eq!(at_token("a@b.com is an email", 5), None, "@ mid-word is not a mention");
+        assert_eq!(at_token("@docs done", 10), None, "cursor is past the token");
+    }
+
+    #[test]
+    fn path_candidates_complete_the_workspace_and_descend_directories() {
+        let root = fixture();
+
+        let top = path_candidates("", &root);
+        assert!(top.contains(&"docs/".to_string()), "{top:?}");
+        assert!(top.contains(&"README.md".to_string()), "{top:?}");
+
+        // Directories carry the trailing slash, so the next Tab descends.
+        assert_eq!(path_candidates("do", &root), vec!["docs/"]);
+        let inside = path_candidates("docs/", &root);
+        assert_eq!(inside, vec!["docs/HANDOFF.md", "docs/TUI-RESEARCH.md"]);
+        assert_eq!(common_prefix(&inside), "docs/", "diverging names share only the dir");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn noise_and_escapes_are_not_offered() {
+        let root = fixture();
+
+        let top = path_candidates("", &root);
+        assert!(!top.iter().any(|c| c.contains(".git")), "{top:?}");
+        assert!(!top.iter().any(|c| c.contains("target")), "{top:?}");
+        assert!(!top.iter().any(|c| c.contains(".hidden")), "{top:?}");
+
+        // Asked for by name, dotfiles and the build dir do complete.
+        assert_eq!(path_candidates(".hi", &root), vec![".hidden"]);
+        assert_eq!(path_candidates("targ", &root), vec!["target/"]);
+
+        // The jail will refuse these, so the UI does not teach them.
+        assert!(path_candidates("/etc/pass", &root).is_empty());
+        assert!(path_candidates("../up", &root).is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
