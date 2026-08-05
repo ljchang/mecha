@@ -1,13 +1,23 @@
 # mecha — handoff
 
-State of the project and what to build next. Written to be picked up cold.
+Where the project stands and what is actually left to do. Written to be picked
+up cold.
+
+Two companion documents, so this one can stay short:
+
+- [`CLAUDE.md`](../CLAUDE.md) — why each subsystem is shaped the way it is. The
+  canonical design document. This file deliberately does not restate it.
+- [`HISTORY.md`](HISTORY.md) — what was built and when, and the traps hit along
+  the way. Everything here that turned into "done" moved there.
 
 ---
 
 ## Where the work is
 
-**All of it is on `main`**, and `main` is level with `origin/main`. The working
-tree is clean.
+Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.0**.
+CI runs build, test, clippy and rustfmt on every push and pull request; the
+documentation site builds from `website/` and deploys to
+<https://ljchang.github.io/mecha/>.
 
 Every commit was verified to build and pass tests **in isolation**, so the
 history bisects rather than merely ending in a good state.
@@ -15,21 +25,29 @@ history bisects rather than merely ending in a good state.
 First thing to run in a fresh context:
 
 ```bash
-cargo test && cargo clippy --all-targets -- -D warnings
+cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **315 core + 73 CLI + 66 mail unit tests, 13 integration tests, 1
-doctest** — 468,
-no warnings. The integration tests need docker (with `debian:stable-slim` and
-`python:3-slim` local) and `python3`; without them they skip and say so. In CI,
-set `MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of
-quietly passing.
+Expect **468 tests**, no warnings — verified 2026-08-05:
 
-**The system prompt is wired now.** `~/.mecha/config.toml` points
+| Suite | Count |
+|---|---:|
+| `mecha-core` unit | 315 |
+| `mecha-cli` unit | 73 |
+| `mecha-mail` unit | 66 |
+| integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
+| doctest | 1 |
+
+The integration tests need docker (with `debian:stable-slim` and `python:3-slim`
+pulled) and `python3`; without them they skip and say so. CI sets
+`MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of quietly
+passing — a silently skipped test reads exactly like a passing one.
+
+**The system prompt is wired.** `~/.mecha/config.toml` points
 `[agent] system_prompt_file` at `prompts/agent.md`. It was not, for the whole
-life of the project before this — `RunConfig` recorded `system_prompt: null`,
-and the model had none of that file's guidance. Check it is still set before
-concluding anything about model behaviour.
+life of the project before 2026-08-03 — `RunConfig` recorded
+`system_prompt: null`, and the model had none of that file's guidance. Check it
+is still set before concluding anything about model behaviour.
 
 ## What exists
 
@@ -56,126 +74,73 @@ A working agent harness, used and measured rather than just compiled.
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
 | Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/send/reject; edits mined as writing reflections |
-| Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar, extracted from flowmail; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed |
+| Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed |
 | Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, systemd unit in `scripts/` |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B) |
-| Eval | 36 cases, 17 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `pkg-cases.jsonl` — 8 memory/interlock cases against fixture MCP servers (`--mcp-file`) |
+| Eval | 36 cases, 15 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `pkg-cases.jsonl` — 8 memory/interlock cases against fixture MCP servers (`--mcp-file`) |
 
 `cargo clippy --all-targets` is clean and should stay that way.
 
-### What the tests actually cover
-
-Six of this project's load-bearing claims used to be backed by a paragraph in
-this file describing a run that happened once, by hand, in a session that was
-over. They now re-run:
-
-| Claim | Where |
-|---|---|
-| A transcript round-trips its taint, and taint records *merge* on load | `session.rs` |
-| The MCP child environment is an allowlist, not an inheritance | `mcp.rs` + `tests/mcp_server.rs` |
-| The Anthropic body never sends what 400s, and the cache breakpoint is placed right | `provider/anthropic.rs` |
-| Fragmented tool-call arguments reassemble; calls survive a mislabelled `finish_reason` | `provider/openai.rs` |
-| A broken sandbox fails preflight instead of degrading to unconfined | `tests/sandbox_backends.rs` |
-| A confined command/server loses the network, your home, and your environment | both integration files |
-
-The split that matters: **unit tests for your own code, integration tests for
-what needs real execution, eval cases for what needs a real model.** A
-`ScriptedProvider` replays what you *believe* a provider does, so it cannot
-catch a provider violating that belief — which is where every expensive
-provider bug here came from. Conversely an eval case cannot tell you *which*
-layer broke, which is how a dropped-tool-call harness bug once graded as a model
-failure.
-
-Still uncovered: the whole `mecha-cli` crate, and bwrap's actual confinement
-(it fails on this machine, so that test asserts the quality of the error message
-rather than the happy path).
-
 ## Environment as left
 
-Running on the DGX Spark (GB10, aarch64, 128GB unified):
+Running on the DGX Spark (GB10, aarch64, 128GB unified). **Verified 2026-08-05:**
 
-| Port | Model | Notes |
+| Port | Model | State |
 |---|---|---|
-| 8080 | Qwen3.6-35B-A3B | MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`) — restarted 2026-08-04, healthy |
-| 8081 | gemma-4-E4B | separate `mtp-*.gguf` draft — **down**, nothing currently depends on it |
-| 8082 | gemma-4-26B-A4B | separate `mtp-*.gguf` draft; the eval judge and nightly validate's judge — restarted 2026-08-04, healthy |
-| 8888 | SearXNG | Docker, JSON format enabled |
+| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1` — MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`) |
+| 8081 | gemma-4-E4B | down; nothing currently depends on it |
+| 8082 | gemma-4-26B-A4B | up, `total_slots=1` — the eval judge and nightly validate's judge |
+| 8888 | SearXNG | up (docker, JSON format enabled) |
 
-**Both servers now run `-np 1`, and the flag is load-bearing (2026-08-05).**
-The llama-server build in use defaults to **4 parallel slots**, which silently
-splits `-c` across them: every request since the 2026-08-04 restart ran
-against **8192 tokens of context, not 32768**, while mecha's `context_window`
-said otherwise. Past 8192 the server context-shifts instead of erroring, so
-the model saw a mangled transcript and returned *empty completions* — the
-mysterious empty-EndTurn deaths in the k=5 compaction runs were this, not a
-mecha regression, and every scorecard taken between the two restarts is
-confounded. Check `curl :8080/props | jq .total_slots` is 1 before believing
-any measurement.
+**`-np 1` is load-bearing.** The llama-server build in use defaults to **4
+parallel slots**, which silently splits `-c` across them: for a period on
+2026-08-04 every request ran against **8192 tokens of context, not 32768**,
+while mecha's `context_window` said otherwise. Past 8192 the server
+context-shifts instead of erroring, so the model saw a mangled transcript and
+returned *empty completions* — the mysterious empty-EndTurn deaths in the k=5
+compaction runs were this, not a mecha regression, and every scorecard taken
+between the two restarts is confounded. Check
+`curl :8080/props | jq .total_slots` is 1 before believing any measurement.
 
-Both llama-servers were found dead on 2026-08-04 (machine likely rebooted;
-ollama's own llama-server was running and is *not* ours) and were restarted
-with the scripts below. **The nightly timer depends on 8080** — its health
-check defers the whole night when it is down, safely, but a permanently dead
-server means no learning happens; check `~/.mecha/learning/logs/` if
-mornings look quiet.
+Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
+`start-gemma26.sh`); they resolve the model through `$HOME` with `HF_HUB` and
+`LLAMA_SERVER` overrides. Config is `~/.mecha/config.toml` (providers `local`,
+`small`, `gemma26`, `anthropic`).
 
-### Standing machinery now installed on this machine
+### Standing machinery on this machine
 
 - **Reflect-on-close**: `~/.mecha/config.toml` carries a `session_end` hook
-  running `nohup mecha reflect -p local ... &` — every recorded session is
-  mined minutes after it closes.
+  running `nohup mecha reflect -p local ... &` — every recorded session is mined
+  minutes after it closes.
 - **Nightly rumination**: `mecha-ruminate.timer` (systemd user, 03:30,
-  `Persistent=true`, linger on) runs `scripts/ruminate.sh`: reflect →
-  distill → validate `--unprocessed-only` (judge: gemma26) → learn
+  `Persistent=true`, linger on) runs `scripts/ruminate.sh`: reflect → distill →
+  validate `--unprocessed-only` (judge: gemma26) → learn
   `--holdout 0.25 --propose` → `rules propose-retirements`. Logs land in
-  `~/.mecha/learning/logs/<date>.log`; pending proposals wait in `mecha
-  proposals`. Validate now also appends every probe's outcome to the
-  store's `validations.jsonl` ledger, which is what the retirement scan
-  reads — see "Rule tenure (2026-08-05)" below.
-- **Triggers are built but nothing schedules them on this machine yet.**
-  `mecha trigger daemon` is not installed — `scripts/mecha-triggers.service`
-  is written and untried. Installing it is three lines (the file says which),
-  and until then triggers only fire when someone runs `mecha trigger tick` or
-  `run` by hand.
+  `~/.mecha/learning/logs/<date>.log`; pending proposals wait in
+  `mecha proposals`. **Confirmed enabled 2026-08-05.**
+- **Triggers are built but nothing schedules them here.** `mecha trigger daemon`
+  is not installed — `scripts/mecha-triggers.service` is written and untried
+  (confirmed absent from `systemctl --user` 2026-08-05). Installing it is three
+  lines, and until then triggers fire only when someone runs
+  `mecha trigger tick` or `run` by hand.
 - **Both consume `~/.cargo/bin/mecha`**, not the repo build — reinstall
   (`cp target/release/mecha ~/.cargo/bin/`) after changing anything in the
   learning path, or the automation runs stale behaviour.
-- The learning store (`~/.mecha/learning`) currently holds **zero live
-  rules** — the one early rule was reverted with its poisoned reflection —
-  so everything from here accumulates from real usage through the gate.
-
-Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
-`start-gemma26.sh`). Config is `~/.mecha/config.toml` (providers `local`,
-`small`, `gemma26`, `anthropic`).
+- The learning store (`~/.mecha/learning`) holds **zero live rules** — the one
+  early rule was reverted with its poisoned reflection — so everything from here
+  accumulates from real usage through the gate.
 
 ### The Anthropic key
 
 [redacted: operational detail — see docs/OPERATIONS.md]
-time:
 
 - **`~/.bashrc` returns early for non-interactive shells** (the `case $- in *i*)`
-  guard around line 5). The export is well below it, so a non-interactive shell
+  guard near the top). The export sits well below it, so a non-interactive shell
   — which is what tooling runs — never reaches it. Load it explicitly:
 [redacted: operational detail — see docs/OPERATIONS.md]
 - **Take the *last* match, not the first.** There were two exports for a while,
   a placeholder above the real key; `grep -m1` silently found the placeholder
   and produced a `401 invalid x-api-key` that looked like a bad key.
-
-### The Anthropic provider is verified
-
-As of 2026-08-03, which it had never been before — ~480 lines written to spec
-with no evidence behind them. Five checks, all passing:
-
-| Check | Result |
-|---|---|
-| Plain call | works |
-| Prompt cache | 3398 tokens written, then **3398 read** on the next call — the breakpoint placement (tools → system → messages, marker on the last system block) is right |
-| Tool round-trip | works, cache hit on both turns |
-| Thinking blocks across a tool turn (Opus 5) | signatures echo back correctly — a wrong signature would 400 on turn two |
-| Ctrl-C mid-stream | cut off cleanly at 289, partial kept, exit 3 |
-
-Still unverified: the refusal path (`stop_reason: "refusal"` arriving at HTTP
-200) — not worth deliberately eliciting.
 
 **No prices are configured**, so `cost_usd` is `None` and `--max-cost` silently
 never fires on a paid provider. For `[providers.anthropic]`:
@@ -200,1766 +165,211 @@ Two conclusions hold from it anyway:
 1. **MoE wins on this hardware.** Decode tracks *active* parameters. The dense
    27B is 8× slower than the 3B-active MoE for identical accuracy.
 2. **Constrained decoding is doing real work.** `llama-server --jinja`
-   grammar-constrains tool calls; that is why malformed-argument counts are
-   zero across the board. Don't conclude anything about a model's tool
-   reliability from an unconstrained sampler.
+   grammar-constrains tool calls; that is why malformed-argument counts are zero
+   across the board. Don't conclude anything about a model's tool reliability
+   from an unconstrained sampler.
 
-The nine cases added since (`long-horizon`, `codegen`, `synthesis`,
-`ambiguity`) do discriminate. qwen3.6-35b-a3b judged by gemma-4-26b-a4b scores
-**32/34** on the full set (`results/qwen-hard-v2.json`), and both failures are
-in the same tag:
+The cases added since (`long-horizon`, `codegen`, `synthesis`, `ambiguity`) do
+discriminate. qwen3.6-35b-a3b judged by gemma-4-26b-a4b scored **32/34** on the
+set as it stood then (`results/qwen-hard-v2.json`):
 
-- **long-horizon 2/2**, at ~17.5 turns — it walks a 16-link chain without
-  losing the running total, and does not take the shortcut of summing the
-  decoys. Confirmed at n=5 on 2026-08-03: `chain-total` is **5/5** uncompacted,
-  `chain-largest` **4/5**. A single failure seen before this was measured looked
-  like a regression and was variance — which is the whole argument for pass@k.
+- **long-horizon 2/2**, at ~17.5 turns — it walks a 16-link chain without losing
+  the running total, and does not take the shortcut of summing the decoys.
+  Confirmed at n=5 on 2026-08-03: `chain-total` is **5/5** uncompacted,
+  `chain-largest` **4/5**. A single earlier failure looked like a regression and
+  was variance — which is the whole argument for pass^k.
 - **codegen 2/2** — implements `median`, finds the one-line duration-parsing
   bug, and runs the tests itself. Graded by running them, not by asking.
 - **synthesis 2/2** — finds the majority figure and the outlier, and notices
   which report supersedes which.
-- **ambiguity 2/3 → 8/9 across the tag** once `ask_user` existed *and* the cases
-  were rewritten to grade the trace. The measurement history is the lesson: the
-  clean A/B said the tool made no difference (6/9 either way), and the
-  transcripts said otherwise — without it the model burned **30 tool calls** and
-  died on the turn ceiling with a correct answer; with it, it asked in **3** and
-  failed a rubric that demanded it ask for two missing things at once. A large
-  real improvement was invisible to the grader. `ambiguous-rate` now asserts
-  `tools: ["ask_user"]` and `false-premise` asserts `forbid_tools: ["ask_user"]`
-  — because the right move there is *not* to ask, the file simply does not
-  exist. Read the transcripts before believing a score.
-- **the old ambiguity note, kept for context: 1/3** — the weak spot, and the one that moves between runs
-  (1–2/3 across four runs). Given "add the new contractor at the usual rate" it
-  sometimes asks, and sometimes spends its whole budget hunting for a
-  contractor that does not exist. That variance is itself the finding, and it
-  is the case to watch when comparing models.
+- **ambiguity 8/9 across the tag** once `ask_user` existed *and* the cases were
+  rewritten to grade the trace. The measurement history is the lesson: a clean
+  A/B said the tool made no difference (6/9 either way) and the transcripts said
+  otherwise — without it the model burned **30 tool calls** and died on the turn
+  ceiling with a correct answer; with it, it asked in **3** and failed a rubric
+  that demanded it ask for two missing things at once. A large real improvement
+  was invisible to the grader. `ambiguous-rate` now asserts `tools: ["ask_user"]`
+  and `false-premise` asserts `forbid_tools: ["ask_user"]` — because the right
+  move there is *not* to ask, the file simply does not exist. Read the
+  transcripts before believing a score.
 
 Only `ambiguity` and `synthesis` have a judge in the loop, and judges disagree
 with themselves across runs. Read the answer before believing a single verdict.
 
-**Scorecards in `results/` from before this change are not comparable to ones
-after it.** The new fixtures took the shared workspace from 11 files to 44, so
-every case that searches the whole workspace got harder — two of them started
-failing on turn ceilings calibrated against the smaller tree. If you add
+**Scorecards in `results/` taken before the fixture expansion are not comparable
+to ones after it.** The new fixtures took the shared workspace from 11 files to
+44, so every case that searches the whole workspace got harder — two of them
+started failing on turn ceilings calibrated against the smaller tree. If you add
 fixtures, expect to recalibrate, and re-baseline every model rather than
 comparing across the boundary.
+
+The compaction arc — seven measured arms, and the finding that a summariser
+preserves *what is true* while dropping *how far you got* — is in
+[`HISTORY.md`](HISTORY.md). It is the reason compaction is shaped the way it is,
+and it is worth reading before changing that code.
 
 ---
 
 ## What to do next
 
-Ordered by what I would actually do first, not by size.
-
-### 1. ~~Tell the model to keep a todo list~~ — done 2026-08-04, and the answer is no
-
-The paragraph is in `prompts/agent.md` (imperative: "your first tool call is
-`todo`") and `todo`'s description now says to call it first for anything over
-three tool calls. qwen3.6-35b-a3b called `todo` **zero times in 20 eval
-case-runs** either way, and `chain-total-compacted` stayed **4/5 in both arms**
-(thinning-only baseline: 4/5, control 5/5). Three probes localised why, and
-they also say the gap this targeted is already closed:
-
-- The model keeps a list *flawlessly* when the **user turn** asks for one —
-  updates every step, batches `todo` with the action in the same turn — and
-  ignores the identical directive in the system prompt. Delivery was verified
-  in the recorded `RunConfig` both times: an instruction-following gap in the
-  model, not a wiring bug.
-- Moving the directive into the tool description got adoption once, on
-  genuinely sequential work — as a single static item it never updated. A
-  checkmark, not a position ledger.
-- Across all **15 compacted chain runs** taken 2026-08-03/04, **no failure was
-  a position failure**: every walk read exactly 16 entries, no restarts, no
-  early END. Thinning already fixed the mode todo was meant to fix. The three
-  misses were all in the *total* (877 and 717 for 847) with position and count
-  right — once by summing its own **correct** 16-row table wrong. The residual
-  mode is value accumulation, which a *running total kept in the list* would
-  address, and which this model will not maintain from prompting alone.
-
-Also learned along the way: the model has **no read path** to the `Mutex` — it
-sees the list only through the echo in its most recent `todo` result. Survival
-through compaction therefore depends on updating often enough that a fresh echo
-sits in the un-summarised tail. If this is ever revisited, the machinery worth
-considering is re-injecting the list at compaction time, not more prompting.
-
-Both changes are kept — a stronger model may well follow them, and they cost
-nothing here. But **the `todo` description change alters the tool surface of
-every eval case**: re-baseline before comparing any full-set scorecard across
-this boundary.
-
-### 2. ~~Pin the sampler~~ (done 2026-08-04), then build the replay driver
-
-The sampler half is done, and both of this file's earlier assumptions about it
-were wrong in ways that only running it showed:
-
-- **`temperature = 0.0` is unusable on qwen3.6.** Greedy decoding walks into
-  verbatim repetition loops that sampling noise would have broken: a limerick
-  request spent its entire 4096-token budget repeating one line of its own
-  reasoning, where the server-default control answered in 1677 tokens. Pinning
-  greedy would have quietly degraded every eval case with long thinking.
-- **A seed makes sampling repeatable, but only sequentially.** At
-  `temperature = 0.8, seed = 42`, identical requests repeat token-for-token —
-  reasoning included — when run one at a time, and *stop* repeating the moment
-  another request shares the batch: llama-server's continuous batching perturbs
-  the numerics, seed or no seed.
-
-So the pin is `temperature = 0.8` — the server default every prior measurement
-already ran at, so no comparability boundary — **plus `seed = 42`**, on all
-three local providers. `ProviderConfig` gained both fields; the
-OpenAI-compatible provider sends them; the Anthropic provider **refuses either
-at startup** (rejecting beats silently dropping — someone who pinned the
-sampler must not believe it is pinned where it cannot be); `RunConfig` records
-both, so a session file now says whether its run was repeatable. Verified
-end-to-end: two `mecha run`s produce byte-identical answers.
-
-What follows from the concurrency caveat: the replay driver must drive
-requests **sequentially** (it naturally would — one conversation), and the
-eval at `--concurrency 4` stays pass@k-shaped. `--concurrency 1` is now the
-deterministic mode, at ~4× the wall clock.
-
-Then the driver — **also done 2026-08-04**. `replay_run.rs` is the impure half
-beside the pure `replay.rs`: a registry of tools that answer from the recording
-(`replay_registry`), and `drive`, which feeds the recorded user turns to an
-agent one at a time and diffs what it did. `mecha replay <session>` rebuilds
-the run from the recorded `RunConfig` — its system prompt, tool surface,
-budgets — not from today's flags, and takes `--on-divergence=stop|error|live`
-(`stop` default; `error` exits nonzero on *any* divergence, for CI; `live`
-abandons the recording and continues on real tools under the configured
-permission mode). Nine unit tests cover the mechanics, including two that
-drive a `ScriptedProvider` through a full faithful and a full divergent run.
-
-Decisions that were not obvious until it ran:
-
-- **A structural divergence kills the recording for every tool**, via a shared
-  cursor and the run's cancellation token — the model gets a refusal, the run
-  stops at the next safe point, and later recorded turns are never fed.
-  Argument-only differences replay the recorded result and keep going; the
-  final diff reports them and the caller judges.
-- **The spec the model sees is the live tool's**, name/description/schema —
-  deliberately, because a changed description is part of what a replay
-  measures. A recorded tool missing from today's registry is an error, not a
-  silent shrink of the surface. This bit immediately: subagent tools like
-  `research` are built by full setup, not `prepare_tools`, so the command uses
-  `setup::prepare` and borrows the discarded parent agent's registry.
-- **`-p`/`-m` override the recorded provider/model**, which is the payoff:
-  cross-model replay on real work. When `-p` is given without `-m`, the model
-  falls back to the *new provider's* model, not the recorded name — sending
-  qwen's name to gemma's server was the first bug this surfaced.
-- **Replayed results carry no `external` marking** — the transcript does not
-  record per-result provenance, so a replay's taint can be less armed than the
-  recording's. Recorded interlock refusals replay verbatim regardless. Known
-  approximation, documented in the module.
-
-Verified end-to-end, all three ways it can go: a recorded qwen session with
-tool calls **replays with zero divergence** under the pinned sampler; the same
-session replayed on gemma-4-26b-a4b reported exactly one **argument-only**
-divergence (`entry-735e.md` for `audit/entry-735e.md` — the handoff's own
-example of a spelling, not a behaviour change); and replaying the todo-probe
-session on gemma stopped at call #0 with a **structural** divergence and exit
-1 under `error` — gemma opens with `todo` where qwen recorded `fs_read`.
-That last one is also a finding for item 1: **gemma obeys the todo-first
-instruction qwen ignores.** The todo result is model-specific.
-
-Why it was worth doing: this project's case set has **saturated once already**,
-and the replacement cost a full session of hand-writing cases, four of whose
-graders were wrong before they were right. Replay turns every real session into
-a regression case. Still open, now cheap: point it at a longer recorded session
-as a standing regression check, and wire `--json` output into something CI can
-diff.
-
-### 3. pkg — design settled 2026-08-04, talked through with the user
-
-The open questions here are now decisions. Recorded in full because they were
-reached by argument and would be easy to re-litigate cold.
-
-**The three-layer architecture.**
-
-- **Systems of record** (Google Calendar, Gmail, GitHub) hold live truth.
-- **mecha is the actor**: it reads and (eventually, via the outbox) writes
-  those systems through MCP. "What's on Thursday" is a live-calendar query,
-  never a pkg query — pkg would answer with a summarized, possibly stale copy.
-  mecha must never "add an event" by writing to pkg: that puts a fact in the
-  graph and nothing on the calendar.
-- **pkg is the derived layer**: distilled context — who someone is, when you
-  last met, what was decided, project state. It learns about the world by
-  ingestion, after the fact. One refinement: pkg is the read model for
-  anything that has a system of record elsewhere, and the **system of record
-  only for what has no other home** — relationships, decisions, episodes,
-  tasks-as-the-user-conceives-them. (If a real task tracker is ever adopted,
-  tasks migrate to rule one.)
-
-**Retrieval timing: on demand, kept.** The decisive argument: a pkg read arms
-both taint legs at once, so session-start retrieval would mean no session
-could ever use `web_search`/`http_fetch` after turn zero. On demand pays that
-price only when memory is actually needed, only from that moment. Corollary
-worth teaching the model: **web before memory** — both orders end equally
-tainted, but only one gets the outbound work done first.
-
-**The weak link is recognition, not timing** — measured, n=2 but vivid: asked
-"my current projects" with "pull from my knowledge graph", the model answered
-beautifully from pkg; asked about "my main research focus" with the source
-unnamed, it web-searched a nonsense query, never touched pkg, flailed through
-fifteen `fs_list` calls, and died on the context window. The fix is prompt
-coverage (projects/goals/tasks/deadlines/"my X" are memory questions) plus
-trace-graded eval cases, not a retrieval scheduler.
-
-**One graph, not a separate mecha store.** `kg_upsert` already *requires* a
-`source` field (`agent:mecha`) and `kg_search` filters by tags — provenance
-scoping is built in, so separation-by-store would duplicate it while
-splitting answers like "what are my projects" forever. The user explicitly
-wants mecha writing and *curating*: staging facts and connections **in
-flight, as tasks teach them**, flagging contradictions and duplicates rather
-than silently picking a side. Review-fatigue is handled by policy, not
-architecture: the nightly review can bulk-skim `agent:mecha` while reading
-personal facts carefully. What does *not* go to pkg: how mecha should behave
-(git), raw run history (sessions JSONL), measurements (`results/`). Only what
-the user would ask a personal assistant later.
-
-**Caveats recorded with the decision:**
-
-- **Self-retrieval costs taint.** Capabilities are per-server and the override
-  only widens, so mecha reading its own notes back arms the interlock like any
-  pkg read. Records cannot vouch for themselves through an untrusted channel.
-  If it hurts, the fix is pkg-side: a read tool scoped to self-authored +
-  curated records. Not needed yet; web-first ordering covers it.
-- ~~**`kg_upsert` stages `fact` and `alias` only — no episode kind.**~~ Both
-  halves of the queued pkg work-package have now shipped: the `readOnlyHint`
-  annotations (pkg, 2026-08-04 — read tools declare `readOnlyHint`,
-  `openWorldHint` explicitly false everywhere, `kg_upsert`
-  `destructiveHint: false`) and the **episode kind (pkg, 2026-08-05)**, which
-  is what session-end distillation pushes through (see the Reflexion section
-  below).
-- ~~**Trace-graded pkg eval cases need a fixture MCP server**~~ — built
-  2026-08-04, and it *is* also the interlock fixture, as predicted: see the
-  struck-through multi-turn interlock bullet in item 4 for what landed
-  (`eval/fixtures/pkg_server.py`, `eval/mcp.toml`, `--mcp-file`,
-  `eval/pkg-cases.jsonl`).
-
-**Roadmap order that falls out:** prompt widening + write habits (now) →
-hooks, with session-end distillation as the first consumer → outbox in core →
-calendar *reads* → calendar writes and email through the outbox. Calendar
-writes are the trifecta in one tool (invites send; descriptions exfiltrate),
-so they do not jump the queue ahead of the outbox. *(Every stage of this
-roadmap has now shipped — distillation, the last leg, on 2026-08-05.)*
-
-### 3c. The public surface — researched 2026-08-05
-
-`docs/PUBLIC-SURFACE-RESEARCH.md`. Four sessions in one week, consolidated
-into one document: artifacts and where they live; hosting and origin
-isolation; scheduling and group coordination; and the front door as a typed
-request API. (The four originals — `ARTIFACT-RESEARCH`, `HOSTING-RESEARCH`,
-`SCHEDULING-RESEARCH`, `FRONTDOOR-RESEARCH` — are folded into it and their
-`A*`/`H*`/`F*` recommendation identifiers are retired in favour of one `P*`
-list.)
-
-It started as "does a scheduled run produce a readable artifact, and can the
-TUI show it?" — both answers were no — and ended somewhere much larger: a
-public API for the things people currently send by email (book a meeting,
-request a letter, invite me to speak, apply to the lab, ask about my research)
-plus the outbound half (reports, blog posts, dataviz, marimo notebooks).
-
-The reframe that makes it one project rather than eight: **it is one
-primitive seen from two sides — a typed, versioned, schema-described object
-crossing the boundary between the user and the world, staged for human review
-in both directions.** Four verbs cover both (`publish`, `read`, `write`,
-`drain`); the unit of extension is a *request-type manifest* from which the
-JSON Schema, the HTML form, both validators, the MCP and WebMCP tool
-declarations, the A2A skill and the triage frame are all generated.
-
-Findings that carry the design, each of which is a bug if undone:
-
-- **Publishing is an outbound send and needs no new safety machinery** —
-  declare the tool `external_send`, name it in `[outbox] tools`, and staging
-  plus the recorded taint snapshot plus a human release is the whole gate.
-- **Structure is the injection defense.** A typed form is literally the
-  Action-Selector pattern (arXiv:2506.08837), and it gets CaMeL's control/data
-  separation without CaMeL's measured 2.7–2.8× token cost, because the schema
-  quarantines at the moment of typing. The rule: **the type is chosen by the
-  form, never inferred from the prose.** No free-text router, ever.
-- **Posture P.** mecha pushes and polls a public box that holds no key
-  reaching home. A tunnel is rejected not for firewall reasons but because it
-  delivers stranger-controlled requests to the process that shares a box with
-  every credential mecha has.
-- **Two features that were each fine become a vulnerability sharing an
-  origin**: an agent-authored page same-origin with the booking page can
-  rewrite what a visitor sees. Separate *registrable* domains, not subdomains.
-- **marimo forces the CSP into content classes.** Pyodide needs
-  `wasm-unsafe-eval` (and COOP/COEP for threads), and granting it on the
-  artifact origin would weaken every artifact. `static` / `interactive` /
-  `compute`, with `compute` on its own origin. Good news: WASM export is a
-  static bundle, so serving a notebook is still just `publish`.
-- **You do not need to build a chatbot front door**, because visitors
-  increasingly arrive with their own: WebMCP (W3C draft Feb 2026, enabled in
-  Chrome 149) lets the requester's agent read the typed form as a tool and
-  fill it on the requester's tokens.
-- **The accessible option and the injection-resistant option are the same
-  option** — a plain semantic HTML form is simultaneously WCAG 2.1 AA,
-  Action-Selector, zero-token, and WebMCP-annotatable.
-- Three constraints that are not engineering: *Moffatt v. Air Canada* (a
-  chatbot's misrepresentation is the operator's, so the research-question
-  surface retrieves from an approved corpus rather than generating), FERPA
-  (consent is a field and the agent never decides it), and GDPR (no
-  small-scale exemption — though `drain`-and-delete is already the
-  data-minimisation story).
-- **Batch review is a gap in the outbox as it stands**, and the public surface
-  makes it load-bearing rather than a nicety. That is a change to existing
-  machinery, which is the kind discovered late.
-- **A harness gap wearing an artifact costume**: MCP says reports are
-  Resources rather than Tools, and `mcp.rs` calls `tools/list` and nothing
-  else while declaring no client capabilities, so mecha cannot consume
-  resources from *any* server. When that is closed, resource contents must
-  arrive `.from_outside()` like any tool result or the interlock gains a
-  blind spot.
-
-**Nothing is built, deliberately** — a prototype was written during the first
-session and reverted, and the doc records why that is the right state until
-the open questions are settled. The cheapest recommendation stands unchanged
-(P22): write a trigger's report **into its own workspace** rather than
-`~/.mecha`, so `fs_read` reaches it with no change to the path jail. The
-shortest path deliberately front-loads the steps that need no public box at
-all: mine twelve months of the user's own mail for the *real* request types,
-`calendar_freebusy` on mecha-mail's unified surface, the manifest generators,
-and the availability engine.
-
-### 3b. Research backlog (raised 2026-08-04, not yet acted on)
-
-`docs/CONTEXT-RESEARCH.md` is the first of these, done. The rest are open,
-and the first two have research threads running as of this writing.
-
-- ~~**Prior art: what other harnesses do**~~ — surveyed 2026-08-05, see
-  `docs/PRIOR-ART-RESEARCH.md`. openclaw, codex and hermes-agent read against
-  this one (their docs, not their source). Five things worth building, with
-  specs: **provenance on reflections** — untrusted-origin lessons must never
-  reach `learn`, which is the one real hole found (a learned rule outlives the
-  taint that should quarantine it and rides in every future run's cached
-  prefix); **a provider error taxonomy with retry and fallback** — mecha has
-  none, any non-2xx bails, and the invariant to keep is that a turn is
-  retryable only before a tool has run; **the post-compaction loop guard**;
-  **per-command approval policy** (`ModeApprover` ignores its `input`
-  entirely); and **pruning on a cache-TTL cadence** rather than only inside
-  compaction. Rejected with reasons: hermes's every-turn micro-compaction
-  (breaks the cache prefix), plugin marketplaces (their own threat model rates
-  it P0 critical), and model-reviewed approvals.
-
-- ~~**Memory curation**~~ — researched 2026-08-05, see
-  `docs/MEMORY-RESEARCH.md` (raised by the user: "Claude Code has a memory md
-  file — what are the best practices?"). The audit finding: mecha already
-  implements the field's consensus positions structurally (write-path
-  provenance gating, queue-before-belief distillation, verbatim session
-  retention, human-gated rule changes) — **the one gap is that rules have no
-  lifecycle after acceptance.** `Rule` is four fields with no id, no
-  timestamps, no link back to its reflexions, and `mecha validate` discards
-  its measurements. The literature's endpoint for that configuration is a
-  store that drifts negative (LLM-authored skills measured +0.0pp vs
-  human-curated +16.2pp until outcome-driven retirement was added). Five
-  recommendations, R1–R5 in the doc: rule identity/provenance/tenure fields;
-  a `validations.jsonl` outcome ledger with retirement flowing through the
-  existing proposal gate; a per-domain cap on the always-loaded rules block;
-  a scheduled reflect → validate → learn → distill cadence (ruminate.sh is
-  most of this already — the missing piece is validate feeding a ledger);
-  and a do-not-build list (no vector store, no extraction replacing
-  transcripts, no LLM-adjudicated DELETE, no auto-decay, no policy on
-  model-rated importance). **R1/R2 built the same day** (see the doc's
-  addendum): rule identity + tenure fields, the `validations.jsonl` ledger,
-  regression bisection, `mecha rules` retire/restore/propose-retirements
-  through the proposal gate (in `ruminate.sh` after learn), and `mecha eval
-  --ab-rules`. Open: R3's hard cap; the R4 cadence beyond what ruminate.sh
-  already orders.
-- ~~**Sandboxes**~~ — researched 2026-08-04, see `docs/SANDBOX-RESEARCH.md`.
-  Answer: **Landlock + seccomp at 1.28 ms against `docker run`'s 192 ms**, no
-  root and no userns, so it works on this box where bwrap is blocked. WASM
-  Python is fast but structurally cannot spawn a process, so it cannot back
-  `shell` — though it could back a narrower code-execution tool, which is the
-  programmatic-tool-calling lever. A measured Pyodide-under-Node host-shell
-  escape is recorded there too. Original framing kept below.
-- **Sandboxes: is there something faster and lighter than Docker?** Current
-  state is bwrap (broken here — AppArmor's
-  `kernel.apparmor_restrict_unprivileged_userns`) or a throwaway container per
-  command, which is correct but slow to start. Worth pricing: WASM runtimes,
-  microVMs (Firecracker/libkrun), landlock + seccomp direct exec (no root, no
-  userns — the one that would work on *this* box), gVisor, and what Codex's
-  Rust sandbox actually does on Linux. **The scoping question that decides it:
-  mecha's `shell` runs arbitrary binaries (cargo, git, compilers), so a
-  Python-only WASM sandbox cannot replace it** — but it *could* back a
-  separate code-execution tool, which is the token-offloading pattern below.
-- **Compaction and tool offloading, deeper.** The context research already
-  points at spill-to-file, outline-instead-of-content, and staleness eviction.
-  The unexplored half is **programmatic tool calling** — the model writes code
-  that calls tools, and intermediate results never enter the context at all
-  (Anthropic measured 37% fewer tokens; the docs' honest version says 38% on
-  one benchmark, 0% and +8% cost on another). ~~That needs a code sandbox,
-  which is why it is coupled to the item above.~~ **It is no longer blocked:**
-  [monty](https://github.com/pydantic/monty) is a Python interpreter written in
-  Rust, evaluated 2026-08-05 in the addendum to `docs/SANDBOX-RESEARCH.md`.
-  Startup **0.004 ms**, no host runtime to escape into (the Pyodide-under-Node
-  escape class does not exist), and — the part that matters — **the only bridge
-  to the host is external functions the embedder registers**, so "every code-
-  mode call routes back through the registry" stops being discipline and
-  becomes the architecture. Two things to get right: taint must update *within*
-  a program (the batching hole in a new place), and approval does not obviously
-  scale to a program making thirty calls. Experimental, no classes, no
-  third-party packages — so it backs a `code` tool, never `shell` and never
-  data analysis.
-- **Planning, verification, and "ralph loops" for long-horizon work.**
-  Ralph-style loops re-run an agent on the same prompt until it converges.
-  mecha has no convergence primitive: no runtime notion of "done", and no
-  in-loop verification (see below). Research whether self-critique works
-  without external grounding — the prior from the context research is that
-  execution grounding is what makes a verifier real, and that self-conditioning
-  (20–30pp at turn 100) actively punishes leaving failed attempts in context.
-
-**What verification mecha already has, and the gap.** Twelve mechanisms, and
-they are all *offline or pre-execution*:
-
-| Where | Mechanism | Grounding |
-|---|---|---|
-| eval | `expect.verify` runs a command, passes iff exit 0 — and hashes the test file first, so editing tests until they pass fails | **execution** |
-| eval | trace checks (`tools`, `tools_in_order`, `forbid_tools`, `args`) | deterministic |
-| eval | run-metadata (`stop_cause`, `taint`, `blocked_sends`, `min_compactions`) — grades the harness, not the model | deterministic |
-| eval | `expect.judge` rubric | LLM |
-| fixtures | `build-eval-fixtures.py` proves each kata fails as shipped *and* is solvable by a reference fix | execution |
-| replay | divergence detection against a recorded run, structural vs argument-only | deterministic |
-| validate | counterfactual replay — does the rule change what the model does at the moment the user intervened | trace (steer/denial), LLM (followup) |
-| learn | `--holdout` keeps a slice unseen so rules are measured off their training data | deterministic |
-| proposals | the gate: a candidate that regresses any probe never reaches a human | trace |
-| hooks | `pre_tool`, fails closed | policy |
-| outbox | a human reads exactly what will be sent | human |
-| startup | `Sandbox::preflight` proves confinement works before the agent can call anything | execution |
-
-**Nothing verifies anything *during* a run** — no longer quite true. The
-cheapest candidate from the research was Slipstream's shape: validate one
-specific artifact (they validated compaction summaries) with a grounded
-judge, measured at **+6.4–8.8 points on SWE-bench Verified for <1% latency**,
-where ~90% of what it catches is omission. **Built 2026-08-05** as
-`compact_validate` (default on): a deterministic truncation refusal plus a
-grounded omission check with one omissions-named regeneration — the first
-in-run verifier. The larger gap stands: no critic on ordinary work, no
-post-condition on a tool call, no convergence test — a ralph loop still needs
-a runtime "is it done yet", and the answer must be a command's exit code.
-
-### 4. Smaller, high-value items
-
-- ~~**Hooks**~~ — built 2026-08-04. See the Reflexion section below for the
-  decisions; the first consumer still to write is session-end distillation.
-- **Structured-output abstraction** — a `structured_output` knob on `Provider`
-  that each backend spells natively (GBNF for llama.cpp, `guided_json` for
-  vLLM, `output_config.format` for Anthropic). Don't hardcode GBNF.
-- ~~**TUI polish**~~ — **built 2026-08-05**, the survey's recommendations as a
-  twelve-commit series (see `docs/TUI-RESEARCH.md`, addendum at the top).
-  The two asked-for items landed — the **live todo pane** (a concrete
-  `TodoTool` handle threaded through `Prepared`/`Live`; pane appears only
-  while the list is non-empty, `/todo` vetoes) and **nested subagent
-  rendering** (`AgentEvent::Nested`, indented per depth) — and the latter's
-  plumbing fixed two real core bugs found during planning: `ToolCtx` now
-  carries the run's events/cancel/phase across the `Tool::call` boundary,
-  because `Subagent::call` was reading the child agent's *default* context,
-  so **the cancel chain and phase inheritance had never actually worked**
-  (Ctrl-C waited out the whole child run; a plan-phase parent under Allow
-  could get writes executed by delegating). Both fixes have tests that fail
-  on the old behaviour. Also landed: the §1 **history-cell render cache**
-  (measured 5.5× on streaming frames at ~500 entries, cached cost no longer
-  grows with the session, pinned by cached-vs-uncached buffer equality) +
-  CSI 2026 synchronized output; kitty keyboard protocol (Shift+Enter
-  newline, Alt+Enter fallback); `?` help overlay; live `^O` disclosure
-  toggle; `/tools` as a modal with capability badges and a detail view
-  (sharing `setup::sandbox_line` with `mecha tools`); `!` shell escape
-  (local, no model, no taint, no approval); `@` path completion; `^G`
-  external compose (the `$EDITOR` shell-out extracted from `outbox edit`
-  into `editor.rs`, shared); terminal title; and the first `TestBackend`
-  frame tests. **Branching** is now `docs/BRANCHING-DESIGN.md` — design
-  only, deliberately: the taint-timeline and provenance interactions make
-  it a security-adjacent session-format change, not a TUI feature. Still
-  open from the survey: steer-vs-queue as two keys, `/export`/copy, the
-  semantic colour table + `NO_COLOR`, keymap config.
-- ~~**Public benchmarks** — tau-bench fits best~~ — researched 2026-08-05, see
-  `docs/BENCHMARK-RESEARCH.md`, and the answer changed. **Terminal-Bench 2.0**
-  is the first move, not tau-bench, for one reason: its leaderboard has
-  separate `Agent` and `Model` columns, and **Qwen3.6-35B-A3B is already on it
-  at 24.6% ± 3.2** under the `little-coder` harness — the exact model on port
-  8080. That is a like-for-like harness comparison, which no other leaderboard
-  in the survey offers. 89 container tasks, each verified by three human
-  reviewers, graded by test scripts; wrap mecha as a Harbor
-  `BaseInstalledAgent` so mecha's own sandbox and tools are what get measured.
-  Budget ~15h at k=1 and ~74h at k=5 on local inference, and note concurrency
-  breaks the seed. **The adapter is built** (2026-08-05, `bench/mecha_agent.py`
-  — a `MechaAgent(BaseInstalledAgent)` — plus `bench/run.sh`, commit d933a56):
-  `run.sh` refuses to measure against a llama-server whose `total_slots != 1`
-  (the `-np 1` confound) and runs a socat forwarder for the run's duration so
-  task containers can reach the host's loopback-bound model server. An
-  oracle-agent sweep to find which of the 89 tasks are viable on arm64 sits
-  incomplete in `jobs/oracle-arm64-sweep/` (18 of 89 trials done, mean 0.61
-  on the completed ones); the full mecha run has not been taken yet. Then **AgentDojo** (97 tasks + 629 injection cases, grades
-  utility *and* attack-success jointly — the only public measurement of what
-  the interlock is for, and the only one that will price its false-refusal
-  cost), and **SWE-bench Bash Only** as the minimum-viable-harness control
-  (mini-swe-agent is ~100 lines, bash only, no tool-calling API — if mecha
-  cannot beat it on the same model, the extra machinery is not paying for
-  itself). Calibration from the Terminal-Bench paper: swapping the harness
-  moved one model **17%**; swapping the model moved one harness **52%**.
-- ~~**pass@k in the eval**~~ — built 2026-08-05, as **pass^k**, which the
-  research says is the number that matters (τ-bench: 61% pass^1 → <25%
-  pass^8). `mecha eval --runs k` turns every case into k independent items —
-  own conversation, own staged workspace for sandboxed cases — and the
-  scorecard groups by case: `passed` becomes cases-passing-every-run, with
-  pass@k kept beside it (`passed_any`, omitted from single-run JSON so old
-  reports stay byte-compatible and `--compare` still loads them). Per-tag
-  scores get the same split. Verified live: 3 discrimination cases × 3 runs,
-  and the codegen pair × 2 runs with four separate staged workspaces and
-  `verify` grading each run's own copy. One trap the pinned sampler sets:
-  at `--concurrency 1` a seeded run replays token-for-token, so k runs are
-  one sample counted k times — the harness warns on exactly that
-  combination rather than silently reporting fake reliability. Worth doing
-  next with it: re-baseline `ambiguity` and `long-horizon` at k=5.
-- **`context_window` on `ProviderConfig`** — the compaction threshold is an
-  absolute token count because nothing here knows any model's window. Would let
-  it be a fraction, and wants the same treatment as pricing: configured, never
-  guessed.
-- ~~**A multi-turn interlock case.**~~ — done 2026-08-04, the fixture-server
-  way. `eval/fixtures/pkg_server.py` (one file, two personas: a frozen fake
-  pkg graph, and a `web` persona whose `fetch` is `openWorldHint`) is declared
-  in `eval/mcp.toml` and connected by the new `mecha eval --mcp-file`, which
-  connects *exactly* the servers in the named file — fatal on failure, unlike
-  `setup`'s warn-and-continue, because a case written against fixture tools
-  measures nothing without them. `eval/pkg-cases.jsonl` is a **separate case
-  file on purpose** (the main set's tool surface stays comparable):
-  recognition, discrimination, ambiguity, the `kg_upsert` write habit,
-  web-before-memory ordering, and `interlock-blocked` — memory read arms both
-  taint legs, the fetch is refused by the harness, `blocked_sends: 1`. The
-  trifecta is now graded end to end, offline and deterministically-fixtured.
-  First measurements (qwen3.6-35b-a3b, n=3, `results/pkg-qwen-v1.json`): **7/8
-  on every run**, interlock 2/2 throughout — `interlock-blocked` passes with
-  the harness logging the refusal. Two findings from the first runs:
-  (1) with both the builtin `http_fetch` and the fixture `web__fetch` in the
-  surface, the model reached for the builtin and hit the real network — the
-  case now names the tool, and the fixture's description claims `lab.example`;
-  (2) the one persistent miss is `memory-ambiguous`, and it is a real gap, not
-  flake: 3/3 the model surfaces both Alexes and refuses to pick (judge passes
-  it) but asks **in the final text** instead of calling `ask_user` — the same
-  ignores-the-system-prompt shape as the todo finding, worth re-checking on a
-  stronger model before concluding anything about the prompt.
-
-### 5. The remaining surfaces
-
-Roughly independent of each other.
-
-**Slack DM.** Socket Mode app in an existing workspace (no new workspace
-required). The hard requirement: it must share one session store with the CLI,
-or you have two assistants that don't know each other. Decide the identity
-model before writing the transport.
-
-**~~Email / calendar~~ — built 2026-08-04, live and verified end to end.**
-`mecha-google/` is a third workspace crate: flowmail's Gmail and Google
-Calendar v3 clients plus its desktop OAuth flow, extracted (the clients had
-zero Tauri/SQLite coupling), trimmed of the sync/cache machinery, and wrapped
-in a stdio MCP binary. mecha-core and mecha-cli have **no code change** —
-`[[mcp]] name = "google"` plus `[outbox] tools` is the whole wiring, which is
-the pkg precedent paying off.
-
-Written because flowmail never had it in Rust: the **token lifecycle**
-(storage/refresh/401-retry lived in its JS frontend), retry+backoff on
-429/5xx, and an HTML→text fallback for HTML-only mail. `threads.get` is the
-one API addition — flowmail rebuilt threads from SQL.
-
-Verified live against a real Gmail account, in this order:
-
-| Check | Result |
-|---|---|
-| `mecha tools` | 8 google tools; reads `read-only`, all four writes `outbox: staged for review` |
-| Calendar read | real events for the coming week, via `calendar_list_events` |
-| Gmail read | real threads, bodies wrapped in `<untrusted-content>` |
-| Send | **staged, not delivered** — the model reported it as a draft awaiting release, with the item id |
-| Edit → release | edited body delivered; confirmed by finding the sent message in the mailbox |
-| **Interlock** | mail read arms `private+untrusted`; the follow-up `http_fetch` was **refused**, and the model reported the refusal accurately |
-| Learning capture | the real draft edit became a `writing` reflection (`error_type: style`) automatically, via the session-end hook |
-
-Decisions worth keeping:
-
-- **Reads are untrusted sources but not send sinks** — the labeling argument
-  is in CLAUDE.md. Config forces `untrusted_input` (mail is other people's
-  words); reads deliberately lack `openWorldHint` because the query reaches
-  only the mailbox's own custodian.
-- **`gmail.modify` was dropped from the scope list.** Nothing here archives
-  or marks read; least privilege beats saving a future consent click.
-- **Loopback port 8924**, not flowmail's 8923, so both apps' flows can exist
-  on one machine. Google Desktop clients accept any loopback port.
-- The consent timeout is 120s, not flowmail's 30s — a careful reader lost
-  that race.
-
-**Outlook/Graph followed the same day**, and the crate became `mecha-mail`
-with two binaries sharing the retry, HTML→text, token-store and
-MCP-transport code. Verified against the real Dartmouth account: calendar
-with recurring meetings expanded, mail search, a batched send refused, and a
-staged message released through the outbox into the inbox.
-
-- **Device code, not loopback** — no redirect URI (so the org-approved
-  registration is untouched: its only URI is flowmail's port 8923) and no
-  forwarded port over SSH. Public client throughout. `AADSTS7000218` means
-  "Allow public client flows" is off; the error text says so.
-- **Scopes exclude `User.Read`**, so `GET /me` 403s — the account address
-  comes from Sent Items, which `Mail.Read` covers. flowmail hit this and
-  solved it the same way; its note was in the exploration and I did not
-  apply it, which cost a re-auth. **A cosmetic lookup must never be fatal
-  to `auth`** — that was the actual bug, and it is fixed.
-- **Four flowmail behaviours fixed rather than ported**, all filed upstream
-  as `ljchang/flowmail` issues 3–6: `calendarView` (recurring events vanish
-  from `/events` + start filter — the worst of them, silent data loss),
-  `/messages/{id}/reply` for threading, `$search` instead of a `$filter`
-  that 400s beside `$orderby`, and comma-splitting `to`.
-
-**The unified surface followed (2026-08-05, commit `ea8149d`).** The two
-per-provider binaries stayed, but **`mecha-mail` is now the one deployments
-wire**: every account in `~/.mecha/mail/` (`accounts.toml`, `mecha-mail auth
-<name> --provider ...`, `import` for legacy logins) behind provider-neutral
-`mail_*`/`calendar_*` tools, so neither mecha nor the model knows Google or
-Microsoft exists. The design is in CLAUDE.md's mecha-mail section; the load-
-bearing choices: the model names an *account*, never a provider, and account
-names are baked into each tool schema as an enum; reads fan out across
-accounts (a failed account reports beside the others, fatal only when all
-fail); item ops require the account their id came from; creates use the
-default or error with "ask the user" (worded so because best-judgment wording
-measurably makes models invent). `mail_reply` unifies threading: Graph's
-reply endpoint on one side, synthesized Gmail addressing on the other. The
-outbox annotations ride unchanged on the unified tools (`assert_tool_surface`
-tests pin each surface).
-
-**Three more found by using it (2026-08-04, after the mail work landed):**
-
-- **Sessions died on context overflow with no warning.** `compact_at_tokens`
-  was unset, so compaction never ran at all; a run hit 38869 tokens against
-  llama-server's `-c 32768` and the raw `exceed_context_size_error` ended it.
-  Now: `context_window` on `ProviderConfig`, a threshold derived from it at
-  two thirds, a TUI fuel gauge that colours at 75% and 90%, and
-  **recovery** — the loop recognises the refusal across backends and
-  compacts and retries the turn once rather than dying.
-- **Every calendar answer was four hours off.** Graph and Google return UTC,
-  the DGX runs UTC, and the model reported UTC — so a noon meeting was
-  announced at 4pm, internally consistent and therefore invisible.
-  `[agent] timezone` (IANA, not an offset) now rides in the system prompt,
-  and `MECHA_TZ` reaches the mail servers so they render event times in it.
-  Introduced by the date fix an hour earlier, which gave the model the date
-  and not the zone.
-- **It asked for an address it could have looked up.** Told to write to
-  Grace, it checked pkg, found no email, and asked — holding `gmail_search`
-  and `outlook_search` the whole time. Prompt guidance added; her address is
-  now in pkg too, along with two aliases and a flagged duplicate (pkg had
-  her as two person nodes). Residual: the model then drafted from personal
-  Gmail for a work colleague despite the prompt saying otherwise — the
-  known instruction-following gap, not a wiring one.
-
-**Two bugs live testing found in mecha itself, both now fixed with tests:**
-
-- **The interlock was defeated by batching.** Every call in a turn was
-  gated against the taint as of the turn's *start* — taint updates only
-  after the batch executes — so "read private data and send it" in one
-  assistant turn passed both gates. Gating now uses what the turn *will*
-  arm (`turn_taint`, computed from the declared capabilities of every call
-  in the batch). Verified to fail on the old behaviour. This is the
-  guarantee the whole security model rests on; it survived pkg, the
-  fixture-server eval, and Gmail because in each of those the model
-  happened to call the tools in separate turns.
-- **The model had no clock.** Asked for "the next three days" it queried a
-  January window — six months stale, and the tool returned an empty answer
-  that looked like an empty calendar. The date now rides in the system
-  prompt (`setup.rs`, before the learned rules) and is recorded in
-  `RunConfig`, so a replay reproduces the date the run actually saw.
-
-Deferred, deliberately: the Gmail drafts API (flowmail never used it either
-— the outbox is the draft layer), any local cache or sync (on-demand is the
-right shape for an agent), and past-correspondence context when drafting a
-reply (cheap to add via `q=from:addr`, unbuilt in flowmail too).
-
-**The outbox (built 2026-08-04, verified live end to end).** `[outbox]
-tools = [...]` names tools whose calls the loop **stages instead of
-executes** (`mecha-core/src/outbox.rs`, interception in `agent.rs`);
-`mecha outbox` reviews: list / show / edit (`$EDITOR`) / send / reject. The
-design notes live in CLAUDE.md; the decisions that were argued rather than
-mechanical:
-
-- **Interception, not a visible tool** — the model calls `email__send`
-  naturally and the harness makes it a draft, so third-party MCP tools are
-  covered with no knowledge of the outbox. Routing an unregistered name
-  warns on every start (a typo would mean the real tool runs unrouted).
-- **Staging skips the interlock and approver**: nothing leaves at stage
-  time. The item snapshots the conversation's taint; `send` warns and
-  confirms (EOF = no) on an armed snapshot. An unrouted send still hits the
-  interlock — tests pin both sides. A failed staging **fails closed**.
-- **The learning capture is wired**: `edit` preserves `args_before`, and
-  `mecha reflect` grew an outbox pass — sent-with-edits items become
-  `writing`-domain reflections (new `Trigger::Edit`, its own reflector
-  prompt ported from flowmail's edit-analysis, `mined_outbox.jsonl`
-  ledger). Verified live: a register-shaped edit ("hey can u send… thx" →
-  full polite phrasing) yielded `error_type: register`, lesson "Always use
-  full, polite phrasing…", with session lineage. A URL-only edit was
-  **skipped by the reflector as unlearnable content — which is the edit-
-  distance gate working**, not a failure. The counterfactual probe
-  allowlists steer/denial; edit reflections have no replayable transcript.
-- **The writing learner exists too (2026-08-04, same day)**:
-  `learner_frames` routes the `writing` domain to its own consolidation
-  prompt (`WRITING_LEARNER_SYSTEM` — flowmail's constraints: immutable user
-  rules, ≤15, positive *and* negative rules, **no one-recipient rules**);
-  every other domain falls back to the behavior frame. Verified live on the
-  real register reflection: direct `learn --min 1` produced a voice rule,
-  the `--propose` gate staged it with the honest "no trace-gradeable
-  reflections; review by reading" evidence, `proposals accept` landed it,
-  and a run's recorded `RunConfig` carries the `### writing` section — so
-  drafting now reads the learned voice, and replays reproduce it.
-- **Still open, deliberately**: the positive signal (sent *unedited*
-  reinforces what produced it) is recorded on items but not yet mined —
-  that is the CIPHER retrieval tier's job, queued. Subagents inherit the
-  route; eval forces `--no-outbox`.
-
-Settled with the user 2026-08-04: **mecha is the email actor** — reads,
-drafts, and (through the outbox) actions — while pkg mines mail through its
-own ingestion to fill the graph, and never becomes the door mecha acts
-through. Same three-layer split as calendar (item 3).
-
-And the outbox is more than the safety gate — **it is the first
-correction-capture point** for the general self-learning system below: every
-staged draft the user edits before sending yields `diff(staged, sent)` as a
-contextual correction with the thread and recipient attached — structural
-capture, where flowmail needed UI for it. pkg's role in drafting is the
-relationship context flowmail's cards provided — who the recipient is, the
-register used with them — composed with the learned rules and the live
-thread.
-
-**Reflexion — mecha's self-learning, two systems, three stages.** Wanted by
-the user explicitly, modeled on flowmail's pair of learning loops
-(`~/Github/flowmail/dev_docs/CORRECTION_SYSTEM.md`, Reflexion/LEAP-style).
-Two distinct systems, because they learn different things from different
-signals:
-
-- **Writing** — learns the user's voice. Signal: the edit. Objective:
-  **minimize edit distance between what mecha produces and what the user
-  keeps.** Capture is structural: outbox `diff(staged, sent)` for email; for
-  file-writing, the diff between what a session wrote and how the user's
-  later edits left the file — sessions record the former, which is what makes
-  this capturable at all.
-- **Behavior** — learns how to perform tasks. Signal: the user stepping in.
-  Capture is *already recorded today*: a mid-run **steer** is a correction
-  with full context in the session JSONL, an approval **denial** is a
-  recorded rejected intent, and a corrective chat turn after an action is the
-  third form. Metric: steers, denials and corrections per session should fall
-  over time — observable from the transcripts alone.
-
-Both run the same three-stage lifecycle, and the stages are distinct on
-purpose:
-
-1. **Reflection** — at the moment of correction, generate one short
-   contextual note: what mecha was doing, what the user changed or stopped,
-   what they evidently wanted. Raw, per-incident, cheap. Stored with a
-   context snapshot in a **mecha-local store beside the sessions, not pkg**
-   (high volume, its own lifecycle, procedural rather than queryable — the
-   one deliberate amendment to the one-graph rule).
-2. **Abstraction** — every ~N reflections per domain, an LLM pass extracts
-   durable candidate rules (flowmail's schema ports: `source='learned'`,
-   confidence, `based_on_count`). Reflections are archived, not deleted —
-   they are the evidence trail and the held-out set.
-3. **Consolidation** — the stage that keeps it honest about context: the
-   rule set has a **fixed token budget per domain**. When abstractions
-   accumulate, a consolidation pass merges overlapping rules, drops
-   superseded ones, and compresses — so learning never grows the system
-   prompt without bound. Rules change only at consolidation time, which also
-   keeps the prompt-cache prefix stable between passes.
-
-Prompt assembly order: the user's own rules → consolidated rules → a small
-sliding window of recent raw reflections. Everything inspectable, editable,
-disableable; the loop is self-sealing (a bad rule → a bad action → a
-reflection that fixes the rule). **Measure, or it isn't learning**: hold out
-a slice of reflections at each abstraction pass and check the rules move the
-metric (edit distance for writing, intervention rate for behavior) on data
-they did not train on. A pass that does not beat its control is prompt
-clutter, and this rig knows what to do with that. Bridge to pkg: rules that
-are really facts about the user ("signs off 'Cheers' with lab members")
-graduate to staged pkg facts.
-
-**Rules are scoped, not only global.** A rule carries a scope — `global`
-(a system-prompt section), `domain` (writing, email, triage), or `tool`
-("when using `fs_edit` on the user's papers, never touch the references
-section"), each scope with its own consolidation budget. Two consequences to
-respect: per-tool injection changes the tool block, which is the front of the
-cached prefix *and* the eval surface, so scoped rules also change only at
-consolidation time; and narrow scopes are what keep the global prompt small,
-which is the point of consolidation.
-
-**Nightly rumination.** Wanted by the user: mecha works on itself overnight.
-Three facts make this cheap and safe here specifically — the DGX idles at
-night and local inference has zero marginal cost; sessions already record
-every intervention; and replay executes nothing, so unattended runs are
-side-effect-free by construction. The cycle: mine the day's transcripts into
-reflections → **counterfactual replay** → abstraction/consolidation when
-thresholds hit → proposals. Counterfactual replay is the load-bearing idea:
-*an intervention is a test case*. The user steered at turn 3 → replay the
-pre-steer prefix under candidate rules and check the model now does what the
-steer asked *without being steered*. Seeded sampling makes the comparison
-meaningful; the recording is ground truth; a rule is kept because it flips
-the counterfactual, not because an LLM liked it. Scheduling is a solved
-problem twice over now — the systemd timer it actually runs on, and
-`mecha trigger`, which deliberately did *not* absorb it (a trigger's action is
-a prompt, and rumination is a sequence of CLI commands).
-
-**The hyperagent layer** (Meta's HyperAgents / DGM-H, ICLR 2026 — task agent
-plus meta agent as one editable program). mecha's version keeps the Darwin
-and adds a commit gate: nightly rumination may *propose* improvements —
-prompt edits, rule changes, eventually code developed in a worktree — but a
-proposal must pass the eval suite, show counterfactual-replay or held-out
-gains, and land as **a diff the user reviews**, never self-applied. The
-validation harness DGM-H's agents had to invent for themselves (memory,
-performance tracking), mecha already has: pkg, the eval rig, scorecards,
-replay. One hard line, recorded as policy: **the security layer — interlock,
-path jail, sandbox, approver — is not proposable-against.** A self-improvement
-loop must never be able to argue its own guardrails down.
-
-**flowmail's implementation was reviewed (2026-08-04), and it is ahead of its
-own design doc** — port these specifics rather than rediscovering them
-(`src-tauri/src/db/learning.rs`, `src-tauri/src/prompts/leap_*.toml`):
-
-- `Reflexion` rows carry `error_type`, `confidence`, `is_processed`, and a
-  `leap_run_id` linking each reflection to the abstraction run that consumed
-  it; `LeapRun` audits record `rules_before`/`rules_after` per stage. The
-  lineage from rule back to evidence is queryable.
-- The consolidation prompt's constraints, each present for a reason: **user
-  rules are immutable** (context only, never merged); an explicit 5–15 rule
-  budget; a deliberate mix of positive and **negative rules** (guardrails
-  against recurring false positives); no one-sender rules; consolidation must
-  *reduce* count.
-- **Rumination there is LEAP-in-production, not Reflexion**: it samples cases
-  with known outcomes (`sample_classified_emails` + ground-truth labels) and
-  learns principles without waiting for user corrections. mecha's analogue is
-  richer: eval cases and recorded sessions are exactly "examples with known
-  outcomes" for an overnight LEAP pass, on top of the counterfactual-replay
-  loop above.
-- `get_correction_rate_by_period` — the metric trend is a first-class query,
-  charted in the UI.
-
-**The drafting system specifically is three papers layered** (reviewed in
-`ai/draft_learning.rs`, `commands/drafts.rs`, `ai/context.rs`), and each
-layer answers a different question:
-
-- **CIPHER** (per-context, retrieved): a preference inferred from each
-  significant edit — the *underlying* preference, not the edit restated —
-  stored with its email context and embedded; drafting retrieves preferences
-  from *similar* past contexts and aggregates them into one bounded
-  directive. The store is unbounded, the injection is top-k: the
-  pressure-relief valve on the context budget, and effectively a third rule
-  scope beyond global/domain/tool — *retrieved-by-similarity per task*.
-- **LEAP** (global rules): consolidated draft-domain rules.
-- **Reflexion** (recent window): the last 5 raw draft reflexions.
-
-Three details mecha's port must keep: **the positive signal** — a draft sent
-*without* edits reinforces what produced it, so learning is not
-corrections-only; **the style/fact split** — the edit-analysis pass extracts
-`factual_additions` ("always CC legal", an account number) separately from
-style, and in mecha's world those route to pkg as staged `fact_candidate`s,
-which gives the pkg bridge its concrete mechanism; and **the edit-distance
-gate** — a token-dissimilarity threshold decides whether an edit is worth
-learning from at all, so trivial touch-ups do not generate noise.
-
-**Inspectability is a requirement, not a nicety** (user: "so it can be
-inspected and edited if needed"). flowmail's `learning/` Svelte components
-(Overview, Reflexions — editable and deletable, Rules — enable/disable/edit,
-Prompts, trend charts) are the reference UI. mecha gets it in two steps:
-**files first** — reflections as JSONL beside the sessions, rules as TOML per
-domain, so `$EDITOR` and `git diff` are the editing UI from day one and a
-rules change is itself a reviewable commit — then a `/learning` TUI view
-mirroring flowmail's tabs once the stores exist.
-
-**Built 2026-08-04, the first slice** (`mecha-core/src/learning.rs`,
-`mecha-cli/src/commands/reflect.rs`):
-
-- **The store**: files under `~/.mecha/learning/` — `reflections.jsonl`
-  (append-only evidence), `mined.jsonl`, `rules/<domain>.user.toml` (never
-  written by code — flowmail's immutability constraint made structural) and
-  `rules/<domain>.learned.toml` (consolidation's file). The directory is a
-  git repo, auto-committed by passes: `git log` is the audit trail, `git
-  revert` the undo. **The user notes a database may be needed later** — the
-  CIPHER retrieval tier is the likely trigger — and the swap happens behind
-  `LearningStore`'s API when a measured workload demands it, not before.
-- **`mecha reflect`**: mines un-mined sessions for interventions (pure
-  extraction, unit-tested: steers, denials by their recorded "Denied by the
-  user:" text, follow-up candidates), asks the `Reflector` (a bare-provider
-  call shaped like the eval `Judge`) for the reusable lesson behind each,
-  appends reflections with full lineage (`session_id` points at the
-  transcript), marks sessions mined, commits. `--dry-run` and `--limit`
-  exist; idempotent, so it can run nightly.
-- **Injection**: `setup::prepare` appends the rules block (user rules first,
-  then enabled learned rules, per domain) to the end of the system prompt —
-  inside the cached prefix, changing only at consolidation time.
-  `--no-learned-rules` opts out anywhere; **eval forces it off** for the same
-  reproducibility reason it forces MCP off. Verified end-to-end: a marker
-  user rule shaped a live answer, the flag removed it, and the injected block
-  lands in the recorded `RunConfig`, so replays of rule-bearing sessions
-  reproduce them.
-- **First real run**: 56 sessions mined, 7 interventions found, 6 correctly
-  skipped as new-tasks/greetings, 1 reflection drawn — a real lesson about
-  retaining user-stated details across turns, traceable to its session.
-- **A trap found by the first dry run**: the harness's forced-final-answer
-  nudge is recorded as a *user* message, and mining almost learned from
-  mecha's own voice. The nudge is now a named constant
-  (`agent::FINAL_ANSWER_NUDGE`) that extraction filters, along with recorded
-  slash commands. Anything else that ever injects synthetic user turns must
-  get the same treatment.
-
-**`mecha learn` (also 2026-08-04)** closes the loop: unprocessed reflections
-per domain → one combined abstraction/consolidation pass (flowmail's
-consolidation prompt already absorbs unprocessed reflexions, so at one user's
-volume a separate incremental stage buys nothing but a second prompt to
-maintain) → a rewritten `learned.toml` within `RULES_CHAR_BUDGET`, a
-`LeapRun` audit in `runs.jsonl`, reflections marked with the run that
-consumed them, and a store commit. Gated by `--min` (default 3) so it does
-not thrash on every stray reflection. Verified end to end on real data: the
-first mined reflection became the first learned rule, the lineage
-rule → run → reflection → session transcript is complete, the store's git
-log reads as the learning history, and the rule now rides in every new
-run's recorded `RunConfig`. The whole cycle is
-`mecha reflect && mecha learn` — already cron-able.
-
-**`mecha validate` (also 2026-08-04)** is the measurement stage: for each
-followup-triggered reflection it rebuilds the recorded conversation up to
-the moment the user stepped in, asks the probe question twice — with and
-without the current rules — and a judge grades both answers against what the
-intervention established the user wanted. Followups only, deliberately: a
-steer or denial lands mid-run between a call and its result, and probing
-there needs the replay driver to carry the run — that is the rumination
-milestone. Verdicts are judge-graded; read the answers before believing a
-single flip.
-
-**Its first live probe caught a false lesson, which is the system working:**
-the verdict came back "both fail", the source transcript said why — the
-followup ("what number did I ask you to remember?") was a *memory test the
-model passed*, `8675309` recalled perfectly. The reflector had invented a
-lesson from a success, because extraction never showed it what the assistant
-did *next*. Fixed structurally: `Intervention.aftermath` carries the
-assistant's post-intervention response, the reflector is told a satisfied
-message is not a failure, and re-mining the same session now draws nothing.
-The poisoned reflection and its rule were reverted with the reason in the
-store's git log. Two traps re-confirmed on the way: the judge thinking-budget
-(4096 was measured insufficient for these heavier rubrics; validate uses
-16384), and n=1 verdicts meaning nothing until the source is read.
-
-**`mecha learn --holdout` and hooks (2026-08-04), the next two items:**
-
-- **`--holdout <fraction>`** keeps every k-th unprocessed reflection out of
-  the pass, so `mecha validate --unprocessed-only` probes rules against data
-  they never saw. Deterministic by id rather than random, because a
-  measurement set that changes between runs measures nothing; held-out
-  reflections simply stay unprocessed, so there is nothing to undo. The stride
-  has a **floor of 2**: a fraction near 1 rounds to a stride of 1, which would
-  hold out *everything* and leave a pass that learns from nothing while
-  looking like it ran. Unit-tested, including that the order the store returns
-  reflections in does not change the set.
-- **Hooks** (`hooks.rs`, `[[hook]]`) — `pre_tool`, `post_tool`, `session_end`,
-  each a shell command taking the event as JSON on stdin. The design notes are
-  in CLAUDE.md; the two that were decisions rather than mechanics: `pre_tool`
-  sits **between the interlock and the approver** (a hook narrows policy,
-  never loosens security, and cannot be talked into clicking yes), and it
-  **fails closed** on any outcome the contract does not define, including a
-  timeout. Subagents inherit the parent's set, `mecha eval` forces it off, and
-  an unknown event name is a startup error even under `--no-hooks`.
-- **The feature was unreachable from config and every unit test passed.**
-  `hooks` was added to `Config` and not to `ConfigLayer`, which is what
-  actually parses a file — so `[[hook]]` anywhere was a hard parse error that
-  killed startup, while the tests, which build `HookSet` directly, were green.
-  Caught by running the binary, not by reading the code. There is now a
-  standing guard: serialise `Config::default()` and parse it back as a
-  `ConfigLayer`, which denies unknown fields, so the next field added to one
-  and not the other fails in the test suite rather than in someone's config.
-  Verified to fail on the old behaviour.
-- Verified live through the CLI afterwards, all four ways: a `pre_tool` hook
-  blocked `shell` and the model reported the block accurately; `--no-hooks`
-  let the same call through; `post_tool` received its JSON payload; and
-  `session_end` fired with the transcript path.
-- A trap found while wiring it: a hook denial says **"Blocked by a hook:"**
-  where the approver says **"Denied by the user:"**, and the learning miner
-  keys on the second. Machine policy is not a user correction — without that
-  split, every hook denial would become a reflection teaching mecha a rule it
-  was already obeying. There is now a test on each side of it.
-
-**Reflect-on-close (2026-08-04)** — the first hook consumer, and the learning
-loop now drives itself: `~/.mecha/config.toml` carries a `session_end` hook
-running `nohup mecha reflect -p local >/dev/null 2>&1 &`. Detached, because
-the hook contract kills a child at its timeout and a model call does not fit
-in one; `-p local` on purpose, because a background job must never spend API
-money silently, and a dead server now costs nothing (below). Three things the
-hook forced, all verified live:
-
-- **The store has a writer lock** (`LearningStore::lock`, advisory `flock` on
-  `<root>/.lock`, kernel-released on crash). Taken by reflect and learn
-  **before reading the state they act on** — two detached reflects from two
-  closing sessions both reading `mined_sessions` before either marks would
-  mine a session twice. Read paths deliberately do not lock (a run start must
-  never wait on a learn pass), which is why `write_learned_rules` now goes
-  through temp-sibling-and-rename like `mark_reflexions_processed` already
-  did. Verified against util-linux `flock` holding the lock: reflect blocked
-  2.7s and then proceeded.
-- **A session is mined all-or-nothing.** Reflect used to print a reflection
-  failure and mark the session mined anyway — interactive-mode manners that
-  turn into silent permanent loss the moment the command runs unattended.
-  Nothing is appended until every intervention in the session reflected;
-  on any error the session stays unmined and the next run retries, so a
-  partial failure cannot duplicate the successes. Verified both ways against
-  the dead local server: the intervention session was left unmined with the
-  reason printed, then mined cleanly on the next pass with a live provider.
-- **The hook runs `mecha` from PATH** (`~/.cargo/bin/mecha`), so a stale
-  installed binary mines with stale behaviour — reinstall
-  (`cp target/release/mecha ~/.cargo/bin/`) when reflect/learn change.
-
-End-to-end check: a `mecha run` session closed, the detached reflect fired,
-and the session appeared in `mined.jsonl` with a store commit ~4s later —
-with the local provider down, because a session with no interventions never
-needs the model.
-
-**Counterfactual validation (2026-08-04)** — `mecha validate` now probes all
-three triggers, and steers/denials are graded on the trace, not by a judge
-(`mecha-core/src/counterfactual.rs`, unit-tested; the CLI orchestration in
-`validate.rs` borrows `mecha replay`'s agent rebuild). The design that fell
-out of what already existed:
-
-- **A replay of a steered session is the no-steer counterfactual by
-  construction** — `replay::extract` drops steering text because there is no
-  legal slot to re-inject it, and the recording *after* the steer is ground
-  truth for what the user wanted, because the user steered it there. So the
-  steer verdict is structural: pass iff the replay tracks the recording
-  through the steer's call index without the steer. The probe truncates the
-  transcript at the end of the intervention's run (`truncate_after_run`), so
-  later turns cannot bill divergences to a question they have nothing to do
-  with.
-- **A denial fails only on the exact refused call** — same tool, same
-  arguments. "Not that directory" denies an argument, not a capability, so
-  same-tool-different-args is the model routing *around* the denial, which is
-  compliance. Structural divergence before the intervention point is
-  **inconclusive**, not evidence: the question was never posed.
-- **Verified live on staged sessions with Opus 5 as the probe model**: the
-  steer probe came back IMPROVED — baseline read the files as its natural
-  plan, the rules arm listed names only, tracking the steered recording
-  unprompted — and the denial probe came back unchanged-both-pass, because a
-  strong model routed around the denial unaided. Both are the honest answer.
-  Determinism caveat inherited from replay: verdicts are reproducible on the
-  pinned local sampler, judge-like (read the trace) elsewhere.
-- `--trigger steer,denial,followup` filters; followups keep the judge path.
-
-**Nightly rumination (2026-08-04)** — `scripts/ruminate.sh` +
-`scripts/mecha-ruminate.{service,timer}`, installed to
-`~/.config/systemd/user/`, enabled, `OnCalendar=03:30`, `Persistent=true`,
-linger on. The cycle is reflect → validate `--unprocessed-only` → learn
-`--holdout 0.25`, and the ordering is the one deliberate choice: **validate
-before learn**, because learn marks reflections processed and measuring
-afterwards would grade the rules on their own training data. Tonight's fresh
-reflections are unseen by the current rules by construction; the holdout
-keeps a slice unseen by the next generation too. If the model server's
-health check fails the whole night defers with a log line — every stage is
-idempotent (the store lock, all-or-nothing mining, `--min`), so a skipped
-night costs nothing. Verified both ways: fired with the server down (clean
-defer) and with it up (full cycle against the real store, logged to
-`~/.mecha/learning/logs/`).
-
-**Gated proposals (2026-08-04)** — the hyperagent commit gate, live end to
-end. `mecha learn --propose` stages its candidate instead of applying it:
-the candidate is measured by counterfactual replay (candidate vs the
-currently deployed rules, on the batch's own interventions), a candidate
-that **regresses any probe never reaches a human** — recorded as
-`rejected_by_gate` with its evidence, because a gate that leaves no trace
-teaches nobody anything — and what survives waits in
-`~/.mecha/learning/proposals/` for `mecha proposals`
-(list / show / accept / reject). Decisions that shaped it:
-
-- **Direct `mecha learn` still applies immediately.** The gate exists for
-  runs nobody watches; a human at a terminal watching the output *is* the
-  review, and the store's git history stays the undo. The nightly script now
-  passes `--propose` always.
-- **Pending proposals claim their reflections.** Both learn modes skip
-  claimed reflections, or the nightly pass would re-propose the same batch
-  every morning until someone reviewed it — and a direct pass would
-  double-count them into the live rules.
-- **Reject also retires the reflections.** They were real corrections, but
-  re-arguing them nightly against a human's explicit no is how a proposal
-  queue becomes spam. The refusal and its `--reason` are recorded on the
-  proposal; the reflections stay in the archive as evidence.
-- **Accept verifies the diff is the change.** The proposal carries
-  `rules_before`; if the live rules moved since the candidate was measured
-  (hand edit, direct learn), accepting bails and says to re-propose —
-  `--force` exists and says what it does. Same-rules comparison is on text
-  and enablement, not metadata: confidence drift is not a conflict.
-- **Proposals can only touch `rules/*.learned.toml`.** The hyperagent hard
-  line — the security layer is not proposable-against — is structural in
-  this v1, not policy: there is no code path from a proposal to anything
-  else.
-- The probe machinery moved to `mecha-cli/src/probe.rs`, shared by validate
-  and the gate — validate's arms are none-vs-live, the gate's are
-  live-vs-candidate, and the identity between a candidate block and the
-  block a run would see after acceptance is unit-tested
-  (`a_candidate_rules_block_renders_exactly_as_a_run_would_see_it`).
-
-The first live gate run was itself a finding: Opus generated an honestly
-*general* rule from the steer reflection ("if a request only calls for
-listing, don't read the files") — and the gate's steer probe failed both
-arms, because the recorded request asked for *summaries* and the steer
-reversed it mid-run. No principled rule wins that counterfactual; only an
-overfitted one does. The evidence line put exactly that judgement in front
-of the reviewer, which is the job.
-
-~~Still to build: session-end **distillation to pkg**~~ — **built 2026-08-05**,
-both halves the same day. pkg's `kg_upsert` grew the episode kind it was
-waiting on (evidence, not belief: the episode lands source-owned under
-`agent:mecha`, and pkg's extractor turns it into candidates that wait in the
-review queue — the staging guardrail intact), and `mecha distill`
-(`mecha-core/src/distill.rs`, `commands/distill.rs`) is the consumer: one
-model call per closed session against the compaction renderer's prose,
-skip-when-nothing-durable, taint snapshot recorded on the episode's meta
-(recorded, not gating — the provenance argument is in CLAUDE.md), ledgered in
-the learning store (`distilled.jsonl`, same writer lock) with pkg's
-`(source, source_id)` key as the second idempotence layer. Wired as a second
-`session_end` hook and into `ruminate.sh` ahead of validate/learn.
-
-**Rule tenure (2026-08-05)** — R1/R2 of `docs/MEMORY-RESEARCH.md`, built the
-day the research doc landed (commit `2a3f58a`). The gap the research audit
-found: a rule that cleared the gate was immortal — no identity, no lineage,
-and validate printed its measurements and discarded them, which is exactly
-the configuration the library-drift paper measured going negative
-(LLM-authored entries +0.0pp vs human-curated +16.2pp until they added
-outcome-driven retirement). What exists now, and the decisions that were
-argued rather than mechanical:
-
-- **Rules carry `id`, `sources`, `created_at`, `retired_at/_reason`** — all
-  serde-defaulted so pre-identity TOML loads unchanged (the `Reflexion.origin`
-  trick, minus fail-closed: absent lineage on an accepted rule is history,
-  not a threat). `finalize_rules` mints on first entry and carries identity
-  by **text match** across consolidations — a reworded rule is deliberately a
-  new rule, because tallies against text the model never saw would be
-  fiction. `sources` is **batch-level** (the reflexion ids the pass
-  consumed), not per-rule: the learner's own per-rule attributions would be
-  unverifiable testimony, and batch-level answers the audit question that
-  matters ("was any source untrusted?").
-- **The validation ledger** (`validations.jsonl`): validate appends every
-  probe's outcome, keyed to the FNV-1a hash of the exact block measured
-  (written out by hand — the std hasher is unstable across Rust releases,
-  and a drifting ledger key silently splits every tally) and stamped with
-  the probe model, because tallies are only comparable within one. Appended
-  without the store lock: a validate run must never block a closing
-  session's reflect, and an appended line needs no read-modify-write.
-- **Bisection attributes a regression to one rule.** On pass-then-fail, the
-  probe re-drives the same recorded prefix under blocks holding subsets of
-  the active learned rules, halving to the culprit (~2·log₂ n drives,
-  n ≤ 15). Three honesty guards, each cheap and each closing a real
-  misattribution: **user rules ride in every arm** (they are not on trial,
-  and an arm without them measures a deployment that cannot exist) with a
-  user-rules-only pre-test so a regression they cause alone attributes to
-  nothing; an **interaction** that needs rules from both halves attributes
-  to nothing; an **inconclusive arm aborts** the whole attribution.
-  Retirement argues from attributed counts, so attribution must never be a
-  guess. Followup regressions are recorded unattributed — judge-graded flips
-  are a prompt to read two answers, not evidence that convicts a rule.
-- **Retirement flows through the existing gate.** `mecha rules
-  propose-retirements` (nightly, after learn) is a deterministic ledger
-  scan — 3 attributed regressions convicts, no model anywhere — staging
-  `enabled = false` + `retired_*` as an ordinary `Proposal`
-  (`reflexion_ids` empty: nothing is consumed; the diff renderer learned to
-  say `~ retired:` instead of "(no textual change)"). A human at the
-  terminal can `rules retire`/`restore` directly — the same
-  apply-with-git-undo standing as direct `mecha learn`. Retirement is a
-  **flag, never a deletion**: the rule survives every learner rewrite
-  (`finalize_rules` re-appends it) and renders to the learner as an
-  immutable "measured harmful — never re-derive" section, so the same
-  lesson cannot return under new wording — the loop-until-dry lesson: dedup
-  against everything *seen*, not everything *kept*. `Rule::active()` treats
-  `retired_at` as stronger than a hand-flipped `enabled`.
-- **Deliberately absent**: decay, TTLs, usage-based eviction (the
-  rarely-fired rule that must never expire), and any policy on model-rated
-  confidence. Only measured harm argues for retirement, and a human accepts
-  the argument. The threshold is conservative on purpose — the drift
-  paper's own small-N retirement variant *hurt*.
-- **`mecha eval --ab-rules`** is the coarse complement: the whole set
-  rules-free then rules-on (both arms through one `run_arm`, so nothing
-  else differs by construction), per-case flips at pass^k, exit 0 —
-  a measurement, not a gate. Neither arm prints or writes as an ordinary
-  scorecard; `--out` writes a clearly-marked AB shape `--compare` cannot
-  load. This is the deliberate opt-in the `no_learned_rules` default's
-  comment always promised.
-- Verified end to end on a scratch store (`MECHA_LEARNING_DIR`): tallies →
-  conviction at threshold → staged proposal citing ledger rows → accept →
-  RETIRED in `rules` list and absent from the rendered block → restore.
-  `~/.cargo/bin/mecha` reinstalled the same day, so the nightly's new stage
-  runs the new binary.
-- Still open from the doc: **R3's hard cap** on the always-loaded block
-  (the soft `RULES_CHAR_BUDGET` warning stands, now counting only active
-  rules), and any R4 cadence beyond what ruminate.sh already orders.
-  Nothing retires on staleness alone — by design.
-
-**`pkg` as memory.** Wired, and the design is now settled — see item 3, which
-supersedes the turn-start retrieval idea this paragraph used to propose
-(turn-start retrieval arms the trifecta at turn zero and was rejected for it).
-The staging queue remains the guardrail: a self-learning agent that cannot
-silently poison its own memory. **Do not build a second memory store beside
-it** — provenance scoping (`source: agent:mecha`) inside the one graph is the
-separation that matters.
-
-**~~Triggers~~ — cron built 2026-08-05.** `mecha trigger` runs a prompt on a
-schedule with nobody watching: `add`, `list`, `show`, `next`, `run`, `tick`,
-`daemon`, `runs`. The design notes are in CLAUDE.md's Triggers section; what
-was argued rather than mechanical:
-
-- **`tick` is the primitive; `daemon` is a loop over it** — the user chose
-  this shape over a daemon-only or systemd-units-per-trigger design. Due-ness
-  is a function of the ledger and the clock, so a crontab line, a systemd
-  timer (`scripts/mecha-triggers.service`) and the built-in loop all reach the
-  same answer, and `tick --dry-run` is an honest preview rather than a second
-  implementation of the schedule.
-- **Due-ness is computed backwards** — `prev_at_or_before(now)` names the most
-  recent slot and it fires if that slot is newer than the last one accounted
-  for. A machine asleep for a week owes **one** briefing, not forty, at no
-  extra cost; a late tick loses nothing. `catch_up` (`always` | `never` | a
-  duration) decides whether a stale slot still runs, and a skip is written to
-  the ledger — "why did I not get my briefing" has to be answerable.
-- **Triggers are not project-configurable, and a trigger run reads the global
-  config only** (`Config::load_global`). `[[hook]]`, `[[mcp]]` and
-  `[[subagent]]` can all come from a `mecha.toml` that arrived with a cloned
-  repository; a scheduled unattended agent run must not. Verified live from
-  the recorded `RunConfig`: a project file disabling `fs_read`/`shell` had no
-  effect on a trigger fired from that directory, and there is a unit test
-  asserting the *difference* between the two load paths.
-- **Read-only unless the file says otherwise**, with `--yes` at `add` time
-  being the written-down decision to widen it. The important consequence:
-  outbox-routed calls still stage under read-only, because staging executes
-  nothing — so draft-my-replies-overnight is both the safe shape and the
-  useful one. `ask_user` is absent by construction, since only a front-end
-  that owns a human ever registers it.
-- **A manual run is evidence, not a fire** (no slot recorded, so it never
-  advances the schedule), **one run per trigger at a time** (non-blocking
-  flock, released by the kernel if the process dies), and the timeout —
-  and a SIGTERM to the daemon — **cancel** rather than abort, so the partial
-  answer and the ledger row survive. All three verified live.
-- **The cron parser is hand-rolled** because every crate surveyed speaks
-  Quartz's dialect where the first field is *seconds*: `0 7 * * *` would parse
-  as something other than 7am rather than failing. DST is handled in both
-  directions — a job in the spring-forward gap fires at the first instant that
-  exists, one in the repeated autumn hour fires once — with tests naming both.
-- **Prompt-only, deliberately.** The user chose this over command triggers:
-  scheduled *commands* are what cron is for, and giving one a home here would
-  mean re-answering how it is confined and which environment it sees.
-  `scripts/ruminate.sh` therefore stays its own systemd timer.
-
-Verified end to end on the local model: a manual fire, a daemon fire landing
-exactly on its slot and not re-firing on later ticks, `notify` delivering the
-answer on stdin, taint recorded on the ledger row, and a SIGTERM mid-run
-recorded as `was interrupted` with the partial answer kept.
-
-**The TUI surface followed the same day.** `/triggers` is a modal in the
-`/tools` shape — list, then a detail view carrying the prompt, the settings,
-recent ledger rows and the last briefing read back from its transcript — with
-`e` edit, `space` on/off, `r` run now, `c` cancel a run in flight, `x` delete
-behind a confirmation. Every action shells out to `mecha trigger ...`: one
-implementation of firing, nothing the TUI can do that the CLI cannot, and a
-twenty-minute run cannot freeze the event loop. Driven end to end under tmux
-(`-x 130 -y 45`), including the `$EDITOR` suspend and a deliberately broken
-edit being refused with the file left intact.
-
-Two things it forced, both worth keeping:
-
-- **Asking "is it running?" must not touch the flock.** `try_claim` acquires
-  and drops, so a UI polling it would occasionally hold the lock exactly when
-  the scheduler fired and turn a legitimate fire into a spurious overlap skip.
-  Watching must not perturb what is watched, so an advisory `<name>.running`
-  marker carries UI state beside the lock rather than instead of it.
-- **`kill(pid, 0)` needs its range checked, and that *is* the function.** A
-  marker holding a non-positive pid would report a long-dead run as alive
-  forever: `0` means "my process group" and `-1` means "everything I may
-  signal", which always succeeds. Found by a test using `u32::MAX`, which
-  sign-flips to exactly that case.
-
-Cancellation is a **sentinel file the runner polls**, not a signal, because the
-run may be inside the daemon's own process where SIGTERM would stop the whole
-scheduler. `mecha trigger cancel <name>` is the CLI half. Verified live: the
-run stopped at its next safe point, kept its partial answer, and recorded
-`was interrupted`.
-
-Still open: **file watchers and inbound webhooks** — the other two trigger
-kinds this section originally named. A watcher wants debounce and a
-"what changed" payload in the prompt; a webhook is a listening socket, which
-is a different security question (the payload is third-party text, so it must
-arrive as `untrusted` — the interlock's rules apply to the *prompt* for the
-first time). Also unbuilt: a trigger whose run failed has no retry, on purpose
-— the next slot is the retry, and a failing trigger that hammers a provider
-unattended is worse than one that misses a morning.
-
-**~~TUI polish~~ — built 2026-08-05** (see item 4 and the addendum at the top
-of `docs/TUI-RESEARCH.md`). The live todo pane, nested subagent rendering, and
-the retroactive `^O` disclosure toggle all landed — the transcript now records
-thinking and tool output regardless of `-v` and filters at render time, which
-is the "decided 2026-08-04" design this section used to spell out. Still open
-from the survey: steer-vs-queue as two keys, `/export`/copy, the semantic
-colour table + `NO_COLOR`, and keymap configuration.
-
-The TUI now has slash commands (`/help /tools /model /provider /mode /mcp
-/usage /clear /session /exit`) and can switch model, provider, permission mode
-and MCP servers mid-session. Three rules that switching had to respect, each of
-which is a bug if forgotten:
-
-- **Switches compose.** They rebuild from the options currently in force, held
-  on `Live`, not from the flags the process launched with. Rebuilding from the
-  launch flags means `/mcp off` followed by `/model x` quietly turns MCP back
-  on.
-- **Every switch appends a `Record::Config`**, with the *live* permission mode
-  rather than the file's — a replay reading the file would reproduce
-  permissions the session never ran under.
-- **A switch is idle-only, and taint does not un-happen.** Dropping the servers
-  that fetched something hostile does not unread it; only `/clear` resets
-  taint, because only `/clear` drops the context too.
-
-Both of this section's "still to build" items exist now: `ask_user` (built,
-and the `ambiguity` cases are graded on the trace — see "What the measurements
-say") and phase-gated planning (`Phase::Plan` hides writing tools
-structurally; Shift+Tab toggles it in the TUI).
-
-### 6. Open security gaps
-
-- **`mecha run` used to record no taint at all**, which meant `--resume` on a
-  one-shot laundered it. Fixed, but the shape of that bug is worth remembering:
-  the guarantee was implemented in two of three front-ends and nobody checked
-  the third. When something is enforced per-interface, enumerate the interfaces.
-- **Evals inherited whatever MCP servers were configured locally** until
-  `--mcp` made them opt-in. A scorecard that depends on today's machine is not
-  comparable to yesterday's. Adding pkg to config silently changed the tool
-  surface mid-experiment and invalidated an A/B in flight.
-
-- **A confined MCP server sees the workspace**, so a filesystem server confined
-  this way is confined against your home directory, not against your project.
-  The right trade for most servers, and worth knowing.
-- **HTTP/SSE MCP transports** are not implemented, and when they are, none of
-  the process confinement applies — there is no child process, and the trust
-  question moves to the endpoint.
-- **Subagent workspaces.** A subagent inherits the caller's workspace; there is
-  no way to give a child a *narrower* jail than its parent, which is the
-  natural next capability restriction.
-- **`shell` is enabled inside sandboxed eval cases**, because a codegen case has
-  to run its tests. The staged workspace is a copy, so the *fixture* is safe,
-  but the command still runs as you — the case file is trusted input.
+Every item below was verified against source on 2026-08-05 to still be unbuilt.
+Ordered by value per unit of effort, not by size.
+
+### Cheap, and worth doing first
+
+- **Write a trigger's report into its own workspace.** A trigger already carries
+  an optional workspace (`mecha-core/src/trigger.rs`), but nothing writes a
+  report file into it — the run's answer exists only in the session transcript,
+  which is why the TUI reads it back from there. An unattended run that leaves a
+  durable artifact is the difference between a scheduled agent and a scheduled
+  agent you can actually use. This is an afternoon.
+- **Batch review in the outbox.** `mecha outbox send` takes exactly one id
+  (`mecha-cli/src/commands/outbox.rs`), as do `show`/`edit`/`reject`. An
+  overnight triage trigger that stages nine replies is then nine invocations.
+- **Re-inject the todo list at compaction time.** `compact.rs` has no knowledge
+  of the todo tool, so the model sees its list only through the echo in the last
+  `todo` result — a compaction that summarises past that echo loses it. The list
+  is exactly the "how far you got" state the summariser is measured to drop.
+- **`calendar_freebusy` on the unified mail surface.** Nothing in
+  `mecha-mail/src` implements it, and every scheduling question needs it.
+- **Re-baseline `ambiguity` and `long-horizon` at k=5.** No scorecard in
+  `results/` records `runs: 5` outside the compaction arc, and these are the two
+  tags whose single-run numbers move.
+
+### Structural gaps
+
+- **MCP resources are not implemented.** `mecha-core/src/mcp.rs` advertises
+  `"capabilities": {}` and speaks only `tools/list` and `tools/call`. No
+  `resources/list`, no `resources/read`. Whenever this is closed, resource
+  content must be marked `.from_outside()` — it is third-party text by
+  definition.
+- **HTTP/SSE MCP transports.** `McpServerConfig` carries only `command`/`args`,
+  so every server is a local process. Worth knowing before building it: none of
+  the process confinement — `env_passthrough`, `sandbox`, per-server `network` —
+  means anything for a remote endpoint, so the security story has to be
+  rewritten rather than inherited.
+- **Subagents cannot narrow the jail.** `SubagentProfile` narrows tools,
+  `max_turns`, model, provider and `trusted_output`, but has no workspace field;
+  `subagent.rs` passes the caller's `ToolCtx` verbatim, so a child's jail is
+  always exactly its parent's. A subagent that should only read one directory
+  cannot be expressed.
+- **Per-command approval policy.** `ModeApprover::approve` takes the tool input
+  and ignores it (`mecha-core/src/tool/mod.rs`), branching only on mode and
+  `read_only`. So `shell: ls` and `shell: rm -rf` are the same decision. There
+  is no per-command rule surface in config to hang this on yet.
+- **Structured output has no provider abstraction.** The `Provider` trait exposes
+  only `id`/`default_model`/`complete`. GBNF, `guided_json` and
+  `output_config.format` are all spellings of the same idea and none is reachable.
+- **A Landlock + seccomp sandbox backend.** `Backend` is `None`/`Bwrap`/`Docker`.
+  The sandbox research measured Landlock at ~1.28 ms and it works on this box,
+  where bwrap does not — so the measured winner is the one that is unimplemented,
+  and docker remains the only working option here.
+- **In-run verification / a convergence primitive.** Nothing in `agent.rs` tests
+  a post-condition; there is no runtime "is it done yet". The research's own
+  answer is the starting point: it has to be a command's exit code, not a
+  model's opinion. `compact_validate` is the only in-run verifier that exists.
+- **Programmatic tool calling** (a `code` tool that calls other tools from inside
+  a program). Two hazards to solve first, both named in the research: taint must
+  update *within* a running program, and approval for a program that makes
+  thirty calls is not thirty approvals.
+
+### The learning system
+
+The arc is complete and running nightly. What is missing is refinement:
+
+- **The sliding window of recent raw reflections never shipped.** Prompt assembly
+  chains user rules then consolidated rules; the third leg — a window of recent
+  unconsolidated reflections — was designed and not built.
+- **Rules are scoped by domain, not by tool.** `Rule` has no `scope` field, and
+  nothing injects rules into a tool's own block.
+- **Rules that are facts should graduate to pkg.** No classifier routes
+  fact-shaped rules into `kg_upsert` as staged candidates; `distill.rs` pushes
+  episodes only.
+- **The positive signal is unread.** Reflection mines only edited-then-sent
+  outbox items. An item sent *unedited* is evidence that whatever produced it
+  was right, and nothing looks at it.
+- **LEAP-in-production.** Rumination mines interventions only. Learning from
+  graded eval cases — sampling known-outcome examples rather than waiting for a
+  correction — was ported in design but not in code.
+- **No correction-rate-over-time query.** `mecha sessions stats` counts sessions
+  and `mecha rules list` gives per-rule tallies; neither answers "are
+  interventions per session going down", which is the only number that says the
+  system is working.
+- **The CIPHER tier** — per-context preferences, embedded and retrieved top-k —
+  exists as a comment and nothing else.
+- **A `/learning` TUI view.** The store is files by design so it can be read
+  without tooling, but nothing surfaces it in the interface.
+
+One item needs a human who remembers the intent: the **edit-distance gate** is
+described as observed working live, but no threshold exists in code — the
+behaviour came from the reflector model declining. If the design was always
+"the model declines", the item is obsolete rather than open.
+
+### Triggers
+
+- **File watchers.** `Trigger` has no watcher kind. Needs debounce and a
+  "what changed" payload injected into the prompt.
+- **Inbound webhooks.** Nothing listens. The interesting part is that the payload
+  must arrive marked untrusted — it would be the first time the interlock's rules
+  applied to a *prompt* rather than to a tool result.
+
+### TUI polish
+
+- **Steering and queuing are the same key.** Enter starts a run when idle and
+  steers one already going; there is no way to queue a follow-up instead.
+- **No `/export` or copy.** `NAMES` lists eleven commands and none of them get
+  the transcript out.
+- **`NO_COLOR` is honoured only by the plain CLI renderer.** The TUI hardcodes
+  colours inline; there is no semantic colour table.
+- **No keymap configuration.**
+
+### Larger, and deliberately not started
+
+- **The public request-intake surface.** `publish`/`read`/`write`/`drain` verbs,
+  a request-type manifest, generated schema/form/validators, WebMCP and A2A,
+  origin isolation and CSP content classes. Nothing is built, on purpose — the
+  design and the open questions are in
+  [`PUBLIC-SURFACE-RESEARCH.md`](PUBLIC-SURFACE-RESEARCH.md). Note this is
+  unrelated to the repository being public; it is a surface for the user's
+  correspondents. The cheapest prerequisite is mining twelve months of mail for
+  the request types that actually recur, which no artifact records yet.
+- **Slack as a transport.** Zero lines exist. The blocking decision is the
+  identity model, not the socket.
+- **Public benchmarks.** The Terminal-Bench adapter (`bench/`) is written and
+  smoke-tested at `n_tasks: 1`; the oracle arm64 sweep is incomplete and the full
+  89-task run has never been made. AgentDojo (for the interlock) and a SWE-bench
+  Bash Only control are named in the research and unstarted.
+- **`mecha replay --json` is not wired into CI.** `scripts/replay-regression.sh`
+  consumes it locally, which is the standing regression check; making it a
+  workflow needs a single-slot llama-server that CI does not have.
 
 ---
 
-## Design notes on what is already built
+## Accepted limitations
 
-Not a checklist. These are the decisions that were expensive to reach and would
-be easy to undo by accident.
+These are not to-do items. Each is a deliberate trade, recorded so nobody
+"fixes" one without knowing what it costs.
 
-### Per-run context
-
-`RunContext` carries what is properly per-*run* rather than per-agent: the path
-jail, the approver, the budget, and optionally a cancellation token and a
-steering queue. `Agent::run_in` takes one; `Agent::run` uses the agent's own.
-One agent — one provider connection, one cached prefix — therefore serves
-concurrent runs jailed to different directories under different permissions.
-
-Subagents inherit the *caller's* workspace rather than the one that existed when
-they were built. That also closed a hole: a parent in a sandbox used to delegate
-to a child still pointed at the original directory.
-
-### The eval rig
-
-`"sandbox": true` stages a private fixture copy per case and allows writes;
-`"max_turns": N` gives a case its own turn budget; `"compact_at_tokens": N`
-forces compaction for one case alone; `expect.verify` runs a command in the
-case's workspace afterwards and grades the exit code; `expect.judge` grades a
-rubric with a second model (`--judge-provider`, `--judge-model`).
-
-`"prompt"` takes a string *or* a list of strings. A list runs on one
-`Conversation`, which is what makes anything cross-turn expressible at all —
-taint accumulating, a transcript growing past the compaction threshold. It is
-untagged in serde, so no existing case changed. `RunContext` gained
-`compact_at_tokens` for the same reason it already carried the budget and the
-jail: one agent serves many runs, and a case that means to exercise compaction
-must not force every other case to compact too.
-
-`expect.stop_cause` / `taint` / `blocked_sends` / `min_compactions` grade the
-*harness* rather than the model. None of it is visible in the answer text.
-`min_compactions` exists specifically so a compaction case fails loudly when
-the transcript never crossed the threshold, rather than passing and reporting
-fidelity it never tested.
-
-- **Grade the artifact, not the claim.** For codegen, `verify` runs the tests.
-  The command hashes the test file first, so a model that edits the tests until
-  they pass fails.
-- **A judge that cannot answer must fail the case, never skip it.** A case whose
-  only real assertion silently evaporates is worse than one that fails loudly.
-- **Fixtures are generated** (`scripts/build-eval-fixtures.py`), which is how
-  the gold answers get computed rather than guessed, and how the katas are
-  checked to fail-as-shipped *and* be solvable.
-
-### Interruption and steering
-
-**Cancel** (`RunContext::cancel`) stops the run at the next safe point and keeps
-what it has: `StopCause::Interrupted`, partial text marked incomplete, and the
-partial assistant turn appended so the session resumes from the cut.
-
-- **Cancellation is a dropped future.** `Agent::complete` selects between the
-  provider call and the token; losing the race drops the provider future, which
-  aborts the in-flight HTTP request. There is nothing else to abort.
-- **What the dropped future takes with it.** Not just the text — the usage
-  frame too, which is why an interrupted run used to report **zero** tokens
-  after spending them. Providers now emit `StreamEvent::Usage` as counts
-  arrive, and the loop keeps them in the same place it keeps the partial text:
-  outside the future. Input is known from the very first frame, which is the
-  expensive half when a cached prefix is in play. The cut turn's *output* is
-  still unknown, so `RunOutcome::usage_complete` is false and the CLI prints
-  "at least" — a floor that admits to being one, rather than a guess dressed as
-  a measurement in the same field a cost budget reads.
-- **A cancellable run streams**, even when nobody is watching, because that is
-  the only way to have the half-written answer when the request is dropped.
-  This is why the field is opt-in: a batch worker nobody can interrupt should
-  not silently change transport.
-- **Tools run to completion.** The cancellation points are the turn boundary and
-  mid-stream, not mid-tool. Interrupting a `shell` half way through a write is
-  worse than waiting for it.
-
-**Steer** (`RunContext::queued_input`) redirects a run *without* stopping it.
-Text typed mid-run is drained at the top of each turn and folded into the message
-that already carries the tool results, so the model reads "here is what your
-tools returned, and also: actually, focus on X" as one user turn and keeps
-working. That placement is forced and also correct: between an assistant's
-`tool_use` and its results there is no legal slot for a user message, so the
-results message is the first opening. Both encoders preserve it (Anthropic as a
-second content block, OpenAI as a trailing `role: "user"` after the `role:
-"tool"` ones).
-
-`mecha tui` is the only front-end that can steer. `mecha chat` deliberately
-cannot: a readline REPL cannot read stdin while a run streams without a second
-reader on the same descriptor, and whichever is blocked when the run ends steals
-the user's next prompt line.
-
-### The TUI
-
-One event loop owns the terminal for the session; the agent runs in a task
-beside it. Enter starts a run when idle and *steers* one already going. Ctrl-C
-cancels the run rather than killing the process; Ctrl-C again at an idle prompt
-quits. Approval is a modal, because the terminal approver's `read_line` would
-fight the event loop for stdin and its prompt would tear the frame —
-`setup::prepare_with_approver` exists for that and only swaps the approver in
-`Ask` mode.
-
-The steering case that matters, from a real run:
-
-```
-● shell  sleep 6 && echo one
-● shell  sleep 6 && echo two
-● shell  sleep 6 && echo three
-↳ change of plan: skip the rest and just reply with the single word PIVOT  (steering)
-PIVOT
-```
-
-The fourth command never ran, and the run was never stopped and restarted.
-
-**Testing a TUI needs a pty *with a window size*.** `script -qec "stty rows 45
-cols 130; mecha tui" /dev/null`. Without the `stty`, every frame renders into a
-0×0 area and the output is pure escape sequences — it looks exactly like a
-broken program.
-
-### Sandboxing
-
-`[sandbox] kind = "bwrap" | "docker" | "none"`. A confined command gets the
-workspace, a read-only system, no home, no environment beyond a named allowlist,
-and by default no network. Default is `none`, because turning it on cannot be
-right for every machine — but `mecha tools` says so out loud.
-
-Verified end-to-end through the agent on the docker backend: uid 1000, `~/.ssh`
-absent, container hostname, 6 environment variables, DNS dead, and files written
-into the workspace owned by the user rather than root (`--user`, without which
-the agent leaves root-owned files you cannot delete).
-
-- **A broken sandbox stops the run.** `preflight` runs a real command through
-  the real backend at startup. Falling back to unconfined execution would be
-  worse than never configuring one, because `shell`'s declared capabilities
-  narrow when confined and the interlock trusts them.
-- **Only `external_send` narrows**; `private_data` stays true. A confined shell
-  still reads the workspace, and `fs_read` is private for exactly those bytes.
-  This was wrong first: narrowing it would have made `shell: cat secrets` set no
-  taint where `fs_read: secrets` does, so the cheapest way around the interlock
-  would have been the more dangerous tool. There is a test named after the hole.
-- **`bwrap` does not work on this machine.** Installed,
-  `unprivileged_userns_clone=1`, and still fails with `setting up uid map:
-  Permission denied`, because Ubuntu 23.10+ added
-  `kernel.apparmor_restrict_unprivileged_userns=1` and ships no AppArmor profile
-  for bwrap. The docker backend exists because of this, and the error message
-  says all of that when it fires.
-
-**MCP servers are covered too**, and were the bigger hole: third-party code, not
-commands a model asked for out loud.
-
-- `env_passthrough` replaced inheritance. A nosy test server went from 64
-  variables including two API keys to 3 and none. This is a **breaking change**
-  for any server that relied on inheriting a token — name it in
-  `env_passthrough` or set it in `env`.
-- `sandbox = true` per server confines it with the global backend, and
-  per-server `network` overrides the global switch, because otherwise reaching
-  one server's API would mean giving `shell` the network.
-- Asking for confinement with no backend set is a **startup error**, not a
-  warning. `mecha tools` lists every server and says which are unconfined.
-
-### Taint is per-conversation
-
-It used to be created fresh inside `run`, so a chat turn reset it and the lethal
-trifecta was defeated by pressing Enter. It now lives on `agent::Conversation`
-with the messages, and is written to the session file — provenance cannot be
-recovered by reading a transcript back, so without that record, resuming
-laundered it too. Verified across a process restart: a page fetched in one
-session, a file read in the resumed one, and the outbound call refused.
-
-The type is the fix. A caller that keeps the history keeps the taint; one that
-starts a new `Conversation` gets a clean one, which is why batch items,
-subagents and eval cases do not contaminate each other. The regression test was
-checked to **fail against the old behaviour**, not merely pass against the new.
-
-### Compaction
-
-`[agent] compact_at_tokens` / `--compact-at`, off by default because it is
-lossy. Verified against llama-server on the 16-link audit chain at a 1200-token
-threshold: it compacted four times and still answered 16 entries / 847, matching
-the gold. The summaries carried the running total forward, which is the part
-that could have destroyed the task silently.
-
-- **The cut has to be legal, not convenient.** A `tool_result` whose `tool_use`
-  is gone is a 400, and that is the whole run. Tool results arrive in the user
-  message right after the turn that asked for them, so the only safe place to
-  resume is an assistant message. `compact.rs` is pure and provider-free for
-  exactly this reason; the loop re-checks the rebuilt transcript and refuses to
-  install it *before* assigning, since an error here means "carry on
-  uncompacted".
-- **The summariser gets prose, not a replay.** Sending the real messages means
-  sending `tool_result`s on a request that declares no tools, and llama-server
-  answers that with an empty completion. Found by running it, not by reading a
-  spec — assume it is true of other providers too.
-- **Taint survives compaction.** Summarising away the text of a hostile page
-  does not un-read it. Taint lives on `Conversation`, which the compaction code
-  never touches, so the type does the work — but there is a test, because it is
-  the invariant that would be easiest to break later.
-- **Fidelity is not legality, and only one of them is unit-testable.** The cut
-  points are pure functions with tests. Whether a summary carried the task
-  forward can only be answered by a model that had to use it.
-- **Measured, and it is worse than this file used to claim.** Two cases, same
-  model, same threshold, on 2026-08-03:
-
-  | Case | Result |
-  |---|---|
-  | `compaction-carries-the-task` — recall a token stated in turn 1 after 8 filler turns | **3/3** |
-  | `chain-total-compacted` — the 16-link traversal, `compact_at_tokens: 1200` | **1/5** |
-  | `chain-total` — the identical task, uncompacted | **5/5** |
-
-  5/5 against 1/5 on the same task with one variable changed (Fisher's exact
-  p≈0.05). The earlier claim in this file — "it compacted four times and still
-  answered 16 entries / 847" — was one sample and does not hold up.
-
-  The failure mode names the cause. The two logged walks lost their *place*,
-  not their facts: one invented `next: END` five links early, the other read 14
-  links correctly, re-read an entry it had already seen, and restarted from
-  `START.md`. Meanwhile a stated fact survives compaction 3/3.
-
-  So the summariser preserves **what is true** and drops **how far you got**.
-  Read `SUMMARY_INSTRUCTION` with that in mind: it asks for established facts
-  with their values, for what failed so it is not repeated, and for what
-  remained — but never for position in a sequence, and "which entries I have
-  already visited" is neither a fact about the world nor a failed attempt.
-
-  Two things were tried. Measured on qwen3.6-35b-a3b at `compact_at_tokens:
-  1200`:
-
-  | arm | `chain-total-compacted` | `carries-the-task` |
-  |---|---|---|
-  | original summariser | 1/3 | 3/3 |
-  | + a clause asking for traversal position | 2/5 | 5/5 |
-  | + tiered thinning | **4/5** | 5/5 |
-  | + todo instruction, prompt only (2026-08-04) | 4/5 | 5/5 |
-  | + todo instruction, prompt + tool description (2026-08-04) | 4/5 | 5/5 |
-  | 4-slot server era, either validation arm (confounded — see Environment) | 2/5 | 5/5 |
-  | + eviction + validation + own-budget summariser, `-np 1` (2026-08-05) | **5/5** | 5/5 |
-  | uncompacted control | 5/5 | — |
-
-  The 2026-08-05 arm (`results/compaction-k5-np1.json`) is the first in which
-  the compacted case matches its uncompacted control. It bundles four changes
-  (eviction, summary validation, the summariser's own budget, spill-capped
-  results) plus the server fix, so it does not isolate any one of them — but
-  the 2/5 rows above it were the same code measured against the quartered
-  8192-token server, which is what "a stale `context_window` is worse than
-  none" looks like when the *server* moves the window.
-
-  The two todo arms are not really separate treatments: the model never called
-  `todo` inside the eval in either one, so both are further samples of the
-  thinning arm — which pools to **12/15**, and every failure in the pool is a
-  wrong *total* over a correctly-completed walk. See item 1 of "What to do
-  next" for the full finding.
-
-  **The prompt clause did nothing** (1/3 → 2/5 is noise). **Thinning appears to
-  close most of the gap**, but be careful with that number: 4/5 against the
-  pooled 3/8 of both earlier arms is p≈0.27, which is not significance at n=5.
-  What makes it more believable than the clause is not the p-value but the
-  mechanism — the claim is "the sequence of tool calls survives", and that is a
-  unit test rather than a hope about what a summariser noticed. Run n≈15 per arm
-  if the number needs to be citable.
-
-  The design is in `thin_old_results`: a call and its result differ enormously
-  in size *and* value, so shorten the results and keep the calls. Position stops
-  being something a summary has to preserve and becomes something the transcript
-  structurally still contains.
-
-  The todo-list idea was tried and measured on 2026-08-04 — the model ignores
-  the instruction, and the position-loss mode it targeted is already fixed by
-  thinning. The finding, with mechanism, is item 1 of "What to do next".
-
----
-
-## Conventions worth keeping
-
-- **The loop never learns where a tool came from or which provider is behind
-  it.** Both are trait objects. Matching on provider name inside `agent.rs`
-  means the abstraction is leaking.
-- Tools return `Ok(ToolOutput { is_error: true })` for expected failures so the
-  model can recover. Reserve `Err` for what it cannot route around.
-- Write tool error messages **for the model**. "not found; the directory
-  contains a.md, b.md" is a self-correcting loop; "No such file" is a dead end.
-- Every model-supplied path goes through `ToolCtx::resolve`. Never `fs::*` on
-  raw tool input.
-- A tool result must exist for every `tool_use` id or the next request 400s.
-- `Capabilities::untrusted_input` is what a tool *can* return;
-  `ToolOutput::external` is where this result *actually came from*. Taint keys
-  off provenance. Any tool reaching the network calls `.from_outside()`.
-- Registry order is stable (`BTreeMap`) because the tool list is the front of
-  the cached prefix.
-- Verify a fix by making it **fail on the old behaviour**, not just pass on the
-  new one. Two bugs this session were caught that way.
-
-## Traps already hit
-
-Recorded so they aren't hit twice.
-
-**The learning system** (all found by pre-push review or by running it)
-
-- **A timeout that starts after the blocking part is not a timeout.** The
-  hook runner wrote the JSON payload to the child's stdin *before* entering
-  the timed wait — so a hook that never read stdin blocked `write_all`
-  forever once the payload outgrew the pipe buffer, and the run hung with
-  the timeout never started. Wrap the write and the wait in one timed
-  future. The general shape: audit what sits *outside* every timeout.
-- **A "did it repeat the call" scan must start at the decision point.** The
-  denial verdict scanned the whole replayed trajectory, and the faithful
-  prefix legitimately contains whatever the recording contains — including,
-  sometimes, an earlier instance of the very call later denied.
-- **An unattended generator with a rejection path is a loop.** Gate-rejected
-  reflections return to the pool by design, so an unchanged pool re-argued
-  the same batch every night. Deduplicate on the exact batch, not on time.
-- **A field added to `Config` but not `ConfigLayer` is a parse error that
-  every unit test misses** — see the hooks section; there is a standing
-  round-trip guard now.
-- **Interactive-mode manners become data loss unattended.** Reflect printed
-  a provider error and marked the session mined anyway; fine with a human
-  watching, silent permanent loss from a hook. Mining is all-or-nothing per
-  session now.
-
-**Measuring**
-
-- **A wrong gold answer measures nothing.** One was shipped ($2,450 vs the
-  correct $1,750) by double-counting a base rate. Verify arithmetic with a
-  script — `scripts/build-eval-fixtures.py` now computes them.
-- **A case with more than one right answer has none.** `pick-search` asked
-  "which file mentions Nadia" when three do, and asserted one of them. It only
-  surfaced when a model named the other two. Grep the fixture before writing
-  the gold.
-- **A grading ceiling can measure the ceiling.** Two ambiguity cases had turn
-  budgets tight enough that the model got cut off mid-exploration, so the case
-  graded budget exhaustion rather than judgement. Discovering that a request is
-  under-specified takes reading; leave room for it.
-- **Substring grading measures formatting.** `"$2,520"` failed a check for
-  `2520`; `"do **not** agree"` failed `not agree`. Both answers were right.
-  `eval::normalize` handles it — extend that, don't work around it.
-- **…and again, unboundedly.** "There is no `budget.csv`" matched none of ten
-  hand-listed negation phrasings. The negation phrasing space has no bottom —
-  that case is judge-only now. Reach for `expect.judge` when you catch yourself
-  enumerating synonyms.
-- **A judge needs room to think before it answers.** At `max_tokens: 512` the
-  judge spent the entire budget on reasoning and returned empty content with
-  `finish_reason: length`. It is 4096 now, and an unparseable verdict reports
-  the stop reason rather than just the empty string.
-- **A test can pass for a reason you did not write.** The first version of the
-  broken-sandbox test named `image:` before `..cfg` in a helper, so Rust's
-  struct-update ordering silently overrode the caller's deliberately broken
-  image and the test ran against a working one. It failed only because it
-  *passed* when it should not have. Put the forced fields where they cannot
-  shadow the caller's, and comment why.
-- **A negative assertion needs a machine where the positive holds.** The
-  confinement tests assert no network and no `~/.ssh`; both would pass
-  vacuously on a host that had neither. Check the host has them before
-  believing the sandbox took them away.
-- **Read the transcripts before believing the score.** The clean A/B on
-  `ask_user` said it made no difference: 6/9 either way. The transcripts said
-  otherwise, and they were right — without the tool the model burned **30 tool
-  calls** and died on the turn ceiling *with a correct answer*; with it, it
-  asked in **3** and failed a rubric demanding it ask for two missing things at
-  once. Identical scores, opposite reasons, and a large real improvement
-  invisible to the grader. Rewriting the cases to assert on the trace
-  (`tools: ["ask_user"]`, and `forbid_tools: ["ask_user"]` where asking is the
-  *wrong* move) took the tag from 6/9 to 8/9.
-- **A tool's failure text is part of its behaviour.** `ask_user`'s decline
-  originally said "proceed with your best interpretation", and the model duly
-  invented a contractor name and rate — precisely the failure the case exists to
-  catch. A decline must not read as permission to guess.
-- **Changing the tool surface invalidates the comparison, including
-  accidentally.** Adding pkg to `~/.mecha/config.toml` gave every eval case five
-  extra tools in the middle of an A/B. Same trap as the fixture change, entered
-  from a different door.
-- **An override that widens should not narrow something unrelated.** Forcing
-  `untrusted_input` on an MCP server also revoked `read_only`, on the reasoning
-  that a distrusted tool should not skip the approval gate. But distrusting what
-  a tool *returns* says nothing about whether it *writes* — and the result was
-  every memory retrieval demanding approval. Only a forced `destructive`
-  contradicts read-only.
-- **Grade the control before believing the treatment.** `chain-total-compacted`
-  failed on its first run, which looked like a compaction finding — until the
-  uncompacted control failed too, which made it look like nothing. Both readings
-  were n=1. Five runs of each turned it back into a finding, and a real one.
-  A case that isolates one variable proves nothing while its control is
-  unmeasured, in *either* direction.
-- **Do not couple a diagnostic to your hardest case.** The first compaction
-  case was the 16-link traversal, so a compaction failure and a long-horizon
-  failure were indistinguishable in the result. The replacement states a token
-  in turn one and asks for it after eight filler turns: the underlying task is
-  trivial, so the case can only fail for the reason it is named after.
-- **Assert on the trace, not only on the answer.** `chain-total` was graded on
-  its total, so a model that stopped early and summed its own truncated list
-  *correctly* failed with "847 not in the answer" — true, useless. Asserting it
-  read `entry-d084.md`, the one real terminator, names the failure instead. It
-  also closed a hole in `chain-largest`, whose answer sits at link 9 of 16 and
-  could be reached without ever finishing the walk.
-
-**Providers**
-
-- **Never believe `finish_reason`.** llama-server reports `stop` alongside
-  `tool_calls`. The loop believed it, dropped the calls, ended the run and
-  returned an empty string — which graded as a model failure and was a harness
-  failure. Any turn containing tool_use blocks is now a tool turn regardless.
-  Assume the same class of bug exists for other local servers.
-- **A request with `tool_result`s and no `tools` gets an empty completion** from
-  llama-server. This is why the compaction summariser is sent flattened prose
-  rather than a structured replay.
-
-**Security**
-
-- **A turn boundary is not a security boundary.** Taint was per-run, so every
-  guard keyed on it silently reset between chat turns while the content it was
-  guarding against stayed in context. Anything scoped to "a run" is worth
-  re-checking against "a conversation".
-- **`Command::envs()` does not replace the environment, it adds to it.** Every
-  MCP server was inheriting mecha's full environment, provider keys included,
-  and nothing about the call site looked wrong. `env_clear()` first.
-- **A sandbox that silently degrades is worse than none.** The first version
-  fell back to unconfined execution when the backend was missing. Since `shell`
-  declares narrower capabilities when confined, that would have had the
-  interlock trusting a claim nothing was enforcing. It refuses to start now.
-- **Wrapping our own errors as untrusted content** made the model invent
-  explanations for its own harness's behaviour. Provenance, not capability.
-
-**Environment**
-
-- **`pkill -f llama-server` kills your own shell**, because the pattern matches
-  the command line running it. Use `pkill -x llama-server`.
-- **`hf download repo --include X Y`** silently ignores `--include` when
-  positional filenames are given. Pass filenames positionally *or* use
-  `--include`, not both.
-- **A pty with no window size renders every TUI frame into 0×0.** Add `stty
-  rows N cols M` inside `script`, or the app looks broken when it is fine.
-- Free-tier claims in comparison articles are often stale. Exa's own page says
-  $10/month recurring credits (~1,400 searches), not the 20,000 some
-  aggregators report.
+- **`shell` is not treated as an untrusted source.** Taint cannot see inside a
+  command, so a command that fetches a hostile page does not arm the interlock
+  the way `http_fetch` does. The mitigation is the sandbox, and it is why
+  `[sandbox] kind` matters.
+- **A confined MCP server sees the workspace.** It is the one writable bind on
+  both backends. Right for most servers, wrong for some, and worth knowing which
+  you are running.
+- **`shell` is enabled inside sandboxed eval cases**, with approval forced open.
+  The fixture is safe because each case gets a private staged copy, but the
+  command still runs as you unless `[sandbox]` is configured — and its default
+  is `none`.
+- **A failed trigger run is not retried.** The next slot is the retry. Adding
+  retry means deciding what a half-completed unattended run owes you.
+- **Gmail drafts, a local mail cache, and past-correspondence context** were all
+  considered and deferred, not forgotten.
+- **pkg gets no self-scoped read tool.** Capability overrides widen only, so a
+  memory read arms `untrusted_input`. Revisit only if self-retrieval taint proves
+  to hurt in practice.
+- **Retrieval at turn start is rejected**, because it arms the trifecta at turn
+  zero for every run whether or not memory was needed.
+- **Rule retirement has no decay, TTL, or usage-based eviction**, and no policy
+  built on model-rated confidence. Only measured harm argues for retirement, and
+  a human accepts the argument.
