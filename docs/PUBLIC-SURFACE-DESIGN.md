@@ -23,7 +23,7 @@ wins and the research doc keeps the reasoning.
 | Templates | **Yes, and they are the extension point** — `report`, `notebook`, `booking`, plus request-type starters. | Adding a kind of output or a kind of ask is writing a directory, not writing code. |
 | marimo | **First-class. Three render modes, and only the third needs its own origin.** | Section 7. `marimo-book` already implements the modes and settles the asset question. |
 | Where notebooks live | **Ours by default; molab as a second target** (`target = factory \| molab \| both`). | §7.7. molab is for notebooks that could go in a public GitHub repo; it has no publish API, no expiry, no revocation and no documented versioning. |
-| Frontend | **Plain HTML + vanilla JS. No framework.** Server-rendered from MiniJinja, progressively enhanced. | §5.1. Confirmed by the user after reviewing the alternative. The form works with JavaScript disabled; JS only sharpens it. |
+| Frontend | **No framework where there is no reactivity; Svelte where there is.** Intake forms and the booking page are server-rendered HTML; `interactive` bundles and the admin UI are Svelte. | §5.1, §5.2. The line follows the content class, not taste. Svelte's build runs at home and adds nothing to the box. |
 | Injection defense | **Four layers, in mecha, not on the server. The classifier is never a gate.** | Section 8. The server filters *shape*; only mecha can filter *meaning*, and a model on the public box would put a provider key on the box we assumed lost. |
 | Scheduling | **Book-me first, then group availability *seeded by mine*.** | Section 9. The seeding makes the group case strictly easier than when2meet. |
 | WebMCP | **Design for it, ship it later, behind a flag.** | Section 10. The manifest already emits everything it needs. |
@@ -373,12 +373,10 @@ vendor = true                    # rewrite every external reference, or fail
 
 ### 5.1 How the form is actually generated
 
-Plain HTML and vanilla JavaScript, no framework. The decision is the user's,
-made after reviewing the alternative, and it is the simpler option rather than
-a compromise — an earlier draft of this document argued for it too strongly and
-then over-corrected; the honest position is that a framework would have been
-*fine*, and going without costs little here because there are five forms rather
-than an application.
+Plain HTML and vanilla JavaScript for the *forms*. Not a blanket rule — §5.2
+draws the line — but for intake it is the simpler option rather than a
+compromise: there are five forms here, not an application, and a form has no
+reactive state to manage.
 
 The generation has two layers, and the first does most of the work:
 
@@ -395,6 +393,55 @@ The generation has two layers, and the first does most of the work:
 Multi-step is server-side — one page per step, a POST between them — so it
 works with JavaScript off and survives a closed tab. Drafts key off the
 capability token rather than `localStorage`, for the same reason.
+
+### 5.2 Where reactivity earns a framework
+
+The rule, and it is a property of the work rather than a preference:
+
+> **Reactivity is a property of the content class.** Where the page is a form
+> — a bounded set of fields, submitted once — there is no reactive state to
+> manage and a framework buys nothing. Where the page is a *view over data the
+> reader manipulates*, there is, and Svelte is the right tool.
+
+| Surface | Reactive? | Stack |
+|---|---|---|
+| Intake forms (letter, speaking, lab, question) | no — linear entry, conditional show/hide | HTML5 constraints + a small evaluator |
+| Booking page | no — slots are radio buttons; zone rendering is one `Intl` call | same |
+| Group availability | no — 5–15 slots × yes/no/if-needed | same |
+| `static` bundles (reports, posts) | no — nothing executes | none |
+| **`interactive` bundles** (dashboards, linked charts, filters) | **yes** | **Svelte** |
+| **Admin UI** (release an outbox draft from a phone) | **yes** | **Svelte**, when it is built |
+| `compute` bundles (marimo) | yes, by Pyodide | not ours |
+
+Two borderline cases, named so nobody re-argues them by accident. A booking
+page grows a month-grid calendar with keyboard navigation → revisit. A group
+poll grows a when2meet-style drag-select grid → revisit. Neither is in v1, and
+both are genuinely reactive if they arrive.
+
+**Why Svelte specifically, on the three axes that matter here:**
+
+- **Performant.** It compiles to imperative DOM updates with a runtime measured
+  in a few kilobytes. That matters more than usual because every byte in a
+  bundle must be *vendored* — there is no CDN to amortise a framework across
+  pages.
+- **Reliable, in the specific sense this project needs: a bundle published
+  today must still render in three years.** A compiled, self-contained bundle
+  with no runtime dependency to stay compatible with is more durable than one
+  that ships a framework expecting its own ecosystem. Compile-away is an
+  artifact-permanence property, not just a size one.
+- **Secure.** Svelte escapes by default and `{@html}` is the single opt-out —
+  forbid it in our templates and lint for it. The compiled output contains no
+  `eval` or `new Function`, so `script-src 'self'` holds with no
+  `unsafe-inline`. One real gotcha: scoped styles emit `<style>` tags unless
+  CSS is extracted at build, which would force `style-src 'unsafe-inline'`.
+  **Extract CSS to a file**; it is a build flag and it keeps the strictest
+  style policy intact.
+
+And the reassuring part: **adding Svelte adds Node to the home-side build, not
+to the VPS.** It is the same shape as marimo — a build-time subprocess whose
+output is a directory of bytes that the vendoring gate checks like any other.
+Nothing on the box changes, and the "assume the public box is lost" inventory
+is untouched.
 
 **What we are taking from `pbs_knowledge`, and what we are not.** The user's
 departmental site already runs a schema-driven form system in production —
