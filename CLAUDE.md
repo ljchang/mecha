@@ -31,6 +31,8 @@ tool/        Tool trait, Registry, Approver, builtin.rs
 mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
 agent.rs     the loop: ask → run tools → feed results back → repeat
 hooks.rs     user commands at lifecycle points; pre_tool can deny a call
+cron.rs      five-field cron, resolved in an IANA zone (both DST directions)
+trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
 learning.rs  the reflection/rule store behind reflect, learn, validate
 distill.rs   session → episode, staged to the knowledge graph over MCP
 session.rs   append-only JSONL transcripts
@@ -387,6 +389,90 @@ knowledge of the outbox to be covered by it. Decisions that carry it:
   temp-sibling-and-rename, advisory flock (never held across `$EDITOR`;
   staging takes no lock at all, so the agent never blocks on a review).
   `send` holds the lock across execution so two sends cannot double-fire.
+
+## Triggers
+
+`mecha trigger` runs a prompt on a cron schedule, unattended — the morning
+briefing, the overnight inbox triage that stages replies, the calendar prep
+before a meeting. It is a small feature because everything a scheduled run
+needs already existed: the outbox stages what would be sent, the interlock
+refuses exfiltration, the sandbox confines `shell`, budgets bound the spend,
+and the session recording feeds `reflect`. `cron.rs` adds the clock,
+`trigger.rs` the store and the ledger, and the CLI the runner.
+
+**`tick` is the primitive and `daemon` is a loop over it.** Anything the
+daemon can do, a crontab line or a systemd timer can do, because being due is
+a function of the ledger and the clock rather than of anything the scheduler
+remembers. That is what makes `tick --dry-run` an honest preview instead of a
+second implementation of the schedule, and what lets the daemon be a dumb
+once-a-minute loop (`scripts/mecha-triggers.service`).
+
+Five decisions, each of which is a bug if undone:
+
+- **Due-ness is computed backwards.** `prev_at_or_before(now)` names the most
+  recent slot; it fires if that slot is newer than the last one accounted
+  for. A laptop closed for a week therefore wakes owing **one** briefing, not
+  forty, and a tick that arrives late has lost nothing. `catch_up` (`always`
+  by default, `never`, or a duration) decides whether a stale slot still
+  runs, and a skip is *written to the ledger* — "why did I not get my
+  briefing" has to be answerable.
+- **Triggers live in `~/.mecha/triggers/`, never in the layered config.**
+  `[[hook]]`, `[[mcp]]` and `[[subagent]]` are all declarable in a project's
+  `mecha.toml`, which is a file that arrives with a cloned repository. A
+  trigger is a scheduled unattended agent run, so a repo that could declare
+  one has been handed a cron slot on your machine. For the same reason a
+  trigger run loads `Config::load_global()` — global file only, no project
+  layer.
+- **Read-only unless the file says otherwise**, and `mecha trigger add`
+  writes `allow` only when `--yes` was passed. Note what read-only does not
+  block: an outbox-routed call still stages, because staging executes
+  nothing. Draft-my-replies-overnight needs no privilege at all, which makes
+  the safe shape also the useful one. `ask_user` is absent by construction —
+  it is only ever registered by a front-end that owns a human.
+- **A manual run is evidence, not a fire.** `mecha trigger run x` records a
+  row with no slot, so it never advances the marker. Testing a trigger must
+  not silently disarm the schedule it was testing.
+- **One run per trigger at a time**, via a non-blocking flock the kernel
+  releases if the process dies. A five-minute trigger whose run takes six
+  minutes skips rather than stacking, and records why. The timeout
+  (`20m` default) *cancels* rather than aborting — the partial answer
+  survives, exactly as with Ctrl-C.
+
+Two smaller ones worth not re-litigating. The cron parser is hand-rolled
+because every available crate speaks Quartz's dialect where the first field is
+**seconds**, so `0 7 * * *` parses as something other than 7am rather than
+failing — a scheduler that silently fires at the wrong time is the worst shape
+of bug this project keeps finding. And DST is handled in both directions:
+a job inside the spring-forward gap fires at the first instant that exists
+(late, not lost), and one inside the repeated autumn hour fires once. The
+timezone is written into the trigger file at `add` time, resolved from
+`[agent] timezone` then, so editing that config later cannot silently move
+every existing trigger.
+
+**The TUI's `/triggers` modal drives the CLI, not the store.** Every action —
+run now, cancel, enable, delete, edit — shells out to `mecha trigger ...` as a
+child process. Firing builds a whole separate agent (its own provider, tool
+surface, workspace, budgets) and can run for twenty minutes, so doing it on the
+event loop would freeze the interface; going through the CLI also means one
+implementation of firing and no way for the TUI to do something the command
+line cannot. The detail view reads the last answer back from the **session
+transcript**, which is the record — a second copy could disagree with it.
+
+Two things there that cost something to get right. Asking "is a run in flight?"
+must not use the flock: `try_claim` acquires and drops, so a UI polling it
+would occasionally hold the lock at the instant the scheduler fired and cause a
+spurious overlap skip. A separate advisory `<name>.running` marker carries UI
+state, and a marker whose pid is gone reads as *not running* so a hard kill
+cannot leave a trigger looking busy forever — with the range check on the pid
+being the whole correctness of that, since `kill(-1, 0)` succeeds and would
+report every dead run as alive. And cancelling is a **sentinel file the runner
+polls**, not a signal: the run may be inside the daemon's process, where
+SIGTERM would take the whole scheduler down.
+
+The action is a **prompt**, never a command — scheduled commands are what cron
+is for, and giving one a home here would mean re-answering how it gets
+confined and which environment it sees. `scripts/ruminate.sh` therefore stays
+its own systemd timer.
 
 **A new field on `Config` is two edits, not one.** Files are parsed into
 `ConfigLayer` — every field optional, so a project file can override one
