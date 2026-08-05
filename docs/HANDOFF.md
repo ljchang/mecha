@@ -332,14 +332,34 @@ behaviour came from the reflector model declining. If the design was always
 
 ### Larger, and deliberately not started
 
-- **The public request-intake surface.** `publish`/`read`/`write`/`drain` verbs,
-  a request-type manifest, generated schema/form/validators, WebMCP and A2A,
-  origin isolation and CSP content classes. Nothing is built, on purpose — the
-  design and the open questions are in
-  [`PUBLIC-SURFACE-RESEARCH.md`](PUBLIC-SURFACE-RESEARCH.md). Note this is
-  unrelated to the repository being public; it is a surface for the user's
-  correspondents. The cheapest prerequisite is mining twelve months of mail for
-  the request types that actually recur, which no artifact records yet.
+- **The public surface.** `publish`/`read`/`write`/`drain` verbs, a
+  request-type manifest generating schema/form/validators/tool declarations,
+  published bundles (reports, dashboards, marimo notebooks), origin isolation
+  and CSP content classes. Nothing is built, on purpose. Two documents:
+  [`PUBLIC-SURFACE-RESEARCH.md`](PUBLIC-SURFACE-RESEARCH.md) is the survey and
+  the argument, [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) is what
+  the user decided to build — **read the design doc for what, the research doc
+  for why.** Note this is unrelated to the repository being public; it is a
+  surface for the user's correspondents.
+
+  The decisions in one paragraph: our own server (`mecha-surface`, one Rust
+  binary, SQLite/WAL, on a VPS, forbidden from depending on `mecha-core`),
+  reached over two scoped **API keys** rather than OAuth, push–pull posture
+  unchanged; **immutable content-addressed bundle versions behind a moving
+  alias**, mirrored to `~/.mecha/bundles/` so an agent can read what it
+  published; **templates as the extension point**; **marimo first-class** on
+  its own origin with `wasm-unsafe-eval` + COOP/COEP, vendored assets, and a
+  publish that *fails* on any surviving external reference; a four-layer
+  **quarantine** whose real work is a tool-less extraction pass turning a
+  stranger's prose into typed fields before anything privileged sees it, with
+  the injection classifier as a label and never a gate; **scheduling** as
+  book-me first, then group availability *seeded by mine* so participants
+  never see a blank grid; WebMCP designed for and deferred behind a flag;
+  compliance deferred deliberately, with the manifest fields kept.
+
+  The cheapest prerequisite is unchanged and still unstarted: mining twelve
+  months of mail for the request types that actually recur, which no artifact
+  records yet — and it should happen before any field list is frozen.
 - **Slack as a transport.** Zero lines exist. The blocking decision is the
   identity model, not the socket.
 - **Public benchmarks.** The Terminal-Bench adapter (`bench/`) is written and
