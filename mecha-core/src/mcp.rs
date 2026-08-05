@@ -22,6 +22,18 @@ use tokio::sync::oneshot;
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// The id of a response, however the server spelled it. We always send
+/// numeric ids, but JSON-RPC allows string ids and real servers echo numbers
+/// back as strings — refusing those would leave every call to time out
+/// against a server that is answering.
+fn response_id(msg: &Value) -> Option<u64> {
+    match msg.get("id")? {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
 /// A live connection to one MCP server.
 pub struct McpClient {
     name: String,
@@ -99,8 +111,11 @@ impl McpClient {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             // The MCP convention is that stderr is the server's log, not part
-            // of the protocol. Let it flow to ours.
-            .stderr(std::process::Stdio::inherit());
+            // of the protocol. It used to inherit ours, but a raw share of
+            // the terminal garbles a full-screen front-end mid-frame — so it
+            // flows through tracing instead, tagged with the server's name
+            // and visible under MECHA_LOG.
+            .stderr(std::process::Stdio::piped());
 
         let mut child = command
             .spawn()
@@ -108,6 +123,15 @@ impl McpClient {
 
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
+        if let Some(stderr) = child.stderr.take() {
+            let server = cfg.name.clone();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::debug!(server = %server, "{line}");
+                }
+            });
+        }
 
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -128,7 +152,7 @@ impl McpClient {
                         tracing::warn!(server, line, "MCP server sent non-JSON on stdout");
                         continue;
                     };
-                    let Some(id) = msg.get("id").and_then(Value::as_u64) else { continue };
+                    let Some(id) = response_id(&msg) else { continue };
                     if let Some(tx) = pending.lock().unwrap().remove(&id) {
                         let _ = tx.send(msg);
                     }
@@ -216,12 +240,33 @@ impl McpClient {
 
     /// Ask the server what it can do, and wrap each answer as a [`Tool`].
     pub async fn list_tools(self: &Arc<Self>) -> Result<Vec<Arc<dyn Tool>>> {
-        let result = self.request("tools/list", json!({})).await?;
-        let tools = result
-            .get("tools")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        // Paged: a server with more tools than one page returns a
+        // `nextCursor`, and stopping at page one silently shrinks its
+        // surface — tools the config counted on simply would not exist.
+        // Bounded, so a server that hands out cursors forever cannot wedge
+        // startup.
+        let mut tools = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..100 {
+            let params = match cursor.take() {
+                Some(c) => json!({"cursor": c}),
+                None => json!({}),
+            };
+            let result = self.request("tools/list", params).await?;
+            tools.extend(
+                result.get("tools").and_then(Value::as_array).cloned().unwrap_or_default(),
+            );
+            match result.get("nextCursor").and_then(Value::as_str) {
+                Some(c) if !c.is_empty() => cursor = Some(c.to_string()),
+                _ => break,
+            }
+        }
+        if cursor.is_some() {
+            tracing::warn!(
+                server = %self.name,
+                "tools/list still paging after 100 pages; taking what arrived"
+            );
+        }
 
         Ok(tools
             .into_iter()
@@ -381,6 +426,19 @@ mod tests {
 
     fn unconfined() -> Sandbox {
         Sandbox::new(SandboxConfig::default())
+    }
+
+    #[test]
+    fn a_response_id_is_accepted_however_the_server_spelled_it() {
+        use serde_json::json;
+        // We send numbers; a compliant server echoes numbers, a common
+        // dialect echoes them as strings. Both must route, or every call
+        // waits out the full timeout against a server that answered.
+        assert_eq!(response_id(&json!({"id": 7})), Some(7));
+        assert_eq!(response_id(&json!({"id": "7"})), Some(7));
+        assert_eq!(response_id(&json!({"id": "not-ours"})), None);
+        assert_eq!(response_id(&json!({"id": null})), None);
+        assert_eq!(response_id(&json!({})), None);
     }
 
     #[test]
