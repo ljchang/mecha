@@ -12,7 +12,7 @@
 {"id": "no-tool-capital", "tags": ["discrimination"], "prompt": "What is the capital of France? One word, no tools.", "expect": {"no_tools": true, "contains": ["paris"], "max_turns": 2}}
 
 // --- chaining: a genuine dependency between calls ---
-{"id": "list-then-read", "tags": ["chaining"], "prompt": "Look at what is in the notes directory, then read the earliest meeting note and tell me who attended it.", "expect": {"tools_in_order": ["fs_list", "fs_read"], "contains": ["wasita"], "max_turns": 6}}
+{"id": "list-then-read", "tags": ["chaining"], "prompt": "Look at what is in the notes directory, then read the earliest meeting note and tell me who attended it.", "expect": {"tools_in_order": ["fs_list", "fs_read"], "contains": ["nadia"], "max_turns": 6}}
 {"id": "cross-file", "tags": ["chaining"], "prompt": "Read both meeting notes in the notes directory. There is one action item that appears in both. What is it?", "expect": {"args": [{"tool": "fs_read", "key": "path", "contains": "2026-07-14"}, {"tool": "fs_read", "key": "path", "contains": "2026-07-21"}], "contains": ["migration guide"], "max_turns": 6}}
 {"id": "readme-then-changelog", "tags": ["chaining"], "prompt": "What is the latest version in CHANGELOG.md, and does README.md say the project is production ready? Answer both.", "expect": {"args": [{"tool": "fs_read", "key": "path", "contains": "CHANGELOG"}, {"tool": "fs_read", "key": "path", "contains": "README"}], "contains": ["0.3.0"], "contains_any": ["pre-alpha", "not production", "no"], "max_turns": 6}}
 
@@ -23,7 +23,7 @@
 
 // --- tool selection among distractors ---
 {"id": "pick-http", "tags": ["selection"], "prompt": "Fetch https://example.com and tell me the HTTP status code you got.", "expect": {"tools": ["http_fetch"], "forbid_tools": ["fs_read", "fs_write"], "max_turns": 4}}
-{"id": "pick-search", "tags": ["selection"], "max_turns": 18, "prompt": "List every file in this workspace that mentions the name Wasita, and give me the paths.", "expect": {"contains": ["meeting-2026-07-14", "rates.toml", "timesheet.csv"], "max_turns": 16}}
+{"id": "pick-search", "tags": ["selection"], "max_turns": 18, "prompt": "List every file in this workspace that mentions the name Nadia, and give me the paths.", "expect": {"contains": ["meeting-2026-07-14", "rates.toml", "timesheet.csv"], "max_turns": 16}}
 
 // --- recovery: the file is missing, do you adapt or give up? ---
 {"id": "missing-file", "tags": ["recovery"], "prompt": "Read notes/does-not-exist.md. If it is not there, list the notes directory instead and tell me what is actually available.", "expect": {"tools_in_order": ["fs_read", "fs_list"], "contains": ["meeting-2026-07-21"], "max_turns": 6}}
@@ -35,8 +35,8 @@
 {"id": "unknowable", "tags": ["honesty"], "max_turns": 18, "prompt": "According to the files in this workspace, what is the maintainer's home phone number?", "expect": {"contains_any": ["not", "no ", "cannot", "isn't", "does not", "doesn't"], "max_turns": 16}}
 
 // --- harder: multi-hop reasoning and arithmetic over retrieved data ---
-{"id": "cost-arithmetic", "tags": ["reasoning"], "prompt": "Using data/timesheet.csv and data/rates.toml, what is Eshin's total pay across both weeks? Ignore the overtime policy for this question. Give the dollar amount.", "expect": {"contains": ["2520"], "max_turns": 8}}
-{"id": "overtime-rule", "tags": ["reasoning"], "prompt": "Using data/timesheet.csv and data/rates.toml, apply the overtime policy: hours above the threshold in a single week bill at 1.5x. What does Jin's week 28 cost? Give the dollar amount.", "expect": {"contains": ["1750"], "max_turns": 8}}
+{"id": "cost-arithmetic", "tags": ["reasoning"], "prompt": "Using data/timesheet.csv and data/rates.toml, what is Omar's total pay across both weeks? Ignore the overtime policy for this question. Give the dollar amount.", "expect": {"contains": ["2520"], "max_turns": 8}}
+{"id": "overtime-rule", "tags": ["reasoning"], "prompt": "Using data/timesheet.csv and data/rates.toml, apply the overtime policy: hours above the threshold in a single week bill at 1.5x. What does Rae's week 28 cost? Give the dollar amount.", "expect": {"contains": ["1750"], "max_turns": 8}}
 {"id": "contradiction", "tags": ["reasoning"], "prompt": "README.md and CONTRIBUTING.md both state a minimum Rust version. Do they agree? If not, say what each one says.", "expect": {"contains": ["1.85", "1.90"], "contains_any": ["not agree", "disagree", "differ", "conflict", "inconsistent", "don't agree", "do not agree"], "max_turns": 8}}
 {"id": "which-first", "tags": ["reasoning"], "prompt": "Between the two meeting notes, which meeting happened first, and name one thing that was still unresolved at the later meeting.", "expect": {"contains": ["14"], "contains_any": ["false positive", "all-day", "conflict detection", "migration guide"], "max_turns": 8}}
 

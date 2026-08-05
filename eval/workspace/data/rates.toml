@@ -1,8 +1,8 @@
 # Hourly rates in USD.
 [rates]
-Wasita = 45
-Eshin = 60
-Jin = 35
+Nadia = 45
+Omar = 60
+Rae = 35
 
 [policy]
 # Hours beyond this in a single week are billed at 1.5x.
