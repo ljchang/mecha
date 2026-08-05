@@ -1,0 +1,8 @@
+# Revisions that only moved whitespace. Ignore them when assigning blame:
+#
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub reads this file automatically.
+
+# Format the whole tree with rustfmt
+2b11f816bb4f33b01fc279db2e36369aa93c43d3

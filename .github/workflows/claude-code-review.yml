@@ -1,0 +1,84 @@
+name: Claude PR review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: review
+    runs-on: ubuntu-latest
+    # A pull request from a fork gets no access to repository secrets, so the
+    # action cannot authenticate and the job would fail on every external
+    # contribution. Skipping is honest; a red X that means "no API key" is not.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request. The PR branch is already checked out in
+            the working directory. Read CLAUDE.md first — it records the
+            invariants this project has paid to learn, and most real defects
+            here are violations of one of them rather than ordinary bugs.
+
+            Weight your attention in this order:
+
+            1. Security invariants. These are enforced structurally, and a
+               change that erodes one is the most expensive defect this repo
+               can ship:
+               - Every model-supplied path must go through `ToolCtx::resolve`.
+                 A raw `fs::*` call on tool input escapes the path jail.
+               - Taint lives on `agent::Conversation`, not on a run. Anything
+                 that resets it per turn re-opens the trifecta hole.
+               - Any tool reaching the network must call `.from_outside()`.
+               - The dispatch order is interlock -> hook -> approver. A hook
+                 may narrow policy, never loosen it.
+               - Anything that fails open where it used to fail closed:
+                 `pre_tool` hooks, sandbox preflight, outbox staging, and
+                 provenance classification are all deliberately fail-closed.
+
+            2. Abstraction leaks. The agent loop must never learn which
+               provider is behind it or where a tool came from. Matching on a
+               provider name inside `agent.rs` is a design regression.
+
+            3. Correctness in the loop. A tool result must exist for every
+               `tool_use` id or the next request is a 400. A compaction cut
+               must resume on an assistant message. Retries must never
+               duplicate work already shown or acted on.
+
+            4. Config reachability. A new field on `Config` needs a matching
+               field on `ConfigLayer`, or its TOML table becomes a parse error
+               that kills startup while every unit test stays green.
+
+            5. Tests. This project's expensive bugs came from believing a
+               scripted provider over a real one. Ask whether a new guarantee
+               is actually measured, and whether a test would fail on the old
+               behaviour.
+
+            Be specific and concise. Cite file:line. If the change is sound,
+            say so briefly rather than inventing findings — a review that
+            always finds something teaches maintainers to ignore it.
+
+            Use `gh pr comment` for top-level feedback.
+            Use `mcp__github_inline_comment__create_inline_comment` (with
+            `confirmed: true`) for specific code issues.
+            Only post GitHub comments — do not return review text as a message.
+
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(cargo check:*),Bash(cargo clippy:*),Bash(cargo test:*)"
