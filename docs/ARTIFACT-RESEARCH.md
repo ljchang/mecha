@@ -10,7 +10,7 @@ Two questions are braided together here and want separating early:
 1. **Artifacts** — a run produces a report; who can read it, where does it
    live, how is it shared, how is it taken down.
 2. **Documentation hosting** — where `docs/` goes when it stops being a
-   directory of markdown in a repository.
+   directory of markdown in a repository. (Part 5.)
 
 They share a word ("static site") and almost nothing else. The hard part of a
 documentation site is *generation* — navigation, search, versioning, theming.
@@ -150,6 +150,23 @@ rather than punching a hole in the jail. The ledger records the path; the
 
 ## Part 3 — Hosting, if the artifact is to be a URL
 
+> **Superseded in part.** `docs/HOSTING-RESEARCH.md` (written alongside this
+> one, from the scheduling side) goes considerably deeper on the substrate: the
+> Listen/Tunnel/Push-pull posture axis, the credential gradient, the
+> origin-isolation hazard when artifacts share a domain with anything that
+> holds a session, restricted-SSH deploy keys, and free-tier limits. Treat that
+> doc as authoritative for *which box and which origin*; what stays here is
+> what is specific to artifacts. The table below is kept because it is scored
+> on sharing rather than on posture, which is the axis this doc cares about.
+>
+> Two of its findings change conclusions here and are worth repeating rather
+> than cross-referencing: **GitHub Pages cannot set response headers**, so it
+> cannot set the CSP that A3 makes the entire security model — right for
+> `docs/`, disqualified for artifacts. And **a tunnel is not the safe option
+> it is marketed as**: it still delivers a stranger's request to a process on
+> the machine holding the mail tokens, which is the thing that actually
+> matters.
+
 Ranked by fit for "private by default, shareable to a named person, public if I
 say so, gone when I say so".
 
@@ -177,6 +194,42 @@ finds static site *generators* and file-sharing tools, not this. The nearest
 prior art for the agent-facing half is `deploybase/mcp-server` (Apache 2.0, Go,
 MCP tools over a managed hosting service) — which confirms the interface shape
 is right and leaves the hosting question exactly where it was.
+
+### The audience split, which is what makes this feel harder than it is
+
+The single most useful structuring move, and it took two documents to see it:
+**"read my own agent's output" and "show something to someone else" are
+different problems**, and almost every difficulty here comes from trying to
+answer both with one origin.
+
+| | Audience | Strangers? | Needs a public box? | Answer |
+|---|---|---|---|---|
+| **Personal reading** | my own devices | no | no | `tailscale serve <dir>` |
+| **External sharing** | a collaborator, a stranger booking a meeting | yes | yes | the public origin in `HOSTING-RESEARCH` |
+
+Solve them separately and each is easy. Solve them together and you inherit
+every constraint of the harder one — a public origin, a CSP you must set
+yourself, cookie isolation, capability URLs, a box to patch — in order to read
+your own briefing in bed.
+
+The posture axis in `HOSTING-RESEARCH` is really two questions, and separating
+them is what shows where Serve sits:
+
+1. **Can a stranger send a request at all?**
+2. **Does that request reach code we wrote?**
+
+| Shape | Stranger can ask | Reaches our code | Public box to lose |
+|---|---|---|---|
+| `tailscale serve <dir>` | no | **no** — `tailscaled` serves the bytes | none |
+| `tailscale serve <port>` → a mecha server | no | yes | none |
+| Push–pull to a VPS | yes | no (at home) | yes |
+| Tunnel → home | yes | **yes** | none, and that is the problem |
+
+That is why "P-ish" in the sibling doc's table undersells the static case.
+Serving a *directory* over Serve is the only row that answers **no** to both
+questions and needs **no second machine at all** — there is no handler to
+exploit and no public box to assume lost. It is strictly the cheapest safe
+thing on the board, and it is not on the board for external sharing at all.
 
 ### Tailscale, checked against the actual machine
 
@@ -281,7 +334,79 @@ are most of the value and about a day's work.
 
 ---
 
-## Part 4 — Documentation hosting
+## Part 4 — Interop: how another agent reads an artifact
+
+Neither this document nor `HOSTING-RESEARCH` had anything to say about the part
+of the original idea that makes an artifact store worth extracting into its own
+repository: **other agents using it.** Publishing is easy to make portable — it
+is an HTTP request. Being *read* is the harder half, and there are two live
+standards, one of which mecha cannot currently speak.
+
+**Venue key** (matching `HOSTING-RESEARCH`): ✅ peer-reviewed · 📄 preprint ·
+📰 vendor/blog · 📘 spec or standards body · 🔮 folklore.
+
+### 📘 A2A already has an `Artifact` type, and it is close to ours
+
+The Agent2Agent protocol — v1.0 stable in 2026, governed under the Linux
+Foundation, the same home MCP moved to in December 2025 — has `Artifact` as a
+**first-class object in its Layer 1 data model**, alongside `AgentCard`,
+`Task`, `Message` and `Part`. An A2A artifact is defined as an output generated
+by an agent as the result of a task, composed of `Part`s — `TextPart`,
+`FilePart`, `DataPart`.
+
+That matters for one reason: **there is already a vocabulary for "a thing an
+agent produced", and it is not ours.** A store whose data model is
+`{id, title, created_at, source, parts[]}` is trivially projectable onto A2A's
+`Artifact`; one built around a single markdown blob is not, and the difference
+is invisible until the day something else wants to consume it. Adopting the
+shape costs nothing now and is the whole difference between a mecha feature and
+a component.
+
+The honest caveat: A2A solves agent-to-*agent* task delegation, and nothing in
+this design is delegating a task. Aligning the **data model** is cheap and
+sensible; implementing the **protocol** would be building a bridge to a river
+nobody here is crossing.
+
+### 📰 MCP: reports are Resources, not Tools — and mecha cannot read Resources
+
+The field's guidance for exposing generated files to agents is consistent and
+specific: **tools are model-controlled actions; resources are
+application-controlled, file-like data.** The failure mode reported repeatedly
+is teams defaulting to tools for everything and then discovering context-window
+blowups, because a large blob returned from a tool call is spent tokens, where
+the same bytes exposed as a resource are read once, deliberately, by the
+application. The rule of thumb: if it answers a question it is a Resource; if
+it does something it is a Tool.
+
+So an artifact store exposed over MCP should offer **`publish` as a tool**
+(it acts, it is `external_send`, it stages through the outbox) and **artifacts
+as resources** (they inform).
+
+**And here is the gap, verified in our own source rather than assumed:**
+`mecha-core/src/mcp.rs` calls `tools/list` and nothing else, and the
+`initialize` handshake declares `"capabilities": {}`. mecha's MCP client is
+**tools-only** — it cannot list or read resources at all. So "expose artifacts
+as MCP resources" is not a thing mecha could consume today, from its own store
+or anyone else's.
+
+Three consequences worth having in writing:
+
+- Exposing artifacts as resources is a **client** work item before it is a
+  server one, and it is the kind of prerequisite that is invisible until
+  someone tries it and concludes the server is broken.
+- Until then the read-back path for mecha's *own* artifacts is the boring one
+  that already works and needs no protocol: **write them inside the run's
+  workspace**, where `fs_read` reaches them (A1). Cheap, and it does not
+  pretend to be interop.
+- Resource support in the client is independently worth something — every
+  third-party MCP server that exposes resources is currently invisible to
+  mecha. That is a gap in the harness, not a detail of this feature. Note the
+  security consequence when it is built: a resource's *contents* are
+  third-party text exactly as a tool result is, so resources must arrive
+  `.from_outside()` and honour the same `[[mcp]] capabilities` override, or
+  the interlock acquires a blind spot the day the feature lands.
+
+## Part 5 — Documentation hosting
 
 Separate decision, and one where the field has a clear shape in 2026.
 
@@ -356,6 +481,14 @@ comparison — and mecha's ecosystem is Rust.
   Bind `127.0.0.1`, refuse anything else without an explicit flag, and read
   `Tailscale-User-Login` — which is trustworthy *because* of the loopback bind
   and not otherwise. No login, no sessions, no cookies written here.
+- **A4d. Model the store on A2A's `Artifact`/`Part` shape** — an id, a title,
+  a time, a source, and a list of typed parts. Costs nothing today, and it is
+  the difference between a mecha feature and something another agent can
+  consume. Do not implement the A2A *protocol*: nothing here delegates a task.
+- **A4e. Publish is a Tool; artifacts are Resources** — the MCP split, which
+  is about token cost as much as taste. Blocked on mecha's own client, which
+  speaks `tools/list` and nothing else; until that changes, the read-back path
+  is the workspace (A1), not a protocol.
 - **A5. If it becomes a repository: service + CLI + MCP server**, in that
   order, with the site generation being the least interesting part. Serve
   artifacts from an origin that holds no credentials.
@@ -400,3 +533,7 @@ comparison — and mecha's ecosystem is Rust.
 - [Do not trust `Tailscale-User-Login` from arbitrary loopback proxies](https://github.com/denoland/clawpatrol/issues/316)
 - [deploybase MCP server (Apache 2.0)](https://codeberg.org/deploybase/mcp-server)
 - [Password protection for Cloudflare Pages](https://dev.to/charca/password-protection-for-cloudflare-pages-8ma)
+- [Agent2Agent (A2A) Protocol specification](https://a2a-protocol.org/latest/specification/)
+- [Announcing the Agent2Agent Protocol — Google Developers Blog](https://developers.googleblog.com/en/a2a-a-new-era-of-agent-interoperability/)
+- [MCP Resources vs Tools](https://www.mcpforge.tech/blog/mcp-resources-vs-tools)
+- [What Are MCP Resources? (And When to Use Them)](https://apigene.ai/blog/mcp-resources)
