@@ -226,13 +226,39 @@ an AppArmor profile. `mecha tools` prints the active sandbox, and
 
 ## mecha-mail
 
-A third crate, extracted from flowmail: `mecha-mail/` is a **library plus two
-thin MCP binaries** (`mecha-google`, `mecha-outlook`). The library (Gmail +
-Google Calendar v3, Outlook mail + calendar over Graph, both OAuth flows, the
-token lifecycle) is what a GUI would depend on directly; each binary serves
-one provider's clients as MCP tools over stdio with its own credential store,
-which is how mecha consumes them — no mecha-core or mecha-cli code knows
-Google or Microsoft exists, only `~/.mecha/config.toml`.
+A third crate, extracted from flowmail: `mecha-mail/` is a **library plus
+three thin MCP binaries**. The library (Gmail + Google Calendar v3, Outlook
+mail + calendar over Graph, both OAuth flows, the token lifecycle) is what a
+GUI would depend on directly. `mecha-google` and `mecha-outlook` each serve
+one provider with its own credential store; **`mecha-mail` is the one
+deployments should wire** — every account in `~/.mecha/mail/` behind one
+provider-neutral surface (`unified.rs`), so no mecha-core or mecha-cli code
+knows Google or Microsoft exists, and neither does the model.
+
+**The model names an account, never a provider.** `accounts.toml` maps short
+names (`dartmouth`, `personal`) to providers, `mecha-mail auth <name>
+--provider ...` adds one (`import` copies a legacy per-provider login in),
+and the account names are baked into every tool schema as an enum at startup
+— the model picks from real names instead of guessing. Resolution is the
+design: **reads fan out** (no `account` on a search or calendar window means
+every mailbox, merged in time order, each row tagged with its account);
+**item operations name their account** (thread and event ids are
+account-scoped, and every row a read returns carries the account, so the
+model always has it); **creates use the default or ask** (`mecha-mail
+default <name>`; with several accounts and none, the error says to *ask the
+user* — worded that way because "use your best judgment" measurably makes
+models invent). A failed account never sinks a fan-out: its error is
+reported beside the other accounts' results, and the call errors only when
+every account failed.
+
+Two unification wrinkles worth remembering: `mail_reply` takes a
+`thread_id` and replies to the newest message (or `message_id`), which Graph
+does natively but Gmail cannot — `gmail_reply_fields` synthesizes the
+addressing (answer the sender, or the recipients when replying to your own
+message; keep everyone on reply-all; never the user's own address, known
+from the credential store). And merged calendars sort on the **raw**
+provider stamps before zone rendering, because rendered strings only sort
+within one zone.
 
 **Microsoft signs in with device code, not loopback.** It needs no redirect
 URI, so it reuses an org-approved app registration untouched, and no
@@ -267,7 +293,10 @@ already custodies the mailbox, so reads carry `readOnlyHint` and *not*
 `openWorldHint`; that is the difference from `http_fetch`, whose payload can
 reach any host. Sends and calendar writes do reach third parties (recipients,
 invitees), carry `openWorldHint`, and are named in `[outbox] tools`, so they
-stage rather than deliver.
+stage rather than deliver. Unification did not touch this: the same
+annotations ride on the unified tools (there is a shared
+`assert_tool_surface` test per surface), and one send name in the outbox
+list now covers every account it could send from.
 
 ## Hooks
 

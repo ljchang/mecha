@@ -104,26 +104,43 @@ impl TokenManager {
     /// Load a Google credential store.
     pub fn load(path: PathBuf) -> Result<Self> {
         let creds = load(&path)?;
+        Ok(Self::with_credentials(path, creds))
+    }
+
+    /// Wrap credentials the caller already read — the unified server loads
+    /// them once for the account address and must not read the file twice
+    /// (a re-auth between two reads would pair one login's address with
+    /// another's tokens).
+    pub fn with_credentials(path: PathBuf, creds: StoredCredentials) -> Self {
         let config = crate::google::auth::google_oauth_config(
             creds.client_id.clone(),
             creds.client_secret.clone(),
             crate::google::auth::DEFAULT_REDIRECT_PORT,
         );
-        Ok(TokenManager {
+        TokenManager {
             path,
             creds: Mutex::new(creds),
             refresher: Refresher::Google(Box::new(config)),
-        })
+        }
     }
 
     /// Load a Microsoft credential store. The tenant is recorded at auth
     /// time; without it there is no endpoint to refresh against.
     pub fn load_microsoft(path: PathBuf) -> Result<Self> {
         let creds = load(&path)?;
-        let tenant = creds
-            .tenant
-            .clone()
-            .context("stored credentials have no tenant — run `mecha-outlook auth` again")?;
+        Self::with_credentials_microsoft(path, creds)
+            .context("run `mecha-outlook auth` again")
+    }
+
+    /// The Microsoft twin of [`Self::with_credentials`]. Errors when the
+    /// store has no tenant; the caller owns naming the right re-auth
+    /// command for its surface.
+    pub fn with_credentials_microsoft(
+        path: PathBuf,
+        creds: StoredCredentials,
+    ) -> Result<Self> {
+        let tenant =
+            creds.tenant.clone().context("stored credentials have no tenant")?;
         let client_id = creds.client_id.clone();
         Ok(TokenManager {
             path,
