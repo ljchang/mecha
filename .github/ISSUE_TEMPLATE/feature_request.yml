@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a capability mecha does not have
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What are you trying to do that is currently hard or impossible? Describe
+        the situation rather than the feature — the best version of a proposal
+        often turns out to be a different feature than the one first imagined.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: If you have a specific design, describe it here.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: >
+        Existing mechanisms that nearly work are useful signal. Hooks, subagents,
+        the outbox and MCP servers each extend mecha without changing the loop.
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Does this touch anything load-bearing?
+      description: >
+        Not disqualifying — just worth naming early, since these carry
+        constraints documented in CLAUDE.md.
+      options:
+        - label: It would add or change a tool capability
+        - label: It would affect taint tracking or the trifecta interlock
+        - label: It would add configuration
+        - label: It would change what goes into the prompt prefix

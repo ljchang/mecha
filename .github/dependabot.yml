@@ -1,0 +1,41 @@
+version: 2
+
+updates:
+  # Rust dependencies. Grouped so a routine week is one pull request rather
+  # than fifteen, each of which would otherwise trigger a CI run and a review.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "deps"
+
+  # The documentation site.
+  - package-ecosystem: npm
+    directory: /website
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      docusaurus:
+        patterns: ["@docusaurus/*", "docusaurus*"]
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "deps(docs)"
+
+  # The workflows themselves. A pinned action that goes stale is a security
+  # problem as much as a maintenance one.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "deps(ci)"

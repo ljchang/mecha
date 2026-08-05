@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to a PR should cancel the run it supersedes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail the build on warnings so lint debt cannot accumulate silently.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # `stable` is what contributors use; the MSRV pin is what the manifest
+        # promises. Breaking either should be a deliberate act, not a surprise.
+        rust: [stable, "1.85"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.rust }}
+
+      - name: Build
+        run: cargo build --workspace --all-targets --locked
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features
+
+  # The integration tests skip themselves when a sandbox backend is missing, and
+  # a silently skipped test reads exactly like a passing one. This job installs
+  # the backends and sets MECHA_TEST_REQUIRE_BACKENDS=1, which turns every skip
+  # into a failure — so "confinement works" is measured here, not assumed.
+  backends:
+    name: sandbox backends
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+
+      - name: Report backend availability
+        run: |
+          echo "bwrap: $(bwrap --version 2>&1 || echo MISSING)"
+          echo "docker: $(docker --version 2>&1 || echo MISSING)"
+          echo "python3: $(python3 --version 2>&1 || echo MISSING)"
+
+      - name: Integration tests, with skips promoted to failures
+        env:
+          MECHA_TEST_REQUIRE_BACKENDS: "1"
+        run: cargo test --workspace --locked --test sandbox_backends --test mcp_server
+
+  # `mecha tools` runs with no provider configured, which makes it the cheapest
+  # end-to-end check that the binary starts and the tool registry builds.
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run --locked --bin mecha -- tools
+      - run: cargo run --locked --bin mecha -- tools --json

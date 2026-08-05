@@ -9,3 +9,39 @@
 *.jsonl
 !eval/*.jsonl
 jobs/
+
+# Credentials. Nothing here has ever been committed and nothing should be: the
+# mail crates keep OAuth material in ~/.mecha/mail/, outside the repo entirely.
+# These patterns exist so a stray copy cannot be staged by accident.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+oauth.json
+credentials.json
+token.json
+client_secret*.json
+service-account*.json
+
+# Python — bench/ and scripts/ are Python, and bytecode was tracked once.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Documentation site (website/ is a Docusaurus project).
+node_modules/
+/website/build/
+/website/.docusaurus/
+/website/.cache-loader/
+# Generated from CHANGELOG.md at build time; the root file is the source.
+/website/docs/changelog.md
+
+# Editors and operating systems.
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/

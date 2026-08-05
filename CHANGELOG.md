@@ -1,0 +1,434 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.0] - 2026-08-05
+
+First public release. Everything is new, so the whole feature surface is listed
+under Added; later releases will record only what changed.
+
+### Added
+
+#### The loop and the library
+
+- **Two crates** — `mecha-core` is a plain Rust library that knows nothing about
+  any CLI or application; `mecha` is a thin binary over it. Implement `Tool` to
+  add a native tool, `Provider` to add a backend, `Approver` to control what
+  needs permission. A provider-agnostic message vocabulary means a transcript
+  recorded against one backend can be replayed against another.
+- **The agent loop** — ask the model, run the tools it asked for, feed the
+  results back, repeat until it stops calling tools. The loop never learns which
+  provider is behind it or where a tool came from; both are trait objects.
+- **An Anthropic provider** over raw HTTP, with adaptive thinking, thinking
+  blocks echoed across tool turns, and `stop_reason: "refusal"` recognised as
+  the HTTP 200 it arrives as.
+- **An OpenAI-compatible provider** covering llama-server, vLLM and Ollama, with
+  streamed tool-call reassembly across arbitrary chunk boundaries, parallel
+  calls interleaved by index, and tool calls that survive the
+  `finish_reason: "stop"` llama-server reports alongside them.
+- **Prompt caching on Anthropic** — a fixed breakpoint covering tools and system
+  prompt plus a second moving breakpoint on the last message block, so an
+  append-only transcript reads from cache instead of being re-sent uncached
+  every turn.
+- **Classified failures, with transient ones retried** — rate limits (honouring
+  `Retry-After` up to a cap), overload, server and transport errors back off and
+  retry; auth, billing, invalid-request and context-overflow never do. A retry
+  covers the send only, so it can never duplicate work already shown or acted
+  on. `[providers.X] fallbacks` then tries other configured providers on
+  exhaustion, turn-local, each answering under its own model name.
+- **A sampler you can pin** — `temperature` and `seed` on the OpenAI-compatible
+  provider, refused at startup on Anthropic rather than silently dropped, and
+  both recorded in the session so a transcript says whether its run was
+  repeatable.
+- **Budgets** — `max_turns`, `max_output_tokens` and `max_cost_usd`. All three
+  end a run the same way: one final turn with the tools removed, so there is an
+  answer rather than silence, and `stop_cause` says which ceiling fired. Cost
+  prices cache reads and writes separately from fresh input, and reports `null`
+  rather than a misleading zero where a provider has no prices configured.
+- **Per-run context** — `RunContext` carries the path jail, the approver, the
+  budget, a cancellation token and a steering queue, so one agent with one
+  provider connection can serve concurrent runs jailed to different directories
+  under different permissions.
+- **Cancellation** that stops a run at the next safe point and keeps the partial
+  answer, the partial assistant turn and the tokens already spent. Tools are
+  never interrupted mid-call.
+- **Steering** — text queued mid-run is folded into the message carrying the
+  tool results, so the model reads the results and the new instruction as one
+  user turn and keeps working, without being stopped and restarted.
+- **Subagents** — an agent wrapped as a tool, given a rebuilt registry as an
+  allowlist rather than an inheritance, with optional per-profile model,
+  provider, turn limit and system prompt. A child's output is untrusted by
+  default; `trusted_output` overrides that as a deliberate risk decision.
+- **Layered TOML configuration** — built-in defaults, `~/.mecha/config.toml`, a
+  project-local `./mecha.toml`, environment variables, then CLI flags, each
+  level overriding only the fields it names. A global-only load exists for runs
+  that no working directory should shape.
+
+#### Interfaces
+
+- **`mecha run`** — one task, one answer, with `--json` for machine-readable
+  output, `--resume` to continue a recorded session, and exit codes that
+  distinguish success, error, refusal and turn exhaustion.
+- **`mecha chat`** — a readline REPL with slash commands and input history saved
+  after every accepted line, so a killed process keeps it.
+- **`mecha tui`** — full-screen, with the input line live while the agent works:
+  Enter starts a run when idle and steers one already going. Streaming output,
+  scrollback that re-arms follow mode, session persistence and `--resume`.
+- **TUI slash commands** — `/help /tools /model /provider /mode /mcp /usage
+  /todo /triggers /clear /session /exit`, with modal pickers, name completion,
+  and mid-session switching of model, provider, permission mode and individual
+  MCP servers. A switch appends a configuration record, so a replay diffs
+  against what actually ran.
+- **TUI keys** — `?` for a full key reference, `^O` to reveal tool output and
+  reasoning retroactively, `^G` to compose in `$EDITOR`, `!command` to run a
+  shell command locally with no model and no taint, `@path` completion against
+  the workspace, and Shift+Enter for a newline where the terminal supports the
+  kitty keyboard protocol.
+- **TUI rendering** — a context fuel gauge that colours at 75% and 90%, a live
+  todo pane, subagent work rendered nested under the call that spawned it (still
+  correct when delegations run in parallel), atomic frame presentation, a tab
+  title that says whether a run is in flight, and cached history cells so
+  drawing no longer costs O(transcript) per streamed token.
+- **`mecha batch`** — the same agent over a JSONL file of prompts at bounded
+  concurrency, results streamed to the output file as they finish and keyed by
+  id, so a killed run leaves everything completed so far on disk. Every item
+  gets its own conversation.
+- **`mecha tools`** — the tool surface with no provider configured, including
+  each tool's declared capabilities, the active sandbox, which MCP servers are
+  unconfined, and `--schema` for exactly what the model sees.
+- **`mecha sessions list | show | path | stats`** and
+  **`mecha config show | path | init`** — inspect saved transcripts, roll up
+  tokens, turns and cost by provider and model over a window of days, and see
+  what settings are in effect.
+
+#### Tools
+
+- **Six built-in tools** — `fs_read`, `fs_write`, `fs_edit`, `fs_list`, `shell`
+  and `http_fetch` — plus `todo`, a task list the model rewrites as it goes,
+  kept outside the message history so it survives compaction intact.
+- **`ask_user`**, registered only by front-ends that own a human, so the model
+  can stop and ask instead of guessing at an under-specified task. Declining is
+  a legitimate answer and returns a tool result, not a failed run.
+- **`web_search`** behind a `SearchBackend` trait with SearXNG, Exa and Tavily
+  tried in order and falling through on failure, and a `depth` argument
+  selecting a cheap round trip or a deep one.
+- **An approval gate** with `ask`, `allow` and `read-only` permission modes,
+  plus a planning phase that does not offer writing tools at all rather than
+  offering them and refusing the call — enforced on both the advertised list and
+  the dispatch path, and inherited by subagents.
+- **A per-turn tool output budget** divided across a turn's concurrent calls, so
+  one runaway tool cannot starve its siblings. What gets cut is written to a
+  spill file, and the marker names the path and the line the elision starts on,
+  so recovering the rest is one read.
+- **An MCP stdio client** that surfaces remote tools as the same `Tool` trait,
+  namespaced `<server>__<tool>` so two servers can both expose a `search`. It
+  follows `nextCursor` pagination, accepts JSON-RPC ids in either numeric or
+  string spelling, and routes a server's stderr through tracing instead of the
+  terminal.
+
+#### Security
+
+- **The path jail** — every model-supplied path is canonicalized and proven to
+  sit inside the workspace before anything touches disk; `..`, symlinks and
+  absolute paths outside the root are refused.
+- **The lethal-trifecta interlock** — tools declare `private_data`,
+  `untrusted_input`, `external_send` and `destructive`; the loop tracks which
+  have entered the conversation and refuses any sending tool once both private
+  data and untrusted content are present. It sits ahead of the approver, because
+  a human clicking yes is what an injection is trying to engineer.
+  `trifecta = "ask" | "allow"` changes the policy deliberately and visibly.
+- **Taint is a property of the conversation**, not of one run, and it is
+  recorded in the session file — so a new turn does not reset it, resuming does
+  not launder it, and compaction does not summarise it away. A new conversation
+  (a batch item, a subagent, an eval case, a trigger fire) starts clean.
+- **`block_sends_after_private`** — an opt-in second control aimed at ordinary
+  privacy leaks rather than injection: any outbound tool is refused once private
+  data is in context.
+- **SSRF protections on `http_fetch`** — hostnames are resolved and loopback,
+  private, link-local (including the cloud metadata endpoint) and CGNAT
+  addresses refused; the connection is pinned to the addresses that passed, so a
+  short-TTL DNS answer cannot swap them afterwards; redirects are not followed;
+  `allowed_domains` and `blocked_domains` narrow it further.
+- **A sandbox for `shell`** — `[sandbox] kind = "bwrap" | "docker" | "none"`. A
+  confined command gets the workspace, a read-only system, no home directory, no
+  environment beyond a named allowlist and by default no network. A configured
+  sandbox that does not work stops the run at startup rather than degrading to
+  unconfined execution.
+- **MCP servers get the same treatment** — the child environment is an allowlist
+  (`PATH`, `HOME`, `LANG`, `LC_ALL`, `TZ`, plus whatever `env_passthrough` names
+  and `env` sets) rather than an inheritance, per-server `sandbox = true`
+  confines the process, and per-server `network` overrides the global switch.
+  `[mcp.capabilities]` can distrust a server further than its own annotations
+  claim, never less.
+- **Bounded output and owner-only stores** — `shell` discards beyond a per-stream
+  cap as it arrives rather than buffering without bound and kills a command at
+  its timeout; sessions, the outbox, the learning store, the spill directory and
+  the mail credential directory are created at mode 0700, token files at 0600.
+
+#### Hooks
+
+- **`[[hook]]` commands** at `pre_tool`, `post_tool` and `session_end`, with the
+  event as one JSON object on stdin, so policy, redaction and logging attach
+  without editing the loop.
+- **The dispatch order is interlock, then hook, then approver** — a hook can
+  narrow policy and never loosen security, and a `pre_tool` denial never reaches
+  the human.
+- **`pre_tool` fails closed** — exit 0 allows, exit 2 denies, and an undefined
+  exit code, a spawn failure or a timeout also deny. `post_tool` and
+  `session_end` are observers whose failures are swallowed. Subagents inherit
+  the parent's hooks, and a typo'd event name is a startup error on every run
+  rather than a warning only on the runs that needed it.
+
+#### The outbox
+
+- **`[outbox] tools`** names tools whose calls are staged rather than executed:
+  the loop intercepts the call, writes it to `~/.mecha/outbox/`, and tells the
+  model it is a draft awaiting release. Draft-only becomes structural, so an
+  email tool — including a third-party MCP server's — needs no knowledge of the
+  outbox to be covered by it.
+- **`mecha outbox list | show | edit | send | reject`** — review the queue, edit
+  a draft in `$EDITOR`, release it (executing the real tool under the store lock
+  so two sends cannot double-fire), or reject it with a reason.
+- **Staging skips the interlock and the approver** because nothing leaves the
+  machine at stage time; the item records the conversation's taint snapshot, and
+  review warns and confirms when a draft was written with the trifecta armed. A
+  staging that fails returns an error to the model rather than falling through
+  to execution. Subagents inherit the route, and a routed name matching no
+  registered tool warns at every start.
+
+#### Learning
+
+- **`mecha reflect`** mines recorded transcripts for the moments the user
+  stepped in — a mid-run steer, a denied tool call, a corrective follow-up turn,
+  an edited outbox draft — and asks a model for the reusable lesson behind each,
+  appending it with the session id that proves it.
+- **`mecha learn`** consolidates unprocessed reflections into
+  `rules/<domain>.learned.toml` within a fixed budget and records which
+  reflections it consumed. `--holdout` keeps a deterministic every-k-th slice
+  out of the pass, so measurement has data the rules never saw.
+- **`mecha validate`** probes whether the rules change an answer. Follow-up
+  probes re-ask the corrective turn and are judge-graded; steer and denial
+  probes are counterfactual replays graded structurally on the trace — did the
+  model do the steered thing without the steer, did it repeat the exact call the
+  user refused.
+- **A file-based learning store** under `~/.mecha/learning/`, which is a git
+  repository: `git log` is the learning history and `git revert` is the undo.
+  User rules are never written by code, learned rules are freely editable, and
+  an audit record per pass names the rules before and after. Learned rules ride
+  in the system prompt inside the cached prefix, changing only at consolidation
+  time; `--no-learned-rules` opts out anywhere.
+- **Provenance gates what may become a rule** — every reflection carries an
+  origin classified by deterministic code from the transcript's recorded taint,
+  and `mecha learn` excludes anything not clean before a prompt is built. It
+  fails closed: an unknown position, a torn transcript or a reflection written
+  before the field existed all classify as untrusted. Excluded evidence stays in
+  the archive.
+- **Unattended learning never applies its own output** — `mecha learn --propose`
+  measures a candidate rule set by counterfactual replay against the deployed
+  one, rejects a candidate that regresses any probe before a human sees it, and
+  stages the rest. `mecha proposals list | show | accept | reject` is the
+  review, and acceptance checks the live rules still match what the candidate
+  was measured against.
+- **Rule tenure** — rules carry an id, sources and a creation time; `mecha
+  validate` appends every probe outcome to a validation ledger keyed to the
+  exact rule set measured, and a regressed trace-graded probe bisects the active
+  rules to name the one that flips it. **`mecha rules`** folds that ledger into
+  per-rule tallies and stages retirement
+  through the same proposal gate as any other rule change once a rule
+  accumulates attributed regressions. Retirement is a flag, never a deletion:
+  the rule stays as evidence, the learner is shown it as measured harmful, and
+  `rules restore` undoes it. A hard per-domain cap on the always-loaded block is
+  warned about at startup and refused in `mecha learn`, so consolidation may
+  shrink or rewrite an over-cap set but never grow past it.
+- **A nightly cycle** — `scripts/ruminate.sh` chains reflect, distill, validate,
+  learn and the retirement scan, with a systemd user timer to fire it. Every
+  stage is idempotent, a store writer lock serialises concurrent passes, and a
+  night with the model server down defers entirely rather than half-running.
+
+#### Distillation
+
+- **`mecha distill`** summarises each closed session into an episode staged to a
+  knowledge-graph MCP server through its `kg_upsert` tool — evidence rather than
+  belief, so the extracted facts wait in that graph's own review queue. It is
+  idempotent at both ends: a local ledger under the learning store's writer
+  lock, and the graph's own source key making a re-push an update.
+- **A tainted session still distills**, with its taint snapshot recorded on the
+  episode instead, because losing the record of a real afternoon because a web
+  page was open would gut the memory. Unknown taint is recorded as unknown.
+
+#### Triggers
+
+- **`mecha trigger add | list | show | edit | rm | enable | disable | next |
+  run | tick | daemon | cancel | runs`** — a prompt on a five-field cron
+  schedule, run unattended. `tick` fires what is due and exits; `daemon` is a
+  loop over it, so a crontab line or a systemd timer reaches the same answer and
+  `tick --dry-run` is an honest preview rather than a second implementation of
+  the schedule. `scripts/mecha-triggers.service` ships the daemon as a systemd
+  user unit.
+- **A hand-rolled cron parser** resolved in an IANA zone recorded on the trigger
+  at authoring time, handling daylight saving in both directions: a job inside
+  the spring-forward gap fires at the first instant that exists, and one inside
+  the repeated autumn hour fires once.
+- **Missed slots collapse** — a machine off for a week owes one run of each
+  trigger rather than a week's worth, and `--catch-up` (`always`, `never`, or a
+  duration) decides whether a stale slot still runs. A skip is written to the
+  ledger, so "why did I not get my briefing" is answerable.
+- **Triggers live in `~/.mecha/triggers/`, never in the layered config**, and a
+  fire loads the global config only — a project file arrives with a cloned
+  repository, and a scheduled agent run is not something a repository should be
+  able to declare. Runs are read-only unless the file says otherwise, with
+  outbox-routed calls still staging under read-only because staging executes
+  nothing.
+- **One run per trigger at a time** via a flock the kernel releases if the
+  process dies, with the overlap skip recorded. The timeout, a daemon SIGTERM
+  and `trigger cancel` all cancel rather than abort, so the partial answer and
+  the ledger row survive. A manual `trigger run` records a row with no slot, so
+  testing a trigger cannot silently disarm its schedule.
+- **`/triggers` in the TUI** — see, edit, enable, run and cancel what is
+  scheduled, with the detail view reading the last answer back from the session
+  transcript. Every action shells out to `mecha trigger`, so firing cannot
+  freeze the interface and the TUI can do nothing the command line cannot.
+
+#### Compaction
+
+- **`[agent] compact_at_tokens`** summarises the middle of a transcript once the
+  provider-reported prompt size passes it, keeping the task at the top and the
+  recent turns verbatim. Off by default, and derived from `context_window` at
+  two thirds where that is configured.
+- **Superseded tool results are evicted first** — when a later call covers the
+  same target, the older result is replaced with a marker naming the recovery,
+  so a write supersedes an earlier read of the file it changed. Errors neither
+  supersede nor get evicted.
+- **Old tool results are then thinned** — results are truncated from the head
+  with a marker saying so, while the calls themselves are left alone, which
+  keeps the sequence and therefore the agent's place in a traversal. Only if
+  that is not enough is a summary taken, and the cut is chosen so no
+  `tool_result` is ever orphaned from its `tool_use`.
+- **Summaries are validated before installing** — one truncated by its own token
+  limit is refused deterministically, and a second tool-less call reads the
+  summary beside the transcript it replaces and names what is missing,
+  triggering exactly one regeneration. An unusable verdict installs with a
+  warning, because a run that needs to compact to survive must still compact.
+- **Overflow recovery** — a prompt the provider refuses as too large is
+  recognised across backends, compacted and retried once instead of ending the
+  run.
+- **A loop guard armed by compaction** — an identical call with an identical
+  result, repeated within a short window after a compaction, stops the run with
+  a distinct `loop` stop cause rather than burning the turn budget re-living
+  what the summary dropped. Polling never trips it.
+
+#### Sessions and replay
+
+- **Append-only JSONL transcripts** in `~/.mecha/sessions`, recording messages,
+  taint checkpoints, usage summaries and a configuration record per attach —
+  provider, model, system prompt, tool list, effort, budgets, permission mode,
+  sandbox, sampler, timezone — so a replay knows what shaped the run rather than
+  diffing two variables at once.
+- **`mecha replay <session>`** re-drives a recorded session against the current
+  build using recorded tool results and a sequential loop, rebuilding the run
+  from the recorded configuration rather than today's flags; `-p`/`-m` replay
+  against a different model. A structural divergence refuses the call and stops
+  the replay, while an argument-only difference replays the recorded result and
+  is reported for the caller to judge. `scripts/replay-regression.sh` replays
+  pinned sessions and fails on any drift, turning recorded real work into
+  standing regression cases; pins are machine-local, because transcripts are
+  personal data.
+
+#### The eval rig
+
+- **`mecha eval [cases.jsonl]`** scores a model on a case set, graded on the
+  tool-call trace first and the text second, with a scorecard broken down by tag
+  and `--compare` to put models side by side. It exits non-zero on failure, so it
+  doubles as a regression gate on the harness.
+- **Deterministic checks** — which tools were called, in what order, with what
+  arguments, and what the answer said. Two apply to every case whether it asks
+  or not, because they disqualify a model regardless of the answer: malformed
+  tool arguments and invented tool names.
+- **`expect.verify`** runs a command in the case's workspace afterwards and
+  grades the exit code, hashing the test file first so a model that edits the
+  tests until they pass still fails. **`expect.judge`** grades a rubric with a
+  second model, for cases whose right answer is a judgement.
+- **Run-metadata checks** — `stop_cause`, `taint`, `blocked_sends` and
+  `min_compactions`, which are the only way to grade the harness rather than the
+  model, since none of it appears in the answer text.
+- **Per-case controls** — `sandbox` for a private copy of the fixture with
+  writes allowed, `max_turns` for a case that genuinely takes twenty steps,
+  `compact_at_tokens` to force compaction for one case alone, and a list-valued
+  `prompt` for several turns on one conversation.
+- **`--runs k`** repeats every case k times and reports pass^k beside pass@k,
+  with independent workspaces per run and a warning when a pinned seed at
+  concurrency 1 would make the k samples one sample counted k times.
+  **`--ab-rules`** runs the set rules-free and then rules-on and reports the
+  per-case flips as their own artifact rather than as a comparable scorecard.
+- **Reproducibility by construction** — eval forces MCP, hooks, learned rules,
+  the outbox and provider fallback off, because a scorecard shaped by one
+  machine's local configuration is not comparable to anyone else's.
+- **Generated fixtures and a second case set** — `scripts/build-eval-fixtures.py`
+  rewrites the workspace, prints the gold answers the cases must assert, and
+  checks that each code kata fails as shipped and is solvable by a reference
+  fix; `eval/pkg-cases.jsonl` runs against fixture MCP servers via `--mcp-file`
+  and grades the trifecta interlock end to end, offline.
+
+#### mecha-mail
+
+- **A library plus three MCP binaries** — Gmail and Google Calendar v3, Outlook
+  mail and calendar over Graph, both OAuth flows and the token lifecycle. The
+  library is what a GUI would depend on directly; `mecha-google` and
+  `mecha-outlook` each serve one provider with its own credential store.
+- **`mecha-mail`, the account-based surface** deployments should wire: every
+  account in `~/.mecha/mail/` behind one provider-neutral set of tools, so
+  neither mecha nor the model knows Google or Microsoft exists. Account names
+  are baked into every tool schema as an enum at startup, so the model picks
+  from real names. Reads fan out across every mailbox and tag each row with its
+  account; item operations name the account their id came from; creates use the
+  configured default or ask the user. A failed account is reported beside the
+  other accounts' results rather than sinking the whole call.
+- **`mecha-mail auth <name> --provider ...`**, with `import` to copy a legacy
+  per-provider login in and `default <name>` to name the sending account.
+  Microsoft signs in with device code, so it needs no redirect URI and no
+  forwarded port, and works over SSH.
+- **Unified replies** — `mail_reply` takes a thread id and answers the newest
+  message, synthesizing Gmail's addressing (answer the sender, keep everyone on
+  reply-all, never the user's own address) where Graph does it natively.
+- **The token lifecycle in Rust** — credentials at mode 0600, refresh ahead of
+  expiry behind a lock so two concurrent tool calls cannot race, one forced
+  refresh and retry on a 401, retry with backoff on 429 and 5xx, and an
+  HTML-to-text fallback so an HTML-only email no longer reaches the model as an
+  empty body.
+- **Capability labelling that matches the risk** — reads are untrusted sources
+  but not send sinks, because a search query travels only to the party that
+  already custodies the mailbox; sends and calendar writes reach third parties,
+  are marked open-world, and are named in `[outbox] tools` so they stage rather
+  than deliver. A drafted `to`, `cc`, `bcc` or `subject` containing CR, LF or
+  NUL is refused rather than stripped, so it cannot smuggle a hidden recipient
+  into a raw message.
+- **Timezone rendering** — `[agent] timezone` is an IANA name that rides in the
+  system prompt and reaches the mail servers as `MECHA_TZ`, so event times are
+  rendered in the user's zone before the model ever sees them.
+
+#### Testing, benchmarking and docs
+
+- **A three-layer test suite** — unit tests for anything that is a function of
+  our own code (including a `ScriptedProvider` that exercises tool dispatch,
+  denials, exhaustion and recovery with no network), integration tests for what
+  is deterministic but needs real execution (docker actually confining a
+  command, an MCP server actually receiving an environment), and eval cases for
+  what only emerges with a model in the loop. `MECHA_TEST_REQUIRE_BACKENDS=1`
+  turns every environment-based skip into a failure, because in CI a silently
+  skipped test reads exactly like a passing one.
+- **A Harbor adapter** (`bench/`) that installs the `mecha` binary inside a
+  Terminal-Bench task container and runs it there, so mecha's own loop, tools,
+  path jail and budgets are what get measured, under the same
+  no-MCP/no-hooks/no-outbox posture eval forces.
+- **Research and design notes** under `docs/` covering context management,
+  memory and rule lifecycle, verification, sandboxing, prior art, public
+  benchmarks, the TUI survey, and a branching design recorded as a deliberate
+  non-implementation.
+
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ljchang/mecha/releases/tag/v0.1.0
