@@ -220,6 +220,8 @@ async fn send(global: &GlobalOpts, store: &OutboxStore, id: &str, yes: bool) -> 
         workspace: tools.workspace.clone(),
         shell_timeout: std::time::Duration::from_secs(tools.config.tools.shell_timeout_secs),
         security: tools.config.security.clone(),
+        output_budget_bytes: tools.config.tools.output_budget_bytes,
+        ..mecha_core::tool::ToolCtx::default()
     };
     let output = match tool.call(item.args.clone(), &ctx).await {
         Ok(out) => out,

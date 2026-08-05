@@ -30,6 +30,7 @@
 //!         workspace: std::env::current_dir()?,
 //!         shell_timeout: std::time::Duration::from_secs(cfg.tools.shell_timeout_secs),
 //!         security: cfg.security.clone(),
+//!         ..ToolCtx::default()
 //!     },
 //!     cfg.agent.clone(),
 //!     None,
