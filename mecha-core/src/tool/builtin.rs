@@ -8,6 +8,7 @@ use super::{Capabilities, Tool, ToolCtx, ToolOutput};
 use crate::sandbox::Sandbox;
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -343,41 +344,101 @@ impl Tool for Shell {
             }
         };
 
-        let child = command.stdin(std::process::Stdio::null()).output();
+        // Streams are drained with a cap rather than collected with
+        // `output()`: a command can print without bound, and the harness must
+        // not buffer without bound on its behalf. `kill_on_drop` also closes
+        // an older hole — without it, a timed-out command kept running after
+        // the run had reported it dead.
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = match command.spawn() {
+            Ok(c) => c,
+            Err(e) => return Ok(ToolOutput::err(format!("cannot run command: {e}"))),
+        };
+        let out_pipe = child.stdout.take();
+        let err_pipe = child.stderr.take();
 
-        let output = match tokio::time::timeout(ctx.shell_timeout, child).await {
-            Err(_) => {
-                return Ok(ToolOutput::err(format!(
-                    "command timed out after {}s",
-                    ctx.shell_timeout.as_secs()
-                )))
-            }
-            Ok(Err(e)) => return Ok(ToolOutput::err(format!("cannot run command: {e}"))),
-            Ok(Ok(o)) => o,
+        let fut = async {
+            tokio::join!(
+                drain_capped(out_pipe, MAX_OUTPUT_BYTES),
+                drain_capped(err_pipe, MAX_OUTPUT_BYTES),
+                child.wait(),
+            )
+        };
+        let ((stdout, out_dropped), (stderr, err_dropped), status) =
+            match tokio::time::timeout(ctx.shell_timeout, fut).await {
+                Err(_) => {
+                    return Ok(ToolOutput::err(format!(
+                        "command timed out after {}s",
+                        ctx.shell_timeout.as_secs()
+                    )))
+                }
+                Ok(v) => v,
+            };
+        let status = match status {
+            Ok(s) => s,
+            Err(e) => return Ok(ToolOutput::err(format!("cannot run command: {e}"))),
         };
 
         let mut body = String::new();
-        body.push_str(&String::from_utf8_lossy(&output.stdout));
-        if !output.stderr.is_empty() {
+        body.push_str(&String::from_utf8_lossy(&stdout));
+        if !stderr.is_empty() {
             if !body.is_empty() && !body.ends_with('\n') {
                 body.push('\n');
             }
-            body.push_str(&String::from_utf8_lossy(&output.stderr));
+            body.push_str(&String::from_utf8_lossy(&stderr));
+        }
+        // Bound the transcript copy *before* naming the discard: `truncate`
+        // cuts the tail, and the tail is exactly where the marker goes.
+        let mut body = truncate(body, "output");
+        if out_dropped || err_dropped {
+            if !body.is_empty() && !body.ends_with('\n') {
+                body.push('\n');
+            }
+            body.push_str(&format!(
+                "[output exceeded {MAX_OUTPUT_BYTES} bytes; the rest was discarded as it streamed. \
+                 Redirect to a file and read it in pieces if more is needed.]"
+            ));
         }
         if body.trim().is_empty() {
             body.push_str("(no output)");
         }
 
-        let code = output.status.code().unwrap_or(-1);
+        let code = status.code().unwrap_or(-1);
         if code != 0 {
             body = format!("exit status {code}\n{body}");
         }
-        Ok(ToolOutput {
-            content: truncate(body, "output"),
-            is_error: code != 0,
-            external: false,
-        })
+        Ok(ToolOutput { content: body, is_error: code != 0, external: false })
     }
+}
+
+/// Read a child's stream to EOF, keeping at most `cap` bytes and discarding
+/// the rest as it arrives. Discarding matters as much as capping: a reader
+/// that simply stopped would fill the pipe and deadlock the child against a
+/// harness that has already decided not to keep the output.
+async fn drain_capped(
+    pipe: Option<impl tokio::io::AsyncRead + Unpin>,
+    cap: usize,
+) -> (Vec<u8>, bool) {
+    use tokio::io::AsyncReadExt;
+    let Some(mut pipe) = pipe else { return (Vec::new(), false) };
+    let mut kept = Vec::new();
+    let mut dropped = false;
+    let mut buf = [0u8; 8192];
+    loop {
+        match pipe.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let take = n.min(cap.saturating_sub(kept.len()));
+                kept.extend_from_slice(&buf[..take]);
+                dropped |= take < n;
+            }
+        }
+    }
+    (kept, dropped)
 }
 
 pub struct HttpFetch;
@@ -414,16 +475,24 @@ impl Tool for HttpFetch {
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let url = arg_str(&input, "url")?;
-        if let Err(e) = check_url(url, ctx).await {
-            return Ok(ToolOutput::err(e.to_string()));
-        }
+        let vetted = match check_url(url, ctx).await {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolOutput::err(e.to_string())),
+        };
 
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             // Following a redirect re-opens everything check_url just closed:
             // a public host can 302 straight to 169.254.169.254.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
+            .redirect(reqwest::redirect::Policy::none());
+        // Pin the connection to the addresses that passed the private-IP
+        // check. Without this the client re-resolves the hostname itself, and
+        // a DNS answer with TTL 0 can hand the check a public address and the
+        // connection 169.254.169.254 — the classic rebinding TOCTOU.
+        if let Some((host, addrs)) = &vetted {
+            builder = builder.resolve_to_addrs(host, addrs);
+        }
+        let client = builder.build()?;
         let resp = match client.get(url).send().await {
             Ok(r) => r,
             Err(e) => return Ok(ToolOutput::err(format!("request failed: {e}"))),
@@ -442,7 +511,23 @@ impl Tool for HttpFetch {
         }
 
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        // Read at most one byte past the cap, then stop — `.text()` buffers
+        // however much the server chooses to send, and the server is the
+        // untrusted side of this call. `truncate` below marks the cut.
+        let mut raw: Vec<u8> = Vec::new();
+        let mut body_stream = resp.bytes_stream();
+        while let Some(chunk) = body_stream.next().await {
+            match chunk {
+                Ok(c) => raw.extend_from_slice(&c),
+                Err(e) => {
+                    return Ok(ToolOutput::err(format!("reading the response body failed: {e}")))
+                }
+            }
+            if raw.len() > MAX_OUTPUT_BYTES {
+                break;
+            }
+        }
+        let body = String::from_utf8_lossy(&raw);
         // The body is third-party content even on a 4xx — an injection hides
         // just as well in an error page.
         Ok(ToolOutput {
@@ -456,7 +541,15 @@ impl Tool for HttpFetch {
 /// Refuse a URL before any packet leaves. Model output decides where this
 /// request goes, so "it's just a GET" is not a defense: the LAN, localhost,
 /// and cloud metadata endpoints are all reachable from here by default.
-async fn check_url(url: &str, ctx: &ToolCtx) -> Result<()> {
+///
+/// Returns the host and the addresses that passed the private-IP check, so
+/// the caller can pin the connection to exactly those — a check that lets the
+/// client resolve again afterwards is only advice. `None` when the private-IP
+/// guard is off and there is nothing to pin.
+async fn check_url(
+    url: &str,
+    ctx: &ToolCtx,
+) -> Result<Option<(String, Vec<std::net::SocketAddr>)>> {
     let parsed = reqwest::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid url: {e}"))?;
     match parsed.scheme() {
         "http" | "https" => {}
@@ -488,22 +581,23 @@ async fn check_url(url: &str, ctx: &ToolCtx) -> Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("cannot resolve {host}: {e}"))?;
 
-        let mut any = false;
+        let mut vetted = Vec::new();
         for addr in addrs {
-            any = true;
             if is_internal(&addr.ip()) {
                 anyhow::bail!(
                     "{host} resolves to the internal address {} — refused",
                     addr.ip()
                 );
             }
+            vetted.push(addr);
         }
-        if !any {
+        if vetted.is_empty() {
             anyhow::bail!("{host} did not resolve to any address");
         }
+        return Ok(Some((host, vetted)));
     }
 
-    Ok(())
+    Ok(None)
 }
 
 /// Addresses an agent has no business reaching on the user's behalf.
@@ -601,6 +695,113 @@ mod tests {
         assert!(ctx.resolve("notes.md").is_ok());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_command_that_floods_stdout_is_capped_not_buffered() {
+        let dir = std::env::temp_dir().join(format!("mecha-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shell = shell_with(Backend::None, false);
+
+        // 1 MB of output against a 200 KB cap. The old `output()` collector
+        // kept all of it in memory; a `yes` running to the timeout kept
+        // gigabytes.
+        let out = shell
+            .call(json!({"command": "yes flood | head -c 1000000"}), &ctx(&dir))
+            .await
+            .unwrap();
+
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.len() <= MAX_OUTPUT_BYTES + 300,
+            "kept {} bytes",
+            out.content.len()
+        );
+        assert!(out.content.contains("discarded"), "the cut must be named");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_oversized_response_body_is_cut_at_the_cap_not_buffered_whole() {
+        use tokio::io::AsyncWriteExt;
+
+        // A local server that answers with 1 MB. The client must stop reading
+        // at the cap — `.text()` would buffer whatever the server sent.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let (mut sock, _) = listener.accept().await.unwrap();
+            // Read the request head before answering, so the client never
+            // sees a response racing its own send.
+            let mut req = Vec::new();
+            let mut tmp = [0u8; 4096];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                match sock.read(&mut tmp).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => req.extend_from_slice(&tmp[..n]),
+                }
+            }
+            let body = vec![b'a'; 1_000_000];
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(&body).await;
+            let _ = sock.shutdown().await;
+        });
+
+        // Loopback is the test server, so the private-IP guard steps aside.
+        let ctx = ToolCtx {
+            security: crate::config::SecurityConfig {
+                block_private_ips: false,
+                ..Default::default()
+            },
+            ..ToolCtx::default()
+        };
+        let out = HttpFetch
+            .call(json!({"url": format!("http://{addr}/big")}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(out.external, "not an HTTP response: {}", out.content);
+        assert!(
+            out.content.len() <= MAX_OUTPUT_BYTES + 300,
+            "kept {} bytes",
+            out.content.len()
+        );
+        assert!(out.content.contains("[truncated"), "the cut must be named");
+    }
+
+    #[tokio::test]
+    async fn internal_addresses_are_refused_and_public_ones_come_back_pinned() {
+        let ctx = ToolCtx::default();
+
+        // Names and literals that resolve internally are refused outright.
+        for url in ["http://localhost/x", "http://127.0.0.1/x", "http://169.254.169.254/meta"] {
+            let err = check_url(url, &ctx).await.unwrap_err().to_string();
+            assert!(err.contains("internal"), "{url}: {err}");
+        }
+
+        // A public literal passes, and the vetted addresses come back so the
+        // caller can pin the connection to them — returning only Ok(()) here
+        // is the rebinding hole: the client would resolve again on its own.
+        let vetted = check_url("http://93.184.216.34/x", &ctx).await.unwrap();
+        let (host, addrs) = vetted.expect("the private-IP guard is on, so there is a pin");
+        assert_eq!(host, "93.184.216.34");
+        assert_eq!(addrs, vec!["93.184.216.34:80".parse().unwrap()]);
+
+        // With the guard off there is nothing to pin — the old behaviour.
+        let open = ToolCtx {
+            security: crate::config::SecurityConfig {
+                block_private_ips: false,
+                ..Default::default()
+            },
+            ..ToolCtx::default()
+        };
+        assert!(check_url("http://127.0.0.1/x", &open).await.unwrap().is_none());
     }
 
     #[tokio::test]
