@@ -198,6 +198,49 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                     }
                 }
 
+                // A subagent's turn, wrapped once per nesting level. Only its
+                // tool activity is narrated — indented, so it reads as the
+                // delegation's work and not the parent's — and its prose is
+                // skipped: the child's conclusions come back through the
+                // parent's tool result.
+                AgentEvent::Nested { event, .. } if !opts.quiet => {
+                    let (depth, inner) = unwrap_nested(AgentEvent::Nested {
+                        tool: String::new(),
+                        event,
+                    });
+                    let pad = "  ".repeat(depth);
+                    match inner {
+                        AgentEvent::ToolCall { name, input, .. } => {
+                            if mid_line {
+                                println!();
+                                mid_line = false;
+                            }
+                            println!(
+                                "{pad}{} {} {}",
+                                style.dim("→"),
+                                style.dim(&name),
+                                style.dim(&one_line(&input))
+                            );
+                        }
+                        AgentEvent::ToolResult { name, is_error, content, .. } => {
+                            if is_error {
+                                println!("{pad}{} {}", style.red("✗"), style.red(&first_line(&content)));
+                            } else {
+                                println!(
+                                    "{pad}{} {}",
+                                    style.dim("✓"),
+                                    style.dim(&format!("{name} — {}", size_hint(&content)))
+                                );
+                            }
+                        }
+                        AgentEvent::ToolDenied { name, reason } => {
+                            println!("{pad}{} {}", style.red(&format!("✗ {name}")), style.dim(&reason));
+                        }
+                        _ => {}
+                    }
+                    let _ = out.flush();
+                }
+
                 // Everything else is only interesting in verbose mode, and is
                 // already handled by the arms above.
                 _ => {}
@@ -215,6 +258,17 @@ pub fn format_usage(u: &Usage) -> String {
         ));
     }
     s
+}
+
+/// Peel `Nested` wrappers, counting them. The count is the nesting depth: a
+/// child's event is wrapped once, a grandchild's twice.
+fn unwrap_nested(mut event: AgentEvent) -> (usize, AgentEvent) {
+    let mut depth = 0;
+    while let AgentEvent::Nested { event: inner, .. } = event {
+        event = *inner;
+        depth += 1;
+    }
+    (depth, event)
 }
 
 /// The most informative single argument, for the non-verbose tool line.
