@@ -129,3 +129,113 @@ to "wrong tool with a known escape class."
 route to running an existing ELF under WASM. The performance penalty is
 unmeasured here; an order of magnitude or worse is the expectation, but that
 is a guess and is labelled as one.
+
+---
+
+# Addendum, 2026-08-05: monty
+
+[pydantic/monty](https://github.com/pydantic/monty) — a minimal Python
+interpreter written in Rust, built for running LLM-generated code. Evaluated
+against the two questions this file separates, and the answers are different.
+
+**It does not replace `shell`, for the reason already settled above.** It is a
+Python interpreter, so it cannot spawn `cargo`, `git` or `gcc`. Monty is
+stricter than the WASM options here rather than looser: no filesystem, no
+network, no environment, **no subprocess**, by construction. Same
+disqualification, arrived at by design instead of by missing primitive.
+
+**It is the best available answer to the other half — the narrow
+code-execution tool behind programmatic tool calling**, and it beats every
+WASM option measured above on the axis that disqualified them.
+
+| | Startup | Host runtime |
+|---|---|---|
+| `docker run` (current) | 192 ms | — |
+| Landlock + seccomp (recommended above) | 1.28 ms | — |
+| MicroPython wasm | 16 ms | wasmtime |
+| CPython WASI (AOT) | ~40 ms | wasmtime |
+| Pyodide | ~1 s | **JS** |
+| **monty** | **0.004 ms** (4.5 µs untyped; 4.8 ms type-checked) | **none — it is a Rust crate** |
+
+(Pydantic's own figures, against their own Docker baseline of 195 ms, which is
+within noise of the 192 ms measured here. Not independently reproduced.)
+
+Three properties make it the right shape, in descending order of how much they
+matter:
+
+- **The only bridge to the host is functions you pass in.** Zero access by
+  default — no filesystem, network, env, or syscalls — and capabilities are
+  opted into as external functions the embedder registers. That is precisely
+  the rule `PRIOR-ART-RESEARCH.md` wrote down for code mode and could only
+  state as discipline: *every call the bridge makes must route back through the
+  registry, or code mode is a hole straight through interlock, hooks and
+  approver*. With monty it is not discipline, it is the architecture — register
+  only `Registry` dispatchers and there is nothing else to reach.
+- **No host runtime to escape into.** The sharpest finding above was a
+  *measured* Pyodide-under-Node host shell escape, where the documented
+  boundary was wrong about itself. Monty is a bytecode VM in Rust (Ruff's
+  parser, its own bytecode) with no JS host and no wasmtime embed, so that
+  entire escape class does not exist. It also compiles to WASM if a browser
+  ever matters, which is how Simon Willison exercised it.
+- **Snapshot and resume, in single-digit kilobytes.** State serialises and
+  execution resumes later. Nothing in the harness survey uses this, and it
+  lands on something mecha already has: a program that hits an outbox-routed
+  call could be *paused at the gate* and resumed after release, instead of
+  failing and being re-run.
+
+Resource limits (memory, allocations, stack depth, execution time, with
+cancellation) map onto the existing budget concepts. ~4.5 MB package, ~5 MB
+resident, Rust/Python/JS bindings.
+
+### What it would take, and the two things to get right
+
+A `code` tool taking a Python program, with one external function per
+registered tool — or a single `call(name, args)` — dispatching through the
+**same path a model-issued call takes**: interlock → hook → approver → outbox
+routing. If that path is shared, nothing about the security model changes and
+the tool inherits all of it.
+
+Two design points that are not free:
+
+- **Taint must update *within* the program, not at its start.** This is the
+  batching hole again, in a new place. That bug gated every call in a turn
+  against the taint as of the turn's *start*, so "read private data and send
+  it" in one assistant turn passed both gates; the fix was to gate on what the
+  turn *will* arm. A program that calls a private-data tool and then a sink is
+  the identical shape, and the interlock must see the second call with the
+  first call's taint already applied. Also note taint has to arm on the *call*,
+  not on what reaches the model — a value that stays in a Python variable and
+  is never printed still armed it. Both want tests that fail on the naive
+  implementation.
+- **Approval does not obviously scale.** A program making thirty tool calls
+  cannot prompt thirty times, and "approve the program" means approving
+  something the human has to read as code. Monty compiles to its own bytecode
+  and does type checking, so extracting the set of external functions a program
+  can reach *before* running it looks feasible — approve a capability set once,
+  then enforce it per call. That is a real open question and I have not
+  established the static analysis is sound.
+
+### Cautions
+
+- **Experimental**, and says so: "not ready for prime time", first released
+  February 2026.
+- **No classes, no context managers, no match statements, no third-party
+  packages**, and a partial stdlib. For tool-orchestration code that is mostly
+  irrelevant — loops, comprehensions, f-strings, `json`, `re`, `datetime`,
+  async are all present. For *data analysis* it is fatal: no numpy, no pandas.
+  So monty does not become a general "run a script" tool.
+- The supported-module list already differs between the README and Pydantic's
+  own article (`os` in one, `pathlib` in the other). Check it at integration
+  time rather than trusting either.
+- **An interpreter escape lands in the agent process**, because monty runs
+  in-process. That is hermes's point — *nothing inside the agent process
+  constitutes containment* — and the mitigation is that the blast radius is
+  whatever external functions were registered, which the embedder chooses. It
+  is an argument for the host functions keeping the path jail and the approver,
+  not for trusting the interpreter alone.
+
+**Verdict:** the strongest candidate found for the token-offloading lever, and
+it changes the ordering in that item — programmatic tool calling is no longer
+blocked on building a code sandbox, because a Rust-native one now exists.
+`shell`'s confinement story is unaffected: Landlock + seccomp remains the
+recommendation there.
