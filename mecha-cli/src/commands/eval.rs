@@ -112,6 +112,18 @@ pub struct Args {
     /// Compare previously written scorecards side by side instead of running.
     #[arg(long, num_args = 1.., conflicts_with_all = ["out", "fixture"])]
     pub compare: Vec<PathBuf>,
+
+    /// Run the whole set twice — rules-free, then with this machine's learned
+    /// rules — and report the per-case flips.
+    ///
+    /// The deliberate opt-in the no-learned-rules default reserves space for:
+    /// the delta is its own artifact, and neither arm is printed or written
+    /// as an ordinary scorecard, because a scorecard shaped by what this
+    /// machine learned last night is not comparable to anyone else's. This is
+    /// the coarse task-outcome A/B beside the validation ledger's probes —
+    /// with `--out`, both arms and the flips land in one clearly-marked JSON.
+    #[arg(long, conflicts_with = "compare")]
+    pub ab_rules: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -138,11 +150,50 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         fixture.display()
     );
 
+    if args.ab_rules {
+        return ab_rules(global, &args, &cases, &fixture).await;
+    }
+
+    let (scorecard, graded) = run_arm(global, &args, &cases, &fixture, false, "").await?;
+
+    print_scorecard(&scorecard, &graded, args.failures);
+
+    if let Some(path) = &args.out {
+        let report = Report {
+            scorecard: scorecard.clone(),
+            cases: graded
+                .iter()
+                .map(|g| serde_json::to_value(g).unwrap_or(serde_json::Value::Null))
+                .collect(),
+        };
+        std::fs::write(path, serde_json::to_string_pretty(&report)?)
+            .with_context(|| format!("writing {}", path.display()))?;
+        eprintln!("\nwrote {}", path.display());
+    }
+
+    // Non-zero when anything failed, so this can gate CI.
+    if scorecard.passed < scorecard.total {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// One full pass over the case set: prepare, run, grade. `with_rules` is the
+/// A/B lever — everything else about the two arms is identical by
+/// construction, because both come through here.
+async fn run_arm(
+    global: &GlobalOpts,
+    args: &Args,
+    cases: &[EvalCase],
+    fixture: &Path,
+    with_rules: bool,
+    arm: &str,
+) -> Result<(Scorecard, Vec<GradedCase>)> {
     // Force read-only and point the workspace at the fixture, whatever the
     // caller's flags or config said. An eval that can mutate its own fixture
     // isn't measuring anything repeatable.
     let mut opts = GlobalOpts {
-        workspace: Some(fixture.clone()),
+        workspace: Some(fixture.to_path_buf()),
         read_only: true,
         yes: false,
         ..global.clone()
@@ -155,8 +206,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Same reproducibility rule for learned rules: a scorecard that depends on
     // what this machine learned last night is not comparable to yesterday's,
     // or anyone else's. When the learning system itself is the thing being
-    // measured, that wants a deliberate opt-in flag, not an ambient default.
-    opts.no_learned_rules = true;
+    // measured, that wants a deliberate opt-in flag, not an ambient default —
+    // `--ab-rules` is that flag, and its treatment arm is the one place this
+    // is ever false.
+    opts.no_learned_rules = !with_rules;
     // And for hooks: a user's local policy scripts firing inside eval cases
     // would grade this machine's config, not the model.
     opts.no_hooks = true;
@@ -183,7 +236,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let sandbox =
             mecha_core::sandbox::Sandbox::new(prepared.config.sandbox.clone());
         let (tools, clients, errors) =
-            mecha_core::mcp::connect_all(&servers, &sandbox, &fixture).await;
+            mecha_core::mcp::connect_all(&servers, &sandbox, fixture).await;
         // Fatal where `setup` warns: a case file written against fixture
         // tools measures nothing without them — the judge rule again.
         anyhow::ensure!(
@@ -199,7 +252,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     // Build the judge before running anything. A case set that cannot be
     // graded should fail in the first second, not after an hour of inference.
-    let judge = build_judge(&args, &prepared, &cases)?;
+    let judge = build_judge(args, &prepared, cases)?;
 
     // With `--runs k` every case becomes k independent batch items — each its
     // own conversation, and (for sandboxed cases) its own staged workspace —
@@ -223,22 +276,25 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     // Stage a private workspace for every sandboxed item, up front, so a
-    // staging failure is not discovered halfway through the run.
+    // staging failure is not discovered halfway through the run. The arm
+    // label keeps an A/B's two passes — same process, same pid — from
+    // staging into each other's directories.
     let sandbox_root =
-        std::env::temp_dir().join(format!("mecha-eval-{}", std::process::id()));
+        std::env::temp_dir().join(format!("mecha-eval-{}{arm}", std::process::id()));
     let item_cases: Vec<(&str, &EvalCase)> =
         items.iter().map(|it| (it.id.as_str(), &cases[item_of[&it.id].0])).collect();
-    let contexts = prepare_contexts(&item_cases, &fixture, &sandbox_root, &prepared)?;
+    let contexts = prepare_contexts(&item_cases, fixture, &sandbox_root, &prepared)?;
     let sandboxed = item_cases.iter().filter(|(_, c)| c.sandbox).count();
 
     eprintln!(
-        "mecha eval: {} cases{} · {} ({}) · {} tools · fixture {}",
+        "mecha eval: {} cases{} · {} ({}) · {} tools · fixture {}{}",
         cases.len(),
         if runs > 1 { format!(" × {runs} runs") } else { String::new() },
         prepared.model,
         prepared.provider_name,
         prepared.agent.registry().len(),
-        fixture.display()
+        fixture.display(),
+        if with_rules { " · learned rules INJECTED (A/B treatment arm)" } else { "" }
     );
     // Repeated runs only measure reliability if they are actually independent
     // samples. A pinned seed replays token-for-token when requests run one at
@@ -341,21 +397,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         started.elapsed().as_millis() as u64,
     );
 
-    print_scorecard(&scorecard, &graded, args.failures);
-
-    if let Some(path) = &args.out {
-        let report = Report {
-            scorecard: scorecard.clone(),
-            cases: graded
-                .iter()
-                .map(|g| serde_json::to_value(g).unwrap_or(serde_json::Value::Null))
-                .collect(),
-        };
-        std::fs::write(path, serde_json::to_string_pretty(&report)?)
-            .with_context(|| format!("writing {}", path.display()))?;
-        eprintln!("\nwrote {}", path.display());
-    }
-
     if sandbox_root.exists() {
         if args.keep_workspaces {
             eprintln!("staged workspaces kept in {}", sandbox_root.display());
@@ -366,9 +407,90 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     }
 
-    // Non-zero when anything failed, so this can gate CI.
-    if scorecard.passed < scorecard.total {
-        std::process::exit(1);
+    Ok((scorecard, graded))
+}
+
+/// The `--ab-rules` report: both arms in full, so nothing about either is
+/// hidden, under a top-level shape `--compare` cannot mistake for a
+/// scorecard.
+#[derive(serde::Serialize)]
+struct AbReport {
+    ab_rules: bool,
+    without_rules: Report,
+    with_rules: Report,
+    flips: Vec<serde_json::Value>,
+}
+
+/// Run the set rules-free and rules-on and report the per-case flips.
+///
+/// Case-level pass means pass^k under `--runs`, per arm — reliability flips
+/// count, not lucky single runs. Exit code is always success on a completed
+/// measurement: the delta is a finding, not a gate.
+async fn ab_rules(
+    global: &GlobalOpts,
+    args: &Args,
+    cases: &[EvalCase],
+    fixture: &Path,
+) -> Result<()> {
+    // Fail before an hour of inference, not after: the treatment arm needs
+    // rules to measure.
+    let has_rules = mecha_core::learning::LearningStore::open_existing_default()
+        .and_then(|s| s.rules_prompt_block().ok().flatten())
+        .is_some();
+    anyhow::ensure!(has_rules, "--ab-rules: the learning store has no rules to measure");
+
+    eprintln!("── arm A: rules-free ──");
+    let (a_card, a_graded) = run_arm(global, args, cases, fixture, false, "a").await?;
+    eprintln!("── arm B: with this machine's learned rules ──");
+    let (b_card, b_graded) = run_arm(global, args, cases, fixture, true, "b").await?;
+
+    // A case passes an arm when every run of it passed — the same pass^k the
+    // scorecard reports.
+    let case_pass = |graded: &[GradedCase], id: &str| {
+        let runs: Vec<&GradedCase> = graded.iter().filter(|g| g.id == id).collect();
+        !runs.is_empty() && runs.iter().all(|g| g.passed)
+    };
+
+    let mut flips = Vec::new();
+    println!("\n── rules A/B ──");
+    println!("arm A (rules-free):  {}/{} cases", a_card.passed, a_card.total);
+    println!("arm B (with rules):  {}/{} cases", b_card.passed, b_card.total);
+    for case in cases {
+        let (a, b) = (case_pass(&a_graded, &case.id), case_pass(&b_graded, &case.id));
+        if a != b {
+            let label = if b { "IMPROVED" } else { "REGRESSED" };
+            println!("  {label}: {}", case.id);
+            flips.push(serde_json::json!({
+                "id": case.id,
+                "without_rules": a,
+                "with_rules": b,
+            }));
+        }
+    }
+    let net = b_card.passed as i64 - a_card.passed as i64;
+    println!(
+        "net: {net:+} case(s); {} flip(s) — judge-graded flips are a prompt to read the \
+         answers, not a verdict",
+        flips.len()
+    );
+
+    if let Some(path) = &args.out {
+        let report = |scorecard: &Scorecard, graded: &[GradedCase]| Report {
+            scorecard: scorecard.clone(),
+            cases: graded
+                .iter()
+                .map(|g| serde_json::to_value(g).unwrap_or(serde_json::Value::Null))
+                .collect(),
+        };
+        let ab = AbReport {
+            ab_rules: true,
+            without_rules: report(&a_card, &a_graded),
+            with_rules: report(&b_card, &b_graded),
+            flips,
+        };
+        std::fs::write(path, serde_json::to_string_pretty(&ab)?)
+            .with_context(|| format!("writing {}", path.display()))?;
+        eprintln!("\nwrote {}", path.display());
     }
     Ok(())
 }

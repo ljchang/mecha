@@ -46,6 +46,9 @@ echo "· validate (held-out + fresh, before learn consumes them)"
 echo "· learn (propose-only: unattended learning never applies its own output)"
 "$MECHA" learn -p "$PROVIDER" --holdout 0.25 --propose
 
+echo "· retirements (deterministic ledger scan; staged for review like any rule change)"
+"$MECHA" rules propose-retirements
+
 echo "· proposals awaiting review"
 "$MECHA" proposals
 
