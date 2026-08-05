@@ -11,6 +11,7 @@
 //! Each binary is one provider's MCP face, with its own credential store, so
 //! a deployment can wire either or both.
 
+pub mod accounts;
 pub mod google;
 pub mod http;
 pub mod mcp;
@@ -19,6 +20,7 @@ pub mod text;
 pub mod time;
 pub mod token;
 pub mod types;
+pub mod unified;
 
 /// Logging to **stderr only** — stdout belongs to the MCP transport, and a
 /// stray log line there is a protocol error.

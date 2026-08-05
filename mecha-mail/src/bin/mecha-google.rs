@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use mecha_mail::google::{auth, gmail::GmailProvider, server::GoogleTools};
+use mecha_mail::google::{auth, server::GoogleTools};
 use mecha_mail::{mcp, token};
 
 #[derive(Parser, Debug)]
@@ -64,43 +64,9 @@ async fn authenticate(
         .or_else(|| existing.as_ref().map(|c| c.client_secret.clone()))
         .unwrap_or_default();
 
-    let config = auth::google_oauth_config(client_id.clone(), client_secret.clone(), port);
-    let pkce = auth::generate_pkce();
-    // The PKCE verifier already proves the callback pairs with this attempt;
-    // state adds CSRF protection for the browser leg.
-    let state = auth::generate_pkce().code_verifier;
-    let url = auth::build_auth_url(&config, &pkce, &state);
-
-    eprintln!("Open this URL to authorize (listening on 127.0.0.1:{port}):\n\n{url}\n");
-    let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-
-    let (code, returned_state) = auth::wait_for_oauth_redirect(port).await?;
-    anyhow::ensure!(returned_state == state, "OAuth state mismatch — try again");
-
-    let tokens =
-        auth::exchange_code(&config, &code, &pkce.code_verifier, &mecha_mail::http::client())
-            .await?;
-    let refresh_token = tokens
-        .refresh_token
-        .clone()
-        .context("Google returned no refresh token; remove the app's access at myaccount.google.com/permissions and re-run")?;
-
-    // Whose mailbox did we just get? Also the first authenticated call, so a
-    // scope or consent problem surfaces here rather than at first use.
-    let account = GmailProvider::new(tokens.access_token.clone()).profile_address().await?;
-
-    token::save(
-        &path,
-        &token::StoredCredentials {
-            client_id,
-            client_secret,
-            tenant: None,
-            access_token: tokens.access_token,
-            refresh_token,
-            expires_at: tokens.expires_at.unwrap_or_default(),
-            account: Some(account.clone()),
-        },
-    )?;
+    let creds = auth::interactive_flow(client_id, client_secret, port).await?;
+    let account = creds.account.clone().unwrap_or_default();
+    token::save(&path, &creds)?;
     eprintln!("authenticated as {account}; credentials in {}", path.display());
     Ok(())
 }

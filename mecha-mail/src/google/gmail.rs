@@ -130,7 +130,13 @@ impl GmailProvider {
         let messages = json["messages"]
             .as_array()
             .ok_or_else(|| MailError::ParseError("thread has no messages array".into()))?;
-        Ok(messages.iter().map(parse_gmail_message).collect())
+        let mut emails: Vec<Email> = messages.iter().map(parse_gmail_message).collect();
+        // Oldest first is a promise callers build on — the unified reply
+        // tool answers `last()` as "the newest message" — and the API's
+        // array order is observed, not documented. The stamps are
+        // fixed-width ISO, so the string sort is chronological.
+        emails.sort_by(|a, b| a.date_received.cmp(&b.date_received));
+        Ok(emails)
     }
 
     /// Send via `messages.send`, returning the sent message's id. `body` is
