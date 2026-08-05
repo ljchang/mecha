@@ -189,6 +189,110 @@ pub fn thin_old_results(messages: &mut [Message], keep_recent: usize, keep_chars
     thinned
 }
 
+/// Starts every evicted result, so a second pass can tell it has already been
+/// here — and so the model can tell a stale result from a short one.
+pub const SUPERSEDED_MARKER: &str = "[stale:";
+
+/// Replace tool results that a later call has superseded.
+///
+/// Runs before thinning, and before any summary, because it is the only pass
+/// here that *removes damage* rather than trading tokens for fidelity: a
+/// superseded read is semantically related to the current state of the work
+/// and wrong about it, which is measurably worse than irrelevant bulk —
+/// related-but-wrong distractors cost 25–68% where unrelated content is
+/// near-free. A transcript holding two versions of the same file is exactly
+/// that shape, and deleting the old one is lossless: the newest result still
+/// says everything the transcript knows to be true.
+///
+/// What counts as "the same target":
+///
+/// - A string `path` argument, across tools — so an `fs_write` supersedes an
+///   earlier `fs_read` of the file it just changed, which is the case the
+///   distractor research names directly.
+/// - Otherwise the tool name plus its exact arguments — the model asked the
+///   same question twice, and the newer answer speaks for both.
+///
+/// Errors neither supersede nor get evicted: a failed call does not describe
+/// the target's state, and "what failed" is what keeps it from being retried.
+/// Returns how many results were evicted.
+pub fn evict_superseded_results(messages: &mut [Message]) -> usize {
+    // Which result answered each call, and whether it errored.
+    let mut errored = std::collections::HashMap::new();
+    for message in messages.iter() {
+        for block in &message.content {
+            if let Block::ToolResult { tool_use_id, is_error, .. } = block {
+                errored.insert(tool_use_id.clone(), *is_error);
+            }
+        }
+    }
+
+    // Every call in transcript order; the last non-error call per target is
+    // the authoritative one.
+    let mut calls: Vec<(String, String, String)> = Vec::new(); // (id, tool, target)
+    for message in messages.iter() {
+        for block in &message.content {
+            if let Block::ToolUse { id, name, input } = block {
+                calls.push((id.clone(), name.clone(), target_of(name, input)));
+            }
+        }
+    }
+    let mut authoritative: std::collections::HashMap<&str, &str> = Default::default();
+    for (id, _, target) in &calls {
+        if errored.get(id) == Some(&false) {
+            authoritative.insert(target, id);
+        }
+    }
+    // The tool behind the authoritative call, for the marker text.
+    let superseder: std::collections::HashMap<&str, &str> = calls
+        .iter()
+        .filter(|(id, _, target)| authoritative.get(target.as_str()) == Some(&id.as_str()))
+        .map(|(_, name, target)| (target.as_str(), name.as_str()))
+        .collect();
+
+    let call_of: std::collections::HashMap<&str, (&str, &str)> =
+        calls.iter().map(|(id, name, target)| (id.as_str(), (name.as_str(), target.as_str()))).collect();
+
+    let mut evicted = 0;
+    for message in messages.iter_mut() {
+        for block in &mut message.content {
+            let Block::ToolResult { tool_use_id, content, is_error } = block else { continue };
+            if *is_error || content.starts_with(SUPERSEDED_MARKER) {
+                continue;
+            }
+            let Some(&(name, target)) = call_of.get(tool_use_id.as_str()) else { continue };
+            // Superseded means a *different, later* call owns the target now.
+            match authoritative.get(target) {
+                Some(&winner) if winner != tool_use_id => {
+                    let later = superseder.get(target).copied().unwrap_or(name);
+                    // Name the recovery: a marker that only says "gone" leaves
+                    // the model to conclude the content never existed.
+                    *content = format!(
+                        "{SUPERSEDED_MARKER} a later {later} call covered the same \
+                         target, so this older result no longer reflects it. The \
+                         newest result is authoritative; call {name} again if this \
+                         content is needed.]"
+                    );
+                    evicted += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    evicted
+}
+
+/// What a call is *about*, for supersession.
+fn target_of(name: &str, input: &serde_json::Value) -> String {
+    match input.get("path").and_then(serde_json::Value::as_str) {
+        // Deliberately not prefixed with the tool name: the newest operation
+        // on a path speaks for the path, whichever tool performed it.
+        Some(path) => format!("path\u{0}{path}"),
+        // `serde_json::Map` is a BTreeMap, so this string is canonical even if
+        // the model orders the arguments differently between calls.
+        None => format!("{name}\u{0}{input}"),
+    }
+}
+
 /// Whether compacting would actually remove anything worth the round trip.
 ///
 /// A summarising call costs a request and its tokens; doing it to drop two
@@ -309,6 +413,134 @@ mod tests {
 
         assert_eq!(second, 0, "a second pass thinned already-thinned results");
         assert_eq!(after_one, after_two);
+    }
+
+    fn body_of(message: &Message) -> String {
+        message
+            .content
+            .iter()
+            .find_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn a_rereads_earlier_copy_is_evicted_and_the_newest_survives_whole() {
+        // Read the same file twice: the first copy is the near-miss distractor
+        // — same path, same symbols, possibly wrong content — and the second
+        // says everything the transcript knows to be true.
+        let mut m = vec![
+            Message::user("go"),
+            call("t0", "a.md"),
+            result("t0", "old contents"),
+            call("t1", "a.md"),
+            result("t1", "new contents"),
+        ];
+        assert_eq!(evict_superseded_results(&mut m), 1);
+        assert!(body_of(&m[2]).starts_with(SUPERSEDED_MARKER));
+        assert!(body_of(&m[2]).contains("fs_read"), "the marker names the recovery");
+        assert_eq!(body_of(&m[4]), "new contents", "the authoritative copy was touched");
+    }
+
+    #[test]
+    fn a_write_supersedes_an_earlier_read_of_the_same_path() {
+        // The exact shape the distractor research names: a file read left in
+        // context after an edit changed the file. The read is now wrong.
+        let mut m = vec![
+            Message::user("go"),
+            call("t0", "a.md"),
+            result("t0", "pre-edit contents"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "fs_write".into(),
+                input: serde_json::json!({"path": "a.md", "content": "post"}),
+            }]),
+            result("t1", "wrote 4 bytes"),
+        ];
+        assert_eq!(evict_superseded_results(&mut m), 1);
+        assert!(body_of(&m[2]).starts_with(SUPERSEDED_MARKER));
+        assert!(body_of(&m[2]).contains("fs_write"), "the marker says what superseded it");
+    }
+
+    #[test]
+    fn errors_neither_supersede_nor_get_evicted() {
+        let mut m = vec![
+            Message::user("go"),
+            call("t0", "a.md"),
+            result("t0", "good contents"),
+            call("t1", "a.md"),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "permission denied".into(),
+                is_error: true,
+            }]),
+        ];
+        // The later *failed* read says nothing about the file; the good copy
+        // must survive, and the failure must stay so it is not retried.
+        assert_eq!(evict_superseded_results(&mut m), 0);
+        assert_eq!(body_of(&m[2]), "good contents");
+        assert_eq!(body_of(&m[4]), "permission denied");
+    }
+
+    #[test]
+    fn different_targets_do_not_supersede_each_other() {
+        let mut m = vec![
+            Message::user("go"),
+            call("t0", "a.md"),
+            result("t0", "a contents"),
+            call("t1", "b.md"),
+            result("t1", "b contents"),
+        ];
+        assert_eq!(evict_superseded_results(&mut m), 0);
+    }
+
+    #[test]
+    fn identical_non_path_calls_dedup_and_different_arguments_do_not() {
+        let shell = |id: &str, cmd: &str| {
+            Message::assistant(vec![Block::ToolUse {
+                id: id.into(),
+                name: "shell".into(),
+                input: serde_json::json!({"command": cmd}),
+            }])
+        };
+        let mut m = vec![
+            Message::user("go"),
+            shell("t0", "cargo test"),
+            result("t0", "1 failed"),
+            shell("t1", "cargo build"),
+            result("t1", "ok"),
+            shell("t2", "cargo test"),
+            result("t2", "all passed"),
+        ];
+        // The first `cargo test` is stale — the suite has been re-run since —
+        // but `cargo build` asked a different question and keeps its answer.
+        assert_eq!(evict_superseded_results(&mut m), 1);
+        assert!(body_of(&m[2]).starts_with(SUPERSEDED_MARKER));
+        assert_eq!(body_of(&m[4]), "ok");
+        assert_eq!(body_of(&m[6]), "all passed");
+    }
+
+    #[test]
+    fn eviction_is_idempotent_and_never_touches_the_calls() {
+        let mut m = vec![
+            Message::user("go"),
+            call("t0", "a.md"),
+            result("t0", "old"),
+            call("t1", "a.md"),
+            result("t1", "new"),
+        ];
+        let calls_before: Vec<_> =
+            m.iter().flat_map(|m| m.tool_uses()).map(|(_, _, i)| i.clone()).collect();
+        assert_eq!(evict_superseded_results(&mut m), 1);
+        assert_eq!(evict_superseded_results(&mut m), 0, "a second pass re-evicted");
+
+        let calls_after: Vec<_> =
+            m.iter().flat_map(|m| m.tool_uses()).map(|(_, _, i)| i.clone()).collect();
+        assert_eq!(calls_before, calls_after, "eviction disturbed the tool calls");
+        assert!(orphaned_tool_results(&m).is_empty());
+        assert!(orphaned_tool_uses(&m).is_empty());
     }
 
     #[test]
