@@ -142,6 +142,18 @@ pub struct ToolCtx {
     pub workspace: PathBuf,
     pub shell_timeout: std::time::Duration,
     pub security: SecurityConfig,
+    /// The byte budget one *turn's* tool results share, divided equally
+    /// across the calls in the batch so one runaway tool cannot starve its
+    /// siblings (mecha executes a turn's calls concurrently, so they land
+    /// together). The old per-tool cap was 200 KB — ~50k tokens, 1.5× the
+    /// whole local context window, which is not a cap so much as a promise
+    /// to overflow.
+    pub output_budget_bytes: usize,
+    /// Where an oversized result is saved in full before its transcript copy
+    /// is cut. `None` disables spilling — the cut then names what was lost
+    /// instead of where to find it. Per-context on purpose: two eval cases
+    /// sharing one spill directory could read each other's output through it.
+    pub spill_dir: Option<PathBuf>,
 }
 
 impl Default for ToolCtx {
@@ -150,16 +162,25 @@ impl Default for ToolCtx {
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             shell_timeout: std::time::Duration::from_secs(120),
             security: SecurityConfig::default(),
+            output_budget_bytes: 24_000,
+            spill_dir: fresh_spill_dir(),
         }
     }
+}
+
+/// A spill directory no other context shares. Not created until first used.
+fn fresh_spill_dir() -> Option<PathBuf> {
+    Some(std::env::temp_dir().join(format!("mecha-spill-{}", uuid::Uuid::new_v4())))
 }
 
 impl ToolCtx {
     /// The same policy pointed at a different root. Used to give one run — an
     /// eval case, a batch item — its own isolated copy of a workspace without
-    /// rebuilding the agent around it.
+    /// rebuilding the agent around it. The spill directory is re-derived too:
+    /// a re-rooted context is a new isolation domain, and inheriting the old
+    /// one would let its runs read each other's spilled output.
     pub fn with_workspace(&self, workspace: impl Into<PathBuf>) -> Self {
-        ToolCtx { workspace: workspace.into(), ..self.clone() }
+        ToolCtx { workspace: workspace.into(), spill_dir: fresh_spill_dir(), ..self.clone() }
     }
 
     /// Resolve a model-supplied path against the workspace and prove it stays
@@ -199,14 +220,84 @@ impl ToolCtx {
         }
 
         let root = self.workspace.canonicalize().unwrap_or_else(|_| self.workspace.clone());
-        if !resolved.starts_with(&root) {
-            anyhow::bail!(
-                "path {raw:?} resolves outside the workspace ({})",
-                root.display()
-            );
+        if resolved.starts_with(&root) {
+            return Ok(resolved);
         }
-        Ok(resolved)
+        // The spill directory is the one sanctioned exception: oversized tool
+        // output is saved there, and the truncation marker tells the model to
+        // read the rest from exactly that path. Its contents are this
+        // context's own tool results, so nothing new becomes reachable.
+        if let Some(spill) = &self.spill_dir {
+            let spill_root = spill.canonicalize().unwrap_or_else(|_| spill.clone());
+            if resolved.starts_with(&spill_root) {
+                return Ok(resolved);
+            }
+        }
+        anyhow::bail!(
+            "path {raw:?} resolves outside the workspace ({})",
+            root.display()
+        )
     }
+}
+
+/// Floor under a result's share of the turn budget. A wide batch must not
+/// starve every result down to a marker with no content: below this, the
+/// division stops and the total budget is allowed to overrun instead.
+pub const SPILL_FLOOR_BYTES: usize = 4_096;
+
+/// Cut an oversized tool result down to `cap` bytes, saving the full output
+/// where the model can get it back.
+///
+/// The marker is written for the model, and it names the recovery — a
+/// truncation notice that only says "gone" leaves the model to conclude the
+/// rest never existed, and the elision line number is what makes the recovery
+/// a single call instead of a scan. A failed spill degrades to a plain cut
+/// that says the output was *not* saved; losing the tail must never lose the
+/// run.
+pub fn cap_result(content: String, cap: usize, spill_dir: Option<&Path>, tool: &str, id: &str) -> String {
+    if content.len() <= cap {
+        return content;
+    }
+    // Cut on a char boundary, never mid-codepoint.
+    let mut cut = cap;
+    while cut > 0 && !content.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let head = &content[..cut];
+    // The line the elision starts on. A cut mid-line means that same line —
+    // re-reading from it overlaps a little, which is the right direction.
+    let line = head.matches('\n').count() + 1;
+    let total = content.len();
+
+    let saved = spill_dir.and_then(|dir| {
+        std::fs::create_dir_all(dir).ok()?;
+        let file = dir.join(format!("{}-{}.txt", safe_name(tool), safe_name(id)));
+        std::fs::write(&file, &content).ok()?;
+        Some(file)
+    });
+
+    match saved {
+        Some(path) => format!(
+            "{head}\n\n[truncated by the harness: showing the first {cut} of {total} bytes; \
+             the rest begins on line {line}. The full output is saved at {path} — continue \
+             with fs_read {{\"path\": \"{path}\", \"offset\": {line}}}, or search it with \
+             grep.]",
+            path = path.display()
+        ),
+        None => format!(
+            "{head}\n\n[truncated by the harness: {omitted} of {total} bytes were dropped \
+             from line {line} on, and the full output could not be saved. Narrow the \
+             request and re-run the tool if the rest is needed.]",
+            omitted = total - cut
+        ),
+    }
+}
+
+/// Tool names and call ids become file names; anything else becomes `-`.
+fn safe_name(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect()
 }
 
 /// The decision an approver hands back for one pending call.
@@ -315,5 +406,106 @@ impl Registry {
             }
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mecha-cap-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_result_under_the_cap_is_untouched() {
+        let out = cap_result("short".into(), 100, None, "shell", "t1");
+        assert_eq!(out, "short");
+    }
+
+    #[test]
+    fn an_oversized_result_is_spilled_whole_and_the_marker_names_the_recovery() {
+        let dir = scratch("spill");
+        let body: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+
+        let out = cap_result(body.clone(), 200, Some(&dir), "shell", "t1");
+
+        // The transcript copy is bounded...
+        assert!(out.len() < body.len());
+        assert!(out.starts_with("line 1\n"));
+        // ...the disk copy is not: byte-identical, so nothing was lost.
+        let file = dir.join("shell-t1.txt");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), body);
+
+        // The marker gives the model a single call back to the rest: the
+        // path, and the line the elision starts on.
+        let line = body[..200].matches('\n').count() + 1;
+        assert!(out.contains(&file.display().to_string()), "{out}");
+        assert!(out.contains(&format!("\"offset\": {line}")), "{out}");
+        assert!(out.contains("fs_read"), "the recovery must be named: {out}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_failed_spill_degrades_to_a_cut_that_admits_the_loss() {
+        // A directory that cannot exist: spilling fails, the run must not.
+        let impossible = PathBuf::from("/dev/null/not-a-dir");
+        let body = "x".repeat(1000);
+        let out = cap_result(body, 100, Some(&impossible), "shell", "t1");
+
+        assert!(out.contains("could not be saved"), "{out}");
+        assert!(out.contains("re-run the tool"), "the fallback still names a recovery: {out}");
+        assert!(!out.contains("/dev/null"), "no path is promised that does not exist");
+    }
+
+    #[test]
+    fn the_cut_lands_on_a_char_boundary() {
+        // A cap that falls mid-codepoint must back up, not panic.
+        let body = "é".repeat(100); // 2 bytes per char
+        let out = cap_result(body, 33, None, "shell", "t1");
+        assert!(out.starts_with(&"é".repeat(16)));
+    }
+
+    #[test]
+    fn the_jail_admits_the_spill_directory_and_nothing_else_new() {
+        let workspace = scratch("ws");
+        let spill = scratch("spilldir");
+        let ctx = ToolCtx {
+            workspace: workspace.clone(),
+            spill_dir: Some(spill.clone()),
+            ..ToolCtx::default()
+        };
+
+        // The marker names an absolute spill path; fs_read must be able to
+        // follow it, or the recovery the model was promised is a lie.
+        std::fs::write(spill.join("shell-t1.txt"), "spilled").unwrap();
+        let resolved = ctx.resolve(&spill.join("shell-t1.txt").display().to_string()).unwrap();
+        assert!(resolved.ends_with("shell-t1.txt"));
+
+        // The exception is the spill directory, not the temp dir around it.
+        let elsewhere = std::env::temp_dir().join("mecha-cap-elsewhere.txt");
+        std::fs::write(&elsewhere, "no").unwrap();
+        assert!(ctx.resolve(&elsewhere.display().to_string()).is_err());
+
+        // And with spilling disabled there is no exception at all.
+        let no_spill = ToolCtx { workspace, spill_dir: None, ..ToolCtx::default() };
+        assert!(no_spill
+            .resolve(&spill.join("shell-t1.txt").display().to_string())
+            .is_err());
+
+        std::fs::remove_dir_all(&spill).ok();
+        std::fs::remove_file(&elsewhere).ok();
+    }
+
+    #[test]
+    fn a_rerooted_context_gets_its_own_spill_directory() {
+        // Two eval cases sharing one spill directory could read each other's
+        // output through it — the same isolation rule as the workspace copy.
+        let ctx = ToolCtx::default();
+        let rerooted = ctx.with_workspace(std::env::temp_dir());
+        assert_ne!(ctx.spill_dir, rerooted.spill_dir);
     }
 }

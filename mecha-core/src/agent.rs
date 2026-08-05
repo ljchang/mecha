@@ -834,9 +834,19 @@ impl Agent {
                 Err(e) if is_context_overflow(&e) && !compaction_gave_up => {
                     tracing::warn!("prompt overflowed the context window; compacting to recover");
                     crate::compact::evict_superseded_results(messages);
+                    // keep_recent 0, unlike the between-turns pass: the
+                    // request does not fit, so *something* must shrink, and in
+                    // the common shape — a short conversation holding one
+                    // enormous tool result — the oversized result IS the
+                    // recent tail. Protecting it here protects the run to
+                    // death; a thinned result can be re-fetched, a dead run
+                    // cannot. Measured, not hypothetical: a capped 48 KB
+                    // `seq` output still overflowed a 32k window, and the
+                    // tail-protecting recovery retried the same request into
+                    // the same 400.
                     crate::compact::thin_old_results(
                         messages,
-                        self.cfg.compact_keep_recent.max(1) * 2,
+                        0,
                         crate::compact::THINNED_RESULT_CHARS,
                     );
                     match self.compact(cx, messages, &events).await {
@@ -1700,7 +1710,23 @@ impl Agent {
         ))
         .await;
 
+        // The turn's results share one byte budget, divided equally across
+        // the batch — the calls land together, so an unbounded one starves
+        // its siblings, and a cap applied here rather than inside each tool
+        // covers MCP results too, which have no cap of their own. Applied
+        // before the untrusted wrapper so the wrapper's closing tag can
+        // never be what gets cut off.
+        let result_cap = (cx.tools.output_budget_bytes / executed.len().max(1))
+            .max(crate::tool::SPILL_FLOOR_BYTES);
+
         for (i, id, name, mut out) in executed {
+            out.content = crate::tool::cap_result(
+                out.content,
+                result_cap,
+                cx.tools.spill_dir.as_deref(),
+                &name,
+                &id,
+            );
             // Update taint from what actually ran. Errors count too: a failed
             // fetch can still return an attacker-controlled body.
             if let Some(tool) = self.registry.get(&name) {
@@ -2748,6 +2774,67 @@ mod tests {
             "a truncated summary reached the transcript"
         );
         assert_eq!(outcome.text, "done", "the run should carry on uncompacted");
+    }
+
+    #[tokio::test]
+    async fn a_turns_results_share_the_byte_budget_and_the_overflow_is_spilled() {
+        // Two 6 KB results against a 10 KB turn budget: each gets half, the
+        // full outputs land on disk, and the transcript carries the recovery.
+        let big = "x".repeat(6_000);
+        let calls = Message::assistant(vec![
+            Block::ToolUse { id: "t0".into(), name: "echo".into(), input: json!({"value": big}) },
+            Block::ToolUse { id: "t1".into(), name: "echo".into(), input: json!({"value": big}) },
+        ]);
+        let (agent, _) = agent_with(
+            vec![
+                CompletionResponse {
+                    message: calls,
+                    stop_reason: StopReason::ToolUse,
+                    usage: Usage { input_tokens: 10, output_tokens: 5, ..Usage::default() },
+                    refusal: None,
+                    model: "scripted-1".into(),
+                    malformed_tool_args: 0,
+                },
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+
+        let spill = std::env::temp_dir().join(format!("mecha-spill-test-{}", uuid::Uuid::new_v4()));
+        let mut cx = agent.context().as_ref().clone();
+        let mut tools = cx.tools.as_ref().clone();
+        tools.output_budget_bytes = 10_000;
+        tools.spill_dir = Some(spill.clone());
+        cx.tools = Arc::new(tools);
+
+        let mut convo = Conversation::user("go");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        let bodies: Vec<String> = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        for body in &bodies {
+            assert!(body.len() < 6_000, "the result was not capped: {} bytes", body.len());
+            assert!(body.contains("truncated by the harness"), "no marker");
+            assert!(body.contains("fs_read"), "the marker must name the recovery");
+        }
+
+        // Nothing was lost: both full outputs are on disk, byte for byte.
+        let mut spilled: Vec<_> = std::fs::read_dir(&spill).unwrap().flatten().collect();
+        spilled.sort_by_key(|e| e.file_name());
+        assert_eq!(spilled.len(), 2);
+        for entry in &spilled {
+            assert_eq!(std::fs::read_to_string(entry.path()).unwrap().len(), 6_000);
+        }
+
+        std::fs::remove_dir_all(&spill).ok();
     }
 
     #[tokio::test]

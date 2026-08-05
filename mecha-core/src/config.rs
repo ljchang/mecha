@@ -317,6 +317,11 @@ pub struct ToolsConfig {
     /// Default answer when nothing is watching to approve a call.
     pub permission_mode: PermissionMode,
     pub shell_timeout_secs: u64,
+    /// The byte budget one turn's tool results share, divided across the
+    /// batch. Oversized results are spilled to a file in full and cut in the
+    /// transcript, with the marker naming the path and the line to resume
+    /// from.
+    pub output_budget_bytes: usize,
 }
 
 impl Default for ToolsConfig {
@@ -327,6 +332,7 @@ impl Default for ToolsConfig {
             workspace: None,
             permission_mode: PermissionMode::Ask,
             shell_timeout_secs: 120,
+            output_budget_bytes: 24_000,
         }
     }
 }
@@ -657,6 +663,7 @@ struct ToolsLayer {
     workspace: Option<PathBuf>,
     permission_mode: Option<PermissionMode>,
     shell_timeout_secs: Option<u64>,
+    output_budget_bytes: Option<usize>,
 }
 
 impl ConfigLayer {
@@ -730,6 +737,9 @@ impl ConfigLayer {
             }
             if let Some(v) = x.shell_timeout_secs {
                 t.shell_timeout_secs = v;
+            }
+            if let Some(v) = x.output_budget_bytes {
+                t.output_budget_bytes = v;
             }
         }
         if let Some(x) = self.security {

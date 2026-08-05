@@ -78,6 +78,8 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         workspace: tools.workspace.clone(),
         shell_timeout: std::time::Duration::from_secs(cfg.tools.shell_timeout_secs),
         security: cfg.security.clone(),
+        output_budget_bytes: cfg.tools.output_budget_bytes,
+        ..ToolCtx::default()
     };
 
     // Validated even when --no-hooks skips installing them: a typo in a hook's
@@ -414,6 +416,10 @@ fn build_subagent(
             workspace: ctx.workspace.clone(),
             shell_timeout: ctx.shell_timeout,
             security: ctx.security.clone(),
+            output_budget_bytes: ctx.output_budget_bytes,
+            // A subagent is its own isolation domain; the default derives a
+            // fresh spill directory rather than sharing the parent's.
+            ..ToolCtx::default()
         },
         child_cfg,
         // Profile model wins; otherwise the child uses its provider's default.
