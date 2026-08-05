@@ -107,8 +107,12 @@ pub fn classify_http(status: u16, body: &str, retry_after: Option<Duration>) -> 
         429 => ProviderError::RateLimit { retry_after },
         529 => ProviderError::Overloaded,
         503 if lower.contains("overload") => ProviderError::Overloaded,
-        s if s >= 500 => ProviderError::ServerError,
+        // Before the 5xx arm: llama-server reports overflow as a *500* saying
+        // "Context size has been exceeded" (observed live). Classified as
+        // ServerError it would be retried with the same payload three times
+        // and then never reach the loop's compact-and-retry recovery.
         _ if overflow_text(body) => ProviderError::ContextOverflow,
+        s if s >= 500 => ProviderError::ServerError,
         _ if lower.contains("credit balance") || lower.contains("billing") => {
             ProviderError::Billing
         }

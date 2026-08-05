@@ -2089,6 +2089,7 @@ mod tests {
         });
         app.transcript.absorb(&AgentEvent::Nested {
             tool: "helper".into(),
+            id: Some("p".into()),
             event: Box::new(AgentEvent::ToolCall {
                 id: "c".into(),
                 name: "echo".into(),

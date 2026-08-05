@@ -206,6 +206,7 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                 AgentEvent::Nested { event, .. } if !opts.quiet => {
                     let (depth, inner) = unwrap_nested(AgentEvent::Nested {
                         tool: String::new(),
+                        id: None,
                         event,
                     });
                     let pad = "  ".repeat(depth);
