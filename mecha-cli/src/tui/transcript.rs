@@ -36,9 +36,29 @@ pub enum Entry {
     Error(String),
 }
 
+/// One entry's cached render: the styled lines and their wrapped height, valid
+/// for exactly one `(width, verbose)` pair. `key: None` means stale.
+///
+/// The codex insight, ported: committed history is immutable, so it renders
+/// once. Without this, every streamed token re-styled and re-wrapped the
+/// whole transcript — O(session) per frame, twice (once to measure, once to
+/// paint), which is what made the input line go sticky in exactly the
+/// long-horizon runs this harness is built for.
+#[derive(Default)]
+struct Cell {
+    key: Option<(u16, bool)>,
+    lines: Vec<Line<'static>>,
+    height: usize,
+}
+
 #[derive(Default)]
 pub struct Transcript {
     entries: Vec<Entry>,
+    /// Parallel to `entries`. Kept in lockstep by `push`; the only mutation
+    /// that isn't a push is a delta folding into the tail, which invalidates
+    /// the tail's cell. Width and verbose changes need no bookkeeping at all:
+    /// they change the key, and a mismatched key rebuilds lazily.
+    cache: Vec<Cell>,
     /// Screen lines scrolled past. Grows downward, 0 is the top.
     pub scroll: u16,
     /// Stick to the bottom as new output arrives — until the user scrolls up,
@@ -58,6 +78,15 @@ impl Transcript {
 
     pub fn push(&mut self, entry: Entry) {
         self.entries.push(entry);
+        self.cache.push(Cell::default());
+    }
+
+    /// The tail entry changed in place (a delta folded in): its cached render
+    /// is now a lie.
+    fn invalidate_last(&mut self) {
+        if let Some(cell) = self.cache.last_mut() {
+            cell.key = None;
+        }
     }
 
     /// Fold streaming output into the entry it belongs to, so a turn arriving
@@ -75,14 +104,34 @@ impl Transcript {
     fn absorb_at(&mut self, event: &AgentEvent, depth: u8) {
         match event {
             AgentEvent::Nested { event, .. } => self.absorb_at(event, depth.saturating_add(1)),
-            AgentEvent::TextDelta(t) => match self.entries.last_mut() {
-                Some(Entry::Assistant { text, depth: d }) if *d == depth => text.push_str(t),
-                _ => self.push(Entry::Assistant { text: t.clone(), depth }),
-            },
-            AgentEvent::ThinkingDelta(t) => match self.entries.last_mut() {
-                Some(Entry::Thinking { text, depth: d }) if *d == depth => text.push_str(t),
-                _ => self.push(Entry::Thinking { text: t.clone(), depth }),
-            },
+            AgentEvent::TextDelta(t) => {
+                let folded = match self.entries.last_mut() {
+                    Some(Entry::Assistant { text, depth: d }) if *d == depth => {
+                        text.push_str(t);
+                        true
+                    }
+                    _ => false,
+                };
+                if folded {
+                    self.invalidate_last();
+                } else {
+                    self.push(Entry::Assistant { text: t.clone(), depth });
+                }
+            }
+            AgentEvent::ThinkingDelta(t) => {
+                let folded = match self.entries.last_mut() {
+                    Some(Entry::Thinking { text, depth: d }) if *d == depth => {
+                        text.push_str(t);
+                        true
+                    }
+                    _ => false,
+                };
+                if folded {
+                    self.invalidate_last();
+                } else {
+                    self.push(Entry::Thinking { text: t.clone(), depth });
+                }
+            }
             AgentEvent::ToolCall { name, input, .. } => self.push(Entry::ToolCall {
                 name: name.clone(),
                 summary: crate::approve::summarize(name, input),
@@ -109,29 +158,42 @@ impl Transcript {
     /// it is on. Errors always render — an agent quietly recovering from a
     /// failure is exactly what you want to see — and so does the parent's own
     /// prose, which is the answer being waited on.
+    #[cfg(test)]
     fn visible(&self, entry: &Entry) -> bool {
-        match entry {
-            Entry::Thinking { .. } => self.verbose,
-            Entry::ToolResult { is_error, .. } => self.verbose || *is_error,
-            // A child's prose is detail — its conclusions come back to the
-            // parent through the tool result.
-            Entry::Assistant { depth, .. } => *depth == 0 || self.verbose,
-            _ => true,
-        }
+        visible(entry, self.verbose)
     }
 
-    /// Render to styled lines. Rebuilt every frame, which is cheap next to the
-    /// terminal write and keeps wrapping honest when the window is resized.
-    ///
-    /// Owned rather than borrowed from `self`, so `draw` can still adjust the
-    /// scroll after measuring the result.
+    /// Every visible entry rendered to styled lines, uncached — the reference
+    /// implementation the cell cache must agree with, kept for exactly the
+    /// tests that say so.
+    #[cfg(test)]
     fn lines(&self) -> Vec<Line<'static>> {
-        let mut out: Vec<Line<'static>> = Vec::new();
+        self.entries
+            .iter()
+            .filter(|e| self.visible(e))
+            .flat_map(entry_lines)
+            .collect()
+    }
+}
 
-        for entry in &self.entries {
-            if !self.visible(entry) {
-                continue;
-            }
+/// What `verbose` decides, in one place: see [`Transcript::visible`].
+fn visible(entry: &Entry, verbose: bool) -> bool {
+    match entry {
+        Entry::Thinking { .. } => verbose,
+        Entry::ToolResult { is_error, .. } => verbose || *is_error,
+        // A child's prose is detail — its conclusions come back to the
+        // parent through the tool result.
+        Entry::Assistant { depth, .. } => *depth == 0 || verbose,
+        _ => true,
+    }
+}
+
+/// One entry's styled lines. A free function so the cache refresh can hold
+/// `&mut` cells while rendering the entries beside them.
+fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = Vec::new();
+    {
+        {
             match entry {
                 Entry::User(text) => {
                     out.push(Line::from(vec![
@@ -221,18 +283,42 @@ impl Transcript {
                 }
             }
         }
-        out
     }
+    out
+}
 
+impl Transcript {
     /// Draw into `area`, honouring follow-mode and clamping the scroll so the
     /// view can never end up past the end of the content.
+    ///
+    /// Served from the cell cache: an ordinary streaming frame re-renders
+    /// only the tail entry, and only the cells intersecting the viewport are
+    /// cloned into the paragraph. A resize or a ^O toggle changes the cache
+    /// key and rebuilds everything exactly once. Safe to slice by cells
+    /// because ratatui wraps each `Line` independently — a wrap never crosses
+    /// an entry boundary.
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
-        let lines = self.lines();
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let key = (area.width, self.verbose);
+
+        // Refresh stale cells and take the running total — the whole-height
+        // measurement `line_count` used to redo per frame.
+        let mut total: usize = 0;
+        for (entry, cell) in self.entries.iter().zip(self.cache.iter_mut()) {
+            if cell.key != Some(key) {
+                cell.lines = if visible(entry, self.verbose) {
+                    entry_lines(entry)
+                } else {
+                    Vec::new()
+                };
+                cell.height = wrapped_height(&cell.lines, area.width);
+                cell.key = Some(key);
+            }
+            total += cell.height;
+        }
 
         // Wrapped height, which is what scrolling is measured in — not the
         // number of entries, and not the number of unwrapped lines.
-        let height = paragraph.line_count(area.width) as u16;
+        let height = total.min(u16::MAX as usize) as u16;
         let max_scroll = height.saturating_sub(area.height);
 
         if self.follow {
@@ -246,7 +332,36 @@ impl Transcript {
             }
         }
 
-        frame.render_widget(paragraph.scroll((self.scroll, 0)), area);
+        // Only the cells intersecting the viewport, with the scroll made
+        // local to the first of them.
+        let scroll = self.scroll as usize;
+        let end_wanted = scroll + area.height as usize;
+        let mut acc = 0usize;
+        let mut local_scroll = 0u16;
+        let mut started = false;
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for cell in &self.cache {
+            if cell.height == 0 {
+                continue;
+            }
+            let end = acc + cell.height;
+            if end > scroll && acc < end_wanted {
+                if !started {
+                    local_scroll = (scroll - acc) as u16;
+                    started = true;
+                }
+                lines.extend(cell.lines.iter().cloned());
+            }
+            acc = end;
+            if acc >= end_wanted {
+                break;
+            }
+        }
+
+        frame.render_widget(
+            Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((local_scroll, 0)),
+            area,
+        );
     }
 
     pub fn scroll_up(&mut self, lines: u16) {
@@ -263,6 +378,15 @@ impl Transcript {
     pub fn jump_to_bottom(&mut self) {
         self.follow = true;
     }
+}
+
+/// How many screen rows these lines occupy at `width`, wrapped the same way
+/// the paragraph will wrap them. Paid once per cell rebuild, not per frame.
+fn wrapped_height(lines: &[Line<'static>], width: u16) -> usize {
+    if lines.is_empty() {
+        return 0;
+    }
+    Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false }).line_count(width)
 }
 
 /// Two spaces per nesting level. A constant width, so a child's rows line up
@@ -338,6 +462,117 @@ mod tests {
 
         t.verbose = true;
         assert!(rendered(&t).contains("child says more"), "revealed by the toggle, folded");
+    }
+
+    /// Render `t` through the cell cache (the real `draw`) into a buffer.
+    fn cached_frame(t: &mut Transcript, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        use ratatui::backend::TestBackend;
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| t.draw(frame, frame.area())).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// Render `t` the pre-cache way — one paragraph of every visible line,
+    /// scrolled to wherever `draw` left `t.scroll` — into a buffer.
+    fn reference_frame(t: &Transcript, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        use ratatui::backend::TestBackend;
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Paragraph::new(t.lines())
+                        .wrap(Wrap { trim: false })
+                        .scroll((t.scroll, 0)),
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// A transcript with every entry kind, long text that wraps, and nesting.
+    fn busy_transcript(entries: usize) -> Transcript {
+        let mut t = Transcript::new(false);
+        for i in 0..entries {
+            t.push(Entry::User(format!("question {i}, padded so that it wraps at any sane width {}", "x".repeat(40))));
+            t.absorb(&call("fs_read"));
+            t.absorb(&AgentEvent::ToolResult {
+                id: format!("t{i}"),
+                name: "fs_read".into(),
+                is_error: i % 7 == 0,
+                content: format!("result {i} {}", "y".repeat(120)),
+            });
+            t.absorb(&nested("helper", call("echo")));
+            t.absorb(&AgentEvent::TextDelta(format!("answer {i} ")));
+            t.absorb(&AgentEvent::TextDelta("and the rest of it\n".into()));
+        }
+        t
+    }
+
+    #[test]
+    fn the_cached_frame_is_identical_to_the_uncached_one() {
+        // The whole risk of a render cache is a stale cell surviving a
+        // mutation. Every invalidation path in one test: initial render,
+        // a delta folding into the tail, a fresh entry, a resize (key
+        // change), the verbose toggle (key change), and a scroll.
+        let mut t = busy_transcript(30);
+
+        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "initial");
+
+        t.absorb(&AgentEvent::TextDelta("more streamed text".into()));
+        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "tail mutated");
+
+        t.push(Entry::Notice("a new entry".into()));
+        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "entry added");
+
+        assert_eq!(cached_frame(&mut t, 120, 20), reference_frame(&t, 120, 20), "resized wider");
+        assert_eq!(cached_frame(&mut t, 41, 20), reference_frame(&t, 41, 20), "resized narrower");
+
+        t.verbose = true;
+        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "verbose on");
+        t.verbose = false;
+        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "verbose off again");
+
+        t.scroll_up(17);
+        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "scrolled back");
+        t.scroll_up(9999);
+        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "clamped at the top");
+        t.jump_to_bottom();
+        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "followed again");
+    }
+
+    #[test]
+    #[ignore = "a measurement, not a regression test — run with --ignored --nocapture"]
+    fn frame_time_before_and_after_the_cache() {
+        let mut t = busy_transcript(100); // ~500 entries
+        let (width, height) = (130u16, 45u16);
+
+        // Warm the cache once, then measure steady-state streaming frames:
+        // one delta folds into the tail per frame, which is the real workload.
+        cached_frame(&mut t, width, height);
+        let start = std::time::Instant::now();
+        for _ in 0..100 {
+            t.absorb(&AgentEvent::TextDelta("token ".into()));
+            cached_frame(&mut t, width, height);
+        }
+        let cached = start.elapsed();
+
+        let start = std::time::Instant::now();
+        for _ in 0..100 {
+            t.absorb(&AgentEvent::TextDelta("token ".into()));
+            // The pre-cache pipeline: rebuild and re-wrap everything.
+            let lines = t.lines();
+            let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+            let _height = paragraph.line_count(width);
+            reference_frame(&t, width, height);
+        }
+        let uncached = start.elapsed();
+
+        println!(
+            "100 streaming frames over ~{} entries: cached {cached:?}, uncached {uncached:?} ({}x)",
+            t.entries.len(),
+            (uncached.as_nanos() / cached.as_nanos().max(1))
+        );
     }
 
     #[test]
