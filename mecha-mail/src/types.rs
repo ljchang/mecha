@@ -44,6 +44,9 @@ pub enum MailError {
     #[error("Parse error: {0}")]
     ParseError(String),
 
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
     #[error("Authentication error: {0}")]
     AuthError(String),
 }
