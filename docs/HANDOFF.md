@@ -708,7 +708,7 @@ Written because flowmail never had it in Rust: the **token lifecycle**
 429/5xx, and an HTML→text fallback for HTML-only mail. `threads.get` is the
 one API addition — flowmail rebuilt threads from SQL.
 
-Verified live on the real account (`lukejchang@gmail.com`), in this order:
+Verified live against a real Gmail account, in this order:
 
 | Check | Result |
 |---|---|

@@ -1,0 +1,155 @@
+---
+title: Installation
+sidebar_position: 1
+description: Build mecha from source with cargo, and the optional dependencies for the sandbox and the eval fixtures.
+---
+
+# Installation
+
+mecha is built from source. There are no published binaries yet, and no package
+in any distribution.
+
+## Requirements
+
+**Rust 1.85 or newer.** The workspace pins `rust-version = "1.85"` on edition
+2021, so an older toolchain fails at build time with a clear message rather than
+part-way through compiling a dependency.
+
+```bash
+rustc --version        # must be 1.85.0 or later
+rustup update stable   # if it is not
+```
+
+Nothing else is required to build. TLS comes from `rustls` rather than the
+system OpenSSL (`reqwest` is pulled in with `default-features = false` and the
+`rustls-tls` feature), so there is no `libssl-dev` step and no vendored C
+build.
+
+## Building
+
+```bash
+git clone https://github.com/ljchang/mecha
+cd mecha
+cargo build --release
+```
+
+The binary is `./target/release/mecha`. The crate that produces it is
+`mecha-cli`, but the binary is named `mecha` — that is the name every command in
+these docs uses.
+
+To put it on your `PATH`:
+
+```bash
+cargo install --path mecha-cli    # installs `mecha` into ~/.cargo/bin
+```
+
+Or symlink the release build, which keeps `cargo build` as the way you update
+it:
+
+```bash
+ln -s "$PWD/target/release/mecha" ~/.local/bin/mecha
+```
+
+The release profile uses thin LTO, so the first `--release` build takes a few
+minutes. Iterating on the code is faster with a debug build (`cargo build`,
+binary at `./target/debug/mecha`); use the release build for anything you
+actually run against a model, because the debug build spends noticeable time in
+JSON handling on large transcripts.
+
+### The other binaries
+
+The workspace has three members. `cargo build --release` builds all of them:
+
+| Binary | Crate | What it is |
+|---|---|---|
+| `mecha` | `mecha-cli` | The agent CLI. |
+| `mecha-mail` | `mecha-mail` | One MCP server over every configured account, whatever provider each uses. This is the one to wire up. |
+| `mecha-google` | `mecha-mail` | Gmail and Google Calendar only, with its own credential store. |
+| `mecha-outlook` | `mecha-mail` | Outlook mail and calendar over Microsoft Graph, its own credential store. |
+
+You do not need the mail binaries unless you want mail and calendar tools; see
+[Mail and calendar](/docs/features/mail).
+
+## Verifying the build
+
+```bash
+cargo test                 # unit tests, including a scripted-provider loop test
+cargo clippy --all-targets
+```
+
+The unit tests need no credentials and no network. A `ScriptedProvider` replays
+a fixed list of turns, which is how loop behaviour — tool dispatch, denials,
+budget exhaustion, error recovery — is tested without a model.
+
+Integration tests under `mecha-core/tests/` do need real execution: docker
+actually confining a command, an MCP server actually receiving an environment.
+They skip when the backend is absent. In CI that is a hazard, because a silently
+skipped test reads exactly like a passing one, so:
+
+```bash
+MECHA_TEST_REQUIRE_BACKENDS=1 cargo test    # every skip becomes a failure
+```
+
+## Optional dependencies
+
+None of these are needed to run an agent. Each unlocks one subsystem.
+
+### A sandbox backend, for confining `shell`
+
+By default `shell` runs commands as you, unconfined — the only sane default for
+a supervised CLI on a machine where the alternatives may not be installed.
+Confinement is opt-in through `[sandbox] kind`, and needs one of:
+
+```bash
+sudo apt install bubblewrap      # kind = "bwrap"
+# or use Docker                  # kind = "docker"
+```
+
+`bwrap` uses unprivileged user namespaces and costs a few milliseconds per
+command. Docker starts a throwaway container, which costs more, but works where
+user namespaces are locked down.
+
+On Ubuntu 23.10 and later, `bwrap` fails even when it is installed and
+`kernel.unprivileged_userns_clone=1`, because AppArmor gained a separate switch
+(`kernel.apparmor_restrict_unprivileged_userns=1`). Use `docker` there, or
+install an AppArmor profile.
+
+A configured sandbox that does not work is a startup failure, not a warning:
+`Sandbox::preflight` runs a real command through the real backend and fails with
+instructions. Silently falling back to unconfined execution would be worse than
+having no sandbox at all, because `shell` declares narrower capabilities when
+confined and the trifecta interlock believes it. See
+[Sandbox](/docs/features/sandbox).
+
+### Python 3, for regenerating eval fixtures
+
+The eval case set reads fixture files under `eval/workspace/`. Those fixtures
+are checked in, so running `mecha eval` needs no Python. Regenerating them does:
+
+```bash
+python3 scripts/build-eval-fixtures.py
+```
+
+It rewrites `eval/workspace/{audit,reports,kata}`, prints the gold answers the
+cases must assert, and checks that each kata fails as shipped and is solvable by
+a reference fix. The reason it is a generator rather than a directory of
+hand-written files: a gold answer typed by hand is a guess, and one shipped in
+this case set was wrong because a base rate got double-counted. A wrong gold
+answer measures nothing — every model fails it, and the failure means nothing.
+
+Python 3 is also what runs the fixture MCP servers used by
+`eval/pkg-cases.jsonl` (`eval/fixtures/pkg_server.py`), a frozen fake of a
+knowledge graph. The real one answers from live machine-local data, and a case
+graded against that measures nothing repeatable. See
+[Evaluation](/docs/features/evaluation).
+
+### Everything else
+
+Search backends, MCP servers, and mail accounts are configured rather than
+installed. They are covered in [Tools and MCP](/docs/features/tools-and-mcp) and
+the [configuration reference](/docs/reference/configuration).
+
+## Next
+
+[First run](/docs/getting-started/first-run) — point mecha at a provider and get
+an answer out of it.

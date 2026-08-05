@@ -1,0 +1,46 @@
+.heroBanner {
+  padding: 5rem 0 3rem;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.heroBanner :global(.hero__subtitle) {
+  max-width: 46rem;
+  margin: 0 auto 2rem;
+  color: var(--ifm-color-emphasis-700);
+  font-size: 1.25rem;
+}
+
+@media screen and (max-width: 996px) {
+  .heroBanner {
+    padding: 3rem 1rem 2rem;
+  }
+
+  .heroBanner :global(.hero__subtitle) {
+    font-size: 1.1rem;
+  }
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.sample {
+  padding: 1rem 0 4rem;
+}
+
+.sample h2 {
+  font-size: 1.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.sample p {
+  color: var(--ifm-color-emphasis-700);
+  font-size: 0.95rem;
+}
