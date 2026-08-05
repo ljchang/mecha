@@ -18,8 +18,8 @@ First thing to run in a fresh context:
 cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
-Expect **265 core + 55 CLI + 43 mail unit tests, 13 integration tests, 1
-doctest** — 377,
+Expect **270 core + 55 CLI + 65 mail unit tests, 13 integration tests, 1
+doctest** — 404,
 no warnings. The integration tests need docker (with `debian:stable-slim` and
 `python:3-slim` local) and `python3`; without them they skip and say so. In CI,
 set `MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of
@@ -56,7 +56,7 @@ A working agent harness, used and measured rather than just compiled.
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
 | Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/send/reject; edits mined as writing reflections |
-| Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar, extracted from flowmail, served as two MCP binaries; all sends and calendar writes outbox-routed |
+| Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar, extracted from flowmail; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning` |
 | Eval | 36 cases, 17 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `pkg-cases.jsonl` — 8 memory/interlock cases against fixture MCP servers (`--mcp-file`) |
 
@@ -692,6 +692,22 @@ staged message released through the outbox into the inbox.
   from `/events` + start filter — the worst of them, silent data loss),
   `/messages/{id}/reply` for threading, `$search` instead of a `$filter`
   that 400s beside `$orderby`, and comma-splitting `to`.
+
+**The unified surface followed (2026-08-05, commit `ea8149d`).** The two
+per-provider binaries stayed, but **`mecha-mail` is now the one deployments
+wire**: every account in `~/.mecha/mail/` (`accounts.toml`, `mecha-mail auth
+<name> --provider ...`, `import` for legacy logins) behind provider-neutral
+`mail_*`/`calendar_*` tools, so neither mecha nor the model knows Google or
+Microsoft exists. The design is in CLAUDE.md's mecha-mail section; the load-
+bearing choices: the model names an *account*, never a provider, and account
+names are baked into each tool schema as an enum; reads fan out across
+accounts (a failed account reports beside the others, fatal only when all
+fail); item ops require the account their id came from; creates use the
+default or error with "ask the user" (worded so because best-judgment wording
+measurably makes models invent). `mail_reply` unifies threading: Graph's
+reply endpoint on one side, synthesized Gmail addressing on the other. The
+outbox annotations ride unchanged on the unified tools (`assert_tool_surface`
+tests pin each surface).
 
 **Three more found by using it (2026-08-04, after the mail work landed):**
 
