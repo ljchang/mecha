@@ -169,14 +169,18 @@ impl Tool for Subagent {
             budget: Default::default(),
             // Cancelling the parent cancels the child with it: the child is
             // one of the parent's tool calls, and a Ctrl-C that left a
-            // subagent running would be a lie.
-            cancel: self.agent.context().cancel.clone(),
+            // subagent running would be a lie. From the *caller's* context —
+            // the agent's own default has no token, which is exactly how this
+            // used to wait out the whole child run.
+            cancel: ctx.cancel.clone(),
             // The child has its own transcript, and its own config decides
             // when to summarise it.
             compact_at_tokens: None,
             // A subagent inherits the caller's phase: delegating from a
-            // planning run must not be the way to get a write executed.
-            phase: self.agent.context().phase,
+            // planning run must not be the way to get a write executed. Also
+            // from the caller's context, for the same reason as `cancel` —
+            // the agent's own default is always `Execute`.
+            phase: ctx.phase,
             // The child agent's own hooks — the front-end that installs hooks
             // on the parent must install them on each child too (setup does),
             // or delegating becomes the way around a pre_tool policy.
@@ -189,7 +193,39 @@ impl Tool for Subagent {
             outbox: self.agent.context().outbox.clone(),
         };
 
-        let outcome = match self.agent.run_in(&cx, &mut convo, None).await {
+        // If somebody is watching the parent run, forward the child's events
+        // wrapped in `Nested`, so a delegation stops being a tool call that
+        // goes dark for minutes. A grandchild's events arrive here already
+        // wrapped once and get wrapped again — depth for free.
+        let (child_events, forwarder) = match &ctx.events {
+            Some(parent) => {
+                let parent = parent.clone();
+                let name = self.profile.name.clone();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                let task = tokio::spawn(async move {
+                    while let Some(event) = rx.recv().await {
+                        let _ = parent.send(crate::agent::AgentEvent::Nested {
+                            tool: name.clone(),
+                            event: Box::new(event),
+                        });
+                    }
+                });
+                (Some(tx), Some(task))
+            }
+            None => (None, None),
+        };
+
+        let result = self.agent.run_in(&cx, &mut convo, child_events).await;
+
+        // Drain the forwarder before building the result, on both paths.
+        // `run_in` dropped its sender on return, so this terminates — and it
+        // is what guarantees every `Nested` event lands *between* the parent's
+        // `ToolCall` and `ToolResult` rather than racing past the latter.
+        if let Some(task) = forwarder {
+            let _ = task.await;
+        }
+
+        let outcome = match result {
             Ok(o) => o,
             Err(e) => {
                 return Ok(ToolOutput::err(format!(

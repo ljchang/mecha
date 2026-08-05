@@ -42,6 +42,11 @@ pub enum AgentEvent {
     /// The transcript was summarised to fit the context window.
     Compacted { messages_before: usize, messages_after: usize, prompt_tokens: u64 },
     Done(Box<RunOutcome>),
+    /// Something happening inside a tool that contains a run of its own — a
+    /// subagent's turn, seen from the parent. `tool` is the parent-visible
+    /// tool name; the boxed event is the child's own. A grandchild arrives
+    /// already wrapped, so depth is the nesting count.
+    Nested { tool: String, event: Box<AgentEvent> },
 }
 
 /// Does this error mean "the prompt did not fit"?
@@ -703,6 +708,24 @@ impl Agent {
         convo: &mut Conversation,
         events: Option<UnboundedSender<AgentEvent>>,
     ) -> Result<RunOutcome> {
+        // Run-scoped state a tool cannot otherwise see, stamped onto the
+        // `ToolCtx` once here rather than at every call site that builds a
+        // `RunContext`. A tool that *contains* a run — a subagent — reads
+        // these to forward events, chain cancellation, and inherit the phase;
+        // without the stamp each of those silently defaults off. Done
+        // unconditionally: one clone per run, and a conditional here is a
+        // fourth copy of the bug this fixes.
+        let stamped = RunContext {
+            tools: Arc::new(ToolCtx {
+                events: events.clone(),
+                cancel: cx.cancel.clone(),
+                phase: cx.phase,
+                ..(*cx.tools).clone()
+            }),
+            ..cx.clone()
+        };
+        let cx = &stamped;
+
         let mut usage = Usage::default();
         let mut turns = 0;
         let mut trace: Vec<ToolCallTrace> = Vec::new();
@@ -1968,13 +1991,24 @@ mod tests {
     }
 
     fn agent_with(turns: Vec<CompletionResponse>, mode: PermissionMode) -> (Agent, Arc<ScriptedProvider>) {
+        agent_with_tools(turns, vec![Arc::new(EchoTool), Arc::new(WriteTool)], mode)
+    }
+
+    /// Like [`agent_with`], but the caller picks the registry — a child agent
+    /// behind a [`Subagent`] needs its own tools, not the parent's fixtures.
+    fn agent_with_tools(
+        turns: Vec<CompletionResponse>,
+        tools: Vec<Arc<dyn Tool>>,
+        mode: PermissionMode,
+    ) -> (Agent, Arc<ScriptedProvider>) {
         let provider = Arc::new(ScriptedProvider {
             turns: Mutex::new(turns),
             seen: Mutex::new(Vec::new()),
         });
         let mut registry = Registry::new();
-        registry.insert(Arc::new(EchoTool));
-        registry.insert(Arc::new(WriteTool));
+        for tool in tools {
+            registry.insert(tool);
+        }
 
         struct Shared(Arc<ScriptedProvider>);
         #[async_trait]
@@ -3198,12 +3232,221 @@ mod tests {
     #[tokio::test]
     async fn a_subagent_cannot_be_used_to_escape_the_planning_phase() {
         // Delegating out of a planning run must not be the way to get a write
-        // executed; the child inherits the phase.
-        let (agent, _) = agent_with(vec![], PermissionMode::Allow);
-        let cx = agent.context().as_ref().clone().with_phase(Phase::Plan);
-        assert_eq!(cx.phase, Phase::Plan);
-        assert!(!cx.phase.allows(false), "planning permitted a writing tool");
-        assert!(cx.phase.allows(true), "planning hid a read-only tool");
+        // executed; the child inherits the phase *through the tool call*. The
+        // previous version of this test asserted `Phase::allows` arithmetic
+        // and never ran a subagent — which is how the child actually running
+        // in `Execute` survived unnoticed.
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct FlaggedWrite(Arc<AtomicBool>);
+        #[async_trait]
+        impl Tool for FlaggedWrite {
+            fn name(&self) -> &str { "fs_write" }
+            fn description(&self) -> &str { "Write a file." }
+            fn input_schema(&self) -> Value { json!({"type": "object"}) }
+            fn read_only(&self) -> bool { false }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                self.0.store(true, Ordering::SeqCst);
+                Ok(ToolOutput::ok("written"))
+            }
+        }
+
+        let wrote = Arc::new(AtomicBool::new(false));
+        let (child, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse { id: "c1".into(), name: "fs_write".into(), input: json!({}) }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("child done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(FlaggedWrite(Arc::clone(&wrote)))],
+            PermissionMode::Allow,
+        );
+
+        let (parent, _) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse { id: "p1".into(), name: "helper".into(), input: json!({"task": "write it"}) }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("planned")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut parent = parent;
+        parent.registry_mut().insert(Arc::new(crate::subagent::Subagent::new(
+            crate::subagent::SubagentProfile { name: "helper".into(), ..Default::default() },
+            Arc::new(child),
+        )));
+
+        let cx = parent.context().as_ref().clone().with_phase(Phase::Plan);
+        let mut convo = Conversation::from(vec![Message::user("plan something")]);
+        let outcome = parent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.text, "planned");
+        assert!(
+            !wrote.load(Ordering::SeqCst),
+            "a plan-phase parent's subagent executed a write — the phase did not inherit"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_subagents_events_surface_as_nested_and_land_inside_the_parents_call() {
+        let (child, _) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse { id: "c1".into(), name: "echo".into(), input: json!({"value": "pong"}) }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("child answer")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+
+        let (mut parent, _) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse { id: "p1".into(), name: "helper".into(), input: json!({"task": "go"}) }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        parent.registry_mut().insert(Arc::new(crate::subagent::Subagent::new(
+            crate::subagent::SubagentProfile { name: "helper".into(), ..Default::default() },
+            Arc::new(child),
+        )));
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        parent.run(&mut convo, Some(tx)).await.unwrap();
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+
+        let call = events.iter().position(
+            |e| matches!(e, AgentEvent::ToolCall { name, .. } if name == "helper"),
+        );
+        let result = events.iter().position(
+            |e| matches!(e, AgentEvent::ToolResult { name, .. } if name == "helper"),
+        );
+        let nested: Vec<usize> = events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, AgentEvent::Nested { tool, .. } if tool == "helper"))
+            .map(|(i, _)| i)
+            .collect();
+
+        let (call, result) = (call.expect("no parent ToolCall"), result.expect("no parent ToolResult"));
+        assert!(!nested.is_empty(), "the child's events never surfaced");
+        assert!(
+            nested.iter().all(|&i| call < i && i < result),
+            "nested events must land between the parent's ToolCall and its ToolResult: \
+             call={call} result={result} nested={nested:?}"
+        );
+        // The wrapped events are the child's own, not a paraphrase.
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::Nested { tool, event } if tool == "helper"
+                    && matches!(event.as_ref(), AgentEvent::ToolCall { name, .. } if name == "echo")
+            )),
+            "the child's echo call should be visible inside a Nested event"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_parent_run_reaches_a_running_subagent() {
+        // The child's provider cancels the *parent's* token during its first
+        // turn. If the token chains, the child stops at its next turn boundary
+        // and its second scripted turn is never consumed; if it does not — the
+        // old behaviour — the child runs to completion with the parent's
+        // Ctrl-C politely waiting for it.
+        struct CancelsMidRun {
+            token: CancellationToken,
+            turns: Mutex<Vec<CompletionResponse>>,
+        }
+        #[async_trait]
+        impl Provider for CancelsMidRun {
+            fn id(&self) -> &str { "cancels" }
+            fn default_model(&self) -> &str { "cancels-1" }
+            async fn complete(
+                &self,
+                _req: &CompletionRequest,
+                _sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                self.token.cancel();
+                let mut turns = self.turns.lock().unwrap();
+                anyhow::ensure!(!turns.is_empty(), "provider ran out of scripted turns");
+                Ok(turns.remove(0))
+            }
+        }
+
+        let token = CancellationToken::new();
+        let remaining = Arc::new(CancelsMidRun {
+            token: token.clone(),
+            turns: Mutex::new(vec![
+                assistant(
+                    vec![Block::ToolUse { id: "c1".into(), name: "echo".into(), input: json!({"value": "hi"}) }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("child ran to completion")], StopReason::EndTurn),
+            ]),
+        });
+
+        struct Shared(Arc<CancelsMidRun>);
+        #[async_trait]
+        impl Provider for Shared {
+            fn id(&self) -> &str { self.0.id() }
+            fn default_model(&self) -> &str { self.0.default_model() }
+            async fn complete(
+                &self,
+                req: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                self.0.complete(req, sink).await
+            }
+        }
+
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(EchoTool));
+        let child = Agent::new(
+            Box::new(Shared(Arc::clone(&remaining))),
+            registry,
+            Arc::new(ModeApprover { mode: PermissionMode::Allow }),
+            ToolCtx { workspace: std::env::temp_dir(), ..Default::default() },
+            AgentConfig::default(),
+            None,
+        )
+        .unwrap();
+
+        let (mut parent, _) = agent_with(
+            vec![assistant(
+                vec![Block::ToolUse { id: "p1".into(), name: "helper".into(), input: json!({"task": "go"}) }],
+                StopReason::ToolUse,
+            )],
+            PermissionMode::Allow,
+        );
+        parent.registry_mut().insert(Arc::new(crate::subagent::Subagent::new(
+            crate::subagent::SubagentProfile { name: "helper".into(), ..Default::default() },
+            Arc::new(child),
+        )));
+
+        let cx = parent.context().as_ref().clone().with_cancel(token);
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = parent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Interrupted);
+        assert_eq!(
+            remaining.turns.lock().unwrap().len(),
+            1,
+            "the child consumed its second turn after the parent was cancelled — \
+             the token did not chain"
+        );
     }
 
     #[tokio::test]

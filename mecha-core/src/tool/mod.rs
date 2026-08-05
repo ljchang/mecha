@@ -154,6 +154,26 @@ pub struct ToolCtx {
     /// instead of where to find it. Per-context on purpose: two eval cases
     /// sharing one spill directory could read each other's output through it.
     pub spill_dir: Option<PathBuf>,
+    /// The run's event channel, so a tool that *contains* a run — a subagent —
+    /// can surface its progress instead of going dark until it returns.
+    ///
+    /// Display-only, and treat it that way: any tool (including a third-party
+    /// MCP server's) can send fabricated events down this channel, so nothing
+    /// that matters may key off it. Conversation state, taint, and run
+    /// completion all come from the loop and the caller's join handle, never
+    /// from events. Stamped by [`Agent::run_in`] per run; `None` everywhere
+    /// nobody is watching (batch, eval).
+    ///
+    /// [`Agent::run_in`]: crate::agent::Agent::run_in
+    pub events: Option<tokio::sync::mpsc::UnboundedSender<crate::agent::AgentEvent>>,
+    /// The run's cancellation token. A tool that contains a run passes it on,
+    /// so cancelling the parent actually cancels the child instead of politely
+    /// waiting out its entire run. Stamped by `Agent::run_in`, like `events`.
+    pub cancel: Option<tokio_util::sync::CancellationToken>,
+    /// The run's phase. A tool that contains a run passes it on, so delegation
+    /// is not the way to get a write executed from a planning run. Stamped by
+    /// `Agent::run_in`, like `events`.
+    pub phase: crate::agent::Phase,
 }
 
 impl Default for ToolCtx {
@@ -164,6 +184,9 @@ impl Default for ToolCtx {
             security: SecurityConfig::default(),
             output_budget_bytes: 24_000,
             spill_dir: fresh_spill_dir(),
+            events: None,
+            cancel: None,
+            phase: crate::agent::Phase::default(),
         }
     }
 }
