@@ -57,6 +57,7 @@ everything that isn't a read.
 | `mecha distill` | Summarise closed sessions into episodes staged to the knowledge graph. |
 | `mecha outbox` | Review staged sends: list / show / edit / send / reject. Tools named in `[outbox]` stage drafts instead of executing. |
 | `mecha proposals` | Review gated rule changes from the learning pass: list / show / accept / reject. |
+| `mecha trigger` | Prompts that run on a schedule: `add` / `list` / `next` / `run` / `tick` / `daemon`. See Triggers. |
 | `mecha tools` | List the tool surface. `--schema` shows exactly what the model sees. |
 | `mecha sessions list\|show\|path` | Inspect saved transcripts. |
 | `mecha config show\|path\|init` | See what settings are in effect. |
@@ -107,6 +108,59 @@ event = "pre_tool"                    # pre_tool | post_tool | session_end
 tools = ["shell"]                     # empty means every tool
 command = "~/.mecha/hooks/no-force-push.sh"
 ```
+
+## Triggers
+
+A trigger is a prompt on a cron schedule, run unattended:
+
+```bash
+mecha trigger add briefing \
+  --schedule '0 7 * * 1-5' \
+  --prompt "Summarise anything in my inbox that needs an answer today, \
+            and what's on my calendar." \
+  --catch-up 3h --notify 'notify-send "mecha briefing"'
+
+mecha trigger next            # when everything fires next
+mecha trigger run briefing    # fire it now, without consuming the scheduled slot
+mecha trigger tick --dry-run  # what would fire, and why
+```
+
+Something has to drive the clock. `mecha trigger daemon` ticks once a minute;
+equivalently, point a systemd timer or a crontab line at `mecha trigger tick`
+— being due is computed from the run ledger and the clock, so every driver
+reaches the same answer. `scripts/mecha-triggers.service` is the daemon as a
+systemd user unit.
+
+In the TUI, `/triggers` is the same thing with a keyboard: the list shows what
+is scheduled and when it next fires, enter opens the prompt, settings, recent
+runs and the last briefing it produced, and `e` edits, `space` enables or
+disables, `r` runs one now, `c` stops one that is running, `x` deletes. A run
+started there is a separate process, so it keeps going — and keeps the
+interface live — however long it takes.
+
+Definitions live in `~/.mecha/triggers/<name>.toml`, one per trigger, and are
+plain files you can edit; every fire appends to `runs.jsonl` beside them
+(`mecha trigger runs`). The full answer stays in the session transcript, which
+is what `--notify` is handed on stdin.
+
+What makes a scheduled run safe is mostly not in this feature:
+
+- Tools named in `[outbox]` **stage drafts instead of sending**, so overnight
+  inbox triage leaves you a review queue rather than sent mail.
+- Triggers are **read-only by default**. Staging still works under read-only,
+  because staging executes nothing — pass `--yes` at `add` time only if the
+  run genuinely needs to write or execute.
+- A trigger run reads `~/.mecha/config.toml` **only**, never a `mecha.toml`
+  from the directory it starts in: a cloned repository must not be able to
+  shape an unattended run.
+- The trifecta interlock, the path jail, the sandbox and the budgets all apply
+  exactly as they do interactively. Each run gets a fresh conversation, so
+  taint never carries over from yesterday.
+
+Missed slots are collapsed: a machine that was off for a week owes one run of
+each trigger, not a week's worth. `--catch-up` (`always`, `never`, or a
+duration) decides whether a stale slot still runs at all, and a skip is
+recorded so you can see why nothing arrived.
 
 ## Hooks
 
