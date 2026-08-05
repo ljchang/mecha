@@ -29,6 +29,18 @@ pub enum Args {
         /// Session id or unique prefix.
         id: String,
     },
+
+    /// Total token usage — and cost, where prices are configured — across
+    /// saved sessions, grouped by provider and model.
+    Stats {
+        /// Only sessions started in the last N days.
+        #[arg(long)]
+        days: Option<i64>,
+
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
@@ -101,9 +113,126 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
         }
 
         Args::Path { id } => println!("{}", Session::find(&dir, &id)?.display()),
+
+        Args::Stats { days, json } => stats(&dir, days, json)?,
     }
 
     Ok(())
+}
+
+/// One row of the rollup: everything recorded under one provider+model pair.
+#[derive(Default)]
+struct StatRow {
+    sessions: u64,
+    turns: u64,
+    usage: mecha_core::message::Usage,
+    /// Priced at *today's* configured rates — the transcript records tokens,
+    /// not prices, so historical runs are re-priced, not remembered.
+    cost_usd: f64,
+    priced: bool,
+}
+
+fn stats(dir: &std::path::Path, days: Option<i64>, json: bool) -> Result<()> {
+    let config = mecha_core::config::Config::load(&std::env::current_dir()?)?;
+    let cutoff = days.map(|d| chrono::Utc::now() - chrono::Duration::days(d));
+
+    let mut rows = std::collections::BTreeMap::<(String, String), StatRow>::new();
+    for (meta, path) in Session::list(dir)? {
+        if let Some(cutoff) = cutoff {
+            if meta.created_at < cutoff {
+                continue;
+            }
+        }
+        // A torn transcript still counts what it recorded; one unreadable
+        // file must not sink the report.
+        let (usage, turns) = Session::usage_totals(&path).unwrap_or_default();
+        let pricing = config.providers.get(&meta.provider).and_then(|p| p.pricing());
+
+        let row = rows.entry((meta.provider, meta.model)).or_default();
+        row.sessions += 1;
+        row.turns += turns as u64;
+        if let Some(pricing) = &pricing {
+            row.cost_usd += usage.cost_usd(pricing);
+            row.priced = true;
+        }
+        row.usage.add(&usage);
+    }
+
+    if json {
+        let items: Vec<_> = rows
+            .iter()
+            .map(|((provider, model), r)| {
+                serde_json::json!({
+                    "provider": provider,
+                    "model": model,
+                    "sessions": r.sessions,
+                    "turns": r.turns,
+                    "input_tokens": r.usage.input_tokens,
+                    "output_tokens": r.usage.output_tokens,
+                    "cache_creation_input_tokens": r.usage.cache_creation_input_tokens,
+                    "cache_read_input_tokens": r.usage.cache_read_input_tokens,
+                    "cost_usd": r.priced.then_some(r.cost_usd),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&items)?);
+        return Ok(());
+    }
+
+    if rows.is_empty() {
+        println!("no sessions in {}", dir.display());
+        return Ok(());
+    }
+
+    println!(
+        "{:<34} {:>8} {:>7} {:>9} {:>9} {:>9} {:>9} {:>10}",
+        "provider/model", "sessions", "turns", "input", "output", "cache-w", "cache-r", "cost"
+    );
+    let mut total = StatRow::default();
+    for ((provider, model), r) in &rows {
+        println!(
+            "{:<34} {:>8} {:>7} {:>9} {:>9} {:>9} {:>9} {:>10}",
+            format!("{provider}/{model}"),
+            r.sessions,
+            r.turns,
+            fmt_tokens(r.usage.input_tokens),
+            fmt_tokens(r.usage.output_tokens),
+            fmt_tokens(r.usage.cache_creation_input_tokens),
+            fmt_tokens(r.usage.cache_read_input_tokens),
+            // A local model with no prices really does cost nothing; only
+            // rows with a configured price claim a dollar figure.
+            if r.priced { format!("${:.2}", r.cost_usd) } else { "—".into() },
+        );
+        total.sessions += r.sessions;
+        total.turns += r.turns;
+        total.usage.add(&r.usage);
+        total.cost_usd += r.cost_usd;
+        total.priced |= r.priced;
+    }
+    println!(
+        "{:<34} {:>8} {:>7} {:>9} {:>9} {:>9} {:>9} {:>10}",
+        "total",
+        total.sessions,
+        total.turns,
+        fmt_tokens(total.usage.input_tokens),
+        fmt_tokens(total.usage.output_tokens),
+        fmt_tokens(total.usage.cache_creation_input_tokens),
+        fmt_tokens(total.usage.cache_read_input_tokens),
+        if total.priced { format!("${:.2}", total.cost_usd) } else { "—".into() },
+    );
+    if total.priced {
+        println!("\ncost is at today's configured prices, not the prices at run time");
+    }
+
+    Ok(())
+}
+
+fn fmt_tokens(n: u64) -> String {
+    match n {
+        0..=9_999 => n.to_string(),
+        10_000..=9_999_999 => format!("{:.1}k", n as f64 / 1_000.0),
+        _ => format!("{:.1}M", n as f64 / 1_000_000.0),
+    }
 }
 
 fn first_line(s: &str) -> String {

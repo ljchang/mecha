@@ -71,3 +71,22 @@ pub use config::Config;
 pub use message::{Block, Effort, Message, Role, StopReason, Usage};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Create a directory (and its parents) and make the leaf owner-only.
+///
+/// Transcripts, staged outbox drafts, the learning store and spilled tool
+/// output all carry the user's private data — mail bodies included, now that
+/// mail is wired — so their directories get the rule the mail token files
+/// already enforce on themselves (0600). The leaf only, on purpose: parents
+/// like `~/.mecha` also hold things the user may deliberately share, and the
+/// sensitive data lives below the leaf. Idempotent, and tightens a
+/// pre-existing directory too.
+pub fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}

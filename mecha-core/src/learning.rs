@@ -289,7 +289,11 @@ impl LearningStore {
     /// audit trail is lost, the data is not.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        std::fs::create_dir_all(root.join("rules"))
+        crate::create_private_dir(&root.join("rules"))
+            .with_context(|| format!("creating {}", root.display()))?;
+        // The root holds reflections and ledgers directly, so it gets the
+        // owner-only rule itself, not only through its subdirectory.
+        crate::create_private_dir(&root)
             .with_context(|| format!("creating {}", root.display()))?;
         if !root.join(".git").exists() {
             let _ = std::process::Command::new("git")
@@ -600,7 +604,7 @@ impl LearningStore {
     /// must never read a half-written file from a nightly pass.
     pub fn write_proposal(&self, p: &Proposal) -> Result<()> {
         let dir = self.root.join("proposals");
-        std::fs::create_dir_all(&dir)?;
+        crate::create_private_dir(&dir)?;
         let path = dir.join(format!("{}.json", p.id));
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_string_pretty(p)?)?;

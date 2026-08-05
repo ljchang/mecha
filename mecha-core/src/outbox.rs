@@ -130,7 +130,7 @@ impl OutboxStore {
 
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        std::fs::create_dir_all(&root)
+        crate::create_private_dir(&root)
             .with_context(|| format!("creating {}", root.display()))?;
         Ok(OutboxStore { root })
     }

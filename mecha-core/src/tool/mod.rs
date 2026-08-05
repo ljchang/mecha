@@ -300,7 +300,9 @@ pub fn cap_result(content: String, cap: usize, spill_dir: Option<&Path>, tool: &
     let total = content.len();
 
     let saved = spill_dir.and_then(|dir| {
-        std::fs::create_dir_all(dir).ok()?;
+        // Owner-only: spilled output is tool results in full — the same
+        // sensitivity as the transcript, sitting in the shared temp dir.
+        crate::create_private_dir(dir).ok()?;
         // A random component, because the call id alone can collide: batch
         // items and non-sandboxed eval cases share one context, and a local
         // server under a pinned seed can hand identical requests identical
