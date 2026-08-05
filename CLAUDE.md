@@ -246,7 +246,7 @@ model asked for out loud. Two rules:
   the network to let one server reach its own API.
 
 On Ubuntu 23.10+, `bwrap` fails even when installed and
-`unprivileged_userns_clone=1`, because AppArmor gained a separate switch:
+`kernel.unprivileged_userns_clone=1`, because AppArmor gained a separate switch:
 `kernel.apparmor_restrict_unprivileged_userns=1`. Use `docker` there, or install
 an AppArmor profile. `mecha tools` prints the active sandbox, and
 `mecha tools --json` prints each tool's capabilities.
