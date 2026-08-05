@@ -152,7 +152,7 @@ impl GmailProvider {
         bcc: Option<&str>,
         in_reply_to: Option<&str>,
     ) -> Result<String, MailError> {
-        let raw_message = build_gmail_raw_message(to, subject, body, cc, bcc, in_reply_to);
+        let raw_message = build_gmail_raw_message(to, subject, body, cc, bcc, in_reply_to)?;
         let encoded = URL_SAFE.encode(raw_message.as_bytes());
 
         let mut payload = serde_json::json!({ "raw": encoded });
@@ -194,6 +194,22 @@ pub fn valid_reply_message_id(mid: &str) -> bool {
     !mid.is_empty() && !mid.chars().any(|c| c == '\r' || c == '\n' || c == '\0')
 }
 
+/// Refuse a header value an extra header could be smuggled through. To, Cc,
+/// Bcc and Subject are model-drafted — which makes them injection-reachable —
+/// and a CR or LF inside one starts a new header line in the raw message
+/// (`\r\nBcc: attacker@…`). Same rule as [`valid_reply_message_id`], which
+/// guards the one header that comes from *incoming* mail. Refused rather than
+/// stripped: silently rewriting an attack hides it, where an error surfaces
+/// it to the model and the user.
+fn checked_header(name: &str, value: &str) -> Result<(), MailError> {
+    if value.chars().any(|c| c == '\r' || c == '\n' || c == '\0') {
+        return Err(MailError::InvalidInput(format!(
+            "the {name} value contains a line break; mail header values must be a single line"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn build_gmail_raw_message(
     to: &str,
     subject: &str,
@@ -201,15 +217,19 @@ pub(crate) fn build_gmail_raw_message(
     cc: Option<&str>,
     bcc: Option<&str>,
     in_reply_to: Option<&str>,
-) -> String {
+) -> Result<String, MailError> {
+    checked_header("to", to)?;
+    checked_header("subject", subject)?;
     let mut headers = format!("To: {to}\r\n");
     if let Some(cc_val) = cc {
         if !cc_val.is_empty() {
+            checked_header("cc", cc_val)?;
             headers.push_str(&format!("Cc: {cc_val}\r\n"));
         }
     }
     if let Some(bcc_val) = bcc {
         if !bcc_val.is_empty() {
+            checked_header("bcc", bcc_val)?;
             headers.push_str(&format!("Bcc: {bcc_val}\r\n"));
         }
     }
@@ -221,7 +241,7 @@ pub(crate) fn build_gmail_raw_message(
     headers.push_str(&format!(
         "Subject: {subject}\r\nContent-Type: text/html; charset=utf-8\r\n\r\n{body}"
     ));
-    headers
+    Ok(headers)
 }
 
 /// Pull the RFC Message-ID out of a Gmail header array (case-insensitive).
@@ -465,14 +485,16 @@ mod tests {
             None,
             None,
             Some("<abc@mail.gmail.com>"),
-        );
+        )
+        .unwrap();
         assert!(raw.contains("In-Reply-To: <abc@mail.gmail.com>"));
         assert!(raw.contains("References: <abc@mail.gmail.com>"));
         assert!(raw.contains("To: bob@example.com"));
         // Reply headers belong in the header block, before the body separator.
         assert!(raw.find("In-Reply-To").unwrap() < raw.find("\r\n\r\n").unwrap());
 
-        let raw2 = build_gmail_raw_message("bob@example.com", "Hi", "<p>x</p>", None, None, None);
+        let raw2 = build_gmail_raw_message("bob@example.com", "Hi", "<p>x</p>", None, None, None)
+            .unwrap();
         assert!(!raw2.contains("In-Reply-To"));
         assert!(!raw2.contains("References"));
     }
@@ -490,8 +512,39 @@ mod tests {
             None,
             None,
             Some("<a@b>\r\nBcc: attacker@evil.com"),
-        );
+        )
+        .unwrap();
         assert!(!raw.contains("attacker@evil.com"), "injected header must not survive");
+    }
+
+    #[test]
+    fn an_injected_addressing_or_subject_header_is_refused() {
+        // Every one of these values is model-drafted, so a prompt injection
+        // can reach them: a CR/LF inside any of them starts a new header line
+        // in the raw message. The reply Message-ID was already guarded; these
+        // were not, and body newlines must of course stay legal.
+        let smuggle = "x\r\nBcc: attacker@evil.com";
+        for (to, subject, cc, bcc) in [
+            (smuggle, "Hi", None, None),
+            ("bob@example.com", smuggle, None, None),
+            ("bob@example.com", "Hi", Some(smuggle), None),
+            ("bob@example.com", "Hi", None, Some(smuggle)),
+        ] {
+            let err = build_gmail_raw_message(to, subject, "<p>x</p>", cc, bcc, None)
+                .expect_err("a header value with a line break must be refused");
+            assert!(err.to_string().contains("line break"), "{err}");
+        }
+
+        let raw = build_gmail_raw_message(
+            "bob@example.com",
+            "Hi",
+            "<p>line one</p>\r\n<p>line two</p>",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(raw.contains("line two"), "the body keeps its newlines");
     }
 
     #[test]
