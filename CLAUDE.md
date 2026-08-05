@@ -85,8 +85,13 @@ raw HTTP. Things that will 400 if forgotten:
 - `stop_reason: "refusal"` arrives as **HTTP 200**. Always check the stop reason
   before reading content.
 - Prompt caching is a prefix match: render order is tools → system → messages,
-  so the `cache_control` breakpoint goes on the last system block and covers the
-  tools too. Anything volatile must come after it.
+  so a `cache_control` breakpoint goes on the last system block and covers the
+  tools too. A second, *moving* breakpoint goes on the last message block
+  (never a thinking block — the API rejects it there): the transcript is
+  append-only between turns, so each request is a prefix of the next and the
+  whole history reads from cache instead of being re-sent uncached every
+  turn. Verified live: a two-request tool round-trip paid 8 uncached input
+  tokens total, with turn 1's write (18,494) read back in full by turn 2.
 
 Model IDs are exact strings with no date suffix (`claude-opus-5`).
 
@@ -347,8 +352,21 @@ not estimated, so it counts cached tokens too. Off by default: compaction is
 lossy, and paraphrasing someone's conversation because it got long is their
 decision.
 
-Three things that decide the design:
+Four things that decide the design:
 
+- **Stale results are evicted before anything is summarised.**
+  `evict_superseded_results` runs first at both compaction sites (threshold
+  and overflow recovery): when a later call covers the same target — the same
+  `path` across tools, so a write supersedes an earlier read of the file it
+  changed, or an identical repeated call otherwise — the older result is
+  replaced with a marker naming the recovery. This is the only pass that
+  *removes damage* rather than trading tokens for fidelity: a superseded read
+  is related to the current state and wrong about it, which the distractor
+  literature puts at 25–68% harm where unrelated bulk is near-free. Errors
+  neither supersede nor get evicted — a failed call says nothing about the
+  target, and "what failed" is what stops it being retried. If eviction (or
+  thinning) freed anything, the summary is deferred a turn to see if it was
+  enough.
 - **The cut has to be legal, not convenient.** A `tool_result` whose `tool_use`
   is gone is a 400, and that is the whole run. Tool results arrive in the user
   message right after the assistant turn that asked for them, so the only safe
@@ -359,6 +377,17 @@ Three things that decide the design:
   sending `tool_result`s on a request that declares no tools, and llama-server
   answers that with an empty completion. Found by running it, not by reading the
   spec.
+- **Summaries are validated before they install** (`compact_validate`, on by
+  default). Two layers: a truncated summary (`stop_reason: max_tokens`) is
+  refused deterministically — it lost its ending, which is where "what
+  remained" lives — and a second tool-less call reads the summary beside the
+  transcript it replaces and lists what is missing. Omissions trigger **one**
+  regeneration with the omissions named; the producer cannot see its own
+  gaps, and naming them is the intervention. The validator is quality
+  improvement, not a gate: an unusable or failed verdict installs the summary
+  with a warning, because a run that needs to compact to survive must still
+  compact. This is deliberately *not* completion-gating on an LLM judge — it
+  is a grounded comparison of two texts both present in the request.
 - **Taint survives compaction.** Summarising away the text of a hostile page
   does not un-read it. Taint lives on `Conversation`, which the compaction code
   never touches — the type does the work, and there is a test.
@@ -384,6 +413,16 @@ kinds of check, in descending order of how much they are worth:
   summary was ever taken. None of it is visible in the answer text, and a case
   that asserts an outcome it never exercised is worse than no case.
 - Everything a model says about its own work is hearsay. Grade the artifact.
+
+`--runs k` repeats every case k times and reports **pass^k** (all k runs pass)
+beside pass@k (any run). Reliability decays much faster than mean success, and
+a single-run scorecard cannot tell a flaky case from a solid one — the gap
+between the two numbers is the model's unreliability, which is usually the
+finding. Sandboxed cases stage one private workspace *per run*, so the k
+samples stay independent. Two caveats: a pinned seed at `--concurrency 1`
+replays token-for-token, making the k runs one sample counted k times (the
+harness warns); and `passed`/`by_tag` in a multi-run scorecard mean pass^k, so
+compare it only against scorecards taken at the same k.
 
 What a case can ask for beyond the defaults:
 
