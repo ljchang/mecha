@@ -246,6 +246,74 @@ because silently falling back to unconfined execution is worse than no sandbox.
 If that is not implemented on the factory side, the confinement claim is
 decoration.
 
+### 2.2c Six corrections to the surface above
+
+Brainstormed after writing §2.2a down. Five of these are things that table got
+wrong or left out; the first is the one that improves the whole shape.
+
+**1. `bundle_render` is a separate tool, and the trust boundary turns out to be
+the workflow boundary.** §2.3 splits rendering from publishing because
+rendering executes notebook code. The *workflow* wants the same split for an
+unrelated reason: **rendering is cheap and publishing is expensive**, because
+publishing costs a human review. Without a render tool, every iteration —
+render, look, fix a chart, render again — is a staged outbox item somebody has
+to reject. So:
+
+| Tool | Cost | Routed | Takes |
+|---|---|---|---|
+| `bundle_render` | cheap, local, no network | no | a template + a source path |
+| `bundle_publish` | one human review | **yes** | an already-rendered directory |
+
+The agent renders, reads the output back with `fs_read`, fixes it, and publishes
+once. That the security split and the ergonomic split land on the same line is
+a good sign the line is real. It also simplifies `bundle_publish`, which no
+longer needs to know what a template is.
+
+**2. The URL is knowable at staging time, and the tool should return it.** A
+staged call returns "drafted, not sent", which would normally mean the agent
+cannot tell the user where the report will live. But versions are
+content-addressed and the share URL is `/b/<id>/` — **both computable at home,
+before the POST**. So the staged response carries the real final URL. Without
+this, every published artifact needs a second conversation to find out where it
+went.
+
+**3. `target = "molab"` cannot mean what §7.7 implies, and that is my error.**
+molab has no publish API — that was the finding that disqualified it as a
+platform. So `target` cannot be a parameter that routes a publish. It describes
+the bundle's *intended homes*: `factory` is the only automatable one, and
+`molab` emits a launch-button URL plus a manual instruction for the human. Any
+tool schema offering `molab` as a publish destination is offering something the
+tool cannot do.
+
+**4. `bundle_unpublish` should exist, for discoverability rather than
+capability.** §2.2a says there is no delete and that taking something down is
+`bundle_alias` to nothing plus a visibility flag. Correct, and useless: a model
+asked to "take that down" will look for a takedown tool, not deduce it from
+alias semantics. Name the composite. It still destroys nothing — versions stay
+immutable and the ledger keeps the row — but it is findable, and a tool surface
+a model cannot navigate is a tool surface that gets worked around.
+
+**5. The vendoring gate must name the URLs it found.** "Vendoring failed" is
+unactionable; `Ok(ToolOutput { is_error: true })` exists so the model can
+recover, and recovery here means knowing *which* external reference survived.
+The error lists every one, with the file and line. Same reasoning as every
+other expected failure in this project: reserve `Err` for what the model cannot
+route around.
+
+**6. Cross-run read-back is still open.** §6 mirrors bundles to
+`~/.mecha/bundles/`, which no jailed run can read, and the workspace copy
+belongs to the run that made it. So *this* run can read what it published and a
+*later* run cannot — which is the question that started this entire line of
+work, answered for one hop and not two. Either a `bundle_fetch` tool pulls a
+published bundle back into the current workspace, or trigger workspaces are
+stable and named. **Unresolved**, and it should be resolved before the read-back
+claim is repeated anywhere.
+
+And one smaller thing, recorded rather than solved: **staging takes no lock**,
+deliberately, so a retried tool call stages twice. Content-addressing makes the
+duplicate detectable — identical bytes are the same version — so review should
+collapse duplicates rather than the agent trying not to create them.
+
 ### 2.2b A staged publish is not a staged email, and the outbox assumes it is
 
 A real gap, found by writing the surface down rather than by using it.
