@@ -16,6 +16,7 @@
 //! ```text
 //! reflections.jsonl        append-only evidence, one line per reflection
 //! mined.jsonl              session ids already mined, one per line
+//! distilled.jsonl          session ids already distilled to the graph
 //! rules/<domain>.user.toml     the user's own rules — never written by code
 //! rules/<domain>.learned.toml  rewritten at consolidation
 //! ```
@@ -278,6 +279,27 @@ impl LearningStore {
 
     pub fn mark_outbox_mined(&self, item_id: &str) -> Result<()> {
         self.append_line("mined_outbox.jsonl", item_id)
+    }
+
+    /// Sessions already distilled to the knowledge graph — `mecha distill`'s
+    /// ledger. Kept in this store, not beside the sessions, for the same
+    /// reasons the mining ledgers are: the writer lock covers the
+    /// read-then-mark race between two detached `session_end` hooks, and the
+    /// git history says when each push happened.
+    pub fn distilled_sessions(&self) -> Result<HashSet<String>> {
+        let path = self.root.join("distilled.jsonl");
+        if !path.exists() {
+            return Ok(HashSet::new());
+        }
+        Ok(std::fs::read_to_string(&path)?
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect())
+    }
+
+    pub fn mark_distilled(&self, session_id: &str) -> Result<()> {
+        self.append_line("distilled.jsonl", session_id)
     }
 
     fn rules_path(&self, domain: &str, kind: &str) -> PathBuf {
@@ -1502,6 +1524,12 @@ mod tests {
 
         store.mark_mined("s1").unwrap();
         assert!(store.mined_sessions().unwrap().contains("s1"));
+
+        // The distill ledger is a separate file: marking a session mined must
+        // not make it look distilled, and vice versa.
+        assert!(!store.distilled_sessions().unwrap().contains("s1"));
+        store.mark_distilled("s1").unwrap();
+        assert!(store.distilled_sessions().unwrap().contains("s1"));
 
         std::fs::remove_dir_all(store.root()).ok();
     }

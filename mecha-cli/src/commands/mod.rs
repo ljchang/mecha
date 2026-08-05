@@ -1,6 +1,7 @@
 pub mod batch;
 pub mod chat;
 pub mod config;
+pub mod distill;
 pub mod eval;
 pub mod learn;
 pub mod outbox;

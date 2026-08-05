@@ -18,7 +18,8 @@ First thing to run in a fresh context:
 cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
-Expect **198 core + 26 CLI unit tests, 13 integration tests, 1 doctest** — 238,
+Expect **265 core + 55 CLI + 43 mail unit tests, 13 integration tests, 1
+doctest** — 377,
 no warnings. The integration tests need docker (with `debian:stable-slim` and
 `python:3-slim` local) and `python3`; without them they skip and say so. In CI,
 set `MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of
@@ -411,9 +412,13 @@ the user would ask a personal assistant later.
   pkg read. Records cannot vouch for themselves through an untrusted channel.
   If it hurts, the fix is pkg-side: a read tool scoped to self-authored +
   curated records. Not needed yet; web-first ordering covers it.
-- **`kg_upsert` stages `fact` and `alias` only — no episode kind.** Session-end
-  distillation lands as episode-shaped facts until pkg grows one. Queue with
-  the pending `readOnlyHint` annotations as one small pkg work-package.
+- ~~**`kg_upsert` stages `fact` and `alias` only — no episode kind.**~~ Both
+  halves of the queued pkg work-package have now shipped: the `readOnlyHint`
+  annotations (pkg, 2026-08-04 — read tools declare `readOnlyHint`,
+  `openWorldHint` explicitly false everywhere, `kg_upsert`
+  `destructiveHint: false`) and the **episode kind (pkg, 2026-08-05)**, which
+  is what session-end distillation pushes through (see the Reflexion section
+  below).
 - ~~**Trace-graded pkg eval cases need a fixture MCP server**~~ — built
   2026-08-04, and it *is* also the interlock fixture, as predicted: see the
   struck-through multi-turn interlock bullet in item 4 for what landed
@@ -424,7 +429,8 @@ the user would ask a personal assistant later.
 hooks, with session-end distillation as the first consumer → outbox in core →
 calendar *reads* → calendar writes and email through the outbox. Calendar
 writes are the trifecta in one tool (invites send; descriptions exfiltrate),
-so they do not jump the queue ahead of the outbox.
+so they do not jump the queue ahead of the outbox. *(Every stage of this
+roadmap has now shipped — distillation, the last leg, on 2026-08-05.)*
 
 ### 3b. Research backlog (raised 2026-08-04, not yet acted on)
 
@@ -562,7 +568,14 @@ a runtime "is it done yet", and the answer must be a command's exit code.
   reviewers, graded by test scripts; wrap mecha as a Harbor
   `BaseInstalledAgent` so mecha's own sandbox and tools are what get measured.
   Budget ~15h at k=1 and ~74h at k=5 on local inference, and note concurrency
-  breaks the seed. Then **AgentDojo** (97 tasks + 629 injection cases, grades
+  breaks the seed. **The adapter is built** (2026-08-05, `bench/mecha_agent.py`
+  — a `MechaAgent(BaseInstalledAgent)` — plus `bench/run.sh`, commit d933a56):
+  `run.sh` refuses to measure against a llama-server whose `total_slots != 1`
+  (the `-np 1` confound) and runs a socat forwarder for the run's duration so
+  task containers can reach the host's loopback-bound model server. An
+  oracle-agent sweep to find which of the 89 tasks are viable on arm64 sits
+  incomplete in `jobs/oracle-arm64-sweep/` (18 of 89 trials done, mean 0.61
+  on the completed ones); the full mecha run has not been taken yet. Then **AgentDojo** (97 tasks + 629 injection cases, grades
   utility *and* attack-success jointly — the only public measurement of what
   the interlock is for, and the only one that will price its false-refusal
   cost), and **SWE-bench Bash Only** as the minimum-viable-harness control
@@ -1153,11 +1166,18 @@ reversed it mid-run. No principled rule wins that counterfactual; only an
 overfitted one does. The evidence line put exactly that judgement in front
 of the reviewer, which is the job.
 
-Still to build: session-end **distillation to pkg** (the other reading of
-"session-end consumer": episode-shaped facts staged to the graph — deferred
-until the staged-write mechanics with pkg are settled). The outbox slots in
-as the email capture point when it lands; the behavior system needed nothing
-the harness did not already record.
+~~Still to build: session-end **distillation to pkg**~~ — **built 2026-08-05**,
+both halves the same day. pkg's `kg_upsert` grew the episode kind it was
+waiting on (evidence, not belief: the episode lands source-owned under
+`agent:mecha`, and pkg's extractor turns it into candidates that wait in the
+review queue — the staging guardrail intact), and `mecha distill`
+(`mecha-core/src/distill.rs`, `commands/distill.rs`) is the consumer: one
+model call per closed session against the compaction renderer's prose,
+skip-when-nothing-durable, taint snapshot recorded on the episode's meta
+(recorded, not gating — the provenance argument is in CLAUDE.md), ledgered in
+the learning store (`distilled.jsonl`, same writer lock) with pkg's
+`(source, source_id)` key as the second idempotence layer. Wired as a second
+`session_end` hook and into `ruminate.sh` ahead of validate/learn.
 
 **`pkg` as memory.** Wired, and the design is now settled — see item 3, which
 supersedes the turn-start retrieval idea this paragraph used to propose
@@ -1170,33 +1190,13 @@ separation that matters.
 **Triggers.** Cron, file watchers, inbound webhooks. Sandboxing exists now, so
 this is unblocked.
 
-**TUI polish.** The `todo` list is not a live pane, and nested subagent calls
-render flat rather than as a tool-call tree.
-
-**Detail level is fixed at launch, and should be a toggle** (asked for
-2026-08-04). Today `Transcript::new(global.verbose)` freezes it from `-v`
-(`tui/mod.rs:315`): thinking renders only when verbose (`transcript.rs:60`),
-tool results only when verbose or an error (`:71`), tool *calls* always. So
-the default is already the quiet one — what is missing is changing your mind
-mid-session, which the slash-command menu makes cheap (`/verbose`, beside
-`/mode` and `/usage`).
-
-The catch worth knowing before starting: when verbose is off the thinking
-deltas are **discarded, not buffered**, so a toggle can only affect
-subsequent turns. Claude-Code-style *retroactive* expansion — collapse a
-turn's reasoning, expand it later — means keeping the text on the entry and
-choosing at render time.
-
-**Decided 2026-08-04: the retroactive ctrl-o version is what is wanted**, not
-the cheap forward-only toggle. So `Transcript` keeps thinking text on the
-entry regardless of the flag, and `verbose` stops gating *ingest* and starts
-gating *render*. Two consequences to design for rather than discover: a long
-run's reasoning is then held in the TUI's own memory for the session (bound
-it, or a day-long session grows without limit — this is display state, so
-dropping the oldest is fine and unlike compaction loses nothing the model
-needs), and the entry needs a collapsed/expanded bit per turn plus a
-keybinding, which is where the work actually is. `-v` becomes the initial
-state of that bit rather than a different code path.
+**~~TUI polish~~ — built 2026-08-05** (see item 4 and the addendum at the top
+of `docs/TUI-RESEARCH.md`). The live todo pane, nested subagent rendering, and
+the retroactive `^O` disclosure toggle all landed — the transcript now records
+thinking and tool output regardless of `-v` and filters at render time, which
+is the "decided 2026-08-04" design this section used to spell out. Still open
+from the survey: steer-vs-queue as two keys, `/export`/copy, the semantic
+colour table + `NO_COLOR`, and keymap configuration.
 
 The TUI now has slash commands (`/help /tools /model /provider /mode /mcp
 /usage /clear /session /exit`) and can switch model, provider, permission mode
@@ -1214,11 +1214,10 @@ which is a bug if forgotten:
   that fetched something hostile does not unread it; only `/clear` resets
   taint, because only `/clear` drops the context too.
 
-Still to build: `ask_user` (a tool that blocks on a human, reusing the approval
-modal's plumbing) and phase-gated planning. Together those are what turns
-`/mode plan` from a permission label into a real planning phase — and `ask_user`
-would let the `ambiguity` cases be graded on the trace instead of by a judge,
-which is the rig's weakest and noisiest tag.
+Both of this section's "still to build" items exist now: `ask_user` (built,
+and the `ambiguity` cases are graded on the trace — see "What the measurements
+say") and phase-gated planning (`Phase::Plan` hides writing tools
+structurally; Shift+Tab toggles it in the TUI).
 
 ### 6. Open security gaps
 

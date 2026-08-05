@@ -55,6 +55,7 @@ pub mod message;
 pub mod outbox;
 pub mod provider;
 pub mod counterfactual;
+pub mod distill;
 pub mod hooks;
 pub mod learning;
 pub mod replay;
