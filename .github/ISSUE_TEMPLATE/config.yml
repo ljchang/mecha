@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/ljchang/mecha/security/advisories/new
+    about: Report privately through a draft advisory, not as a public issue.
+  - name: Documentation
+    url: https://ljchang.github.io/mecha/
+    about: Configuration reference, the command surface, and how each subsystem works.
+  - name: Design rationale
+    url: https://github.com/ljchang/mecha/blob/main/CLAUDE.md
+    about: Why each subsystem is shaped the way it is. Read before proposing a change to one.
