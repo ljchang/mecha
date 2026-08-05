@@ -1907,8 +1907,201 @@ fn leave(terminal: &mut Terminal<impl Backend>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::input_layout;
+    use super::*;
+    use ratatui::backend::TestBackend;
 
     use super::Picker;
+
+    /// An `App` with nothing going on, for frame tests. Fields that need a
+    /// live agent stay inert: `running` is `None`, channels dangle unused.
+    fn test_app() -> App {
+        let (shell_tx, _shell_rx) = mpsc::unbounded_channel();
+        // The receiver is dropped; frame tests never run a `!command`.
+        std::mem::forget(_shell_rx);
+        App {
+            transcript: Transcript::new(false),
+            input: String::new(),
+            cursor: 0,
+            history: Vec::new(),
+            history_pos: None,
+            convo: Conversation::new(),
+            running: None,
+            pending: None,
+            usage: Usage::default(),
+            prompt_tokens: 0,
+            context_window: None,
+            should_quit: false,
+            quit_armed: false,
+            pending_switch: None,
+            mode: PermissionMode::Ask,
+            mcp_on: false,
+            mcp_servers: Vec::new(),
+            phase: Phase::default(),
+            asking: None,
+            picker: None,
+            help: false,
+            tools: None,
+            sandbox_line: "sandbox: none — commands run as you, with your credentials".into(),
+            workspace: std::env::temp_dir(),
+            todo_visible: true,
+            pending_editor: false,
+            shell_tx,
+            providers: Vec::new(),
+            kitty_keyboard: false,
+        }
+    }
+
+    /// Everything on the frame, one string, for substring assertions —
+    /// deliberately not a snapshot, so cosmetic tweaks do not churn tests.
+    fn frame_text(app: &mut App, width: u16, height: u16, todo: Option<&[TodoItem]>) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, app, "test-model", "test-provider", 3, todo))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    use mecha_core::tool::todo::{Status, TodoItem};
+
+    #[test]
+    fn the_status_line_reads_idle_context_and_scrolled() {
+        let mut app = test_app();
+        let idle = frame_text(&mut app, 80, 12, None);
+        assert!(idle.contains("test-model"), "{idle}");
+        assert!(idle.contains("0 in / 0 out"), "{idle}");
+
+        // With the window known, the count becomes a fuel gauge.
+        app.prompt_tokens = 29_300;
+        app.context_window = Some(32_800);
+        let gauged = frame_text(&mut app, 80, 12, None);
+        assert!(gauged.contains("context 29.3k/32.8k (89%)"), "{gauged}");
+
+        // Scrolled back: the status says so, and only while actually back.
+        // Wider frame — the badge sits at the end of the status line, and a
+        // narrow terminal legitimately truncates it.
+        for i in 0..40 {
+            app.transcript.push(Entry::Notice(format!("line {i}")));
+        }
+        app.transcript.scroll_up(5);
+        let scrolled = frame_text(&mut app, 110, 12, None);
+        assert!(scrolled.contains("scrolled"), "{scrolled}");
+        app.transcript.jump_to_bottom();
+        let followed = frame_text(&mut app, 110, 12, None);
+        assert!(!followed.contains("scrolled"), "{followed}");
+    }
+
+    #[tokio::test]
+    async fn a_running_frame_shows_the_timer_and_the_steering_hint() {
+        let mut app = test_app();
+        app.running = Some(Running {
+            handle: tokio::spawn(async { std::future::pending::<RunResult>().await }),
+            cancel: CancellationToken::new(),
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+            started: std::time::Instant::now(),
+            cancelling: false,
+            persisted: 0,
+        });
+        let text = frame_text(&mut app, 80, 12, None);
+        assert!(text.contains("working"), "{text}");
+        assert!(text.contains("type to steer"), "{text}");
+    }
+
+    #[test]
+    fn the_help_overlay_advertises_the_newline_key_only_where_it_exists() {
+        // On a terminal without the kitty protocol, Shift+Enter *submits* —
+        // help that teaches it as a newline is worse than no help.
+        let mut app = test_app();
+        app.help = true;
+        let plain = frame_text(&mut app, 100, 30, None);
+        assert!(plain.contains("alt+enter"), "{plain}");
+        assert!(!plain.contains("shift+enter"), "{plain}");
+        assert!(plain.contains("/clear"), "commands render from HELP: {plain}");
+
+        app.kitty_keyboard = true;
+        let kitty = frame_text(&mut app, 100, 30, None);
+        assert!(kitty.contains("shift+enter"), "{kitty}");
+    }
+
+    #[test]
+    fn the_tools_modal_detail_spells_the_declared_surface_out() {
+        let mut app = test_app();
+        app.tools = Some(tools::ToolsModal {
+            rows: vec![tools::ToolRow {
+                name: "shell".into(),
+                read_only: false,
+                outbox: false,
+                caps: mecha_core::tool::Capabilities {
+                    private_data: true,
+                    ..Default::default()
+                },
+                description: "Run a command.".into(),
+            }],
+            selected: 0,
+            detail: true,
+            sandbox_line: app.sandbox_line.clone(),
+        });
+        let text = frame_text(&mut app, 100, 30, None);
+        assert!(text.contains("reads data the user considers private"), "{text}");
+        assert!(text.contains("sandbox: none"), "shell's detail names the sandbox: {text}");
+    }
+
+    #[test]
+    fn the_todo_pane_appears_with_content_clamps_and_can_be_vetoed() {
+        let mut app = test_app();
+        let items: Vec<TodoItem> = (0..12)
+            .map(|i| TodoItem {
+                content: format!("step {i}"),
+                status: if i < 2 { Status::Completed } else { Status::Pending },
+            })
+            .collect();
+
+        let text = frame_text(&mut app, 80, 24, Some(&items));
+        assert!(text.contains("todo 2/12"), "{text}");
+        // Clamped at eight rows of items: the pane is a glance, not a pager.
+        let shown = (0..12).filter(|i| text.contains(&format!("step {i}"))).count();
+        assert!(shown <= 8, "expected at most 8 items on screen, saw {shown}:\n{text}");
+
+        // Empty list: no pane at all — an always-there box stops being read.
+        let empty = frame_text(&mut app, 80, 24, Some(&[]));
+        assert!(!empty.contains("todo"), "{empty}");
+
+        // /todo vetoes it even with content.
+        app.todo_visible = false;
+        let vetoed = frame_text(&mut app, 80, 24, Some(&items));
+        assert!(!vetoed.contains("todo 2/12"), "{vetoed}");
+    }
+
+    #[test]
+    fn nested_subagent_calls_indent_under_their_parent() {
+        let mut app = test_app();
+        app.transcript.absorb(&AgentEvent::ToolCall {
+            id: "p".into(),
+            name: "helper".into(),
+            input: serde_json::json!({}),
+        });
+        app.transcript.absorb(&AgentEvent::Nested {
+            tool: "helper".into(),
+            event: Box::new(AgentEvent::ToolCall {
+                id: "c".into(),
+                name: "echo".into(),
+                input: serde_json::json!({}),
+            }),
+        });
+
+        let text = frame_text(&mut app, 80, 12, None);
+        let parent = text.lines().find(|l| l.contains("helper")).unwrap();
+        let child = text.lines().find(|l| l.contains("echo")).unwrap();
+        assert!(parent.starts_with("● "), "parent at the margin: {parent:?}");
+        assert!(child.starts_with("  ● "), "child one level in: {child:?}");
+    }
 
     fn picker(n: usize) -> Picker {
         Picker {
