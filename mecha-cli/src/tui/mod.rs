@@ -197,6 +197,10 @@ struct App {
     /// additionally requires a non-empty list, so this is a veto, not a
     /// summons.
     todo_visible: bool,
+    /// ^G was pressed: open $EDITOR on the input. Deferred to the event loop
+    /// like `pending_switch`, because suspending the TUI needs the terminal,
+    /// which a key handler does not hold.
+    pending_editor: bool,
     /// Every provider entry in config, as (name, model). Fixed for the session.
     providers: Vec<(String, String)>,
     /// Whether the terminal speaks the kitty keyboard protocol, which is what
@@ -378,6 +382,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         sandbox_line: setup::sandbox_line(&prepared.sandbox),
         workspace: prepared.workspace.clone(),
         todo_visible: true,
+        pending_editor: false,
         shell_tx,
         providers: prepared
             .config
@@ -406,6 +411,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     let mut live = Live::new(prepared, global.clone());
     let (mut terminal, kitty) = enter()?;
     app.kitty_keyboard = kitty;
+    set_title(&format!("mecha · {}", workspace_name(&app)));
     let result = run_loop(
         &mut terminal,
         &mut app,
@@ -467,6 +473,14 @@ async fn run_loop(
         // a run in flight must finish under the settings it started with.
         if let Some(switch) = app.pending_switch.take() {
             apply_switch(switch, app, live, approver, session).await?;
+            continue;
+        }
+
+        // ^G, deferred here for the same reason: handing the terminal to
+        // $EDITOR needs the terminal.
+        if app.pending_editor {
+            app.pending_editor = false;
+            suspend_and_edit(terminal, app)?;
             continue;
         }
 
@@ -573,6 +587,7 @@ fn finish_run(
     }
 
     app.running = None;
+    set_title(&format!("mecha · {}", workspace_name(app)));
     Ok(())
 }
 
@@ -764,6 +779,10 @@ fn on_key(
         },
 
         KeyCode::Char('d') if ctrl && app.input.is_empty() => app.should_quit = true,
+
+        // Compose in $EDITOR. Deferred to the event loop; what comes back
+        // lands in the input box, not on the wire — sending is still Enter.
+        KeyCode::Char('g') if ctrl => app.pending_editor = true,
 
         // A live version of --verbose. The transcript records everything and
         // filters at render, so turning this on mid-run reveals the tool
@@ -1235,6 +1254,8 @@ fn submit(
     }
     app.transcript.push(Entry::User(text));
 
+    set_title(&format!("mecha ▶ {} · {}", workspace_name(app), agent.model()));
+
     // A fresh channel per run, so a late event from a cancelled run cannot
     // bleed into the next one.
     let (tx, rx) = mpsc::unbounded_channel();
@@ -1269,6 +1290,73 @@ fn submit(
         persisted,
     });
     Ok(())
+}
+
+/// Hand the terminal to `$EDITOR` with the current input, and take both back.
+///
+/// The suspend mirrors `leave()` and the restore mirrors `enter()`, minus the
+/// panic hook (still installed) and the probe (already answered — the kitty
+/// flags are re-pushed if they were pushed before). The full `terminal.clear`
+/// afterwards is load-bearing: the editor drew over everything, and a diff
+/// against the pre-editor buffer would restore only what happened to change.
+fn suspend_and_edit(terminal: &mut Terminal<impl Backend>, app: &mut App) -> Result<()> {
+    disable_raw_mode()?;
+    if kitty_pushed() {
+        crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
+    }
+    crossterm::execute!(
+        std::io::stdout(),
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        DisableBracketedPaste
+    )?;
+
+    let result = crate::editor::edit_text(
+        &app.input,
+        &format!("mecha-compose-{}.txt", std::process::id()),
+    );
+
+    enable_raw_mode()?;
+    crossterm::execute!(
+        std::io::stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
+    if kitty_pushed() {
+        crossterm::execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
+    terminal.clear()?;
+
+    match result {
+        // Into the input box, not onto the wire: sending is still Enter.
+        Ok(text) => {
+            app.input = text.trim_end().to_string();
+            app.cursor = app.input.len();
+        }
+        // A failed editor keeps what was typed — quitting vim in anger must
+        // not eat the draft.
+        Err(e) => app
+            .transcript
+            .push(Entry::Error(format!("editor: {e:#} — the input is unchanged"))),
+    }
+    Ok(())
+}
+
+/// The terminal/tab title: "is it still going" answered from a tab strip,
+/// which matters over SSH where notifications do not reach.
+fn set_title(title: &str) {
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(title));
+}
+
+fn workspace_name(app: &App) -> String {
+    app.workspace
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| app.workspace.display().to_string())
 }
 
 /// Run a `!command` in the workspace, on a task so the input line stays live.
@@ -1569,6 +1657,7 @@ fn draw_help(frame: &mut Frame, kitty: bool) {
         ("↑ ↓", "input history".into()),
         ("?", "this overlay, on an empty line".into()),
         ("!command", "run it locally — the model never sees it".into()),
+        ("^g", "compose the input in $EDITOR".into()),
     ];
 
     let mut body: Vec<Line> = keys
@@ -1794,6 +1883,9 @@ fn enter() -> Result<(Terminal<CrosstermBackend<std::io::Stdout>>, bool)> {
 }
 
 fn leave(terminal: &mut Terminal<impl Backend>) -> Result<()> {
+    // An emptied title lets the shell's own prompt hook reclaim it; leaving
+    // "mecha ▶ …" on a tab that no longer runs mecha is a small lie forever.
+    set_title("");
     disable_raw_mode()?;
     // Popped before leaving the alternate screen, mirroring the push order —
     // the flags belong to the alternate screen's stack.
