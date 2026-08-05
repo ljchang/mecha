@@ -55,7 +55,10 @@ impl Anthropic {
                 .base_url
                 .clone()
                 .unwrap_or_else(|| "https://api.anthropic.com".to_string()),
-            default_model: cfg.model.clone().unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+            default_model: cfg
+                .model
+                .clone()
+                .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             retry: crate::provider::retry::RetryPolicy::from_config(cfg),
         })
     }
@@ -175,7 +178,10 @@ impl Anthropic {
 
     fn request(&self, body: &Value) -> reqwest::RequestBuilder {
         self.http
-            .post(format!("{}/v1/messages", self.base_url.trim_end_matches('/')))
+            .post(format!(
+                "{}/v1/messages",
+                self.base_url.trim_end_matches('/')
+            ))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", API_VERSION)
             .header("content-type", "application/json")
@@ -237,7 +243,9 @@ impl Anthropic {
             // complete frame is guaranteed to be complete UTF-8.
             while let Some(frame) = buf.next_segment(b"\n\n") {
                 for line in frame.lines() {
-                    let Some(data) = line.strip_prefix("data:") else { continue };
+                    let Some(data) = line.strip_prefix("data:") else {
+                        continue;
+                    };
                     let data = data.trim();
                     if data.is_empty() {
                         continue;
@@ -286,7 +294,11 @@ fn encode_block(b: &Block) -> Option<Value> {
         Block::ToolUse { id, name, input } => {
             json!({"type": "tool_use", "id": id, "name": name, "input": input})
         }
-        Block::ToolResult { tool_use_id, content, is_error } => json!({
+        Block::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => json!({
             "type": "tool_result",
             "tool_use_id": tool_use_id,
             "content": content,
@@ -301,8 +313,15 @@ fn decode_block(v: &Value) -> Option<Block> {
             text: v.get("text")?.as_str().unwrap_or_default().to_string(),
         }),
         "thinking" => Some(Block::Thinking {
-            text: v.get("thinking").and_then(Value::as_str).unwrap_or_default().to_string(),
-            signature: v.get("signature").and_then(Value::as_str).map(str::to_string),
+            text: v
+                .get("thinking")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            signature: v
+                .get("signature")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         }),
         "tool_use" => Some(Block::ToolUse {
             id: v.get("id")?.as_str()?.to_string(),
@@ -342,8 +361,14 @@ fn decode_refusal(v: &Value) -> Option<Refusal> {
         return None;
     }
     Some(Refusal {
-        category: d.get("category").and_then(Value::as_str).map(str::to_string),
-        explanation: d.get("explanation").and_then(Value::as_str).map(str::to_string),
+        category: d
+            .get("category")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        explanation: d
+            .get("explanation")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -385,8 +410,15 @@ struct StreamAccumulator {
 
 enum PartialBlock {
     Text(String),
-    Thinking { text: String, signature: Option<String> },
-    ToolUse { id: String, name: String, json: String },
+    Thinking {
+        text: String,
+        signature: Option<String>,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        json: String,
+    },
     Ignored,
 }
 
@@ -395,7 +427,11 @@ impl StreamAccumulator {
         match event.get("type").and_then(Value::as_str).unwrap_or("") {
             "message_start" => {
                 if let Some(m) = event.get("message") {
-                    self.model = m.get("model").and_then(Value::as_str).unwrap_or_default().to_string();
+                    self.model = m
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
                     self.usage.add(&decode_usage(m.get("usage")));
                     // Input tokens — including both cache tiers — are known
                     // from this first frame. Report them now so a run cancelled
@@ -408,17 +444,32 @@ impl StreamAccumulator {
                 let cb = event.get("content_block").cloned().unwrap_or(Value::Null);
                 let partial = match cb.get("type").and_then(Value::as_str).unwrap_or("") {
                     "text" => PartialBlock::Text(
-                        cb.get("text").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        cb.get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
                     ),
                     "thinking" => PartialBlock::Thinking {
-                        text: cb.get("thinking").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        text: cb
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
                         signature: None,
                     },
                     "tool_use" => {
-                        let name = cb.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+                        let name = cb
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
                         let _ = sink.send(StreamEvent::ToolUseStart { name: name.clone() });
                         PartialBlock::ToolUse {
-                            id: cb.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
+                            id: cb
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
                             name,
                             json: String::new(),
                         }
@@ -429,26 +480,45 @@ impl StreamAccumulator {
             }
             "content_block_delta" => {
                 let idx = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-                let Some(delta) = event.get("delta") else { return Ok(()) };
-                let Some(block) = self.blocks.get_mut(&idx) else { return Ok(()) };
-                match (delta.get("type").and_then(Value::as_str).unwrap_or(""), block) {
+                let Some(delta) = event.get("delta") else {
+                    return Ok(());
+                };
+                let Some(block) = self.blocks.get_mut(&idx) else {
+                    return Ok(());
+                };
+                match (
+                    delta.get("type").and_then(Value::as_str).unwrap_or(""),
+                    block,
+                ) {
                     ("text_delta", PartialBlock::Text(buf)) => {
-                        let t = delta.get("text").and_then(Value::as_str).unwrap_or_default();
+                        let t = delta
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
                         buf.push_str(t);
                         let _ = sink.send(StreamEvent::TextDelta(t.to_string()));
                     }
                     ("thinking_delta", PartialBlock::Thinking { text, .. }) => {
-                        let t = delta.get("thinking").and_then(Value::as_str).unwrap_or_default();
+                        let t = delta
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
                         text.push_str(t);
                         let _ = sink.send(StreamEvent::ThinkingDelta(t.to_string()));
                     }
                     ("signature_delta", PartialBlock::Thinking { signature, .. }) => {
-                        let s = delta.get("signature").and_then(Value::as_str).unwrap_or_default();
+                        let s = delta
+                            .get("signature")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
                         signature.get_or_insert_with(String::new).push_str(s);
                     }
                     ("input_json_delta", PartialBlock::ToolUse { json, .. }) => {
                         json.push_str(
-                            delta.get("partial_json").and_then(Value::as_str).unwrap_or_default(),
+                            delta
+                                .get("partial_json")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default(),
                         );
                     }
                     _ => {}
@@ -649,7 +719,10 @@ mod tests {
         assert_eq!(system[0]["cache_control"], json!({"type": "ephemeral"}));
 
         for tool in body["tools"].as_array().unwrap() {
-            assert!(tool.get("cache_control").is_none(), "a tool carried the breakpoint too");
+            assert!(
+                tool.get("cache_control").is_none(),
+                "a tool carried the breakpoint too"
+            );
         }
     }
 
@@ -676,7 +749,10 @@ mod tests {
         assert!(!mentions_key(&messages[0], "cache_control"));
         assert!(!mentions_key(&messages[1], "cache_control"));
         let last = messages[2]["content"].as_array().unwrap();
-        assert_eq!(last.last().unwrap()["cache_control"], json!({"type": "ephemeral"}));
+        assert_eq!(
+            last.last().unwrap()["cache_control"],
+            json!({"type": "ephemeral"})
+        );
     }
 
     #[test]
@@ -689,16 +765,24 @@ mod tests {
                 Message::user("go"),
                 Message::assistant(vec![
                     Block::text("partial answer"),
-                    Block::Thinking { text: "hmm".into(), signature: Some("sig".into()) },
+                    Block::Thinking {
+                        text: "hmm".into(),
+                        signature: Some("sig".into()),
+                    },
                 ]),
             ],
             ..req()
         };
         let body = client().body(&r, false).unwrap();
-        let blocks = body["messages"].as_array().unwrap()[1]["content"].as_array().unwrap();
+        let blocks = body["messages"].as_array().unwrap()[1]["content"]
+            .as_array()
+            .unwrap();
 
         assert_eq!(blocks[1]["type"], "thinking");
-        assert!(blocks[1].get("cache_control").is_none(), "marker on a thinking block 400s");
+        assert!(
+            blocks[1].get("cache_control").is_none(),
+            "marker on a thinking block 400s"
+        );
         assert_eq!(blocks[0]["cache_control"], json!({"type": "ephemeral"}));
     }
 
@@ -713,7 +797,10 @@ mod tests {
         let body = client().body(&r, false).unwrap();
         let tools = body["tools"].as_array().unwrap();
 
-        assert!(tools[0].get("cache_control").is_none(), "the breakpoint must be last, not first");
+        assert!(
+            tools[0].get("cache_control").is_none(),
+            "the breakpoint must be last, not first"
+        );
         assert_eq!(tools[1]["cache_control"], json!({"type": "ephemeral"}));
     }
 
@@ -725,12 +812,23 @@ mod tests {
             cache_prompt: false,
             ..req()
         };
-        assert!(!mentions_key(&client().body(&r, false).unwrap(), "cache_control"));
+        assert!(!mentions_key(
+            &client().body(&r, false).unwrap(),
+            "cache_control"
+        ));
     }
 
     #[test]
     fn thinking_is_adaptive_rather_than_a_token_budget() {
-        let body = client().body(&CompletionRequest { thinking: true, ..req() }, false).unwrap();
+        let body = client()
+            .body(
+                &CompletionRequest {
+                    thinking: true,
+                    ..req()
+                },
+                false,
+            )
+            .unwrap();
         assert_eq!(body["thinking"]["type"], "adaptive");
     }
 
@@ -740,15 +838,34 @@ mod tests {
         // function call; failing there costs a round trip and returns an error
         // that does not say which knob to move.
         for effort in [Effort::XHigh, Effort::Max] {
-            let r = CompletionRequest { thinking: false, effort: Some(effort), ..req() };
+            let r = CompletionRequest {
+                thinking: false,
+                effort: Some(effort),
+                ..req()
+            };
             let err = client().body(&r, false).unwrap_err().to_string();
-            assert!(err.contains(effort.as_str()), "the error should name the effort: {err}");
-            assert!(err.contains("high"), "the error should say what to do: {err}");
+            assert!(
+                err.contains(effort.as_str()),
+                "the error should name the effort: {err}"
+            );
+            assert!(
+                err.contains("high"),
+                "the error should say what to do: {err}"
+            );
         }
 
         // At `high` and below it is accepted, and must actually be sent.
-        for effort in [None, Some(Effort::Low), Some(Effort::Medium), Some(Effort::High)] {
-            let r = CompletionRequest { thinking: false, effort, ..req() };
+        for effort in [
+            None,
+            Some(Effort::Low),
+            Some(Effort::Medium),
+            Some(Effort::High),
+        ] {
+            let r = CompletionRequest {
+                thinking: false,
+                effort,
+                ..req()
+            };
             let body = client().body(&r, false).unwrap();
             assert_eq!(body["thinking"], json!({"type": "disabled"}));
         }
@@ -758,7 +875,10 @@ mod tests {
     fn a_thinking_block_with_no_signature_is_dropped_rather_than_replayed() {
         // Signatures are opaque and checked. Sending a reconstructed one 400s
         // the *next* turn, which is a confusing place to discover it.
-        let dropped = encode_block(&Block::Thinking { text: "reasoning".into(), signature: None });
+        let dropped = encode_block(&Block::Thinking {
+            text: "reasoning".into(),
+            signature: None,
+        });
         assert!(dropped.is_none());
 
         let kept = encode_block(&Block::Thinking {
@@ -878,7 +998,9 @@ mod retry_tests {
         tokio::spawn(async move {
             let mut responses = responses.into_iter();
             loop {
-                let Ok((mut sock, _)) = listener.accept().await else { break };
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
                 counter.fetch_add(1, Ordering::SeqCst);
 
                 // Read the request head, then its content-length body, so the
@@ -912,9 +1034,10 @@ mod retry_tests {
                     buf.extend_from_slice(&tmp[..n]);
                 }
 
-                let (status, headers, body) = responses
-                    .next()
-                    .unwrap_or((500, Vec::new(), "script exhausted".into()));
+                let (status, headers, body) =
+                    responses
+                        .next()
+                        .unwrap_or((500, Vec::new(), "script exhausted".into()));
                 let mut resp = format!(
                     "HTTP/1.1 {status} R\r\ncontent-length: {}\r\nconnection: close\r\n",
                     body.len()
@@ -934,8 +1057,16 @@ mod retry_tests {
     #[tokio::test]
     async fn transient_failures_are_retried_until_the_request_succeeds() {
         let (url, count) = mock_http(vec![
-            (429, vec![("retry-after", "0".into())], "rate limited".into()),
-            (429, vec![("retry-after", "0".into())], "rate limited".into()),
+            (
+                429,
+                vec![("retry-after", "0".into())],
+                "rate limited".into(),
+            ),
+            (
+                429,
+                vec![("retry-after", "0".into())],
+                "rate limited".into(),
+            ),
             (200, vec![], ok_body("recovered")),
         ])
         .await;
@@ -948,7 +1079,11 @@ mod retry_tests {
     #[tokio::test]
     async fn max_retries_zero_disables_retrying() {
         let (url, count) = mock_http(vec![
-            (429, vec![("retry-after", "0".into())], "rate limited".into()),
+            (
+                429,
+                vec![("retry-after", "0".into())],
+                "rate limited".into(),
+            ),
             (200, vec![], ok_body("never reached")),
         ])
         .await;
@@ -978,15 +1113,23 @@ mod retry_tests {
 
     #[tokio::test]
     async fn a_retry_after_past_the_cap_is_a_failure_not_a_nap() {
-        let (url, count) =
-            mock_http(vec![(429, vec![("retry-after", "3600".into())], "later".into())]).await;
+        let (url, count) = mock_http(vec![(
+            429,
+            vec![("retry-after", "3600".into())],
+            "later".into(),
+        )])
+        .await;
 
         let err = client_at(&url).complete(&req(), None).await.unwrap_err();
         assert!(matches!(
             err.downcast_ref::<ProviderError>(),
             Some(ProviderError::RateLimit { .. })
         ));
-        assert_eq!(count.load(Ordering::SeqCst), 1, "an hour-long wait must not be slept");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "an hour-long wait must not be slept"
+        );
     }
 
     #[tokio::test]
@@ -999,7 +1142,11 @@ mod retry_tests {
         .await;
 
         let err = client_at(&url).complete(&req(), None).await.unwrap_err();
-        assert_eq!(count.load(Ordering::SeqCst), 1, "overflow retried with the same payload");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "overflow retried with the same payload"
+        );
         // The loop's compact-and-retry-once recovery keys on this.
         assert!(crate::agent::is_context_overflow(&err), "{err:#}");
     }
@@ -1028,11 +1175,7 @@ mod retry_tests {
             fn read_only(&self) -> bool {
                 true
             }
-            async fn call(
-                &self,
-                _input: serde_json::Value,
-                _ctx: &ToolCtx,
-            ) -> Result<ToolOutput> {
+            async fn call(&self, _input: serde_json::Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(ToolOutput::ok("ran"))
             }
@@ -1047,7 +1190,11 @@ mod retry_tests {
         .to_string();
         let (url, requests) = mock_http(vec![
             (200, vec![], tool_use_body),
-            (429, vec![("retry-after", "0".into())], "rate limited".into()),
+            (
+                429,
+                vec![("retry-after", "0".into())],
+                "rate limited".into(),
+            ),
             (200, vec![], ok_body("done")),
         ])
         .await;
@@ -1058,9 +1205,18 @@ mod retry_tests {
         let agent = Agent::new(
             Box::new(client_at(&url)),
             registry,
-            Arc::new(ModeApprover { mode: PermissionMode::Allow }),
-            ToolCtx { workspace: std::env::temp_dir(), ..Default::default() },
-            AgentConfig { thinking: false, force_final_answer: false, ..Default::default() },
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                ..Default::default()
+            },
+            AgentConfig {
+                thinking: false,
+                force_final_answer: false,
+                ..Default::default()
+            },
             None,
         )
         .unwrap();
@@ -1069,7 +1225,11 @@ mod retry_tests {
         let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert_eq!(outcome.text, "done");
-        assert_eq!(requests.load(Ordering::SeqCst), 3, "turn 2 was retried at the HTTP layer");
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            3,
+            "turn 2 was retried at the HTTP layer"
+        );
         assert_eq!(
             executions.load(Ordering::SeqCst),
             1,

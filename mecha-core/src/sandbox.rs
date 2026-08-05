@@ -128,7 +128,12 @@ impl Sandbox {
     /// its own API, confined, while `shell` still has no way out. Sharing one
     /// flag would mean opening `shell` to satisfy the server.
     pub fn with_network(&self, network: bool) -> Self {
-        Sandbox { cfg: SandboxConfig { network, ..self.cfg.clone() } }
+        Sandbox {
+            cfg: SandboxConfig {
+                network,
+                ..self.cfg.clone()
+            },
+        }
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -310,7 +315,11 @@ impl Sandbox {
         let mut a: Vec<String> = Vec::new();
         args!(a, "run", "--rm", "-i");
 
-        args!(a, "--network", if self.cfg.network { "bridge" } else { "none" });
+        args!(
+            a,
+            "--network",
+            if self.cfg.network { "bridge" } else { "none" }
+        );
 
         // Root inside a container writing into a bind-mounted workspace leaves
         // root-owned files behind on the host, which the user then cannot
@@ -321,7 +330,13 @@ impl Sandbox {
             args!(a, "--user", format!("{uid}:{gid}"));
         }
 
-        args!(a, "--security-opt", "no-new-privileges", "--cap-drop", "ALL");
+        args!(
+            a,
+            "--security-opt",
+            "no-new-privileges",
+            "--cap-drop",
+            "ALL"
+        );
 
         if let Some(mb) = self.cfg.memory_mb {
             args!(a, "--memory", format!("{mb}m"));
@@ -333,7 +348,11 @@ impl Sandbox {
         for path in &self.cfg.readable {
             args!(a, "-v", format!("{}:{}:ro", path.display(), path.display()));
         }
-        args!(a, "-v", format!("{}:{}", workspace.display(), workspace.display()));
+        args!(
+            a,
+            "-v",
+            format!("{}:{}", workspace.display(), workspace.display())
+        );
         for path in &self.cfg.writable {
             args!(a, "-v", format!("{}:{}", path.display(), path.display()));
         }
@@ -381,9 +400,7 @@ impl Sandbox {
             )
         })?;
 
-        if output.status.success()
-            && String::from_utf8_lossy(&output.stdout).contains(marker)
-        {
+        if output.status.success() && String::from_utf8_lossy(&output.stdout).contains(marker) {
             return Ok(());
         }
 
@@ -391,7 +408,11 @@ impl Sandbox {
         anyhow::bail!(
             "the {} sandbox does not work here: {}{}",
             self.cfg.kind.as_str(),
-            if stderr.is_empty() { "no output".into() } else { stderr.clone() },
+            if stderr.is_empty() {
+                "no output".into()
+            } else {
+                stderr.clone()
+            },
             diagnose(self.cfg.kind, &stderr)
         )
     }
@@ -424,8 +445,7 @@ fn diagnose(kind: Backend, stderr: &str) -> String {
                 .into()
         }
         Backend::Docker => {
-            "\n\nCheck the image exists (`docker pull <image>`) and the daemon is running."
-                .into()
+            "\n\nCheck the image exists (`docker pull <image>`) and the daemon is running.".into()
         }
         _ => String::new(),
     }
@@ -441,7 +461,10 @@ mod tests {
     use super::*;
 
     fn cfg(kind: Backend) -> SandboxConfig {
-        SandboxConfig { kind, ..SandboxConfig::default() }
+        SandboxConfig {
+            kind,
+            ..SandboxConfig::default()
+        }
     }
 
     #[test]
@@ -461,8 +484,10 @@ mod tests {
 
         // ...and asking for the network opens it again. This is the whole
         // basis for relaxing the interlock, so it must not be sloppy.
-        let sandbox =
-            Sandbox::new(SandboxConfig { network: true, ..cfg(Backend::Bwrap) });
+        let sandbox = Sandbox::new(SandboxConfig {
+            network: true,
+            ..cfg(Backend::Bwrap)
+        });
         assert!(sandbox.can_reach_network());
     }
 
@@ -485,8 +510,14 @@ mod tests {
             .bwrap_args(&workspace, &workspace)
             .unwrap();
 
-        assert!(args.contains(&"--unshare-net".into()), "no network by default");
-        assert!(args.contains(&"--clearenv".into()), "the parent env must not leak");
+        assert!(
+            args.contains(&"--unshare-net".into()),
+            "no network by default"
+        );
+        assert!(
+            args.contains(&"--clearenv".into()),
+            "the parent env must not leak"
+        );
         assert!(args.contains(&"--unshare-user".into()));
         assert!(args.contains(&"--die-with-parent".into()));
         // Blocks TIOCSTI input injection into the parent's terminal.
@@ -506,9 +537,12 @@ mod tests {
     #[test]
     fn network_is_shared_only_when_asked_for() {
         let workspace = std::env::temp_dir();
-        let args = Sandbox::new(SandboxConfig { network: true, ..cfg(Backend::Bwrap) })
-            .bwrap_args(&workspace, &workspace)
-            .unwrap();
+        let args = Sandbox::new(SandboxConfig {
+            network: true,
+            ..cfg(Backend::Bwrap)
+        })
+        .bwrap_args(&workspace, &workspace)
+        .unwrap();
         assert!(!args.contains(&"--unshare-net".into()));
     }
 
@@ -520,9 +554,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(args[0], "run");
-        assert!(args.contains(&"--rm".into()), "containers must not accumulate");
-        assert!(args.windows(2).any(|w| w[0] == "--network" && w[1] == "none"));
-        assert!(args.windows(2).any(|w| w[0] == "--cap-drop" && w[1] == "ALL"));
+        assert!(
+            args.contains(&"--rm".into()),
+            "containers must not accumulate"
+        );
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--network" && w[1] == "none"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--cap-drop" && w[1] == "ALL"));
         assert!(args
             .windows(2)
             .any(|w| w[0] == "--security-opt" && w[1] == "no-new-privileges"));
@@ -539,8 +580,10 @@ mod tests {
         std::env::set_var("MECHA_TEST_TOKEN", "sk-should-not-cross");
         std::env::set_var("MECHA_TEST_WANTED", "fine");
 
-        let names: Vec<String> =
-            Sandbox::child_env(&["MECHA_TEST_WANTED".into()]).into_iter().map(|(k, _)| k).collect();
+        let names: Vec<String> = Sandbox::child_env(&["MECHA_TEST_WANTED".into()])
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
 
         assert!(names.contains(&"MECHA_TEST_WANTED".to_string()));
         assert!(
@@ -560,7 +603,12 @@ mod tests {
         let workspace = std::env::temp_dir();
         let sandbox = Sandbox::new(cfg(Backend::Bwrap));
         let command = sandbox
-            .wrap_argv("node", &["server.js".into(), "--flag with space".into()], &workspace, &workspace)
+            .wrap_argv(
+                "node",
+                &["server.js".into(), "--flag with space".into()],
+                &workspace,
+                &workspace,
+            )
             .unwrap();
 
         let argv: Vec<_> = command
@@ -568,8 +616,14 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert!(!argv.iter().any(|a| a == "-lc"), "no shell should be involved");
-        assert!(argv.contains(&"--flag with space".to_string()), "args stay one argv entry");
+        assert!(
+            !argv.iter().any(|a| a == "-lc"),
+            "no shell should be involved"
+        );
+        assert!(
+            argv.contains(&"--flag with space".to_string()),
+            "args stay one argv entry"
+        );
     }
 
     #[test]

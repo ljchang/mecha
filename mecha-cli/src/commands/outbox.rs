@@ -87,7 +87,11 @@ fn list(store: &OutboxStore) -> Result<()> {
             item.id,
             item.status,
             item.summary,
-            if item.taint.trifecta_armed() { "  ⚠ tainted" } else { "" },
+            if item.taint.trifecta_armed() {
+                "  ⚠ tainted"
+            } else {
+                ""
+            },
             if item.edited() { "  (edited)" } else { "" },
         );
     }
@@ -111,7 +115,10 @@ fn show(store: &OutboxStore, id: &str) -> Result<()> {
     if let Some(resolved) = &item.resolved_at {
         println!(
             "resolved {resolved}{}",
-            item.reason.as_deref().map(|r| format!(" — {r}")).unwrap_or_default()
+            item.reason
+                .as_deref()
+                .map(|r| format!(" — {r}"))
+                .unwrap_or_default()
         );
     }
     if let Some(error) = &item.error {
@@ -121,7 +128,10 @@ fn show(store: &OutboxStore, id: &str) -> Result<()> {
     println!("{}", indent(&pretty(&item.args)));
     if item.edited() {
         println!("\nedited since drafting:");
-        println!("{}", mecha_core::outbox::diff_args(&item.args_before, &item.args));
+        println!(
+            "{}",
+            mecha_core::outbox::diff_args(&item.args_before, &item.args)
+        );
     }
     if item.status == "pending" {
         println!(
@@ -154,8 +164,10 @@ fn edit(store: &OutboxStore, id: &str) -> Result<()> {
     let _lock = store.lock()?;
     let updated = store.update_args(&item.id, args)?;
     if updated.edited() {
-        println!("edited; `send` will use the new arguments, and `mecha reflect` \
-                  will mine the diff as a writing lesson once sent");
+        println!(
+            "edited; `send` will use the new arguments, and `mecha reflect` \
+                  will mine the diff as a writing lesson once sent"
+        );
     } else {
         println!("no change");
     }
@@ -199,7 +211,12 @@ async fn send(global: &GlobalOpts, store: &OutboxStore, id: &str, yes: bool) -> 
         bail!(
             "tool `{}` is not available in this configuration. Available: {}",
             item.tool,
-            tools.registry.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
+            tools
+                .registry
+                .iter()
+                .map(|t| t.name())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     };
 
@@ -252,7 +269,10 @@ fn pretty(v: &Value) -> String {
 }
 
 fn indent(s: &str) -> String {
-    s.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
+    s.lines()
+        .map(|l| format!("  {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -273,5 +293,4 @@ mod tests {
         let same = mecha_core::outbox::diff_args(&before, &before);
         assert!(same.contains("no textual change"), "{same}");
     }
-
 }

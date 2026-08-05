@@ -69,9 +69,14 @@ async fn main() -> Result<()> {
     mecha_mail::init_tracing();
     let cli = Cli::parse();
     match cli.command {
-        Some(Command::Auth { name, provider, client_id, client_secret, tenant, port }) => {
-            auth(name, provider, client_id, client_secret, tenant, port).await
-        }
+        Some(Command::Auth {
+            name,
+            provider,
+            client_id,
+            client_secret,
+            tenant,
+            port,
+        }) => auth(name, provider, client_id, client_secret, tenant, port).await,
         Some(Command::Import { name, provider }) => import(name, provider),
         Some(Command::Accounts) => list_accounts(),
         Some(Command::Default { name }) => set_default(name),
@@ -100,9 +105,10 @@ fn register(file: &mut accounts::AccountsFile, name: &str, provider: Provider) -
             existing.provider
         ),
         Some(_) => {}
-        None => file
-            .accounts
-            .push(AccountEntry { name: name.to_string(), provider }),
+        None => file.accounts.push(AccountEntry {
+            name: name.to_string(),
+            provider,
+        }),
     }
     Ok(())
 }
@@ -146,8 +152,9 @@ fn resolve_client(
     };
 
     let explicit_id = client_id.or_else(|| env(id_env));
-    let explicit_secret =
-        client_secret.or_else(|| secret_env.and_then(env)).unwrap_or_default();
+    let explicit_secret = client_secret
+        .or_else(|| secret_env.and_then(env))
+        .unwrap_or_default();
     let explicit_tenant = tenant.or_else(|| tenant_env.and_then(env));
 
     if let Some(client_id) = explicit_id {
@@ -157,7 +164,11 @@ fn resolve_client(
             })?),
             Provider::Google => None,
         };
-        return Ok(ClientConfig { client_id, client_secret: explicit_secret, tenant });
+        return Ok(ClientConfig {
+            client_id,
+            client_secret: explicit_secret,
+            tenant,
+        });
     }
 
     // No explicit id: take the whole registration from one stored login —
@@ -178,9 +189,9 @@ fn resolve_client(
                     .filter(|c| consistent_with(c, provider))
             })
     };
-    let source = stored.or_else(sibling).with_context(|| {
-        format!("no client id: pass --client-id or set {id_env}")
-    })?;
+    let source = stored
+        .or_else(sibling)
+        .with_context(|| format!("no client id: pass --client-id or set {id_env}"))?;
     Ok(ClientConfig {
         client_id: source.client_id,
         client_secret: source.client_secret,
@@ -203,8 +214,7 @@ async fn auth(
 
     let creds = match provider {
         Provider::Google => {
-            google::auth::interactive_flow(client.client_id, client.client_secret, port)
-                .await?
+            google::auth::interactive_flow(client.client_id, client.client_secret, port).await?
         }
         Provider::Outlook => {
             // resolve_client guarantees a tenant for Outlook.
@@ -269,7 +279,11 @@ fn list_accounts() -> Result<()> {
         } else {
             ""
         };
-        println!("{:<12} {:<8} {address}{default}", entry.name, entry.provider.to_string());
+        println!(
+            "{:<12} {:<8} {address}{default}",
+            entry.name,
+            entry.provider.to_string()
+        );
     }
     if file.default.is_none() {
         println!(
@@ -294,7 +308,11 @@ fn set_default(name: Option<String>) -> Result<()> {
             if !file.accounts.iter().any(|a| a.name == name) {
                 bail!(
                     "no account `{name}`; configured: {}",
-                    file.accounts.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")
+                    file.accounts
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
             }
             file.default = Some(name.clone());

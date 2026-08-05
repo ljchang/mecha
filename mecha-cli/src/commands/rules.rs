@@ -94,12 +94,17 @@ fn list(store: &LearningStore) -> Result<()> {
 }
 
 fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
-    let id = r.id.as_deref().unwrap_or("(no id — predates identity; next learn pass mints one)");
+    let id =
+        r.id.as_deref()
+            .unwrap_or("(no id — predates identity; next learn pass mints one)");
     let state = if r.retired_at.is_some() {
         format!(
             "RETIRED {}{}",
             r.retired_at.as_deref().unwrap_or_default(),
-            r.retired_reason.as_deref().map(|w| format!(" — {w}")).unwrap_or_default()
+            r.retired_reason
+                .as_deref()
+                .map(|w| format!(" — {w}"))
+                .unwrap_or_default()
         )
     } else if !r.enabled {
         "disabled".into()
@@ -147,13 +152,19 @@ fn retire(store: &LearningStore, id: &str, reason: Option<String>) -> Result<()>
     let _lock = store.lock()?;
     let (domain, mut rules, i) = find_rule(store, id)?;
     if rules[i].retired_at.is_some() {
-        bail!("rule {} is already retired", rules[i].id.as_deref().unwrap_or(id));
+        bail!(
+            "rule {} is already retired",
+            rules[i].id.as_deref().unwrap_or(id)
+        );
     }
     rules[i].enabled = false;
     rules[i].retired_at = Some(chrono::Utc::now().to_rfc3339());
     rules[i].retired_reason = Some(reason.unwrap_or_else(|| "retired by hand".into()));
     store.write_learned_rules(&domain, &rules)?;
-    store.commit(&format!("retire[{domain}]: {}", rules[i].id.as_deref().unwrap_or(id)));
+    store.commit(&format!(
+        "retire[{domain}]: {}",
+        rules[i].id.as_deref().unwrap_or(id)
+    ));
     println!("retired from `{domain}`: {}", rules[i].text);
     Ok(())
 }
@@ -162,13 +173,19 @@ fn restore(store: &LearningStore, id: &str) -> Result<()> {
     let _lock = store.lock()?;
     let (domain, mut rules, i) = find_rule(store, id)?;
     if rules[i].retired_at.is_none() {
-        bail!("rule {} is not retired", rules[i].id.as_deref().unwrap_or(id));
+        bail!(
+            "rule {} is not retired",
+            rules[i].id.as_deref().unwrap_or(id)
+        );
     }
     rules[i].enabled = true;
     rules[i].retired_at = None;
     rules[i].retired_reason = None;
     store.write_learned_rules(&domain, &rules)?;
-    store.commit(&format!("restore[{domain}]: {}", rules[i].id.as_deref().unwrap_or(id)));
+    store.commit(&format!(
+        "restore[{domain}]: {}",
+        rules[i].id.as_deref().unwrap_or(id)
+    ));
     println!("restored to `{domain}`: {}", rules[i].text);
     Ok(())
 }
@@ -197,8 +214,7 @@ fn propose(store: &LearningStore, min_attributed: u32) -> Result<()> {
         // A pending proposal already retiring these exact rules is not
         // re-staged — the nightly must not spam the queue while a human
         // hasn't looked yet.
-        let convicted_ids: Vec<&str> =
-            convicted.iter().filter_map(|r| r.id.as_deref()).collect();
+        let convicted_ids: Vec<&str> = convicted.iter().filter_map(|r| r.id.as_deref()).collect();
         let already = proposals.iter().any(|p| {
             p.status == "pending"
                 && p.domain == domain
@@ -218,10 +234,9 @@ fn propose(store: &LearningStore, min_attributed: u32) -> Result<()> {
         let rules: Vec<Rule> = before
             .iter()
             .map(|r| {
-                let convicted = r
-                    .id
-                    .as_deref()
-                    .is_some_and(|id| convicted_ids.contains(&id));
+                let convicted =
+                    r.id.as_deref()
+                        .is_some_and(|id| convicted_ids.contains(&id));
                 if !convicted {
                     return r.clone();
                 }
@@ -250,7 +265,10 @@ fn propose(store: &LearningStore, min_attributed: u32) -> Result<()> {
         evidence_lines.push(format!(
             "deterministic ledger scan over {} record(s); threshold {min_attributed} \
              attributed regression(s); no model involved",
-            records.iter().filter(|rec: &&ValidationRecord| rec.domain == domain).count(),
+            records
+                .iter()
+                .filter(|rec: &&ValidationRecord| rec.domain == domain)
+                .count(),
         ));
 
         let proposal = Proposal {
@@ -307,7 +325,11 @@ mod tests {
     }
 
     fn rule(text: &str, id: &str) -> Rule {
-        Rule { text: text.into(), id: Some(id.into()), ..Default::default() }
+        Rule {
+            text: text.into(),
+            id: Some(id.into()),
+            ..Default::default()
+        }
     }
 
     fn regression(rule_id: &str, at: &str) -> ValidationRecord {
@@ -328,10 +350,18 @@ mod tests {
     fn retirement_is_proposed_at_the_threshold_and_through_the_gate() {
         let store = temp_store();
         store
-            .write_learned_rules("behavior", &[rule("Bad rule.", "r-bad"), rule("Fine rule.", "r-ok")])
+            .write_learned_rules(
+                "behavior",
+                &[rule("Bad rule.", "r-bad"), rule("Fine rule.", "r-ok")],
+            )
             .unwrap();
         for i in 0..3 {
-            store.append_validation(&regression("r-bad", &format!("2026-08-0{}T00:00:00Z", i + 1))).unwrap();
+            store
+                .append_validation(&regression(
+                    "r-bad",
+                    &format!("2026-08-0{}T00:00:00Z", i + 1),
+                ))
+                .unwrap();
         }
 
         // Below threshold: nothing staged.
@@ -347,13 +377,29 @@ mod tests {
         let p = &all[0];
         assert_eq!(p.status, "pending");
         assert!(p.reflexion_ids.is_empty());
-        let bad = p.rules.iter().find(|r| r.id.as_deref() == Some("r-bad")).unwrap();
+        let bad = p
+            .rules
+            .iter()
+            .find(|r| r.id.as_deref() == Some("r-bad"))
+            .unwrap();
         assert!(bad.retired_at.is_some() && !bad.enabled);
-        assert!(bad.retired_reason.as_deref().unwrap().contains("3 attributed"));
-        assert!(p.rules.iter().find(|r| r.id.as_deref() == Some("r-ok")).unwrap().active());
+        assert!(bad
+            .retired_reason
+            .as_deref()
+            .unwrap()
+            .contains("3 attributed"));
+        assert!(p
+            .rules
+            .iter()
+            .find(|r| r.id.as_deref() == Some("r-ok"))
+            .unwrap()
+            .active());
         assert!(p.evidence.contains("no model involved"));
         let live = store.learned_rules("behavior").unwrap();
-        assert!(live.iter().all(|r| r.active()), "staging must not touch the live rules");
+        assert!(
+            live.iter().all(|r| r.active()),
+            "staging must not touch the live rules"
+        );
 
         // Re-running while the proposal is pending must not stage a twin.
         propose(&store, 3).unwrap();

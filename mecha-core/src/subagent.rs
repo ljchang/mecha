@@ -100,7 +100,11 @@ impl Subagent {
             ..Capabilities::default()
         };
 
-        Subagent { profile, agent, capabilities }
+        Subagent {
+            profile,
+            agent,
+            capabilities,
+        }
     }
 
     /// The tools this child was actually given, for `mecha tools` and for
@@ -248,20 +252,22 @@ impl Tool for Subagent {
             );
         }
         if outcome.exhausted {
-            content.push_str(
-                "\n\n[note: the subagent ran out of turns, so this may be incomplete]",
-            );
+            content
+                .push_str("\n\n[note: the subagent ran out of turns, so this may be incomplete]");
         }
         if outcome.blocked_sends > 0 {
-            content.push_str(
-                "\n\n[note: the subagent attempted an outbound call that was blocked]",
-            );
+            content
+                .push_str("\n\n[note: the subagent attempted an outbound call that was blocked]");
         }
 
         let output = ToolOutput::ok(content);
         // Marking the answer as external is what keeps the parent's interlock
         // honest — see the module docs on why a summary is not laundering.
-        Ok(if self.capabilities.untrusted_input { output.from_outside() } else { output })
+        Ok(if self.capabilities.untrusted_input {
+            output.from_outside()
+        } else {
+            output
+        })
     }
 }
 
@@ -272,7 +278,13 @@ mod tests {
     #[test]
     fn profile_defaults_are_conservative() {
         let p = SubagentProfile::default();
-        assert!(p.tools.is_empty(), "a profile grants no tools unless it says so");
-        assert!(!p.trusted_output, "child output is untrusted unless opted out");
+        assert!(
+            p.tools.is_empty(),
+            "a profile grants no tools unless it says so"
+        );
+        assert!(
+            !p.trusted_output,
+            "child output is untrusted unless opted out"
+        );
     }
 }

@@ -46,12 +46,25 @@ async fn tool_named(tools: &[Arc<dyn Tool>], name: &str) -> Arc<dyn Tool> {
 }
 
 async fn call(tool: &Arc<dyn Tool>, input: Value, workspace: &Path) -> String {
-    let ctx = ToolCtx { workspace: workspace.to_path_buf(), ..Default::default() };
-    let out = tool.call(input, &ctx).await.expect("the call itself failed");
-    assert!(!out.is_error, "the server reported an error: {}", out.content);
+    let ctx = ToolCtx {
+        workspace: workspace.to_path_buf(),
+        ..Default::default()
+    };
+    let out = tool
+        .call(input, &ctx)
+        .await
+        .expect("the call itself failed");
+    assert!(
+        !out.is_error,
+        "the server reported an error: {}",
+        out.content
+    );
     // Provenance, not capability: taint keys off where a result actually came
     // from, and everything an MCP server returns came from outside.
-    assert!(out.external, "an MCP result was not marked as coming from outside");
+    assert!(
+        out.external,
+        "an MCP result was not marked as coming from outside"
+    );
     out.content
 }
 
@@ -63,7 +76,9 @@ async fn a_real_handshake_yields_the_servers_tools_namespaced_and_annotated() {
     let dir = tmpdir("mcp-handshake");
     let cfg = server("python3", &fixture_server());
 
-    let client = McpClient::connect(&cfg, &unconfined(), &dir).await.expect("handshake failed");
+    let client = McpClient::connect(&cfg, &unconfined(), &dir)
+        .await
+        .expect("handshake failed");
     let tools = client.list_tools().await.expect("tools/list failed");
 
     // Namespaced, so two servers can each expose a `search`.
@@ -77,14 +92,20 @@ async fn a_real_handshake_yields_the_servers_tools_namespaced_and_annotated() {
     // The annotations feed the interlock, so their mapping is worth pinning.
     let environ = tool_named(&tools, "nosy__environ").await;
     assert!(environ.read_only(), "readOnlyHint was dropped");
-    assert!(!environ.capabilities().external_send, "an unannotated tool became a send sink");
+    assert!(
+        !environ.capabilities().external_send,
+        "an unannotated tool became a send sink"
+    );
     assert!(
         !environ.capabilities().untrusted_input,
         "an unannotated tool would arm the interlock on every call"
     );
 
     let touch = tool_named(&tools, "nosy__touch").await;
-    assert!(touch.capabilities().destructive, "destructiveHint was dropped");
+    assert!(
+        touch.capabilities().destructive,
+        "destructiveHint was dropped"
+    );
     assert!(!touch.read_only());
 
     std::fs::remove_dir_all(&dir).ok();
@@ -122,29 +143,49 @@ async fn a_servers_own_account_of_itself_can_be_widened_but_never_narrowed() {
     let tools = forced.list_tools().await.unwrap();
 
     let environ = tool_named(&tools, "nosy__environ").await;
-    assert!(environ.capabilities().untrusted_input, "the override did not widen");
+    assert!(
+        environ.capabilities().untrusted_input,
+        "the override did not widen"
+    );
     assert!(environ.capabilities().external_send);
     // Widening applies to every tool the server exposes, not just the one that
     // looked risky — the point is that we no longer trust its self-report.
-    assert!(tool_named(&tools, "nosy__probe").await.capabilities().untrusted_input);
+    assert!(
+        tool_named(&tools, "nosy__probe")
+            .await
+            .capabilities()
+            .untrusted_input
+    );
 
     // And nothing the server declared for itself was switched off.
     let touch = tool_named(&tools, "nosy__touch").await;
-    assert!(touch.capabilities().destructive, "a declared capability was narrowed");
+    assert!(
+        touch.capabilities().destructive,
+        "a declared capability was narrowed"
+    );
 
     // Distrusting what a tool *returns* says nothing about whether it writes.
     // These are orthogonal, and conflating them made every retrieval from a
     // read-only knowledge-graph server prompt for approval.
-    assert!(environ.read_only(), "an untrusted-input override wrongly revoked read-only");
+    assert!(
+        environ.read_only(),
+        "an untrusted-input override wrongly revoked read-only"
+    );
 
     // A forced `destructive` does contradict it, and there the exemption goes.
     let cfg = McpServerConfig {
-        capabilities: CapabilityOverride { destructive: true, ..Default::default() },
+        capabilities: CapabilityOverride {
+            destructive: true,
+            ..Default::default()
+        },
         ..server("python3", &fixture_server())
     };
     let strict = McpClient::connect(&cfg, &unconfined(), &dir).await.unwrap();
     let environ = tool_named(&strict.list_tools().await.unwrap(), "nosy__environ").await;
-    assert!(!environ.read_only(), "a tool forced destructive kept its approval exemption");
+    assert!(
+        !environ.read_only(),
+        "a tool forced destructive kept its approval exemption"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -162,12 +203,16 @@ async fn the_environment_a_server_actually_sees_is_the_allowlist() {
     };
 
     let cfg = McpServerConfig {
-        env: [("MECHA_EXPLICIT_TOKEN".to_string(), "granted".to_string())].into_iter().collect(),
+        env: [("MECHA_EXPLICIT_TOKEN".to_string(), "granted".to_string())]
+            .into_iter()
+            .collect(),
         env_passthrough: vec![passthrough.clone()],
         ..server("python3", &fixture_server())
     };
 
-    let client = McpClient::connect(&cfg, &unconfined(), &dir).await.expect("handshake failed");
+    let client = McpClient::connect(&cfg, &unconfined(), &dir)
+        .await
+        .expect("handshake failed");
     let tools = client.list_tools().await.unwrap();
     let reported = call(&tool_named(&tools, "nosy__environ").await, json!({}), &dir).await;
 
@@ -186,10 +231,19 @@ async fn the_environment_a_server_actually_sees_is_the_allowlist() {
     // bug was never about one variable. `envs()` layers onto the inherited
     // environment, so *everything* crossed, provider keys included.
     let leaked: Vec<_> = seen.difference(&allowed).collect();
-    assert!(leaked.is_empty(), "the server was handed variables nobody named: {leaked:?}");
+    assert!(
+        leaked.is_empty(),
+        "the server was handed variables nobody named: {leaked:?}"
+    );
 
-    assert!(seen.contains(&passthrough), "a named passthrough never arrived");
-    assert!(seen.contains("MECHA_EXPLICIT_TOKEN"), "an explicit value never arrived");
+    assert!(
+        seen.contains(&passthrough),
+        "a named passthrough never arrived"
+    );
+    assert!(
+        seen.contains("MECHA_EXPLICIT_TOKEN"),
+        "an explicit value never arrived"
+    );
     assert!(
         seen.len() < ours.len(),
         "the server holds as much as we do ({} vs {})",
@@ -202,8 +256,7 @@ async fn the_environment_a_server_actually_sees_is_the_allowlist() {
 
 #[tokio::test]
 async fn a_confined_server_loses_the_network_and_your_home_but_keeps_the_workspace() {
-    if unavailable("docker", docker_available())
-        || unavailable(IMAGE, docker_image_present(IMAGE))
+    if unavailable("docker", docker_available()) || unavailable(IMAGE, docker_image_present(IMAGE))
     {
         return;
     }
@@ -224,13 +277,23 @@ async fn a_confined_server_loses_the_network_and_your_home_but_keeps_the_workspa
         ..Default::default()
     });
 
-    let client = McpClient::connect(&cfg, &sandbox, &dir).await.expect("confined handshake failed");
+    let client = McpClient::connect(&cfg, &sandbox, &dir)
+        .await
+        .expect("confined handshake failed");
     let tools = client.list_tools().await.unwrap();
     let probe = call(&tool_named(&tools, "nosy__probe").await, json!({}), &dir).await;
     let probe: Value = serde_json::from_str(&probe).expect("probe returned non-JSON");
 
-    assert_eq!(probe["network"], json!(false), "a confined server reached the network");
-    assert_eq!(probe["home_ssh_exists"], json!(false), "a confined server can see your ssh keys");
+    assert_eq!(
+        probe["network"],
+        json!(false),
+        "a confined server reached the network"
+    );
+    assert_eq!(
+        probe["home_ssh_exists"],
+        json!(false),
+        "a confined server can see your ssh keys"
+    );
     assert_ne!(probe["uid"], json!(0), "a confined server runs as root");
 
     // These negatives only mean something on a machine where the positives
@@ -238,7 +301,11 @@ async fn a_confined_server_loses_the_network_and_your_home_but_keeps_the_workspa
     // confined server does not share the host's UTS namespace.
     let host = std::process::Command::new("hostname").output().unwrap();
     let host = String::from_utf8_lossy(&host.stdout).trim().to_string();
-    assert_ne!(probe["hostname"], json!(host), "the server ran outside the sandbox");
+    assert_ne!(
+        probe["hostname"],
+        json!(host),
+        "the server ran outside the sandbox"
+    );
 
     // A confined server sees the *workspace*, which is the documented trade:
     // confined against your home directory, not against your project.
@@ -249,8 +316,7 @@ async fn a_confined_server_loses_the_network_and_your_home_but_keeps_the_workspa
 
 #[tokio::test]
 async fn a_confined_server_leaves_files_you_still_own() {
-    if unavailable("docker", docker_available())
-        || unavailable(IMAGE, docker_image_present(IMAGE))
+    if unavailable("docker", docker_available()) || unavailable(IMAGE, docker_image_present(IMAGE))
     {
         return;
     }
@@ -258,20 +324,28 @@ async fn a_confined_server_leaves_files_you_still_own() {
     let script = dir.join("nosy_mcp_server.py");
     std::fs::copy(fixture_server(), &script).unwrap();
 
-    let cfg = McpServerConfig { sandbox: true, ..server("python3", &script) };
+    let cfg = McpServerConfig {
+        sandbox: true,
+        ..server("python3", &script)
+    };
     let sandbox = Sandbox::new(SandboxConfig {
         kind: Backend::Docker,
         image: IMAGE.into(),
         ..Default::default()
     });
 
-    let client = McpClient::connect(&cfg, &sandbox, &dir).await.expect("confined handshake failed");
+    let client = McpClient::connect(&cfg, &sandbox, &dir)
+        .await
+        .expect("confined handshake failed");
     let tools = client.list_tools().await.unwrap();
     let touch = tool_named(&tools, "nosy__touch").await;
     call(&touch, json!({"name": "from-the-server.txt"}), &dir).await;
 
     let written = dir.join("from-the-server.txt");
-    assert!(written.exists(), "the confined server's write never reached the workspace");
+    assert!(
+        written.exists(),
+        "the confined server's write never reached the workspace"
+    );
 
     #[cfg(unix)]
     {
@@ -294,7 +368,10 @@ async fn a_server_asking_for_confinement_with_no_backend_never_starts() {
         return;
     }
     let dir = tmpdir("mcp-unconfinable");
-    let cfg = McpServerConfig { sandbox: true, ..server("python3", &fixture_server()) };
+    let cfg = McpServerConfig {
+        sandbox: true,
+        ..server("python3", &fixture_server())
+    };
 
     // Through the real entry point, not just the builder: a server that asked
     // to be confined and quietly was not is the failure this refuses.
@@ -302,7 +379,10 @@ async fn a_server_asking_for_confinement_with_no_backend_never_starts() {
         Ok(_) => panic!("a server that asked to be confined was started unconfined"),
         Err(e) => e.to_string(),
     };
-    assert!(err.contains("no sandbox backend is set"), "unexpected error: {err}");
+    assert!(
+        err.contains("no sandbox backend is set"),
+        "unexpected error: {err}"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

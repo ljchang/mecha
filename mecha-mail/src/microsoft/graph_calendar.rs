@@ -76,12 +76,14 @@ pub struct OutlookCalendarProvider {
 
 impl OutlookCalendarProvider {
     pub fn new(access_token: String) -> Self {
-        Self { access_token, client: crate::http::client() }
+        Self {
+            access_token,
+            client: crate::http::client(),
+        }
     }
 
     async fn get_json(&self, url: &str) -> Result<Value, MailError> {
-        let resp =
-            send_with_retry(self.client.get(url).bearer_auth(&self.access_token)).await?;
+        let resp = send_with_retry(self.client.get(url).bearer_auth(&self.access_token)).await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
@@ -123,7 +125,10 @@ impl OutlookCalendarProvider {
         let base = if calendar_id.is_empty() || calendar_id == "primary" {
             format!("{GRAPH}/me/calendarView")
         } else {
-            format!("{GRAPH}/me/calendars/{}/calendarView", urlencode(calendar_id))
+            format!(
+                "{GRAPH}/me/calendars/{}/calendarView",
+                urlencode(calendar_id)
+            )
         };
 
         let mut url = format!(
@@ -177,7 +182,10 @@ impl OutlookCalendarProvider {
             format!("{GRAPH}/me/calendars/{}/events", urlencode(calendar_id))
         };
         let resp = send_with_retry(
-            self.client.post(&url).bearer_auth(&self.access_token).json(&body),
+            self.client
+                .post(&url)
+                .bearer_auth(&self.access_token)
+                .json(&body),
         )
         .await?;
         if !resp.status().is_success() {
@@ -252,7 +260,10 @@ impl OutlookCalendarProvider {
             return Ok(());
         }
         let text = resp.text().await.unwrap_or_default();
-        Err(MailError::ApiError { status, message: super::auth::humanize_aadsts(&text) })
+        Err(MailError::ApiError {
+            status,
+            message: super::auth::humanize_aadsts(&text),
+        })
     }
 }
 
@@ -300,7 +311,10 @@ fn parse_event(item: &Value, calendar_id: &str) -> CalendarEvent {
             Some(s) if !s.trim().is_empty() => s.to_string(),
             _ => "(No title)".to_string(),
         },
-        description: item["bodyPreview"].as_str().filter(|s| !s.is_empty()).map(String::from),
+        description: item["bodyPreview"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(String::from),
         start_time: stamp("start"),
         end_time: stamp("end"),
         location: item["location"]["displayName"]
@@ -309,7 +323,9 @@ fn parse_event(item: &Value, calendar_id: &str) -> CalendarEvent {
             .map(String::from),
         status,
         attendees,
-        organizer: item["organizer"]["emailAddress"]["address"].as_str().map(String::from),
+        organizer: item["organizer"]["emailAddress"]["address"]
+            .as_str()
+            .map(String::from),
         is_all_day: item["isAllDay"].as_bool().unwrap_or(false),
         html_link: item["webLink"].as_str().map(String::from),
     }
@@ -340,7 +356,10 @@ mod tests {
         let cancelled = json!({"id": "e2", "subject": "", "isCancelled": true});
         let e = parse_event(&cancelled, "");
         assert_eq!(e.status, "cancelled");
-        assert_eq!(e.title, "(No title)", "an empty subject must not render blank");
+        assert_eq!(
+            e.title, "(No title)",
+            "an empty subject must not render blank"
+        );
     }
 
     #[test]

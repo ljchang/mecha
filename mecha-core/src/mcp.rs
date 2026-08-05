@@ -104,7 +104,11 @@ impl McpClient {
     /// model asked for out loud, where a server runs whatever its author wrote.
     /// So it gets the same treatment — a named environment rather than an
     /// inherited one, and optional confinement.
-    pub async fn connect(cfg: &McpServerConfig, sandbox: &Sandbox, workspace: &Path) -> Result<Arc<Self>> {
+    pub async fn connect(
+        cfg: &McpServerConfig,
+        sandbox: &Sandbox,
+        workspace: &Path,
+    ) -> Result<Arc<Self>> {
         let mut command = Self::build_command(cfg, sandbox, workspace)?;
 
         command
@@ -152,7 +156,9 @@ impl McpClient {
                         tracing::warn!(server, line, "MCP server sent non-JSON on stdout");
                         continue;
                     };
-                    let Some(id) = response_id(&msg) else { continue };
+                    let Some(id) = response_id(&msg) else {
+                        continue;
+                    };
                     if let Some(tx) = pending.lock().unwrap().remove(&id) {
                         let _ = tx.send(msg);
                     }
@@ -184,7 +190,9 @@ impl McpClient {
             .await
             .with_context(|| format!("MCP handshake with `{}` failed", cfg.name))?;
 
-        client.notify("notifications/initialized", json!({})).await?;
+        client
+            .notify("notifications/initialized", json!({}))
+            .await?;
         Ok(client)
     }
 
@@ -232,7 +240,9 @@ impl McpClient {
             bail!(
                 "MCP server `{}` returned an error for {method}: {}",
                 self.name,
-                err.get("message").and_then(Value::as_str).unwrap_or(&err.to_string())
+                err.get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&err.to_string())
             );
         }
         Ok(response.get("result").cloned().unwrap_or(Value::Null))
@@ -254,7 +264,11 @@ impl McpClient {
             };
             let result = self.request("tools/list", params).await?;
             tools.extend(
-                result.get("tools").and_then(Value::as_array).cloned().unwrap_or_default(),
+                result
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
             );
             match result.get("nextCursor").and_then(Value::as_str) {
                 Some(c) if !c.is_empty() => cursor = Some(c.to_string()),
@@ -324,19 +338,33 @@ impl McpClient {
         // Content is a list of typed parts; we flatten the text ones and note
         // anything else rather than silently dropping it.
         let mut text = Vec::new();
-        for part in result.get("content").and_then(Value::as_array).unwrap_or(&vec![]) {
+        for part in result
+            .get("content")
+            .and_then(Value::as_array)
+            .unwrap_or(&vec![])
+        {
             match part.get("type").and_then(Value::as_str) {
-                Some("text") => {
-                    text.push(part.get("text").and_then(Value::as_str).unwrap_or("").to_string())
-                }
+                Some("text") => text.push(
+                    part.get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                ),
                 Some(other) => text.push(format!("[{other} content omitted]")),
                 None => {}
             }
         }
 
         Ok(ToolOutput {
-            content: if text.is_empty() { "(no content)".into() } else { text.join("\n") },
-            is_error: result.get("isError").and_then(Value::as_bool).unwrap_or(false),
+            content: if text.is_empty() {
+                "(no content)".into()
+            } else {
+                text.join("\n")
+            },
+            is_error: result
+                .get("isError")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             external: true,
         })
     }
@@ -456,8 +484,14 @@ mod tests {
         let err = McpClient::build_command(&cfg, &unconfined(), Path::new("/tmp"))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("no sandbox backend is set"), "unexpected error: {err}");
-        assert!(err.contains("nosy"), "the error should name the server: {err}");
+        assert!(
+            err.contains("no sandbox backend is set"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("nosy"),
+            "the error should name the server: {err}"
+        );
     }
 
     #[test]
@@ -473,7 +507,10 @@ mod tests {
         let std = cmd.as_std();
 
         assert_eq!(std.get_program(), "/usr/bin/env");
-        let args: Vec<_> = std.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        let args: Vec<_> = std
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
         assert_eq!(args, vec!["-0"]);
     }
 
@@ -508,7 +545,11 @@ mod tests {
         };
 
         let mut cmd = McpClient::build_command(&cfg, &unconfined(), Path::new("/tmp")).unwrap();
-        let out = cmd.stdout(std::process::Stdio::piped()).output().await.unwrap();
+        let out = cmd
+            .stdout(std::process::Stdio::piped())
+            .output()
+            .await
+            .unwrap();
         assert!(out.status.success(), "env did not run");
 
         let child: std::collections::BTreeSet<String> = String::from_utf8_lossy(&out.stdout)
@@ -524,10 +565,19 @@ mod tests {
             .collect();
 
         let leaked: Vec<_> = child.difference(&allowed).collect();
-        assert!(leaked.is_empty(), "these crossed without being named: {leaked:?}");
+        assert!(
+            leaked.is_empty(),
+            "these crossed without being named: {leaked:?}"
+        );
 
-        assert!(child.contains(&passthrough), "a named passthrough did not cross");
-        assert!(child.contains("MECHA_EXPLICIT_TOKEN"), "an explicit value did not cross");
+        assert!(
+            child.contains(&passthrough),
+            "a named passthrough did not cross"
+        );
+        assert!(
+            child.contains("MECHA_EXPLICIT_TOKEN"),
+            "an explicit value did not cross"
+        );
         assert!(
             child.len() < ours.len(),
             "the child holds as much as we do ({} vs {}) — the environment was inherited",

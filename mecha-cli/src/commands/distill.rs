@@ -46,7 +46,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let store = LearningStore::open(LearningStore::default_root()?)?;
     // Same lock discipline as reflect: taken before reading the ledger, so
     // two detached session_end hooks cannot both see a session as new.
-    let _lock = if args.dry_run { None } else { Some(store.lock()?) };
+    let _lock = if args.dry_run {
+        None
+    } else {
+        Some(store.lock()?)
+    };
     let done = store.distilled_sessions()?;
 
     let sessions = Session::list(&sessions_dir)?;
@@ -64,10 +68,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     if args.dry_run {
         for (meta, path) in &todo {
-            let n = Session::load(path).map(|(_, c)| c.messages.len()).unwrap_or(0);
+            let n = Session::load(path)
+                .map(|(_, c)| c.messages.len())
+                .unwrap_or(0);
             println!("{} ({n} message(s), {})", meta.id, meta.created_at);
         }
-        println!("dry run: {} session(s) would be distilled; nothing written", todo.len());
+        println!(
+            "dry run: {} session(s) would be distilled; nothing written",
+            todo.len()
+        );
         return Ok(());
     }
 
@@ -85,7 +94,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let provider = mecha_core::provider::build(provider_cfg)?;
     let model = global.model.clone().or_else(|| provider_cfg.model.clone());
     let distiller = Distiller::new(provider, model);
-    eprintln!("distilling with {} ({provider_name}) → {}", distiller.model(), args.server);
+    eprintln!(
+        "distilling with {} ({provider_name}) → {}",
+        distiller.model(),
+        args.server
+    );
 
     let sandbox = mecha_core::sandbox::Sandbox::new(cfg.sandbox.clone());
     let client = mecha_core::mcp::McpClient::connect(server_cfg, &sandbox, &cwd)
@@ -139,7 +152,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                             outcome.uid,
                             outcome.status,
                             outcome.entities_linked,
-                            if outcome.entities_linked == 1 { "y" } else { "ies" }
+                            if outcome.entities_linked == 1 {
+                                "y"
+                            } else {
+                                "ies"
+                            }
                         );
                     }
                     Err(e) => {
@@ -168,7 +185,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     }
 
-    store.commit(&format!("distill: {distilled} episode(s), {skipped} skip(s)"));
+    store.commit(&format!(
+        "distill: {distilled} episode(s), {skipped} skip(s)"
+    ));
     println!(
         "distilled {distilled} session(s) into the graph, skipped {skipped} \
          (nothing durable); ledger: {}",

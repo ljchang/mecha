@@ -96,20 +96,27 @@ pub enum SummaryVerdict {
 /// validator that cannot run must not be able to veto a compaction the run
 /// may need to survive.
 pub fn parse_omissions(text: &str) -> Option<SummaryVerdict> {
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     if lines.is_empty() {
         return None;
     }
     // A whole line saying "none" (however decorated) is a pass. Substrings do
     // not count: "none of the paths survive" is a finding, not a pass.
-    if lines
-        .iter()
-        .any(|l| l.trim_matches(['-', '*', '.', '!', ':', ' ']).eq_ignore_ascii_case("none"))
-    {
+    if lines.iter().any(|l| {
+        l.trim_matches(['-', '*', '.', '!', ':', ' '])
+            .eq_ignore_ascii_case("none")
+    }) {
         return Some(SummaryVerdict::Complete);
     }
     Some(SummaryVerdict::Missing(
-        lines.iter().map(|l| l.trim_start_matches(['-', '*', ' ']).to_string()).collect(),
+        lines
+            .iter()
+            .map(|l| l.trim_start_matches(['-', '*', ' ']).to_string())
+            .collect(),
     ))
 }
 
@@ -122,7 +129,11 @@ pub fn retry_instruction(omissions: &[String]) -> String {
         "{SUMMARY_INSTRUCTION}\n\nA check of your previous summary against the \
          transcript found it omitted the following. The rewritten summary must \
          include them:\n{}",
-        omissions.iter().map(|o| format!("- {o}")).collect::<Vec<_>>().join("\n")
+        omissions
+            .iter()
+            .map(|o| format!("- {o}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     )
 }
 
@@ -149,8 +160,14 @@ pub fn render_for_summary(messages: &[Message], max_result_chars: usize) -> Stri
                 Block::ToolUse { name, input, .. } => {
                     out.push_str(&format!("[assistant calls {name}] {input}\n"));
                 }
-                Block::ToolResult { content, is_error, .. } => {
-                    let label = if *is_error { "tool error" } else { "tool result" };
+                Block::ToolResult {
+                    content, is_error, ..
+                } => {
+                    let label = if *is_error {
+                        "tool error"
+                    } else {
+                        "tool result"
+                    };
                     out.push_str(&format!("[{label}] {}\n", clip(content, max_result_chars)));
                 }
                 // Reasoning is the model talking to itself and does not survive
@@ -247,7 +264,9 @@ pub fn thin_old_results(messages: &mut [Message], keep_recent: usize, keep_chars
 
     for message in messages.iter_mut().take(cutoff) {
         for block in &mut message.content {
-            let Block::ToolResult { content, .. } = block else { continue };
+            let Block::ToolResult { content, .. } = block else {
+                continue;
+            };
             // Already thinned: leave it, or repeated passes would eat the head
             // a chunk at a time.
             if content.ends_with(TRUNCATION_MARKER) || content.chars().count() <= keep_chars {
@@ -292,7 +311,12 @@ pub fn evict_superseded_results(messages: &mut [Message]) -> usize {
     let mut errored = std::collections::HashMap::new();
     for message in messages.iter() {
         for block in &message.content {
-            if let Block::ToolResult { tool_use_id, is_error, .. } = block {
+            if let Block::ToolResult {
+                tool_use_id,
+                is_error,
+                ..
+            } = block
+            {
                 errored.insert(tool_use_id.clone(), *is_error);
             }
         }
@@ -321,17 +345,28 @@ pub fn evict_superseded_results(messages: &mut [Message]) -> usize {
         .map(|(_, name, target)| (target.as_str(), name.as_str()))
         .collect();
 
-    let call_of: std::collections::HashMap<&str, (&str, &str)> =
-        calls.iter().map(|(id, name, target)| (id.as_str(), (name.as_str(), target.as_str()))).collect();
+    let call_of: std::collections::HashMap<&str, (&str, &str)> = calls
+        .iter()
+        .map(|(id, name, target)| (id.as_str(), (name.as_str(), target.as_str())))
+        .collect();
 
     let mut evicted = 0;
     for message in messages.iter_mut() {
         for block in &mut message.content {
-            let Block::ToolResult { tool_use_id, content, is_error } = block else { continue };
+            let Block::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } = block
+            else {
+                continue;
+            };
             if *is_error || content.starts_with(SUPERSEDED_MARKER) {
                 continue;
             }
-            let Some(&(name, target)) = call_of.get(tool_use_id.as_str()) else { continue };
+            let Some(&(name, target)) = call_of.get(tool_use_id.as_str()) else {
+                continue;
+            };
             // Superseded means a *different, later* call owns the target now.
             match authoritative.get(target) {
                 Some(&winner) if winner != tool_use_id => {
@@ -366,8 +401,14 @@ fn target_of(name: &str, input: &serde_json::Value) -> String {
         // the unranged read.
         Some(path) => format!(
             "path\u{0}{path}\u{0}{}\u{0}{}",
-            input.get("offset").and_then(serde_json::Value::as_u64).unwrap_or(0),
-            input.get("limit").and_then(serde_json::Value::as_u64).unwrap_or(0),
+            input
+                .get("offset")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            input
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
         ),
         // `serde_json::Map` is a BTreeMap, so this string is canonical even if
         // the model orders the arguments differently between calls.
@@ -403,7 +444,10 @@ pub fn orphaned_tool_uses(messages: &[Message]) -> Vec<String> {
             }
         }
     }
-    asked.into_iter().filter(|id| !answered.contains(id)).collect()
+    asked
+        .into_iter()
+        .filter(|id| !answered.contains(id))
+        .collect()
 }
 
 /// Every `tool_result` whose `tool_use` is missing — the error that 400s.
@@ -458,15 +502,26 @@ mod tests {
     #[test]
     fn thinning_keeps_every_call_and_shortens_only_the_results() {
         let mut m = walk(8);
-        let before_calls: Vec<_> = m.iter().flat_map(|m| m.tool_uses()).map(|(_, _, i)| i.clone()).collect();
+        let before_calls: Vec<_> = m
+            .iter()
+            .flat_map(|m| m.tool_uses())
+            .map(|(_, _, i)| i.clone())
+            .collect();
 
         let thinned = thin_old_results(&mut m, 4, 240);
 
         assert!(thinned > 0);
         // The sequence of calls is what says where the agent got to, and it is
         // untouched — that is the whole point of thinning rather than cutting.
-        let after_calls: Vec<_> = m.iter().flat_map(|m| m.tool_uses()).map(|(_, _, i)| i.clone()).collect();
-        assert_eq!(before_calls, after_calls, "thinning disturbed the tool calls");
+        let after_calls: Vec<_> = m
+            .iter()
+            .flat_map(|m| m.tool_uses())
+            .map(|(_, _, i)| i.clone())
+            .collect();
+        assert_eq!(
+            before_calls, after_calls,
+            "thinning disturbed the tool calls"
+        );
         assert_eq!(m.len(), 17, "thinning removed messages");
     }
 
@@ -479,7 +534,11 @@ mod tests {
             Block::ToolResult { content, .. } => Some(content.clone()),
             _ => None,
         });
-        assert_eq!(last_result.unwrap().len(), 500, "the newest result was thinned");
+        assert_eq!(
+            last_result.unwrap().len(),
+            500,
+            "the newest result was thinned"
+        );
     }
 
     #[test]
@@ -523,7 +582,10 @@ mod tests {
         let found = parse_omissions("- the amount 847\n- the path audit/entry-d084.md").unwrap();
         assert_eq!(
             found,
-            Missing(vec!["the amount 847".into(), "the path audit/entry-d084.md".into()])
+            Missing(vec![
+                "the amount 847".into(),
+                "the path audit/entry-d084.md".into()
+            ])
         );
 
         // Nothing usable is no verdict — the caller must not treat it as a
@@ -535,7 +597,10 @@ mod tests {
     #[test]
     fn the_retry_instruction_names_every_omission_and_keeps_the_original_brief() {
         let retry = retry_instruction(&["the amount 847".into(), "the QX-4417 reference".into()]);
-        assert!(retry.contains(SUMMARY_INSTRUCTION), "the retry must still say how to summarise");
+        assert!(
+            retry.contains(SUMMARY_INSTRUCTION),
+            "the retry must still say how to summarise"
+        );
         assert!(retry.contains("- the amount 847"));
         assert!(retry.contains("- the QX-4417 reference"));
     }
@@ -554,8 +619,15 @@ mod tests {
         ];
         assert_eq!(evict_superseded_results(&mut m), 1);
         assert!(body_of(&m[2]).starts_with(SUPERSEDED_MARKER));
-        assert!(body_of(&m[2]).contains("fs_read"), "the marker names the recovery");
-        assert_eq!(body_of(&m[4]), "new contents", "the authoritative copy was touched");
+        assert!(
+            body_of(&m[2]).contains("fs_read"),
+            "the marker names the recovery"
+        );
+        assert_eq!(
+            body_of(&m[4]),
+            "new contents",
+            "the authoritative copy was touched"
+        );
     }
 
     #[test]
@@ -575,7 +647,10 @@ mod tests {
         ];
         assert_eq!(evict_superseded_results(&mut m), 1);
         assert!(body_of(&m[2]).starts_with(SUPERSEDED_MARKER));
-        assert!(body_of(&m[2]).contains("fs_write"), "the marker says what superseded it");
+        assert!(
+            body_of(&m[2]).contains("fs_write"),
+            "the marker says what superseded it"
+        );
     }
 
     #[test]
@@ -624,7 +699,10 @@ mod tests {
         m.push(ranged("t3", 100));
         m.push(result("t3", "lines 100-110 again"));
         assert_eq!(evict_superseded_results(&mut m), 1);
-        assert!(body_of(&m[4]).starts_with(SUPERSEDED_MARKER), "the older 100-slice");
+        assert!(
+            body_of(&m[4]).starts_with(SUPERSEDED_MARKER),
+            "the older 100-slice"
+        );
         assert_eq!(body_of(&m[2]), "the whole file", "the full read survived");
     }
 
@@ -675,21 +753,38 @@ mod tests {
             call("t1", "a.md"),
             result("t1", "new"),
         ];
-        let calls_before: Vec<_> =
-            m.iter().flat_map(|m| m.tool_uses()).map(|(_, _, i)| i.clone()).collect();
+        let calls_before: Vec<_> = m
+            .iter()
+            .flat_map(|m| m.tool_uses())
+            .map(|(_, _, i)| i.clone())
+            .collect();
         assert_eq!(evict_superseded_results(&mut m), 1);
-        assert_eq!(evict_superseded_results(&mut m), 0, "a second pass re-evicted");
+        assert_eq!(
+            evict_superseded_results(&mut m),
+            0,
+            "a second pass re-evicted"
+        );
 
-        let calls_after: Vec<_> =
-            m.iter().flat_map(|m| m.tool_uses()).map(|(_, _, i)| i.clone()).collect();
-        assert_eq!(calls_before, calls_after, "eviction disturbed the tool calls");
+        let calls_after: Vec<_> = m
+            .iter()
+            .flat_map(|m| m.tool_uses())
+            .map(|(_, _, i)| i.clone())
+            .collect();
+        assert_eq!(
+            calls_before, calls_after,
+            "eviction disturbed the tool calls"
+        );
         assert!(orphaned_tool_results(&m).is_empty());
         assert!(orphaned_tool_uses(&m).is_empty());
     }
 
     #[test]
     fn a_result_shorter_than_the_budget_is_not_touched() {
-        let mut m = vec![Message::user("go"), call("t0", "a.md"), result("t0", "amount: 43")];
+        let mut m = vec![
+            Message::user("go"),
+            call("t0", "a.md"),
+            result("t0", "amount: 43"),
+        ];
         assert_eq!(thin_old_results(&mut m, 0, 240), 0);
         assert!(!format!("{:?}", m[2].content).contains("truncated"));
     }
@@ -734,7 +829,9 @@ mod tests {
         // turns into a real session, so check every target, not a lucky one.
         let messages = transcript(6);
         for target in 0..messages.len() {
-            let Some(cut) = cut_point(&messages, target) else { continue };
+            let Some(cut) = cut_point(&messages, target) else {
+                continue;
+            };
             let rebuilt = rebuild(&messages, cut, "a summary");
 
             assert!(
@@ -752,8 +849,13 @@ mod tests {
     fn the_cut_lands_on_an_assistant_turn_and_at_or_after_the_target() {
         let messages = transcript(5);
         for target in 0..messages.len() {
-            let Some(cut) = cut_point(&messages, target) else { continue };
-            assert!(cut >= target.max(1), "a cut before the target drops too much");
+            let Some(cut) = cut_point(&messages, target) else {
+                continue;
+            };
+            assert!(
+                cut >= target.max(1),
+                "a cut before the target drops too much"
+            );
             assert_eq!(messages[cut].role, Role::Assistant);
         }
     }
@@ -771,7 +873,10 @@ mod tests {
 
         // ...and the tail was not paraphrased.
         assert_eq!(rebuilt.len(), 1 + messages.len() - cut);
-        assert_eq!(rebuilt.last().unwrap().text(), messages.last().unwrap().text());
+        assert_eq!(
+            rebuilt.last().unwrap().text(),
+            messages.last().unwrap().text()
+        );
     }
 
     #[test]
@@ -792,7 +897,10 @@ mod tests {
 
     #[test]
     fn a_short_conversation_is_left_alone() {
-        let messages = vec![Message::user("hi"), Message::assistant(vec![Block::text("hello")])];
+        let messages = vec![
+            Message::user("hi"),
+            Message::assistant(vec![Block::text("hello")]),
+        ];
         // There is a legal cut, but nothing worth dropping.
         let cut = cut_point(&messages, 1).unwrap();
         assert!(!worth_compacting(&messages, cut));

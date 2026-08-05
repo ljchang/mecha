@@ -7,8 +7,8 @@ use crate::approve::TerminalApprover;
 use crate::GlobalOpts;
 use anyhow::{Context, Result};
 use mecha_core::agent::Agent;
-use mecha_core::config::{Config, PermissionMode};
 use mecha_core::config::SearchBackendConfig;
+use mecha_core::config::{Config, PermissionMode};
 use mecha_core::mcp::{self, McpClient};
 use mecha_core::search::{Exa, SearchBackend, SearchChain, Searxng, Tavily, WebSearch};
 use mecha_core::subagent::{Subagent, SubagentProfile};
@@ -246,7 +246,11 @@ pub fn sandbox_line(sandbox: &mecha_core::sandbox::Sandbox) -> String {
         format!(
             "sandbox: {} · network {} · reads {}",
             sandbox.backend().as_str(),
-            if sandbox.can_reach_network() { "on" } else { "off" },
+            if sandbox.can_reach_network() {
+                "on"
+            } else {
+                "off"
+            },
             if sandbox.reaches_beyond_workspace() {
                 "beyond the workspace"
             } else {
@@ -261,8 +265,11 @@ pub fn sandbox_line(sandbox: &mecha_core::sandbox::Sandbox) -> String {
 /// Resolve config, workspace, tools, and the approval policy.
 pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<PreparedTools> {
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
-    let mut cfg =
-        if opts.global_config_only { Config::load_global()? } else { Config::load(&cwd)? };
+    let mut cfg = if opts.global_config_only {
+        Config::load_global()?
+    } else {
+        Config::load(&cwd)?
+    };
 
     // --- flags override config ---
     if let Some(effort) = opts.effort {
@@ -327,8 +334,11 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
                 chrono::Local::now().format("%A, %-d %B %Y")
             ),
         };
-        cfg.agent.system_prompt =
-            Some(if base.is_empty() { stamp } else { format!("{base}\n\n{stamp}") });
+        cfg.agent.system_prompt = Some(if base.is_empty() {
+            stamp
+        } else {
+            format!("{base}\n\n{stamp}")
+        });
         cfg.agent.system_prompt_file = None;
     }
     // Learned rules ride at the end of the system prompt — still inside the
@@ -349,8 +359,11 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             }
             if let Some(block) = store.rules_prompt_block()? {
                 let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
-                cfg.agent.system_prompt =
-                    Some(if base.is_empty() { block } else { format!("{base}\n\n{block}") });
+                cfg.agent.system_prompt = Some(if base.is_empty() {
+                    block
+                } else {
+                    format!("{base}\n\n{block}")
+                });
                 cfg.agent.system_prompt_file = None;
             }
         }
@@ -437,7 +450,9 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         if interactive && cfg.tools.permission_mode == PermissionMode::Ask {
             Arc::new(TerminalApprover::default())
         } else {
-            Arc::new(ModeApprover { mode: cfg.tools.permission_mode })
+            Arc::new(ModeApprover {
+                mode: cfg.tools.permission_mode,
+            })
         };
 
     // An MCP server may legitimately shadow `todo` (registered after the
@@ -449,7 +464,10 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             // Data pointers, not Arc::ptr_eq: comparing a concrete Arc with a
             // trait-object Arc through ptr_eq compares vtables too, which is
             // the documented footgun.
-            std::ptr::eq(Arc::as_ptr(registered) as *const (), Arc::as_ptr(handle) as *const ())
+            std::ptr::eq(
+                Arc::as_ptr(registered) as *const (),
+                Arc::as_ptr(handle) as *const (),
+            )
         })
     });
 
@@ -464,7 +482,15 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             .context("sandbox preflight failed — refusing to run `shell` unconfined")?;
     }
 
-    Ok(PreparedTools { registry, sandbox, workspace, config: cfg, approver, todo, _mcp: clients })
+    Ok(PreparedTools {
+        registry,
+        sandbox,
+        workspace,
+        config: cfg,
+        approver,
+        todo,
+        _mcp: clients,
+    })
 }
 
 /// Build the search chain in configured order, skipping backends that cannot
@@ -478,7 +504,9 @@ fn build_search_chain(configs: &[SearchBackendConfig]) -> (SearchChain, Vec<Stri
             "exa" => cfg
                 .resolve_api_key()
                 .context("no API key (set api_key_env, e.g. EXA_API_KEY)")
-                .and_then(|k| Ok(Box::new(Exa::new(k, cfg.base_url.clone())?) as Box<dyn SearchBackend>)),
+                .and_then(|k| {
+                    Ok(Box::new(Exa::new(k, cfg.base_url.clone())?) as Box<dyn SearchBackend>)
+                }),
             "tavily" => cfg
                 .resolve_api_key()
                 .context("no API key (set api_key_env, e.g. TAVILY_API_KEY)")
@@ -594,8 +622,10 @@ mod tests {
     /// still an error.
     #[test]
     fn an_absent_allowlist_excludes_nothing_and_a_present_one_excludes_what_it_omits() {
-        let wanted: Vec<String> =
-            ["web_search", "http_fetch", "todo"].iter().map(|s| s.to_string()).collect();
+        let wanted: Vec<String> = ["web_search", "http_fetch", "todo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         assert!(
             excluded_by_allowlist(&wanted, &[]).is_empty(),
@@ -608,8 +638,10 @@ mod tests {
             vec!["web_search", "http_fetch", "todo"]
         );
 
-        let full: Vec<String> =
-            ["web_search", "http_fetch", "todo", "fs_read"].iter().map(|s| s.to_string()).collect();
+        let full: Vec<String> = ["web_search", "http_fetch", "todo", "fs_read"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert!(
             excluded_by_allowlist(&wanted, &full).is_empty(),
             "an allowlist that covers the profile keeps it"

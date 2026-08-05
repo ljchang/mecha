@@ -52,7 +52,11 @@ mod tests {
         buf.push(b"event: x\ndata: 1\n\ndata: 2\n\ntail");
         assert_eq!(buf.next_segment(b"\n\n").unwrap(), "event: x\ndata: 1\n\n");
         assert_eq!(buf.next_segment(b"\n\n").unwrap(), "data: 2\n\n");
-        assert_eq!(buf.next_segment(b"\n\n"), None, "the tail waits for its delimiter");
+        assert_eq!(
+            buf.next_segment(b"\n\n"),
+            None,
+            "the tail waits for its delimiter"
+        );
     }
 
     #[test]

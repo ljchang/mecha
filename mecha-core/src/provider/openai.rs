@@ -39,7 +39,10 @@ impl OpenAiCompatible {
                 .base_url
                 .clone()
                 .unwrap_or_else(|| "https://api.openai.com".to_string()),
-            default_model: cfg.model.clone().unwrap_or_else(|| "gpt-4o-mini".to_string()),
+            default_model: cfg
+                .model
+                .clone()
+                .unwrap_or_else(|| "gpt-4o-mini".to_string()),
             temperature: cfg.temperature,
             seed: cfg.seed,
             id: cfg.kind.clone(),
@@ -152,7 +155,9 @@ impl Provider for OpenAiCompatible {
             // end mid-character, and only a complete line is guaranteed to be
             // complete UTF-8.
             while let Some(line) = buf.next_segment(b"\n") {
-                let Some(data) = line.trim().strip_prefix("data:") else { continue };
+                let Some(data) = line.trim().strip_prefix("data:") else {
+                    continue;
+                };
                 let data = data.trim();
                 if data.is_empty() || data == "[DONE]" {
                     continue;
@@ -187,7 +192,14 @@ fn encode_message(m: &Message, out: &mut Vec<Value>) {
             }
             let mut msg = json!({"role": "assistant"});
             let obj = msg.as_object_mut().unwrap();
-            obj.insert("content".into(), if text.is_empty() { Value::Null } else { json!(text) });
+            obj.insert(
+                "content".into(),
+                if text.is_empty() {
+                    Value::Null
+                } else {
+                    json!(text)
+                },
+            );
             if !tool_calls.is_empty() {
                 obj.insert("tool_calls".into(), json!(tool_calls));
             }
@@ -198,7 +210,11 @@ fn encode_message(m: &Message, out: &mut Vec<Value>) {
             for b in &m.content {
                 match b {
                     Block::Text { text: t } => text.push_str(t),
-                    Block::ToolResult { tool_use_id, content, .. } => out.push(json!({
+                    Block::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => out.push(json!({
                         "role": "tool",
                         "tool_call_id": tool_use_id,
                         "content": content,
@@ -243,9 +259,7 @@ fn parse_arguments(name: &str, raw: &str) -> Result<Value> {
 
 fn decode_response(v: &Value) -> Result<CompletionResponse> {
     let mut malformed = 0u32;
-    let choice = v
-        .pointer("/choices/0")
-        .context("response has no choices")?;
+    let choice = v.pointer("/choices/0").context("response has no choices")?;
     let msg = choice.get("message").context("choice has no message")?;
 
     let mut content = Vec::new();
@@ -254,7 +268,11 @@ fn decode_response(v: &Value) -> Result<CompletionResponse> {
             content.push(Block::text(text));
         }
     }
-    for call in msg.get("tool_calls").and_then(Value::as_array).unwrap_or(&vec![]) {
+    for call in msg
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .unwrap_or(&vec![])
+    {
         let name = call
             .pointer("/function/name")
             .and_then(Value::as_str)
@@ -272,7 +290,11 @@ fn decode_response(v: &Value) -> Result<CompletionResponse> {
             }
         };
         content.push(Block::ToolUse {
-            id: call.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
+            id: call
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
             input,
             name,
         });
@@ -283,7 +305,11 @@ fn decode_response(v: &Value) -> Result<CompletionResponse> {
         stop_reason: decode_finish(choice.get("finish_reason").and_then(Value::as_str)),
         usage: decode_usage(v.get("usage")),
         refusal: None,
-        model: v.get("model").and_then(Value::as_str).unwrap_or_default().to_string(),
+        model: v
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         malformed_tool_args: malformed,
     })
 }
@@ -314,17 +340,25 @@ impl Accumulator {
                 let _ = sink.send(StreamEvent::Usage(self.usage.clone()));
             }
         }
-        let Some(choice) = v.pointer("/choices/0") else { return };
+        let Some(choice) = v.pointer("/choices/0") else {
+            return;
+        };
         if let Some(f) = choice.get("finish_reason").and_then(Value::as_str) {
             self.finish = Some(decode_finish(Some(f)));
         }
-        let Some(delta) = choice.get("delta") else { return };
+        let Some(delta) = choice.get("delta") else {
+            return;
+        };
 
         if let Some(t) = delta.get("content").and_then(Value::as_str) {
             self.text.push_str(t);
             let _ = sink.send(StreamEvent::TextDelta(t.to_string()));
         }
-        for call in delta.get("tool_calls").and_then(Value::as_array).unwrap_or(&vec![]) {
+        for call in delta
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .unwrap_or(&vec![])
+        {
             let idx = call.get("index").and_then(Value::as_u64).unwrap_or(0);
             let entry = self.calls.entry(idx).or_default();
             if let Some(id) = call.get("id").and_then(Value::as_str) {
@@ -332,7 +366,9 @@ impl Accumulator {
             }
             if let Some(name) = call.pointer("/function/name").and_then(Value::as_str) {
                 if entry.1.is_empty() && !name.is_empty() {
-                    let _ = sink.send(StreamEvent::ToolUseStart { name: name.to_string() });
+                    let _ = sink.send(StreamEvent::ToolUseStart {
+                        name: name.to_string(),
+                    });
                 }
                 entry.1.push_str(name);
             }
@@ -411,7 +447,10 @@ mod tests {
         assert!(body.get("seed").is_none());
     }
 
-    fn sink() -> (StreamSink, tokio::sync::mpsc::UnboundedReceiver<StreamEvent>) {
+    fn sink() -> (
+        StreamSink,
+        tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
+    ) {
         tokio::sync::mpsc::unbounded_channel()
     }
 
@@ -468,8 +507,14 @@ mod tests {
         let (tx, _rx) = sink();
         let mut acc = Accumulator::default();
 
-        acc.push(&call_delta(0, Some("call_a"), Some("fs_read"), "{\"path\":"), &tx);
-        acc.push(&call_delta(1, Some("call_b"), Some("shell"), "{\"cmd\":"), &tx);
+        acc.push(
+            &call_delta(0, Some("call_a"), Some("fs_read"), "{\"path\":"),
+            &tx,
+        );
+        acc.push(
+            &call_delta(1, Some("call_b"), Some("shell"), "{\"cmd\":"),
+            &tx,
+        );
         acc.push(&call_delta(0, None, None, " \"a.md\"}"), &tx);
         acc.push(&call_delta(1, None, None, " \"ls\"}"), &tx);
 
@@ -498,14 +543,20 @@ mod tests {
     fn malformed_arguments_are_counted_and_handed_back_rather_than_killing_the_turn() {
         let (tx, _rx) = sink();
         let mut acc = Accumulator::default();
-        acc.push(&call_delta(0, Some("call_1"), Some("fs_read"), "{\"path\": "), &tx);
+        acc.push(
+            &call_delta(0, Some("call_1"), Some("fs_read"), "{\"path\": "),
+            &tx,
+        );
 
         let resp = acc.finish();
 
         // The model gets an error result it can retry from, and the count is
         // the reliability signal worth comparing models on.
         assert_eq!(resp.malformed_tool_args, 1);
-        assert!(resp.message.tool_uses()[0].2.get("__malformed_arguments").is_some());
+        assert!(resp.message.tool_uses()[0]
+            .2
+            .get("__malformed_arguments")
+            .is_some());
     }
 
     #[test]
@@ -515,12 +566,22 @@ mod tests {
         // only works if the blocks survive decoding in the first place.
         let (tx, _rx) = sink();
         let mut acc = Accumulator::default();
-        acc.push(&call_delta(0, Some("call_1"), Some("fs_read"), "{\"path\": \"a.md\"}"), &tx);
-        acc.push(&json!({"choices": [{"index": 0, "finish_reason": "stop", "delta": {}}]}), &tx);
+        acc.push(
+            &call_delta(0, Some("call_1"), Some("fs_read"), "{\"path\": \"a.md\"}"),
+            &tx,
+        );
+        acc.push(
+            &json!({"choices": [{"index": 0, "finish_reason": "stop", "delta": {}}]}),
+            &tx,
+        );
 
         let resp = acc.finish();
         assert_eq!(resp.stop_reason, StopReason::EndTurn);
-        assert_eq!(resp.message.tool_uses().len(), 1, "the calls were dropped with the label");
+        assert_eq!(
+            resp.message.tool_uses().len(),
+            1,
+            "the calls were dropped with the label"
+        );
 
         // And the same on the non-streaming path.
         let v = json!({
@@ -564,8 +625,16 @@ mod tests {
         let mut out = Vec::new();
         encode_message(
             &Message::tool_results(vec![
-                Block::ToolResult { tool_use_id: "t1".into(), content: "42".into(), is_error: false },
-                Block::ToolResult { tool_use_id: "t2".into(), content: "7".into(), is_error: false },
+                Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "42".into(),
+                    is_error: false,
+                },
+                Block::ToolResult {
+                    tool_use_id: "t2".into(),
+                    content: "7".into(),
+                    is_error: false,
+                },
                 Block::text("actually, focus on X"),
             ]),
             &mut out,
@@ -596,7 +665,12 @@ mod tests {
         assert_eq!(out[0]["role"], "assistant");
         assert_eq!(out[0]["content"], Value::Null);
         // A JSON *string*, not an object — sending the object is a 400 here.
-        let args = out[0]["tool_calls"][0]["function"]["arguments"].as_str().unwrap();
-        assert_eq!(serde_json::from_str::<Value>(args).unwrap(), json!({"path": "a.md"}));
+        let args = out[0]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(args).unwrap(),
+            json!({"path": "a.md"})
+        );
     }
 }

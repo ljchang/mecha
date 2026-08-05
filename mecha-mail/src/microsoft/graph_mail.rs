@@ -37,7 +37,10 @@ pub struct OutlookProvider {
 
 impl OutlookProvider {
     pub fn new(access_token: String) -> Self {
-        Self { access_token, client: crate::http::client() }
+        Self {
+            access_token,
+            client: crate::http::client(),
+        }
     }
 
     async fn get_json(&self, url: &str) -> Result<Value, MailError> {
@@ -99,16 +102,24 @@ impl OutlookProvider {
     }
 
     pub async fn get_message(&self, message_id: &str) -> Result<Email, MailError> {
-        let url = format!("{GRAPH}/me/messages/{}?$select={SELECT}", urlencode(message_id));
+        let url = format!(
+            "{GRAPH}/me/messages/{}?$select={SELECT}",
+            urlencode(message_id)
+        );
         Ok(parse_outlook_message(&self.get_json(&url).await?))
     }
 
     /// A conversation. Graph has no thread resource — a "thread" is every
     /// message sharing a `conversationId`, which is a filter query.
     pub async fn get_thread(&self, conversation_id: &str) -> Result<Vec<Email>, MailError> {
-        let filter = format!("conversationId eq '{}'", conversation_id.replace('\'', "''"));
-        let url =
-            format!("{GRAPH}/me/messages?$filter={}&$select={SELECT}", urlencode(&filter));
+        let filter = format!(
+            "conversationId eq '{}'",
+            conversation_id.replace('\'', "''")
+        );
+        let url = format!(
+            "{GRAPH}/me/messages?$filter={}&$select={SELECT}",
+            urlencode(&filter)
+        );
         let json = self.get_json(&url).await?;
         let mut emails: Vec<Email> = json["value"]
             .as_array()
@@ -162,7 +173,10 @@ impl OutlookProvider {
         let verb = if reply_all { "replyAll" } else { "reply" };
         let resp = send_with_retry(
             self.client
-                .post(format!("{GRAPH}/me/messages/{}/{verb}", urlencode(message_id)))
+                .post(format!(
+                    "{GRAPH}/me/messages/{}/{verb}",
+                    urlencode(message_id)
+                ))
                 .bearer_auth(&self.access_token)
                 .json(&json!({"message": {"body": {"contentType": "HTML", "content": body}}})),
         )
@@ -180,10 +194,13 @@ impl OutlookProvider {
     /// message in Sent Items, which `Mail.Read` already covers. flowmail
     /// reached the same conclusion by the same route.
     pub async fn profile_address(&self) -> Result<String, MailError> {
-        if let Ok(json) = self.get_json(&format!("{GRAPH}/me?$select=mail,userPrincipalName")).await
+        if let Ok(json) = self
+            .get_json(&format!("{GRAPH}/me?$select=mail,userPrincipalName"))
+            .await
         {
-            if let Some(addr) =
-                json["mail"].as_str().or_else(|| json["userPrincipalName"].as_str())
+            if let Some(addr) = json["mail"]
+                .as_str()
+                .or_else(|| json["userPrincipalName"].as_str())
             {
                 return Ok(addr.to_string());
             }
@@ -212,7 +229,10 @@ impl OutlookProvider {
         }
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        Err(MailError::ApiError { status, message: super::auth::humanize_aadsts(&body) })
+        Err(MailError::ApiError {
+            status,
+            message: super::auth::humanize_aadsts(&body),
+        })
     }
 }
 
@@ -242,17 +262,27 @@ pub(crate) fn parse_outlook_message(msg: &Value) -> Email {
 
     // Graph gives one body with a contentType; the text/HTML split that
     // `crate::text::clean_body` expects is reconstructed here.
-    let content = msg["body"]["content"].as_str().unwrap_or_default().to_string();
+    let content = msg["body"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let is_html = msg["body"]["contentType"]
         .as_str()
         .is_some_and(|t| t.eq_ignore_ascii_case("html"));
-    let (body_text, body_html) =
-        if is_html { (String::new(), content) } else { (content, String::new()) };
+    let (body_text, body_html) = if is_html {
+        (String::new(), content)
+    } else {
+        (content, String::new())
+    };
 
     let date_received = msg["receivedDateTime"]
         .as_str()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .map(|dt| {
+            dt.with_timezone(&chrono::Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        })
         .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
 
     Email {
@@ -266,7 +296,10 @@ pub(crate) fn parse_outlook_message(msg: &Value) -> Email {
             .as_str()
             .unwrap_or_default()
             .to_string(),
-        from_name: msg["from"]["emailAddress"]["name"].as_str().unwrap_or_default().to_string(),
+        from_name: msg["from"]["emailAddress"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
         to_addresses: addr_list("toRecipients"),
         cc_addresses: addr_list("ccRecipients"),
         bcc_addresses: addr_list("bccRecipients"),

@@ -25,8 +25,16 @@ pub enum Entry {
     /// Typed while the agent was working, so it reads differently: it did not
     /// start this run, it redirected one already underway.
     Steer(String),
-    Assistant { text: String, depth: u8, group: Option<String> },
-    Thinking { text: String, depth: u8, group: Option<String> },
+    Assistant {
+        text: String,
+        depth: u8,
+        group: Option<String>,
+    },
+    Thinking {
+        text: String,
+        depth: u8,
+        group: Option<String>,
+    },
     ToolCall {
         name: String,
         summary: String,
@@ -36,10 +44,20 @@ pub enum Entry {
         id: Option<String>,
         group: Option<String>,
     },
-    ToolResult { name: String, is_error: bool, content: String, depth: u8, group: Option<String> },
+    ToolResult {
+        name: String,
+        is_error: bool,
+        content: String,
+        depth: u8,
+        group: Option<String>,
+    },
     /// A `!command` the user ran themselves. Local to the session: the model
     /// never sees it, no taint, no approval — it is the user's own terminal.
-    Shell { cmd: String, output: String, status: Option<i32> },
+    Shell {
+        cmd: String,
+        output: String,
+        status: Option<i32>,
+    },
     /// The harness talking about itself: what a command did, what was cleared.
     /// May be several lines; each one is rendered as a line, because a
     /// multi-line string pushed as a single `Line` gets reflowed into a blob
@@ -87,7 +105,11 @@ pub struct Transcript {
 
 impl Transcript {
     pub fn new(verbose: bool) -> Self {
-        Transcript { follow: true, verbose, ..Default::default() }
+        Transcript {
+            follow: true,
+            verbose,
+            ..Default::default()
+        }
     }
 
     pub fn push(&mut self, entry: Entry) {
@@ -116,7 +138,9 @@ impl Transcript {
     /// `None` — top-level, or unattributable — appends, which is also the
     /// pre-grouping behaviour.
     fn slot(&self, group: &Option<String>) -> usize {
-        let Some(group) = group else { return self.entries.len() };
+        let Some(group) = group else {
+            return self.entries.len();
+        };
         self.entries
             .iter()
             .rposition(|e| {
@@ -156,7 +180,12 @@ impl Transcript {
             AgentEvent::TextDelta(t) => {
                 let at = self.slot(&group);
                 if let Some(i) = at.checked_sub(1) {
-                    if let Entry::Assistant { text, depth: d, group: g } = &mut self.entries[i] {
+                    if let Entry::Assistant {
+                        text,
+                        depth: d,
+                        group: g,
+                    } = &mut self.entries[i]
+                    {
                         if *d == depth && *g == group {
                             text.push_str(t);
                             self.invalidate_at(i);
@@ -164,12 +193,24 @@ impl Transcript {
                         }
                     }
                 }
-                self.insert(at, Entry::Assistant { text: t.clone(), depth, group });
+                self.insert(
+                    at,
+                    Entry::Assistant {
+                        text: t.clone(),
+                        depth,
+                        group,
+                    },
+                );
             }
             AgentEvent::ThinkingDelta(t) => {
                 let at = self.slot(&group);
                 if let Some(i) = at.checked_sub(1) {
-                    if let Entry::Thinking { text, depth: d, group: g } = &mut self.entries[i] {
+                    if let Entry::Thinking {
+                        text,
+                        depth: d,
+                        group: g,
+                    } = &mut self.entries[i]
+                    {
                         if *d == depth && *g == group {
                             text.push_str(t);
                             self.invalidate_at(i);
@@ -177,7 +218,14 @@ impl Transcript {
                         }
                     }
                 }
-                self.insert(at, Entry::Thinking { text: t.clone(), depth, group });
+                self.insert(
+                    at,
+                    Entry::Thinking {
+                        text: t.clone(),
+                        depth,
+                        group,
+                    },
+                );
             }
             AgentEvent::ToolCall { id, name, input } => {
                 let at = self.slot(&group);
@@ -192,7 +240,12 @@ impl Transcript {
                     },
                 );
             }
-            AgentEvent::ToolResult { name, is_error, content, .. } => {
+            AgentEvent::ToolResult {
+                name,
+                is_error,
+                content,
+                ..
+            } => {
                 let at = self.slot(&group);
                 self.insert(
                     at,
@@ -259,7 +312,11 @@ fn entry_group(entry: &Entry) -> Option<&str> {
 /// entry's group chain extended by its own call id.
 fn entry_owns(entry: &Entry) -> Option<String> {
     match entry {
-        Entry::ToolCall { id: Some(id), group, .. } => Some(match group {
+        Entry::ToolCall {
+            id: Some(id),
+            group,
+            ..
+        } => Some(match group {
             Some(g) => format!("{g}/{id}"),
             None => id.clone(),
         }),
@@ -319,7 +376,12 @@ fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
                         ));
                     }
                 }
-                Entry::ToolCall { name, summary, depth, .. } => {
+                Entry::ToolCall {
+                    name,
+                    summary,
+                    depth,
+                    ..
+                } => {
                     out.push(Line::from(vec![
                         Span::raw(indent(*depth)),
                         Span::styled("● ", Style::new().fg(Color::Magenta)),
@@ -328,8 +390,18 @@ fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
                         Span::styled(truncate(summary, 200), Style::new().fg(Color::DarkGray)),
                     ]));
                 }
-                Entry::ToolResult { name, is_error, content, depth, .. } => {
-                    let colour = if *is_error { Color::Red } else { Color::DarkGray };
+                Entry::ToolResult {
+                    name,
+                    is_error,
+                    content,
+                    depth,
+                    ..
+                } => {
+                    let colour = if *is_error {
+                        Color::Red
+                    } else {
+                        Color::DarkGray
+                    };
                     out.push(Line::from(vec![
                         Span::raw(indent(*depth)),
                         Span::styled("  ⤷ ", Style::new().fg(colour)),
@@ -338,7 +410,11 @@ fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
                         Span::styled(truncate(content, 400), Style::new().fg(colour)),
                     ]));
                 }
-                Entry::Shell { cmd, output, status } => {
+                Entry::Shell {
+                    cmd,
+                    output,
+                    status,
+                } => {
                     // Non-zero exit colours the header, not the output: the
                     // output of a failed command is still just output.
                     let header_colour = match status {
@@ -364,7 +440,10 @@ fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
                 }
                 Entry::Notice(text) => {
                     for line in text.split('\n') {
-                        out.push(Line::styled(line.to_string(), Style::new().fg(Color::DarkGray)));
+                        out.push(Line::styled(
+                            line.to_string(),
+                            Style::new().fg(Color::DarkGray),
+                        ));
                     }
                 }
                 Entry::Error(text) => {
@@ -450,7 +529,9 @@ impl Transcript {
         }
 
         frame.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((local_scroll, 0)),
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .scroll((local_scroll, 0)),
             area,
         );
     }
@@ -477,7 +558,9 @@ fn wrapped_height(lines: &[Line<'static>], width: u16) -> usize {
     if lines.is_empty() {
         return 0;
     }
-    Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false }).line_count(width)
+    Paragraph::new(lines.to_vec())
+        .wrap(Wrap { trim: false })
+        .line_count(width)
 }
 
 /// Two spaces per nesting level. A constant width, so a child's rows line up
@@ -504,23 +587,39 @@ mod tests {
     use serde_json::json;
 
     fn call(name: &str) -> AgentEvent {
-        AgentEvent::ToolCall { id: "t1".into(), name: name.into(), input: json!({}) }
+        AgentEvent::ToolCall {
+            id: "t1".into(),
+            name: name.into(),
+            input: json!({}),
+        }
     }
 
     /// An *untagged* wrapper — no call id, as an old recording would send —
     /// exercising the append-in-order fallback.
     fn nested(tool: &str, event: AgentEvent) -> AgentEvent {
-        AgentEvent::Nested { tool: tool.into(), id: None, event: Box::new(event) }
+        AgentEvent::Nested {
+            tool: tool.into(),
+            id: None,
+            event: Box::new(event),
+        }
     }
 
     /// A tagged wrapper, as the subagent actually sends: the parent call's
     /// tool_use id rides on every event.
     fn nested_in(tool: &str, id: &str, event: AgentEvent) -> AgentEvent {
-        AgentEvent::Nested { tool: tool.into(), id: Some(id.into()), event: Box::new(event) }
+        AgentEvent::Nested {
+            tool: tool.into(),
+            id: Some(id.into()),
+            event: Box::new(event),
+        }
     }
 
     fn call_with_id(name: &str, id: &str) -> AgentEvent {
-        AgentEvent::ToolCall { id: id.into(), name: name.into(), input: json!({}) }
+        AgentEvent::ToolCall {
+            id: id.into(),
+            name: name.into(),
+            input: json!({}),
+        }
     }
 
     fn delta(text: &str) -> AgentEvent {
@@ -539,10 +638,13 @@ mod tests {
             .iter()
             .map(|e| match e {
                 Entry::ToolCall { depth, .. } => *depth,
-                other => panic!("expected only tool calls, got {}", match other {
-                    Entry::User(_) => "user",
-                    _ => "something else",
-                }),
+                other => panic!(
+                    "expected only tool calls, got {}",
+                    match other {
+                        Entry::User(_) => "user",
+                        _ => "something else",
+                    }
+                ),
             })
             .collect();
         assert_eq!(depths, vec![0, 1, 2]);
@@ -553,7 +655,12 @@ mod tests {
     fn rendered(t: &Transcript) -> String {
         t.lines()
             .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -565,14 +672,23 @@ mod tests {
         // the answer the user is waiting for. Recorded either way — the
         // toggle has to be able to reveal it later.
         let mut t = Transcript::new(false);
-        t.absorb(&nested("helper", AgentEvent::TextDelta("child says".into())));
+        t.absorb(&nested(
+            "helper",
+            AgentEvent::TextDelta("child says".into()),
+        ));
         t.absorb(&nested("helper", AgentEvent::TextDelta(" more".into())));
 
         assert!(!t.entries.is_empty(), "recorded even while hidden");
-        assert!(!rendered(&t).contains("child says"), "hidden while not verbose");
+        assert!(
+            !rendered(&t).contains("child says"),
+            "hidden while not verbose"
+        );
 
         t.verbose = true;
-        assert!(rendered(&t).contains("child says more"), "revealed by the toggle, folded");
+        assert!(
+            rendered(&t).contains("child says more"),
+            "revealed by the toggle, folded"
+        );
     }
 
     /// Render `t` through the cell cache (the real `draw`) into a buffer.
@@ -605,7 +721,10 @@ mod tests {
     fn busy_transcript(entries: usize) -> Transcript {
         let mut t = Transcript::new(false);
         for i in 0..entries {
-            t.push(Entry::User(format!("question {i}, padded so that it wraps at any sane width {}", "x".repeat(40))));
+            t.push(Entry::User(format!(
+                "question {i}, padded so that it wraps at any sane width {}",
+                "x".repeat(40)
+            )));
             t.absorb(&call("fs_read"));
             t.absorb(&AgentEvent::ToolResult {
                 id: format!("t{i}"),
@@ -628,28 +747,68 @@ mod tests {
         // change), the verbose toggle (key change), and a scroll.
         let mut t = busy_transcript(30);
 
-        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "initial");
+        assert_eq!(
+            cached_frame(&mut t, 80, 20),
+            reference_frame(&t, 80, 20),
+            "initial"
+        );
 
         t.absorb(&AgentEvent::TextDelta("more streamed text".into()));
-        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "tail mutated");
+        assert_eq!(
+            cached_frame(&mut t, 80, 20),
+            reference_frame(&t, 80, 20),
+            "tail mutated"
+        );
 
         t.push(Entry::Notice("a new entry".into()));
-        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "entry added");
+        assert_eq!(
+            cached_frame(&mut t, 80, 20),
+            reference_frame(&t, 80, 20),
+            "entry added"
+        );
 
-        assert_eq!(cached_frame(&mut t, 120, 20), reference_frame(&t, 120, 20), "resized wider");
-        assert_eq!(cached_frame(&mut t, 41, 20), reference_frame(&t, 41, 20), "resized narrower");
+        assert_eq!(
+            cached_frame(&mut t, 120, 20),
+            reference_frame(&t, 120, 20),
+            "resized wider"
+        );
+        assert_eq!(
+            cached_frame(&mut t, 41, 20),
+            reference_frame(&t, 41, 20),
+            "resized narrower"
+        );
 
         t.verbose = true;
-        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "verbose on");
+        assert_eq!(
+            cached_frame(&mut t, 80, 20),
+            reference_frame(&t, 80, 20),
+            "verbose on"
+        );
         t.verbose = false;
-        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "verbose off again");
+        assert_eq!(
+            cached_frame(&mut t, 80, 20),
+            reference_frame(&t, 80, 20),
+            "verbose off again"
+        );
 
         t.scroll_up(17);
-        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "scrolled back");
+        assert_eq!(
+            cached_frame(&mut t, 80, 20),
+            reference_frame(&t, 80, 20),
+            "scrolled back"
+        );
         t.scroll_up(9999);
-        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "clamped at the top");
+        assert_eq!(
+            cached_frame(&mut t, 80, 20),
+            reference_frame(&t, 80, 20),
+            "clamped at the top"
+        );
         t.jump_to_bottom();
-        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "followed again");
+        assert_eq!(
+            cached_frame(&mut t, 80, 20),
+            reference_frame(&t, 80, 20),
+            "followed again"
+        );
     }
 
     #[test]
@@ -819,10 +978,16 @@ mod tests {
         ));
 
         match &t.entries[2] {
-            Entry::ToolCall { name, depth, group, .. } => {
+            Entry::ToolCall {
+                name, depth, group, ..
+            } => {
                 assert_eq!(name, "fs_read");
                 assert_eq!(*depth, 2);
-                assert_eq!(group.as_deref(), Some("tA/s1"), "the chain names both parents");
+                assert_eq!(
+                    group.as_deref(),
+                    Some("tA/s1"),
+                    "the chain names both parents"
+                );
             }
             _ => panic!("expected the grandchild's call third"),
         }
@@ -836,14 +1001,26 @@ mod tests {
         let mut t = busy_transcript(5);
         t.absorb(&call_with_id("helper", "tA"));
         t.push(Entry::Notice("after".into()));
-        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "before insert");
+        assert_eq!(
+            cached_frame(&mut t, 80, 20),
+            reference_frame(&t, 80, 20),
+            "before insert"
+        );
 
         // This inserts *above* the notice.
         t.absorb(&nested_in("helper", "tA", call_with_id("echo", "c1")));
-        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "after insert");
+        assert_eq!(
+            cached_frame(&mut t, 80, 20),
+            reference_frame(&t, 80, 20),
+            "after insert"
+        );
 
         t.absorb(&nested_in("helper", "tA", delta("child prose")));
         t.absorb(&nested_in("helper", "tA", delta(" folded")));
-        assert_eq!(cached_frame(&mut t, 80, 20), reference_frame(&t, 80, 20), "after grouped fold");
+        assert_eq!(
+            cached_frame(&mut t, 80, 20),
+            reference_frame(&t, 80, 20),
+            "after grouped fold"
+        );
     }
 }

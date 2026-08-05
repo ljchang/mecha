@@ -33,7 +33,10 @@ pub fn in_zone(raw: &str, tz: Option<Tz>) -> String {
     let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(trimmed) else {
         return raw.to_string();
     };
-    parsed.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z").to_string()
+    parsed
+        .with_timezone(&tz)
+        .format("%Y-%m-%d %H:%M %Z")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -47,7 +50,10 @@ mod tests {
     /// The bug this exists for: a noon Eastern meeting was announced as 4pm.
     #[test]
     fn a_utc_stamp_renders_in_the_users_zone() {
-        assert_eq!(in_zone("2026-08-04T16:00:00Z", eastern()), "2026-08-04 12:00 EDT");
+        assert_eq!(
+            in_zone("2026-08-04T16:00:00Z", eastern()),
+            "2026-08-04 12:00 EDT"
+        );
         // Graph's seven-digit fraction must parse too.
         assert_eq!(
             in_zone("2026-08-04T16:00:00.0000000Z", eastern()),
@@ -69,6 +75,9 @@ mod tests {
         assert_eq!(in_zone("2026-08-10", eastern()), "2026-08-10");
         assert_eq!(in_zone("", eastern()), "");
         // No zone configured means no change.
-        assert_eq!(in_zone("2026-08-04T16:00:00Z", None), "2026-08-04T16:00:00Z");
+        assert_eq!(
+            in_zone("2026-08-04T16:00:00Z", None),
+            "2026-08-04T16:00:00Z"
+        );
     }
 }

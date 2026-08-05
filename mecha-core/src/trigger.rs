@@ -92,9 +92,9 @@ impl std::str::FromStr for CatchUp {
         match s.trim().to_ascii_lowercase().as_str() {
             "always" | "true" => Ok(CatchUp::Always),
             "never" | "false" => Ok(CatchUp::Never),
-            other => Ok(CatchUp::Within(parse_duration(other).with_context(|| {
-                format!("catch_up `{s}` is not `always`, `never`, or a duration like `2h`")
-            })?)),
+            other => Ok(CatchUp::Within(parse_duration(other).with_context(
+                || format!("catch_up `{s}` is not `always`, `never`, or a duration like `2h`"),
+            )?)),
         }
     }
 }
@@ -117,7 +117,8 @@ pub fn parse_duration(text: &str) -> Result<chrono::Duration> {
     let text = text.trim();
     anyhow::ensure!(!text.is_empty(), "is empty");
     let (digits, unit) = text.split_at(
-        text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len()),
+        text.find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(text.len()),
     );
     let n: i64 = digits
         .parse()
@@ -285,7 +286,8 @@ impl Trigger {
             "trigger name `{name}` is too long (64 characters max)"
         );
         anyhow::ensure!(
-            name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'),
+            name.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'),
             "trigger name `{name}` may only contain lowercase letters, digits, `-` and `_`"
         );
         Ok(())
@@ -307,8 +309,7 @@ impl Trigger {
                 .map_err(|_| anyhow::anyhow!("trigger `{}`: unknown timezone `{tz}`", self.name))?;
         }
         if let Some(t) = &self.timeout {
-            parse_duration(t)
-                .with_context(|| format!("trigger `{}`: bad timeout", self.name))?;
+            parse_duration(t).with_context(|| format!("trigger `{}`: bad timeout", self.name))?;
         }
         Ok(())
     }
@@ -351,11 +352,15 @@ impl Trigger {
         }
         let tz = self.tz(fallback_tz);
         let Some(slot) = self.schedule.prev_at_or_before(now, tz) else {
-            return Due::Not { next: self.schedule.next_after(now, tz) };
+            return Due::Not {
+                next: self.schedule.next_after(now, tz),
+            };
         };
         let anchor = last_slot.or(self.created_at);
         if anchor.is_some_and(|a| slot <= a) {
-            return Due::Not { next: self.schedule.next_after(now, tz) };
+            return Due::Not {
+                next: self.schedule.next_after(now, tz),
+            };
         }
 
         let age = now - slot;
@@ -377,11 +382,18 @@ impl Trigger {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Due {
     /// Fire, for this slot.
-    Now { slot: DateTime<Utc> },
+    Now {
+        slot: DateTime<Utc>,
+    },
     /// A slot was missed and is past its catch-up window. Recorded as skipped
     /// — evidence, not silence — and the marker advances past it.
-    Stale { slot: DateTime<Utc>, age: chrono::Duration },
-    Not { next: Option<DateTime<Utc>> },
+    Stale {
+        slot: DateTime<Utc>,
+        age: chrono::Duration,
+    },
+    Not {
+        next: Option<DateTime<Utc>>,
+    },
     Disabled,
 }
 
@@ -500,8 +512,7 @@ impl TriggerStore {
 
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        crate::create_private_dir(&root)
-            .with_context(|| format!("creating {}", root.display()))?;
+        crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
         Ok(TriggerStore { root })
     }
 
@@ -546,7 +557,11 @@ impl TriggerStore {
             if path.extension().and_then(|e| e.to_str()) != Some("toml") {
                 continue;
             }
-            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
             match self.load_path(&path, &name) {
                 Ok(t) => out.push(t),
                 Err(e) => problems.push(format!("{}: {e:#}", path.display())),
@@ -719,7 +734,11 @@ impl TriggerStore {
     /// it if the process dies); this is advisory state beside it.
     pub fn mark_running(&self, name: &str, slot: Option<DateTime<Utc>>) -> Result<()> {
         crate::create_private_dir(&self.locks_dir())?;
-        let marker = RunMarker { pid: std::process::id(), started_at: Utc::now(), slot };
+        let marker = RunMarker {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            slot,
+        };
         let path = self.marker_path(name);
         let tmp = path.with_extension("running.tmp");
         std::fs::write(&tmp, serde_json::to_string(&marker)?)?;
@@ -795,7 +814,9 @@ pub struct RunMarker {
 /// asks. Found by a test using `u32::MAX`, which sign-flips to exactly the
 /// `-1` case.
 fn process_alive(pid: u32) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
     if pid <= 0 {
         return false;
     }
@@ -809,8 +830,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("mecha-trigger-test-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mecha-trigger-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -857,7 +878,11 @@ mod tests {
         let root = scratch("broken");
         let store = TriggerStore::open(&root).unwrap();
         store.save(&daily_7am("good")).unwrap();
-        std::fs::write(store.path_of("bad"), "schedule = \"nonsense\"\nprompt = \"x\"\n").unwrap();
+        std::fs::write(
+            store.path_of("bad"),
+            "schedule = \"nonsense\"\nprompt = \"x\"\n",
+        )
+        .unwrap();
 
         let (list, problems) = store.list().unwrap();
         assert_eq!(list.len(), 1, "the good one still fires");
@@ -878,7 +903,11 @@ mod tests {
         let Due::Now { slot } = t.due(Some(last), now, None) else {
             panic!("a missed slot must fire");
         };
-        assert_eq!(slot, utc("2026-08-10T11:00:00Z"), "today's slot, not the 4th's");
+        assert_eq!(
+            slot,
+            utc("2026-08-10T11:00:00Z"),
+            "today's slot, not the 4th's"
+        );
 
         // Once that slot is recorded, it is not due again...
         assert!(matches!(t.due(Some(slot), now, None), Due::Not { .. }));
@@ -931,7 +960,10 @@ mod tests {
     fn a_disabled_trigger_is_never_due() {
         let mut t = daily_7am("briefing");
         t.enabled = false;
-        assert_eq!(t.due(None, utc("2026-08-05T11:00:30Z"), None), Due::Disabled);
+        assert_eq!(
+            t.due(None, utc("2026-08-05T11:00:30Z"), None),
+            Due::Disabled
+        );
     }
 
     /// Testing a trigger by hand must not disarm the schedule.
@@ -973,13 +1005,18 @@ mod tests {
         store.save(&t).unwrap();
 
         let now = utc("2026-08-05T23:30:00Z");
-        let Due::Stale { slot, .. } = t.due(None, now, None) else { panic!() };
+        let Due::Stale { slot, .. } = t.due(None, now, None) else {
+            panic!()
+        };
         let mut rec = RunRecord::started("briefing", Some(slot), false);
         rec.status = RunStatus::SkippedStale;
         store.append_run(&rec).unwrap();
 
         let last = store.last_slots().unwrap().get("briefing").copied();
-        assert!(matches!(t.due(last, now, None), Due::Not { .. }), "not reconsidered");
+        assert!(
+            matches!(t.due(last, now, None), Due::Not { .. }),
+            "not reconsidered"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -994,10 +1031,16 @@ mod tests {
             store.try_claim("briefing").unwrap().is_none(),
             "a five-minute trigger whose run takes six must not stack"
         );
-        assert!(store.try_claim("other").unwrap().is_some(), "and it is per trigger");
+        assert!(
+            store.try_claim("other").unwrap().is_some(),
+            "and it is per trigger"
+        );
 
         drop(held);
-        assert!(store.try_claim("briefing").unwrap().is_some(), "released when the run ends");
+        assert!(
+            store.try_claim("briefing").unwrap().is_some(),
+            "released when the run ends"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1012,7 +1055,9 @@ mod tests {
         let store = TriggerStore::open(&root).unwrap();
 
         assert!(store.running("briefing").is_none(), "nothing running yet");
-        store.mark_running("briefing", Some(utc("2026-08-05T11:00:00Z"))).unwrap();
+        store
+            .mark_running("briefing", Some(utc("2026-08-05T11:00:00Z")))
+            .unwrap();
 
         let marker = store.running("briefing").expect("should report the run");
         assert_eq!(marker.pid, std::process::id());
@@ -1047,7 +1092,10 @@ mod tests {
 
         // A real-looking pid that no longer exists: far above any pid_max.
         rewrite(i32::MAX as u32);
-        assert!(store.running("briefing").is_none(), "a dead pid is not a running trigger");
+        assert!(
+            store.running("briefing").is_none(),
+            "a dead pid is not a running trigger"
+        );
         assert!(!path.exists(), "and the stale marker is cleaned up");
 
         // And the one that found the bug: `u32::MAX` sign-flips to -1, which
@@ -1067,7 +1115,10 @@ mod tests {
         let root = scratch("cancel");
         let store = TriggerStore::open(&root).unwrap();
 
-        assert!(!store.request_cancel("briefing").unwrap(), "nothing to cancel");
+        assert!(
+            !store.request_cancel("briefing").unwrap(),
+            "nothing to cancel"
+        );
         assert!(!store.cancel_requested("briefing"));
 
         store.mark_running("briefing", None).unwrap();
@@ -1093,8 +1144,14 @@ mod tests {
 
     #[test]
     fn durations_parse_the_way_people_write_them() {
-        assert_eq!(parse_duration("90s").unwrap(), chrono::Duration::seconds(90));
-        assert_eq!(parse_duration("30m").unwrap(), chrono::Duration::minutes(30));
+        assert_eq!(
+            parse_duration("90s").unwrap(),
+            chrono::Duration::seconds(90)
+        );
+        assert_eq!(
+            parse_duration("30m").unwrap(),
+            chrono::Duration::minutes(30)
+        );
         assert_eq!(parse_duration("2h").unwrap(), chrono::Duration::hours(2));
         assert_eq!(parse_duration("1d").unwrap(), chrono::Duration::days(1));
         assert_eq!(parse_duration("45").unwrap(), chrono::Duration::seconds(45));

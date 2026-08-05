@@ -186,7 +186,11 @@ impl TriggersModal {
         match &self.status {
             Some(s) => format!(" triggers · {s} "),
             None => {
-                let cancel = if self.rows.iter().any(|r| r.running) { " c cancel ·" } else { "" };
+                let cancel = if self.rows.iter().any(|r| r.running) {
+                    " c cancel ·"
+                } else {
+                    ""
+                };
                 format!(
                     " {} trigger(s) · enter detail · e edit · space on/off · r run now ·{cancel} x delete · esc ",
                     self.rows.len()
@@ -196,7 +200,9 @@ impl TriggersModal {
     }
 
     fn draw_detail(&self, frame: &mut Frame) {
-        let Some(row) = self.rows.get(self.selected) else { return };
+        let Some(row) = self.rows.get(self.selected) else {
+            return;
+        };
         let mut body: Vec<Line> = Vec::new();
 
         body.push(Line::styled(
@@ -206,7 +212,10 @@ impl TriggersModal {
         if let Some(d) = &row.description {
             body.push(Line::styled(d.clone(), Style::new().fg(Color::White)));
         }
-        body.push(Line::styled(row.when.clone(), Style::new().fg(Color::DarkGray)));
+        body.push(Line::styled(
+            row.when.clone(),
+            Style::new().fg(Color::DarkGray),
+        ));
         body.push(Line::raw(""));
 
         for line in &row.settings {
@@ -216,7 +225,10 @@ impl TriggersModal {
 
         body.push(Line::styled("prompt", Style::new().fg(Color::Yellow)));
         for line in row.prompt.lines() {
-            body.push(Line::styled(line.to_string(), Style::new().fg(Color::White)));
+            body.push(Line::styled(
+                line.to_string(),
+                Style::new().fg(Color::White),
+            ));
         }
 
         if !row.runs.is_empty() {
@@ -231,7 +243,10 @@ impl TriggersModal {
             body.push(Line::raw(""));
             body.push(Line::styled("last answer", Style::new().fg(Color::Yellow)));
             for line in answer.lines() {
-                body.push(Line::styled(line.to_string(), Style::new().fg(Color::White)));
+                body.push(Line::styled(
+                    line.to_string(),
+                    Style::new().fg(Color::White),
+                ));
             }
         }
 
@@ -256,7 +271,10 @@ impl TriggersModal {
         let body = vec![
             Line::styled(confirm.prompt.clone(), Style::new().fg(Color::White)),
             Line::raw(""),
-            Line::styled("y to confirm · anything else cancels", Style::new().fg(Color::DarkGray)),
+            Line::styled(
+                "y to confirm · anything else cancels",
+                Style::new().fg(Color::DarkGray),
+            ),
         ];
         let area = super::centered(frame.area(), 70, 5);
         frame.render_widget(Clear, area);
@@ -281,7 +299,9 @@ pub fn load(limit_runs: usize) -> anyhow::Result<Vec<TriggerRow>> {
     let (triggers, _problems) = store.list()?;
     let last_slots = store.last_slots()?;
     let all_runs = store.runs()?;
-    let tz_default = mecha_core::config::Config::load_global().ok().and_then(|c| c.agent.timezone());
+    let tz_default = mecha_core::config::Config::load_global()
+        .ok()
+        .and_then(|c| c.agent.timezone());
     let now = Utc::now();
 
     let mut rows = Vec::new();
@@ -291,8 +311,9 @@ pub fn load(limit_runs: usize) -> anyhow::Result<Vec<TriggerRow>> {
             "disabled".to_string()
         } else {
             match t.due(last_slots.get(&t.name).copied(), now, tz_default) {
-                mecha_core::trigger::Due::Now { .. }
-                | mecha_core::trigger::Due::Stale { .. } => "due now".to_string(),
+                mecha_core::trigger::Due::Now { .. } | mecha_core::trigger::Due::Stale { .. } => {
+                    "due now".to_string()
+                }
                 mecha_core::trigger::Due::Not { next: Some(next) } => {
                     format!("in {} ({})", gap(next - now), local(next, tz))
                 }
@@ -303,21 +324,15 @@ pub fn load(limit_runs: usize) -> anyhow::Result<Vec<TriggerRow>> {
         let mine: Vec<_> = all_runs.iter().filter(|r| r.trigger == t.name).collect();
         let last = mine
             .last()
-            .map(|r| {
-                format!(
-                    "last {} {} ago",
-                    r.status.as_str(),
-                    gap(now - r.started_at)
-                )
-            })
+            .map(|r| format!("last {} {} ago", r.status.as_str(), gap(now - r.started_at)))
             .unwrap_or_default();
 
-        let mut settings = vec![
-            format!("permission {:?} · timeout {} · catch up {}",
-                t.permission_mode,
-                mecha_core::trigger::render_duration(t.timeout_duration()),
-                t.catch_up),
-        ];
+        let mut settings = vec![format!(
+            "permission {:?} · timeout {} · catch up {}",
+            t.permission_mode,
+            mecha_core::trigger::render_duration(t.timeout_duration()),
+            t.catch_up
+        )];
         if let Some(p) = &t.provider {
             settings.push(format!("provider {p}"));
         }
@@ -393,7 +408,9 @@ fn read_answer(session_id: &str) -> Option<String> {
 }
 
 fn local(at: DateTime<Utc>, tz: chrono_tz::Tz) -> String {
-    at.with_timezone(&tz).format("%a %-d %b %H:%M %Z").to_string()
+    at.with_timezone(&tz)
+        .format("%a %-d %b %H:%M %Z")
+        .to_string()
 }
 
 fn gap(d: chrono::Duration) -> String {
@@ -432,11 +449,30 @@ mod tests {
     #[test]
     fn the_badge_says_which_of_the_three_states_it_is_in() {
         assert_eq!(row("a").badge(), "on");
-        assert_eq!(TriggerRow { enabled: false, ..row("a") }.badge(), "off");
-        // Running wins over enabled: what it is doing beats what it will do.
-        assert_eq!(TriggerRow { running: true, ..row("a") }.badge(), "running");
         assert_eq!(
-            TriggerRow { running: true, enabled: false, ..row("a") }.badge(),
+            TriggerRow {
+                enabled: false,
+                ..row("a")
+            }
+            .badge(),
+            "off"
+        );
+        // Running wins over enabled: what it is doing beats what it will do.
+        assert_eq!(
+            TriggerRow {
+                running: true,
+                ..row("a")
+            }
+            .badge(),
+            "running"
+        );
+        assert_eq!(
+            TriggerRow {
+                running: true,
+                enabled: false,
+                ..row("a")
+            }
+            .badge(),
             "running",
             "a run started before it was disabled is still a run"
         );
@@ -471,7 +507,10 @@ mod tests {
     fn scrolling_up_past_the_top_stops_rather_than_wrapping_around() {
         let mut modal = TriggersModal::new(vec![row("a")]);
         modal.scroll_detail(-5);
-        assert_eq!(modal.detail_scroll, 0, "a u16 that wrapped would scroll to the end");
+        assert_eq!(
+            modal.detail_scroll, 0,
+            "a u16 that wrapped would scroll to the end"
+        );
     }
 
     /// The keymap has to be on screen: a modal whose actions are invisible is
@@ -480,17 +519,30 @@ mod tests {
     fn the_title_shows_the_keys_and_offers_cancel_only_when_something_runs() {
         let idle = TriggersModal::new(vec![row("a")]);
         let title = idle.title();
-        for key in ["enter", "e edit", "space on/off", "r run now", "x delete", "esc"] {
+        for key in [
+            "enter",
+            "e edit",
+            "space on/off",
+            "r run now",
+            "x delete",
+            "esc",
+        ] {
             assert!(title.contains(key), "{key} missing from {title}");
         }
         assert!(!title.contains("c cancel"), "nothing is running: {title}");
 
-        let busy = TriggersModal::new(vec![TriggerRow { running: true, ..row("a") }]);
+        let busy = TriggersModal::new(vec![TriggerRow {
+            running: true,
+            ..row("a")
+        }]);
         assert!(busy.title().contains("c cancel"), "{}", busy.title());
 
         // A status message replaces the keymap — it is the answer to what the
         // user just pressed, which is what they are looking for.
-        let done = TriggersModal { status: Some("started `a`".into()), ..idle };
+        let done = TriggersModal {
+            status: Some("started `a`".into()),
+            ..idle
+        };
         assert!(done.title().contains("started `a`"));
     }
 
@@ -499,7 +551,10 @@ mod tests {
         let rows: Vec<TriggerRow> = (0..30).map(|i| row(&format!("t{i}"))).collect();
         let modal = TriggersModal::new(rows);
         assert_eq!(modal.list_scroll(10), 0);
-        let modal = TriggersModal { selected: 25, ..modal };
+        let modal = TriggersModal {
+            selected: 25,
+            ..modal
+        };
         assert_eq!(modal.list_scroll(10), 16);
     }
 }

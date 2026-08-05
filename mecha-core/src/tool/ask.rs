@@ -96,7 +96,11 @@ impl Tool for AskUserTool {
     }
 
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
-        let question = input.get("question").and_then(Value::as_str).unwrap_or("").trim();
+        let question = input
+            .get("question")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
         if question.is_empty() {
             return Ok(ToolOutput::err(
                 "ask_user needs a `question`. Say what you need to know in one sentence.",
@@ -147,7 +151,10 @@ mod tests {
     #[async_trait]
     impl Asker for Canned {
         async fn ask(&self, question: &str, options: &[String]) -> Option<String> {
-            self.seen.lock().unwrap().push((question.to_string(), options.to_vec()));
+            self.seen
+                .lock()
+                .unwrap()
+                .push((question.to_string(), options.to_vec()));
             self.answer.clone()
         }
     }
@@ -182,7 +189,10 @@ mod tests {
     #[tokio::test]
     async fn a_declined_question_tells_the_model_to_carry_on_rather_than_killing_the_run() {
         let (tool, _) = tool(None);
-        let out = tool.call(json!({"question": "which?"}), &ToolCtx::default()).await.unwrap();
+        let out = tool
+            .call(json!({"question": "which?"}), &ToolCtx::default())
+            .await
+            .unwrap();
 
         // An error *result*, not an `Err`: pressing escape should not end the
         // run, it should hand the model something it can act on.
@@ -193,10 +203,16 @@ mod tests {
     #[tokio::test]
     async fn an_empty_question_is_refused_before_anyone_is_interrupted() {
         let (tool, canned) = tool(Some("x"));
-        let out = tool.call(json!({"question": "   "}), &ToolCtx::default()).await.unwrap();
+        let out = tool
+            .call(json!({"question": "   "}), &ToolCtx::default())
+            .await
+            .unwrap();
 
         assert!(out.is_error);
-        assert!(canned.seen.lock().unwrap().is_empty(), "the user was interrupted for nothing");
+        assert!(
+            canned.seen.lock().unwrap().is_empty(),
+            "the user was interrupted for nothing"
+        );
     }
 
     #[tokio::test]
@@ -238,7 +254,10 @@ mod tests {
         let (tool, _) = tool(None);
         let d = tool.description();
         assert!(d.contains("not really enumerable") || d.contains("not add a catch-all"));
-        assert!(d.contains("outside your list"), "the model is never told the list is not binding");
+        assert!(
+            d.contains("outside your list"),
+            "the model is never told the list is not binding"
+        );
     }
 
     #[test]
