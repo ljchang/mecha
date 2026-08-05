@@ -461,6 +461,26 @@ the viewer's browser (which is why Anthropic's strict CSP is the security
 model rather than a polish item, and why the host must set it rather than the
 model); and a public artifact is readable by people the report was never about.
 
+**Nothing is built, deliberately** — a prototype was written during the
+session and reverted, and the doc records why that is the right state until
+the audience question is settled. Later additions cover the **audience
+split** (reading your own output and showing someone else are different
+problems wanting different substrates; conflating them is what makes this
+feel hard), **Tailscale checked against this machine** (`tailscale serve`
+takes a *directory*, so the static case needs no server, no port and no
+public box — the only shape where no stranger can ask and no code of ours
+answers), and **interop**: A2A has `Artifact` as a first-class object of
+typed `Part`s, worth modelling on and not worth implementing the protocol
+for; and MCP says reports are Resources rather than Tools — which mecha
+cannot consume, because `mcp.rs` calls `tools/list` and nothing else and
+declares no client capabilities. That last one is a harness gap wearing an
+artifact costume, and when it is closed, resource contents must arrive
+`.from_outside()` like any tool result or the interlock gains a blind spot.
+
+See also `docs/HOSTING-RESEARCH.md`, written in parallel from the
+scheduling side, which is authoritative for the substrate — postures, the
+credential gradient, origin isolation, deploy keys.
+
 Six recommendations, A1–A5 and D1. The cheapest is A1: write a trigger's
 report **into its own workspace** rather than `~/.mecha`, so `fs_read` reaches
 it with no change to the path jail. Also recorded: capability URLs done

@@ -514,6 +514,59 @@ comparison — and mecha's ecosystem is Rust.
   surveyed products, none of them on the path to "my briefing is a page I can
   send someone."
 
+## Where this stands
+
+**Nothing here is built, on purpose.** This is a planning document, and it
+should stay one until the questions below are answered — a reader finding it
+cold should not go looking for `mecha artifacts` in the source.
+
+For the record, because it is the most useful kind of negative result: a
+prototype of the store, the markdown-to-HTML renderer and a trigger writing its
+briefing as an artifact **was** written during this session and then deliberately
+reverted, along with the generated `~/.mecha/site`. What it demonstrated before
+it went is worth keeping:
+
+- The whole producing half is small — a store, a renderer and a rebuild, with
+  the tests that matter being the injection ones (raw HTML stripped from
+  agent-authored markdown, titles escaped, CSP on every page).
+- **`tailscale serve <directory>` really does remove the server entirely**, and
+  the tailnet already spans the machine, a laptop and a phone.
+- The interesting cost is not the code. It is deciding the audience, the
+  origin, and who may read a summary of somebody's inbox — which is what the
+  rest of this document and `HOSTING-RESEARCH` are about.
+
+## Open questions
+
+Ordered by how much they change the shape of what gets built.
+
+1. **Is the artifact store worth extracting as its own repository at all?**
+   The reusable value is concentrated in the *hosting* — the origin split, the
+   CSP, capability URLs — and almost none of it is in the *generating*, which
+   is a markdown call and a template. A repository whose valuable half is a
+   deployment might be better as a deployment plus fifty lines, and "an
+   independent repo other agents can use" may be satisfied by the MCP surface
+   alone. Unresolved, and it decides whether this is a weekend or a month.
+2. **Which audience is actually being served first?** Part 3's split says
+   personal reading and external sharing want different substrates. Building
+   the personal half is nearly free and forecloses nothing; building the
+   sharing half means a public box, a second domain and a thing to patch
+   forever. They are not the same project and the order matters.
+3. **Does the MCP-resources gap get closed as part of this, or on its own?**
+   It is a harness question wearing an artifact costume: mecha cannot read
+   resources from *any* server today, and fixing that is worth doing whether or
+   not artifacts ever exist. Doing it here would mean this feature paying for a
+   general capability, which is usually how general capabilities get built and
+   also how features slip.
+4. **The documentation site is an independent decision with a weak
+   recommendation.** D1 leans Zola or mdBook purely on "no new language runtime
+   for ten markdown files". Nothing depends on it, and the survey's own warning
+   — switching costs about ten times adopting — argues for deciding it
+   deliberately rather than as a side effect of the artifact work.
+5. **Which parts of the Claude Code artifact behaviour in Part 1 are actually
+   true.** Two sources disagree about the public-link tier, and everything
+   there is secondary reporting. If any of it becomes load-bearing for a
+   decision, check the product rather than the blogs.
+
 ## Sources
 
 - [Claude Code artifacts: publish, plans, private sharing — Stacktree](https://stacktr.ee/blog/artifacts-in-claude-code-explained)
