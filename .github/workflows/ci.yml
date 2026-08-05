@@ -94,11 +94,19 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
 
+      # The docker-backed tests check for the image locally rather than pulling
+      # it themselves, so that a developer without network access gets a skip
+      # instead of a hang. On a fresh runner that means it has to be fetched
+      # here, or those tests report the backend as unavailable.
+      - name: Pre-pull the sandbox image
+        run: docker pull python:3-slim
+
       - name: Report backend availability
         run: |
           echo "bwrap: $(bwrap --version 2>&1 || echo MISSING)"
           echo "docker: $(docker --version 2>&1 || echo MISSING)"
           echo "python3: $(python3 --version 2>&1 || echo MISSING)"
+          echo "image: $(docker image inspect python:3-slim --format '{{.Id}}' 2>&1 || echo MISSING)"
           echo "-- proving bwrap actually runs, not just that it is installed:"
           bwrap --ro-bind / / --unshare-all true && echo "bwrap: WORKS" || echo "bwrap: PRESENT BUT NON-FUNCTIONAL"
 
