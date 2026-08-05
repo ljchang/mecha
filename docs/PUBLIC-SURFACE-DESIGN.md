@@ -189,6 +189,100 @@ an agent run when the queue was non-empty. Making it a tool would put a model
 in the polling loop, which is the same mistake as putting one in the request
 path, one hop later.
 
+### 2.2a The tool surface, concretely
+
+"`publish` and friends" was carrying too much. The surface is five tools, and
+the capability declarations follow `mecha-mail`'s precedent exactly rather than
+being invented here.
+
+| Tool | Does | `readOnlyHint` | `openWorldHint` | Capabilities | Outbox |
+|---|---|---|---|---|---|
+| `bundle_publish` | upload a rendered bundle, get a version | no | **yes** | `external_send` | **routed** |
+| `bundle_alias` | point a share URL at a version | no | **yes** | `external_send` | **routed** |
+| `bundle_list` | what is published, and at which version | **yes** | no | `untrusted_input` | no |
+| `bundle_status` | one bundle: versions, alias, visibility | **yes** | no | `untrusted_input` | no |
+| `type_push` | upload a request-type manifest + schema | no | **yes** | `external_send` | **routed** |
+
+Three things that fall out of the precedent and are worth stating so nobody
+re-derives them:
+
+- **`bundle_alias` is routed too.** Moving an alias changes what every existing
+  share link resolves to — that is a publication, not a bookkeeping change, and
+  it is the one people forget. A staged alias move shows both versions.
+- **The reads are `untrusted_input` but not `openWorldHint`.** The query goes
+  only to our own origin, which already holds the bytes — the same reasoning
+  that puts `mail_search` on one side of that line and `http_fetch` on the
+  other. But the origin is a box we have agreed to assume is lost, so
+  everything it returns arrives `.from_outside()`. A returned URL is data to
+  show, never a thing to fetch.
+- **There is no `bundle_delete`.** Versions are immutable and the alias is the
+  only moving part; unpublishing is `bundle_alias` to nothing plus a visibility
+  flag. A delete verb would be the one operation that could destroy the record.
+
+**The `[[mcp]]` block**, which needs one deliberate exception:
+
+```toml
+[[mcp]]
+name = "factory"
+command = "mecha-factory-publish"
+sandbox = true
+network = true          # it must POST; the global no-network default cannot hold
+env_passthrough = []
+env = { MECHA_FACTORY_URL = "...", MECHA_FACTORY_KEY_FILE = "~/.mecha/factory/publish.key" }
+```
+
+`network = true` on exactly one server is why per-server override exists — the
+alternative would be giving `shell` the network so one server can reach its own
+API. The key is passed as a **path, not a value**, so it never appears in an
+environment dump or a crash log.
+
+**And the confinement subtlety that is easy to miss:** mecha sees one MCP
+server and confines *it*. The render subprocess lives **inside**
+`mecha-factory-publish`, so mecha's sandbox cannot see it — which means the
+"no network, no key while executing the notebook" claim of §2.3 is
+`mecha-factory`'s job to enforce and to preflight, not mecha's. The rule
+transfers with it: **a configured sandbox that does not work stops the run**,
+because silently falling back to unconfined execution is worse than no sandbox.
+If that is not implemented on the factory side, the confinement claim is
+decoration.
+
+### 2.2b A staged publish is not a staged email, and the outbox assumes it is
+
+A real gap, found by writing the surface down rather than by using it.
+
+`mecha outbox` was built for messages: `show` prints the args, `edit` opens
+`$EDITOR` on them, and `diff(args_before, args)` of sent-with-edits items is
+mined into **`writing`-domain reflections**. Every one of those assumptions
+breaks on a publish:
+
+- **`show`** would print `{bundle_path, id, target, visibility}`. That is not
+  reviewable. The reviewable object is *the rendered page*, and the reviewer
+  needs to open it.
+- **`edit`** on those args means changing a filesystem path or a visibility
+  flag. It does not mean editing the draft. Editing the content means editing
+  the source and re-rendering.
+- **The writing miner would learn from path edits.** This is the
+  "Blocked by a hook:" mistake in a new costume — the miner keys on the shape
+  of an edit, and feeding it a changed directory path teaches voice rules from
+  noise, into the cached prefix of every future run.
+
+So, three decisions:
+
+- **`show` on a publish prints the local preview path** from the workspace
+  mirror (§6) and the bundle's diff against the currently aliased version —
+  "what would change for a reader" — rather than the args. Review means opening
+  the page.
+- **`edit` on a publish is refused**, with a message naming the real action:
+  edit the source and re-render, which stages a new item. Simplest, honest, and
+  it avoids inventing a re-render-from-the-outbox path nobody asked for.
+- **The writing-reflection miner filters on item kind.** Publishes are excluded
+  from `mined_outbox.jsonl` entirely. There is a test for the string
+  `"Blocked by a hook:"` for exactly this reason; this wants the same.
+
+The general lesson, worth keeping: **the outbox generalised to a new sink
+without changing, which was the design goal — but its *review* affordances did
+not.** Staging is sink-agnostic. Reviewing is not.
+
 ### 2.3 Render and publish are split, because rendering executes the notebook
 
 Not an accident of packaging — a trust boundary, and the thing most likely to
