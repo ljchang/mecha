@@ -178,6 +178,84 @@ prior art for the agent-facing half is `deploybase/mcp-server` (Apache 2.0, Go,
 MCP tools over a managed hosting service) — which confirms the interface shape
 is right and leaves the hosting question exactly where it was.
 
+### Tailscale, checked against the actual machine
+
+Worth its own section because it is the one option already installed here, and
+because checking it changed what it is good for.
+
+`tailscale status` on this box shows a tailnet that already spans the DGX
+(`spark-8c43`), a MacBook, an iPhone and one more Linux host, all one identity.
+So the audience for "read my agent's output on my phone" is *already
+authenticated*, with nothing to set up.
+
+**`tailscale serve <target>` takes a file or a directory, not only a port.**
+From the CLI's own help on this machine: "`<target>` can be a file, directory,
+text, or most commonly the location to a service running on the local machine."
+That is the finding that matters, because it removes a whole component:
+
+```text
+tailscale serve --bg ~/.mecha/site     # a directory of static files, over HTTPS
+```
+
+No web server, no port, no process to supervise, no firewall rule. Whatever
+generates the files can be a batch job that exits. `Serve` is tailnet-only;
+`Funnel` is the same mechanism pointed at the public internet, and the two are
+mutually exclusive per port — which makes "is this public?" a single legible
+piece of state rather than a policy spread across a config file.
+
+**If a server is ever wanted, Tailscale can also supply the identity.** When
+Serve proxies to a local service it sets `Tailscale-User-Login`,
+`Tailscale-User-Name` and `Tailscale-User-Profile-Pic` on the request, and it
+*strips* those headers from incoming requests so they cannot be spoofed from
+outside. An application behind it therefore knows who is asking without
+implementing login, sessions, cookies or password reset — the entire category
+of thing that is dangerous to write badly.
+
+The caveat is sharp and is the reason to write this down rather than remember
+it: **those headers are only trustworthy if the service listens on loopback
+only.** Anything reachable on the LAN or the tailnet directly can be called
+without going through Serve, and then the caller supplies whatever identity
+they like. Tailscale's own documentation says so, and there is at least one
+project bug filed about trusting the header from arbitrary loopback proxies.
+So the rule for anything built this way is: bind `127.0.0.1`, refuse to bind
+anywhere else without an explicit flag, and treat the header as authoritative
+only because of that.
+
+### What a `mecha serve` would actually buy
+
+Asked directly, and worth separating from the hosting question because the
+answer is not about hosting at all.
+
+**Reading needs no server.** Yesterday's briefing is a static page; a directory
+plus `tailscale serve` covers it completely, and the generator can be a
+short-lived process that runs after a trigger and exits.
+
+**A server buys *acting*, and only that.** Releasing an outbox draft from a
+phone. Running a trigger now. Disabling one that is misbehaving at 3am from
+somewhere that is not a terminal. Given that the interesting scheduled work —
+overnight inbox triage — is designed to *stage* replies for review, approving
+them from a couch is plausibly the feature that makes the whole 24/7 setup
+worth running. That is a real argument for a server, and it is an argument
+about the outbox rather than about artifacts.
+
+Three shapes, with what each actually costs:
+
+| Shape | Firewall | Identity | Cost |
+|---|---|---|---|
+| **Static files + `tailscale serve <dir>`** | untouched | tailnet | none; no process at all |
+| **`mecha serve` on loopback + `tailscale serve 8787`** | untouched | tailnet headers | an HTTP server and a route table |
+| **Outbound connection to a cloud relay** | untouched | whatever the relay does | a cloud component, and the reports transit a third party |
+
+The third only earns its keep for a viewer who cannot be on the tailnet — which
+is the same "external collaborator" case that capability URLs answer more
+cheaply, and without a persistent outbound connection from a machine holding
+mail credentials.
+
+A middle option worth noting because it costs nothing to keep open: a reverse
+proxy already on the box (nginx, Caddy) can front either shape. That matters
+mostly as an escape hatch — it means choosing Tailscale now does not foreclose
+anything, since every shape here is "serve a directory or proxy a port".
+
 ### If it becomes its own repository
 
 The user's instinct is right, with one correction about where the boundary
@@ -268,6 +346,16 @@ comparison — and mecha's ecosystem is Rust.
   recipient so revocation can be targeted, and no secrets in the path that
   will end up in a referrer. Three fields and a check; it is the entire
   difference between this and every native artifact host surveyed.
+- **A4b. Generate a directory; let something else serve it.** `tailscale serve
+  <dir>` needs no process, no port and no firewall change, and the tailnet here
+  is already the exact audience. Any other host — nginx, Caddy, a Pages upload,
+  an rsync to a VPS — consumes the same directory, so this choice forecloses
+  nothing. A server is a *later, separate* decision, justified by wanting to
+  act (release a draft, run a trigger) rather than to read.
+- **A4c. If a server is ever built: loopback only, identity from the proxy.**
+  Bind `127.0.0.1`, refuse anything else without an explicit flag, and read
+  `Tailscale-User-Login` — which is trustworthy *because* of the loopback bind
+  and not otherwise. No login, no sessions, no cookies written here.
 - **A5. If it becomes a repository: service + CLI + MCP server**, in that
   order, with the site generation being the least interesting part. Serve
   artifacts from an origin that holds no credentials.
@@ -307,5 +395,8 @@ comparison — and mecha's ecosystem is Rust.
 - [Static Site Generators 2026 Head-to-Head](https://www.youngju.dev/blog/culture/2026-05-14-static-site-generators-2026-hugo-eleventy-astro-mkdocs-docusaurus-mintlify-starlight-comparison-deep-dive.en)
 - [Starlight vs Docusaurus — LogRocket](https://blog.logrocket.com/starlight-vs-docusaurus-building-documentation/)
 - [Tailscale Funnel documentation](https://tailscale.com/docs/features/tailscale-funnel)
+- [Tailscale Serve documentation](https://tailscale.com/docs/features/tailscale-serve)
+- [Tailscale identity — identity headers on proxied requests](https://tailscale.com/docs/concepts/tailscale-identity)
+- [Do not trust `Tailscale-User-Login` from arbitrary loopback proxies](https://github.com/denoland/clawpatrol/issues/316)
 - [deploybase MCP server (Apache 2.0)](https://codeberg.org/deploybase/mcp-server)
 - [Password protection for Cloudflare Pages](https://dev.to/charca/password-protection-for-cloudflare-pages-8ma)
