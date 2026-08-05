@@ -23,6 +23,9 @@ pub enum Entry {
     Thinking { text: String, depth: u8 },
     ToolCall { name: String, summary: String, depth: u8 },
     ToolResult { name: String, is_error: bool, content: String, depth: u8 },
+    /// A `!command` the user ran themselves. Local to the session: the model
+    /// never sees it, no taint, no approval — it is the user's own terminal.
+    Shell { cmd: String, output: String, status: Option<i32> },
     /// The harness talking about itself: what a command did, what was cleared.
     /// May be several lines; each one is rendered as a line, because a
     /// multi-line string pushed as a single `Line` gets reflowed into a blob
@@ -181,6 +184,30 @@ impl Transcript {
                         Span::raw(" "),
                         Span::styled(truncate(content, 400), Style::new().fg(colour)),
                     ]));
+                }
+                Entry::Shell { cmd, output, status } => {
+                    // Non-zero exit colours the header, not the output: the
+                    // output of a failed command is still just output.
+                    let header_colour = match status {
+                        Some(0) => Color::Cyan,
+                        _ => Color::Red,
+                    };
+                    let exit = match status {
+                        Some(0) => String::new(),
+                        Some(code) => format!("  (exit {code})"),
+                        None => "  (killed)".to_string(),
+                    };
+                    out.push(Line::from(vec![
+                        Span::styled("! ", Style::new().fg(header_colour).bold()),
+                        Span::styled(cmd.clone(), Style::new().fg(header_colour)),
+                        Span::styled(exit, Style::new().fg(Color::DarkGray)),
+                    ]));
+                    for line in output.lines() {
+                        out.push(Line::styled(
+                            format!("  {line}"),
+                            Style::new().fg(Color::DarkGray),
+                        ));
+                    }
                 }
                 Entry::Notice(text) => {
                     for line in text.split('\n') {
