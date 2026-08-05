@@ -125,9 +125,12 @@ mornings look quiet.
   mined minutes after it closes.
 - **Nightly rumination**: `mecha-ruminate.timer` (systemd user, 03:30,
   `Persistent=true`, linger on) runs `scripts/ruminate.sh`: reflect →
-  validate `--unprocessed-only` (judge: gemma26) → learn `--holdout 0.25
-  --propose`. Logs land in `~/.mecha/learning/logs/<date>.log`; pending
-  proposals wait in `mecha proposals`.
+  distill → validate `--unprocessed-only` (judge: gemma26) → learn
+  `--holdout 0.25 --propose` → `rules propose-retirements`. Logs land in
+  `~/.mecha/learning/logs/<date>.log`; pending proposals wait in `mecha
+  proposals`. Validate now also appends every probe's outcome to the
+  store's `validations.jsonl` ledger, which is what the retirement scan
+  reads — see "Rule tenure (2026-08-05)" below.
 - **Both consume `~/.cargo/bin/mecha`**, not the repo build — reinstall
   (`cp target/release/mecha ~/.cargo/bin/`) after changing anything in the
   learning path, or the automation runs stale behaviour.
@@ -1218,6 +1221,80 @@ skip-when-nothing-durable, taint snapshot recorded on the episode's meta
 the learning store (`distilled.jsonl`, same writer lock) with pkg's
 `(source, source_id)` key as the second idempotence layer. Wired as a second
 `session_end` hook and into `ruminate.sh` ahead of validate/learn.
+
+**Rule tenure (2026-08-05)** — R1/R2 of `docs/MEMORY-RESEARCH.md`, built the
+day the research doc landed (commit `2a3f58a`). The gap the research audit
+found: a rule that cleared the gate was immortal — no identity, no lineage,
+and validate printed its measurements and discarded them, which is exactly
+the configuration the library-drift paper measured going negative
+(LLM-authored entries +0.0pp vs human-curated +16.2pp until they added
+outcome-driven retirement). What exists now, and the decisions that were
+argued rather than mechanical:
+
+- **Rules carry `id`, `sources`, `created_at`, `retired_at/_reason`** — all
+  serde-defaulted so pre-identity TOML loads unchanged (the `Reflexion.origin`
+  trick, minus fail-closed: absent lineage on an accepted rule is history,
+  not a threat). `finalize_rules` mints on first entry and carries identity
+  by **text match** across consolidations — a reworded rule is deliberately a
+  new rule, because tallies against text the model never saw would be
+  fiction. `sources` is **batch-level** (the reflexion ids the pass
+  consumed), not per-rule: the learner's own per-rule attributions would be
+  unverifiable testimony, and batch-level answers the audit question that
+  matters ("was any source untrusted?").
+- **The validation ledger** (`validations.jsonl`): validate appends every
+  probe's outcome, keyed to the FNV-1a hash of the exact block measured
+  (written out by hand — the std hasher is unstable across Rust releases,
+  and a drifting ledger key silently splits every tally) and stamped with
+  the probe model, because tallies are only comparable within one. Appended
+  without the store lock: a validate run must never block a closing
+  session's reflect, and an appended line needs no read-modify-write.
+- **Bisection attributes a regression to one rule.** On pass-then-fail, the
+  probe re-drives the same recorded prefix under blocks holding subsets of
+  the active learned rules, halving to the culprit (~2·log₂ n drives,
+  n ≤ 15). Three honesty guards, each cheap and each closing a real
+  misattribution: **user rules ride in every arm** (they are not on trial,
+  and an arm without them measures a deployment that cannot exist) with a
+  user-rules-only pre-test so a regression they cause alone attributes to
+  nothing; an **interaction** that needs rules from both halves attributes
+  to nothing; an **inconclusive arm aborts** the whole attribution.
+  Retirement argues from attributed counts, so attribution must never be a
+  guess. Followup regressions are recorded unattributed — judge-graded flips
+  are a prompt to read two answers, not evidence that convicts a rule.
+- **Retirement flows through the existing gate.** `mecha rules
+  propose-retirements` (nightly, after learn) is a deterministic ledger
+  scan — 3 attributed regressions convicts, no model anywhere — staging
+  `enabled = false` + `retired_*` as an ordinary `Proposal`
+  (`reflexion_ids` empty: nothing is consumed; the diff renderer learned to
+  say `~ retired:` instead of "(no textual change)"). A human at the
+  terminal can `rules retire`/`restore` directly — the same
+  apply-with-git-undo standing as direct `mecha learn`. Retirement is a
+  **flag, never a deletion**: the rule survives every learner rewrite
+  (`finalize_rules` re-appends it) and renders to the learner as an
+  immutable "measured harmful — never re-derive" section, so the same
+  lesson cannot return under new wording — the loop-until-dry lesson: dedup
+  against everything *seen*, not everything *kept*. `Rule::active()` treats
+  `retired_at` as stronger than a hand-flipped `enabled`.
+- **Deliberately absent**: decay, TTLs, usage-based eviction (the
+  rarely-fired rule that must never expire), and any policy on model-rated
+  confidence. Only measured harm argues for retirement, and a human accepts
+  the argument. The threshold is conservative on purpose — the drift
+  paper's own small-N retirement variant *hurt*.
+- **`mecha eval --ab-rules`** is the coarse complement: the whole set
+  rules-free then rules-on (both arms through one `run_arm`, so nothing
+  else differs by construction), per-case flips at pass^k, exit 0 —
+  a measurement, not a gate. Neither arm prints or writes as an ordinary
+  scorecard; `--out` writes a clearly-marked AB shape `--compare` cannot
+  load. This is the deliberate opt-in the `no_learned_rules` default's
+  comment always promised.
+- Verified end to end on a scratch store (`MECHA_LEARNING_DIR`): tallies →
+  conviction at threshold → staged proposal citing ledger rows → accept →
+  RETIRED in `rules` list and absent from the rendered block → restore.
+  `~/.cargo/bin/mecha` reinstalled the same day, so the nightly's new stage
+  runs the new binary.
+- Still open from the doc: **R3's hard cap** on the always-loaded block
+  (the soft `RULES_CHAR_BUDGET` warning stands, now counting only active
+  rules), and any R4 cadence beyond what ruminate.sh already orders.
+  Nothing retires on staleness alone — by design.
 
 **`pkg` as memory.** Wired, and the design is now settled — see item 3, which
 supersedes the turn-start retrieval idea this paragraph used to propose
