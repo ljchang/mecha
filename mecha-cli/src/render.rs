@@ -164,6 +164,9 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                                     StopCause::MaxTurns => "raise --max-turns",
                                     StopCause::OutputTokenBudget => "raise --max-output-tokens",
                                     StopCause::CostBudget => "raise --max-cost",
+                                    // Not a budget: raising a ceiling won't
+                                    // unstick it. Starting over will.
+                                    StopCause::Loop => "the task did not survive compaction; retry, or raise the compaction threshold",
                                     StopCause::Completed | StopCause::Interrupted => "",
                                 };
                                 format!(

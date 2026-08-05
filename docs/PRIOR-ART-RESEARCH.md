@@ -300,7 +300,19 @@ turn-level guard needs care in `agent.rs`.
 
 ---
 
-## 3. The post-compaction loop guard
+## 3. The post-compaction loop guard ~~— built 2026-08-05~~
+
+> **Built 2026-08-05** to this spec, with three deltas. It arms on *any*
+> compaction, not only overflow recovery — same failure shape, superset
+> coverage, and openclaw's own guard is post-compaction generally. The hash
+> is a 64-bit `DefaultHasher`, not sha256 — nothing adversarial is being
+> resisted, and a collision needs two different calls inside a window of
+> three. And a detected loop also suppresses further compaction: a summary
+> spent on a transcript about to be abandoned is pure waste (found by the
+> test scripts, not foresight). Four loop tests cover trip, polling
+> (same args + changing result never trips), dormant-until-compaction, and
+> the off switch. `expect.stop_cause: "loop"` is gradeable; no shipped case
+> asserts it, since a case cannot reliably make a model loop.
 
 **The finding.** openclaw ships two loop detectors and makes them asymmetric on
 purpose: general rolling-history detection is **off** by default, but the
