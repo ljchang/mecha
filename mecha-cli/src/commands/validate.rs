@@ -18,15 +18,29 @@
 //! A rule set that does not move these verdicts on reflections it did not
 //! train on is prompt clutter, and `mecha learn --holdout` exists to keep
 //! such reflections available.
+//!
+//! Every probe's outcome is appended to the store's **validation ledger**
+//! (`validations.jsonl`), keyed to the exact rule set measured — printed
+//! numbers are a report, the ledger is evidence, and `mecha rules` folds it
+//! into per-rule tallies. When a trace-graded probe *regresses* (passes
+//! rules-free, fails with the rules), the probe **bisects** the active
+//! learned rules against the same recorded prefix to name the rule that
+//! flips it, and the attribution lands in the ledger too. Bisection assumes
+//! a single culprit; a regression that needs several rules together, or one
+//! the user's own rules cause, is recorded unattributed — never guessed.
 
 use crate::{probe, setup, GlobalOpts};
 use anyhow::{Context, Result};
-use mecha_core::config::Config;
+use mecha_core::config::{Config, ProviderConfig};
 use mecha_core::counterfactual::ProbeVerdict;
 use mecha_core::eval::Judge;
-use mecha_core::learning::{locate_followup, strip_rules_block, LearningStore, Trigger};
+use mecha_core::learning::{
+    domain_rules_section, locate_followup, rules_hash, strip_rules_block, wrap_rules_block,
+    LearningStore, Rule, Trigger, ValidationRecord,
+};
 use mecha_core::message::{CompletionRequest, Message};
 use mecha_core::session::Session;
+use std::collections::BTreeMap;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -48,6 +62,123 @@ pub struct Args {
     /// Default is all three.
     #[arg(long, value_delimiter = ',')]
     pub trigger: Vec<String>,
+
+    /// Skip the bisection that attributes a regression to one rule.
+    /// Regressions are still recorded in the ledger, just unattributed.
+    #[arg(long)]
+    pub no_attribute: bool,
+}
+
+/// The active learned rules as a flat list, with what a bisection needs to
+/// rebuild a candidate block from any subset of them.
+struct RuleSurface {
+    /// `(domain, rule)`, in domain order — the ledger's `rule_ids` and the
+    /// bisection's index space.
+    flat: Vec<(String, Rule)>,
+    user_by_domain: BTreeMap<String, Vec<Rule>>,
+}
+
+impl RuleSurface {
+    fn load(store: &LearningStore) -> Result<Self> {
+        let mut flat = Vec::new();
+        let mut user_by_domain = BTreeMap::new();
+        for domain in store.domains() {
+            user_by_domain.insert(domain.clone(), store.user_rules(&domain)?);
+            for rule in store.learned_rules(&domain)? {
+                if rule.active() {
+                    flat.push((domain.clone(), rule));
+                }
+            }
+        }
+        Ok(RuleSurface { flat, user_by_domain })
+    }
+
+    /// Ids of the rules riding in the measured block — what a ledger row
+    /// charges its observation to. Rules from before identity existed have
+    /// none; they ride, but no tally can accumulate against them.
+    fn rule_ids(&self) -> Vec<String> {
+        self.flat.iter().filter_map(|(_, r)| r.id.clone()).collect()
+    }
+
+    /// Render the block a run would see if only the selected learned rules
+    /// (by index into `flat`) existed. User rules always ride: they are not
+    /// on trial, and an arm without them would measure a deployment that
+    /// cannot exist.
+    fn block_with(&self, selected: &[usize]) -> Option<String> {
+        let mut sections = Vec::new();
+        for (domain, user) in &self.user_by_domain {
+            let learned: Vec<Rule> = self
+                .flat
+                .iter()
+                .enumerate()
+                .filter(|(i, (d, _))| d == domain && selected.contains(i))
+                .map(|(_, (_, r))| r.clone())
+                .collect();
+            sections.extend(domain_rules_section(domain, user, &learned));
+        }
+        wrap_rules_block(sections)
+    }
+}
+
+/// Bisect a confirmed regression down to one learned rule.
+///
+/// Precondition: rules-free passed, the full block failed. Every test drives
+/// the same recorded prefix under a block holding a subset of the learned
+/// rules; if the probe still fails, the culprit is inside the subset. Returns
+/// the index of the single rule that flips the verdict, or `None` when no
+/// single rule does — the user's rules alone regress it, several rules only
+/// fail together, or an arm came back inconclusive. `None` is an honest
+/// answer: attribution must never be a guess, because retirement argues from
+/// it.
+async fn attribute_regression(
+    prepared: &setup::Prepared,
+    provider_cfg: &ProviderConfig,
+    model: &str,
+    prep: &probe::ProbePrep,
+    surface: &RuleSurface,
+) -> Result<Option<usize>> {
+    if surface.flat.is_empty() {
+        return Ok(None);
+    }
+    let fails = |selected: Vec<usize>| async move {
+        let block = surface.block_with(&selected);
+        match probe::drive_arm(prepared, provider_cfg, model, prep, block.as_deref()).await? {
+            Ok(ProbeVerdict::Fail) => Ok(Some(true)),
+            Ok(ProbeVerdict::Pass) => Ok(Some(false)),
+            // An inconclusive or failed arm aborts the whole attribution.
+            Ok(ProbeVerdict::Inconclusive(_)) | Err(_) => Ok::<_, anyhow::Error>(None),
+        }
+    };
+
+    // If the user's own rules already regress this probe, no learned rule can
+    // be charged with it — a final single-rule test would blame whichever
+    // rule happened to ride beside them.
+    match fails(Vec::new()).await? {
+        Some(false) => {}
+        _ => return Ok(None),
+    }
+
+    // The full block is a confirmed failure, so the culprit is in the full
+    // set; each round keeps whichever half still fails.
+    let mut set: Vec<usize> = (0..surface.flat.len()).collect();
+    while set.len() > 1 {
+        let (a, b) = set.split_at(set.len() / 2);
+        let (a, b) = (a.to_vec(), b.to_vec());
+        match fails(a.clone()).await? {
+            Some(true) => {
+                set = a;
+                continue;
+            }
+            Some(false) => {}
+            None => return Ok(None),
+        }
+        match fails(b.clone()).await? {
+            Some(true) => set = b,
+            // Neither half fails alone: the regression needs rules from both.
+            _ => return Ok(None),
+        }
+    }
+    Ok(set.first().copied())
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
@@ -117,6 +248,35 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let mut unchanged = 0u32;
     let mut inconclusive = 0u32;
     let mut skipped = 0u32;
+    let mut recorded_rows = 0u32;
+
+    // What every ledger row this run charges its observation to. Loaded once:
+    // the block was rendered from this same state, and a mid-run rules change
+    // would make rows describe a set that was never measured.
+    let surface = RuleSurface::load(&store)?;
+    let block_hash = rules_hash(&rules_block);
+    let ledger_rule_ids = surface.rule_ids();
+    let mut record = |r: &mecha_core::learning::Reflexion,
+                      outcome: &str,
+                      attributed: Option<String>|
+     -> Result<()> {
+        // Append-only, no store lock: a validate run must never block the
+        // reflect a closing session fires, and a single appended line needs
+        // no read-modify-write.
+        store.append_validation(&ValidationRecord {
+            reflexion_id: r.id.clone(),
+            trigger: r.trigger.clone(),
+            domain: r.domain.clone(),
+            rules_hash: block_hash.clone(),
+            rule_ids: ledger_rule_ids.clone(),
+            outcome: outcome.into(),
+            attributed_rule_id: attributed,
+            model: model.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        })?;
+        recorded_rows += 1;
+        Ok(())
+    };
 
     for r in &reflexions {
         let path = match Session::find(&sessions_dir, &r.session_id) {
@@ -146,46 +306,80 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // ── steers and denials: replay the prefix, grade the trace ──
         if r.trigger != Trigger::Followup.as_str() {
             let prepared = prepared.as_ref().expect("built because needs_replay");
-            match probe::probe_reflection(
-                prepared,
-                provider_cfg,
-                &model,
-                &sessions_dir,
-                r,
-                None,
-                Some(&rules_block),
-            )
-            .await?
-            {
-                probe::ProbeResult::Skipped(why) => {
+            let prep = match probe::prepare_probe(&sessions_dir, r)? {
+                Ok(prep) => prep,
+                Err(why) => {
                     eprintln!("· {}: {why}; skipping", r.id);
                     skipped += 1;
+                    continue;
                 }
-                probe::ProbeResult::Verdicts(baseline, with) => {
-                    match probe::compare(
-                        &baseline,
-                        &with,
-                        &mut improved,
-                        &mut regressed,
-                        &mut unchanged,
-                        &mut inconclusive,
-                    ) {
-                        Some(label) => {
-                            println!("· {} [{}, {label}] {}", r.id, r.trigger, r.reflexion_text)
-                        }
-                        None => {
-                            let why = [&baseline, &with]
-                                .iter()
-                                .find_map(|v| match v {
-                                    ProbeVerdict::Inconclusive(w) => Some(w.clone()),
-                                    _ => None,
-                                })
-                                .unwrap_or_default();
-                            println!("· {} [{}] inconclusive: {why}", r.id, r.trigger);
-                        }
+            };
+            let mut arms = Vec::new();
+            for block in [None, Some(rules_block.as_str())] {
+                match probe::drive_arm(prepared, provider_cfg, &model, &prep, block).await? {
+                    Ok(v) => arms.push(v),
+                    Err(why) => {
+                        eprintln!("· {}: {why}; skipping", r.id);
+                        break;
                     }
                 }
             }
+            let [baseline, with] = &arms[..] else {
+                skipped += 1;
+                continue;
+            };
+            match probe::compare(
+                baseline,
+                with,
+                &mut improved,
+                &mut regressed,
+                &mut unchanged,
+                &mut inconclusive,
+            ) {
+                Some(label) => {
+                    println!("· {} [{}, {label}] {}", r.id, r.trigger, r.reflexion_text)
+                }
+                None => {
+                    let why = [baseline, with]
+                        .iter()
+                        .find_map(|v| match v {
+                            ProbeVerdict::Inconclusive(w) => Some(w.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    println!("· {} [{}] inconclusive: {why}", r.id, r.trigger);
+                }
+            }
+
+            // A regression is the suspicion attribution acts on: find which
+            // rule flips this probe, against the same recorded prefix.
+            let mut attributed = None;
+            if matches!((baseline, with), (ProbeVerdict::Pass, ProbeVerdict::Fail))
+                && !args.no_attribute
+            {
+                match attribute_regression(prepared, provider_cfg, &model, &prep, &surface)
+                    .await?
+                {
+                    Some(i) => {
+                        let (domain, rule) = &surface.flat[i];
+                        match &rule.id {
+                            Some(id) => {
+                                attributed = Some(id.clone());
+                                println!("    attributed to [{domain}] {}", rule.text);
+                            }
+                            // A rule from before identity existed can be
+                            // named but not tallied — the next learn pass
+                            // mints its id.
+                            None => println!(
+                                "    attributed to a pre-identity rule [{domain}]: {}",
+                                rule.text
+                            ),
+                        }
+                    }
+                    None => println!("    no single rule attributable"),
+                }
+            }
+            record(r, outcome_str(baseline, with), attributed)?;
             continue;
         }
 
@@ -238,18 +432,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             continue;
         };
 
-        let label = match (baseline, with) {
+        let (label, outcome) = match (baseline, with) {
             (false, true) => {
                 improved += 1;
-                "IMPROVED"
+                ("IMPROVED", "improved")
             }
             (true, false) => {
                 regressed += 1;
-                "REGRESSED"
+                ("REGRESSED", "regressed")
             }
-            _ => {
+            (true, true) => {
                 unchanged += 1;
-                if baseline { "unchanged (both pass)" } else { "unchanged (both fail)" }
+                ("unchanged (both pass)", "unchanged_pass")
+            }
+            (false, false) => {
+                unchanged += 1;
+                ("unchanged (both fail)", "unchanged_fail")
             }
         };
         println!("· {} [{}] {}", r.id, label, r.reflexion_text);
@@ -257,6 +455,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             println!("    baseline:   {}", first_line(&answers[0]));
             println!("    with rules: {}", first_line(&answers[1]));
         }
+        // Judge-graded, so no bisection: a followup regression is a prompt to
+        // read two answers, not evidence that convicts one rule.
+        record(r, outcome, None)?;
     }
 
     println!(
@@ -265,7 +466,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
          trace-graded, followups judge-graded — read before believing a single flip)",
         reflexions.len()
     );
+    if recorded_rows > 0 {
+        println!("{recorded_rows} row(s) appended to the validation ledger — `mecha rules` folds them");
+        store.commit(&format!("validate: {recorded_rows} probe(s) → ledger"));
+    }
     Ok(())
+}
+
+/// The ledger's outcome vocabulary for a trace-graded probe pair.
+fn outcome_str(baseline: &ProbeVerdict, with: &ProbeVerdict) -> &'static str {
+    match (baseline, with) {
+        (ProbeVerdict::Inconclusive(_), _) | (_, ProbeVerdict::Inconclusive(_)) => "inconclusive",
+        (ProbeVerdict::Fail, ProbeVerdict::Pass) => "improved",
+        (ProbeVerdict::Pass, ProbeVerdict::Fail) => "regressed",
+        (ProbeVerdict::Pass, _) => "unchanged_pass",
+        (ProbeVerdict::Fail, _) => "unchanged_fail",
+    }
 }
 
 fn first_line(s: &str) -> String {
@@ -274,5 +490,102 @@ fn first_line(s: &str) -> String {
         format!("{}…", line.chars().take(140).collect::<String>())
     } else {
         line.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_store() -> LearningStore {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir()
+            .join("mecha-validate-test")
+            .join(format!("{}-{nanos}", std::process::id()));
+        LearningStore::open(dir).unwrap()
+    }
+
+    fn rule(text: &str, id: Option<&str>) -> Rule {
+        Rule { text: text.into(), id: id.map(Into::into), ..Default::default() }
+    }
+
+    #[test]
+    fn a_full_selection_renders_exactly_the_deployed_block() {
+        // The bisection's ground assumption: block_with(everything) is the
+        // very block the treatment arm measured, byte for byte — otherwise
+        // the subsets it tests live in a different deployment than the
+        // regression it is explaining.
+        let store = temp_store();
+        std::fs::write(
+            store.root().join("rules/behavior.user.toml"),
+            "[[rules]]\ntext = \"User rule.\"\n",
+        )
+        .unwrap();
+        store
+            .write_learned_rules(
+                "behavior",
+                &[rule("Learned A.", Some("r-a")), rule("Learned B.", Some("r-b"))],
+            )
+            .unwrap();
+        store.write_learned_rules("writing", &[rule("Sign off briefly.", Some("r-c"))]).unwrap();
+
+        let surface = RuleSurface::load(&store).unwrap();
+        assert_eq!(surface.flat.len(), 3);
+        assert_eq!(surface.rule_ids(), vec!["r-a", "r-b", "r-c"]);
+
+        let all: Vec<usize> = (0..surface.flat.len()).collect();
+        assert_eq!(
+            surface.block_with(&all).unwrap(),
+            store.rules_prompt_block().unwrap().unwrap()
+        );
+
+        // An empty selection still carries the user's rules — they are not on
+        // trial — and none of the learned ones.
+        let none = surface.block_with(&[]).unwrap();
+        assert!(none.contains("User rule."));
+        assert!(!none.contains("Learned A.") && !none.contains("Sign off"));
+
+        // A subset carries exactly its members.
+        let one = surface.block_with(&[1]).unwrap();
+        assert!(one.contains("Learned B.") && !one.contains("Learned A."));
+
+        std::fs::remove_dir_all(store.root()).ok();
+    }
+
+    #[test]
+    fn retired_and_preidentity_rules_shape_the_surface_correctly() {
+        let store = temp_store();
+        let retired = Rule {
+            text: "Was harmful.".into(),
+            enabled: false,
+            id: Some("r-old".into()),
+            retired_at: Some("2026-08-05T00:00:00Z".into()),
+            ..Default::default()
+        };
+        // A rule from before identity existed rides in blocks (it is live!)
+        // but cannot be tallied — rule_ids must skip it, not invent a key.
+        store
+            .write_learned_rules("behavior", &[rule("No id yet.", None), retired])
+            .unwrap();
+        let surface = RuleSurface::load(&store).unwrap();
+        assert_eq!(surface.flat.len(), 1, "retired rules are not on the surface");
+        assert!(surface.rule_ids().is_empty());
+        assert!(surface.block_with(&[0]).unwrap().contains("No id yet."));
+        std::fs::remove_dir_all(store.root()).ok();
+    }
+
+    #[test]
+    fn the_ledger_outcome_vocabulary_covers_the_verdict_grid() {
+        use ProbeVerdict::*;
+        let inc = || Inconclusive("why".into());
+        assert_eq!(outcome_str(&Fail, &Pass), "improved");
+        assert_eq!(outcome_str(&Pass, &Fail), "regressed");
+        assert_eq!(outcome_str(&Pass, &Pass), "unchanged_pass");
+        assert_eq!(outcome_str(&Fail, &Fail), "unchanged_fail");
+        assert_eq!(outcome_str(&inc(), &Pass), "inconclusive");
+        assert_eq!(outcome_str(&Pass, &inc()), "inconclusive");
     }
 }

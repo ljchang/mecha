@@ -18,8 +18,8 @@ First thing to run in a fresh context:
 cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
-Expect **270 core + 55 CLI + 65 mail unit tests, 13 integration tests, 1
-doctest** — 404,
+Expect **275 core + 62 CLI + 65 mail unit tests, 13 integration tests, 1
+doctest** — 416,
 no warnings. The integration tests need docker (with `debian:stable-slim` and
 `python:3-slim` local) and `python3`; without them they skip and say so. In CI,
 set `MECHA_TEST_REQUIRE_BACKENDS=1` so a missing backend fails instead of
@@ -57,7 +57,7 @@ A working agent harness, used and measured rather than just compiled.
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
 | Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/send/reject; edits mined as writing reflections |
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar, extracted from flowmail; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed |
-| Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning` |
+| Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B) |
 | Eval | 36 cases, 17 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `pkg-cases.jsonl` — 8 memory/interlock cases against fixture MCP servers (`--mcp-file`) |
 
 `cargo clippy --all-targets` is clean and should stay that way.
@@ -470,7 +470,12 @@ and the first two have research threads running as of this writing.
   most of this already — the missing piece is validate feeding a ledger);
   and a do-not-build list (no vector store, no extraction replacing
   transcripts, no LLM-adjudicated DELETE, no auto-decay, no policy on
-  model-rated importance).
+  model-rated importance). **R1/R2 built the same day** (see the doc's
+  addendum): rule identity + tenure fields, the `validations.jsonl` ledger,
+  regression bisection, `mecha rules` retire/restore/propose-retirements
+  through the proposal gate (in `ruminate.sh` after learn), and `mecha eval
+  --ab-rules`. Open: R3's hard cap; the R4 cadence beyond what ruminate.sh
+  already orders.
 - ~~**Sandboxes**~~ — researched 2026-08-04, see `docs/SANDBOX-RESEARCH.md`.
   Answer: **Landlock + seccomp at 1.28 ms against `docker run`'s 192 ms**, no
   root and no userns, so it works on this box where bwrap is blocked. WASM
