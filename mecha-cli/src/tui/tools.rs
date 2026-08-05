@@ -120,7 +120,9 @@ impl ToolsModal {
     }
 
     fn draw_detail(&self, frame: &mut Frame) {
-        let Some(row) = self.rows.get(self.selected) else { return };
+        let Some(row) = self.rows.get(self.selected) else {
+            return;
+        };
 
         let mut body: Vec<Line> = vec![Line::styled(
             format!("[{}]", row.badges()),
@@ -128,7 +130,10 @@ impl ToolsModal {
         )];
         body.push(Line::raw(""));
         for line in row.description.lines() {
-            body.push(Line::styled(line.to_string(), Style::new().fg(Color::White)));
+            body.push(Line::styled(
+                line.to_string(),
+                Style::new().fg(Color::White),
+            ));
         }
         body.push(Line::raw(""));
 
@@ -173,7 +178,11 @@ impl ToolsModal {
             ));
         }
 
-        let area = super::centered(frame.area(), 80, (body.len() as u16 + 4).min(frame.area().height));
+        let area = super::centered(
+            frame.area(),
+            80,
+            (body.len() as u16 + 4).min(frame.area().height),
+        );
         frame.render_widget(Clear, area);
         frame.render_widget(
             Paragraph::new(body).wrap(Wrap { trim: false }).block(
@@ -211,7 +220,10 @@ mod tests {
             outbox: true,
             ..row(
                 "email_send",
-                Capabilities { external_send: true, ..Capabilities::default() },
+                Capabilities {
+                    external_send: true,
+                    ..Capabilities::default()
+                },
             )
         };
         assert_eq!(loud.badges(), "writes · outbox · sends");
@@ -220,7 +232,10 @@ mod tests {
     #[test]
     fn the_selection_wraps_and_an_empty_list_does_not_panic() {
         let mut modal = ToolsModal {
-            rows: vec![row("a", Capabilities::default()), row("b", Capabilities::default())],
+            rows: vec![
+                row("a", Capabilities::default()),
+                row("b", Capabilities::default()),
+            ],
             selected: 0,
             detail: false,
             sandbox_line: String::new(),
@@ -242,11 +257,29 @@ mod tests {
 
     #[test]
     fn a_long_list_scrolls_to_keep_the_selection_visible() {
-        let rows: Vec<ToolRow> = (0..30).map(|i| row(&format!("t{i}"), Capabilities::default())).collect();
-        let modal = ToolsModal { rows, selected: 0, detail: false, sandbox_line: String::new() };
-        assert_eq!(modal.list_scroll(10), 0, "selection at the top needs no scroll");
+        let rows: Vec<ToolRow> = (0..30)
+            .map(|i| row(&format!("t{i}"), Capabilities::default()))
+            .collect();
+        let modal = ToolsModal {
+            rows,
+            selected: 0,
+            detail: false,
+            sandbox_line: String::new(),
+        };
+        assert_eq!(
+            modal.list_scroll(10),
+            0,
+            "selection at the top needs no scroll"
+        );
 
-        let modal = ToolsModal { selected: 25, ..modal };
-        assert_eq!(modal.list_scroll(10), 16, "selection stays on the last visible row");
+        let modal = ToolsModal {
+            selected: 25,
+            ..modal
+        };
+        assert_eq!(
+            modal.list_scroll(10),
+            16,
+            "selection stays on the last visible row"
+        );
     }
 }

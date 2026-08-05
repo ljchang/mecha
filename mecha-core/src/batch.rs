@@ -367,7 +367,10 @@ mod tests {
             }
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
 
-            self.history_lengths.lock().unwrap().push(req.messages.len());
+            self.history_lengths
+                .lock()
+                .unwrap()
+                .push(req.messages.len());
             let prompt = req.messages.last().map(|m| m.text()).unwrap_or_default();
 
             // One item is allowed to blow up, so the "recorded, not fatal"
@@ -377,14 +380,17 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(vec![Block::text(format!("answered: {prompt}"))]),
                 stop_reason: StopReason::EndTurn,
-                usage: Usage { input_tokens: 10, output_tokens: 5, ..Usage::default() },
+                usage: Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    ..Usage::default()
+                },
                 refusal: None,
                 model: "echo-1".into(),
                 malformed_tool_args: 0,
             })
         }
     }
-
 
     fn agent_with(provider: Arc<EchoProvider>) -> Agent {
         struct Shared(Arc<EchoProvider>);
@@ -408,8 +414,13 @@ mod tests {
         Agent::new(
             Box::new(Shared(provider)),
             Registry::new(),
-            Arc::new(ModeApprover { mode: PermissionMode::Allow }),
-            ToolCtx { workspace: std::env::temp_dir(), ..Default::default() },
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                ..Default::default()
+            },
             AgentConfig::default(),
             None,
         )
@@ -436,7 +447,13 @@ mod tests {
         });
         let agent = agent_with(Arc::clone(&provider));
 
-        let results = run(&agent, items(&["alpha", "beta", "gamma", "delta"]), 4, |_| {}).await;
+        let results = run(
+            &agent,
+            items(&["alpha", "beta", "gamma", "delta"]),
+            4,
+            |_| {},
+        )
+        .await;
 
         // Completion order under concurrency is not submission order, so every
         // result has to carry its own key and metadata home with it.
@@ -445,7 +462,12 @@ mod tests {
             let index = r.meta.as_ref().unwrap()["index"].as_u64().unwrap();
             assert_eq!(r.id, format!("item-{index}"));
             let expected = ["alpha", "beta", "gamma", "delta"][index as usize];
-            assert_eq!(r.text, format!("answered: {expected}"), "{} got another item's answer", r.id);
+            assert_eq!(
+                r.text,
+                format!("answered: {expected}"),
+                "{} got another item's answer",
+                r.id
+            );
         }
     }
 
@@ -495,7 +517,10 @@ mod tests {
 
         let peak = provider.max_in_flight.load(Ordering::SeqCst);
         assert!(peak <= 2, "{peak} items ran at once against a limit of 2");
-        assert_eq!(peak, 2, "the limit was never actually reached; the test proves nothing");
+        assert_eq!(
+            peak, 2,
+            "the limit was never actually reached; the test proves nothing"
+        );
     }
 
     #[tokio::test]
@@ -518,10 +543,16 @@ mod tests {
         // The callback is what lets a long eval print progress instead of
         // going quiet for ten minutes.
         let mut announced = Vec::new();
-        let results = run(&agent, items(&["a", "b", "c"]), 1, |r| announced.push(r.id.clone())).await;
+        let results = run(&agent, items(&["a", "b", "c"]), 1, |r| {
+            announced.push(r.id.clone())
+        })
+        .await;
 
         assert_eq!(announced.len(), 3);
-        assert_eq!(announced, results.iter().map(|r| r.id.clone()).collect::<Vec<_>>());
+        assert_eq!(
+            announced,
+            results.iter().map(|r| r.id.clone()).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -532,7 +563,11 @@ mod tests {
             text: String::new(),
             error: None,
             turns: 1,
-            usage: Usage { input_tokens: 10, output_tokens: 5, ..Usage::default() },
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                ..Usage::default()
+            },
             stop_reason: Some(StopReason::EndTurn),
             meta: None,
             elapsed_ms: 1,
@@ -545,7 +580,10 @@ mod tests {
             usage_complete: true,
         };
 
-        let summary = BatchSummary::of(&[result("a", true), result("b", false), result("c", true)], 99);
+        let summary = BatchSummary::of(
+            &[result("a", true), result("b", false), result("c", true)],
+            99,
+        );
 
         assert_eq!(summary.total, 3);
         assert_eq!(summary.succeeded, 2);

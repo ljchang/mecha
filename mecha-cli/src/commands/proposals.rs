@@ -19,7 +19,7 @@
 //! this deployment, and applying it anyway needs `--force`.
 
 use anyhow::{bail, Result};
-use mecha_core::learning::{LearningStore, LeapRun, Rule};
+use mecha_core::learning::{LeapRun, LearningStore, Rule};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -84,7 +84,13 @@ fn show(store: &LearningStore, id: &str) -> Result<()> {
     println!("proposal {} · {} · {}", p.id, p.domain, p.status);
     println!("created {}", p.created_at);
     if let Some(resolved) = &p.resolved_at {
-        println!("resolved {resolved}{}", p.reason.as_deref().map(|r| format!(" — {r}")).unwrap_or_default());
+        println!(
+            "resolved {resolved}{}",
+            p.reason
+                .as_deref()
+                .map(|r| format!(" — {r}"))
+                .unwrap_or_default()
+        );
     }
     println!("\n{}", render_diff(&p.rules_before, &p.rules));
     println!("evidence:\n{}", indent(&p.evidence));
@@ -130,7 +136,11 @@ fn accept(store: &LearningStore, id: &str, force: bool) -> Result<()> {
         p.id,
         p.rules.len()
     ));
-    println!("accepted: {} rule(s) now live for `{}`", p.rules.len(), p.domain);
+    println!(
+        "accepted: {} rule(s) now live for `{}`",
+        p.rules.len(),
+        p.domain
+    );
     Ok(())
 }
 
@@ -168,7 +178,10 @@ fn render_diff(before: &[Rule], after: &[Rule]) -> String {
             Some(b) if b.active() && !r.active() => out.push_str(&format!(
                 "  ~ retired: {}{}\n",
                 r.text,
-                r.retired_reason.as_deref().map(|w| format!(" ({w})")).unwrap_or_default()
+                r.retired_reason
+                    .as_deref()
+                    .map(|w| format!(" ({w})"))
+                    .unwrap_or_default()
             )),
             Some(b) if !b.active() && r.active() => {
                 out.push_str(&format!("  ~ restored: {}\n", r.text))
@@ -183,11 +196,17 @@ fn render_diff(before: &[Rule], after: &[Rule]) -> String {
 }
 
 fn same_rules(a: &[Rule], b: &[Rule]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.text == y.text && x.enabled == y.enabled)
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.text == y.text && x.enabled == y.enabled)
 }
 
 fn indent(s: &str) -> String {
-    s.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
+    s.lines()
+        .map(|l| format!("  {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -195,7 +214,10 @@ mod tests {
     use super::*;
 
     fn rule(text: &str) -> Rule {
-        Rule { text: text.into(), ..Default::default() }
+        Rule {
+            text: text.into(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -218,7 +240,10 @@ mod tests {
         after[1].retired_at = Some("2026-08-05T00:00:00Z".into());
         after[1].retired_reason = Some("3 attributed regressions".into());
         let d = render_diff(&before, &after);
-        assert!(d.contains("~ retired: bad (3 attributed regressions)"), "{d}");
+        assert!(
+            d.contains("~ retired: bad (3 attributed regressions)"),
+            "{d}"
+        );
         assert!(!d.contains("no textual change"), "{d}");
 
         let back = render_diff(&after, &before);

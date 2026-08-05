@@ -25,9 +25,7 @@ impl Approver for TerminalApprover {
 
         let name = tool.name().to_string();
         let summary = summarize(&name, input);
-        let prompt = format!(
-            "\n  {name}  {summary}\n  allow? [y]es / [a]lways / [n]o / [q]uit > "
-        );
+        let prompt = format!("\n  {name}  {summary}\n  allow? [y]es / [a]lways / [n]o / [q]uit > ");
 
         // Reading stdin blocks; keep it off the async runtime's worker threads.
         let answer = tokio::task::spawn_blocking(move || {

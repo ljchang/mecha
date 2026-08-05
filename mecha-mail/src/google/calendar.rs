@@ -68,7 +68,10 @@ pub struct CalendarProvider {
 
 impl CalendarProvider {
     pub fn new(access_token: String) -> Self {
-        Self { access_token, client: crate::http::client() }
+        Self {
+            access_token,
+            client: crate::http::client(),
+        }
     }
 
     /// Calendars the account can at least see. flowmail filtered to
@@ -84,7 +87,10 @@ impl CalendarProvider {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(MailError::ApiError { status, message: body });
+            return Err(MailError::ApiError {
+                status,
+                message: body,
+            });
         }
 
         let body: Value = resp.json().await?;
@@ -137,7 +143,10 @@ impl CalendarProvider {
             if !resp.status().is_success() {
                 let status = resp.status().as_u16();
                 let body = resp.text().await.unwrap_or_default();
-                return Err(MailError::ApiError { status, message: body });
+                return Err(MailError::ApiError {
+                    status,
+                    message: body,
+                });
             }
 
             let body: Value = resp.json().await?;
@@ -185,8 +194,11 @@ impl CalendarProvider {
             body["location"] = json!(loc);
         }
         if !event.attendees.is_empty() {
-            body["attendees"] =
-                json!(event.attendees.iter().map(|a| json!({"email": a})).collect::<Vec<_>>());
+            body["attendees"] = json!(event
+                .attendees
+                .iter()
+                .map(|a| json!({"email": a}))
+                .collect::<Vec<_>>());
         }
 
         let url = format!(
@@ -194,13 +206,19 @@ impl CalendarProvider {
             urlencode(calendar_id)
         );
         let resp = send_with_retry(
-            self.client.post(&url).bearer_auth(&self.access_token).json(&body),
+            self.client
+                .post(&url)
+                .bearer_auth(&self.access_token)
+                .json(&body),
         )
         .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(MailError::ApiError { status, message: body });
+            return Err(MailError::ApiError {
+                status,
+                message: body,
+            });
         }
 
         let result: Value = resp.json().await?;
@@ -224,8 +242,10 @@ impl CalendarProvider {
             body["location"] = json!(loc);
         }
         if let Some(ref attendees) = event.attendees {
-            body["attendees"] =
-                json!(attendees.iter().map(|a| json!({"email": a})).collect::<Vec<_>>());
+            body["attendees"] = json!(attendees
+                .iter()
+                .map(|a| json!({"email": a}))
+                .collect::<Vec<_>>());
         }
 
         let all_day = event.all_day.unwrap_or(false);
@@ -251,24 +271,26 @@ impl CalendarProvider {
             urlencode(event_id)
         );
         let resp = send_with_retry(
-            self.client.patch(&url).bearer_auth(&self.access_token).json(&body),
+            self.client
+                .patch(&url)
+                .bearer_auth(&self.access_token)
+                .json(&body),
         )
         .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(MailError::ApiError { status, message: body });
+            return Err(MailError::ApiError {
+                status,
+                message: body,
+            });
         }
 
         let result: Value = resp.json().await?;
         Ok(parse_event(&result, calendar_id))
     }
 
-    pub async fn delete_event(
-        &self,
-        calendar_id: &str,
-        event_id: &str,
-    ) -> Result<(), MailError> {
+    pub async fn delete_event(&self, calendar_id: &str, event_id: &str) -> Result<(), MailError> {
         let url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
             urlencode(calendar_id),
@@ -283,7 +305,10 @@ impl CalendarProvider {
             return Ok(());
         }
         let body = resp.text().await.unwrap_or_default();
-        Err(MailError::ApiError { status, message: body })
+        Err(MailError::ApiError {
+            status,
+            message: body,
+        })
     }
 }
 

@@ -81,9 +81,11 @@ pub fn extract(messages: &[Message]) -> Trajectory {
                 let mut text = String::new();
                 for block in &message.content {
                     match block {
-                        Block::ToolResult { tool_use_id, content, is_error } => {
-                            results.push((tool_use_id.clone(), content.clone(), *is_error))
-                        }
+                        Block::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                        } => results.push((tool_use_id.clone(), content.clone(), *is_error)),
                         Block::Text { text: t } => text.push_str(t),
                         _ => {}
                     }
@@ -107,7 +109,12 @@ pub fn extract(messages: &[Message]) -> Trajectory {
                     // the order they were asked for.
                     if let Some(i) = pending.iter().position(|(p, _, _)| *p == id) {
                         let (_, name, input) = pending.remove(i);
-                        t.calls.push(RecordedCall { name, input, output, is_error });
+                        t.calls.push(RecordedCall {
+                            name,
+                            input,
+                            output,
+                            is_error,
+                        });
                     }
                 }
             }
@@ -122,12 +129,21 @@ pub fn extract(messages: &[Message]) -> Trajectory {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Divergence {
     /// A different tool entirely. The strongest signal there is.
-    Tool { index: usize, expected: String, actual: String },
+    Tool {
+        index: usize,
+        expected: String,
+        actual: String,
+    },
     /// The right tool, different arguments. Worth reporting separately: a
     /// model that reads the same file by a different path spelling has not
     /// regressed, and grading it as though it had makes replay useless inside a
     /// week.
-    Arguments { index: usize, tool: String, expected: Value, actual: Value },
+    Arguments {
+        index: usize,
+        tool: String,
+        expected: Value,
+        actual: Value,
+    },
     /// The replay kept going after the recording ran out.
     Extra { index: usize, actual: String },
     /// The replay stopped early.
@@ -212,7 +228,8 @@ fn same_arguments(a: &Value, b: &Value) -> bool {
         (Value::String(x), Value::String(y)) => x.trim() == y.trim(),
         (Value::Object(x), Value::Object(y)) => {
             x.len() == y.len()
-                && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same_arguments(v, w)))
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| same_arguments(v, w)))
         }
         (Value::Array(x), Value::Array(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(v, w)| same_arguments(v, w))
@@ -227,15 +244,30 @@ mod tests {
     use serde_json::json;
 
     fn call(id: &str, name: &str, input: Value) -> Block {
-        Block::ToolUse { id: id.into(), name: name.into(), input }
+        Block::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input,
+        }
     }
 
     fn result(id: &str, content: &str) -> Block {
-        Block::ToolResult { tool_use_id: id.into(), content: content.into(), is_error: false }
+        Block::ToolResult {
+            tool_use_id: id.into(),
+            content: content.into(),
+            is_error: false,
+        }
     }
 
     fn trace(name: &str, input: Value) -> ToolCallTrace {
-        ToolCallTrace { name: name.into(), input, is_error: false, denied: false, unknown: false, staged: false }
+        ToolCallTrace {
+            name: name.into(),
+            input,
+            is_error: false,
+            denied: false,
+            unknown: false,
+            staged: false,
+        }
     }
 
     #[test]
@@ -337,16 +369,42 @@ mod tests {
         // Everything after the fork is two sequences that already parted
         // company; reporting all of it buries the one fact that matters.
         let recorded = vec![
-            RecordedCall { name: "fs_read".into(), input: json!({}), output: String::new(), is_error: false },
-            RecordedCall { name: "fs_read".into(), input: json!({}), output: String::new(), is_error: false },
-            RecordedCall { name: "fs_read".into(), input: json!({}), output: String::new(), is_error: false },
+            RecordedCall {
+                name: "fs_read".into(),
+                input: json!({}),
+                output: String::new(),
+                is_error: false,
+            },
+            RecordedCall {
+                name: "fs_read".into(),
+                input: json!({}),
+                output: String::new(),
+                is_error: false,
+            },
+            RecordedCall {
+                name: "fs_read".into(),
+                input: json!({}),
+                output: String::new(),
+                is_error: false,
+            },
         ];
-        let replayed = vec![trace("shell", json!({})), trace("shell", json!({})), trace("shell", json!({}))];
+        let replayed = vec![
+            trace("shell", json!({})),
+            trace("shell", json!({})),
+            trace("shell", json!({})),
+        ];
 
         let d = diff(&recorded, &replayed);
 
         assert_eq!(d.len(), 1);
-        assert_eq!(d[0], Divergence::Tool { index: 0, expected: "fs_read".into(), actual: "shell".into() });
+        assert_eq!(
+            d[0],
+            Divergence::Tool {
+                index: 0,
+                expected: "fs_read".into(),
+                actual: "shell".into()
+            }
+        );
         assert!(d[0].is_structural());
     }
 
@@ -377,11 +435,29 @@ mod tests {
             is_error: false,
         };
 
-        let extra = diff(&[one("fs_read")], &[trace("fs_read", json!({})), trace("shell", json!({}))]);
-        assert_eq!(extra, vec![Divergence::Extra { index: 1, actual: "shell".into() }]);
+        let extra = diff(
+            &[one("fs_read")],
+            &[trace("fs_read", json!({})), trace("shell", json!({}))],
+        );
+        assert_eq!(
+            extra,
+            vec![Divergence::Extra {
+                index: 1,
+                actual: "shell".into()
+            }]
+        );
 
-        let missing = diff(&[one("fs_read"), one("shell")], &[trace("fs_read", json!({}))]);
-        assert_eq!(missing, vec![Divergence::Missing { index: 1, expected: "shell".into() }]);
+        let missing = diff(
+            &[one("fs_read"), one("shell")],
+            &[trace("fs_read", json!({}))],
+        );
+        assert_eq!(
+            missing,
+            vec![Divergence::Missing {
+                index: 1,
+                expected: "shell".into()
+            }]
+        );
     }
 
     #[test]
@@ -396,7 +472,10 @@ mod tests {
         };
         let d = diff(
             &[one("a.md"), one("b.md")],
-            &[trace("fs_read", json!({"path": "b.md"})), trace("fs_read", json!({"path": "a.md"}))],
+            &[
+                trace("fs_read", json!({"path": "b.md"})),
+                trace("fs_read", json!({"path": "a.md"})),
+            ],
         );
 
         assert_eq!(d.len(), 2, "a reordering went unreported");

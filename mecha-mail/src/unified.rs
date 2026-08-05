@@ -97,7 +97,6 @@ impl MailTools {
             default: file.default,
         })
     }
-
 }
 
 // ---------------------------------------------------------------- resolution
@@ -124,7 +123,9 @@ fn resolve(
     if let Some(wanted) = arg {
         return match names.iter().position(|n| n == wanted) {
             Some(i) => Ok(vec![i]),
-            None => Err(format!("unknown account `{wanted}`; configured accounts: {listed}")),
+            None => Err(format!(
+                "unknown account `{wanted}`; configured accounts: {listed}"
+            )),
         };
     }
     match mode {
@@ -137,7 +138,9 @@ fn resolve(
         Mode::Create => match default {
             Some(d) => match names.iter().position(|n| n == d) {
                 Some(i) => Ok(vec![i]),
-                None => Err(format!("default account `{d}` is not configured ({listed})")),
+                None => Err(format!(
+                    "default account `{d}` is not configured ({listed})"
+                )),
             },
             None => Err(format!(
                 "several accounts are configured ({listed}) and no default is set — \
@@ -404,9 +407,7 @@ async fn events_one(
     time_min: &str,
     time_max: &str,
 ) -> Result<Vec<Value>, MailError> {
-    let to_values = |v: Value| -> Vec<Value> {
-        v.as_array().cloned().unwrap_or_default()
-    };
+    let to_values = |v: Value| -> Vec<Value> { v.as_array().cloned().unwrap_or_default() };
     with_token(&a.manager, |t| async move {
         match a.provider {
             Provider::Google => gcal::CalendarProvider::new(t)
@@ -466,7 +467,10 @@ fn finish_events(events: &mut [Value], tz: Option<chrono_tz::Tz>) {
 /// message id; Gmail threads by the RFC 5322 Message-ID.
 fn reply_id(provider: Provider, e: &Email) -> String {
     match provider {
-        Provider::Google => e.message_id.clone().unwrap_or_else(|| e.provider_id.clone()),
+        Provider::Google => e
+            .message_id
+            .clone()
+            .unwrap_or_else(|| e.provider_id.clone()),
         Provider::Outlook => e.provider_id.clone(),
     }
 }
@@ -535,7 +539,10 @@ fn with_notes(body: String, failures: &[String]) -> String {
     if failures.is_empty() {
         body
     } else {
-        format!("{body}\n\nnote — some accounts could not be read:\n{}", failures.join("\n"))
+        format!(
+            "{body}\n\nnote — some accounts could not be read:\n{}",
+            failures.join("\n")
+        )
     }
 }
 
@@ -553,16 +560,16 @@ pub(crate) fn gmail_reply_fields(
     reply_all: bool,
 ) -> (String, Option<String>, String) {
     let is_self = |addr: &str| {
-        self_address.map(|s| s.eq_ignore_ascii_case(addr.trim())).unwrap_or(false)
+        self_address
+            .map(|s| s.eq_ignore_ascii_case(addr.trim()))
+            .unwrap_or(false)
     };
     let own_message = is_self(&target.from_address);
 
     let mut to: Vec<String> = Vec::new();
     let push = |list: &mut Vec<String>, addr: &str| {
         let addr = addr.trim();
-        if !addr.is_empty()
-            && !is_self(addr)
-            && !list.iter().any(|t| t.eq_ignore_ascii_case(addr))
+        if !addr.is_empty() && !is_self(addr) && !list.iter().any(|t| t.eq_ignore_ascii_case(addr))
         {
             list.push(addr.to_string());
         }
@@ -594,7 +601,12 @@ pub(crate) fn gmail_reply_fields(
         None
     };
 
-    let subject = if target.subject.trim().to_ascii_lowercase().starts_with("re:") {
+    let subject = if target
+        .subject
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("re:")
+    {
         target.subject.clone()
     } else {
         format!("Re: {}", target.subject)
@@ -612,18 +624,20 @@ impl MailTools {
     }
 
     async fn dispatch(&self, name: &str, args: &Value) -> Option<(String, bool)> {
-        let str_arg =
-            |key: &str| args.get(key).and_then(Value::as_str).map(|s| s.to_string());
+        let str_arg = |key: &str| args.get(key).and_then(Value::as_str).map(|s| s.to_string());
         let account_arg = str_arg("account");
         let fail = |msg: String| Some((msg, true));
-        let missing =
-            |what: &str| Some((format!("missing required `{what}`"), true));
+        let missing = |what: &str| Some((format!("missing required `{what}`"), true));
 
         match name {
             "mail_search" => {
-                let Some(query) = str_arg("query") else { return missing("query") };
-                let max =
-                    args.get("max_results").and_then(Value::as_u64).unwrap_or(10) as u32;
+                let Some(query) = str_arg("query") else {
+                    return missing("query");
+                };
+                let max = args
+                    .get("max_results")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(10) as u32;
                 let max = max.clamp(1, 50);
                 let picked = match self.pick(account_arg.as_deref(), Mode::Read) {
                     Ok(p) => p,
@@ -639,23 +653,25 @@ impl MailTools {
                 }
                 let rows = ok
                     .into_iter()
-                    .flat_map(|(n, p, emails)| {
-                        emails.into_iter().map(move |e| (p, n.clone(), e))
-                    })
+                    .flat_map(|(n, p, emails)| emails.into_iter().map(move |e| (p, n.clone(), e)))
                     .collect();
                 Some((with_notes(render_rows(rows), &failures), false))
             }
             "mail_recent" => {
-                let max =
-                    args.get("max_results").and_then(Value::as_u64).unwrap_or(10) as u32;
+                let max = args
+                    .get("max_results")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(10) as u32;
                 let max = max.clamp(1, 50);
                 let picked = match self.pick(account_arg.as_deref(), Mode::Read) {
                     Ok(p) => p,
                     Err(e) => return fail(e),
                 };
-                let results = futures::future::join_all(picked.iter().map(|a| async {
-                    (a.name.clone(), a.provider, recent_one(a, max).await)
-                }))
+                let results = futures::future::join_all(
+                    picked
+                        .iter()
+                        .map(|a| async { (a.name.clone(), a.provider, recent_one(a, max).await) }),
+                )
                 .await;
                 let (ok, failures, all_failed) = merge(results);
                 if all_failed {
@@ -663,9 +679,7 @@ impl MailTools {
                 }
                 let rows = ok
                     .into_iter()
-                    .flat_map(|(n, p, emails)| {
-                        emails.into_iter().map(move |e| (p, n.clone(), e))
-                    })
+                    .flat_map(|(n, p, emails)| emails.into_iter().map(move |e| (p, n.clone(), e)))
                     .collect();
                 Some((with_notes(render_rows(rows), &failures), false))
             }
@@ -678,9 +692,10 @@ impl MailTools {
                     Err(e) => return fail(e),
                 };
                 match thread_one(account, &thread_id).await {
-                    Ok(emails) => {
-                        Some((render_thread(account.provider, &account.name, &emails), false))
-                    }
+                    Ok(emails) => Some((
+                        render_thread(account.provider, &account.name, &emails),
+                        false,
+                    )),
                     Err(e) => fail(format!("{e}")),
                 }
             }
@@ -737,8 +752,10 @@ impl MailTools {
                     Ok(p) => p[0],
                     Err(e) => return fail(e),
                 };
-                let reply_all =
-                    args.get("reply_all").and_then(Value::as_bool).unwrap_or(false);
+                let reply_all = args
+                    .get("reply_all")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let wanted = str_arg("message_id");
 
                 // The thread read finds the target message and, for Gmail,
@@ -748,9 +765,9 @@ impl MailTools {
                     Err(e) => return fail(format!("{e}")),
                 };
                 let target = match &wanted {
-                    Some(mid) => emails.iter().find(|e| {
-                        e.provider_id == *mid || e.message_id.as_deref() == Some(mid)
-                    }),
+                    Some(mid) => emails
+                        .iter()
+                        .find(|e| e.provider_id == *mid || e.message_id.as_deref() == Some(mid)),
                     None => emails.last(),
                 };
                 let Some(target) = target else {
@@ -767,24 +784,22 @@ impl MailTools {
                         with_token(&account.manager, |t| {
                             let (target_id, html) = (target_id.clone(), html.clone());
                             async move {
-                                OutlookProvider::new(t).reply(&target_id, &html, reply_all).await
+                                OutlookProvider::new(t)
+                                    .reply(&target_id, &html, reply_all)
+                                    .await
                             }
                         })
                         .await
                         .map(|()| "replied in the original conversation".to_string())
                     }
                     Provider::Google => {
-                        let (to, cc, subject) = gmail_reply_fields(
-                            target,
-                            account.address.as_deref(),
-                            reply_all,
-                        );
+                        let (to, cc, subject) =
+                            gmail_reply_fields(target, account.address.as_deref(), reply_all);
                         let in_reply_to = target.message_id.clone();
                         with_token(&account.manager, |t| {
                             let (to, cc, subject, html) =
                                 (to.clone(), cc.clone(), subject.clone(), html.clone());
-                            let (thread_id, in_reply_to) =
-                                (thread_id.clone(), in_reply_to.clone());
+                            let (thread_id, in_reply_to) = (thread_id.clone(), in_reply_to.clone());
                             async move {
                                 GmailProvider::new(t)
                                     .send_email(
@@ -813,9 +828,11 @@ impl MailTools {
                     Ok(p) => p,
                     Err(e) => return fail(e),
                 };
-                let results = futures::future::join_all(picked.iter().map(|a| async {
-                    (a.name.clone(), a.provider, calendars_one(a).await)
-                }))
+                let results = futures::future::join_all(
+                    picked
+                        .iter()
+                        .map(|a| async { (a.name.clone(), a.provider, calendars_one(a).await) }),
+                )
                 .await;
                 let (ok, failures, all_failed) = merge(results);
                 if all_failed {
@@ -825,8 +842,7 @@ impl MailTools {
                     .into_iter()
                     .map(|(name, _, cals)| json!({"account": name, "calendars": cals}))
                     .collect();
-                let body =
-                    serde_json::to_string_pretty(&listed).unwrap_or_else(|_| "[]".into());
+                let body = serde_json::to_string_pretty(&listed).unwrap_or_else(|_| "[]".into());
                 Some((with_notes(body, &failures), false))
             }
             "calendar_list_events" => {
@@ -871,8 +887,7 @@ impl MailTools {
                     return Some((with_notes(body, &failures), false));
                 }
                 finish_events(&mut events, crate::time::configured_zone());
-                let body =
-                    serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".into());
+                let body = serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".into());
                 Some((with_notes(body, &failures), false))
             }
             "calendar_create_event" => {
@@ -889,7 +904,10 @@ impl MailTools {
                 let description = str_arg("description");
                 let location = str_arg("location");
                 let attendees = str_list(args, "attendees");
-                let all_day = args.get("all_day").and_then(Value::as_bool).unwrap_or(false);
+                let all_day = args
+                    .get("all_day")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let timezone = str_arg("timezone");
                 let result = with_token(&account.manager, |t| {
                     let (title, start, end) = (title.clone(), start.clone(), end.clone());
@@ -940,7 +958,9 @@ impl MailTools {
                 }
             }
             "calendar_update_event" => {
-                let Some(event_id) = str_arg("event_id") else { return missing("event_id") };
+                let Some(event_id) = str_arg("event_id") else {
+                    return missing("event_id");
+                };
                 let account = match self.pick(account_arg.as_deref(), Mode::Item) {
                     Ok(p) => p[0],
                     Err(e) => return fail(e),
@@ -1008,7 +1028,9 @@ impl MailTools {
                 }
             }
             "calendar_delete_event" => {
-                let Some(event_id) = str_arg("event_id") else { return missing("event_id") };
+                let Some(event_id) = str_arg("event_id") else {
+                    return missing("event_id");
+                };
                 let account = match self.pick(account_arg.as_deref(), Mode::Item) {
                     Ok(p) => p[0],
                     Err(e) => return fail(e),
@@ -1033,9 +1055,10 @@ impl MailTools {
                 })
                 .await;
                 match result {
-                    Ok(()) => {
-                        Some((format!("deleted event {event_id} from `{}`", account.name), false))
-                    }
+                    Ok(()) => Some((
+                        format!("deleted event {event_id} from `{}`", account.name),
+                        false,
+                    )),
                     Err(e) => fail(format!("{e}")),
                 }
             }
@@ -1047,7 +1070,11 @@ impl MailTools {
 fn str_list(args: &Value, key: &str) -> Vec<String> {
     args.get(key)
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -1191,7 +1218,12 @@ mod tests {
 
     #[test]
     fn a_plain_reply_answers_the_sender_only() {
-        let e = email("priya@x.edu", &["me@dartmouth.edu", "bob@y.com"], &[], "Plans");
+        let e = email(
+            "priya@x.edu",
+            &["me@dartmouth.edu", "bob@y.com"],
+            &[],
+            "Plans",
+        );
         let (to, cc, subject) = gmail_reply_fields(&e, Some("me@dartmouth.edu"), false);
         assert_eq!(to, "priya@x.edu");
         assert_eq!(cc, None);
@@ -1232,7 +1264,12 @@ mod tests {
     /// the reply goes back to the people they wrote to, not to themselves.
     #[test]
     fn replying_to_your_own_message_addresses_its_recipients() {
-        let e = email("me@dartmouth.edu", &["priya@x.edu", "bob@y.com"], &[], "Plans");
+        let e = email(
+            "me@dartmouth.edu",
+            &["priya@x.edu", "bob@y.com"],
+            &[],
+            "Plans",
+        );
         let (to, _, _) = gmail_reply_fields(&e, Some("me@dartmouth.edu"), false);
         assert_eq!(to, "priya@x.edu, bob@y.com");
     }

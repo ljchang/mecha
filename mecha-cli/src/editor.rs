@@ -14,15 +14,17 @@ use anyhow::{bail, Context, Result};
 /// the caller's to keep: an editor that was quit in anger must not "save".
 pub fn edit_text(initial: &str, scratch_name: &str) -> Result<String> {
     let scratch = std::env::temp_dir().join(scratch_name);
-    std::fs::write(&scratch, initial)
-        .with_context(|| format!("writing {}", scratch.display()))?;
+    std::fs::write(&scratch, initial).with_context(|| format!("writing {}", scratch.display()))?;
 
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".to_string());
     let status = std::process::Command::new("sh")
         .arg("-c")
-        .arg(format!("{editor} {}", shell_quote(&scratch.to_string_lossy())))
+        .arg(format!(
+            "{editor} {}",
+            shell_quote(&scratch.to_string_lossy())
+        ))
         .status()
         .with_context(|| format!("launching {editor}"))?;
     if !status.success() {

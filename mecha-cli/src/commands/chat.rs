@@ -122,8 +122,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let history_len = convo.len();
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let renderer =
-            render::spawn(rx, render::RenderOpts { verbose: global.verbose, quiet: false });
+        let renderer = render::spawn(
+            rx,
+            render::RenderOpts {
+                verbose: global.verbose,
+                quiet: false,
+            },
+        );
 
         let result = crate::interrupt::run_interruptible(
             &prepared.agent,
@@ -158,7 +163,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     if let Some(s) = &session {
         println!("\nsession {} · {}", s.meta.id, render::format_usage(&total));
         let cx = prepared.agent.context();
-        cx.hooks.session_end(&s.meta.id, &s.path, &cx.tools.workspace).await;
+        cx.hooks
+            .session_end(&s.meta.id, &s.path, &cx.tools.workspace)
+            .await;
     }
     Ok(())
 }

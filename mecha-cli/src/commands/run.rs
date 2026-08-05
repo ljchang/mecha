@@ -90,7 +90,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         None
     } else {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let handle = render::spawn(rx, render::RenderOpts { verbose: global.verbose, quiet });
+        let handle = render::spawn(
+            rx,
+            render::RenderOpts {
+                verbose: global.verbose,
+                quiet,
+            },
+        );
         Some((tx, handle))
     };
 
@@ -119,7 +125,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // disarmed — the exact hole that was closed for the other two
         // front-ends and left open here.
         s.append(&Record::Taint(convo.taint))?;
-        s.append(&Record::Summary { usage: outcome.usage.clone(), turns: outcome.turns })?;
+        s.append(&Record::Summary {
+            usage: outcome.usage.clone(),
+            turns: outcome.turns,
+        })?;
     }
 
     if args.json {
@@ -150,7 +159,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Before the exit-code match below: those paths leave the process.
     if let Some(s) = &session {
         let cx = prepared.agent.context();
-        cx.hooks.session_end(&s.meta.id, &s.path, &cx.tools.workspace).await;
+        cx.hooks
+            .session_end(&s.meta.id, &s.path, &cx.tools.workspace)
+            .await;
     }
 
     // Distinct codes so a script can tell "the model refused" from "it ran out
@@ -169,7 +180,9 @@ fn read_prompt(arg: Option<&str>) -> Result<String> {
                 anyhow::bail!("no prompt given (pass one as an argument, or pipe it on stdin)");
             }
             let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf).context("reading prompt from stdin")?;
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .context("reading prompt from stdin")?;
             Ok(buf)
         }
         Some(text) => Ok(text.to_string()),

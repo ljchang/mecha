@@ -91,7 +91,10 @@ pub fn valid_name(name: &str) -> bool {
 pub fn load() -> Result<AccountsFile> {
     let path = file_path()?;
     let text = std::fs::read_to_string(&path).with_context(|| {
-        format!("reading {} — run `mecha-mail auth <name> --provider ...` first", path.display())
+        format!(
+            "reading {} — run `mecha-mail auth <name> --provider ...` first",
+            path.display()
+        )
     })?;
     let file: AccountsFile =
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
@@ -141,7 +144,10 @@ mod tests {
             default: default.map(String::from),
             accounts: names
                 .iter()
-                .map(|n| AccountEntry { name: n.to_string(), provider: Provider::Google })
+                .map(|n| AccountEntry {
+                    name: n.to_string(),
+                    provider: Provider::Google,
+                })
                 .collect(),
         }
     }
@@ -151,8 +157,14 @@ mod tests {
         let original = AccountsFile {
             default: Some("dartmouth".into()),
             accounts: vec![
-                AccountEntry { name: "dartmouth".into(), provider: Provider::Outlook },
-                AccountEntry { name: "personal".into(), provider: Provider::Google },
+                AccountEntry {
+                    name: "dartmouth".into(),
+                    provider: Provider::Outlook,
+                },
+                AccountEntry {
+                    name: "personal".into(),
+                    provider: Provider::Google,
+                },
             ],
         };
         let text = toml::to_string_pretty(&original).unwrap();

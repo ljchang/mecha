@@ -46,7 +46,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // reflect at every close: two closes in quick succession must not both
     // see the same session as unmined. Blocking is right: the second pass
     // waits, re-reads, finds nothing left, and exits. A dry run only reads.
-    let _lock = if args.dry_run { None } else { Some(store.lock()?) };
+    let _lock = if args.dry_run {
+        None
+    } else {
+        Some(store.lock()?)
+    };
     let mined = store.mined_sessions()?;
 
     let sessions = Session::list(&sessions_dir)?;
@@ -118,7 +122,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // so the classification must fail closed: a timeline that cannot be
         // read covers nothing, and uncovered means Untrusted.
         let timeline = Session::taint_timeline(path).unwrap_or_else(|e| {
-            eprintln!("· cannot read taint from {}: {e:#}; treating as untrusted", meta.id);
+            eprintln!(
+                "· cannot read taint from {}: {e:#}; treating as untrusted",
+                meta.id
+            );
             TaintTimeline::default()
         });
 
@@ -195,7 +202,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     for item in &outbox_todo {
         let intervention = outbox_intervention(item);
         if args.dry_run {
-            println!("{} [edit] {} draft edited before sending", item.id, item.tool);
+            println!(
+                "{} [edit] {} draft edited before sending",
+                item.id, item.tool
+            );
             continue;
         }
         let reflector = reflector.as_ref().expect("built unless dry-run");
@@ -257,9 +267,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 /// writing-domain reflector: the draft is the context, the diff is what the
 /// user did, the sent version is the aftermath.
 fn outbox_intervention(item: &mecha_core::outbox::OutboxItem) -> Intervention {
-    let pretty = |v: &serde_json::Value| {
-        serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
-    };
+    let pretty =
+        |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
     Intervention {
         trigger: Trigger::Edit,
         context: format!(

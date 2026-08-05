@@ -55,7 +55,10 @@ pub fn generate_pkce() -> PkceChallenge {
     let digest = hasher.finalize();
     let code_challenge = URL_SAFE_NO_PAD.encode(digest);
 
-    PkceChallenge { code_verifier, code_challenge }
+    PkceChallenge {
+        code_verifier,
+        code_challenge,
+    }
 }
 
 /// The Google OAuth configuration for this client. Scopes cover Gmail
@@ -155,7 +158,10 @@ pub async fn refresh_token(
 pub fn parse_token_response(json: serde_json::Value, prior_refresh: Option<&str>) -> OAuthTokens {
     let expires_in = json["expires_in"].as_i64().unwrap_or(3600);
     OAuthTokens {
-        access_token: json["access_token"].as_str().unwrap_or_default().to_string(),
+        access_token: json["access_token"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
         refresh_token: json["refresh_token"]
             .as_str()
             .map(|s| s.to_string())
@@ -196,8 +202,7 @@ fn extract_token_error_description(body: &str) -> String {
 /// flowmail's 30s regularly lost the race to a careful reader.
 pub async fn wait_for_oauth_redirect(port: u16) -> Result<(String, String), MailError> {
     let addr = format!("127.0.0.1:{port}");
-    let server =
-        tiny_http::Server::http(&addr).map_err(|e| MailError::AuthError(e.to_string()))?;
+    let server = tiny_http::Server::http(&addr).map_err(|e| MailError::AuthError(e.to_string()))?;
 
     let request = server
         .recv_timeout(std::time::Duration::from_secs(120))
@@ -276,8 +281,7 @@ pub async fn interactive_flow(
     let (code, returned_state) = wait_for_oauth_redirect(port).await?;
     anyhow::ensure!(returned_state == state, "OAuth state mismatch — try again");
 
-    let tokens =
-        exchange_code(&config, &code, &pkce.code_verifier, &crate::http::client()).await?;
+    let tokens = exchange_code(&config, &code, &pkce.code_verifier, &crate::http::client()).await?;
     let refresh_token = tokens.refresh_token.clone().context(
         "Google returned no refresh token; remove the app's access at myaccount.google.com/permissions and re-run",
     )?;
@@ -332,7 +336,10 @@ mod tests {
             url.contains("&prompt=consent") && url.contains("&access_type=offline"),
             "both are required for Google to return a refresh token every sign-in: {url}"
         );
-        assert!(url.contains("localhost%3A8924"), "the port must ride in the redirect: {url}");
+        assert!(
+            url.contains("localhost%3A8924"),
+            "the port must ride in the redirect: {url}"
+        );
     }
 
     #[test]
@@ -356,13 +363,19 @@ mod tests {
 
     #[test]
     fn extract_token_error_description_handles_code_only() {
-        assert_eq!(extract_token_error_description(r#"{"error":"invalid_grant"}"#), "invalid_grant");
+        assert_eq!(
+            extract_token_error_description(r#"{"error":"invalid_grant"}"#),
+            "invalid_grant"
+        );
     }
 
     #[test]
     fn extract_token_error_description_handles_description_only() {
         let body = r#"{"error_description":"Token has been expired or revoked."}"#;
-        assert_eq!(extract_token_error_description(body), "Token has been expired or revoked.");
+        assert_eq!(
+            extract_token_error_description(body),
+            "Token has been expired or revoked."
+        );
     }
 
     #[test]
@@ -381,7 +394,9 @@ mod tests {
     fn append_optional_secret_includes_when_present() {
         let mut params: Vec<(&str, &str)> = vec![("grant_type", "authorization_code")];
         append_optional_secret(&mut params, "shhh");
-        assert!(params.iter().any(|(k, v)| *k == "client_secret" && *v == "shhh"));
+        assert!(params
+            .iter()
+            .any(|(k, v)| *k == "client_secret" && *v == "shhh"));
     }
 
     #[test]

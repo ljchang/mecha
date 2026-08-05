@@ -87,11 +87,21 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                     } else {
                         one_line(&input)
                     };
-                    println!("{} {} {}", style.cyan("→"), style.cyan(&name), style.dim(&detail));
+                    println!(
+                        "{} {} {}",
+                        style.cyan("→"),
+                        style.cyan(&name),
+                        style.dim(&detail)
+                    );
                     let _ = out.flush();
                 }
 
-                AgentEvent::ToolResult { name, is_error, content, .. } if !opts.quiet => {
+                AgentEvent::ToolResult {
+                    name,
+                    is_error,
+                    content,
+                    ..
+                } if !opts.quiet => {
                     if is_error {
                         println!("{} {}", style.red("✗"), style.red(&first_line(&content)));
                     } else if opts.verbose {
@@ -110,7 +120,11 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                     println!("{} {}", style.red(&format!("✗ {name}")), style.dim(&reason));
                 }
 
-                AgentEvent::Compacted { messages_before, messages_after, .. } if !opts.quiet => {
+                AgentEvent::Compacted {
+                    messages_before,
+                    messages_after,
+                    ..
+                } if !opts.quiet => {
                     if mid_line {
                         println!();
                         mid_line = false;
@@ -141,7 +155,10 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                             style.red(&format!(
                                 "refused ({}): {}",
                                 refusal.category.as_deref().unwrap_or("unspecified"),
-                                refusal.explanation.as_deref().unwrap_or("no explanation given")
+                                refusal
+                                    .explanation
+                                    .as_deref()
+                                    .unwrap_or("no explanation given")
                             ))
                         );
                     }
@@ -186,7 +203,11 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                         // An interrupted run knows what the prompt cost but not
                         // what the cut turn produced, so the figure is a floor.
                         // Printing it bare would read as a measurement.
-                        let at_least = if outcome.usage_complete { "" } else { "at least " };
+                        let at_least = if outcome.usage_complete {
+                            ""
+                        } else {
+                            "at least "
+                        };
                         println!(
                             "{}",
                             style.dim(&format!(
@@ -223,9 +244,18 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                                 style.dim(&one_line(&input))
                             );
                         }
-                        AgentEvent::ToolResult { name, is_error, content, .. } => {
+                        AgentEvent::ToolResult {
+                            name,
+                            is_error,
+                            content,
+                            ..
+                        } => {
                             if is_error {
-                                println!("{pad}{} {}", style.red("✗"), style.red(&first_line(&content)));
+                                println!(
+                                    "{pad}{} {}",
+                                    style.red("✗"),
+                                    style.red(&first_line(&content))
+                                );
                             } else {
                                 println!(
                                     "{pad}{} {}",
@@ -235,7 +265,11 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                             }
                         }
                         AgentEvent::ToolDenied { name, reason } => {
-                            println!("{pad}{} {}", style.red(&format!("✗ {name}")), style.dim(&reason));
+                            println!(
+                                "{pad}{} {}",
+                                style.red(&format!("✗ {name}")),
+                                style.dim(&reason)
+                            );
                         }
                         _ => {}
                     }
@@ -295,7 +329,10 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn indent(s: &str) -> String {
-    s.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
+    s.lines()
+        .map(|l| format!("  {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn size_hint(content: &str) -> String {

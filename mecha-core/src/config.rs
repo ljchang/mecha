@@ -321,9 +321,8 @@ impl AgentConfig {
     /// prevents is total, not gradual: one turn over the window and the
     /// server refuses the request outright.
     pub fn compact_at(&self, context_window: Option<u64>) -> Option<u64> {
-        self.compact_at_tokens.or_else(|| {
-            context_window.map(|w| (w as f64 * Self::COMPACT_FRACTION) as u64)
-        })
+        self.compact_at_tokens
+            .or_else(|| context_window.map(|w| (w as f64 * Self::COMPACT_FRACTION) as u64))
     }
 
     pub fn resolve_system_prompt(&self) -> Result<Option<String>> {
@@ -585,10 +584,10 @@ impl Config {
     }
 
     fn merge_file(&mut self, path: &Path) -> Result<()> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let layer: ConfigLayer = toml::from_str(&text)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let layer: ConfigLayer =
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         layer.apply(self);
         Ok(())
     }
@@ -615,7 +614,11 @@ impl Config {
         let cfg = self.providers.get(&name).with_context(|| {
             format!(
                 "no provider named {name:?}. Configured: {}",
-                self.providers.keys().cloned().collect::<Vec<_>>().join(", ")
+                self.providers
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         })?;
         Ok((name, cfg))
@@ -957,8 +960,7 @@ mod tests {
     /// same call on a machine with no project file proves nothing.
     #[test]
     fn the_project_layer_is_reachable_from_load_and_not_from_load_global() {
-        let dir = std::env::temp_dir()
-            .join(format!("mecha-config-scope-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mecha-config-scope-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join(Config::PROJECT_FILE),
@@ -967,7 +969,10 @@ mod tests {
         .unwrap();
 
         let with_project = Config::load(&dir).unwrap();
-        assert_eq!(with_project.default_provider, "contributed-by-the-repository");
+        assert_eq!(
+            with_project.default_provider,
+            "contributed-by-the-repository"
+        );
 
         let global_only = Config::load_global().unwrap();
         assert_ne!(
@@ -992,6 +997,9 @@ mod tests {
         // one and not the other fails here rather than in someone's config.
         let rendered = toml::to_string(&Config::default()).unwrap();
         let parsed = toml::from_str::<ConfigLayer>(&rendered);
-        assert!(parsed.is_ok(), "Config has a field ConfigLayer cannot read: {parsed:?}");
+        assert!(
+            parsed.is_ok(),
+            "Config has a field ConfigLayer cannot read: {parsed:?}"
+        );
     }
 }

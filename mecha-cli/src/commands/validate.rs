@@ -90,7 +90,10 @@ impl RuleSurface {
                 }
             }
         }
-        Ok(RuleSurface { flat, user_by_domain })
+        Ok(RuleSurface {
+            flat,
+            user_by_domain,
+        })
     }
 
     /// Ids of the rules riding in the measured block — what a ledger row
@@ -190,7 +193,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     };
 
     let wanted_triggers: Vec<&str> = if args.trigger.is_empty() {
-        vec![Trigger::Steer.as_str(), Trigger::Denial.as_str(), Trigger::Followup.as_str()]
+        vec![
+            Trigger::Steer.as_str(),
+            Trigger::Denial.as_str(),
+            Trigger::Followup.as_str(),
+        ]
     } else {
         args.trigger.iter().map(String::as_str).collect()
     };
@@ -234,8 +241,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // needs the live registry for specs — builtins, MCP servers, subagents.
     // Built once, only when something will use it; the parent agent it builds
     // is discarded and only its registry is borrowed, as in `mecha replay`.
-    let needs_replay =
-        reflexions.iter().any(|r| r.trigger != Trigger::Followup.as_str());
+    let needs_replay = reflexions
+        .iter()
+        .any(|r| r.trigger != Trigger::Followup.as_str());
     let prepared = if needs_replay {
         Some(setup::prepare(&global.clone(), false).await?)
     } else {
@@ -357,9 +365,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             if matches!((baseline, with), (ProbeVerdict::Pass, ProbeVerdict::Fail))
                 && !args.no_attribute
             {
-                match attribute_regression(prepared, provider_cfg, &model, &prep, &surface)
-                    .await?
-                {
+                match attribute_regression(prepared, provider_cfg, &model, &prep, &surface).await? {
                     Some(i) => {
                         let (domain, rule) = &surface.flat[i];
                         match &rule.id {
@@ -385,7 +391,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
         // ── followups: re-ask the corrective turn, judge both answers ──
         let Some(idx) = locate_followup(&convo.messages, &r.intervention) else {
-            eprintln!("· {}: could not locate the intervention turn; skipping", r.id);
+            eprintln!(
+                "· {}: could not locate the intervention turn; skipping",
+                r.id
+            );
             skipped += 1;
             continue;
         };
@@ -467,7 +476,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         reflexions.len()
     );
     if recorded_rows > 0 {
-        println!("{recorded_rows} row(s) appended to the validation ledger — `mecha rules` folds them");
+        println!(
+            "{recorded_rows} row(s) appended to the validation ledger — `mecha rules` folds them"
+        );
         store.commit(&format!("validate: {recorded_rows} probe(s) → ledger"));
     }
     Ok(())
@@ -485,7 +496,11 @@ fn outcome_str(baseline: &ProbeVerdict, with: &ProbeVerdict) -> &'static str {
 }
 
 fn first_line(s: &str) -> String {
-    let line = s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let line = s
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     if line.chars().count() > 140 {
         format!("{}…", line.chars().take(140).collect::<String>())
     } else {
@@ -509,7 +524,11 @@ mod tests {
     }
 
     fn rule(text: &str, id: Option<&str>) -> Rule {
-        Rule { text: text.into(), id: id.map(Into::into), ..Default::default() }
+        Rule {
+            text: text.into(),
+            id: id.map(Into::into),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -527,10 +546,15 @@ mod tests {
         store
             .write_learned_rules(
                 "behavior",
-                &[rule("Learned A.", Some("r-a")), rule("Learned B.", Some("r-b"))],
+                &[
+                    rule("Learned A.", Some("r-a")),
+                    rule("Learned B.", Some("r-b")),
+                ],
             )
             .unwrap();
-        store.write_learned_rules("writing", &[rule("Sign off briefly.", Some("r-c"))]).unwrap();
+        store
+            .write_learned_rules("writing", &[rule("Sign off briefly.", Some("r-c"))])
+            .unwrap();
 
         let surface = RuleSurface::load(&store).unwrap();
         assert_eq!(surface.flat.len(), 3);
@@ -571,7 +595,11 @@ mod tests {
             .write_learned_rules("behavior", &[rule("No id yet.", None), retired])
             .unwrap();
         let surface = RuleSurface::load(&store).unwrap();
-        assert_eq!(surface.flat.len(), 1, "retired rules are not on the surface");
+        assert_eq!(
+            surface.flat.len(),
+            1,
+            "retired rules are not on the surface"
+        );
         assert!(surface.rule_ids().is_empty());
         assert!(surface.block_with(&[0]).unwrap().contains("No id yet."));
         std::fs::remove_dir_all(store.root()).ok();

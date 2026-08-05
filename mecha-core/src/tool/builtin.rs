@@ -88,11 +88,23 @@ impl Tool for FsRead {
         let path = ctx.resolve(arg_str(&input, "path")?)?;
         let text = match tokio::fs::read_to_string(&path).await {
             Ok(t) => t,
-            Err(e) => return Ok(ToolOutput::err(format!("cannot read {}: {e}", path.display()))),
+            Err(e) => {
+                return Ok(ToolOutput::err(format!(
+                    "cannot read {}: {e}",
+                    path.display()
+                )))
+            }
         };
 
-        let offset = input.get("offset").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
-        let limit = input.get("limit").and_then(Value::as_u64).map(|l| l as usize);
+        let offset = input
+            .get("offset")
+            .and_then(Value::as_u64)
+            .unwrap_or(1)
+            .max(1) as usize;
+        let limit = input
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map(|l| l as usize);
         if offset == 1 && limit.is_none() {
             return Ok(ToolOutput::ok(truncate(text, "file")));
         }
@@ -146,7 +158,10 @@ impl Tool for FsWrite {
                 content.len(),
                 path.display()
             ))),
-            Err(e) => Ok(ToolOutput::err(format!("cannot write {}: {e}", path.display()))),
+            Err(e) => Ok(ToolOutput::err(format!(
+                "cannot write {}: {e}",
+                path.display()
+            ))),
         }
     }
 }
@@ -187,7 +202,12 @@ impl Tool for FsEdit {
 
         let text = match tokio::fs::read_to_string(&path).await {
             Ok(t) => t,
-            Err(e) => return Ok(ToolOutput::err(format!("cannot read {}: {e}", path.display()))),
+            Err(e) => {
+                return Ok(ToolOutput::err(format!(
+                    "cannot read {}: {e}",
+                    path.display()
+                )))
+            }
         };
 
         // Ambiguity here silently edits the wrong line, so refuse instead.
@@ -240,7 +260,12 @@ impl Tool for FsList {
         let path = ctx.resolve(raw)?;
         let mut entries = match tokio::fs::read_dir(&path).await {
             Ok(e) => e,
-            Err(e) => return Ok(ToolOutput::err(format!("cannot list {}: {e}", path.display()))),
+            Err(e) => {
+                return Ok(ToolOutput::err(format!(
+                    "cannot list {}: {e}",
+                    path.display()
+                )))
+            }
         };
 
         let mut out = Vec::new();
@@ -411,7 +436,11 @@ impl Tool for Shell {
         if code != 0 {
             body = format!("exit status {code}\n{body}");
         }
-        Ok(ToolOutput { content: body, is_error: code != 0, external: false })
+        Ok(ToolOutput {
+            content: body,
+            is_error: code != 0,
+            external: false,
+        })
     }
 }
 
@@ -424,7 +453,9 @@ async fn drain_capped(
     cap: usize,
 ) -> (Vec<u8>, bool) {
     use tokio::io::AsyncReadExt;
-    let Some(mut pipe) = pipe else { return (Vec::new(), false) };
+    let Some(mut pipe) = pipe else {
+        return (Vec::new(), false);
+    };
     let mut kept = Vec::new();
     let mut dropped = false;
     let mut buf = [0u8; 8192];
@@ -520,7 +551,9 @@ impl Tool for HttpFetch {
             match chunk {
                 Ok(c) => raw.extend_from_slice(&c),
                 Err(e) => {
-                    return Ok(ToolOutput::err(format!("reading the response body failed: {e}")))
+                    return Ok(ToolOutput::err(format!(
+                        "reading the response body failed: {e}"
+                    )))
                 }
             }
             if raw.len() > MAX_OUTPUT_BYTES {
@@ -655,7 +688,11 @@ mod tests {
         assert!(confined.destructive, "it can still destroy the workspace");
 
         // Confined *with* a network is a way out again.
-        assert!(shell_with(Backend::Bwrap, true).capabilities().external_send);
+        assert!(
+            shell_with(Backend::Bwrap, true)
+                .capabilities()
+                .external_send
+        );
     }
 
     #[test]
@@ -665,15 +702,20 @@ mod tests {
         // `fs_read: secrets.txt` — the same bytes, the safer tool — would. The
         // cheapest route around the interlock must never be the more dangerous
         // tool.
-        for (kind, network) in
-            [(Backend::None, false), (Backend::Bwrap, false), (Backend::Docker, false)]
-        {
+        for (kind, network) in [
+            (Backend::None, false),
+            (Backend::Bwrap, false),
+            (Backend::Docker, false),
+        ] {
             assert!(
                 shell_with(kind, network).capabilities().private_data,
                 "{kind:?} shell reads the workspace, exactly as fs_read does"
             );
         }
-        assert!(FsRead.capabilities().private_data, "the rule this is matching");
+        assert!(
+            FsRead.capabilities().private_data,
+            "the rule this is matching"
+        );
     }
 
     fn ctx(dir: &std::path::Path) -> ToolCtx {
@@ -707,7 +749,10 @@ mod tests {
         // kept all of it in memory; a `yes` running to the timeout kept
         // gigabytes.
         let out = shell
-            .call(json!({"command": "yes flood | head -c 1000000"}), &ctx(&dir))
+            .call(
+                json!({"command": "yes flood | head -c 1000000"}),
+                &ctx(&dir),
+            )
             .await
             .unwrap();
 
@@ -780,7 +825,11 @@ mod tests {
         let ctx = ToolCtx::default();
 
         // Names and literals that resolve internally are refused outright.
-        for url in ["http://localhost/x", "http://127.0.0.1/x", "http://169.254.169.254/meta"] {
+        for url in [
+            "http://localhost/x",
+            "http://127.0.0.1/x",
+            "http://169.254.169.254/meta",
+        ] {
             let err = check_url(url, &ctx).await.unwrap_err().to_string();
             assert!(err.contains("internal"), "{url}: {err}");
         }
@@ -801,7 +850,10 @@ mod tests {
             },
             ..ToolCtx::default()
         };
-        assert!(check_url("http://127.0.0.1/x", &open).await.unwrap().is_none());
+        assert!(check_url("http://127.0.0.1/x", &open)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

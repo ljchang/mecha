@@ -63,9 +63,8 @@ pub fn default_path() -> Result<PathBuf> {
 }
 
 pub fn load(path: &Path) -> Result<StoredCredentials> {
-    let text = std::fs::read_to_string(path).with_context(|| {
-        format!("reading {} — run `mecha-google auth` first", path.display())
-    })?;
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {} — run `mecha-google auth` first", path.display()))?;
     serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
@@ -97,7 +96,10 @@ pub fn save(path: &Path, creds: &StoredCredentials) -> Result<()> {
 enum Refresher {
     Google(Box<OAuthConfig>),
     /// Public client: tenant + client id, never a secret.
-    Microsoft { tenant: String, client_id: String },
+    Microsoft {
+        tenant: String,
+        client_id: String,
+    },
 }
 
 /// Hands out live access tokens, refreshing behind a lock so concurrent tool
@@ -141,19 +143,17 @@ impl TokenManager {
     /// time; without it there is no endpoint to refresh against.
     pub fn load_microsoft(path: PathBuf) -> Result<Self> {
         let creds = load(&path)?;
-        Self::with_credentials_microsoft(path, creds)
-            .context("run `mecha-outlook auth` again")
+        Self::with_credentials_microsoft(path, creds).context("run `mecha-outlook auth` again")
     }
 
     /// The Microsoft twin of [`Self::with_credentials`]. Errors when the
     /// store has no tenant; the caller owns naming the right re-auth
     /// command for its surface.
-    pub fn with_credentials_microsoft(
-        path: PathBuf,
-        creds: StoredCredentials,
-    ) -> Result<Self> {
-        let tenant =
-            creds.tenant.clone().context("stored credentials have no tenant")?;
+    pub fn with_credentials_microsoft(path: PathBuf, creds: StoredCredentials) -> Result<Self> {
+        let tenant = creds
+            .tenant
+            .clone()
+            .context("stored credentials have no tenant")?;
         let client_id = creds.client_id.clone();
         Ok(TokenManager {
             path,
@@ -191,23 +191,22 @@ impl TokenManager {
                     .await
                     .context("refreshing the Google access token")?
             }
-            Refresher::Microsoft { tenant, client_id } => {
-                crate::microsoft::auth::refresh_token(
-                    tenant,
-                    client_id,
-                    &creds.refresh_token,
-                    &client,
-                )
-                .await
-                .context("refreshing the Microsoft access token")?
-            }
+            Refresher::Microsoft { tenant, client_id } => crate::microsoft::auth::refresh_token(
+                tenant,
+                client_id,
+                &creds.refresh_token,
+                &client,
+            )
+            .await
+            .context("refreshing the Microsoft access token")?,
         };
         creds.access_token = tokens.access_token.clone();
         if let Some(rt) = tokens.refresh_token {
             creds.refresh_token = rt;
         }
-        creds.expires_at =
-            tokens.expires_at.unwrap_or_else(|| chrono::Utc::now().timestamp() + 3600);
+        creds.expires_at = tokens
+            .expires_at
+            .unwrap_or_else(|| chrono::Utc::now().timestamp() + 3600);
         save(&self.path, creds)?;
         Ok(tokens.access_token)
     }
@@ -232,8 +231,8 @@ mod tests {
     #[test]
     fn credentials_round_trip_with_owner_only_permissions() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir()
-            .join(format!("mecha-google-token-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mecha-google-token-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("oauth.json");
 

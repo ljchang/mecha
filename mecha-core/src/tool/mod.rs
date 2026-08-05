@@ -34,11 +34,19 @@ pub struct ToolOutput {
 
 impl ToolOutput {
     pub fn ok(content: impl Into<String>) -> Self {
-        ToolOutput { content: content.into(), is_error: false, external: false }
+        ToolOutput {
+            content: content.into(),
+            is_error: false,
+            external: false,
+        }
     }
 
     pub fn err(content: impl Into<String>) -> Self {
-        ToolOutput { content: content.into(), is_error: true, external: false }
+        ToolOutput {
+            content: content.into(),
+            is_error: true,
+            external: false,
+        }
     }
 
     /// Mark this content as having come from outside the machine.
@@ -210,7 +218,11 @@ impl ToolCtx {
     /// a re-rooted context is a new isolation domain, and inheriting the old
     /// one would let its runs read each other's spilled output.
     pub fn with_workspace(&self, workspace: impl Into<PathBuf>) -> Self {
-        ToolCtx { workspace: workspace.into(), spill_dir: fresh_spill_dir(), ..self.clone() }
+        ToolCtx {
+            workspace: workspace.into(),
+            spill_dir: fresh_spill_dir(),
+            ..self.clone()
+        }
     }
 
     /// Resolve a model-supplied path against the workspace and prove it stays
@@ -249,7 +261,10 @@ impl ToolCtx {
             resolved.push(part);
         }
 
-        let root = self.workspace.canonicalize().unwrap_or_else(|_| self.workspace.clone());
+        let root = self
+            .workspace
+            .canonicalize()
+            .unwrap_or_else(|_| self.workspace.clone());
         if resolved.starts_with(&root) {
             return Ok(resolved);
         }
@@ -284,7 +299,13 @@ pub const SPILL_FLOOR_BYTES: usize = 4_096;
 /// a single call instead of a scan. A failed spill degrades to a plain cut
 /// that says the output was *not* saved; losing the tail must never lose the
 /// run.
-pub fn cap_result(content: String, cap: usize, spill_dir: Option<&Path>, tool: &str, id: &str) -> String {
+pub fn cap_result(
+    content: String,
+    cap: usize,
+    spill_dir: Option<&Path>,
+    tool: &str,
+    id: &str,
+) -> String {
     if content.len() <= cap {
         return content;
     }
@@ -334,7 +355,13 @@ pub fn cap_result(content: String, cap: usize, spill_dir: Option<&Path>, tool: &
 /// Tool names and call ids become file names; anything else becomes `-`.
 fn safe_name(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -434,7 +461,11 @@ impl Registry {
     /// The sandbox is passed in rather than read from config here because it
     /// changes what `shell` *is* — an unconfined shell and a confined one
     /// declare different capabilities, and the loop's interlock reads them.
-    pub fn with_builtins(mut self, cfg: &ToolsConfig, sandbox: Arc<crate::sandbox::Sandbox>) -> Self {
+    pub fn with_builtins(
+        mut self,
+        cfg: &ToolsConfig,
+        sandbox: Arc<crate::sandbox::Sandbox>,
+    ) -> Self {
         for tool in builtin::all(sandbox) {
             let name = tool.name();
             let allowed = cfg.enabled.is_empty() || cfg.enabled.iter().any(|e| e == name);
@@ -475,8 +506,18 @@ mod cap_tests {
         assert!(out.starts_with("line 1\n"));
         // ...the disk copy is not: byte-identical, so nothing was lost. The
         // name carries a random tag, so it is discovered rather than assumed.
-        let file = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-        assert!(file.file_name().unwrap().to_str().unwrap().starts_with("shell-t1-"));
+        let file = std::fs::read_dir(&dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(file
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("shell-t1-"));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), body);
 
         // The marker gives the model a single call back to the rest: the
@@ -497,8 +538,14 @@ mod cap_tests {
         let out = cap_result(body, 100, Some(&impossible), "shell", "t1");
 
         assert!(out.contains("could not be saved"), "{out}");
-        assert!(out.contains("re-run the tool"), "the fallback still names a recovery: {out}");
-        assert!(!out.contains("/dev/null"), "no path is promised that does not exist");
+        assert!(
+            out.contains("re-run the tool"),
+            "the fallback still names a recovery: {out}"
+        );
+        assert!(
+            !out.contains("/dev/null"),
+            "no path is promised that does not exist"
+        );
     }
 
     #[test]
@@ -522,7 +569,9 @@ mod cap_tests {
         // The marker names an absolute spill path; fs_read must be able to
         // follow it, or the recovery the model was promised is a lie.
         std::fs::write(spill.join("shell-t1.txt"), "spilled").unwrap();
-        let resolved = ctx.resolve(&spill.join("shell-t1.txt").display().to_string()).unwrap();
+        let resolved = ctx
+            .resolve(&spill.join("shell-t1.txt").display().to_string())
+            .unwrap();
         assert!(resolved.ends_with("shell-t1.txt"));
 
         // The exception is the spill directory, not the temp dir around it.
@@ -531,7 +580,11 @@ mod cap_tests {
         assert!(ctx.resolve(&elsewhere.display().to_string()).is_err());
 
         // And with spilling disabled there is no exception at all.
-        let no_spill = ToolCtx { workspace, spill_dir: None, ..ToolCtx::default() };
+        let no_spill = ToolCtx {
+            workspace,
+            spill_dir: None,
+            ..ToolCtx::default()
+        };
         assert!(no_spill
             .resolve(&spill.join("shell-t1.txt").display().to_string())
             .is_err());

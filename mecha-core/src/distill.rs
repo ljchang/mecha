@@ -69,10 +69,7 @@ pub fn render_for_distill(messages: &[Message], head_chars: usize, tail_chars: u
         return full;
     }
     let head: String = full.chars().take(head_chars).collect();
-    let tail: String = full
-        .chars()
-        .skip(total - tail_chars)
-        .collect();
+    let tail: String = full.chars().skip(total - tail_chars).collect();
     format!(
         "{head}\n… [{} characters of the middle omitted] …\n{tail}",
         total - head_chars - tail_chars
@@ -113,7 +110,11 @@ impl Distiller {
         let model = model.unwrap_or_else(|| provider.default_model().to_string());
         // The reflector's size, for the reflector's measured reason: a
         // reasoning model spends budget thinking before the JSON appears.
-        Distiller { provider, model, max_tokens: 4096 }
+        Distiller {
+            provider,
+            model,
+            max_tokens: 4096,
+        }
     }
 
     pub fn model(&self) -> &str {
@@ -140,7 +141,10 @@ impl Distiller {
         let text = response.message.text();
         let parsed = parse_distiller_reply(&text);
         if parsed.is_none() && crate::eval::extract_json(&text).is_none() {
-            tracing::warn!("distiller returned no JSON (stop: {:?})", response.stop_reason);
+            tracing::warn!(
+                "distiller returned no JSON (stop: {:?})",
+                response.stop_reason
+            );
         }
         Ok(parsed)
     }
@@ -209,7 +213,10 @@ mod tests {
     use crate::message::{Block, Role};
 
     fn msg(role: Role, text: &str) -> Message {
-        Message { role, content: vec![Block::Text { text: text.into() }] }
+        Message {
+            role,
+            content: vec![Block::Text { text: text.into() }],
+        }
     }
 
     #[test]
@@ -219,7 +226,10 @@ mod tests {
             "/home/u/.mecha/sessions/sess-42.jsonl",
             "2026-08-05 12:00:00",
             "Worked on the eval rig.",
-            Some(Taint { private: true, untrusted: false }),
+            Some(Taint {
+                private: true,
+                untrusted: false,
+            }),
             "qwen3.6-35b-a3b",
         );
         assert_eq!(args["kind"], "episode");
@@ -244,7 +254,10 @@ mod tests {
             parse_distiller_reply("noise {\"skip\": false, \"episode\": \" Did a thing. \"}"),
             Some("Did a thing.".to_string())
         );
-        assert_eq!(parse_distiller_reply("{\"skip\": false, \"episode\": \"\"}"), None);
+        assert_eq!(
+            parse_distiller_reply("{\"skip\": false, \"episode\": \"\"}"),
+            None
+        );
         assert_eq!(parse_distiller_reply("not json at all"), None);
     }
 
@@ -252,7 +265,10 @@ mod tests {
     fn render_for_distill_keeps_head_and_tail_of_a_long_session() {
         let mut messages = vec![msg(Role::User, &"start ".repeat(200))];
         for i in 0..50 {
-            messages.push(msg(Role::Assistant, &format!("middle {i} {}", "x".repeat(100))));
+            messages.push(msg(
+                Role::Assistant,
+                &format!("middle {i} {}", "x".repeat(100)),
+            ));
         }
         messages.push(msg(Role::Assistant, "the final outcome"));
         let rendered = render_for_distill(&messages, 500, 800);

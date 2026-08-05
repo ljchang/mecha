@@ -121,7 +121,11 @@ impl SearchBackend for Exa {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            bail!("exa {}: {}", status, text.chars().take(300).collect::<String>());
+            bail!(
+                "exa {}: {}",
+                status,
+                text.chars().take(300).collect::<String>()
+            );
         }
 
         let v: Value = serde_json::from_str(&text).context("exa returned malformed JSON")?;
@@ -141,7 +145,11 @@ impl SearchBackend for Exa {
             })
             .unwrap_or_default();
 
-        Ok(SearchResponse { results, answer: None, backend: "exa".into() })
+        Ok(SearchResponse {
+            results,
+            answer: None,
+            backend: "exa".into(),
+        })
     }
 }
 
@@ -198,7 +206,11 @@ impl SearchBackend for Tavily {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            bail!("tavily {}: {}", status, text.chars().take(300).collect::<String>());
+            bail!(
+                "tavily {}: {}",
+                status,
+                text.chars().take(300).collect::<String>()
+            );
         }
 
         let v: Value = serde_json::from_str(&text).context("tavily returned malformed JSON")?;
@@ -294,7 +306,11 @@ impl SearchBackend for Searxng {
             })
             .unwrap_or_default();
 
-        Ok(SearchResponse { results, answer: None, backend: "searxng".into() })
+        Ok(SearchResponse {
+            results,
+            answer: None,
+            backend: "searxng".into(),
+        })
     }
 }
 
@@ -331,12 +347,7 @@ impl SearchChain {
         self.backends.iter().map(|b| b.id()).collect()
     }
 
-    pub async fn search(
-        &self,
-        query: &str,
-        limit: usize,
-        depth: Depth,
-    ) -> Result<SearchResponse> {
+    pub async fn search(&self, query: &str, limit: usize, depth: Depth) -> Result<SearchResponse> {
         let mut failures = Vec::new();
 
         for backend in &self.backends {
@@ -506,7 +517,11 @@ mod tests {
     fn stub(id: &'static str, behaviour: Behaviour) -> (Box<dyn SearchBackend>, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         (
-            Box::new(Stub { id, calls: Arc::clone(&calls), behaviour }),
+            Box::new(Stub {
+                id,
+                calls: Arc::clone(&calls),
+                behaviour,
+            }),
             calls,
         )
     }
@@ -528,7 +543,10 @@ mod tests {
         let (first, _) = stub("exa", Behaviour::Empty);
         let (second, _) = stub("tavily", Behaviour::One);
         let chain = SearchChain::new(vec![first, second]);
-        assert_eq!(chain.search("q", 5, Depth::Quick).await.unwrap().backend, "tavily");
+        assert_eq!(
+            chain.search("q", 5, Depth::Quick).await.unwrap().backend,
+            "tavily"
+        );
     }
 
     #[tokio::test]
@@ -537,7 +555,10 @@ mod tests {
         let (second, second_calls) = stub("tavily", Behaviour::One);
         let chain = SearchChain::new(vec![first, second]);
 
-        assert_eq!(chain.search("q", 5, Depth::Quick).await.unwrap().backend, "exa");
+        assert_eq!(
+            chain.search("q", 5, Depth::Quick).await.unwrap().backend,
+            "exa"
+        );
         assert_eq!(first_calls.load(Ordering::SeqCst), 1);
         assert_eq!(second_calls.load(Ordering::SeqCst), 0, "no wasted quota");
     }
@@ -548,7 +569,11 @@ mod tests {
         let (second, _) = stub("tavily", Behaviour::Fail);
         let chain = SearchChain::new(vec![first, second]);
 
-        let err = chain.search("q", 5, Depth::Quick).await.unwrap_err().to_string();
+        let err = chain
+            .search("q", 5, Depth::Quick)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("exa"), "{err}");
         assert!(err.contains("tavily"), "{err}");
     }
@@ -558,8 +583,14 @@ mod tests {
         let (backend, _) = stub("exa", Behaviour::One);
         let tool = WebSearch::new(Arc::new(SearchChain::new(vec![backend])));
 
-        let out = tool.call(json!({"query": "rust"}), &ToolCtx::default()).await.unwrap();
-        assert!(out.external, "search output must taint the conversation as untrusted");
+        let out = tool
+            .call(json!({"query": "rust"}), &ToolCtx::default())
+            .await
+            .unwrap();
+        assert!(
+            out.external,
+            "search output must taint the conversation as untrusted"
+        );
         assert!(out.content.contains("https://example.com"));
         assert!(out.content.contains("(via exa)"));
     }

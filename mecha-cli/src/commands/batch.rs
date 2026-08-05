@@ -56,8 +56,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     let mut sink: Box<dyn Write + Send> = match &args.out {
         Some(path) => Box::new(std::io::BufWriter::new(
-            std::fs::File::create(path)
-                .with_context(|| format!("creating {}", path.display()))?,
+            std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?,
         )),
         None => Box::new(std::io::stdout()),
     };
@@ -117,7 +116,11 @@ fn read_items(path: &PathBuf) -> Result<Vec<BatchItem>> {
         // A bare JSON string is the convenient form for a quick list of
         // prompts; the object form is what you want once ids matter.
         let item = if let Ok(text) = serde_json::from_str::<String>(line) {
-            BatchItem { id: format!("{}", i + 1), prompt: text.into(), meta: None }
+            BatchItem {
+                id: format!("{}", i + 1),
+                prompt: text.into(),
+                meta: None,
+            }
         } else {
             serde_json::from_str::<BatchItem>(line)
                 .with_context(|| format!("{}:{}: not a valid batch item", path.display(), i + 1))?

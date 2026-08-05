@@ -29,11 +29,16 @@ pub async fn serve(provider: impl ToolProvider) -> anyhow::Result<()> {
         if line.is_empty() {
             continue;
         }
-        let Ok(message) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(message) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         let Some(id) = message.get("id").cloned().filter(|v| !v.is_null()) else {
             continue; // a notification; nothing to answer
         };
-        let method = message.get("method").and_then(Value::as_str).unwrap_or_default();
+        let method = message
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
 
         let reply = match method {
             "initialize" => json!({
@@ -53,8 +58,14 @@ pub async fn serve(provider: impl ToolProvider) -> anyhow::Result<()> {
             }),
             "tools/call" => {
                 let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
-                let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
-                let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let args = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
                 match provider.call(name, &args).await {
                     Some((text, is_error)) => json!({
                         "jsonrpc": "2.0", "id": id,
@@ -96,14 +107,20 @@ pub(crate) fn assert_tool_surface(tools: &[Value], reads: &[&str], writes: &[&st
             .unwrap_or(false)
     };
     for read in reads {
-        assert!(annotation(read, "readOnlyHint"), "{read} must be readOnlyHint");
+        assert!(
+            annotation(read, "readOnlyHint"),
+            "{read} must be readOnlyHint"
+        );
         assert!(
             !annotation(read, "openWorldHint"),
             "{read} reaches only the provider that already custodies this data — not a send sink"
         );
     }
     for write in writes {
-        assert!(annotation(write, "openWorldHint"), "{write} reaches third parties");
+        assert!(
+            annotation(write, "openWorldHint"),
+            "{write} reaches third parties"
+        );
         assert!(!annotation(write, "readOnlyHint"), "{write} is a write");
     }
     for tool in tools {

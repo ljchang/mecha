@@ -90,9 +90,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let prepared = setup::prepare(&opts, false).await?;
 
     let provider_name = opts.provider.clone().unwrap();
-    let provider_cfg = prepared.config.providers.get(&provider_name).with_context(|| {
-        format!("provider `{provider_name}` is not in the config; add it or pass -p")
-    })?;
+    let provider_cfg = prepared
+        .config
+        .providers
+        .get(&provider_name)
+        .with_context(|| {
+            format!("provider `{provider_name}` is not in the config; add it or pass -p")
+        })?;
     let provider = mecha_core::provider::build(provider_cfg)?;
     // The recorded model only makes sense on the recorded provider. Replaying
     // on another provider (`-p`) means that provider's own model unless `-m`
@@ -100,7 +104,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // server does not serve.
     let model = opts.model.clone().unwrap_or_else(|| {
         if global.provider.is_some() {
-            provider_cfg.model.clone().unwrap_or_else(|| provider.default_model().to_string())
+            provider_cfg
+                .model
+                .clone()
+                .unwrap_or_else(|| provider.default_model().to_string())
         } else {
             recorded.model.clone()
         }
@@ -132,10 +139,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // mode falls back to the configured permission mode — real tools run after
     // the divergence, and they deserve exactly the scrutiny they always get.
     let approver: Arc<dyn mecha_core::tool::Approver> = match mode {
-        OnDivergence::Live => {
-            Arc::new(ModeApprover { mode: prepared.config.tools.permission_mode })
-        }
-        _ => Arc::new(ModeApprover { mode: PermissionMode::Allow }),
+        OnDivergence::Live => Arc::new(ModeApprover {
+            mode: prepared.config.tools.permission_mode,
+        }),
+        _ => Arc::new(ModeApprover {
+            mode: PermissionMode::Allow,
+        }),
     };
 
     let mut tool_ctx = mecha_core::tool::ToolCtx {
@@ -197,7 +206,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     if mode == OnDivergence::Error && !report.divergences.is_empty() {
-        bail!("replay diverged: {} difference(s)", report.divergences.len());
+        bail!(
+            "replay diverged: {} difference(s)",
+            report.divergences.len()
+        );
     }
     Ok(())
 }
@@ -214,14 +226,27 @@ fn render_report(report: &mecha_core::replay_run::ReplayReport, recorded_final: 
             report.replayed_calls.len(),
             report.recorded_calls,
             report.turns,
-            if report.stopped_early { ", stopped at divergence" } else { "" }
+            if report.stopped_early {
+                ", stopped at divergence"
+            } else {
+                ""
+            }
         );
         for d in &report.divergences {
             match d {
-                Divergence::Tool { index, expected, actual } => {
+                Divergence::Tool {
+                    index,
+                    expected,
+                    actual,
+                } => {
                     println!("  call #{index}: recorded `{expected}`, replayed `{actual}`")
                 }
-                Divergence::Arguments { index, tool, expected, actual } => {
+                Divergence::Arguments {
+                    index,
+                    tool,
+                    expected,
+                    actual,
+                } => {
                     println!("  call #{index} ({tool}): same tool, different arguments");
                     println!("    recorded: {expected}");
                     println!("    replayed: {actual}");
@@ -249,7 +274,11 @@ fn render_report(report: &mecha_core::replay_run::ReplayReport, recorded_final: 
 
 fn first_line(s: &str) -> String {
     let line = s.lines().next().unwrap_or("").trim();
-    if line.len() > 120 { format!("{}…", &line[..120]) } else { line.to_string() }
+    if line.len() > 120 {
+        format!("{}…", &line[..120])
+    } else {
+        line.to_string()
+    }
 }
 
 fn resolve_session(arg: &str) -> Result<PathBuf> {

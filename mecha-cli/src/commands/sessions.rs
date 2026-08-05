@@ -93,7 +93,10 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
                             println!("› {text}\n");
                         }
                         for block in &message.content {
-                            if let Block::ToolResult { content, is_error, .. } = block {
+                            if let Block::ToolResult {
+                                content, is_error, ..
+                            } = block
+                            {
                                 let marker = if *is_error { "✗" } else { "✓" };
                                 println!("  {marker} {}\n", first_line(content));
                             }
@@ -146,7 +149,10 @@ fn stats(dir: &std::path::Path, days: Option<i64>, json: bool) -> Result<()> {
         // A torn transcript still counts what it recorded; one unreadable
         // file must not sink the report.
         let (usage, turns) = Session::usage_totals(&path).unwrap_or_default();
-        let pricing = config.providers.get(&meta.provider).and_then(|p| p.pricing());
+        let pricing = config
+            .providers
+            .get(&meta.provider)
+            .and_then(|p| p.pricing());
 
         let row = rows.entry((meta.provider, meta.model)).or_default();
         row.sessions += 1;
@@ -201,7 +207,11 @@ fn stats(dir: &std::path::Path, days: Option<i64>, json: bool) -> Result<()> {
             fmt_tokens(r.usage.cache_read_input_tokens),
             // A local model with no prices really does cost nothing; only
             // rows with a configured price claim a dollar figure.
-            if r.priced { format!("${:.2}", r.cost_usd) } else { "—".into() },
+            if r.priced {
+                format!("${:.2}", r.cost_usd)
+            } else {
+                "—".into()
+            },
         );
         total.sessions += r.sessions;
         total.turns += r.turns;
@@ -218,7 +228,11 @@ fn stats(dir: &std::path::Path, days: Option<i64>, json: bool) -> Result<()> {
         fmt_tokens(total.usage.output_tokens),
         fmt_tokens(total.usage.cache_creation_input_tokens),
         fmt_tokens(total.usage.cache_read_input_tokens),
-        if total.priced { format!("${:.2}", total.cost_usd) } else { "—".into() },
+        if total.priced {
+            format!("${:.2}", total.cost_usd)
+        } else {
+            "—".into()
+        },
     );
     if total.priced {
         println!("\ncost is at today's configured prices, not the prices at run time");

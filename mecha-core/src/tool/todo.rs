@@ -60,7 +60,10 @@ impl TodoTool {
         if items.is_empty() {
             return "(the list is empty)".to_string();
         }
-        let done = items.iter().filter(|i| i.status == Status::Completed).count();
+        let done = items
+            .iter()
+            .filter(|i| i.status == Status::Completed)
+            .count();
         let mut out = format!("{done}/{} done\n", items.len());
         for item in items {
             out.push_str(&format!("{} {}\n", item.status.marker(), item.content));
@@ -119,7 +122,9 @@ impl Tool for TodoTool {
 
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(raw) = input.get("items").and_then(Value::as_array) else {
-            return Ok(ToolOutput::err("`items` must be an array of {content, status}"));
+            return Ok(ToolOutput::err(
+                "`items` must be an array of {content, status}",
+            ));
         };
 
         let mut items = Vec::with_capacity(raw.len());
@@ -137,12 +142,18 @@ impl Tool for TodoTool {
                     )))
                 }
             };
-            items.push(TodoItem { content: content.to_string(), status });
+            items.push(TodoItem {
+                content: content.to_string(),
+                status,
+            });
         }
 
         // Nudge rather than reject: two items in flight is a mild smell, not an
         // error, and refusing the write would lose the update entirely.
-        let in_progress = items.iter().filter(|i| i.status == Status::InProgress).count();
+        let in_progress = items
+            .iter()
+            .filter(|i| i.status == Status::InProgress)
+            .count();
         let mut note = String::new();
         if in_progress > 1 {
             note = format!(
@@ -187,12 +198,18 @@ mod tests {
     async fn the_list_is_replaced_not_appended() {
         let tool = TodoTool::new();
         let ctx = ToolCtx::default();
-        tool.call(json!({"items": [{"content": "a", "status": "pending"}]}), &ctx)
-            .await
-            .unwrap();
-        tool.call(json!({"items": [{"content": "b", "status": "pending"}]}), &ctx)
-            .await
-            .unwrap();
+        tool.call(
+            json!({"items": [{"content": "a", "status": "pending"}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        tool.call(
+            json!({"items": [{"content": "b", "status": "pending"}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
 
         let items = tool.items();
         assert_eq!(items.len(), 1, "a write replaces the whole list");

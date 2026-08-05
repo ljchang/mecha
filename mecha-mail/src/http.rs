@@ -30,9 +30,7 @@ pub(crate) fn retry_after(status: Option<u16>, attempt: u32) -> Option<Duration>
     }
     match status {
         // 429 and 5xx are Google's weather; everything else is our request.
-        Some(429) | Some(500..=599) | None => {
-            Some(Duration::from_millis(500 * 2u64.pow(attempt)))
-        }
+        Some(429) | Some(500..=599) | None => Some(Duration::from_millis(500 * 2u64.pow(attempt))),
         Some(_) => None,
     }
 }
@@ -79,7 +77,10 @@ mod tests {
     fn transient_statuses_retry_with_growing_delays_then_stop() {
         assert!(retry_after(Some(429), 0).is_some());
         assert!(retry_after(Some(503), 0).is_some());
-        assert!(retry_after(None, 0).is_some(), "transport errors are transient too");
+        assert!(
+            retry_after(None, 0).is_some(),
+            "transport errors are transient too"
+        );
         assert!(retry_after(Some(429), 0) < retry_after(Some(429), 1));
         assert_eq!(retry_after(Some(429), 2), None, "three attempts total");
     }

@@ -142,11 +142,7 @@ pub fn tool_definitions() -> Vec<Value> {
 
 /// One tool call: token, dispatch, and — on a 401 — one forced refresh and
 /// retry, which is the JS `refreshOrReconnect` pattern finally in Rust.
-pub async fn call_tool(
-    manager: &TokenManager,
-    name: &str,
-    args: &Value,
-) -> Option<(String, bool)> {
+pub async fn call_tool(manager: &TokenManager, name: &str, args: &Value) -> Option<(String, bool)> {
     let first = dispatch(manager, name, args, false).await?;
     match first {
         Err(e) if e.is_auth_expiry() => {
@@ -185,9 +181,14 @@ async fn dispatch(
     let result = match name {
         "gmail_search" => {
             let Some(query) = str_arg("query") else {
-                return Some(Err(MailError::ParseError("missing required `query`".into())));
+                return Some(Err(MailError::ParseError(
+                    "missing required `query`".into(),
+                )));
             };
-            let max = args.get("max_results").and_then(Value::as_u64).unwrap_or(10) as u32;
+            let max = args
+                .get("max_results")
+                .and_then(Value::as_u64)
+                .unwrap_or(10) as u32;
             GmailProvider::new(token)
                 .search(&query, max.clamp(1, 50))
                 .await
@@ -195,7 +196,9 @@ async fn dispatch(
         }
         "gmail_get_thread" => {
             let Some(thread_id) = str_arg("thread_id") else {
-                return Some(Err(MailError::ParseError("missing required `thread_id`".into())));
+                return Some(Err(MailError::ParseError(
+                    "missing required `thread_id`".into(),
+                )));
             };
             GmailProvider::new(token)
                 .get_thread(&thread_id)
@@ -224,9 +227,10 @@ async fn dispatch(
                 .await
                 .map(|id| format!("sent (message id {id}) to {to}"))
         }
-        "calendar_list" => CalendarProvider::new(token).list_calendars().await.map(|cals| {
-            serde_json::to_string_pretty(&cals).unwrap_or_else(|_| "[]".into())
-        }),
+        "calendar_list" => CalendarProvider::new(token)
+            .list_calendars()
+            .await
+            .map(|cals| serde_json::to_string_pretty(&cals).unwrap_or_else(|_| "[]".into())),
         "calendar_list_events" => {
             let now = chrono::Utc::now();
             let time_min = str_arg("time_min").unwrap_or_else(|| now.to_rfc3339());
@@ -254,8 +258,7 @@ async fn dispatch(
                 (str_arg("title"), str_arg("start_time"), str_arg("end_time"))
             else {
                 return Some(Err(MailError::ParseError(
-                    "calendar_create_event requires `title`, `start_time`, and `end_time`"
-                        .into(),
+                    "calendar_create_event requires `title`, `start_time`, and `end_time`".into(),
                 )));
             };
             let request = CreateEventRequest {
@@ -265,7 +268,10 @@ async fn dispatch(
                 end_time: end,
                 location: str_arg("location"),
                 attendees: str_list(args, "attendees"),
-                all_day: args.get("all_day").and_then(Value::as_bool).unwrap_or(false),
+                all_day: args
+                    .get("all_day")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 timezone: str_arg("timezone"),
             };
             let calendar_id = str_arg("calendar_id").unwrap_or_else(|| "primary".into());
@@ -276,7 +282,9 @@ async fn dispatch(
         }
         "calendar_update_event" => {
             let Some(event_id) = str_arg("event_id") else {
-                return Some(Err(MailError::ParseError("missing required `event_id`".into())));
+                return Some(Err(MailError::ParseError(
+                    "missing required `event_id`".into(),
+                )));
             };
             let request = UpdateEventRequest {
                 title: str_arg("title"),
@@ -299,7 +307,9 @@ async fn dispatch(
         }
         "calendar_delete_event" => {
             let Some(event_id) = str_arg("event_id") else {
-                return Some(Err(MailError::ParseError("missing required `event_id`".into())));
+                return Some(Err(MailError::ParseError(
+                    "missing required `event_id`".into(),
+                )));
             };
             let calendar_id = str_arg("calendar_id").unwrap_or_else(|| "primary".into());
             CalendarProvider::new(token)
@@ -315,7 +325,11 @@ async fn dispatch(
 fn str_list(args: &Value, key: &str) -> Vec<String> {
     args.get(key)
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -404,9 +418,16 @@ mod tests {
                 .unwrap_or(false)
         };
 
-        for read in ["gmail_search", "gmail_get_thread", "calendar_list", "calendar_list_events"]
-        {
-            assert!(annotation(read, "readOnlyHint"), "{read} must be readOnlyHint");
+        for read in [
+            "gmail_search",
+            "gmail_get_thread",
+            "calendar_list",
+            "calendar_list_events",
+        ] {
+            assert!(
+                annotation(read, "readOnlyHint"),
+                "{read} must be readOnlyHint"
+            );
             assert!(
                 !annotation(read, "openWorldHint"),
                 "{read} reaches only googleapis.com, the data's custodian — not a send sink"
@@ -418,7 +439,10 @@ mod tests {
             "calendar_update_event",
             "calendar_delete_event",
         ] {
-            assert!(annotation(write, "openWorldHint"), "{write} reaches third parties");
+            assert!(
+                annotation(write, "openWorldHint"),
+                "{write} reaches third parties"
+            );
             assert!(!annotation(write, "readOnlyHint"), "{write} is a write");
         }
         for destructive in ["calendar_update_event", "calendar_delete_event"] {

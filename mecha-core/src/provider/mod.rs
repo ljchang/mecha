@@ -20,7 +20,9 @@ pub enum StreamEvent {
     TextDelta(String),
     ThinkingDelta(String),
     /// A tool call has begun; arguments are still streaming.
-    ToolUseStart { name: String },
+    ToolUseStart {
+        name: String,
+    },
     /// Everything known about this turn's token usage *so far*, cumulative.
     ///
     /// Emitted as it arrives rather than only at the end, because cancelling a
@@ -58,9 +60,9 @@ pub fn build(cfg: &crate::config::ProviderConfig) -> Result<Box<dyn Provider>> {
         "openai" | "openai-compatible" | "local" => {
             Ok(Box::new(openai::OpenAiCompatible::from_config(cfg)?))
         }
-        other => anyhow::bail!(
-            "unknown provider kind {other:?} (expected: anthropic, openai, local)"
-        ),
+        other => {
+            anyhow::bail!("unknown provider kind {other:?} (expected: anthropic, openai, local)")
+        }
     }
 }
 
@@ -90,7 +92,8 @@ impl Failover {
 }
 
 fn failover_worthy(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<retry::ProviderError>().is_some_and(retry::ProviderError::transient)
+    e.downcast_ref::<retry::ProviderError>()
+        .is_some_and(retry::ProviderError::transient)
 }
 
 #[async_trait]
@@ -214,14 +217,22 @@ mod failover_tests {
         }
     }
 
-    type Rig = (Failover, Arc<AtomicUsize>, Arc<Mutex<Option<String>>>, Arc<AtomicUsize>);
+    type Rig = (
+        Failover,
+        Arc<AtomicUsize>,
+        Arc<Mutex<Option<String>>>,
+        Arc<AtomicUsize>,
+    );
 
     fn rig(error: fn() -> anyhow::Error) -> Rig {
         let primary_calls = Arc::new(AtomicUsize::new(0));
         let fallback_calls = Arc::new(AtomicUsize::new(0));
         let model_seen = Arc::new(Mutex::new(None));
         let failover = Failover::new(
-            Box::new(Failing { error, calls: Arc::clone(&primary_calls) }),
+            Box::new(Failing {
+                error,
+                calls: Arc::clone(&primary_calls),
+            }),
             vec![(
                 "small".into(),
                 Box::new(Recording {
@@ -243,7 +254,10 @@ mod failover_tests {
         assert_eq!(response.message.text(), "from the fallback");
         // The recorded bug this guards: sending one server's model name to
         // another server. The fallback must be asked for its own model.
-        assert_eq!(model_seen.lock().unwrap().as_deref(), Some("fallback-model"));
+        assert_eq!(
+            model_seen.lock().unwrap().as_deref(),
+            Some("fallback-model")
+        );
     }
 
     #[tokio::test]
@@ -260,7 +274,11 @@ mod failover_tests {
             let err = failover.complete(&req(), None).await.unwrap_err();
             assert!(err.downcast_ref::<ProviderError>().is_some());
             assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
-            assert_eq!(fallback_calls.load(Ordering::SeqCst), 0, "the fallback was consulted");
+            assert_eq!(
+                fallback_calls.load(Ordering::SeqCst),
+                0,
+                "the fallback was consulted"
+            );
         }
     }
 

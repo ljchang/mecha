@@ -9,7 +9,10 @@ use mecha_mail::microsoft::{auth, server::OutlookTools};
 use mecha_mail::{mcp, token};
 
 #[derive(Parser, Debug)]
-#[command(name = "mecha-outlook", about = "Outlook mail and calendar as MCP tools")]
+#[command(
+    name = "mecha-outlook",
+    about = "Outlook mail and calendar as MCP tools"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,

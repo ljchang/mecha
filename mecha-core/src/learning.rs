@@ -293,8 +293,7 @@ impl LearningStore {
             .with_context(|| format!("creating {}", root.display()))?;
         // The root holds reflections and ledgers directly, so it gets the
         // owner-only rule itself, not only through its subdirectory.
-        crate::create_private_dir(&root)
-            .with_context(|| format!("creating {}", root.display()))?;
+        crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
         if !root.join(".git").exists() {
             let _ = std::process::Command::new("git")
                 .arg("init")
@@ -413,7 +412,9 @@ impl LearningStore {
     }
 
     fn rules_path(&self, domain: &str, kind: &str) -> PathBuf {
-        self.root.join("rules").join(format!("{domain}.{kind}.toml"))
+        self.root
+            .join("rules")
+            .join(format!("{domain}.{kind}.toml"))
     }
 
     fn load_rules(&self, path: &Path) -> Result<Vec<Rule>> {
@@ -443,7 +444,9 @@ impl LearningStore {
     /// so the file on disk has to be complete at every instant — a torn TOML
     /// here would fail an unrelated run at startup.
     pub fn write_learned_rules(&self, domain: &str, rules: &[Rule]) -> Result<()> {
-        let file = RulesFile { rules: rules.to_vec() };
+        let file = RulesFile {
+            rules: rules.to_vec(),
+        };
         let path = self.rules_path(domain, "learned");
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, toml::to_string_pretty(&file)?)?;
@@ -457,7 +460,10 @@ impl LearningStore {
         if let Ok(entries) = std::fs::read_dir(self.root.join("rules")) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if let Some(domain) = name.strip_suffix(".user.toml").or(name.strip_suffix(".learned.toml")) {
+                if let Some(domain) = name
+                    .strip_suffix(".user.toml")
+                    .or(name.strip_suffix(".learned.toml"))
+                {
                     if !out.iter().any(|d| d == domain) {
                         out.push(domain.to_string());
                     }
@@ -488,7 +494,11 @@ impl LearningStore {
     pub fn over_budget_domains(&self) -> Result<Vec<(String, usize)>> {
         let mut out = Vec::new();
         for domain in self.domains() {
-            let active = self.learned_rules(&domain)?.iter().filter(|r| r.active()).count();
+            let active = self
+                .learned_rules(&domain)?
+                .iter()
+                .filter(|r| r.active())
+                .count();
             if active > MAX_ACTIVE_RULES_PER_DOMAIN {
                 out.push((domain, active));
             }
@@ -658,7 +668,11 @@ impl LearningStore {
             1 => Ok(matches[0].clone()),
             n => anyhow::bail!(
                 "`{id}` matches {n} proposals: {}",
-                matches.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", ")
+                matches
+                    .iter()
+                    .map(|p| p.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         }
     }
@@ -902,7 +916,9 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                 let mut has_results = false;
                 for block in &message.content {
                     match block {
-                        Block::ToolResult { content, is_error, .. } => {
+                        Block::ToolResult {
+                            content, is_error, ..
+                        } => {
                             has_results = true;
                             if *is_error {
                                 if let Some(reason) = content.strip_prefix("Denied by the user:") {
@@ -1070,7 +1086,11 @@ impl Reflector {
         let model = model.unwrap_or_else(|| provider.default_model().to_string());
         // Sized like the judge's, for the same measured reason: a reasoning
         // model spends its budget thinking before the JSON appears.
-        Reflector { provider, model, max_tokens: 4096 }
+        Reflector {
+            provider,
+            model,
+            max_tokens: 4096,
+        }
     }
 
     pub fn model(&self) -> &str {
@@ -1086,10 +1106,18 @@ impl Reflector {
              <intervention kind=\"{}\">\n{}\n</intervention>\n\n\
              <what-the-assistant-did-next>\n{}\n</what-the-assistant-did-next>\n\n\
              What is the reusable lesson? Reply with the JSON object only.",
-            if i.context.is_empty() { "(start of task)" } else { &i.context },
+            if i.context.is_empty() {
+                "(start of task)"
+            } else {
+                &i.context
+            },
             i.trigger.as_str(),
             i.text,
-            if i.aftermath.is_empty() { "(the run ended there)" } else { &i.aftermath },
+            if i.aftermath.is_empty() {
+                "(the run ended there)"
+            } else {
+                &i.aftermath
+            },
         );
 
         let request = crate::message::CompletionRequest {
@@ -1106,7 +1134,10 @@ impl Reflector {
         let response = self.provider.complete(&request, None).await?;
         let text = response.message.text();
         let Some(json) = crate::eval::extract_json(&text) else {
-            tracing::warn!("reflector returned no JSON (stop: {:?})", response.stop_reason);
+            tracing::warn!(
+                "reflector returned no JSON (stop: {:?})",
+                response.stop_reason
+            );
             return Ok(None);
         };
         let reply: ReflectorReply = match serde_json::from_str(&json) {
@@ -1152,7 +1183,10 @@ pub fn locate_followup(messages: &[Message], intervention_text: &str) -> Option<
     let wanted = intervention_text.trim();
     messages.iter().position(|m| {
         m.role == Role::User
-            && !m.content.iter().any(|b| matches!(b, Block::ToolResult { .. }))
+            && !m
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult { .. }))
             && m.text().trim() == wanted
     })
 }
@@ -1344,7 +1378,11 @@ impl Learner {
         let model = model.unwrap_or_else(|| provider.default_model().to_string());
         // Reasoning happens before the JSON; sized like the judge's budget,
         // then doubled because the output here is a whole rule set.
-        Learner { provider, model, max_tokens: 8192 }
+        Learner {
+            provider,
+            model,
+            max_tokens: 8192,
+        }
     }
 
     pub fn model(&self) -> &str {
@@ -1409,7 +1447,10 @@ impl Learner {
                     .map(|r| format!(
                         "- {}{}",
                         r.text,
-                        r.retired_reason.as_deref().map(|w| format!(" (retired: {w})")).unwrap_or_default()
+                        r.retired_reason
+                            .as_deref()
+                            .map(|w| format!(" (retired: {w})"))
+                            .unwrap_or_default()
                     ))
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -1426,7 +1467,11 @@ impl Learner {
             render_rules(user_rules),
             render_rules(&active.iter().map(|r| (*r).clone()).collect::<Vec<_>>()),
             reflexions.len(),
-            if rendered_reflexions.is_empty() { "(none)" } else { &rendered_reflexions },
+            if rendered_reflexions.is_empty() {
+                "(none)"
+            } else {
+                &rendered_reflexions
+            },
         );
 
         let request = crate::message::CompletionRequest {
@@ -1461,11 +1506,19 @@ mod tests {
     use serde_json::json;
 
     fn tool_use(id: &str) -> Block {
-        Block::ToolUse { id: id.into(), name: "fs_read".into(), input: json!({"path": "a.md"}) }
+        Block::ToolUse {
+            id: id.into(),
+            name: "fs_read".into(),
+            input: json!({"path": "a.md"}),
+        }
     }
 
     fn result(id: &str, content: &str, is_error: bool) -> Block {
-        Block::ToolResult { tool_use_id: id.into(), content: content.into(), is_error }
+        Block::ToolResult {
+            tool_use_id: id.into(),
+            content: content.into(),
+            is_error,
+        }
     }
 
     #[test]
@@ -1496,7 +1549,10 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].trigger, Trigger::Steer);
         assert_eq!(found[0].text, "change of plan: skip the rest");
-        assert!(found[0].context.contains("fs_read"), "context names what was being done");
+        assert!(
+            found[0].context.contains("fs_read"),
+            "context names what was being done"
+        );
     }
 
     #[test]
@@ -1521,12 +1577,18 @@ mod tests {
         use crate::agent::Taint;
         // A clean covering taint is the only road to Clean.
         assert_eq!(
-            classify_origin(Some(Taint { private: true, untrusted: false })),
+            classify_origin(Some(Taint {
+                private: true,
+                untrusted: false
+            })),
             Origin::Clean,
             "private-but-trusted is still the user's own conversation"
         );
         assert_eq!(
-            classify_origin(Some(Taint { private: false, untrusted: true })),
+            classify_origin(Some(Taint {
+                private: false,
+                untrusted: true
+            })),
             Origin::Untrusted
         );
         // Unknown coverage — torn transcript, pre-taint recording — is never
@@ -1690,8 +1752,14 @@ mod tests {
     fn the_rule_budget_refuses_growth_over_the_cap_and_allows_shrinking_toward_it() {
         const CAP: usize = MAX_ACTIVE_RULES_PER_DOMAIN;
         assert!(!budget_refuses(3, CAP), "filling up to the cap is fine");
-        assert!(budget_refuses(CAP, CAP + 1), "growing past the cap is refused");
-        assert!(budget_refuses(CAP + 5, CAP + 6), "an over-cap set may not grow further");
+        assert!(
+            budget_refuses(CAP, CAP + 1),
+            "growing past the cap is refused"
+        );
+        assert!(
+            budget_refuses(CAP + 5, CAP + 6),
+            "an over-cap set may not grow further"
+        );
         // The two ways an over-cap legacy set is allowed to move: shrinking
         // toward the cap, or a same-size rewrite — consolidation must be able
         // to land, or the refusal wedges the store it exists to shrink.
@@ -1708,7 +1776,10 @@ mod tests {
         store.write_learned_rules("behavior", &rules).unwrap();
 
         let over = store.over_budget_domains().unwrap();
-        assert_eq!(over, vec![("behavior".to_string(), MAX_ACTIVE_RULES_PER_DOMAIN + 1)]);
+        assert_eq!(
+            over,
+            vec![("behavior".to_string(), MAX_ACTIVE_RULES_PER_DOMAIN + 1)]
+        );
 
         // Retiring one brings the domain back under: a retired rule stays in
         // the file as evidence and costs the budget nothing.
@@ -1790,7 +1861,10 @@ mod tests {
         store
             .write_learned_rules(
                 "behavior",
-                &[Rule { text: "Learned.".into(), ..Default::default() }],
+                &[Rule {
+                    text: "Learned.".into(),
+                    ..Default::default()
+                }],
             )
             .unwrap();
         let live = store.rules_prompt_block().unwrap().unwrap();
@@ -1800,7 +1874,9 @@ mod tests {
         // mean anything about the deployment that follows acceptance.
         let user = store.user_rules("behavior").unwrap();
         let learned = store.learned_rules("behavior").unwrap();
-        let sections = domain_rules_section("behavior", &user, &learned).into_iter().collect();
+        let sections = domain_rules_section("behavior", &user, &learned)
+            .into_iter()
+            .collect();
         assert_eq!(wrap_rules_block(sections).unwrap(), live);
     }
 
@@ -1811,9 +1887,15 @@ mod tests {
         // flock is per open-file-description, so a second open contends even
         // within one process — which is also exactly the reflect-vs-reflect
         // case, since each detached pass is its own process.
-        assert!(store.try_lock().unwrap().is_none(), "the lock did not exclude");
+        assert!(
+            store.try_lock().unwrap().is_none(),
+            "the lock did not exclude"
+        );
         drop(held);
-        assert!(store.try_lock().unwrap().is_some(), "the lock did not release");
+        assert!(
+            store.try_lock().unwrap().is_some(),
+            "the lock did not release"
+        );
     }
 
     #[test]
@@ -1869,7 +1951,11 @@ mod tests {
                         based_on_count: Some(3),
                         ..Default::default()
                     },
-                    Rule { text: "A disabled rule must not appear.".into(), enabled: false, ..Default::default() },
+                    Rule {
+                        text: "A disabled rule must not appear.".into(),
+                        enabled: false,
+                        ..Default::default()
+                    },
                 ],
             )
             .unwrap();
@@ -1890,14 +1976,21 @@ mod tests {
             Message::assistant(vec![Block::text("Noted.")]),
             Message::user("what number did I ask you to remember?"),
         ];
-        assert_eq!(locate_followup(&messages, "what number did I ask you to remember?"), Some(2));
+        assert_eq!(
+            locate_followup(&messages, "what number did I ask you to remember?"),
+            Some(2)
+        );
         assert_eq!(locate_followup(&messages, "never said"), None);
 
         // A tool-results message carrying steering text is not a followup turn.
         let steered = vec![Message {
             role: Role::User,
             content: vec![
-                Block::ToolResult { tool_use_id: "t".into(), content: "ok".into(), is_error: false },
+                Block::ToolResult {
+                    tool_use_id: "t".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                },
                 Block::text("skip the rest"),
             ],
         }];
@@ -1924,7 +2017,9 @@ mod tests {
         assert!(rules[0].enabled);
 
         assert_eq!(
-            parse_learner_reply("{\"rules\": []}").expect("empty set is valid").len(),
+            parse_learner_reply("{\"rules\": []}")
+                .expect("empty set is valid")
+                .len(),
             0,
             "an empty set is an answer, not a failure"
         );
@@ -1953,7 +2048,9 @@ mod tests {
                 })
                 .unwrap();
         }
-        let marked = store.mark_reflexions_processed(&["r1".into()], "run-1").unwrap();
+        let marked = store
+            .mark_reflexions_processed(&["r1".into()], "run-1")
+            .unwrap();
         assert_eq!(marked, 1);
 
         let back = store.reflexions().unwrap();
@@ -1981,7 +2078,10 @@ mod tests {
     fn edit_reflections_belong_to_the_writing_domain() {
         let (system, domain) = reflector_frames(Trigger::Edit);
         assert_eq!(domain, "writing");
-        assert!(system.contains("edit"), "the writing frame talks about edits");
+        assert!(
+            system.contains("edit"),
+            "the writing frame talks about edits"
+        );
         for t in [Trigger::Steer, Trigger::Denial, Trigger::Followup] {
             let (system, domain) = reflector_frames(t);
             assert_eq!(domain, "behavior");
@@ -2000,7 +2100,10 @@ mod tests {
         assert_eq!(learner_frames("behavior"), LEARNER_SYSTEM);
         assert_eq!(learner_frames("some-future-domain"), LEARNER_SYSTEM);
 
-        assert!(WRITING_LEARNER_SYSTEM.contains("edits"), "the frame is about edits");
+        assert!(
+            WRITING_LEARNER_SYSTEM.contains("edits"),
+            "the frame is about edits"
+        );
         for prompt in [LEARNER_SYSTEM, WRITING_LEARNER_SYSTEM] {
             assert!(
                 prompt.contains(r#"{"rules": [{"rule":"#),
@@ -2036,7 +2139,10 @@ mod tests {
         let rules = store.learned_rules("behavior").unwrap();
         assert_eq!(rules.len(), 1);
         assert!(rules[0].id.is_none() && rules[0].sources.is_empty());
-        assert!(rules[0].active(), "an old rule is live until someone says otherwise");
+        assert!(
+            rules[0].active(),
+            "an old rule is live until someone says otherwise"
+        );
         std::fs::remove_dir_all(store.root()).ok();
     }
 
@@ -2050,10 +2156,16 @@ mod tests {
             ..Default::default()
         };
         let out = finalize_rules(
-            vec![Rule { text: survivor.text.clone(), ..Default::default() }, Rule {
-                text: "New lesson.".into(),
-                ..Default::default()
-            }],
+            vec![
+                Rule {
+                    text: survivor.text.clone(),
+                    ..Default::default()
+                },
+                Rule {
+                    text: "New lesson.".into(),
+                    ..Default::default()
+                },
+            ],
             &[survivor],
             &["refl-b".into(), "refl-c".into()],
             "2026-08-05T00:00:00Z",
@@ -2083,17 +2195,27 @@ mod tests {
         assert!(!retired.active());
         // Retirement wins over a hand edit that flipped enabled back on:
         // the measurement trail outranks a stray toggle.
-        assert!(!Rule { enabled: true, ..retired.clone() }.active());
+        assert!(!Rule {
+            enabled: true,
+            ..retired.clone()
+        }
+        .active());
 
         // A learner rewrite that (correctly) omits the retired rule must not
         // erase it from the file — the evidence trail is the point.
         let out = finalize_rules(
-            vec![Rule { text: "Fresh rule.".into(), ..Default::default() }],
+            vec![Rule {
+                text: "Fresh rule.".into(),
+                ..Default::default()
+            }],
             std::slice::from_ref(&retired),
             &["refl-x".into()],
             "2026-08-06T00:00:00Z",
         );
-        assert!(out.iter().any(|r| r.id.as_deref() == Some("r-bad")), "retired rule dropped");
+        assert!(
+            out.iter().any(|r| r.id.as_deref() == Some("r-bad")),
+            "retired rule dropped"
+        );
 
         // And it never reaches a prompt.
         let section = domain_rules_section("behavior", &[], &out).unwrap();
@@ -2115,16 +2237,31 @@ mod tests {
             model: "qwen".into(),
             created_at: at.into(),
         };
-        store.append_validation(&rec("improved", None, "2026-08-05T01:00:00Z")).unwrap();
-        store.append_validation(&rec("regressed", Some("r-b"), "2026-08-05T02:00:00Z")).unwrap();
+        store
+            .append_validation(&rec("improved", None, "2026-08-05T01:00:00Z"))
+            .unwrap();
+        store
+            .append_validation(&rec("regressed", Some("r-b"), "2026-08-05T02:00:00Z"))
+            .unwrap();
         let back = store.validations().unwrap();
         assert_eq!(back.len(), 2);
 
         let tallies = rule_tallies(&back);
         let a = &tallies["r-a"];
-        assert_eq!((a.observations, a.improved, a.regressed, a.attributed_regressions), (2, 1, 1, 0));
+        assert_eq!(
+            (
+                a.observations,
+                a.improved,
+                a.regressed,
+                a.attributed_regressions
+            ),
+            (2, 1, 1, 0)
+        );
         let b = &tallies["r-b"];
-        assert_eq!(b.attributed_regressions, 1, "the bisection's verdict lands on r-b alone");
+        assert_eq!(
+            b.attributed_regressions, 1,
+            "the bisection's verdict lands on r-b alone"
+        );
         assert_eq!(b.last_validated.as_deref(), Some("2026-08-05T02:00:00Z"));
         std::fs::remove_dir_all(store.root()).ok();
     }

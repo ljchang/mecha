@@ -21,9 +21,7 @@ use mecha_core::agent::{Conversation, RunContext};
 use mecha_core::config::PermissionMode;
 use mecha_core::message::Message;
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
-use mecha_core::trigger::{
-    CatchUp, Due, RunRecord, RunStatus, Trigger, TriggerStore,
-};
+use mecha_core::trigger::{CatchUp, Due, RunRecord, RunStatus, Trigger, TriggerStore};
 use std::io::Write;
 use tokio_util::sync::CancellationToken;
 
@@ -204,7 +202,9 @@ fn cancel(name: &str) -> Result<()> {
 
 /// The zone a schedule is read in when the trigger does not name one.
 fn config_tz() -> Option<Tz> {
-    mecha_core::config::Config::load_global().ok().and_then(|c| c.agent.timezone())
+    mecha_core::config::Config::load_global()
+        .ok()
+        .and_then(|c| c.agent.timezone())
 }
 
 fn open() -> Result<TriggerStore> {
@@ -287,17 +287,28 @@ fn show(name: &str, last: bool) -> Result<()> {
     let tz = t.tz(config_tz());
     let now = Utc::now();
 
-    println!("trigger {}{}", t.name, if t.enabled { "" } else { " (disabled)" });
+    println!(
+        "trigger {}{}",
+        t.name,
+        if t.enabled { "" } else { " (disabled)" }
+    );
     if let Some(d) = &t.description {
         println!("  {d}");
     }
     println!("  schedule    {} [{}]", t.schedule.source(), tz);
     if let Some(next) = t.next_fire(now, config_tz()) {
-        println!("  next fire   {} (in {})", local(next, tz), human_gap(next - now));
+        println!(
+            "  next fire   {} (in {})",
+            local(next, tz),
+            human_gap(next - now)
+        );
     }
     println!("  catch up    {}", t.catch_up);
     println!("  permission  {:?}", t.permission_mode);
-    println!("  timeout     {}", mecha_core::trigger::render_duration(t.timeout_duration()));
+    println!(
+        "  timeout     {}",
+        mecha_core::trigger::render_duration(t.timeout_duration())
+    );
     if let Some(p) = &t.provider {
         println!("  provider    {p}");
     }
@@ -328,8 +339,11 @@ fn show(name: &str, last: bool) -> Result<()> {
     println!("  file        {}", store.path_of(&t.name).display());
     println!("\nprompt:\n{}", indent(&t.prompt));
 
-    let mine: Vec<RunRecord> =
-        store.runs()?.into_iter().filter(|r| r.trigger == t.name).collect();
+    let mine: Vec<RunRecord> = store
+        .runs()?
+        .into_iter()
+        .filter(|r| r.trigger == t.name)
+        .collect();
     if !mine.is_empty() {
         println!("\nrecent runs:");
         for r in mine.iter().rev().take(5) {
@@ -360,7 +374,10 @@ fn print_answer(run: &RunRecord) -> Result<()> {
         .find(|m| m.role == mecha_core::Role::Assistant)
         .map(|m| m.text())
         .unwrap_or_default();
-    println!("\n── {} · session {id} ──\n{text}", run.started_at.to_rfc3339());
+    println!(
+        "\n── {} · session {id} ──\n{text}",
+        run.started_at.to_rfc3339()
+    );
     Ok(())
 }
 
@@ -372,8 +389,14 @@ fn next(name: Option<&str>, count: usize) -> Result<()> {
         println!("{} [{}]", t.name, t.tz(tz));
         let mut at = Utc::now();
         for _ in 0..count {
-            let Some(fire) = t.next_fire(at, tz) else { break };
-            println!("  {}  (in {})", local(fire, t.tz(tz)), human_gap(fire - Utc::now()));
+            let Some(fire) = t.next_fire(at, tz) else {
+                break;
+            };
+            println!(
+                "  {}  (in {})",
+                local(fire, t.tz(tz)),
+                human_gap(fire - Utc::now())
+            );
             at = fire;
         }
     }
@@ -383,8 +406,12 @@ fn next(name: Option<&str>, count: usize) -> Result<()> {
 fn runs(name: Option<&str>, count: usize) -> Result<()> {
     let store = open()?;
     let all = store.runs()?;
-    let mine: Vec<&RunRecord> =
-        all.iter().filter(|r| name.is_none_or(|n| r.trigger == n)).rev().take(count).collect();
+    let mine: Vec<&RunRecord> = all
+        .iter()
+        .filter(|r| name.is_none_or(|n| r.trigger == n))
+        .rev()
+        .take(count)
+        .collect();
     if mine.is_empty() {
         println!("no runs recorded yet");
         return Ok(());
@@ -463,11 +490,16 @@ fn add(global: &GlobalOpts, a: AddArgs) -> Result<()> {
     // Read-only unless `--yes` was passed. `--yes` reads as "this scheduled run
     // may write and execute unattended", which is the decision being made, and
     // the confirmation below prints the resulting mode so it is never silent.
-    t.permission_mode = if global.yes { PermissionMode::Allow } else { PermissionMode::ReadOnly };
+    t.permission_mode = if global.yes {
+        PermissionMode::Allow
+    } else {
+        PermissionMode::ReadOnly
+    };
     t.workspace = match &global.workspace {
-        Some(w) => Some(w.canonicalize().with_context(|| {
-            format!("workspace {} does not exist", w.display())
-        })?),
+        Some(w) => Some(
+            w.canonicalize()
+                .with_context(|| format!("workspace {} does not exist", w.display()))?,
+        ),
         None => None,
     };
     t.tools = global.tools.clone();
@@ -520,7 +552,9 @@ fn add(global: &GlobalOpts, a: AddArgs) -> Result<()> {
 /// trigger cannot, because the ceiling is the only thing standing between an
 /// unattended loop and a bill.
 fn check_cost_cap(t: &Trigger) -> Result<()> {
-    let Some(cap) = t.max_cost_usd else { return Ok(()) };
+    let Some(cap) = t.max_cost_usd else {
+        return Ok(());
+    };
     let cfg = mecha_core::config::Config::load_global()?;
     let (name, provider) = cfg.provider(t.provider.as_deref())?;
     anyhow::ensure!(
@@ -579,7 +613,11 @@ async fn tick(
         match t.due(last_slots.get(&t.name).copied(), now, tz) {
             Due::Now { slot } => {
                 if dry_run {
-                    println!("{:<20} would fire for slot {}", t.name, local(slot, t.tz(tz)));
+                    println!(
+                        "{:<20} would fire for slot {}",
+                        t.name,
+                        local(slot, t.tz(tz))
+                    );
                     continue;
                 }
                 // Claim first: the lock is what stops a slow run from stacking,
@@ -590,7 +628,10 @@ async fn tick(
                     rec.finished_at = Some(Utc::now());
                     rec.error = Some("a previous run of this trigger is still going".into());
                     store.append_run(&rec)?;
-                    eprintln!("mecha: {} skipped — the previous run is still going", t.name);
+                    eprintln!(
+                        "mecha: {} skipped — the previous run is still going",
+                        t.name
+                    );
                     continue;
                 };
                 fire(global, &store, t, Some(slot), false, stop).await?;
@@ -612,8 +653,11 @@ async fn tick(
                 let mut rec = RunRecord::started(&t.name, Some(slot), false);
                 rec.status = RunStatus::SkippedStale;
                 rec.finished_at = Some(Utc::now());
-                rec.error =
-                    Some(format!("missed by {}, past catch_up = {}", human_gap(age), t.catch_up));
+                rec.error = Some(format!(
+                    "missed by {}, past catch_up = {}",
+                    human_gap(age),
+                    t.catch_up
+                ));
                 store.append_run(&rec)?;
             }
             Due::Not { next } if dry_run => {
@@ -651,12 +695,11 @@ async fn daemon(global: &GlobalOpts) -> Result<()> {
     {
         let stop = stop.clone();
         tokio::spawn(async move {
-            let mut term = match tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::terminate(),
-            ) {
-                Ok(s) => s,
-                Err(_) => return,
-            };
+            let mut term =
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {}
                 _ = term.recv() => {}
@@ -834,7 +877,10 @@ async fn run_agent(
     // that says what happened.
     let token = stop.map(CancellationToken::child_token).unwrap_or_default();
     let cx = RunContext::clone(prepared.agent.context()).with_cancel(token.clone());
-    let limit = t.timeout_duration().to_std().unwrap_or(std::time::Duration::from_secs(1200));
+    let limit = t
+        .timeout_duration()
+        .to_std()
+        .unwrap_or(std::time::Duration::from_secs(1200));
     let timer = {
         let token = token.clone();
         tokio::spawn(async move {
@@ -882,11 +928,16 @@ async fn run_agent(
         Ok(o) => o,
         Err(e) => {
             let cx = prepared.agent.context();
-            cx.hooks.session_end(&session.meta.id, &session.path, &cx.tools.workspace).await;
+            cx.hooks
+                .session_end(&session.meta.id, &session.path, &cx.tools.workspace)
+                .await;
             return Err(e);
         }
     };
-    session.append(&Record::Summary { usage: outcome.usage.clone(), turns: outcome.turns })?;
+    session.append(&Record::Summary {
+        usage: outcome.usage.clone(),
+        turns: outcome.turns,
+    })?;
 
     record.turns = outcome.turns;
     record.cost_usd = outcome.cost_usd;
@@ -895,13 +946,15 @@ async fn run_agent(
     record.taint = outcome.taint;
     // Recorded only when it is news: `Completed` is the ordinary case, and a
     // field that is always set is a field nobody reads.
-    record.stop_cause =
-        (outcome.stop_cause != mecha_core::agent::StopCause::Completed).then_some(outcome.stop_cause);
+    record.stop_cause = (outcome.stop_cause != mecha_core::agent::StopCause::Completed)
+        .then_some(outcome.stop_cause);
 
     // Same as every other front-end: closing the session is what feeds
     // reflect-on-close, so a trigger's runs are mined like any other.
     let cx = prepared.agent.context();
-    cx.hooks.session_end(&session.meta.id, &session.path, &cx.tools.workspace).await;
+    cx.hooks
+        .session_end(&session.meta.id, &session.path, &cx.tools.workspace)
+        .await;
 
     if outcome.stop_cause.is_early() {
         eprintln!(
@@ -925,7 +978,10 @@ fn notify(t: &Trigger, text: &str) {
     let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("mecha: notify command for `{}` failed to start — {e}", t.name);
+            eprintln!(
+                "mecha: notify command for `{}` failed to start — {e}",
+                t.name
+            );
             return;
         }
     };
@@ -944,7 +1000,9 @@ fn notify(t: &Trigger, text: &str) {
 // ------------------------------------------------------------------ printing
 
 fn local(at: DateTime<Utc>, tz: Tz) -> String {
-    at.with_timezone(&tz).format("%a %-d %b %H:%M %Z").to_string()
+    at.with_timezone(&tz)
+        .format("%a %-d %b %H:%M %Z")
+        .to_string()
 }
 
 fn human_gap(d: chrono::Duration) -> String {
@@ -961,7 +1019,11 @@ fn human_gap(d: chrono::Duration) -> String {
 }
 
 fn first_line(text: &str) -> String {
-    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     if line.chars().count() > 100 {
         format!("{}…", line.chars().take(100).collect::<String>())
     } else {
@@ -970,7 +1032,10 @@ fn first_line(text: &str) -> String {
 }
 
 fn indent(text: &str) -> String {
-    text.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
+    text.lines()
+        .map(|l| format!("  {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]

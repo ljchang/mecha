@@ -130,8 +130,7 @@ impl OutboxStore {
 
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        crate::create_private_dir(&root)
-            .with_context(|| format!("creating {}", root.display()))?;
+        crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
         Ok(OutboxStore { root })
     }
 
@@ -202,7 +201,11 @@ impl OutboxStore {
             1 => Ok(matches[0].clone()),
             n => anyhow::bail!(
                 "`{id}` matches {n} outbox items: {}",
-                matches.iter().map(|i| i.id.as_str()).collect::<Vec<_>>().join(", ")
+                matches
+                    .iter()
+                    .map(|i| i.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         }
     }
@@ -279,8 +282,7 @@ impl OutboxStore {
 /// the full before/after always survives on the item itself. Used by both
 /// `mecha outbox show` and the reflect pass that mines edits.
 pub fn diff_args(before: &Value, after: &Value) -> String {
-    let pretty =
-        |v: &Value| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
+    let pretty = |v: &Value| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
     let b = pretty(before);
     let a = pretty(after);
     let b_lines: Vec<&str> = b.lines().collect();
@@ -309,7 +311,10 @@ fn summarize(tool: &str, args: &Value) -> String {
     let mut text = compact;
     if text.len() > 80 {
         // Truncate on a char boundary; arguments can be any UTF-8.
-        let cut = (0..=80).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+        let cut = (0..=80)
+            .rev()
+            .find(|&i| text.is_char_boundary(i))
+            .unwrap_or(0);
         text.truncate(cut);
         text.push('…');
     }
@@ -322,8 +327,8 @@ mod tests {
     use serde_json::json;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("mecha-outbox-test-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mecha-outbox-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -334,13 +339,21 @@ mod tests {
         let store = OutboxStore::open(&root).unwrap();
 
         let a = store
-            .stage("web__fetch", json!({"url": "https://a"}), Taint::default(), None)
+            .stage(
+                "web__fetch",
+                json!({"url": "https://a"}),
+                Taint::default(),
+                None,
+            )
             .unwrap();
         let b = store
             .stage(
                 "email__send",
                 json!({"to": "x@y"}),
-                Taint { private: true, untrusted: true },
+                Taint {
+                    private: true,
+                    untrusted: true,
+                },
                 Some("sess-1".into()),
             )
             .unwrap();
@@ -379,10 +392,17 @@ mod tests {
         let root = scratch("edit");
         let store = OutboxStore::open(&root).unwrap();
         let item = store
-            .stage("web__fetch", json!({"url": "https://a"}), Taint::default(), None)
+            .stage(
+                "web__fetch",
+                json!({"url": "https://a"}),
+                Taint::default(),
+                None,
+            )
             .unwrap();
 
-        let edited = store.update_args(&item.id, json!({"url": "https://b"})).unwrap();
+        let edited = store
+            .update_args(&item.id, json!({"url": "https://b"}))
+            .unwrap();
         assert!(edited.edited());
         assert_eq!(edited.args_before, json!({"url": "https://a"}));
         assert_eq!(edited.args, json!({"url": "https://b"}));
@@ -399,7 +419,11 @@ mod tests {
         let sent = store.resolve(&item.id, "sent", None).unwrap();
         assert_eq!(sent.status, "sent");
         assert!(sent.resolved_at.is_some());
-        assert_eq!(store.items().unwrap().len(), 1, "resolved in place, not archived");
+        assert_eq!(
+            store.items().unwrap().len(),
+            1,
+            "resolved in place, not archived"
+        );
 
         let err = store.resolve(&item.id, "rejected", None).unwrap_err();
         assert!(err.to_string().contains("not pending"), "{err}");

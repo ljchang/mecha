@@ -8,7 +8,10 @@ use mecha_mail::google::{auth, server::GoogleTools};
 use mecha_mail::{mcp, token};
 
 #[derive(Parser, Debug)]
-#[command(name = "mecha-google", about = "Gmail and Google Calendar as MCP tools")]
+#[command(
+    name = "mecha-google",
+    about = "Gmail and Google Calendar as MCP tools"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -37,9 +40,11 @@ async fn main() -> Result<()> {
     mecha_mail::init_tracing();
     let cli = Cli::parse();
     match cli.command {
-        Some(Command::Auth { client_id, client_secret, port }) => {
-            authenticate(client_id, client_secret, port).await
-        }
+        Some(Command::Auth {
+            client_id,
+            client_secret,
+            port,
+        }) => authenticate(client_id, client_secret, port).await,
         Some(Command::Serve) | None => {
             let manager = token::TokenManager::load(token::default_path()?)?;
             mcp::serve(GoogleTools { manager }).await
@@ -67,6 +72,9 @@ async fn authenticate(
     let creds = auth::interactive_flow(client_id, client_secret, port).await?;
     let account = creds.account.clone().unwrap_or_default();
     token::save(&path, &creds)?;
-    eprintln!("authenticated as {account}; credentials in {}", path.display());
+    eprintln!(
+        "authenticated as {account}; credentials in {}",
+        path.display()
+    );
     Ok(())
 }
