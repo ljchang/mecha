@@ -415,7 +415,15 @@ async fn run_loop(
         // tool list underneath us.
         let (model, provider, tools) =
             (live.model.clone(), live.provider.clone(), live.agent.registry().len());
+        // CSI 2026: the terminal buffers everything between the pair and
+        // presents it as one repaint. Follow-mode streaming scrolls the whole
+        // transcript region every token, and over SSH that write arrives in
+        // arbitrary packet-sized pieces — without this, visibly torn.
+        // Terminals that do not know the mode ignore it by spec, so there is
+        // nothing to probe.
+        crossterm::queue!(std::io::stdout(), crossterm::terminal::BeginSynchronizedUpdate)?;
         terminal.draw(|frame| draw(frame, app, &model, &provider, tools))?;
+        crossterm::execute!(std::io::stdout(), crossterm::terminal::EndSynchronizedUpdate)?;
 
         // Applied here rather than in the key handler: rebuilding is async, and
         // a run in flight must finish under the settings it started with.
@@ -1442,6 +1450,10 @@ fn enter() -> Result<(Terminal<CrosstermBackend<std::io::Stdout>>, bool)> {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
+        // A panic between Begin and End would otherwise leave the terminal
+        // buffering until its own timeout; ending an update that was never
+        // begun is harmless.
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::EndSynchronizedUpdate);
         if kitty_pushed() {
             let _ = crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
         }
