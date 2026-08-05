@@ -201,11 +201,16 @@ impl Tool for Subagent {
             Some(parent) => {
                 let parent = parent.clone();
                 let name = self.profile.name.clone();
+                // The dispatch stamped the parent's tool_use id for this very
+                // call; carrying it on every wrapped event is what lets a
+                // renderer keep two parallel delegations apart.
+                let call_id = ctx.call_id.clone();
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
                 let task = tokio::spawn(async move {
                     while let Some(event) = rx.recv().await {
                         let _ = parent.send(crate::agent::AgentEvent::Nested {
                             tool: name.clone(),
+                            id: call_id.clone(),
                             event: Box::new(event),
                         });
                     }
