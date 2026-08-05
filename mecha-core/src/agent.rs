@@ -991,7 +991,14 @@ impl Agent {
             system: Some(crate::compact::SUMMARY_SYSTEM.to_string()),
             messages: prompt,
             tools: Vec::new(),
-            max_tokens: self.cfg.max_tokens.min(8192),
+            // The summariser's own budget, not the agent's: a summary's length
+            // has no reason to track the answer budget, and tying them was
+            // measured to kill runs — at [agent] max_tokens = 4096 the
+            // summariser hit its limit mid-summary, the truncation guard
+            // (correctly) refused it, and the run gave up compacting and died
+            // of context pressure. 2/5 on chain-total-compacted in BOTH
+            // validation arms, same empty-completion deaths.
+            max_tokens: 8192,
             effort: self.cfg.effort,
             thinking: false,
             // The prefix is about to change, so there is nothing to reuse.
@@ -1109,7 +1116,8 @@ impl Agent {
                 rendered, summary,
             ))],
             tools: Vec::new(),
-            max_tokens: self.cfg.max_tokens.min(8192),
+            // Same rule as the summariser: its own budget, not the agent's.
+            max_tokens: 8192,
             effort: self.cfg.effort,
             thinking: false,
             cache_prompt: false,
