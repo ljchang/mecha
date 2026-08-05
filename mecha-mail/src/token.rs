@@ -11,6 +11,19 @@ use tokio::sync::Mutex;
 
 use crate::google::auth::OAuthConfig;
 
+/// Create the store directory owner-only. The files inside already enforce
+/// 0600 on themselves; the directory holding tokens and account addresses
+/// deserves the matching rule, and this tightens a pre-existing one too.
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// Everything needed to mint access tokens, in one place. A Desktop-client
 /// secret is non-secret by Google's own definition and absent entirely for
 /// Microsoft public clients; the refresh token is exactly as sensitive as
@@ -62,7 +75,7 @@ pub fn load(path: &Path) -> Result<StoredCredentials> {
 pub fn save(path: &Path, creds: &StoredCredentials) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        create_private_dir(dir)?;
     }
     let tmp = path.with_extension("json.tmp");
     {

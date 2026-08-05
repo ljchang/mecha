@@ -190,7 +190,7 @@ impl Session {
     }
 
     pub fn create(dir: &Path, meta: SessionMeta) -> Result<Self> {
-        std::fs::create_dir_all(dir)
+        crate::create_private_dir(dir)
             .with_context(|| format!("creating session directory {}", dir.display()))?;
         let path = dir.join(format!("{}.jsonl", meta.id));
         let session = Session { meta: meta.clone(), path };
@@ -292,6 +292,53 @@ impl Session {
             .collect())
     }
 
+    /// The header alone, without parsing the rest of the file.
+    ///
+    /// Listing goes through this rather than [`Session::load`] so `mecha
+    /// sessions` stays O(number of sessions) instead of O(total transcript
+    /// bytes) — with reflect-on-close recording every interaction, the full
+    /// parse re-read the whole store to print one line per file. The header
+    /// is the first record `create` writes; a file whose first record is
+    /// anything else is not a session this process wrote, and is skipped
+    /// exactly as `load`'s no-header error skipped it.
+    pub fn peek_meta(path: &Path) -> Option<SessionMeta> {
+        use std::io::BufRead;
+        let file = std::fs::File::open(path).ok()?;
+        let mut reader = std::io::BufReader::new(file);
+        let mut first = String::new();
+        loop {
+            first.clear();
+            if reader.read_line(&mut first).ok()? == 0 {
+                return None;
+            }
+            if !first.trim().is_empty() {
+                break;
+            }
+        }
+        match serde_json::from_str::<Record>(&first).ok()? {
+            Record::Meta(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// The run summaries of a transcript, summed: total usage and turns
+    /// across every run the file records. Zero for a transcript that
+    /// predates the summary record or died before writing one — an honest
+    /// under-count, never a guess.
+    pub fn usage_totals(path: &Path) -> Result<(Usage, u32)> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let mut usage = Usage::default();
+        let mut turns = 0u32;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            if let Ok(Record::Summary { usage: u, turns: t }) = serde_json::from_str(line) {
+                usage.add(&u);
+                turns += t;
+            }
+        }
+        Ok((usage, turns))
+    }
+
     /// Sessions in `dir`, newest first.
     pub fn list(dir: &Path) -> Result<Vec<(SessionMeta, PathBuf)>> {
         if !dir.exists() {
@@ -304,7 +351,7 @@ impl Session {
                 continue;
             }
             // A transcript with no header is unusable; skip it quietly.
-            if let Ok((meta, _)) = Session::load(&path) {
+            if let Some(meta) = Session::peek_meta(&path) {
                 out.push((meta, path));
             }
         }
@@ -563,6 +610,79 @@ mod tests {
 
         let tl = Session::taint_timeline(&session.path).unwrap();
         assert!(tl.covering(0).is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn listing_reads_only_the_first_record_and_skips_files_without_a_header() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-peek")).unwrap();
+        session.append_messages(&[Message::user("hello")]).unwrap();
+
+        // A stray JSONL file whose first record is not a header is skipped —
+        // the contract is now explicitly "the header is the first record",
+        // which is where `create` writes it; buried headers no longer count,
+        // and that is the price of listing without parsing every transcript.
+        let stray = serde_json::to_string(&Record::Message(Message::user("orphan"))).unwrap();
+        let meta = serde_json::to_string(&Record::Meta(meta_with_id("buried"))).unwrap();
+        std::fs::write(dir.join("stray.jsonl"), format!("{stray}\n{meta}\n")).unwrap();
+
+        let listed = Session::list(&dir).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].0.id, "20260101T000000-peek");
+
+        // And the peek agrees with the full load about what the header says.
+        let peeked = Session::peek_meta(&session.path).unwrap();
+        let (loaded, _) = Session::load(&session.path).unwrap();
+        assert_eq!(peeked.id, loaded.id);
+        assert_eq!(peeked.model, loaded.model);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn usage_totals_sum_every_run_and_report_zero_for_a_summaryless_file() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-usage")).unwrap();
+
+        // No summary yet — a run that died mid-flight. Zero, not an error.
+        assert_eq!(Session::usage_totals(&session.path).unwrap().1, 0);
+
+        // Two runs on one session (chat, resume): the totals are the sum.
+        session
+            .append(&Record::Summary {
+                usage: Usage { input_tokens: 100, output_tokens: 10, ..Default::default() },
+                turns: 2,
+            })
+            .unwrap();
+        session
+            .append(&Record::Summary {
+                usage: Usage { input_tokens: 50, output_tokens: 5, ..Default::default() },
+                turns: 1,
+            })
+            .unwrap();
+
+        let (usage, turns) = Session::usage_totals(&session.path).unwrap();
+        assert_eq!(usage.input_tokens, 150);
+        assert_eq!(usage.output_tokens, 15);
+        assert_eq!(turns, 3);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_session_directory_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        // A fresh path, so `create` makes the directory itself.
+        let dir = std::env::temp_dir().join(format!("mecha-session-{}", uuid::Uuid::new_v4()));
+        Session::create(&dir, meta_with_id("20260101T000000-perms")).unwrap();
+
+        // Transcripts hold whatever the tools returned — mail bodies
+        // included — so the directory gets the token-file rule.
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
 
         std::fs::remove_dir_all(&dir).ok();
     }

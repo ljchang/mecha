@@ -103,7 +103,7 @@ pub fn save(file: &AccountsFile) -> Result<()> {
     validate(file)?;
     let path = file_path()?;
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        crate::token::create_private_dir(dir)?;
     }
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, toml::to_string_pretty(file)?)?;
