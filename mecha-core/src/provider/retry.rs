@@ -317,6 +317,13 @@ mod tests {
             classify_http(400, r#"{"type":"exceed_context_size_error"}"#, None),
             ContextOverflow
         );
+        // ...and it outranks the status class: llama-server reports overflow
+        // as a 500 (observed live). As ServerError it would be retried with
+        // the same payload and never reach compaction recovery.
+        assert_eq!(
+            classify_http(500, "Context size has been exceeded.", None),
+            ContextOverflow
+        );
         assert_eq!(
             classify_http(400, "Your credit balance is too low", None),
             Billing
