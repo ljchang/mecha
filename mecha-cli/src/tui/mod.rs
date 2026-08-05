@@ -79,6 +79,11 @@ struct Live {
     /// `/mcp off` followed by `/model x` would quietly turn MCP back on,
     /// because the rebuild would start from the original flags again.
     opts: GlobalOpts,
+    /// The todo tool the agent is actually using, polled each frame for the
+    /// live pane. Riding here, not on `App`, so a `/model` switch — which
+    /// rebuilds the agent and its tools wholesale — refreshes it for free; a
+    /// handle cached anywhere else would go stale and watch a dead list.
+    todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
     /// Held for the lifetime of the session: dropping a client kills its
     /// server, so the *old* set must outlive the switch that replaced it only
     /// until the new one is up.
@@ -92,6 +97,7 @@ impl Live {
             model: p.model,
             provider: p.provider_name,
             opts,
+            todo: p.todo,
             _mcp: p._mcp,
         }
     }
@@ -187,6 +193,10 @@ struct App {
     sandbox_line: String,
     /// The workspace root, for `@path` completion. Fixed for the session.
     workspace: std::path::PathBuf,
+    /// Whether the todo pane may appear at all. `/todo` flips it; the pane
+    /// additionally requires a non-empty list, so this is a veto, not a
+    /// summons.
+    todo_visible: bool,
     /// Every provider entry in config, as (name, model). Fixed for the session.
     providers: Vec<(String, String)>,
     /// Whether the terminal speaks the kitty keyboard protocol, which is what
@@ -367,6 +377,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         tools: None,
         sandbox_line: setup::sandbox_line(&prepared.sandbox),
         workspace: prepared.workspace.clone(),
+        todo_visible: true,
         shell_tx,
         providers: prepared
             .config
@@ -438,6 +449,10 @@ async fn run_loop(
         // tool list underneath us.
         let (model, provider, tools) =
             (live.model.clone(), live.provider.clone(), live.agent.registry().len());
+        // Polled per frame rather than event-driven: the list lives behind a
+        // Mutex the tool writes to, and a lock-and-clone at frame rate is
+        // cheaper than being clever.
+        let todo_items = live.todo.as_ref().map(|t| t.items());
         // CSI 2026: the terminal buffers everything between the pair and
         // presents it as one repaint. Follow-mode streaming scrolls the whole
         // transcript region every token, and over SSH that write arrives in
@@ -445,7 +460,7 @@ async fn run_loop(
         // Terminals that do not know the mode ignore it by spec, so there is
         // nothing to probe.
         crossterm::queue!(std::io::stdout(), crossterm::terminal::BeginSynchronizedUpdate)?;
-        terminal.draw(|frame| draw(frame, app, &model, &provider, tools))?;
+        terminal.draw(|frame| draw(frame, app, &model, &provider, tools, todo_items.as_deref()))?;
         crossterm::execute!(std::io::stdout(), crossterm::terminal::EndSynchronizedUpdate)?;
 
         // Applied here rather than in the key handler: rebuilding is async, and
@@ -1059,6 +1074,15 @@ fn run_command(
             ));
         }
 
+        Command::Todo => {
+            app.todo_visible = !app.todo_visible;
+            say(if app.todo_visible {
+                "todo pane shown — it appears whenever the list is non-empty".into()
+            } else {
+                "todo pane hidden".into()
+            });
+        }
+
         Command::Quit => app.should_quit = true,
 
         Command::Model(None) | Command::Provider(None) => {
@@ -1362,21 +1386,38 @@ fn input_layout(text: &str, cursor: usize, width: u16) -> (u16, u16, u16) {
     (cursor_col, cursor_row, row + 1)
 }
 
-fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: usize) {
+fn draw(
+    frame: &mut Frame,
+    app: &mut App,
+    model: &str,
+    provider: &str,
+    tools: usize,
+    todo: Option<&[mecha_core::tool::todo::TodoItem]>,
+) {
     // The input box grows with what has been typed rather than scrolling
     // sideways, so a long steering instruction stays readable while writing it.
     let inner_width = frame.area().width.saturating_sub(2);
     let (cursor_col, cursor_row, rows) = input_layout(&app.input, app.cursor, inner_width);
     let input_height = rows.clamp(1, 6) + 2;
+
+    // The pane exists only while there is a list: an empty bordered box would
+    // be a badge that is always there, and those stop being read.
+    let todo = todo.filter(|items| app.todo_visible && !items.is_empty());
+    let todo_height = todo.map_or(0, |items| (items.len() as u16).min(8) + 2);
+
     let chunks = Layout::vertical([
         Constraint::Min(1),
+        Constraint::Length(todo_height),
         Constraint::Length(1),
         Constraint::Length(input_height),
     ])
     .split(frame.area());
 
     app.transcript.draw(frame, chunks[0]);
-    frame.render_widget(Paragraph::new(app.status(model, provider, tools)), chunks[1]);
+    if let Some(items) = todo {
+        draw_todo(frame, chunks[1], items);
+    }
+    frame.render_widget(Paragraph::new(app.status(model, provider, tools)), chunks[2]);
 
     let (border, hint) = match &app.running {
         Some(run) if run.cancelling => (Color::Red, " stopping "),
@@ -1419,13 +1460,13 @@ fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: us
                 .border_style(Style::new().fg(border))
                 .title(hint),
         );
-    frame.render_widget(input, chunks[2]);
+    frame.render_widget(input, chunks[3]);
 
     // Cursor position inside the bordered box, wrapping as the text does and
     // breaking where the text does.
     frame.set_cursor_position((
-        chunks[2].x + 1 + cursor_col,
-        chunks[2].y + 1 + cursor_row.min(rows.clamp(1, 6).saturating_sub(1)),
+        chunks[3].x + 1 + cursor_col,
+        chunks[3].y + 1 + cursor_row.min(rows.clamp(1, 6).saturating_sub(1)),
     ));
 
     // What else could still be meant, listed under the box. Only while the
@@ -1439,9 +1480,9 @@ fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: us
             hint.push_str(&format!("  … +{}", candidates.len() - shown));
         }
         let area = Rect {
-            x: chunks[2].x,
-            y: chunks[2].y.saturating_sub(1),
-            width: chunks[2].width,
+            x: chunks[3].x,
+            y: chunks[3].y.saturating_sub(1),
+            width: chunks[3].width,
             height: 1,
         };
         frame.render_widget(Clear, area);
@@ -1468,6 +1509,45 @@ fn draw(frame: &mut Frame, app: &mut App, model: &str, provider: &str, tools: us
     if let Some(request) = &app.pending {
         draw_approval(frame, request);
     }
+}
+
+/// The agent's own task list, live. The model has no read path to this Mutex
+/// beyond the echo in its last `todo` result — the pane is for the human, and
+/// it is most of why the tool is worth having during a long run.
+fn draw_todo(frame: &mut Frame, area: Rect, items: &[mecha_core::tool::todo::TodoItem]) {
+    use mecha_core::tool::todo::Status;
+
+    let done = items.iter().filter(|i| i.status == Status::Completed).count();
+    let body: Vec<Line> = items
+        .iter()
+        .map(|item| {
+            let (marker, style) = match item.status {
+                Status::Completed => ("[x]", Style::new().fg(Color::DarkGray)),
+                Status::InProgress => ("[~]", Style::new().fg(Color::Yellow)),
+                Status::Pending => ("[ ]", Style::new().fg(Color::White)),
+            };
+            Line::styled(format!(" {marker} {}", item.content), style)
+        })
+        .collect();
+
+    // When the list is taller than the pane, keep the working edge visible:
+    // the finished head is the part nobody is waiting on.
+    let visible = area.height.saturating_sub(2).max(1) as usize;
+    let first_active = items
+        .iter()
+        .position(|i| i.status != Status::Completed)
+        .unwrap_or(0);
+    let scroll = (first_active + 1).saturating_sub(visible) as u16;
+
+    frame.render_widget(
+        Paragraph::new(body).scroll((scroll, 0)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::new().fg(Color::DarkGray))
+                .title(format!(" todo {done}/{} · /todo hides ", items.len())),
+        ),
+        area,
+    );
 }
 
 /// The middle tier of progressive disclosure: the status line hints at 3–4
