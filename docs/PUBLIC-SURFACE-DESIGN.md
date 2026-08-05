@@ -327,6 +327,74 @@ in the classification, not a demand on the user. Overload is what produced the
 silence in the first place; a design that relocates the pile into a prettier
 queue has solved nothing.
 
+### 3.2 Tasks and deadlines, and why they are the load-bearing part
+
+Nothing durable tracks these today. `~/.mecha/` holds briefings, learning,
+mail, outbox, sessions and triggers; there is no task store, and the `todo`
+tool is an in-run scratchpad that dies with the run.
+
+**The reason this matters more than it looks: a deadline is what makes silence
+detectable.** Today an unanswered message is *invisible* — there is no artifact
+anywhere that says "you owe this person a reply and it has been eleven days."
+Nothing can surface it, escalate it, or close it out, because there is no
+object to hang a state on. Give the obligation a due date and silence stops
+being an absence and becomes a **state** — which can be shown in the morning,
+escalated when it ages, and eventually auto-declined with dignity rather than
+left to rot. That is the mechanism by which this whole system attacks the
+actual problem, and it is why tasks are not a side feature.
+
+**Three sources, and the second is the one nobody has:**
+
+- **Inbound requests.** The manifest's `sla_days` generates the due date, so
+  every typed request carries a deadline without anyone typing one. Already
+  modelled by §3; this just names the derivation.
+- **Commitments the user made.** "I'll send you the draft next week" in a sent
+  message is a task, and nothing records it. Extractable from Sent Items and —
+  more reliably — from **released outbox items**, where mecha already knows
+  exactly what went out because it staged it. This is the distinctive
+  capability here and it is squarely on the stated goal: a dropped promise is
+  the same failure as an unanswered message, one turn later.
+- **Direct capture.** The user says so.
+
+**Its own store, following the rules the other three already follow** — one
+pretty JSON per item, temp-sibling-and-rename, advisory flock never held across
+anything slow, and a ledger that answers "why didn't that happen". A fourth
+instance of an existing pattern, not a new one.
+
+**Deliberately not in pkg.** The knowledge graph is marked `untrusted_input` by
+config on purpose, and mecha reads it back through that override. Escalation
+logic must not run on untrusted data: a row that says "due tomorrow" has to be
+trustworthy, and anything arriving `.from_outside()` is by definition not. Push
+episodes to pkg as evidence; keep the tasks that drive behaviour at home.
+
+**Recurrence reuses `cron.rs`.** Annual reports, term-bound obligations, a
+review load that resets. The parser is already hand-rolled precisely because
+every crate spoke Quartz's dialect, and it is already correct across both DST
+directions in a named IANA zone. Inventing a second recurrence model here would
+be re-answering a question this project already paid for.
+
+**The daily surface gains a line, and it goes first:**
+
+```
+due          sorted by deadline, each with what breaks if it slips
+questions    policy questions, each unblocking a named class
+drafts       batched by type, to approve
+handled      one ledger row each
+```
+
+This is also what makes one of the mining findings load-bearing rather than
+incidental: **the hard deadline, and what breaks if it slips, is missing from
+almost every inbound request.** It is a required field precisely because it
+feeds this, and "what breaks" is what lets the morning list sort by
+consequence instead of by date.
+
+**One caution, because it decides whether this gets used.** A task list you do
+not trust is worse than no task list — one hallucinated commitment and the user
+stops reading it. So extraction is conservative by default, every derived task
+**links to the message it came from**, and a derived task the user deletes is
+recorded as a negative example rather than silently forgotten. Grade the
+artifact, not the model's confidence in it.
+
 ---
 
 ## 4. The protocol
