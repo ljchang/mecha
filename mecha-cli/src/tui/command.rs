@@ -14,6 +14,8 @@ use mecha_core::config::PermissionMode;
 pub enum Command {
     Help,
     Tools,
+    /// Scheduled prompts: see, edit, enable/disable, run, cancel, delete.
+    Triggers,
     /// `None` shows the current model; `Some` switches to it.
     Model(Option<String>),
     Provider(Option<String>),
@@ -57,6 +59,9 @@ pub fn parse(line: &str) -> Option<Command> {
     Some(match name {
         "help" | "h" | "?" => Command::Help,
         "tools" => Command::Tools,
+        // Both spellings: the command is `mecha trigger`, the thing you want
+        // to see is all of them.
+        "triggers" | "trigger" => Command::Triggers,
         "model" | "m" => Command::Model(arg.map(str::to_string)),
         "provider" | "p" => Command::Provider(arg.map(str::to_string)),
         "usage" => Command::Usage,
@@ -193,8 +198,10 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 10] =
-    ["help", "tools", "model", "provider", "mode", "mcp", "usage", "clear", "session", "todo"];
+pub const NAMES: [&str; 11] = [
+    "help", "tools", "triggers", "model", "provider", "mode", "mcp", "usage", "clear", "session",
+    "todo",
+];
 
 /// Command names that could still be meant by what has been typed.
 ///
@@ -243,6 +250,7 @@ pub fn mode_name(mode: PermissionMode) -> &'static str {
 pub const HELP: &str = "\
   /help                  this list
   /tools                 tools this agent can call
+  /triggers              scheduled prompts: see, edit, run, cancel
   /model [id]            show or switch the model
   /provider [name]       show or switch the provider
   /mode [ask|allow|read-only]   show or switch the permission mode
