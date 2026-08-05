@@ -41,7 +41,10 @@ pub struct Transcript {
     /// Stick to the bottom as new output arrives — until the user scrolls up,
     /// at which point staying put is the only sane behaviour.
     pub follow: bool,
-    /// Show thinking and tool output.
+    /// Show thinking and tool output. A *render* filter, not a record filter:
+    /// everything is kept, so toggling mid-session (^O) reveals what already
+    /// happened rather than only what happens next. `--verbose` is just the
+    /// initial position.
     pub verbose: bool,
 }
 
@@ -69,15 +72,11 @@ impl Transcript {
     fn absorb_at(&mut self, event: &AgentEvent, depth: u8) {
         match event {
             AgentEvent::Nested { event, .. } => self.absorb_at(event, depth.saturating_add(1)),
-            // A child's prose is detail — its conclusions come back to the
-            // parent through the tool result — so it only streams in verbose.
-            AgentEvent::TextDelta(t) if depth == 0 || self.verbose => {
-                match self.entries.last_mut() {
-                    Some(Entry::Assistant { text, depth: d }) if *d == depth => text.push_str(t),
-                    _ => self.push(Entry::Assistant { text: t.clone(), depth }),
-                }
-            }
-            AgentEvent::ThinkingDelta(t) if self.verbose => match self.entries.last_mut() {
+            AgentEvent::TextDelta(t) => match self.entries.last_mut() {
+                Some(Entry::Assistant { text, depth: d }) if *d == depth => text.push_str(t),
+                _ => self.push(Entry::Assistant { text: t.clone(), depth }),
+            },
+            AgentEvent::ThinkingDelta(t) => match self.entries.last_mut() {
                 Some(Entry::Thinking { text, depth: d }) if *d == depth => text.push_str(t),
                 _ => self.push(Entry::Thinking { text: t.clone(), depth }),
             },
@@ -87,16 +86,12 @@ impl Transcript {
                 depth,
             }),
             AgentEvent::ToolResult { name, is_error, content, .. } => {
-                // Errors are always shown: an agent quietly recovering from a
-                // failure is exactly what you want to see.
-                if self.verbose || *is_error {
-                    self.push(Entry::ToolResult {
-                        name: name.clone(),
-                        is_error: *is_error,
-                        content: content.clone(),
-                        depth,
-                    });
-                }
+                self.push(Entry::ToolResult {
+                    name: name.clone(),
+                    is_error: *is_error,
+                    content: content.clone(),
+                    depth,
+                });
             }
             AgentEvent::ToolDenied { name, reason } => self.push(Entry::Error(format!(
                 "{}{name} denied — {reason}",
@@ -104,6 +99,21 @@ impl Transcript {
             ))),
             AgentEvent::QueuedInput(text) => self.push(Entry::Steer(text.clone())),
             _ => {}
+        }
+    }
+
+    /// What `verbose` decides, in one place: detail entries render only when
+    /// it is on. Errors always render — an agent quietly recovering from a
+    /// failure is exactly what you want to see — and so does the parent's own
+    /// prose, which is the answer being waited on.
+    fn visible(&self, entry: &Entry) -> bool {
+        match entry {
+            Entry::Thinking { .. } => self.verbose,
+            Entry::ToolResult { is_error, .. } => self.verbose || *is_error,
+            // A child's prose is detail — its conclusions come back to the
+            // parent through the tool result.
+            Entry::Assistant { depth, .. } => *depth == 0 || self.verbose,
+            _ => true,
         }
     }
 
@@ -116,6 +126,9 @@ impl Transcript {
         let mut out: Vec<Line<'static>> = Vec::new();
 
         for entry in &self.entries {
+            if !self.visible(entry) {
+                continue;
+            }
             match entry {
                 Entry::User(text) => {
                     out.push(Line::from(vec![
@@ -273,22 +286,60 @@ mod tests {
         assert_eq!(depths, vec![0, 1, 2]);
     }
 
+    /// Everything a transcript would render, as one string, for asserting on
+    /// what is *visible* rather than what is recorded.
+    fn rendered(t: &Transcript) -> String {
+        t.lines()
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
-    fn a_childs_prose_is_detail_and_only_streams_in_verbose() {
+    fn a_childs_prose_is_detail_and_only_renders_in_verbose() {
         // The child's conclusions come back through the parent's tool result;
         // its running commentary would otherwise be indistinguishable from
-        // the answer the user is waiting for.
-        let mut quiet = Transcript::new(false);
-        quiet.absorb(&nested("helper", AgentEvent::TextDelta("child says".into())));
-        assert!(quiet.entries.is_empty(), "hidden while not verbose");
+        // the answer the user is waiting for. Recorded either way — the
+        // toggle has to be able to reveal it later.
+        let mut t = Transcript::new(false);
+        t.absorb(&nested("helper", AgentEvent::TextDelta("child says".into())));
+        t.absorb(&nested("helper", AgentEvent::TextDelta(" more".into())));
 
-        let mut verbose = Transcript::new(true);
-        verbose.absorb(&nested("helper", AgentEvent::TextDelta("child says".into())));
-        verbose.absorb(&nested("helper", AgentEvent::TextDelta(" more".into())));
-        match &verbose.entries[..] {
-            [Entry::Assistant { text, depth: 1 }] => assert_eq!(text, "child says more"),
-            other => panic!("expected one folded child entry, got {} entries", other.len()),
-        }
+        assert!(!t.entries.is_empty(), "recorded even while hidden");
+        assert!(!rendered(&t).contains("child says"), "hidden while not verbose");
+
+        t.verbose = true;
+        assert!(rendered(&t).contains("child says more"), "revealed by the toggle, folded");
+    }
+
+    #[test]
+    fn the_verbose_toggle_reveals_tool_output_that_already_happened() {
+        // The old behaviour dropped hidden entries at absorb time, which made
+        // a later toggle only apply to the future — precisely backwards, since
+        // the moment you reach for ^O is after something looked wrong.
+        let mut t = Transcript::new(false);
+        t.absorb(&call("fs_read"));
+        t.absorb(&AgentEvent::ToolResult {
+            id: "t1".into(),
+            name: "fs_read".into(),
+            is_error: false,
+            content: "the file contents".into(),
+        });
+
+        assert!(!rendered(&t).contains("the file contents"));
+        t.verbose = true;
+        assert!(rendered(&t).contains("the file contents"));
+
+        // Errors were never hidden, toggle or no toggle.
+        t.verbose = false;
+        t.absorb(&AgentEvent::ToolResult {
+            id: "t2".into(),
+            name: "shell".into(),
+            is_error: true,
+            content: "exit 1: no such file".into(),
+        });
+        assert!(rendered(&t).contains("no such file"));
     }
 
     #[test]
