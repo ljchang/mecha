@@ -95,10 +95,24 @@ skipped test reads exactly like a passing one.
 
 ## Documentation
 
-User-facing behaviour changes belong in `website/docs/`. Release-note-worthy
-changes go in the `## [Unreleased]` section of `CHANGELOG.md` at the repository
-root — not in `website/docs/changelog.md`, which is generated from it at build
-time and gitignored.
+**[`docs/README.md`](docs/README.md) is the map** — which document holds what,
+and a decision rule for where a given piece of writing goes. Read it before
+adding to any of them; most new writing belongs in a file that already exists.
 
-If you learn something that would have saved you an hour, add it to `CLAUDE.md`.
-That file is the reason the next agent will be faster than you were.
+The short version: `CLAUDE.md` is why the code is shaped this way,
+`docs/HANDOFF.md` is current state and open work only, `docs/HISTORY.md` is
+what shipped and what was learned, `website/docs/` is for users, and
+`CHANGELOG.md` gets the `## [Unreleased]` entry for anything user-visible.
+Do not edit `website/docs/changelog.md` — it is generated from `CHANGELOG.md`
+at build time and gitignored.
+
+**At the end of a session that changed behaviour, run the `handoff` skill**
+(`.claude/skills/handoff/`). It is the procedure for verifying which open items
+actually shipped, moving them into `docs/HISTORY.md`, and re-checking the facts
+that rot. Its one rule is worth internalising even if you never invoke it:
+*verify against source, never against a commit message* — including your own.
+
+If you learn something that would have saved you an hour, write it down. A
+lesson with a general rule attached goes in `docs/HISTORY.md` under "Traps
+already hit"; an invariant that would otherwise look like an improvement to
+remove goes in `CLAUDE.md`.

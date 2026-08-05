@@ -10,6 +10,13 @@ Two companion documents, so this one can stay short:
 - [`HISTORY.md`](HISTORY.md) — what was built and when, and the traps hit along
   the way. Everything here that turned into "done" moved there.
 
+**Keeping this file honest is a procedure, not a habit.** Run the `handoff`
+skill (`.claude/skills/handoff/`) at the end of a session that changed
+behaviour: it walks every open item below, verifies against source whether it
+shipped, moves the ones that did into `HISTORY.md`, and re-checks the counts
+and machine facts that rot silently. [`README.md`](README.md) in this directory
+maps which document holds what.
+
 ---
 
 ## Where the work is

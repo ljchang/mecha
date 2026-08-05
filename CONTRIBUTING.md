@@ -43,6 +43,21 @@ npm run build    # what CI builds; fails on broken links
 history. `website/docs/changelog.md` is generated from it before every build and
 is gitignored — edit the root file.
 
+## Which document to write in
+
+[`docs/README.md`](docs/README.md) maps every document to its job and gives a
+decision rule for where a given piece of writing belongs. It is worth two
+minutes before you add to any of them.
+
+Two conventions carry most of the weight. `docs/HANDOFF.md` is bounded — it
+holds current state and open work only, and every item in it has been verified
+unbuilt against source. Completed work moves to `docs/HISTORY.md` rather than
+being struck through, which is how that file stayed readable after growing to
+1,965 lines once already.
+
+The `handoff` skill (`.claude/skills/handoff/`) is the procedure for that move.
+Run it at the end of a session that changed behaviour.
+
 ## Invariants
 
 These are enforced structurally rather than by convention, and a change that
