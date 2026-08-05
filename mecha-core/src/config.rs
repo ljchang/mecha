@@ -235,6 +235,16 @@ pub struct AgentConfig {
     /// Turns kept verbatim after a compaction. The recent ones are where the
     /// work is; a summary of the last two turns is worse than the turns.
     pub compact_keep_recent: usize,
+    /// Stop a run that repeats an identical tool call, with an identical
+    /// result, right after a compaction (`StopCause::Loop`).
+    ///
+    /// On by default — the asymmetry is deliberate. A general repeated-call
+    /// detector would need a measurement to justify watching all of ordinary
+    /// work; this one exists to escape the specific loop that burns unbounded
+    /// tokens at the largest prompts a run will ever send, and a no-config
+    /// user should get that protection. Identical arguments with a *changing*
+    /// result is polling and never trips it.
+    pub loop_guard: bool,
     /// Check each summary against the transcript it replaces before
     /// installing it, and regenerate once with the omissions named.
     ///
@@ -268,6 +278,7 @@ impl Default for AgentConfig {
             compact_at_tokens: None,
             timezone: None,
             compact_keep_recent: 6,
+            loop_guard: true,
             compact_validate: true,
         }
     }
@@ -648,6 +659,7 @@ struct AgentLayer {
     compact_at_tokens: Option<u64>,
     compact_keep_recent: Option<usize>,
     compact_validate: Option<bool>,
+    loop_guard: Option<bool>,
     timezone: Option<String>,
 }
 
@@ -736,6 +748,9 @@ impl ConfigLayer {
             }
             if let Some(v) = a.compact_validate {
                 t.compact_validate = v;
+            }
+            if let Some(v) = a.loop_guard {
+                t.loop_guard = v;
             }
             if a.timezone.is_some() {
                 t.timezone = a.timezone;

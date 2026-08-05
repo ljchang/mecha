@@ -404,6 +404,18 @@ Four things that decide the design:
   place to resume is an assistant message. `compact.rs` is pure and unit-tested
   for exactly this; the loop re-checks the rebuilt transcript before installing
   it, because a guard that fires after the damage is not a guard.
+- **A compaction arms the loop guard** (`[agent] loop_guard`, on by default).
+  An identical call with an identical result, repeated within a window of
+  three calls after any compaction, stops the run with `StopCause::Loop` —
+  distinct from `MaxTurns`, because "hit the turn limit" reads as the task
+  being too big when a stuck run is a different problem. Keyed on call *and*
+  result: polling (same arguments, changing result) never trips it. Dormant
+  until a compaction on purpose — repeated calls in ordinary work are the
+  model's business, and the failure this catches is specifically the run
+  re-living what a summary dropped, at the largest prompts it will ever
+  send. Gradeable via `expect.stop_cause: "loop"`; no shipped case asserts
+  it, because a case cannot reliably make a model loop, and a case that
+  asserts an outcome it may never exercise is worse than no case.
 - **The summariser gets prose, not a replay.** Sending the real messages means
   sending `tool_result`s on a request that declares no tools, and llama-server
   answers that with an empty completion. Found by running it, not by reading the
