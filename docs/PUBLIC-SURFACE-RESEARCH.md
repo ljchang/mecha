@@ -11,9 +11,11 @@ documents (`ARTIFACT-RESEARCH`, `HOSTING-RESEARCH`, `SCHEDULING-RESEARCH`,
 identifiers (`A*`, `H*`, `F*`) are retired in favour of the single `P*` list
 below.
 
-**Nothing here is built.** This is a planning document and should stay one
-until the open questions at the end are answered. A reader finding it cold
-should not go looking for `mecha serve` in the source.
+**Nothing here is built.** This is the survey and the argument. The decisions
+taken off the back of it live in
+[`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) — read that for what is
+actually being built; read this for why. A reader finding either cold should
+not go looking for `mecha serve` in the source.
 
 **Venue key**: ✅ peer-reviewed · 📄 preprint · 📰 vendor/blog · 📘 spec or
 standards body · ⚖️ law or regulation · 🔮 folklore (no measurement exists).
