@@ -261,7 +261,8 @@ pub fn sandbox_line(sandbox: &mecha_core::sandbox::Sandbox) -> String {
 /// Resolve config, workspace, tools, and the approval policy.
 pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<PreparedTools> {
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
-    let mut cfg = Config::load(&cwd)?;
+    let mut cfg =
+        if opts.global_config_only { Config::load_global()? } else { Config::load(&cwd)? };
 
     // --- flags override config ---
     if let Some(effort) = opts.effort {
