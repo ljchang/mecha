@@ -696,6 +696,20 @@ fn on_key(
 
         KeyCode::Char('d') if ctrl && app.input.is_empty() => app.should_quit = true,
 
+        // A live version of --verbose. The transcript records everything and
+        // filters at render, so turning this on mid-run reveals the tool
+        // output that already happened — which is exactly when you want it.
+        KeyCode::Char('o') if ctrl => {
+            app.transcript.verbose = !app.transcript.verbose;
+            app.transcript.push(Entry::Notice(
+                if app.transcript.verbose {
+                    "showing thinking and tool output — ^O to hide".into()
+                } else {
+                    "hiding thinking and tool output — ^O to show".into()
+                },
+            ));
+        }
+
         // Fill in as much as every candidate agrees on. Repeated presses
         // converge rather than cycling through guesses.
         KeyCode::Tab => {
