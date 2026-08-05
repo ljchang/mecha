@@ -14,7 +14,7 @@ wins and the research doc keeps the reasoning.
 | Question | Decision | Consequence |
 |---|---|---|
 | Own server, or a platform? | **Own server on a VPS.** One Rust binary, SQLite in WAL, its own ACME. No CDN in front to begin with. | Total header control, nobody else terminating TLS, testable locally because it is just a program. A box to patch forever. |
-| Where does the code live? | **`mecha-factory`, its own repository**, three deployables. | §2.1. Two languages and a marimo dependency do not belong in mecha's `cargo test --workspace` CI. Free on crates.io, PyPI and GitHub as of 2026-08-05. |
+| Where does the code live? | **`mecha-factory`, its own repository.** Rust throughout; Python only as a sandboxed marimo subprocess. | §2.1. It is a deployed server with its own release cycle, and the credential-isolation property becomes checkable by looking at what is deployed. Free on crates.io, PyPI and GitHub as of 2026-08-05. |
 | How does mecha reach it? | **MCP for `publish`; CLI for `drain`.** | §2.2. Outbox routing is by tool *name* in the dispatch path, so staging works with zero mecha-core changes — and the common case (nothing new) must cost zero tokens, which rules out an agent tool. |
 | How does mecha talk to it? | **API key, not OAuth.** Two scoped keys, minted by mecha, stored hashed on the server. | Mirrors the two forced-command SSH keys. OAuth buys delegation between parties, and there is only one party. |
 | Which direction do packets go? | **Push–pull, unchanged.** mecha publishes and drains; the server never initiates. | The home machine's attack surface is unchanged by shipping this. |
@@ -54,13 +54,22 @@ wins and the research doc keeps the reasoning.
 The publish path at home has one more boundary inside it (§2.3):
 
 ```
-  notebook.py ──▶ factory-render ──▶ a directory ──▶ factory-publish ──▶ POST
-                  (sandboxed:         of bytes        (holds the key,
-                   no network,                         executes nothing,
-                   no key,                             runs the vendoring
-                   executes the                        gate)
-                   notebook)
+  markdown / data ──────────────────────┐
+                                        │
+  notebook.py ──▶ marimo (subprocess) ──┤
+                  sandboxed: no network,│
+                  no key, executes the  │
+                  notebook              │
+                                        ▼
+                              factory-publish (Rust)
+                              renders data→HTML in process,
+                              runs the vendoring gate,
+                              holds the key, POSTs
 ```
+
+Only the marimo path is sandboxed, and the reason is not the language: it is
+the only renderer that **executes code**. Everything else is data→HTML with
+nothing to run.
 
 ### 2.1 Its own repository, and three deployables
 
@@ -71,8 +80,42 @@ wrong, and reading `marimo-book` is what showed why: this is not one program.**
 | Deployable | Language | Runs on | Holds |
 |---|---|---|---|
 | **`mecha-factory`** (bin `factory`) | Rust, one static binary | the VPS | request queue, published bytes, a TLS cert |
-| **`mecha-factory-render`** | Python | home, sandboxed, **no network, no key** | executes notebook code |
-| **`mecha-factory-publish`** | Python, thin | home | the publish API key; executes nothing |
+| **`mecha-factory-publish`** (bin `factory-publish`) | Rust | home | the publish API key; renders everything that is data→HTML |
+| the marimo renderer | Python **subprocess** | home, sandboxed, **no network, no key** | executes notebook code |
+
+**Correction, and it matters.** An earlier draft of this section said "the
+render pipeline *is* marimo and marimo-book, both Python" and made that the
+first argument for a separate repository. That was wrong. **Python is required
+for exactly one class of input — marimo — and everything else renders in
+Rust.** See the renderer table in §5.
+
+So the publisher is Rust and shells out to marimo for the marimo templates,
+which is the same move this project already makes for sandbox backends and MCP
+servers: a subprocess with a narrow contract, not a second implementation
+language for the whole component. It may not even need a bespoke Python
+package — `marimo export html-wasm` and `marimo-book build` are already CLIs,
+so the contract can be "invoke this tool, get a directory".
+
+**The repository split survives, on the two arguments that are actually
+load-bearing**, and it is worth being explicit that the language argument is no
+longer one of them:
+
+- **It is a deployed server.** Its release cycle is "push a binary to a box you
+  patch forever"; mecha's is `cargo install`. Coupling those means a docs typo
+  in mecha is a reason to think about the VPS.
+- **The credential-isolation property becomes checkable by looking.** "The
+  public box holds none of mecha's code and none of its credentials" is a
+  claim you verify from what is deployed rather than from build discipline.
+- Plus, weakly: it is genuinely usable by any MCP-speaking agent, and its
+  integration tests want to stand up a server with real TLS and run marimo —
+  heavier CI than `cargo test --workspace` should carry.
+
+**The consequence for `mecha-manifest`:** both sides are Rust and both need it
+(mecha validates drained records, the factory validates at the edge), so it
+becomes **its own published crate** — free on crates.io as of today — rather
+than a path dependency. Version discipline on the manifest is a feature, not
+friction: it is a versioned schema format, and being forced to bump it
+deliberately is the point.
 
 **The name.** A factory is where machines are built and shipped from — and it
 is deliberately *not* the machine. That is exactly the relationship this
@@ -145,10 +188,10 @@ state. So the renderer runs arbitrary Python. If the same process also held the
 publish API key and had network access, a compromised dependency anywhere in a
 notebook's import graph would have both.
 
-So: **`mecha-factory-render` executes notebook code in the sandbox with no
+So: **the marimo subprocess executes notebook code in the sandbox with no
 network and no key, and emits a directory. `mecha-factory-publish` takes a
-directory, runs
-the vendoring check, and POSTs it — holding the key, executing nothing.** Same
+directory, runs the vendoring check, and POSTs it — holding the key, executing
+nothing.** Same
 instinct the sandbox already encodes for `shell`: narrow what the dangerous
 thing can reach, rather than trusting it.
 
@@ -277,6 +320,28 @@ templates/
   booking/       inbound + outbound                   availability page + claim
   request/       inbound                              the generic typed form
 ```
+
+**Which renderer each template needs**, since this is where the language
+question actually lives:
+
+| Template | Renderer | Where | Executes code? |
+|---|---|---|---|
+| `report` (markdown) | pulldown-cmark + MiniJinja | Rust, in process | no |
+| `dashboard` | MiniJinja + a data file | Rust, in process | no |
+| `booking` | MiniJinja + availability JSON | Rust, in process | no |
+| `request` (the form) | generated from the manifest | Rust, in process | no |
+| `notebook` | `marimo export html-wasm` | Python subprocess | **yes** |
+| `report` with live cells | `marimo-book build` | Python subprocess | **yes** |
+
+Four of six render in Rust with nothing to execute. **The sandbox is required
+exactly where the renderer runs code we did not write** — the marimo rows,
+because both `marimo export` and `MarimoIslandGenerator.build()` execute the
+notebook to capture its outputs. That is the real boundary, and it happens to
+fall on a language line rather than being caused by one.
+
+The corollary worth holding onto: **a report, a dashboard, a booking page and
+a form need no Python at all.** If marimo were never wired up, everything
+except the notebook templates would still work.
 
 `report` spans two classes on purpose: it is `static` until a discrete widget
 appears, and `interactive` once precompute ships a lookup table and a shim
@@ -637,7 +702,8 @@ pay for again.
   publish path. The `report` template wants the *pipeline* — cells to HTML,
   precompute, anywidget mounts — not the theme.
 
-**The integration shape**, then: `mecha-factory` never runs Python. The
+**The integration shape**, then: `mecha-factory` never runs Python, and
+neither does `mecha-factory-publish` for four of the six templates. The
 `notebook` and `report` templates shell out to marimo / marimo-book **at
 publish time, on the home machine**, inside the run's workspace, and what
 crosses to the public box is a vendored, checked, immutable directory of bytes.
