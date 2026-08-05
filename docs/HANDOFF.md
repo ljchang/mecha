@@ -1804,7 +1804,7 @@ Recorded so they aren't hit twice.
   correct $1,750) by double-counting a base rate. Verify arithmetic with a
   script — `scripts/build-eval-fixtures.py` now computes them.
 - **A case with more than one right answer has none.** `pick-search` asked
-  "which file mentions Wasita" when three do, and asserted one of them. It only
+  "which file mentions Nadia" when three do, and asserted one of them. It only
   surfaced when a model named the other two. Grep the fixture before writing
   the gold.
 - **A grading ceiling can measure the ceiling.** Two ambiguity cases had turn
