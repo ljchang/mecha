@@ -215,6 +215,17 @@ pub struct AgentConfig {
     /// Turns kept verbatim after a compaction. The recent ones are where the
     /// work is; a summary of the last two turns is worse than the turns.
     pub compact_keep_recent: usize,
+    /// Check each summary against the transcript it replaces before
+    /// installing it, and regenerate once with the omissions named.
+    ///
+    /// Summaries fail by *omission* — they preserve what is true and drop
+    /// task-critical specifics — and the producer cannot see its own gaps.
+    /// A separate grounded comparison can: it reads both texts side by side,
+    /// which is a different task from generating either. Measured elsewhere
+    /// (Slipstream) at +6.4–8.8 points on SWE-bench Verified for under 1%
+    /// latency, with ~90% of catches being omissions. Costs one extra
+    /// request per compaction, two when a regeneration is needed.
+    pub compact_validate: bool,
 }
 
 impl Default for AgentConfig {
@@ -237,6 +248,7 @@ impl Default for AgentConfig {
             compact_at_tokens: None,
             timezone: None,
             compact_keep_recent: 6,
+            compact_validate: true,
         }
     }
 }
@@ -609,6 +621,7 @@ struct AgentLayer {
     max_cost_usd: Option<f64>,
     compact_at_tokens: Option<u64>,
     compact_keep_recent: Option<usize>,
+    compact_validate: Option<bool>,
     timezone: Option<String>,
 }
 
@@ -693,6 +706,9 @@ impl ConfigLayer {
             }
             if let Some(v) = a.compact_keep_recent {
                 t.compact_keep_recent = v;
+            }
+            if let Some(v) = a.compact_validate {
+                t.compact_validate = v;
             }
             if a.timezone.is_some() {
                 t.timezone = a.timezone;
