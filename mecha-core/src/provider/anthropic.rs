@@ -59,10 +59,36 @@ impl Anthropic {
     }
 
     fn body(&self, req: &CompletionRequest, stream: bool) -> Result<Value> {
+        let mut messages: Vec<Value> = req.messages.iter().map(encode_message).collect();
+
+        // A second, *moving* breakpoint on the last content block. The static
+        // one below pins tools+system; without this one the entire message
+        // history is re-sent uncached on every turn, and where it has been
+        // measured cache operations are ~80% of billed agent cost. The
+        // transcript is append-only between turns, so each request is a strict
+        // prefix of the next: this turn's cache write is next turn's cache
+        // read, which is exactly the trade the write premium is for. Never on
+        // a thinking block — the API rejects the marker there.
+        if req.cache_prompt {
+            let last_block = messages.iter_mut().rev().find_map(|m| {
+                m.get_mut("content")?
+                    .as_array_mut()?
+                    .iter_mut()
+                    .rev()
+                    .find(|b| b.get("type").and_then(Value::as_str) != Some("thinking"))
+            });
+            if let Some(block) = last_block {
+                block
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("cache_control".into(), json!({"type": "ephemeral"}));
+            }
+        }
+
         let mut body = json!({
             "model": req.model,
             "max_tokens": req.max_tokens,
-            "messages": req.messages.iter().map(encode_message).collect::<Vec<_>>(),
+            "messages": messages,
         });
         let obj = body.as_object_mut().unwrap();
 
@@ -602,10 +628,55 @@ mod tests {
         for tool in body["tools"].as_array().unwrap() {
             assert!(tool.get("cache_control").is_none(), "a tool carried the breakpoint too");
         }
-        assert!(
-            !mentions_key(&body["messages"], "cache_control"),
-            "the messages are volatile and must stay outside the cached prefix"
-        );
+    }
+
+    #[test]
+    fn the_moving_breakpoint_sits_on_the_last_message_block_and_only_there() {
+        let r = CompletionRequest {
+            system: Some("you are a harness".into()),
+            tools: vec![spec("fs_read")],
+            cache_prompt: true,
+            messages: vec![
+                Message::user("first"),
+                Message::assistant(vec![Block::text("ok")]),
+                Message::user("second"),
+            ],
+            ..req()
+        };
+        let body = client().body(&r, false).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+
+        // Exactly one marker in the messages, on the very last block: the
+        // transcript is append-only between turns, so this turn's request is a
+        // prefix of the next and the whole history reads from cache. Two
+        // markers total (system + here) stays well under the API's limit of 4.
+        assert!(!mentions_key(&messages[0], "cache_control"));
+        assert!(!mentions_key(&messages[1], "cache_control"));
+        let last = messages[2]["content"].as_array().unwrap();
+        assert_eq!(last.last().unwrap()["cache_control"], json!({"type": "ephemeral"}));
+    }
+
+    #[test]
+    fn the_moving_breakpoint_never_lands_on_a_thinking_block() {
+        // The API rejects cache_control on thinking blocks. When one ends the
+        // transcript, the marker backs up to the nearest markable block.
+        let r = CompletionRequest {
+            cache_prompt: true,
+            messages: vec![
+                Message::user("go"),
+                Message::assistant(vec![
+                    Block::text("partial answer"),
+                    Block::Thinking { text: "hmm".into(), signature: Some("sig".into()) },
+                ]),
+            ],
+            ..req()
+        };
+        let body = client().body(&r, false).unwrap();
+        let blocks = body["messages"].as_array().unwrap()[1]["content"].as_array().unwrap();
+
+        assert_eq!(blocks[1]["type"], "thinking");
+        assert!(blocks[1].get("cache_control").is_none(), "marker on a thinking block 400s");
+        assert_eq!(blocks[0]["cache_control"], json!({"type": "ephemeral"}));
     }
 
     #[test]
