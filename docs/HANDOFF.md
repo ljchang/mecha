@@ -441,53 +441,84 @@ writes are the trifecta in one tool (invites send; descriptions exfiltrate),
 so they do not jump the queue ahead of the outbox. *(Every stage of this
 roadmap has now shipped — distillation, the last leg, on 2026-08-05.)*
 
-### 3c. Artifacts and where they live — researched 2026-08-05
+### 3c. The public surface — researched 2026-08-05
 
-`docs/ARTIFACT-RESEARCH.md`, raised by the user off the back of the morning
-briefing: does a scheduled run produce a readable artifact, and can the TUI
-show what has been generated? Both answers were no. The survey covers Claude
-Code Artifacts (June 2026), Codex Sites, Cursor canvases, the third-party
-layer that exists to fill their gaps, hosting options for permissioned static
-sites, and documentation generators (zensical, Astro/Starlight, Hugo,
-Docusaurus, Zola, mdBook).
+`docs/PUBLIC-SURFACE-RESEARCH.md`. Four sessions in one week, consolidated
+into one document: artifacts and where they live; hosting and origin
+isolation; scheduling and group coordination; and the front door as a typed
+request API. (The four originals — `ARTIFACT-RESEARCH`, `HOSTING-RESEARCH`,
+`SCHEDULING-RESEARCH`, `FRONTDOOR-RESEARCH` — are folded into it and their
+`A*`/`H*`/`F*` recommendation identifiers are retired in favour of one `P*`
+list.)
 
-The finding that matters here: **publishing an artifact is an outbound send,
-and mecha needs no new safety machinery for it** — declare the publish tool
-`external_send`, name it in `[outbox] tools`, and staging plus the recorded
-taint snapshot plus a human release is the whole gate. Three threats that are
-easy to collapse into one and should not be: the publish moves private data
-off the machine; the *page* is itself an exfiltration vehicle that fires in
-the viewer's browser (which is why Anthropic's strict CSP is the security
-model rather than a polish item, and why the host must set it rather than the
-model); and a public artifact is readable by people the report was never about.
+It started as "does a scheduled run produce a readable artifact, and can the
+TUI show it?" — both answers were no — and ended somewhere much larger: a
+public API for the things people currently send by email (book a meeting,
+request a letter, invite me to speak, apply to the lab, ask about my research)
+plus the outbound half (reports, blog posts, dataviz, marimo notebooks).
 
-**Nothing is built, deliberately** — a prototype was written during the
+The reframe that makes it one project rather than eight: **it is one
+primitive seen from two sides — a typed, versioned, schema-described object
+crossing the boundary between the user and the world, staged for human review
+in both directions.** Four verbs cover both (`publish`, `read`, `write`,
+`drain`); the unit of extension is a *request-type manifest* from which the
+JSON Schema, the HTML form, both validators, the MCP and WebMCP tool
+declarations, the A2A skill and the triage frame are all generated.
+
+Findings that carry the design, each of which is a bug if undone:
+
+- **Publishing is an outbound send and needs no new safety machinery** —
+  declare the tool `external_send`, name it in `[outbox] tools`, and staging
+  plus the recorded taint snapshot plus a human release is the whole gate.
+- **Structure is the injection defense.** A typed form is literally the
+  Action-Selector pattern (arXiv:2506.08837), and it gets CaMeL's control/data
+  separation without CaMeL's measured 2.7–2.8× token cost, because the schema
+  quarantines at the moment of typing. The rule: **the type is chosen by the
+  form, never inferred from the prose.** No free-text router, ever.
+- **Posture P.** mecha pushes and polls a public box that holds no key
+  reaching home. A tunnel is rejected not for firewall reasons but because it
+  delivers stranger-controlled requests to the process that shares a box with
+  every credential mecha has.
+- **Two features that were each fine become a vulnerability sharing an
+  origin**: an agent-authored page same-origin with the booking page can
+  rewrite what a visitor sees. Separate *registrable* domains, not subdomains.
+- **marimo forces the CSP into content classes.** Pyodide needs
+  `wasm-unsafe-eval` (and COOP/COEP for threads), and granting it on the
+  artifact origin would weaken every artifact. `static` / `interactive` /
+  `compute`, with `compute` on its own origin. Good news: WASM export is a
+  static bundle, so serving a notebook is still just `publish`.
+- **You do not need to build a chatbot front door**, because visitors
+  increasingly arrive with their own: WebMCP (W3C draft Feb 2026, enabled in
+  Chrome 149) lets the requester's agent read the typed form as a tool and
+  fill it on the requester's tokens.
+- **The accessible option and the injection-resistant option are the same
+  option** — a plain semantic HTML form is simultaneously WCAG 2.1 AA,
+  Action-Selector, zero-token, and WebMCP-annotatable.
+- Three constraints that are not engineering: *Moffatt v. Air Canada* (a
+  chatbot's misrepresentation is the operator's, so the research-question
+  surface retrieves from an approved corpus rather than generating), FERPA
+  (consent is a field and the agent never decides it), and GDPR (no
+  small-scale exemption — though `drain`-and-delete is already the
+  data-minimisation story).
+- **Batch review is a gap in the outbox as it stands**, and the public surface
+  makes it load-bearing rather than a nicety. That is a change to existing
+  machinery, which is the kind discovered late.
+- **A harness gap wearing an artifact costume**: MCP says reports are
+  Resources rather than Tools, and `mcp.rs` calls `tools/list` and nothing
+  else while declaring no client capabilities, so mecha cannot consume
+  resources from *any* server. When that is closed, resource contents must
+  arrive `.from_outside()` like any tool result or the interlock gains a
+  blind spot.
+
+**Nothing is built, deliberately** — a prototype was written during the first
 session and reverted, and the doc records why that is the right state until
-the audience question is settled. Later additions cover the **audience
-split** (reading your own output and showing someone else are different
-problems wanting different substrates; conflating them is what makes this
-feel hard), **Tailscale checked against this machine** (`tailscale serve`
-takes a *directory*, so the static case needs no server, no port and no
-public box — the only shape where no stranger can ask and no code of ours
-answers), and **interop**: A2A has `Artifact` as a first-class object of
-typed `Part`s, worth modelling on and not worth implementing the protocol
-for; and MCP says reports are Resources rather than Tools — which mecha
-cannot consume, because `mcp.rs` calls `tools/list` and nothing else and
-declares no client capabilities. That last one is a harness gap wearing an
-artifact costume, and when it is closed, resource contents must arrive
-`.from_outside()` like any tool result or the interlock gains a blind spot.
-
-See also `docs/HOSTING-RESEARCH.md`, written in parallel from the
-scheduling side, which is authoritative for the substrate — postures, the
-credential gradient, origin isolation, deploy keys.
-
-Six recommendations, A1–A5 and D1. The cheapest is A1: write a trigger's
-report **into its own workspace** rather than `~/.mecha`, so `fs_read` reaches
-it with no change to the path jail. Also recorded: capability URLs done
-properly (CSPRNG id, expiry, one URL per recipient so revocation can be
-targeted) are the one thing no surveyed product does, and about a day's work;
-and if the artifact host becomes its own repository the reusable shape is
-service + CLI + MCP server, with site generation the least interesting part.
+the open questions are settled. The cheapest recommendation stands unchanged
+(P22): write a trigger's report **into its own workspace** rather than
+`~/.mecha`, so `fs_read` reaches it with no change to the path jail. The
+shortest path deliberately front-loads the steps that need no public box at
+all: mine twelve months of the user's own mail for the *real* request types,
+`calendar_freebusy` on mecha-mail's unified surface, the manifest generators,
+and the availability engine.
 
 ### 3b. Research backlog (raised 2026-08-04, not yet acted on)
 
