@@ -90,6 +90,9 @@ impl Default for Config {
                 temperature: None,
                 seed: None,
                 context_window: None,
+                max_retries: None,
+                retry_after_cap_secs: None,
+                fallbacks: Vec::new(),
             },
         );
         Config {
@@ -147,6 +150,23 @@ pub struct ProviderConfig {
     /// With it, [`AgentConfig::compact_at`] derives a threshold and the CLI
     /// can show how much room is left.
     pub context_window: Option<u64>,
+    /// Retries per request on transient failures — 429, 5xx, transport. 0
+    /// disables. Unset means 3. Auth, billing, invalid-request and
+    /// context-overflow errors are never retried: the same payload fails the
+    /// same way, and overflow belongs to the compaction path.
+    pub max_retries: Option<u32>,
+    /// A `Retry-After` above this many seconds is surfaced as a failure
+    /// instead of slept through (default 60) — a provider can name a wait
+    /// long enough that the process is simply asleep, and control never
+    /// returns to a layer that could fall back instead.
+    pub retry_after_cap_secs: Option<u64>,
+    /// Provider entries to try, in order, when this one exhausts its retries
+    /// on a *transient* failure. Turn-local: the next turn starts from this
+    /// provider again. Each fallback answers with its own model. Empty —
+    /// the default — means strict: fail rather than silently answer with a
+    /// different model. `mecha eval` never falls back regardless: a
+    /// scorecard grades the model it names.
+    pub fallbacks: Vec<String>,
 }
 
 impl ProviderConfig {

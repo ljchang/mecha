@@ -105,6 +105,12 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_outbox: bool,
 
+    /// Never fall back to another provider — a configured `fallbacks` list is
+    /// ignored, and a transient failure that survives its retries fails the
+    /// run instead of being answered by a different model.
+    #[arg(long, global = true)]
+    pub no_fallback: bool,
+
     /// Summarise older turns once the prompt passes this many tokens. Roughly
     /// two thirds of the model's context window is a reasonable setting.
     #[arg(long, global = true)]

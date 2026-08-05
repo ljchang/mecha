@@ -51,16 +51,15 @@ pub enum AgentEvent {
 /// direction costs one summarisation; being wrong the other way loses the
 /// run, which is what happened before this existed.
 pub(crate) fn is_context_overflow(error: &anyhow::Error) -> bool {
-    let text = format!("{error:#}").to_lowercase();
-    // llama-server: "exceed_context_size_error" / "exceeds the available
-    // context size". vLLM and OpenAI: "context_length_exceeded" / "maximum
-    // context length". Anthropic: "prompt is too long".
-    text.contains("exceed_context_size")
-        || text.contains("context size")
-        || text.contains("context_length_exceeded")
-        || text.contains("context length")
-        || text.contains("prompt is too long")
-        || text.contains("too many tokens")
+    // The typed answer, when the provider classified it — and the text
+    // fallback for errors that arrived any other way. llama-server:
+    // "exceed_context_size_error" / "exceeds the available context size".
+    // vLLM and OpenAI: "context_length_exceeded" / "maximum context length".
+    // Anthropic: "prompt is too long".
+    if let Some(class) = error.downcast_ref::<crate::provider::retry::ProviderError>() {
+        return *class == crate::provider::retry::ProviderError::ContextOverflow;
+    }
+    crate::provider::retry::overflow_text(&format!("{error:#}"))
 }
 
 /// "1 turn", "3 turns". These strings are read by people.

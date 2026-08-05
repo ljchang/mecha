@@ -168,7 +168,24 @@ lets untrusted content into the prompt is the silently-degrading-sandbox shape.
 
 ---
 
-## 2. A provider error taxonomy, and retry
+## 2. A provider error taxonomy, and retry ~~— built 2026-08-05~~
+
+> **Built 2026-08-05**, close to this spec: `provider/retry.rs` (taxonomy,
+> per-class policy, capped `Retry-After`, shared `send_with_retry`), both
+> backends wired, `Failover` in `provider/mod.rs`, config fields on
+> `ProviderConfig`, eval forces `--no-fallback`. The turn-level retry layer
+> was **not** built separately: retries live at the request level, before
+> the response body is consumed, so the never-after-a-tool-ran invariant
+> holds by construction — pinned by a mock-HTTP loop test in which turn 2's
+> 429 is retried and the tool executes exactly once. Mid-stream failures
+> carry no `ProviderError` marker, which is what keeps them out of both
+> retry and failover. Deviation: per-turn provider recording in `RunConfig`
+> is deferred — fallback logs loudly instead; replay of a fallen-back
+> session is a known approximation. Verified live: a dead primary retried
+> (transport, 2.5s backoff), fell back to the healthy server, and answered;
+> `--no-fallback` failed strictly. The motivating failure was reproduced
+> twice on cue during the spillover work — llama-server closing an idle
+> pooled connection, reqwest's write dying mid-send.
 
 **The finding.** All three have this; openclaw's `concepts/model-failover.md`
 is the most worked-out treatment of provider failure I have seen anywhere.

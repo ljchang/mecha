@@ -66,13 +66,32 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     let cfg = tools.config;
 
     let (provider_name, provider_cfg) = cfg.provider(opts.provider.as_deref())?;
-    let provider = mecha_core::provider::build(provider_cfg)?;
+    let mut provider = mecha_core::provider::build(provider_cfg)?;
 
     let model = opts
         .model
         .clone()
         .or_else(|| provider_cfg.model.clone())
         .unwrap_or_else(|| provider.default_model().to_string());
+
+    // Fallbacks, resolved at startup so a typo'd name fails on every start
+    // rather than only on the outage that needed it. `--no-fallback` is the
+    // strictness switch; eval forces it, because a scorecard produced by a
+    // different model than the one it names measures nothing.
+    if !provider_cfg.fallbacks.is_empty() && !opts.no_fallback {
+        let mut fallbacks = Vec::new();
+        for name in &provider_cfg.fallbacks {
+            anyhow::ensure!(
+                name != &provider_name,
+                "provider {provider_name:?} lists itself as a fallback"
+            );
+            let (fb_name, fb_cfg) = cfg.provider(Some(name)).with_context(|| {
+                format!("fallback {name:?} of provider {provider_name:?} is not configured")
+            })?;
+            fallbacks.push((fb_name, mecha_core::provider::build(fb_cfg)?));
+        }
+        provider = Box::new(mecha_core::provider::Failover::new(provider, fallbacks));
+    }
 
     let ctx = ToolCtx {
         workspace: tools.workspace.clone(),

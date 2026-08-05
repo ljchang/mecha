@@ -28,6 +28,7 @@ pub struct Anthropic {
     api_key: String,
     base_url: String,
     default_model: String,
+    retry: crate::provider::retry::RetryPolicy,
 }
 
 impl Anthropic {
@@ -55,7 +56,22 @@ impl Anthropic {
                 .clone()
                 .unwrap_or_else(|| "https://api.anthropic.com".to_string()),
             default_model: cfg.model.clone().unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+            retry: crate::provider::retry::RetryPolicy::from_config(cfg),
         })
+    }
+
+    /// Send with the retry policy; on giving up, keep this provider's error
+    /// shape with the classification underneath for policy layers to match.
+    async fn send(&self, body: &Value) -> Result<reqwest::Response> {
+        crate::provider::retry::send_with_retry(|| self.request(body), &self.retry)
+            .await
+            .map_err(|f| {
+                let message = match f.status {
+                    Some(status) => format!("anthropic {status}: {}", api_error(&f.detail)),
+                    None => format!("anthropic: {}", f.detail),
+                };
+                anyhow::Error::new(f.class).context(message)
+            })
     }
 
     fn body(&self, req: &CompletionRequest, stream: bool) -> Result<Value> {
@@ -192,12 +208,7 @@ impl Provider for Anthropic {
 impl Anthropic {
     async fn complete_once(&self, req: &CompletionRequest) -> Result<CompletionResponse> {
         let body = self.body(req, false)?;
-        let resp = self.request(&body).send().await?;
-        let status = resp.status();
-        let text = resp.text().await?;
-        if !status.is_success() {
-            bail!("anthropic {}: {}", status, api_error(&text));
-        }
+        let text = self.send(&body).await?.text().await?;
         let v: Value = serde_json::from_str(&text).context("malformed response body")?;
         decode_response(&v)
     }
@@ -208,12 +219,12 @@ impl Anthropic {
         sink: &StreamSink,
     ) -> Result<CompletionResponse> {
         let body = self.body(req, true)?;
-        let resp = self.request(&body).send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            bail!("anthropic {}: {}", status, api_error(&text));
-        }
+        // Retries cover the send and the status line — nothing has streamed
+        // yet. From here down a failure is mid-stream: deltas may already be
+        // on the user's screen, so it propagates as-is, carrying no
+        // `ProviderError` — which is also what tells the failover wrapper it
+        // must not re-issue the request.
+        let resp = self.send(&body).await?;
 
         let mut acc = StreamAccumulator::default();
         let mut buf = String::new();
@@ -524,11 +535,22 @@ mod tests {
     use super::*;
 
     fn client() -> Anthropic {
+        client_at("http://localhost:1")
+    }
+
+    /// Shared with `retry_tests` below.
+    pub(super) fn client_at(base_url: &str) -> Anthropic {
         Anthropic {
             http: reqwest::Client::new(),
             api_key: "test-key".into(),
-            base_url: "http://localhost:1".into(),
+            base_url: base_url.into(),
             default_model: DEFAULT_MODEL.into(),
+            // Fast retries: these tests measure counts and outcomes, not
+            // wall clock.
+            retry: crate::provider::retry::RetryPolicy {
+                base_delay: std::time::Duration::from_millis(1),
+                ..Default::default()
+            },
         }
     }
 
@@ -801,5 +823,256 @@ mod tests {
         assert_eq!(resp.stop_reason, StopReason::EndTurn);
         assert!(resp.refusal.is_none());
         assert_eq!(resp.message.text(), "hello");
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::tests::client_at;
+    use super::*;
+    use crate::provider::retry::ProviderError;
+    use crate::provider::Provider;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn req() -> CompletionRequest {
+        CompletionRequest {
+            model: DEFAULT_MODEL.into(),
+            system: None,
+            messages: vec![Message::user("hi")],
+            tools: Vec::new(),
+            max_tokens: 64,
+            effort: None,
+            thinking: false,
+            cache_prompt: false,
+        }
+    }
+
+    fn ok_body(text: &str) -> String {
+        serde_json::json!({
+            "content": [{"type": "text", "text": text}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "model": DEFAULT_MODEL,
+        })
+        .to_string()
+    }
+
+    fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    type MockResponse = (u16, Vec<(&'static str, String)>, String);
+
+    /// A scripted HTTP server: each connection gets the next canned response
+    /// and is closed. Anything past the script gets a 500, which fails the
+    /// test through the assertion on the request count.
+    async fn mock_http(responses: Vec<MockResponse>) -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&count);
+
+        tokio::spawn(async move {
+            let mut responses = responses.into_iter();
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { break };
+                counter.fetch_add(1, Ordering::SeqCst);
+
+                // Read the request head, then its content-length body, so the
+                // client never sees a reset while still writing.
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 8192];
+                let (head_end, body_len) = loop {
+                    let n = sock.read(&mut tmp).await.unwrap_or(0);
+                    if n == 0 {
+                        break (buf.len(), 0);
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(pos) = find(&buf, b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..pos]).to_string();
+                        let len = head
+                            .lines()
+                            .find_map(|l| {
+                                let l = l.to_ascii_lowercase();
+                                l.strip_prefix("content-length:")
+                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        break (pos + 4, len);
+                    }
+                };
+                while buf.len() < head_end + body_len {
+                    let n = sock.read(&mut tmp).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+
+                let (status, headers, body) = responses
+                    .next()
+                    .unwrap_or((500, Vec::new(), "script exhausted".into()));
+                let mut resp = format!(
+                    "HTTP/1.1 {status} R\r\ncontent-length: {}\r\nconnection: close\r\n",
+                    body.len()
+                );
+                for (k, v) in headers {
+                    resp.push_str(&format!("{k}: {v}\r\n"));
+                }
+                resp.push_str("\r\n");
+                resp.push_str(&body);
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (format!("http://{addr}"), count)
+    }
+
+    #[tokio::test]
+    async fn transient_failures_are_retried_until_the_request_succeeds() {
+        let (url, count) = mock_http(vec![
+            (429, vec![("retry-after", "0".into())], "rate limited".into()),
+            (429, vec![("retry-after", "0".into())], "rate limited".into()),
+            (200, vec![], ok_body("recovered")),
+        ])
+        .await;
+
+        let response = client_at(&url).complete(&req(), None).await.unwrap();
+        assert_eq!(response.message.text(), "recovered");
+        assert_eq!(count.load(Ordering::SeqCst), 3, "two retries, then success");
+    }
+
+    #[tokio::test]
+    async fn max_retries_zero_disables_retrying() {
+        let (url, count) = mock_http(vec![
+            (429, vec![("retry-after", "0".into())], "rate limited".into()),
+            (200, vec![], ok_body("never reached")),
+        ])
+        .await;
+
+        let mut provider = client_at(&url);
+        provider.retry.max_retries = 0;
+        let err = provider.complete(&req(), None).await.unwrap_err();
+        assert!(err.to_string().contains("429"), "{err:#}");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn auth_failures_are_terminal_by_request_count_not_by_elapsed_time() {
+        let (url, count) = mock_http(vec![(401, vec![], "invalid x-api-key".into())]).await;
+
+        let err = client_at(&url).complete(&req(), None).await.unwrap_err();
+        assert!(err.to_string().contains("401"), "{err:#}");
+        assert_eq!(
+            err.downcast_ref::<ProviderError>(),
+            Some(&ProviderError::Auth),
+            "the class rides under the message"
+        );
+        // The assertion that matters: one request. A retried 401 is a lockout
+        // risk, and elapsed-time assertions measure the scheduler.
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_retry_after_past_the_cap_is_a_failure_not_a_nap() {
+        let (url, count) =
+            mock_http(vec![(429, vec![("retry-after", "3600".into())], "later".into())]).await;
+
+        let err = client_at(&url).complete(&req(), None).await.unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<ProviderError>(),
+            Some(ProviderError::RateLimit { .. })
+        ));
+        assert_eq!(count.load(Ordering::SeqCst), 1, "an hour-long wait must not be slept");
+    }
+
+    #[tokio::test]
+    async fn context_overflow_stays_out_of_the_retry_path_and_reaches_compaction() {
+        let (url, count) = mock_http(vec![(
+            400,
+            Vec::new(),
+            r#"{"error":{"type":"exceed_context_size_error","message":"too big"}}"#.into(),
+        )])
+        .await;
+
+        let err = client_at(&url).complete(&req(), None).await.unwrap_err();
+        assert_eq!(count.load(Ordering::SeqCst), 1, "overflow retried with the same payload");
+        // The loop's compact-and-retry-once recovery keys on this.
+        assert!(crate::agent::is_context_overflow(&err), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn a_mid_run_transient_error_never_re_executes_a_tool() {
+        use crate::agent::{Agent, Conversation};
+        use crate::config::{AgentConfig, PermissionMode};
+        use crate::tool::{ModeApprover, Registry, Tool, ToolCtx, ToolOutput};
+
+        // Turn 1 asks for a tool; the request carrying its result dies with a
+        // retryable 429; the retry succeeds. The tool must have run exactly
+        // once — the retry re-sends the HTTP request, never the turn.
+        struct CountingTool(Arc<AtomicUsize>);
+        #[async_trait]
+        impl Tool for CountingTool {
+            fn name(&self) -> &str {
+                "echo"
+            }
+            fn description(&self) -> &str {
+                "counts"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &ToolCtx,
+            ) -> Result<ToolOutput> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(ToolOutput::ok("ran"))
+            }
+        }
+
+        let tool_use_body = serde_json::json!({
+            "content": [{"type": "tool_use", "id": "t1", "name": "echo", "input": {}}],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "model": DEFAULT_MODEL,
+        })
+        .to_string();
+        let (url, requests) = mock_http(vec![
+            (200, vec![], tool_use_body),
+            (429, vec![("retry-after", "0".into())], "rate limited".into()),
+            (200, vec![], ok_body("done")),
+        ])
+        .await;
+
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(CountingTool(Arc::clone(&executions))));
+        let agent = Agent::new(
+            Box::new(client_at(&url)),
+            registry,
+            Arc::new(ModeApprover { mode: PermissionMode::Allow }),
+            ToolCtx { workspace: std::env::temp_dir(), ..Default::default() },
+            AgentConfig { thinking: false, force_final_answer: false, ..Default::default() },
+            None,
+        )
+        .unwrap();
+
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.text, "done");
+        assert_eq!(requests.load(Ordering::SeqCst), 3, "turn 2 was retried at the HTTP layer");
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            1,
+            "the retry duplicated a tool execution"
+        );
     }
 }
