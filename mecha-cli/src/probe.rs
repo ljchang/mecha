@@ -18,7 +18,10 @@ use crate::setup::Prepared;
 use anyhow::Result;
 use mecha_core::agent::{Agent, RunContext};
 use mecha_core::config::{PermissionMode, ProviderConfig};
-use mecha_core::counterfactual::{denial_verdict, locate_denial, locate_steer, steer_verdict, truncate_after_run, ProbePoint, ProbeVerdict};
+use mecha_core::counterfactual::{
+    denial_verdict, locate_denial, locate_steer, steer_verdict, truncate_after_run, ProbePoint,
+    ProbeVerdict,
+};
 use mecha_core::learning::{strip_rules_block, Reflexion, Trigger};
 use mecha_core::replay::{extract, Trajectory};
 use mecha_core::replay_run::{drive, replay_registry, OnDivergence};
@@ -87,9 +90,18 @@ pub fn prepare_probe(sessions_dir: &Path, r: &Reflexion) -> Result<Result<ProbeP
     // The recorded system prompt with any rules block of its era removed: an
     // arm must carry exactly the block it was given, not a mixture of
     // generations.
-    let base_system =
-        recorded.system_prompt.as_deref().map(strip_rules_block).unwrap_or_default();
-    Ok(Ok(ProbePrep { trajectory, point, recorded, base_system, steer }))
+    let base_system = recorded
+        .system_prompt
+        .as_deref()
+        .map(strip_rules_block)
+        .unwrap_or_default();
+    Ok(Ok(ProbePrep {
+        trajectory,
+        point,
+        recorded,
+        base_system,
+        steer,
+    }))
 }
 
 /// Drive the prepared prefix once under `block` (appended to the recorded
@@ -119,8 +131,9 @@ pub async fn drive_arm(
         Err(e) => return Ok(Err(format!("{e:#}"))),
     };
     // Nothing executes under Stop mode, so nothing needs approving.
-    let approver: Arc<dyn mecha_core::tool::Approver> =
-        Arc::new(ModeApprover { mode: PermissionMode::Allow });
+    let approver: Arc<dyn mecha_core::tool::Approver> = Arc::new(ModeApprover {
+        mode: PermissionMode::Allow,
+    });
     let mut agent_cfg = prepared.config.agent.clone();
     agent_cfg.system_prompt = (!system.is_empty()).then_some(system);
     agent_cfg.system_prompt_file = None;

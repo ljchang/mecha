@@ -158,7 +158,11 @@ impl Tool for ReplayTool {
         // Decided under the lock, executed after it: a live call awaits, and a
         // std mutex must not be held across an await point.
         match self.decide(&input) {
-            Action::Recorded(content, is_error) => Ok(ToolOutput { content, is_error, external: false }),
+            Action::Recorded(content, is_error) => Ok(ToolOutput {
+                content,
+                is_error,
+                external: false,
+            }),
             Action::Refuse(msg) => Ok(ToolOutput::err(msg)),
             Action::Live => self.inner.call(input, ctx).await,
         }
@@ -181,7 +185,11 @@ pub fn replay_registry(
     mode: OnDivergence,
     cancel: CancellationToken,
 ) -> Result<Registry> {
-    let state = Arc::new(Mutex::new(ReplayState { calls, cursor: 0, dead: false }));
+    let state = Arc::new(Mutex::new(ReplayState {
+        calls,
+        cursor: 0,
+        dead: false,
+    }));
     let mut registry = Registry::new();
     for name in recorded_tools {
         let Some(tool) = live.get(name) else {
@@ -235,7 +243,11 @@ impl ReplayReport {
 /// Sequential on purpose, one conversation, one turn at a time: seeded sampling
 /// only repeats when requests do not share a batch, so a replay that raced
 /// anything else would diverge for reasons that are nobody's regression.
-pub async fn drive(agent: &Agent, cx: &RunContext, trajectory: &Trajectory) -> Result<ReplayReport> {
+pub async fn drive(
+    agent: &Agent,
+    cx: &RunContext,
+    trajectory: &Trajectory,
+) -> Result<ReplayReport> {
     let mut convo = Conversation::new();
     let mut replayed: Vec<ToolCallTrace> = Vec::new();
     let mut final_text = String::new();
@@ -277,22 +289,41 @@ mod tests {
     struct EchoTool;
     #[async_trait]
     impl Tool for EchoTool {
-        fn name(&self) -> &str { "echo" }
-        fn description(&self) -> &str { "Echo the `value` argument back." }
-        fn input_schema(&self) -> Value { json!({"type": "object"}) }
-        fn read_only(&self) -> bool { true }
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "Echo the `value` argument back."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
         async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
-            Ok(ToolOutput::ok(format!("live: {}", input.get("value").and_then(Value::as_str).unwrap_or(""))))
+            Ok(ToolOutput::ok(format!(
+                "live: {}",
+                input.get("value").and_then(Value::as_str).unwrap_or("")
+            )))
         }
     }
 
     struct OtherTool;
     #[async_trait]
     impl Tool for OtherTool {
-        fn name(&self) -> &str { "other" }
-        fn description(&self) -> &str { "A second tool." }
-        fn input_schema(&self) -> Value { json!({"type": "object"}) }
-        fn read_only(&self) -> bool { true }
+        fn name(&self) -> &str {
+            "other"
+        }
+        fn description(&self) -> &str {
+            "A second tool."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
         async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
             Ok(ToolOutput::ok("live: other"))
         }
@@ -306,10 +337,19 @@ mod tests {
     }
 
     fn recorded(name: &str, input: Value, output: &str) -> RecordedCall {
-        RecordedCall { name: name.into(), input, output: output.into(), is_error: false }
+        RecordedCall {
+            name: name.into(),
+            input,
+            output: output.into(),
+            is_error: false,
+        }
     }
 
-    fn replay_reg(calls: Vec<RecordedCall>, mode: OnDivergence, cancel: &CancellationToken) -> Registry {
+    fn replay_reg(
+        calls: Vec<RecordedCall>,
+        mode: OnDivergence,
+        cancel: &CancellationToken,
+    ) -> Registry {
         replay_registry(
             &["echo".to_string(), "other".to_string()],
             &live_registry(),
@@ -333,11 +373,21 @@ mod tests {
         );
         let ctx = ToolCtx::default();
 
-        let out = reg.get("echo").unwrap().call(json!({"value": "a"}), &ctx).await.unwrap();
+        let out = reg
+            .get("echo")
+            .unwrap()
+            .call(json!({"value": "a"}), &ctx)
+            .await
+            .unwrap();
         assert_eq!(out.content, "first");
         assert!(!out.is_error);
 
-        let out = reg.get("other").unwrap().call(json!({}), &ctx).await.unwrap();
+        let out = reg
+            .get("other")
+            .unwrap()
+            .call(json!({}), &ctx)
+            .await
+            .unwrap();
         assert_eq!(out.content, "second");
         assert!(!cancel.is_cancelled());
     }
@@ -355,8 +405,16 @@ mod tests {
             OnDivergence::Stop,
             &cancel,
         );
-        let out = reg.get("echo").unwrap().call(json!({}), &ToolCtx::default()).await.unwrap();
-        assert!(out.is_error, "the model must see the same failure it saw at record time");
+        let out = reg
+            .get("echo")
+            .unwrap()
+            .call(json!({}), &ToolCtx::default())
+            .await
+            .unwrap();
+        assert!(
+            out.is_error,
+            "the model must see the same failure it saw at record time"
+        );
         assert_eq!(out.content, "no such file");
     }
 
@@ -364,19 +422,35 @@ mod tests {
     async fn a_different_tool_stops_the_run_and_kills_the_recording() {
         let cancel = CancellationToken::new();
         let reg = replay_reg(
-            vec![recorded("echo", json!({}), "first"), recorded("echo", json!({}), "second")],
+            vec![
+                recorded("echo", json!({}), "first"),
+                recorded("echo", json!({}), "second"),
+            ],
             OnDivergence::Stop,
             &cancel,
         );
         let ctx = ToolCtx::default();
 
-        let out = reg.get("other").unwrap().call(json!({}), &ctx).await.unwrap();
+        let out = reg
+            .get("other")
+            .unwrap()
+            .call(json!({}), &ctx)
+            .await
+            .unwrap();
         assert!(out.is_error);
-        assert!(cancel.is_cancelled(), "a structural divergence must stop the run");
+        assert!(
+            cancel.is_cancelled(),
+            "a structural divergence must stop the run"
+        );
 
         // The recording is dead: even the tool the recording expected gets
         // nothing now, rather than an answer to a question nobody asked.
-        let out = reg.get("echo").unwrap().call(json!({}), &ctx).await.unwrap();
+        let out = reg
+            .get("echo")
+            .unwrap()
+            .call(json!({}), &ctx)
+            .await
+            .unwrap();
         assert!(out.is_error);
         assert!(out.content.contains("diverged"));
     }
@@ -384,11 +458,24 @@ mod tests {
     #[tokio::test]
     async fn running_past_the_end_of_the_recording_stops() {
         let cancel = CancellationToken::new();
-        let reg = replay_reg(vec![recorded("echo", json!({}), "only")], OnDivergence::Stop, &cancel);
+        let reg = replay_reg(
+            vec![recorded("echo", json!({}), "only")],
+            OnDivergence::Stop,
+            &cancel,
+        );
         let ctx = ToolCtx::default();
 
-        reg.get("echo").unwrap().call(json!({}), &ctx).await.unwrap();
-        let out = reg.get("echo").unwrap().call(json!({}), &ctx).await.unwrap();
+        reg.get("echo")
+            .unwrap()
+            .call(json!({}), &ctx)
+            .await
+            .unwrap();
+        let out = reg
+            .get("echo")
+            .unwrap()
+            .call(json!({}), &ctx)
+            .await
+            .unwrap();
         assert!(out.is_error);
         assert!(cancel.is_cancelled());
     }
@@ -408,7 +495,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.content, "contents");
-        assert!(!cancel.is_cancelled(), "argument differences are reported by the diff, not fatal");
+        assert!(
+            !cancel.is_cancelled(),
+            "argument differences are reported by the diff, not fatal"
+        );
     }
 
     #[tokio::test]
@@ -421,13 +511,23 @@ mod tests {
         );
         let ctx = ToolCtx::default();
 
-        let out = reg.get("other").unwrap().call(json!({}), &ctx).await.unwrap();
+        let out = reg
+            .get("other")
+            .unwrap()
+            .call(json!({}), &ctx)
+            .await
+            .unwrap();
         assert_eq!(out.content, "live: other");
         assert!(!cancel.is_cancelled(), "live mode keeps going");
 
         // And it stays live: the recorded result for `echo` is never used,
         // because after the divergence it answers a question nobody asked.
-        let out = reg.get("echo").unwrap().call(json!({"value": "x"}), &ctx).await.unwrap();
+        let out = reg
+            .get("echo")
+            .unwrap()
+            .call(json!({"value": "x"}), &ctx)
+            .await
+            .unwrap();
         assert_eq!(out.content, "live: x");
     }
 
@@ -451,8 +551,12 @@ mod tests {
     struct Scripted(Mutex<Vec<CompletionResponse>>);
     #[async_trait]
     impl Provider for Scripted {
-        fn id(&self) -> &str { "scripted" }
-        fn default_model(&self) -> &str { "scripted-1" }
+        fn id(&self) -> &str {
+            "scripted"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-1"
+        }
         async fn complete(
             &self,
             _req: &CompletionRequest,
@@ -468,7 +572,11 @@ mod tests {
         CompletionResponse {
             message: Message::assistant(blocks),
             stop_reason: stop,
-            usage: Usage { input_tokens: 10, output_tokens: 5, ..Usage::default() },
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                ..Usage::default()
+            },
             refusal: None,
             model: "scripted-1".into(),
             malformed_tool_args: 0,
@@ -476,7 +584,11 @@ mod tests {
     }
 
     fn tool_use(id: &str, name: &str, input: Value) -> Block {
-        Block::ToolUse { id: id.into(), name: name.into(), input }
+        Block::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input,
+        }
     }
 
     async fn drive_scripted(
@@ -486,7 +598,9 @@ mod tests {
     ) -> ReplayReport {
         let cancel = CancellationToken::new();
         let registry = replay_reg(calls, OnDivergence::Stop, &cancel);
-        let approver = Arc::new(ModeApprover { mode: PermissionMode::Allow });
+        let approver = Arc::new(ModeApprover {
+            mode: PermissionMode::Allow,
+        });
         let agent = Agent::new(
             Box::new(Scripted(Mutex::new(turns))),
             registry,
@@ -513,7 +627,10 @@ mod tests {
         };
         let report = drive_scripted(
             vec![
-                assistant(vec![tool_use("t1", "echo", json!({"value": "a"}))], StopReason::ToolUse),
+                assistant(
+                    vec![tool_use("t1", "echo", json!({"value": "a"}))],
+                    StopReason::ToolUse,
+                ),
                 assistant(vec![Block::text("done")], StopReason::EndTurn),
             ],
             calls,
@@ -543,7 +660,10 @@ mod tests {
         // comes back as a tool result, and the cancelled run ends the turn.
         let report = drive_scripted(
             vec![
-                assistant(vec![tool_use("t1", "other", json!({}))], StopReason::ToolUse),
+                assistant(
+                    vec![tool_use("t1", "other", json!({}))],
+                    StopReason::ToolUse,
+                ),
                 assistant(vec![Block::text("gave up")], StopReason::EndTurn),
             ],
             calls,
@@ -551,7 +671,10 @@ mod tests {
         )
         .await;
 
-        assert!(report.stopped_early, "the second recorded turn must never be fed");
+        assert!(
+            report.stopped_early,
+            "the second recorded turn must never be fed"
+        );
         assert_eq!(report.turns, 1);
         let structural: Vec<_> = report.structural().collect();
         assert!(!structural.is_empty(), "{:?}", report.divergences);

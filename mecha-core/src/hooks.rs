@@ -75,9 +75,9 @@ impl HookSet {
                 "pre_tool" => Event::PreTool,
                 "post_tool" => Event::PostTool,
                 "session_end" => Event::SessionEnd,
-                other => bail!(
-                    "hook event {other:?} is not one of pre_tool, post_tool, session_end"
-                ),
+                other => {
+                    bail!("hook event {other:?} is not one of pre_tool, post_tool, session_end")
+                }
             };
             if c.command.trim().is_empty() {
                 bail!("a hook for {:?} has an empty command", c.event);
@@ -99,10 +99,16 @@ impl HookSet {
     /// True when any `pre_tool` or `post_tool` hook exists — lets the dispatch
     /// path skip payload construction entirely in the common empty case.
     pub fn watches_tools(&self) -> bool {
-        self.hooks.iter().any(|h| matches!(h.event, Event::PreTool | Event::PostTool))
+        self.hooks
+            .iter()
+            .any(|h| matches!(h.event, Event::PreTool | Event::PostTool))
     }
 
-    async fn run_one(hook: &Hook, payload: &Value, workdir: &std::path::Path) -> Result<(i32, String)> {
+    async fn run_one(
+        hook: &Hook,
+        payload: &Value,
+        workdir: &std::path::Path,
+    ) -> Result<(i32, String)> {
         let mut child = tokio::process::Command::new("sh")
             .arg("-c")
             .arg(&hook.command)
@@ -136,7 +142,12 @@ impl HookSet {
     }
 
     /// Run the matching `pre_tool` hooks in order. First denial wins.
-    pub async fn pre_tool(&self, tool: &str, input: &Value, workdir: &std::path::Path) -> HookVerdict {
+    pub async fn pre_tool(
+        &self,
+        tool: &str,
+        input: &Value,
+        workdir: &std::path::Path,
+    ) -> HookVerdict {
         for hook in self.hooks.iter().filter(|h| h.event == Event::PreTool) {
             if !hook.matches_tool(tool) {
                 continue;
@@ -161,11 +172,18 @@ impl HookSet {
                     return HookVerdict::Deny(format!(
                         "hook `{}` exited {code} (exit 0 allows, 2 denies){}",
                         hook.command,
-                        if reason.is_empty() { String::new() } else { format!(": {reason}") }
+                        if reason.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {reason}")
+                        }
                     ));
                 }
                 Err(e) => {
-                    return HookVerdict::Deny(format!("hook `{}` failed to run: {e}", hook.command));
+                    return HookVerdict::Deny(format!(
+                        "hook `{}` failed to run: {e}",
+                        hook.command
+                    ));
                 }
             }
         }
@@ -201,7 +219,12 @@ impl HookSet {
     }
 
     /// Notify `session_end` observers. Best-effort by design.
-    pub async fn session_end(&self, session_id: &str, path: &std::path::Path, workdir: &std::path::Path) {
+    pub async fn session_end(
+        &self,
+        session_id: &str,
+        path: &std::path::Path,
+        workdir: &std::path::Path,
+    ) {
         for hook in self.hooks.iter().filter(|h| h.event == Event::SessionEnd) {
             let payload = serde_json::json!({
                 "event": "session_end",
@@ -231,7 +254,9 @@ mod tests {
 
     #[test]
     fn an_unknown_event_is_a_startup_error() {
-        let err = HookSet::from_config(&[cfg("pre-tool", "true")]).unwrap_err().to_string();
+        let err = HookSet::from_config(&[cfg("pre-tool", "true")])
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("pre-tool"), "{err}");
         assert!(HookSet::from_config(&[cfg("pre_tool", "  ")]).is_err());
     }
@@ -239,18 +264,25 @@ mod tests {
     #[tokio::test]
     async fn exit_zero_allows_and_exit_two_denies_with_the_reason() {
         let set = HookSet::from_config(&[cfg("pre_tool", "true")]).unwrap();
-        let v = set.pre_tool("echo", &json!({}), std::path::Path::new(".")).await;
+        let v = set
+            .pre_tool("echo", &json!({}), std::path::Path::new("."))
+            .await;
         assert_eq!(v, HookVerdict::Allow);
 
         let set = HookSet::from_config(&[cfg("pre_tool", "echo not today; exit 2")]).unwrap();
-        let v = set.pre_tool("echo", &json!({}), std::path::Path::new(".")).await;
+        let v = set
+            .pre_tool("echo", &json!({}), std::path::Path::new("."))
+            .await;
         assert_eq!(v, HookVerdict::Deny("not today".into()));
     }
 
     #[tokio::test]
     async fn an_undefined_exit_code_fails_closed() {
         let set = HookSet::from_config(&[cfg("pre_tool", "exit 1")]).unwrap();
-        match set.pre_tool("echo", &json!({}), std::path::Path::new(".")).await {
+        match set
+            .pre_tool("echo", &json!({}), std::path::Path::new("."))
+            .await
+        {
             HookVerdict::Deny(reason) => assert!(reason.contains("exited 1"), "{reason}"),
             HookVerdict::Allow => panic!("an undefined exit code must not be permission"),
         }
@@ -261,7 +293,10 @@ mod tests {
         let mut c = cfg("pre_tool", "sleep 30");
         c.timeout_secs = Some(1);
         let set = HookSet::from_config(&[c]).unwrap();
-        match set.pre_tool("echo", &json!({}), std::path::Path::new(".")).await {
+        match set
+            .pre_tool("echo", &json!({}), std::path::Path::new("."))
+            .await
+        {
             HookVerdict::Deny(reason) => assert!(reason.contains("failed to run"), "{reason}"),
             HookVerdict::Allow => panic!("a timeout must not be permission"),
         }
@@ -293,13 +328,19 @@ mod tests {
         let set = HookSet::from_config(&[c]).unwrap();
 
         // A tool outside the filter never fires the hook.
-        let v = set.pre_tool("echo", &json!({}), std::path::Path::new(".")).await;
+        let v = set
+            .pre_tool("echo", &json!({}), std::path::Path::new("."))
+            .await;
         assert_eq!(v, HookVerdict::Allow);
         assert!(!marker.exists());
 
         // A matching tool does, and the payload arrives on stdin.
         let v = set
-            .pre_tool("shell", &json!({"command": "rm -rf /"}), std::path::Path::new("."))
+            .pre_tool(
+                "shell",
+                &json!({"command": "rm -rf /"}),
+                std::path::Path::new("."),
+            )
             .await;
         assert!(matches!(v, HookVerdict::Deny(_)));
         let written = std::fs::read_to_string(&marker).unwrap();
@@ -313,6 +354,7 @@ mod tests {
         let set = HookSet::from_config(&[cfg("post_tool", "exit 7")]).unwrap();
         // Nothing to assert beyond "does not panic or error": the call has no
         // way to fail the caller.
-        set.post_tool("echo", &json!({}), false, "out", std::path::Path::new(".")).await;
+        set.post_tool("echo", &json!({}), false, "out", std::path::Path::new("."))
+            .await;
     }
 }

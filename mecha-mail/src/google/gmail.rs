@@ -18,7 +18,10 @@ pub struct GmailProvider {
 
 impl GmailProvider {
     pub fn new(access_token: String) -> Self {
-        Self { access_token, client: crate::http::client() }
+        Self {
+            access_token,
+            client: crate::http::client(),
+        }
     }
 
     fn auth_header(&self) -> String {
@@ -27,13 +30,18 @@ impl GmailProvider {
 
     async fn get_json(&self, url: &str) -> Result<Value, MailError> {
         let resp = send_with_retry(
-            self.client.get(url).header("Authorization", self.auth_header()),
+            self.client
+                .get(url)
+                .header("Authorization", self.auth_header()),
         )
         .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(MailError::ApiError { status, message: body });
+            return Err(MailError::ApiError {
+                status,
+                message: body,
+            });
         }
         resp.json::<Value>().await.map_err(MailError::from)
     }
@@ -171,7 +179,10 @@ impl GmailProvider {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(MailError::ApiError { status, message: body });
+            return Err(MailError::ApiError {
+                status,
+                message: body,
+            });
         }
         let json: Value = resp.json().await?;
         Ok(json["id"].as_str().unwrap_or_default().to_string())
@@ -179,8 +190,9 @@ impl GmailProvider {
 
     /// The authenticated account's address — doubles as the auth smoke test.
     pub async fn profile_address(&self) -> Result<String, MailError> {
-        let json =
-            self.get_json("https://gmail.googleapis.com/gmail/v1/users/me/profile").await?;
+        let json = self
+            .get_json("https://gmail.googleapis.com/gmail/v1/users/me/profile")
+            .await?;
         json["emailAddress"]
             .as_str()
             .map(|s| s.to_string())
@@ -302,8 +314,9 @@ pub(crate) fn parse_gmail_message(msg: &Value) -> Email {
     let bcc_addresses = parse_addr_list(&bcc_raw);
 
     // Prefer internalDate (epoch millis) over the header, which lies more.
-    let date_received = if let Some(internal_date) =
-        msg["internalDate"].as_str().and_then(|s| s.parse::<i64>().ok())
+    let date_received = if let Some(internal_date) = msg["internalDate"]
+        .as_str()
+        .and_then(|s| s.parse::<i64>().ok())
     {
         match chrono::DateTime::from_timestamp(internal_date / 1000, 0) {
             Some(dt) => dt.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
@@ -319,7 +332,11 @@ pub(crate) fn parse_gmail_message(msg: &Value) -> Email {
 
     let labels: Vec<String> = msg["labelIds"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
 
     let is_read = !labels.contains(&"UNREAD".to_string());
@@ -419,11 +436,17 @@ fn parse_date_to_iso(date_str: &str) -> String {
         return chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     }
 
-    let cleaned =
-        if let Some(pos) = trimmed.rfind('(') { trimmed[..pos].trim() } else { trimmed };
+    let cleaned = if let Some(pos) = trimmed.rfind('(') {
+        trimmed[..pos].trim()
+    } else {
+        trimmed
+    };
 
     if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(cleaned) {
-        return dt.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        return dt
+            .with_timezone(&chrono::Utc)
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
     }
 
     let formats = [
@@ -435,12 +458,18 @@ fn parse_date_to_iso(date_str: &str) -> String {
     ];
     for fmt in &formats {
         if let Ok(dt) = chrono::DateTime::parse_from_str(cleaned, fmt) {
-            return dt.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            return dt
+                .with_timezone(&chrono::Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
         }
     }
 
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(cleaned) {
-        return dt.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        return dt
+            .with_timezone(&chrono::Utc)
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
     }
 
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
@@ -470,7 +499,10 @@ mod tests {
             json!({"name": "Subject", "value": "Hi"}),
             json!({"name": "Message-ID", "value": "<abc@mail.gmail.com>"}),
         ];
-        assert_eq!(extract_message_id(&headers), Some("<abc@mail.gmail.com>".to_string()));
+        assert_eq!(
+            extract_message_id(&headers),
+            Some("<abc@mail.gmail.com>".to_string())
+        );
         let headers2 = vec![json!({"name": "message-id", "value": "<x@y>"})];
         assert_eq!(extract_message_id(&headers2), Some("<x@y>".to_string()));
         assert_eq!(extract_message_id(&[]), None);
@@ -493,8 +525,8 @@ mod tests {
         // Reply headers belong in the header block, before the body separator.
         assert!(raw.find("In-Reply-To").unwrap() < raw.find("\r\n\r\n").unwrap());
 
-        let raw2 = build_gmail_raw_message("bob@example.com", "Hi", "<p>x</p>", None, None, None)
-            .unwrap();
+        let raw2 =
+            build_gmail_raw_message("bob@example.com", "Hi", "<p>x</p>", None, None, None).unwrap();
         assert!(!raw2.contains("In-Reply-To"));
         assert!(!raw2.contains("References"));
     }
@@ -514,7 +546,10 @@ mod tests {
             Some("<a@b>\r\nBcc: attacker@evil.com"),
         )
         .unwrap();
-        assert!(!raw.contains("attacker@evil.com"), "injected header must not survive");
+        assert!(
+            !raw.contains("attacker@evil.com"),
+            "injected header must not survive"
+        );
     }
 
     #[test]
@@ -570,7 +605,10 @@ mod tests {
         assert_eq!(email.id, "gmail-m1");
         assert_eq!(email.from_name, "Priya Nair");
         assert_eq!(email.from_address, "priya@example.edu");
-        assert_eq!(email.to_addresses, vec!["luke@example.edu", "bob@example.com"]);
+        assert_eq!(
+            email.to_addresses,
+            vec!["luke@example.edu", "bob@example.com"]
+        );
         assert_eq!(email.body_text, "hello there");
         assert!(!email.is_read);
         assert_eq!(email.message_id.as_deref(), Some("<mid@x>"));

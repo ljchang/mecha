@@ -41,7 +41,13 @@ pub struct TuiApprover {
 impl TuiApprover {
     pub fn new() -> (Self, mpsc::UnboundedReceiver<Request>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        (TuiApprover { tx, always: Mutex::new(HashSet::new()) }, rx)
+        (
+            TuiApprover {
+                tx,
+                always: Mutex::new(HashSet::new()),
+            },
+            rx,
+        )
     }
 }
 

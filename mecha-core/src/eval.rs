@@ -107,13 +107,21 @@ pub async fn verify_workspace(
             }
         }
         Ok(Err(e)) => {
-            return Check { name, passed: false, detail: format!("cannot run `{command}`: {e}") }
+            return Check {
+                name,
+                passed: false,
+                detail: format!("cannot run `{command}`: {e}"),
+            }
         }
         Ok(Ok(o)) => o,
     };
 
     if output.status.success() {
-        return Check { name, passed: true, detail: String::new() };
+        return Check {
+            name,
+            passed: true,
+            detail: String::new(),
+        };
     }
 
     let mut body = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -147,8 +155,7 @@ fn tail(s: &str, max: usize) -> String {
 /// correctly refuse — but only *after* the case had already been staged around
 /// a path that cannot work.
 pub fn stage_workspace(fixture: &Path, dest: &Path) -> Result<()> {
-    std::fs::create_dir_all(dest)
-        .with_context(|| format!("creating {}", dest.display()))?;
+    std::fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
 
     for entry in std::fs::read_dir(fixture)
         .with_context(|| format!("reading fixture {}", fixture.display()))?
@@ -157,8 +164,7 @@ pub fn stage_workspace(fixture: &Path, dest: &Path) -> Result<()> {
         let from = entry.path();
         let to = dest.join(entry.file_name());
         // `metadata` follows links; `file_type` would not.
-        let meta = std::fs::metadata(&from)
-            .with_context(|| format!("stat {}", from.display()))?;
+        let meta = std::fs::metadata(&from).with_context(|| format!("stat {}", from.display()))?;
 
         if meta.is_dir() {
             stage_workspace(&from, &to)?;
@@ -358,7 +364,11 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
         checks.push(Check {
             name: format!("calls {tool}"),
             passed,
-            detail: if passed { String::new() } else { format!("called: {}", fmt(&called)) },
+            detail: if passed {
+                String::new()
+            } else {
+                format!("called: {}", fmt(&called))
+            },
         });
     }
 
@@ -367,7 +377,11 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
         checks.push(Check {
             name: format!("order {}", case.expect.tools_in_order.join(" → ")),
             passed,
-            detail: if passed { String::new() } else { format!("called: {}", fmt(&called)) },
+            detail: if passed {
+                String::new()
+            } else {
+                format!("called: {}", fmt(&called))
+            },
         });
     }
 
@@ -376,7 +390,11 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
         checks.push(Check {
             name: format!("avoids {tool}"),
             passed,
-            detail: if passed { String::new() } else { format!("called {tool}") },
+            detail: if passed {
+                String::new()
+            } else {
+                format!("called {tool}")
+            },
         });
     }
 
@@ -385,7 +403,11 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
         checks.push(Check {
             name: "answers without tools".into(),
             passed,
-            detail: if passed { String::new() } else { format!("called: {}", fmt(&called)) },
+            detail: if passed {
+                String::new()
+            } else {
+                format!("called: {}", fmt(&called))
+            },
         });
     }
 
@@ -394,7 +416,11 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
         checks.push(Check {
             name: format!("says {needle:?}"),
             passed,
-            detail: if passed { String::new() } else { "not in the answer".into() },
+            detail: if passed {
+                String::new()
+            } else {
+                "not in the answer".into()
+            },
         });
     }
 
@@ -403,7 +429,11 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
         checks.push(Check {
             name: format!("omits {needle:?}"),
             passed,
-            detail: if passed { String::new() } else { "present in the answer".into() },
+            detail: if passed {
+                String::new()
+            } else {
+                "present in the answer".into()
+            },
         });
     }
 
@@ -416,7 +446,11 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
         checks.push(Check {
             name: format!("says one of {}", fmt(&case.expect.contains_any)),
             passed,
-            detail: if passed { String::new() } else { "none present".into() },
+            detail: if passed {
+                String::new()
+            } else {
+                "none present".into()
+            },
         });
     }
 
@@ -450,7 +484,11 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
             checks.push(Check {
                 name: format!("{leg} taint is {expected}"),
                 passed,
-                detail: if passed { String::new() } else { format!("it was {actual}") },
+                detail: if passed {
+                    String::new()
+                } else {
+                    format!("it was {actual}")
+                },
             });
         }
     }
@@ -460,7 +498,11 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
         checks.push(Check {
             name: format!("refuses {expected} outbound call(s)"),
             passed,
-            detail: if passed { String::new() } else { format!("refused {}", result.blocked_sends) },
+            detail: if passed {
+                String::new()
+            } else {
+                format!("refused {}", result.blocked_sends)
+            },
         });
     }
 
@@ -485,7 +527,11 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
         checks.push(Check {
             name: format!("≤{max} turns"),
             passed,
-            detail: if passed { String::new() } else { format!("took {}", result.turns) },
+            detail: if passed {
+                String::new()
+            } else {
+                format!("took {}", result.turns)
+            },
         });
     }
 
@@ -496,7 +542,10 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
         checks.push(Check {
             name: "well-formed arguments".into(),
             passed: false,
-            detail: format!("{} call(s) had unparseable JSON", result.malformed_tool_args),
+            detail: format!(
+                "{} call(s) had unparseable JSON",
+                result.malformed_tool_args
+            ),
         });
     }
     if unknown_tools > 0 {
@@ -517,7 +566,11 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
         elapsed_ms: result.elapsed_ms,
         malformed_tool_args: result.malformed_tool_args,
         unknown_tools,
-        tool_errors: result.tool_calls.iter().filter(|c| c.is_error && !c.unknown).count() as u32,
+        tool_errors: result
+            .tool_calls
+            .iter()
+            .filter(|c| c.is_error && !c.unknown)
+            .count() as u32,
         tools_called: called,
         usage: result.usage.clone(),
         error: result.error.clone(),
@@ -556,7 +609,11 @@ fn grade_arg(expect: &ArgExpect, result: &BatchResult) -> Check {
     Check {
         name,
         passed,
-        detail: if passed { String::new() } else { format!("got {}", fmt(&values)) },
+        detail: if passed {
+            String::new()
+        } else {
+            format!("got {}", fmt(&values))
+        },
     }
 }
 
@@ -631,7 +688,11 @@ impl Judge {
         // model thinks before it answers, and a budget sized for the verdict
         // alone gets spent entirely on the reasoning, returning empty content
         // with `finish_reason: length`. Observed, not hypothetical.
-        Judge { provider, model, max_tokens: 4096 }
+        Judge {
+            provider,
+            model,
+            max_tokens: 4096,
+        }
     }
 
     /// Override the verdict budget. Only worth touching for a judge that
@@ -647,7 +708,11 @@ impl Judge {
 
     /// Grade one answer. The judge gets no tools and no history.
     pub async fn assess(&self, prompt: &str, rubric: &str, answer: &str) -> Result<Verdict> {
-        let answer = if answer.trim().is_empty() { "(the assistant said nothing)" } else { answer };
+        let answer = if answer.trim().is_empty() {
+            "(the assistant said nothing)"
+        } else {
+            answer
+        };
 
         let user = format!(
             "<task>\n{prompt}\n</task>\n\n\
@@ -705,18 +770,20 @@ impl Judge {
     /// worse than a case that fails loudly.
     pub async fn check(&self, case: &EvalCase, answer: &str) -> Option<Check> {
         let rubric = case.expect.judge.as_deref()?;
-        Some(match self.assess(&case.prompt.render(), rubric, answer).await {
-            Ok(v) => Check {
-                name: "judge".into(),
-                passed: v.pass,
-                detail: v.reason,
+        Some(
+            match self.assess(&case.prompt.render(), rubric, answer).await {
+                Ok(v) => Check {
+                    name: "judge".into(),
+                    passed: v.pass,
+                    detail: v.reason,
+                },
+                Err(e) => Check {
+                    name: "judge".into(),
+                    passed: false,
+                    detail: format!("could not be graded: {e:#}"),
+                },
             },
-            Err(e) => Check {
-                name: "judge".into(),
-                passed: false,
-                detail: format!("could not be graded: {e:#}"),
-            },
-        })
+        )
     }
 }
 
@@ -816,12 +883,7 @@ fn one_run() -> usize {
 }
 
 impl Scorecard {
-    pub fn of(
-        graded: &[GradedCase],
-        model: String,
-        provider: String,
-        wall_clock_ms: u64,
-    ) -> Self {
+    pub fn of(graded: &[GradedCase], model: String, provider: String, wall_clock_ms: u64) -> Self {
         // One entry per case, in first-seen order, holding every run of it.
         // With one run per case each group is a singleton and the whole
         // scorecard reduces to what it computed before `--runs` existed.
@@ -839,12 +901,14 @@ impl Scorecard {
 
         let total = cases.len();
         let passed = cases.iter().filter(|(_, runs)| all(runs)).count();
-        let passed_any = (runs_per_case > 1)
-            .then(|| cases.iter().filter(|(_, runs)| any(runs)).count());
+        let passed_any =
+            (runs_per_case > 1).then(|| cases.iter().filter(|(_, runs)| any(runs)).count());
 
         let checks_total: usize = graded.iter().map(|g| g.checks.len()).sum();
-        let checks_passed: usize =
-            graded.iter().map(|g| g.checks.iter().filter(|c| c.passed).count()).sum();
+        let checks_passed: usize = graded
+            .iter()
+            .map(|g| g.checks.iter().filter(|c| c.passed).count())
+            .sum();
 
         let mut latencies: Vec<u64> = graded.iter().map(|g| g.elapsed_ms).collect();
         latencies.sort_unstable();
@@ -977,11 +1041,17 @@ mod tests {
     fn the_interlock_firing_is_gradable_where_no_substring_could_express_it() {
         let mut result = result_with(vec![], "I could not send that.");
         result.blocked_sends = 1;
-        result.taint = crate::agent::Taint { private: true, untrusted: true };
+        result.taint = crate::agent::Taint {
+            private: true,
+            untrusted: true,
+        };
 
         let expect = Expect {
             blocked_sends: Some(1),
-            taint: Some(TaintExpect { private: Some(true), untrusted: Some(true) }),
+            taint: Some(TaintExpect {
+                private: Some(true),
+                untrusted: Some(true),
+            }),
             ..Default::default()
         };
         assert!(grade(&case(expect), &result).passed);
@@ -990,7 +1060,10 @@ mod tests {
         // guard, however plausible the answer text sounds.
         let mut clean = result_with(vec![], "I could not send that.");
         clean.blocked_sends = 0;
-        let expect = Expect { blocked_sends: Some(1), ..Default::default() };
+        let expect = Expect {
+            blocked_sends: Some(1),
+            ..Default::default()
+        };
         assert!(!grade(&case(expect), &clean).passed);
     }
 
@@ -1008,7 +1081,10 @@ mod tests {
         let graded = grade(&case(expect.clone()), &never);
         assert!(!graded.passed);
         assert!(
-            graded.checks.iter().any(|c| !c.passed && c.detail.contains("did not exercise")),
+            graded
+                .checks
+                .iter()
+                .any(|c| !c.passed && c.detail.contains("did not exercise")),
             "the failure should say the case measured nothing"
         );
 
@@ -1022,17 +1098,30 @@ mod tests {
         let mut hit = result_with(vec![], "");
         hit.stop_cause = Some(StopCause::MaxTurns);
 
-        let expect = Expect { stop_cause: Some(StopCause::MaxTurns), ..Default::default() };
+        let expect = Expect {
+            stop_cause: Some(StopCause::MaxTurns),
+            ..Default::default()
+        };
         assert!(grade(&case(expect), &hit).passed);
 
         // Completing normally is a different outcome, and the text may be
         // identical either way.
-        let expect = Expect { stop_cause: Some(StopCause::Completed), ..Default::default() };
+        let expect = Expect {
+            stop_cause: Some(StopCause::Completed),
+            ..Default::default()
+        };
         assert!(!grade(&case(expect), &hit).passed);
     }
 
     fn call(name: &str, input: Value) -> ToolCallTrace {
-        ToolCallTrace { name: name.into(), input, is_error: false, denied: false, unknown: false, staged: false }
+        ToolCallTrace {
+            name: name.into(),
+            input,
+            is_error: false,
+            denied: false,
+            unknown: false,
+            staged: false,
+        }
     }
 
     fn case(expect: Expect) -> EvalCase {
@@ -1058,7 +1147,10 @@ mod tests {
             ("The port is `8431`.", "8431"),
         ];
         for (answer, needle) in cases {
-            let c = case(Expect { contains: vec![needle.into()], ..Default::default() });
+            let c = case(Expect {
+                contains: vec![needle.into()],
+                ..Default::default()
+            });
             let r = result_with(vec![], answer);
             assert!(grade(&c, &r).passed, "{answer:?} should satisfy {needle:?}");
         }
@@ -1066,11 +1158,17 @@ mod tests {
 
     #[test]
     fn normalizing_does_not_make_wrong_answers_pass() {
-        let c = case(Expect { contains: vec!["2520".into()], ..Default::default() });
+        let c = case(Expect {
+            contains: vec!["2520".into()],
+            ..Default::default()
+        });
         assert!(!grade(&c, &result_with(vec![], "The total is $2,530.")).passed);
 
         // A comma between words is not a digit separator and must survive.
-        let c = case(Expect { contains: vec!["apples, oranges".into()], ..Default::default() });
+        let c = case(Expect {
+            contains: vec!["apples, oranges".into()],
+            ..Default::default()
+        });
         assert!(grade(&c, &result_with(vec![], "We have apples, oranges.")).passed);
         assert!(!grade(&c, &result_with(vec![], "We have apples and oranges.")).passed);
     }
@@ -1114,20 +1212,28 @@ mod tests {
         );
         assert!(grade(&c, &interleaved).passed);
 
-        let reversed =
-            result_with(vec![call("fs_read", json!({})), call("fs_list", json!({}))], "");
+        let reversed = result_with(
+            vec![call("fs_read", json!({})), call("fs_list", json!({}))],
+            "",
+        );
         assert!(!grade(&c, &reversed).passed);
     }
 
     #[test]
     fn malformed_arguments_fail_even_when_the_answer_is_right() {
-        let c = case(Expect { contains: vec!["hello".into()], ..Default::default() });
+        let c = case(Expect {
+            contains: vec!["hello".into()],
+            ..Default::default()
+        });
         let mut r = result_with(vec![], "hello there");
         r.malformed_tool_args = 1;
 
         let graded = grade(&c, &r);
         assert!(!graded.passed);
-        assert!(graded.checks.iter().any(|ch| ch.name == "well-formed arguments"));
+        assert!(graded
+            .checks
+            .iter()
+            .any(|ch| ch.name == "well-formed arguments"));
     }
 
     /// The shipped case set must stay loadable — a typo in one line would
@@ -1147,14 +1253,17 @@ mod tests {
             if line.is_empty() || line.starts_with("//") {
                 continue;
             }
-            let case: EvalCase = serde_json::from_str(line)
-                .unwrap_or_else(|e| panic!("cases.jsonl:{}: {e}", i + 1));
+            let case: EvalCase =
+                serde_json::from_str(line).unwrap_or_else(|e| panic!("cases.jsonl:{}: {e}", i + 1));
             case.validate()
                 .unwrap_or_else(|e| panic!("cases.jsonl:{}: {e}", i + 1));
             assert!(ids.insert(case.id.clone()), "duplicate case id {}", case.id);
             count += 1;
         }
-        assert!(count >= 15, "expected a substantive case set, found {count}");
+        assert!(
+            count >= 15,
+            "expected a substantive case set, found {count}"
+        );
     }
 
     #[test]
@@ -1168,8 +1277,8 @@ mod tests {
         ];
         for text in wrapped {
             let json = extract_json(text).unwrap_or_else(|| panic!("no object in {text:?}"));
-            let v: Verdict = serde_json::from_str(&json)
-                .unwrap_or_else(|e| panic!("{text:?} -> {json:?}: {e}"));
+            let v: Verdict =
+                serde_json::from_str(&json).unwrap_or_else(|e| panic!("{text:?} -> {json:?}: {e}"));
             assert!(v.pass);
         }
 
@@ -1180,11 +1289,18 @@ mod tests {
 
     #[test]
     fn an_appended_check_can_only_turn_a_pass_into_a_failure() {
-        let c = case(Expect { contains: vec!["hello".into()], ..Default::default() });
+        let c = case(Expect {
+            contains: vec!["hello".into()],
+            ..Default::default()
+        });
         let mut graded = grade(&c, &result_with(vec![], "hello there"));
         assert!(graded.passed);
 
-        graded.add_check(Check { name: "judge".into(), passed: false, detail: "no".into() });
+        graded.add_check(Check {
+            name: "judge".into(),
+            passed: false,
+            detail: "no".into(),
+        });
         assert!(!graded.passed);
         assert_eq!(graded.checks.last().unwrap().name, "judge");
     }
@@ -1199,12 +1315,21 @@ mod tests {
 
         let dest = root.join("case-1");
         stage_workspace(&fixture, &dest).unwrap();
-        assert_eq!(std::fs::read_to_string(dest.join("README.md")).unwrap(), "original");
-        assert_eq!(std::fs::read_to_string(dest.join("notes/a.md")).unwrap(), "a");
+        assert_eq!(
+            std::fs::read_to_string(dest.join("README.md")).unwrap(),
+            "original"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("notes/a.md")).unwrap(),
+            "a"
+        );
 
         // The whole point: writing in the copy cannot reach the fixture.
         std::fs::write(dest.join("README.md"), "mutated").unwrap();
-        assert_eq!(std::fs::read_to_string(fixture.join("README.md")).unwrap(), "original");
+        assert_eq!(
+            std::fs::read_to_string(fixture.join("README.md")).unwrap(),
+            "original"
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -1301,7 +1426,10 @@ mod tests {
 
     #[test]
     fn no_tools_catches_a_model_that_reaches_for_one() {
-        let c = case(Expect { no_tools: true, ..Default::default() });
+        let c = case(Expect {
+            no_tools: true,
+            ..Default::default()
+        });
         assert!(grade(&c, &result_with(vec![], "4")).passed);
         assert!(!grade(&c, &result_with(vec![call("shell", json!({}))], "4")).passed);
     }

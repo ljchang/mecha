@@ -19,7 +19,10 @@ pub enum Record {
     Message(Message),
     /// Written when a run finishes, so `sessions show` can report cost without
     /// replaying the whole transcript.
-    Summary { usage: Usage, turns: u32 },
+    Summary {
+        usage: Usage,
+        turns: u32,
+    },
     /// Everything that shaped the request, written each time a process
     /// attaches to the session — on creation and again on every resume.
     ///
@@ -143,7 +146,11 @@ impl RunConfig {
             model: agent.model().to_string(),
             workspace: agent.ctx().workspace.clone(),
             system_prompt: agent.system().map(str::to_string),
-            tools: agent.registry().iter().map(|t| t.name().to_string()).collect(),
+            tools: agent
+                .registry()
+                .iter()
+                .map(|t| t.name().to_string())
+                .collect(),
             effort: cfg.effort,
             temperature: config.providers.get(provider).and_then(|p| p.temperature),
             seed: config.providers.get(provider).and_then(|p| p.seed),
@@ -193,7 +200,10 @@ impl Session {
         crate::create_private_dir(dir)
             .with_context(|| format!("creating session directory {}", dir.display()))?;
         let path = dir.join(format!("{}.jsonl", meta.id));
-        let session = Session { meta: meta.clone(), path };
+        let session = Session {
+            meta: meta.clone(),
+            path,
+        };
         session.append(&Record::Meta(meta))?;
         Ok(session)
     }
@@ -231,8 +241,8 @@ impl Session {
     /// Unparseable lines are skipped rather than failing the load — a truncated
     /// final line is the normal result of a killed process.
     pub fn load(path: &Path) -> Result<(SessionMeta, Conversation)> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
         let mut meta = None;
         let mut messages = Vec::new();
@@ -263,8 +273,8 @@ impl Session {
     /// gate on: it can over-taint a message (a fetch later in the same run
     /// counts against it), never under-taint one.
     pub fn taint_timeline(path: &Path) -> Result<TaintTimeline> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         Ok(TaintTimeline::from_records(
             text.lines()
                 .filter(|l| !l.trim().is_empty())
@@ -280,8 +290,8 @@ impl Session {
     /// before this was recorded — which cannot be replayed faithfully, because
     /// the system prompt and tool list that shaped it are gone.
     pub fn run_configs(path: &Path) -> Result<Vec<RunConfig>> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         Ok(text
             .lines()
             .filter(|l| !l.trim().is_empty())
@@ -326,8 +336,8 @@ impl Session {
     /// predates the summary record or died before writing one — an honest
     /// under-count, never a guess.
     pub fn usage_totals(path: &Path) -> Result<(Usage, u32)> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let mut usage = Usage::default();
         let mut turns = 0u32;
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -407,7 +417,10 @@ impl TaintTimeline {
     /// before taint was. The caller must treat `None` as *unknown*, and
     /// unknown provenance is never clean.
     pub fn covering(&self, index: usize) -> Option<Taint> {
-        self.checkpoints.iter().find(|(n, _)| *n > index).map(|(_, t)| *t)
+        self.checkpoints
+            .iter()
+            .find(|(n, _)| *n > index)
+            .map(|(_, t)| *t)
     }
 }
 
@@ -444,7 +457,10 @@ mod tests {
             ])
             .unwrap();
         session
-            .append(&Record::Taint(Taint { private: true, untrusted: true }))
+            .append(&Record::Taint(Taint {
+                private: true,
+                untrusted: true,
+            }))
             .unwrap();
 
         let (meta, convo) = Session::load(&session.path).unwrap();
@@ -469,10 +485,16 @@ mod tests {
         // The order a real run writes them in: one leg arrives, then the other,
         // and the loop may checkpoint again with nothing new to say.
         session
-            .append(&Record::Taint(Taint { untrusted: true, private: false }))
+            .append(&Record::Taint(Taint {
+                untrusted: true,
+                private: false,
+            }))
             .unwrap();
         session
-            .append(&Record::Taint(Taint { private: true, untrusted: false }))
+            .append(&Record::Taint(Taint {
+                private: true,
+                untrusted: false,
+            }))
             .unwrap();
         session.append(&Record::Taint(Taint::default())).unwrap();
 
@@ -481,7 +503,10 @@ mod tests {
         // Replacing rather than merging would leave this clean, and resuming
         // would hand the model the attacker's page with the guard switched off.
         assert!(convo.taint.private, "an earlier private leg was dropped");
-        assert!(convo.taint.untrusted, "an earlier untrusted leg was dropped");
+        assert!(
+            convo.taint.untrusted,
+            "an earlier untrusted leg was dropped"
+        );
         assert!(convo.taint.trifecta_armed());
 
         std::fs::remove_dir_all(&dir).ok();
@@ -509,11 +534,17 @@ mod tests {
         let session = Session::create(&dir, meta_with_id("20260101T000000-killed")).unwrap();
         session.append_messages(&[Message::user("first")]).unwrap();
         session
-            .append(&Record::Taint(Taint { private: true, untrusted: false }))
+            .append(&Record::Taint(Taint {
+                private: true,
+                untrusted: false,
+            }))
             .unwrap();
 
         // What a killed process leaves behind: a half-written final record.
-        let mut file = std::fs::OpenOptions::new().append(true).open(&session.path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&session.path)
+            .unwrap();
         write!(file, "{{\"record\":\"message\",\"role\":\"assis").unwrap();
         drop(file);
 
@@ -521,7 +552,10 @@ mod tests {
 
         assert_eq!(convo.messages.len(), 1);
         assert_eq!(convo.messages[0].text(), "first");
-        assert!(convo.taint.private, "a torn last line lost the taint before it");
+        assert!(
+            convo.taint.private,
+            "a torn last line lost the taint before it"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -532,10 +566,18 @@ mod tests {
         let session = Session::create(&dir, meta_with_id("20260101T000000-cfg")).unwrap();
 
         // What a resume under different flags looks like on disk.
-        let first = RunConfig { compact_at_tokens: None, ..RunConfig::default() };
-        let second = RunConfig { compact_at_tokens: Some(1200), ..RunConfig::default() };
+        let first = RunConfig {
+            compact_at_tokens: None,
+            ..RunConfig::default()
+        };
+        let second = RunConfig {
+            compact_at_tokens: Some(1200),
+            ..RunConfig::default()
+        };
         session.append(&Record::Config(first)).unwrap();
-        session.append_messages(&[Message::user("first run")]).unwrap();
+        session
+            .append_messages(&[Message::user("first run")])
+            .unwrap();
         session.append(&Record::Config(second)).unwrap();
 
         let configs = Session::run_configs(&session.path).unwrap();
@@ -572,14 +614,25 @@ mod tests {
         let session = Session::create(&dir, meta_with_id("20260101T000000-tl")).unwrap();
 
         // Run one: clean. Its checkpoint lands after its messages.
-        session.append_messages(&[Message::user("list the files")]).unwrap();
-        session.append_messages(&[Message::assistant(vec![Block::text("done")])]).unwrap();
+        session
+            .append_messages(&[Message::user("list the files")])
+            .unwrap();
+        session
+            .append_messages(&[Message::assistant(vec![Block::text("done")])])
+            .unwrap();
         session.append(&Record::Taint(Taint::default())).unwrap();
         // Run two: a hostile page enters; the checkpoint records it.
-        session.append_messages(&[Message::user("fetch that page")]).unwrap();
-        session.append_messages(&[Message::assistant(vec![Block::text("fetched")])]).unwrap();
         session
-            .append(&Record::Taint(Taint { untrusted: true, private: false }))
+            .append_messages(&[Message::user("fetch that page")])
+            .unwrap();
+        session
+            .append_messages(&[Message::assistant(vec![Block::text("fetched")])])
+            .unwrap();
+        session
+            .append(&Record::Taint(Taint {
+                untrusted: true,
+                private: false,
+            }))
             .unwrap();
 
         let tl = Session::taint_timeline(&session.path).unwrap();
@@ -652,13 +705,21 @@ mod tests {
         // Two runs on one session (chat, resume): the totals are the sum.
         session
             .append(&Record::Summary {
-                usage: Usage { input_tokens: 100, output_tokens: 10, ..Default::default() },
+                usage: Usage {
+                    input_tokens: 100,
+                    output_tokens: 10,
+                    ..Default::default()
+                },
                 turns: 2,
             })
             .unwrap();
         session
             .append(&Record::Summary {
-                usage: Usage { input_tokens: 50, output_tokens: 5, ..Default::default() },
+                usage: Usage {
+                    input_tokens: 50,
+                    output_tokens: 5,
+                    ..Default::default()
+                },
                 turns: 1,
             })
             .unwrap();
@@ -707,7 +768,10 @@ mod tests {
         Session::create(&dir, meta_with_id("20260101T000000-bbbbbbbb")).unwrap();
 
         let err = Session::find(&dir, "20260101").unwrap_err().to_string();
-        assert!(err.contains("matches 2 sessions"), "unexpected error: {err}");
+        assert!(
+            err.contains("matches 2 sessions"),
+            "unexpected error: {err}"
+        );
 
         // A full id still resolves, and resuming the wrong transcript is the
         // failure being guarded against.

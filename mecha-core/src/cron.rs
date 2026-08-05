@@ -122,7 +122,8 @@ impl Schedule {
             fields.len()
         );
 
-        let minutes = parse_field(fields[0], 0, 59, &[]).map_err(|e| ctx("minute", fields[0], e))?;
+        let minutes =
+            parse_field(fields[0], 0, 59, &[]).map_err(|e| ctx("minute", fields[0], e))?;
         let hours = parse_field(fields[1], 0, 23, &[]).map_err(|e| ctx("hour", fields[1], e))?;
         let days =
             parse_field(fields[2], 1, 31, &[]).map_err(|e| ctx("day-of-month", fields[2], e))?;
@@ -132,7 +133,11 @@ impl Schedule {
             parse_field(fields[4], 0, 7, WEEKDAYS).map_err(|e| ctx("day-of-week", fields[4], e))?;
 
         // Cron numbers Sunday as both 0 and 7; fold so matching only checks 0.
-        let weekdays = if weekdays & (1 << 7) != 0 { (weekdays | 1) & !(1 << 7) } else { weekdays };
+        let weekdays = if weekdays & (1 << 7) != 0 {
+            (weekdays | 1) & !(1 << 7)
+        } else {
+            weekdays
+        };
 
         Ok(Schedule {
             source: expr.to_string(),
@@ -380,12 +385,18 @@ mod tests {
         // is seconds, so this expression means 07:00 there only by accident.
         let s = Schedule::parse("0 7 * * *").unwrap();
         let next = s.next_after(utc("2026-08-05T00:00:00Z"), ny()).unwrap();
-        assert_eq!(next.with_timezone(&ny()).to_string(), "2026-08-05 07:00:00 EDT");
+        assert_eq!(
+            next.with_timezone(&ny()).to_string(),
+            "2026-08-05 07:00:00 EDT"
+        );
 
         // A six-field expression is an error, not a reinterpretation.
         let err = Schedule::parse("0 0 7 * * *").unwrap_err().to_string();
         assert!(err.contains("five fields"), "{err}");
-        assert!(err.contains("7am"), "the message has to say what the user meant: {err}");
+        assert!(
+            err.contains("7am"),
+            "the message has to say what the user meant: {err}"
+        );
     }
 
     #[test]
@@ -393,11 +404,17 @@ mod tests {
         let s = Schedule::parse("*/15 9-17 * * mon-fri").unwrap();
         let start = utc("2026-08-05T12:07:00Z"); // Wednesday, 08:07 EDT
         let next = s.next_after(start, ny()).unwrap();
-        assert_eq!(next.with_timezone(&ny()).to_string(), "2026-08-05 09:00:00 EDT");
+        assert_eq!(
+            next.with_timezone(&ny()).to_string(),
+            "2026-08-05 09:00:00 EDT"
+        );
 
         let s = Schedule::parse("30 3 1,15 jan,jul *").unwrap();
         let next = s.next_after(utc("2026-08-05T00:00:00Z"), ny()).unwrap();
-        assert_eq!(next.with_timezone(&ny()).to_string(), "2027-01-01 03:30:00 EST");
+        assert_eq!(
+            next.with_timezone(&ny()).to_string(),
+            "2027-01-01 03:30:00 EST"
+        );
 
         // Weekend-only, by name, crossing a week boundary.
         let s = Schedule::parse("0 10 * * sat,sun").unwrap();
@@ -435,9 +452,17 @@ mod tests {
         let s = Schedule::parse("0 0 13 * fri").unwrap();
         let after = utc("2026-08-05T00:00:00Z"); // Wednesday
         let first = s.next_after(after, ny()).unwrap();
-        assert_eq!(first.with_timezone(&ny()).day(), 7, "Friday the 7th comes first");
+        assert_eq!(
+            first.with_timezone(&ny()).day(),
+            7,
+            "Friday the 7th comes first"
+        );
         let second = s.next_after(first, ny()).unwrap();
-        assert_eq!(second.with_timezone(&ny()).day(), 13, "then the 13th, itself a Thursday");
+        assert_eq!(
+            second.with_timezone(&ny()).day(),
+            13,
+            "then the 13th, itself a Thursday"
+        );
 
         // With only one of them restricted, it is just that one.
         let s = Schedule::parse("0 0 13 * *").unwrap();
@@ -475,7 +500,11 @@ mod tests {
         // 2026-11-01: 02:00 EDT → 01:00 EST, so 01:30 happens twice.
         let s = Schedule::parse("30 1 * * *").unwrap();
         let first = s.next_after(utc("2026-10-31T12:00:00Z"), ny()).unwrap();
-        assert_eq!(first.to_rfc3339(), "2026-11-01T05:30:00+00:00", "the earlier 01:30, EDT");
+        assert_eq!(
+            first.to_rfc3339(),
+            "2026-11-01T05:30:00+00:00",
+            "the earlier 01:30, EDT"
+        );
 
         let second = s.next_after(first, ny()).unwrap();
         assert_eq!(
@@ -496,7 +525,10 @@ mod tests {
         let s = Schedule::parse("0 7 * * *").unwrap();
         let now = utc("2026-08-05T12:30:00Z"); // 08:30 EDT
         let prev = s.prev_at_or_before(now, ny()).unwrap();
-        assert_eq!(prev.with_timezone(&ny()).to_string(), "2026-08-05 07:00:00 EDT");
+        assert_eq!(
+            prev.with_timezone(&ny()).to_string(),
+            "2026-08-05 07:00:00 EDT"
+        );
 
         // A month asleep does not change the answer, and costs no more work.
         let long_ago = utc("2026-07-01T00:00:00Z");
@@ -511,7 +543,10 @@ mod tests {
         // At the instant of a slot, that slot is the most recent one...
         assert_eq!(s.prev_at_or_before(exactly, ny()).unwrap(), exactly);
         // ...and the next is strictly later, so nothing fires twice.
-        assert_eq!(s.next_after(exactly, ny()).unwrap(), utc("2026-08-05T12:40:00Z"));
+        assert_eq!(
+            s.next_after(exactly, ny()).unwrap(),
+            utc("2026-08-05T12:40:00Z")
+        );
     }
 
     #[test]
@@ -529,7 +564,10 @@ mod tests {
     fn a_schedule_round_trips_through_serde_as_what_the_user_typed() {
         let s = Schedule::parse("*/15 9-17 * * mon-fri").unwrap();
         let toml = toml::to_string(&serde_json::json!({"schedule": s.clone()})).unwrap();
-        assert!(toml.contains(r#"schedule = "*/15 9-17 * * mon-fri""#), "{toml}");
+        assert!(
+            toml.contains(r#"schedule = "*/15 9-17 * * mon-fri""#),
+            "{toml}"
+        );
         let back: Schedule = serde_json::from_str(r#""*/15 9-17 * * mon-fri""#).unwrap();
         assert_eq!(back, s);
         assert!(serde_json::from_str::<Schedule>(r#""nonsense""#).is_err());

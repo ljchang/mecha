@@ -20,6 +20,7 @@ mod triggers;
 
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
+use command::mode_name;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
     EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
@@ -29,12 +30,11 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use futures::StreamExt;
-use command::mode_name;
 use mecha_core::agent::{Agent, AgentEvent, Conversation, Phase, RunOutcome};
 use mecha_core::config::PermissionMode;
-use mecha_core::tool::{Approver, ModeApprover};
 use mecha_core::message::{Message, Usage};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
+use mecha_core::tool::{Approver, ModeApprover};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use std::collections::VecDeque;
@@ -218,8 +218,14 @@ struct App {
 impl App {
     fn status(&self, model: &str, provider: &str, tools: usize) -> Line<'static> {
         let mut spans = vec![
-            Span::styled(format!(" {model} "), Style::new().fg(Color::Black).bg(Color::Cyan)),
-            Span::styled(format!(" {provider} · {tools} tools "), Style::new().fg(Color::DarkGray)),
+            Span::styled(
+                format!(" {model} "),
+                Style::new().fg(Color::Black).bg(Color::Cyan),
+            ),
+            Span::styled(
+                format!(" {provider} · {tools} tools "),
+                Style::new().fg(Color::DarkGray),
+            ),
         ];
 
         // Only shown while planning: a badge that is always there stops being
@@ -310,7 +316,9 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     prepared
         .agent
         .registry_mut()
-        .insert(Arc::new(mecha_core::tool::ask::AskUserTool::new(Arc::clone(&asker))));
+        .insert(Arc::new(mecha_core::tool::ask::AskUserTool::new(
+            Arc::clone(&asker),
+        )));
 
     let session_dir = Session::default_dir()?;
     // One conversation for the session, so the taint accumulates across turns
@@ -412,8 +420,10 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
             (false, true) => " · already holds third-party content",
             (false, false) => "",
         };
-        app.transcript
-            .push(Entry::Notice(format!("resumed {} messages{carried}", app.convo.len())));
+        app.transcript.push(Entry::Notice(format!(
+            "resumed {} messages{carried}",
+            app.convo.len()
+        )));
     }
 
     let mut live = Live::new(prepared, global.clone());
@@ -434,9 +444,15 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     leave(&mut terminal)?;
 
     if let Some(s) = &session {
-        println!("session {} · {}", s.meta.id, crate::render::format_usage(&app.usage));
+        println!(
+            "session {} · {}",
+            s.meta.id,
+            crate::render::format_usage(&app.usage)
+        );
         let cx = live.agent.context();
-        cx.hooks.session_end(&s.meta.id, &s.path, &cx.tools.workspace).await;
+        cx.hooks
+            .session_end(&s.meta.id, &s.path, &cx.tools.workspace)
+            .await;
     }
     result
 }
@@ -461,8 +477,11 @@ async fn run_loop(
     loop {
         // Recomputed each frame: a `/provider` or `/mcp` switch changes the
         // tool list underneath us.
-        let (model, provider, tools) =
-            (live.model.clone(), live.provider.clone(), live.agent.registry().len());
+        let (model, provider, tools) = (
+            live.model.clone(),
+            live.provider.clone(),
+            live.agent.registry().len(),
+        );
         // Polled per frame rather than event-driven: the list lives behind a
         // Mutex the tool writes to, and a lock-and-clone at frame rate is
         // cheaper than being clever.
@@ -473,9 +492,15 @@ async fn run_loop(
         // arbitrary packet-sized pieces — without this, visibly torn.
         // Terminals that do not know the mode ignore it by spec, so there is
         // nothing to probe.
-        crossterm::queue!(std::io::stdout(), crossterm::terminal::BeginSynchronizedUpdate)?;
+        crossterm::queue!(
+            std::io::stdout(),
+            crossterm::terminal::BeginSynchronizedUpdate
+        )?;
         terminal.draw(|frame| draw(frame, app, &model, &provider, tools, todo_items.as_deref()))?;
-        crossterm::execute!(std::io::stdout(), crossterm::terminal::EndSynchronizedUpdate)?;
+        crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::EndSynchronizedUpdate
+        )?;
 
         // Applied here rather than in the key handler: rebuilding is async, and
         // a run in flight must finish under the settings it started with.
@@ -504,9 +529,11 @@ async fn run_loop(
 
         // A run in flight redraws on a timer so the elapsed clock ticks even
         // when nothing else is happening.
-        let tick = tokio::time::sleep(std::time::Duration::from_millis(
-            if app.running.is_some() { 200 } else { 60_000 },
-        ));
+        let tick = tokio::time::sleep(std::time::Duration::from_millis(if app.running.is_some() {
+            200
+        } else {
+            60_000
+        }));
 
         tokio::select! {
             Some(Ok(event)) = keys.next() => on_terminal_event(app, event, &mut events_tx, &mut events_rx, &live.agent, session)?,
@@ -682,7 +709,8 @@ fn on_key(
                 // proceed with its best interpretation and say which it chose.
                 if let Some(q) = app.asking.take() {
                     let _ = q.reply.send(None);
-                    app.transcript.push(Entry::Notice("left it to the model".into()));
+                    app.transcript
+                        .push(Entry::Notice("left it to the model".into()));
                 }
                 return Ok(());
             }
@@ -709,7 +737,9 @@ fn on_key(
             // newline — an answer is allowed to have paragraphs.
             KeyCode::Enter
                 if !app.input.trim().is_empty()
-                    && !key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
             {
                 let answer = app.input.trim().to_string();
                 app.input.clear();
@@ -800,7 +830,8 @@ fn on_key(
             None if app.quit_armed => app.should_quit = true,
             None => {
                 app.quit_armed = true;
-                app.transcript.push(Entry::Notice("^C again to quit".into()));
+                app.transcript
+                    .push(Entry::Notice("^C again to quit".into()));
             }
         },
 
@@ -815,13 +846,12 @@ fn on_key(
         // output that already happened — which is exactly when you want it.
         KeyCode::Char('o') if ctrl => {
             app.transcript.verbose = !app.transcript.verbose;
-            app.transcript.push(Entry::Notice(
-                if app.transcript.verbose {
+            app.transcript
+                .push(Entry::Notice(if app.transcript.verbose {
                     "showing thinking and tool output — ^O to hide".into()
                 } else {
                     "hiding thinking and tool output — ^O to show".into()
-                },
-            ));
+                }));
         }
 
         // Fill in as much as every candidate agrees on. Repeated presses
@@ -921,8 +951,6 @@ fn on_key(
     Ok(())
 }
 
-
-
 /// Apply a queued switch. Called from the event loop, never from a key handler:
 /// rebuilding is async, and none of it is safe with a run in flight.
 ///
@@ -958,8 +986,9 @@ async fn apply_switch(
     // run context, and swapping it is copy-on-write.
     if let Switch::Mode(mode) = switch {
         let Some(agent) = Arc::get_mut(&mut live.agent) else {
-            app.transcript
-                .push(Entry::Notice("cannot change mode while the agent is shared".into()));
+            app.transcript.push(Entry::Notice(
+                "cannot change mode while the agent is shared".into(),
+            ));
             return Ok(());
         };
         let next: Arc<dyn Approver> = match mode {
@@ -997,7 +1026,11 @@ async fn apply_switch(
             if *on {
                 opts.no_mcp_servers.clear();
             }
-            if *on { "MCP on".to_string() } else { "MCP off".to_string() }
+            if *on {
+                "MCP on".to_string()
+            } else {
+                "MCP off".to_string()
+            }
         }
         Switch::McpServer(name, on) => {
             opts.no_mcp_servers.retain(|n| n != name);
@@ -1013,15 +1046,18 @@ async fn apply_switch(
         Switch::Mode(_) => unreachable!("handled above"),
     };
 
-    app.transcript.push(Entry::Notice(format!("switching to {what}…")));
+    app.transcript
+        .push(Entry::Notice(format!("switching to {what}…")));
 
     let prepared = match setup::prepare_with_approver(&opts, Arc::clone(approver)).await {
         Ok(p) => p,
         // Keep the working agent. A failed switch that also broke the session
         // would punish a typo far out of proportion.
         Err(e) => {
-            app.transcript
-                .push(Entry::Error(format!("could not switch: {e:#} — staying on {}", live.model)));
+            app.transcript.push(Entry::Error(format!(
+                "could not switch: {e:#} — staying on {}",
+                live.model
+            )));
             return Ok(());
         }
     };
@@ -1038,7 +1074,11 @@ async fn apply_switch(
         live.model,
         live.provider,
         live.agent.registry().len(),
-        if tools_changed { " · prompt cache reset" } else { "" }
+        if tools_changed {
+            " · prompt cache reset"
+        } else {
+            ""
+        }
     )));
 
     record_config(session, live, app.mode)?;
@@ -1050,7 +1090,10 @@ async fn apply_switch(
 fn record_config(session: Option<&Session>, live: &Live, mode: PermissionMode) -> Result<()> {
     let Some(s) = session else { return Ok(()) };
     let cfg = mecha_core::config::Config::load(
-        live.opts.workspace.as_deref().unwrap_or(std::path::Path::new(".")),
+        live.opts
+            .workspace
+            .as_deref()
+            .unwrap_or(std::path::Path::new(".")),
     )?;
     let mut record = RunConfig::of(&live.agent, &cfg, &live.provider);
     // The file cannot know about a `/mode` switch, and a replay that read the
@@ -1152,7 +1195,11 @@ fn run_command(
             if items.is_empty() {
                 say("no providers configured — see `mecha config path`".into());
             } else {
-                let selected = app.providers.iter().position(|(n, _)| n == current).unwrap_or(0);
+                let selected = app
+                    .providers
+                    .iter()
+                    .position(|(n, _)| n == current)
+                    .unwrap_or(0);
                 app.picker = Some(Picker {
                     title: " switch model · ↑↓ then enter, esc to cancel ".into(),
                     items,
@@ -1161,7 +1208,11 @@ fn run_command(
             }
         }
         Command::Mode(None) => {
-            let modes = [PermissionMode::Ask, PermissionMode::Allow, PermissionMode::ReadOnly];
+            let modes = [
+                PermissionMode::Ask,
+                PermissionMode::Allow,
+                PermissionMode::ReadOnly,
+            ];
             let describe = |m: PermissionMode| match m {
                 PermissionMode::Ask => "ask        approve each write or command",
                 PermissionMode::Allow => "allow      run everything without asking",
@@ -1203,26 +1254,27 @@ fn run_command(
             }
         }
 
-        Command::McpServer(name, want) => {
-            match app.mcp_servers.iter().find(|(n, _)| *n == name) {
-                Some((_, on)) => {
-                    let target = want.unwrap_or(!on);
-                    if target == *on {
-                        say(format!("{name} is already {}", if target { "on" } else { "off" }));
-                    } else {
-                        app.pending_switch = Some(Switch::McpServer(name, target));
-                    }
+        Command::McpServer(name, want) => match app.mcp_servers.iter().find(|(n, _)| *n == name) {
+            Some((_, on)) => {
+                let target = want.unwrap_or(!on);
+                if target == *on {
+                    say(format!(
+                        "{name} is already {}",
+                        if target { "on" } else { "off" }
+                    ));
+                } else {
+                    app.pending_switch = Some(Switch::McpServer(name, target));
                 }
-                None => say(format!(
-                    "no MCP server named {name:?} — configured: {}",
-                    app.mcp_servers
-                        .iter()
-                        .map(|(n, _)| n.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
             }
-        }
+            None => say(format!(
+                "no MCP server named {name:?} — configured: {}",
+                app.mcp_servers
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        },
 
         // Everything that changes the agent goes through the event loop: these
         // are async, and none of them may happen with a run in flight.
@@ -1233,12 +1285,8 @@ fn run_command(
 
         Command::BadToggle(word) => say(format!("say on or off, not {word:?}")),
 
-        Command::BadMode(word) => {
-            say(format!("no such mode {word:?} (ask | allow | read-only)"))
-        }
-        Command::Unknown(name) => {
-            say(format!("no such command /{name}\n{}", command::HELP))
-        }
+        Command::BadMode(word) => say(format!("no such mode {word:?} (ask | allow | read-only)")),
+        Command::Unknown(name) => say(format!("no such command /{name}\n{}", command::HELP)),
     }
     Ok(())
 }
@@ -1285,7 +1333,11 @@ fn submit(
     }
     app.transcript.push(Entry::User(text));
 
-    set_title(&format!("mecha ▶ {} · {}", workspace_name(app), agent.model()));
+    set_title(&format!(
+        "mecha ▶ {} · {}",
+        workspace_name(app),
+        agent.model()
+    ));
 
     // A fresh channel per run, so a late event from a cancelled run cannot
     // bleed into the next one.
@@ -1330,7 +1382,9 @@ fn submit(
 /// one place. Every mutation goes through `mecha trigger ...`, so the modal can
 /// do exactly what the command line can and no more.
 fn handle_triggers_key(app: &mut App, key: KeyEvent) -> Result<()> {
-    let Some(modal) = &mut app.scheduled else { return Ok(()) };
+    let Some(modal) = &mut app.scheduled else {
+        return Ok(());
+    };
 
     // A pending confirmation swallows the keyboard: y does the thing, anything
     // else backs out. Deliberately not "any key confirms".
@@ -1387,7 +1441,10 @@ fn handle_triggers_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char(' ') => {
             if let Some(row) = modal.selected_row() {
-                let (verb, name) = (if row.enabled { "disable" } else { "enable" }, row.name.clone());
+                let (verb, name) = (
+                    if row.enabled { "disable" } else { "enable" },
+                    row.name.clone(),
+                );
                 let outcome = trigger_cli(&[verb, &name]);
                 modal.status = Some(match outcome {
                     Ok(_) => format!("{verb}d `{name}`"),
@@ -1457,7 +1514,8 @@ fn reload_triggers(app: &mut App) {
         }
         Err(e) => {
             app.scheduled = None;
-            app.transcript.push(Entry::Error(format!("triggers: {e:#}")));
+            app.transcript
+                .push(Entry::Error(format!("triggers: {e:#}")));
         }
     }
 }
@@ -1544,9 +1602,9 @@ fn suspend_and_edit(terminal: &mut Terminal<impl Backend>, app: &mut App) -> Res
         }
         // A failed editor keeps what was typed — quitting vim in anger must
         // not eat the draft.
-        Err(e) => app
-            .transcript
-            .push(Entry::Error(format!("editor: {e:#} — the input is unchanged"))),
+        Err(e) => app.transcript.push(Entry::Error(format!(
+            "editor: {e:#} — the input is unchanged"
+        ))),
     }
     Ok(())
 }
@@ -1629,7 +1687,8 @@ fn workspace_name(app: &App) -> String {
 fn run_shell_escape(app: &mut App, agent: &Arc<Agent>, cmd: String) {
     let workspace = agent.context().tools.workspace.clone();
     let tx = app.shell_tx.clone();
-    app.transcript.push(Entry::Notice(format!("running !{cmd}")));
+    app.transcript
+        .push(Entry::Notice(format!("running !{cmd}")));
     tokio::spawn(async move {
         let result = tokio::process::Command::new("sh")
             .arg("-c")
@@ -1650,7 +1709,11 @@ fn run_shell_escape(app: &mut App, agent: &Arc<Agent>, cmd: String) {
                     }
                     text.push_str(&String::from_utf8_lossy(&out.stderr));
                 }
-                Entry::Shell { cmd, output: clip_output(&text), status: out.status.code() }
+                Entry::Shell {
+                    cmd,
+                    output: clip_output(&text),
+                    status: out.status.code(),
+                }
             }
             Err(e) => Entry::Error(format!("!{cmd}: {e}")),
         };
@@ -1681,7 +1744,10 @@ fn clip_output(s: &str) -> String {
     };
 
     if out.len() > MAX_BYTES {
-        let cut = (0..=MAX_BYTES).rev().find(|&i| out.is_char_boundary(i)).unwrap_or(0);
+        let cut = (0..=MAX_BYTES)
+            .rev()
+            .find(|&i| out.is_char_boundary(i))
+            .unwrap_or(0);
         let dropped = out.len() - cut;
         out.truncate(cut);
         out.push_str(&format!("\n… ({dropped} more bytes)"));
@@ -1780,7 +1846,10 @@ fn draw(
     if let Some(items) = todo {
         draw_todo(frame, chunks[1], items);
     }
-    frame.render_widget(Paragraph::new(app.status(model, provider, tools)), chunks[2]);
+    frame.render_widget(
+        Paragraph::new(app.status(model, provider, tools)),
+        chunks[2],
+    );
 
     let (border, hint) = match &app.running {
         Some(run) if run.cancelling => (Color::Red, " stopping "),
@@ -1792,11 +1861,15 @@ fn draw(
     // Two candidate sources, one mechanism: an `@path` token at the cursor
     // completes against the workspace, anything else against command names.
     let (candidates, typed) = match command::at_token(&app.input, app.cursor) {
-        Some((_, partial)) => {
-            (command::path_candidates(partial, &app.workspace), partial.to_string())
-        }
+        Some((_, partial)) => (
+            command::path_candidates(partial, &app.workspace),
+            partial.to_string(),
+        ),
         None => (
-            command::completions(&app.input).into_iter().map(str::to_string).collect(),
+            command::completions(&app.input)
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
             app.input.trim_start_matches('/').to_string(),
         ),
     };
@@ -1815,14 +1888,12 @@ fn draw(
         ])
     };
 
-    let input = Paragraph::new(body)
-        .wrap(Wrap { trim: false })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::new().fg(border))
-                .title(hint),
-        );
+    let input = Paragraph::new(body).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(border))
+            .title(hint),
+    );
     frame.render_widget(input, chunks[3]);
 
     // Cursor position inside the bordered box, wrapping as the text does and
@@ -1883,7 +1954,10 @@ fn draw(
 fn draw_todo(frame: &mut Frame, area: Rect, items: &[mecha_core::tool::todo::TodoItem]) {
     use mecha_core::tool::todo::Status;
 
-    let done = items.iter().filter(|i| i.status == Status::Completed).count();
+    let done = items
+        .iter()
+        .filter(|i| i.status == Status::Completed)
+        .count();
     let body: Vec<Line> = items
         .iter()
         .map(|item| {
@@ -1921,7 +1995,11 @@ fn draw_todo(frame: &mut Frame, area: Rect, items: &[mecha_core::tool::todo::Tod
 fn draw_help(frame: &mut Frame, kitty: bool) {
     // Shift+Enter only where it can actually arrive — advertising it on a
     // terminal without the kitty protocol would teach a key that submits.
-    let newline_keys = if kitty { "shift+enter · alt+enter" } else { "alt+enter" };
+    let newline_keys = if kitty {
+        "shift+enter · alt+enter"
+    } else {
+        "alt+enter"
+    };
     let keys: Vec<(&str, String)> = vec![
         ("enter", "send · while running, steer the run".into()),
         (newline_keys, "insert a newline".into()),
@@ -1934,7 +2012,10 @@ fn draw_help(frame: &mut Frame, kitty: bool) {
         ("pgup pgdn wheel", "scroll the transcript".into()),
         ("↑ ↓", "input history".into()),
         ("?", "this overlay, on an empty line".into()),
-        ("!command", "run it locally — the model never sees it".into()),
+        (
+            "!command",
+            "run it locally — the model never sees it".into(),
+        ),
         ("^g", "compose the input in $EDITOR".into()),
     ];
 
@@ -1949,13 +2030,18 @@ fn draw_help(frame: &mut Frame, kitty: bool) {
         .collect();
     body.push(Line::raw(""));
     for line in command::HELP.lines() {
-        body.push(Line::styled(line.to_string(), Style::new().fg(Color::DarkGray)));
+        body.push(Line::styled(
+            line.to_string(),
+            Style::new().fg(Color::DarkGray),
+        ));
     }
 
     let area = centered(
         frame.area(),
         70,
-        (body.len() as u16).saturating_add(2).min(frame.area().height),
+        (body.len() as u16)
+            .saturating_add(2)
+            .min(frame.area().height),
     );
     frame.render_widget(Clear, area);
     frame.render_widget(
@@ -1985,7 +2071,10 @@ fn draw_question(frame: &mut Frame, q: &ask::Question) {
     ];
     for (i, option) in q.options.iter().enumerate() {
         body.push(Line::from(vec![
-            Span::styled(format!(" {} ", i + 1), Style::new().fg(Color::Black).bg(Color::Green)),
+            Span::styled(
+                format!(" {} ", i + 1),
+                Style::new().fg(Color::Black).bg(Color::Green),
+            ),
             Span::raw(" "),
             Span::styled(option.clone(), Style::new().fg(Color::White)),
         ]));
@@ -2022,7 +2111,10 @@ fn draw_picker(frame: &mut Frame, picker: &Picker) {
         .enumerate()
         .map(|(i, (label, _))| {
             if i == picker.selected {
-                Line::styled(format!("› {label}"), Style::new().fg(Color::Black).bg(Color::Cyan))
+                Line::styled(
+                    format!("› {label}"),
+                    Style::new().fg(Color::Black).bg(Color::Cyan),
+                )
             } else {
                 Line::styled(format!("  {label}"), Style::new().fg(Color::White))
             }
@@ -2045,9 +2137,10 @@ fn draw_approval(frame: &mut Frame, request: &approve::Request) {
     frame.render_widget(Clear, area);
 
     let body = vec![
-        Line::from(vec![
-            Span::styled(request.tool.as_str(), Style::new().fg(Color::Magenta).bold()),
-        ]),
+        Line::from(vec![Span::styled(
+            request.tool.as_str(),
+            Style::new().fg(Color::Magenta).bold(),
+        )]),
         Line::raw(""),
         Line::styled(request.summary.as_str(), Style::new().fg(Color::White)),
         Line::raw(""),
@@ -2116,7 +2209,10 @@ fn enter() -> Result<(Terminal<CrosstermBackend<std::io::Stdout>>, bool)> {
         // A panic between Begin and End would otherwise leave the terminal
         // buffering until its own timeout; ending an update that was never
         // begun is harmless.
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::EndSynchronizedUpdate);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::EndSynchronizedUpdate
+        );
         if kitty_pushed() {
             let _ = crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
         }
@@ -2148,7 +2244,10 @@ fn enter() -> Result<(Terminal<CrosstermBackend<std::io::Stdout>>, bool)> {
     // expect. Pushed *after* entering the alternate screen, because kitty
     // keeps a separate flag stack per screen buffer — pushed before, the flags
     // would outlive the TUI on the main screen.
-    let kitty = matches!(crossterm::terminal::supports_keyboard_enhancement(), Ok(true));
+    let kitty = matches!(
+        crossterm::terminal::supports_keyboard_enhancement(),
+        Ok(true)
+    );
     if kitty {
         crossterm::execute!(
             stdout,
@@ -2303,7 +2402,10 @@ mod tests {
         let plain = frame_text(&mut app, 100, 30, None);
         assert!(plain.contains("alt+enter"), "{plain}");
         assert!(!plain.contains("shift+enter"), "{plain}");
-        assert!(plain.contains("/clear"), "commands render from HELP: {plain}");
+        assert!(
+            plain.contains("/clear"),
+            "commands render from HELP: {plain}"
+        );
 
         app.kitty_keyboard = true;
         let kitty = frame_text(&mut app, 100, 30, None);
@@ -2329,8 +2431,14 @@ mod tests {
             sandbox_line: app.sandbox_line.clone(),
         });
         let text = frame_text(&mut app, 100, 30, None);
-        assert!(text.contains("reads data the user considers private"), "{text}");
-        assert!(text.contains("sandbox: none"), "shell's detail names the sandbox: {text}");
+        assert!(
+            text.contains("reads data the user considers private"),
+            "{text}"
+        );
+        assert!(
+            text.contains("sandbox: none"),
+            "shell's detail names the sandbox: {text}"
+        );
     }
 
     #[test]
@@ -2339,15 +2447,24 @@ mod tests {
         let items: Vec<TodoItem> = (0..12)
             .map(|i| TodoItem {
                 content: format!("step {i}"),
-                status: if i < 2 { Status::Completed } else { Status::Pending },
+                status: if i < 2 {
+                    Status::Completed
+                } else {
+                    Status::Pending
+                },
             })
             .collect();
 
         let text = frame_text(&mut app, 80, 24, Some(&items));
         assert!(text.contains("todo 2/12"), "{text}");
         // Clamped at eight rows of items: the pane is a glance, not a pager.
-        let shown = (0..12).filter(|i| text.contains(&format!("step {i}"))).count();
-        assert!(shown <= 8, "expected at most 8 items on screen, saw {shown}:\n{text}");
+        let shown = (0..12)
+            .filter(|i| text.contains(&format!("step {i}")))
+            .count();
+        assert!(
+            shown <= 8,
+            "expected at most 8 items on screen, saw {shown}:\n{text}"
+        );
 
         // Empty list: no pane at all — an always-there box stops being read.
         let empty = frame_text(&mut app, 80, 24, Some(&[]));
@@ -2364,9 +2481,16 @@ mod tests {
         // Many lines and one enormous line fail differently: the first
         // scrolls the useful part away, the second sits whole in memory and
         // wraps for thousands of rows.
-        let many = (0..500).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let many = (0..500)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let clipped = super::clip_output(&many);
-        assert!(clipped.lines().count() <= 201, "kept {} lines", clipped.lines().count());
+        assert!(
+            clipped.lines().count() <= 201,
+            "kept {} lines",
+            clipped.lines().count()
+        );
         assert!(clipped.contains("more lines"), "{clipped}");
 
         let huge = "x".repeat(100_000);
@@ -2408,7 +2532,9 @@ mod tests {
     fn picker(n: usize) -> Picker {
         Picker {
             title: String::new(),
-            items: (0..n).map(|i| (i.to_string(), super::command::Command::Usage)).collect(),
+            items: (0..n)
+                .map(|i| (i.to_string(), super::command::Command::Usage))
+                .collect(),
             selected: 0,
         }
     }

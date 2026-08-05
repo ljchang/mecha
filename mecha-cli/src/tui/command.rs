@@ -145,7 +145,9 @@ pub fn at_token(input: &str, cursor: usize) -> Option<(usize, &str)> {
         .map(|i| i + before[i..].chars().next().map_or(1, char::len_utf8))
         .unwrap_or(0);
     let token = &before[token_start..];
-    token.starts_with('@').then(|| (token_start + 1, &token[1..]))
+    token
+        .starts_with('@')
+        .then(|| (token_start + 1, &token[1..]))
 }
 
 /// Workspace entries the partial path could still mean. Directories come with
@@ -209,12 +211,18 @@ pub const NAMES: [&str; 11] = [
 /// whitespace the name is settled and the user is onto arguments, and once
 /// there is an exact match there is nothing left to suggest.
 pub fn completions(input: &str) -> Vec<&'static str> {
-    let Some(rest) = input.strip_prefix('/') else { return Vec::new() };
+    let Some(rest) = input.strip_prefix('/') else {
+        return Vec::new();
+    };
     if rest.contains(char::is_whitespace) {
         return Vec::new();
     }
     let rest = rest.to_ascii_lowercase();
-    NAMES.iter().copied().filter(|n| n.starts_with(&rest) && *n != rest).collect()
+    NAMES
+        .iter()
+        .copied()
+        .filter(|n| n.starts_with(&rest) && *n != rest)
+        .collect()
 }
 
 /// The longest prefix every candidate shares — what Tab should fill in.
@@ -224,7 +232,9 @@ pub fn completions(input: &str) -> Vec<&'static str> {
 /// so it serves both the `&'static str` command names and the owned path
 /// candidates.
 pub fn common_prefix<S: AsRef<str>>(candidates: &[S]) -> String {
-    let Some(first) = candidates.first().map(AsRef::as_ref) else { return String::new() };
+    let Some(first) = candidates.first().map(AsRef::as_ref) else {
+        return String::new();
+    };
     let mut len = first.len();
     for c in &candidates[1..] {
         len = len.min(
@@ -270,12 +280,19 @@ mod tests {
     fn completion_only_fires_while_the_name_is_still_being_typed() {
         assert_eq!(completions("/mo"), vec!["model", "mode"]);
         assert_eq!(completions("/mod"), vec!["model", "mode"]);
-        assert_eq!(completions("/mode"), vec!["model"], "an exact match still offers longer names");
+        assert_eq!(
+            completions("/mode"),
+            vec!["model"],
+            "an exact match still offers longer names"
+        );
         assert_eq!(completions("/c"), vec!["clear"]);
 
         // Not a command, or past the name: nothing to suggest.
         assert!(completions("summarise this").is_empty());
-        assert!(completions("/model claude").is_empty(), "arguments are not command names");
+        assert!(
+            completions("/model claude").is_empty(),
+            "arguments are not command names"
+        );
         assert!(completions("/zzz").is_empty());
     }
 
@@ -299,12 +316,17 @@ mod tests {
             );
         }
         for line in HELP.lines() {
-            let Some(advertised) = line.split_whitespace().next() else { continue };
+            let Some(advertised) = line.split_whitespace().next() else {
+                continue;
+            };
             let advertised = advertised.trim_start_matches('/');
             if advertised == "exit" {
                 continue; // an alias, deliberately not offered first
             }
-            assert!(NAMES.contains(&advertised), "{advertised} is documented but not completable");
+            assert!(
+                NAMES.contains(&advertised),
+                "{advertised} is documented but not completable"
+            );
         }
     }
 
@@ -326,7 +348,12 @@ mod tests {
         for dir in ["docs", "src", "target", ".git"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
-        for file in ["README.md", "docs/HANDOFF.md", "docs/TUI-RESEARCH.md", ".hidden"] {
+        for file in [
+            "README.md",
+            "docs/HANDOFF.md",
+            "docs/TUI-RESEARCH.md",
+            ".hidden",
+        ] {
             std::fs::write(root.join(file), "x").unwrap();
         }
         root
@@ -336,12 +363,19 @@ mod tests {
     fn the_at_token_is_found_anywhere_in_the_message() {
         // Mentions complete mid-sentence, not only at the start of the line.
         assert_eq!(at_token("@doc", 4), Some((1, "doc")));
-        assert_eq!(at_token("summarise @docs/HAND", 20), Some((11, "docs/HAND")));
+        assert_eq!(
+            at_token("summarise @docs/HAND", 20),
+            Some((11, "docs/HAND"))
+        );
         assert_eq!(at_token("read @", 6), Some((6, "")));
 
         // No @-token at the cursor: nothing to complete.
         assert_eq!(at_token("plain text", 10), None);
-        assert_eq!(at_token("a@b.com is an email", 5), None, "@ mid-word is not a mention");
+        assert_eq!(
+            at_token("a@b.com is an email", 5),
+            None,
+            "@ mid-word is not a mention"
+        );
         assert_eq!(at_token("@docs done", 10), None, "cursor is past the token");
     }
 
@@ -357,7 +391,11 @@ mod tests {
         assert_eq!(path_candidates("do", &root), vec!["docs/"]);
         let inside = path_candidates("docs/", &root);
         assert_eq!(inside, vec!["docs/HANDOFF.md", "docs/TUI-RESEARCH.md"]);
-        assert_eq!(common_prefix(&inside), "docs/", "diverging names share only the dir");
+        assert_eq!(
+            common_prefix(&inside),
+            "docs/",
+            "diverging names share only the dir"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -406,15 +444,24 @@ mod tests {
     #[test]
     fn commands_parse_with_and_without_arguments() {
         assert_eq!(parse("/model"), Some(Command::Model(None)));
-        assert_eq!(parse("/model claude-opus-5"), Some(Command::Model(Some("claude-opus-5".into()))));
-        assert_eq!(parse("/provider local"), Some(Command::Provider(Some("local".into()))));
+        assert_eq!(
+            parse("/model claude-opus-5"),
+            Some(Command::Model(Some("claude-opus-5".into())))
+        );
+        assert_eq!(
+            parse("/provider local"),
+            Some(Command::Provider(Some("local".into())))
+        );
         assert_eq!(parse("/clear"), Some(Command::Clear));
     }
 
     #[test]
     fn surrounding_whitespace_never_decides_anything() {
         assert_eq!(parse("  /usage  "), Some(Command::Usage));
-        assert_eq!(parse("/model    gpt-4o   "), Some(Command::Model(Some("gpt-4o".into()))));
+        assert_eq!(
+            parse("/model    gpt-4o   "),
+            Some(Command::Model(Some("gpt-4o".into())))
+        );
     }
 
     #[test]
@@ -431,7 +478,10 @@ mod tests {
         // `--yes` on the command line, "auto" in every other agent UI, `allow`
         // in the config file. All three mean the same thing.
         for word in ["allow", "auto", "yes", "ALLOW"] {
-            assert_eq!(parse(&format!("/mode {word}")), Some(Command::Mode(Some(PermissionMode::Allow))));
+            assert_eq!(
+                parse(&format!("/mode {word}")),
+                Some(Command::Mode(Some(PermissionMode::Allow)))
+            );
         }
         for word in ["read-only", "readonly", "ro", "plan"] {
             assert_eq!(
@@ -440,38 +490,67 @@ mod tests {
                 "{word}"
             );
         }
-        assert_eq!(parse("/mode ask"), Some(Command::Mode(Some(PermissionMode::Ask))));
+        assert_eq!(
+            parse("/mode ask"),
+            Some(Command::Mode(Some(PermissionMode::Ask)))
+        );
         assert_eq!(parse("/mode"), Some(Command::Mode(None)));
     }
 
     #[test]
     fn mcp_toggles_on_the_words_people_actually_type() {
         for word in ["on", "yes", "true", "enable", "ON"] {
-            assert_eq!(parse(&format!("/mcp {word}")), Some(Command::Mcp(Some(true))), "{word}");
+            assert_eq!(
+                parse(&format!("/mcp {word}")),
+                Some(Command::Mcp(Some(true))),
+                "{word}"
+            );
         }
         for word in ["off", "no", "false", "disable"] {
-            assert_eq!(parse(&format!("/mcp {word}")), Some(Command::Mcp(Some(false))), "{word}");
+            assert_eq!(
+                parse(&format!("/mcp {word}")),
+                Some(Command::Mcp(Some(false))),
+                "{word}"
+            );
         }
         assert_eq!(parse("/mcp"), Some(Command::Mcp(None)));
         // A single word that is not on/off is a server name — the parser
         // cannot know which servers exist, so an unknown one is caught at
         // dispatch, where the configured list can be shown.
-        assert_eq!(parse("/mcp maybe"), Some(Command::McpServer("maybe".into(), None)));
+        assert_eq!(
+            parse("/mcp maybe"),
+            Some(Command::McpServer("maybe".into(), None))
+        );
     }
 
     #[test]
     fn mcp_addresses_all_the_servers_or_one_of_them() {
         assert_eq!(parse("/mcp off"), Some(Command::Mcp(Some(false))));
-        assert_eq!(parse("/mcp pkg off"), Some(Command::McpServer("pkg".into(), Some(false))));
-        assert_eq!(parse("/mcp pkg on"), Some(Command::McpServer("pkg".into(), Some(true))));
+        assert_eq!(
+            parse("/mcp pkg off"),
+            Some(Command::McpServer("pkg".into(), Some(false)))
+        );
+        assert_eq!(
+            parse("/mcp pkg on"),
+            Some(Command::McpServer("pkg".into(), Some(true)))
+        );
         // A bare name flips it, which is what you want when there is one
         // server you keep reaching for.
-        assert_eq!(parse("/mcp pkg"), Some(Command::McpServer("pkg".into(), None)));
+        assert_eq!(
+            parse("/mcp pkg"),
+            Some(Command::McpServer("pkg".into(), None))
+        );
 
         // Reads naturally, means the opposite of what it looks like. Refused
         // rather than guessed at.
-        assert_eq!(parse("/mcp off pkg"), Some(Command::BadToggle("off pkg".into())));
-        assert_eq!(parse("/mcp pkg maybe"), Some(Command::BadToggle("maybe".into())));
+        assert_eq!(
+            parse("/mcp off pkg"),
+            Some(Command::BadToggle("off pkg".into()))
+        );
+        assert_eq!(
+            parse("/mcp pkg maybe"),
+            Some(Command::BadToggle("maybe".into()))
+        );
     }
 
     #[test]
@@ -493,7 +572,9 @@ mod tests {
     fn every_command_in_the_help_text_actually_parses() {
         // Help that lists a command nobody implemented is worse than no help.
         for line in HELP.lines() {
-            let Some(name) = line.split_whitespace().next() else { continue };
+            let Some(name) = line.split_whitespace().next() else {
+                continue;
+            };
             let parsed = parse(name);
             assert!(
                 !matches!(parsed, None | Some(Command::Unknown(_))),

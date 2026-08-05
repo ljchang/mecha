@@ -55,17 +55,26 @@ pub struct Message {
 
 impl Message {
     pub fn user(text: impl Into<String>) -> Self {
-        Message { role: Role::User, content: vec![Block::text(text)] }
+        Message {
+            role: Role::User,
+            content: vec![Block::text(text)],
+        }
     }
 
     pub fn assistant(content: Vec<Block>) -> Self {
-        Message { role: Role::Assistant, content }
+        Message {
+            role: Role::Assistant,
+            content,
+        }
     }
 
     /// Tool results always go back as a single user message — splitting them
     /// across messages teaches the model to stop calling tools in parallel.
     pub fn tool_results(results: Vec<Block>) -> Self {
-        Message { role: Role::User, content: results }
+        Message {
+            role: Role::User,
+            content: results,
+        }
     }
 
     /// Concatenated text blocks, ignoring thinking and tool traffic.
@@ -208,7 +217,9 @@ impl std::str::FromStr for Effort {
             "high" => Ok(Effort::High),
             "xhigh" | "x-high" => Ok(Effort::XHigh),
             "max" => Ok(Effort::Max),
-            other => Err(format!("unknown effort {other:?} (low|medium|high|xhigh|max)")),
+            other => Err(format!(
+                "unknown effort {other:?} (low|medium|high|xhigh|max)"
+            )),
         }
     }
 }
@@ -260,9 +271,16 @@ mod tests {
         // Letting reasoning leak into it would put the model's scratchpad in
         // front of the user and into eval assertions.
         let m = Message::assistant(vec![
-            Block::Thinking { text: "let me think".into(), signature: Some("sig".into()) },
+            Block::Thinking {
+                text: "let me think".into(),
+                signature: Some("sig".into()),
+            },
             Block::text("the answer is "),
-            Block::ToolUse { id: "t1".into(), name: "echo".into(), input: json!({}) },
+            Block::ToolUse {
+                id: "t1".into(),
+                name: "echo".into(),
+                input: json!({}),
+            },
             Block::text("42"),
         ]);
 
@@ -272,9 +290,17 @@ mod tests {
     #[test]
     fn tool_uses_reports_every_call_in_order() {
         let m = Message::assistant(vec![
-            Block::ToolUse { id: "t1".into(), name: "fs_read".into(), input: json!({"path": "a"}) },
+            Block::ToolUse {
+                id: "t1".into(),
+                name: "fs_read".into(),
+                input: json!({"path": "a"}),
+            },
             Block::text("and also"),
-            Block::ToolUse { id: "t2".into(), name: "shell".into(), input: json!({"cmd": "ls"}) },
+            Block::ToolUse {
+                id: "t2".into(),
+                name: "shell".into(),
+                input: json!({"cmd": "ls"}),
+            },
         ]);
 
         let calls = m.tool_uses();
@@ -289,8 +315,16 @@ mod tests {
         // tools in parallel, which is a behavioural regression no test of the
         // wire format would catch.
         let m = Message::tool_results(vec![
-            Block::ToolResult { tool_use_id: "t1".into(), content: "a".into(), is_error: false },
-            Block::ToolResult { tool_use_id: "t2".into(), content: "b".into(), is_error: true },
+            Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "a".into(),
+                is_error: false,
+            },
+            Block::ToolResult {
+                tool_use_id: "t2".into(),
+                content: "b".into(),
+                is_error: true,
+            },
         ]);
 
         assert_eq!(m.role, Role::User);
@@ -305,14 +339,31 @@ mod tests {
         // it rather than replay it.
         let blocks = vec![
             Block::text("hello"),
-            Block::Thinking { text: "hm".into(), signature: None },
-            Block::Thinking { text: "hm".into(), signature: Some("sig".into()) },
-            Block::ToolUse { id: "t1".into(), name: "echo".into(), input: json!({"v": 1}) },
-            Block::ToolResult { tool_use_id: "t1".into(), content: "1".into(), is_error: true },
+            Block::Thinking {
+                text: "hm".into(),
+                signature: None,
+            },
+            Block::Thinking {
+                text: "hm".into(),
+                signature: Some("sig".into()),
+            },
+            Block::ToolUse {
+                id: "t1".into(),
+                name: "echo".into(),
+                input: json!({"v": 1}),
+            },
+            Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "1".into(),
+                is_error: true,
+            },
         ];
 
         let encoded = serde_json::to_string(&blocks).unwrap();
-        assert!(!encoded.contains("\"signature\":null"), "an absent signature was written out");
+        assert!(
+            !encoded.contains("\"signature\":null"),
+            "an absent signature was written out"
+        );
 
         let decoded: Vec<Block> = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.len(), blocks.len());
@@ -330,9 +381,10 @@ mod tests {
     fn an_older_transcript_without_is_error_still_loads() {
         // `is_error` is `#[serde(default)]` precisely so a transcript written
         // before it existed still resumes.
-        let block: Block =
-            serde_json::from_value(json!({"type": "tool_result", "tool_use_id": "t1", "content": "x"}))
-                .unwrap();
+        let block: Block = serde_json::from_value(
+            json!({"type": "tool_result", "tool_use_id": "t1", "content": "x"}),
+        )
+        .unwrap();
         match block {
             Block::ToolResult { is_error, .. } => assert!(!is_error),
             other => panic!("expected a tool result, got {other:?}"),
@@ -355,7 +407,11 @@ mod tests {
 
     #[test]
     fn usage_accumulates_every_field() {
-        let mut a = Usage { input_tokens: 1, output_tokens: 2, ..Usage::default() };
+        let mut a = Usage {
+            input_tokens: 1,
+            output_tokens: 2,
+            ..Usage::default()
+        };
         a.add(&Usage {
             input_tokens: 10,
             output_tokens: 20,
@@ -394,7 +450,11 @@ mod tests {
     fn a_provider_with_no_prices_configured_costs_nothing_rather_than_guessing() {
         // Hardcoding a price table guarantees it is wrong within a quarter, so
         // the default has to be zero rather than a plausible number.
-        let usage = Usage { input_tokens: 1_000_000, output_tokens: 1_000_000, ..Usage::default() };
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            ..Usage::default()
+        };
         assert_eq!(usage.cost_usd(&Pricing::default()), 0.0);
     }
 
@@ -411,17 +471,30 @@ mod tests {
             ("x-high", Effort::XHigh),
             ("max", Effort::Max),
         ] {
-            assert_eq!(Effort::from_str(input).unwrap(), expected, "parsing {input}");
+            assert_eq!(
+                Effort::from_str(input).unwrap(),
+                expected,
+                "parsing {input}"
+            );
         }
 
         let err = Effort::from_str("turbo").unwrap_err();
-        assert!(err.contains("turbo") && err.contains("low|medium|high"), "unhelpful: {err}");
+        assert!(
+            err.contains("turbo") && err.contains("low|medium|high"),
+            "unhelpful: {err}"
+        );
     }
 
     #[test]
     fn every_effort_round_trips_through_its_wire_name() {
         use std::str::FromStr;
-        for effort in [Effort::Low, Effort::Medium, Effort::High, Effort::XHigh, Effort::Max] {
+        for effort in [
+            Effort::Low,
+            Effort::Medium,
+            Effort::High,
+            Effort::XHigh,
+            Effort::Max,
+        ] {
             assert_eq!(Effort::from_str(effort.as_str()).unwrap(), effort);
         }
     }

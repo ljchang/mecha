@@ -201,26 +201,40 @@ async fn dispatch(
     };
 
     let str_arg = |key: &str| args.get(key).and_then(Value::as_str).map(|s| s.to_string());
-    let missing = |what: &str| Some(Err(MailError::ParseError(format!("missing required `{what}`"))));
+    let missing = |what: &str| {
+        Some(Err(MailError::ParseError(format!(
+            "missing required `{what}`"
+        ))))
+    };
 
     let result = match name {
         "outlook_search" => {
-            let Some(query) = str_arg("query") else { return missing("query") };
-            let max = args.get("max_results").and_then(Value::as_u64).unwrap_or(10) as u32;
+            let Some(query) = str_arg("query") else {
+                return missing("query");
+            };
+            let max = args
+                .get("max_results")
+                .and_then(Value::as_u64)
+                .unwrap_or(10) as u32;
             OutlookProvider::new(token)
                 .search(&query, max.clamp(1, 50))
                 .await
                 .map(|e| render_search(&e))
         }
         "outlook_recent" => {
-            let max = args.get("max_results").and_then(Value::as_u64).unwrap_or(10) as u32;
+            let max = args
+                .get("max_results")
+                .and_then(Value::as_u64)
+                .unwrap_or(10) as u32;
             OutlookProvider::new(token)
                 .recent(max.clamp(1, 50))
                 .await
                 .map(|e| render_search(&e))
         }
         "outlook_get_thread" => {
-            let Some(thread_id) = str_arg("thread_id") else { return missing("thread_id") };
+            let Some(thread_id) = str_arg("thread_id") else {
+                return missing("thread_id");
+            };
             OutlookProvider::new(token)
                 .get_thread(&thread_id)
                 .await
@@ -234,7 +248,13 @@ async fn dispatch(
             };
             let html = crate::google::server::markdown_to_html(&body_md);
             OutlookProvider::new(token)
-                .send_email(&to, &subject, &html, str_arg("cc").as_deref(), str_arg("bcc").as_deref())
+                .send_email(
+                    &to,
+                    &subject,
+                    &html,
+                    str_arg("cc").as_deref(),
+                    str_arg("bcc").as_deref(),
+                )
                 .await
                 .map(|()| format!("sent to {to}"))
         }
@@ -244,7 +264,10 @@ async fn dispatch(
             else {
                 return missing("message_id and body_markdown");
             };
-            let reply_all = args.get("reply_all").and_then(Value::as_bool).unwrap_or(false);
+            let reply_all = args
+                .get("reply_all")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let html = crate::google::server::markdown_to_html(&body_md);
             OutlookProvider::new(token)
                 .reply(&message_id, &html, reply_all)
@@ -277,7 +300,8 @@ async fn dispatch(
                     let tz = crate::time::configured_zone();
                     for e in &mut events {
                         if e.is_all_day {
-                            e.start_time = e.start_time.get(..10).unwrap_or(&e.start_time).to_string();
+                            e.start_time =
+                                e.start_time.get(..10).unwrap_or(&e.start_time).to_string();
                             e.end_time = e.end_time.get(..10).unwrap_or(&e.end_time).to_string();
                         } else {
                             e.start_time = crate::time::in_zone(&e.start_time, tz);
@@ -300,7 +324,10 @@ async fn dispatch(
                 end_time: end,
                 location: str_arg("location"),
                 attendees: str_list(args, "attendees"),
-                all_day: args.get("all_day").and_then(Value::as_bool).unwrap_or(false),
+                all_day: args
+                    .get("all_day")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 timezone: str_arg("timezone"),
             };
             let calendar_id = str_arg("calendar_id").unwrap_or_else(|| "primary".into());
@@ -310,7 +337,9 @@ async fn dispatch(
                 .map(|e| serde_json::to_string_pretty(&e).unwrap_or_default())
         }
         "calendar_update_event" => {
-            let Some(event_id) = str_arg("event_id") else { return missing("event_id") };
+            let Some(event_id) = str_arg("event_id") else {
+                return missing("event_id");
+            };
             let request = UpdateEventRequest {
                 title: str_arg("title"),
                 description: str_arg("description"),
@@ -330,7 +359,9 @@ async fn dispatch(
                 .map(|e| serde_json::to_string_pretty(&e).unwrap_or_default())
         }
         "calendar_delete_event" => {
-            let Some(event_id) = str_arg("event_id") else { return missing("event_id") };
+            let Some(event_id) = str_arg("event_id") else {
+                return missing("event_id");
+            };
             OutlookCalendarProvider::new(token)
                 .delete_event(&event_id)
                 .await
@@ -344,7 +375,11 @@ async fn dispatch(
 fn str_list(args: &Value, key: &str) -> Vec<String> {
     args.get(key)
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -420,6 +455,9 @@ mod tests {
         let tools = tool_definitions();
         let reply = tools.iter().find(|t| t["name"] == "outlook_reply").unwrap();
         assert_eq!(reply["inputSchema"]["required"][0], "message_id");
-        assert!(reply["description"].as_str().unwrap().contains("conversation"));
+        assert!(reply["description"]
+            .as_str()
+            .unwrap()
+            .contains("conversation"));
     }
 }

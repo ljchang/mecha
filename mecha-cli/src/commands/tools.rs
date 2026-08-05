@@ -22,9 +22,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let prepared = setup::prepare_tools(global, false).await?;
     let registry = &prepared.registry;
 
-    let outbox_routed = |name: &str| {
-        !global.no_outbox && prepared.config.outbox.tools.iter().any(|t| t == name)
-    };
+    let outbox_routed =
+        |name: &str| !global.no_outbox && prepared.config.outbox.tools.iter().any(|t| t == name);
 
     if args.json {
         let specs: Vec<_> = registry
@@ -60,8 +59,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     for tool in registry.iter() {
-        let access = if tool.read_only() { "read-only" } else { "writes" };
-        let routing = if outbox_routed(tool.name()) { " · outbox: staged for review" } else { "" };
+        let access = if tool.read_only() {
+            "read-only"
+        } else {
+            "writes"
+        };
+        let routing = if outbox_routed(tool.name()) {
+            " · outbox: staged for review"
+        } else {
+            ""
+        };
         println!("{}  [{}{}]", tool.name(), access, routing);
         for line in tool.description().lines() {
             println!("    {line}");
@@ -75,7 +82,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         println!();
     }
 
-    println!("{} tools · workspace {}", registry.len(), prepared.workspace.display());
+    println!(
+        "{} tools · workspace {}",
+        registry.len(),
+        prepared.workspace.display()
+    );
 
     // The sandbox decides what `shell` actually is, so say so plainly. An
     // operator who thinks commands are confined when they aren't is the exact
@@ -103,7 +114,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // confinement it does not have.
                 "will not start — asks for confinement, no backend set".to_string()
             } else {
-                let network = server.network.unwrap_or(prepared.sandbox.can_reach_network());
+                let network = server
+                    .network
+                    .unwrap_or(prepared.sandbox.can_reach_network());
                 format!(
                     "{} · network {}",
                     prepared.sandbox.backend().as_str(),
@@ -112,7 +125,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             };
             println!("  {}  →  {}", server.name, confinement);
             if !server.env_passthrough.is_empty() {
-                println!("      env passed through: {}", server.env_passthrough.join(", "));
+                println!(
+                    "      env passed through: {}",
+                    server.env_passthrough.join(", ")
+                );
             }
             if server.sandbox && !prepared.sandbox.is_enabled() {
                 println!("      ⚠ set [sandbox] kind, or drop `sandbox = true`");

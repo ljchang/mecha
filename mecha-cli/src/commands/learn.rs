@@ -18,7 +18,7 @@ use crate::{probe, setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
 use mecha_core::learning::{
-    budget_refuses, domain_rules_section, wrap_rules_block, Learner, LearningStore, LeapRun,
+    budget_refuses, domain_rules_section, wrap_rules_block, LeapRun, Learner, LearningStore,
     Proposal, Trigger, MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
 };
 use mecha_core::session::Session;
@@ -78,7 +78,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // a detached reflect landing mid-pass must wait, not interleave. Held
     // across the model call on purpose: the pass is a read-modify-write of
     // the rule set, and there is no smaller region that keeps it one.
-    let _lock = if args.dry_run { None } else { Some(store.lock()?) };
+    let _lock = if args.dry_run {
+        None
+    } else {
+        Some(store.lock()?)
+    };
 
     anyhow::ensure!(
         (0.0..1.0).contains(&args.holdout),
@@ -135,10 +139,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     if args.holdout > 0.0 {
         for (domain, rs) in by_domain.iter_mut() {
             let before = rs.len();
-            let held = hold_out(&rs.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), args.holdout);
+            let held = hold_out(
+                &rs.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+                args.holdout,
+            );
             rs.retain(|r| !held.contains(&r.id));
             if before != rs.len() {
-                println!("{domain}: holding out {} of {before} reflection(s)", before - rs.len());
+                println!(
+                    "{domain}: holding out {} of {before} reflection(s)",
+                    before - rs.len()
+                );
             }
         }
     }
@@ -209,15 +219,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     // The gate replays against the recorded tool surface, which needs the
     // live registry for specs — same borrow `mecha validate` makes.
-    let prepared =
-        if args.propose { Some(setup::prepare(&global.clone(), false).await?) } else { None };
+    let prepared = if args.propose {
+        Some(setup::prepare(&global.clone(), false).await?)
+    } else {
+        None
+    };
     let sessions_dir = Session::default_dir()?;
 
     for (domain, reflexions) in &by_domain {
         let user_rules = store.user_rules(domain)?;
         let learned_before = store.learned_rules(domain)?;
 
-        let Some(rules) = learner.learn(domain, &user_rules, &learned_before, reflexions).await?
+        let Some(rules) = learner
+            .learn(domain, &user_rules, &learned_before, reflexions)
+            .await?
         else {
             eprintln!("{domain}: the learner produced no usable rule set; nothing changed");
             continue;
@@ -237,8 +252,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
         // Retired rules stay in the file but never render, so they cost the
         // budget nothing.
-        let rendered: usize =
-            rules.iter().filter(|r| r.active()).map(|r| r.text.len() + 2).sum();
+        let rendered: usize = rules
+            .iter()
+            .filter(|r| r.active())
+            .map(|r| r.text.len() + 2)
+            .sum();
         if rendered > RULES_CHAR_BUDGET {
             eprintln!(
                 "{domain}: warning — the new rule set renders to {rendered} chars, over the \
@@ -266,7 +284,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if args.propose {
             let prepared = prepared.as_ref().expect("built under --propose");
             let candidate_block = wrap_rules_block(
-                domain_rules_section(domain, &user_rules, &rules).into_iter().collect(),
+                domain_rules_section(domain, &user_rules, &rules)
+                    .into_iter()
+                    .collect(),
             );
             let current_block = store.rules_prompt_block()?;
 
@@ -323,7 +343,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // A candidate that makes any probe worse than what is deployed
             // never reaches a human — recorded with its evidence, though,
             // because a gate that leaves no trace teaches nobody anything.
-            let status = if regressed > 0 { "rejected_by_gate" } else { "pending" };
+            let status = if regressed > 0 {
+                "rejected_by_gate"
+            } else {
+                "pending"
+            };
             let proposal = Proposal {
                 id: Session::new_id(),
                 domain: domain.clone(),

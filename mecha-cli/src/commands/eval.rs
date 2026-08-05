@@ -16,9 +16,9 @@
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::agent::{Budget, RunContext};
-use mecha_core::tool::ask::{AskUserTool, Asker};
 use mecha_core::config::PermissionMode;
 use mecha_core::eval::{grade, stage_workspace, EvalCase, GradedCase, Judge, Scorecard};
+use mecha_core::tool::ask::{AskUserTool, Asker};
 use mecha_core::tool::ModeApprover;
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -140,10 +140,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let cases = load_cases(&args.cases, &args.tags)?;
     anyhow::ensure!(!cases.is_empty(), "no cases to run");
 
-    let fixture = args
-        .fixture
-        .clone()
-        .unwrap_or_else(|| args.cases.parent().unwrap_or(Path::new(".")).join("workspace"));
+    let fixture = args.fixture.clone().unwrap_or_else(|| {
+        args.cases
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("workspace")
+    });
     anyhow::ensure!(
         fixture.is_dir(),
         "fixture workspace {} does not exist",
@@ -233,8 +235,7 @@ async fn run_arm(
     let mut _fixture_mcp = Vec::new();
     if let Some(path) = &args.mcp_file {
         let servers = load_mcp_file(path)?;
-        let sandbox =
-            mecha_core::sandbox::Sandbox::new(prepared.config.sandbox.clone());
+        let sandbox = mecha_core::sandbox::Sandbox::new(prepared.config.sandbox.clone());
         let (tools, clients, errors) =
             mecha_core::mcp::connect_all(&servers, &sandbox, fixture).await;
         // Fatal where `setup` warns: a case file written against fixture
@@ -264,8 +265,11 @@ async fn run_arm(
     let mut item_of: HashMap<String, (usize, u32)> = HashMap::new();
     for (i, case) in cases.iter().enumerate() {
         for run in 1..=runs {
-            let id =
-                if runs == 1 { case.id.clone() } else { format!("{}#r{run}", case.id) };
+            let id = if runs == 1 {
+                case.id.clone()
+            } else {
+                format!("{}#r{run}", case.id)
+            };
             item_of.insert(id.clone(), (i, run));
             items.push(mecha_core::batch::BatchItem {
                 id,
@@ -279,22 +283,31 @@ async fn run_arm(
     // staging failure is not discovered halfway through the run. The arm
     // label keeps an A/B's two passes — same process, same pid — from
     // staging into each other's directories.
-    let sandbox_root =
-        std::env::temp_dir().join(format!("mecha-eval-{}{arm}", std::process::id()));
-    let item_cases: Vec<(&str, &EvalCase)> =
-        items.iter().map(|it| (it.id.as_str(), &cases[item_of[&it.id].0])).collect();
+    let sandbox_root = std::env::temp_dir().join(format!("mecha-eval-{}{arm}", std::process::id()));
+    let item_cases: Vec<(&str, &EvalCase)> = items
+        .iter()
+        .map(|it| (it.id.as_str(), &cases[item_of[&it.id].0]))
+        .collect();
     let contexts = prepare_contexts(&item_cases, fixture, &sandbox_root, &prepared)?;
     let sandboxed = item_cases.iter().filter(|(_, c)| c.sandbox).count();
 
     eprintln!(
         "mecha eval: {} cases{} · {} ({}) · {} tools · fixture {}{}",
         cases.len(),
-        if runs > 1 { format!(" × {runs} runs") } else { String::new() },
+        if runs > 1 {
+            format!(" × {runs} runs")
+        } else {
+            String::new()
+        },
         prepared.model,
         prepared.provider_name,
         prepared.agent.registry().len(),
         fixture.display(),
-        if with_rules { " · learned rules INJECTED (A/B treatment arm)" } else { "" }
+        if with_rules {
+            " · learned rules INJECTED (A/B treatment arm)"
+        } else {
+            ""
+        }
     );
     // Repeated runs only measure reliability if they are actually independent
     // samples. A pinned seed replays token-for-token when requests run one at
@@ -312,7 +325,10 @@ async fn run_arm(
         }
     }
     if sandboxed > 0 {
-        eprintln!("  {sandboxed} sandboxed case(s) staged under {}", sandbox_root.display());
+        eprintln!(
+            "  {sandboxed} sandboxed case(s) staged under {}",
+            sandbox_root.display()
+        );
     }
     if let Some(j) = &judge {
         eprintln!("  judge: {}", j.model());
@@ -320,9 +336,8 @@ async fn run_arm(
 
     // A verify command is a test run, not a tool call, so it gets its own
     // ceiling rather than borrowing the one meant for the agent's shell.
-    let verify_timeout = std::time::Duration::from_secs(
-        prepared.config.tools.shell_timeout_secs.max(120),
-    );
+    let verify_timeout =
+        std::time::Duration::from_secs(prepared.config.tools.shell_timeout_secs.max(120));
 
     let started = std::time::Instant::now();
     let total = items.len();
@@ -346,7 +361,9 @@ async fn run_arm(
     // Results come back in completion order; grade against the matching case.
     let mut graded: Vec<GradedCase> = Vec::new();
     for result in &results {
-        let Some(&(case_idx, run)) = item_of.get(&result.id) else { continue };
+        let Some(&(case_idx, run)) = item_of.get(&result.id) else {
+            continue;
+        };
         let case = &cases[case_idx];
         let mut g = grade(case, result);
         g.run = run;
@@ -360,12 +377,8 @@ async fn run_arm(
             // the command against the very directory sandboxing protects.
             g.add_check(match contexts.get(&result.id) {
                 Some(cx) => {
-                    mecha_core::eval::verify_workspace(
-                        command,
-                        &cx.tools.workspace,
-                        verify_timeout,
-                    )
-                    .await
+                    mecha_core::eval::verify_workspace(command, &cx.tools.workspace, verify_timeout)
+                        .await
                 }
                 None => mecha_core::eval::Check {
                     name: "verify".into(),
@@ -387,7 +400,13 @@ async fn run_arm(
     }
     // Report in case-file order (then run order) so two runs read the same way.
     graded.sort_by_key(|g| {
-        (cases.iter().position(|c| c.id == g.id).unwrap_or(usize::MAX), g.run)
+        (
+            cases
+                .iter()
+                .position(|c| c.id == g.id)
+                .unwrap_or(usize::MAX),
+            g.run,
+        )
     });
 
     let scorecard = Scorecard::of(
@@ -437,7 +456,10 @@ async fn ab_rules(
     let has_rules = mecha_core::learning::LearningStore::open_existing_default()
         .and_then(|s| s.rules_prompt_block().ok().flatten())
         .is_some();
-    anyhow::ensure!(has_rules, "--ab-rules: the learning store has no rules to measure");
+    anyhow::ensure!(
+        has_rules,
+        "--ab-rules: the learning store has no rules to measure"
+    );
 
     eprintln!("── arm A: rules-free ──");
     let (a_card, a_graded) = run_arm(global, args, cases, fixture, false, "a").await?;
@@ -453,10 +475,19 @@ async fn ab_rules(
 
     let mut flips = Vec::new();
     println!("\n── rules A/B ──");
-    println!("arm A (rules-free):  {}/{} cases", a_card.passed, a_card.total);
-    println!("arm B (with rules):  {}/{} cases", b_card.passed, b_card.total);
+    println!(
+        "arm A (rules-free):  {}/{} cases",
+        a_card.passed, a_card.total
+    );
+    println!(
+        "arm B (with rules):  {}/{} cases",
+        b_card.passed, b_card.total
+    );
     for case in cases {
-        let (a, b) = (case_pass(&a_graded, &case.id), case_pass(&b_graded, &case.id));
+        let (a, b) = (
+            case_pass(&a_graded, &case.id),
+            case_pass(&b_graded, &case.id),
+        );
         if a != b {
             let label = if b { "IMPROVED" } else { "REGRESSED" };
             println!("  {label}: {}", case.id);
@@ -542,13 +573,23 @@ fn prepare_contexts(
                 .canonicalize()
                 .with_context(|| format!("resolving {}", dir.display()))?;
 
-            base.sandboxed(dir, Arc::new(ModeApprover { mode: PermissionMode::Allow }))
+            base.sandboxed(
+                dir,
+                Arc::new(ModeApprover {
+                    mode: PermissionMode::Allow,
+                }),
+            )
         } else {
             base.as_ref().clone()
         };
 
-        let budget = Budget { max_turns: case.max_turns, ..Budget::default() };
-        let cx = cx.with_budget(budget).with_compact_at(case.compact_at_tokens);
+        let budget = Budget {
+            max_turns: case.max_turns,
+            ..Budget::default()
+        };
+        let cx = cx
+            .with_budget(budget)
+            .with_compact_at(case.compact_at_tokens);
         contexts.insert(id.to_string(), Arc::new(cx));
     }
     Ok(contexts)
@@ -558,7 +599,13 @@ fn prepare_contexts(
 /// workspace somewhere other than where cleanup looks for it.
 fn safe_dir_name(id: &str) -> String {
     id.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -587,7 +634,10 @@ fn build_judge(
     })?;
     let provider = mecha_core::provider::build(provider_cfg)?;
 
-    let model = args.judge_model.clone().or_else(|| provider_cfg.model.clone());
+    let model = args
+        .judge_model
+        .clone()
+        .or_else(|| provider_cfg.model.clone());
     let judge = Judge::new(provider, model);
 
     // Not fatal, but it does undermine the result: a model asked whether its
@@ -620,11 +670,15 @@ struct McpFile {
 /// value — is left alone; existence on disk is what distinguishes a path from
 /// an argument that merely looks like one.
 fn load_mcp_file(path: &Path) -> Result<Vec<mecha_core::config::McpServerConfig>> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let file: McpFile = toml::from_str(&text)
         .with_context(|| format!("{} is not an MCP server file", path.display()))?;
-    anyhow::ensure!(!file.mcp.is_empty(), "{} names no MCP servers", path.display());
+    anyhow::ensure!(
+        !file.mcp.is_empty(),
+        "{} names no MCP servers",
+        path.display()
+    );
 
     let base = path.parent().unwrap_or(Path::new("."));
     let resolve = |s: String| -> String {
@@ -648,8 +702,7 @@ fn load_mcp_file(path: &Path) -> Result<Vec<mecha_core::config::McpServerConfig>
 }
 
 fn load_cases(path: &Path, tags: &[String]) -> Result<Vec<EvalCase>> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("opening {}", path.display()))?;
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
 
     let mut cases = Vec::new();
     for (i, line) in std::io::BufReader::new(file).lines().enumerate() {
@@ -686,7 +739,12 @@ fn print_scorecard(card: &Scorecard, graded: &[GradedCase], show_failures: bool)
             card.pass_rate() * 100.0
         );
         if let Some(any) = card.passed_any {
-            println!("  {:<19} {}/{}", format!("pass@{k} (any run)"), any, card.total);
+            println!(
+                "  {:<19} {}/{}",
+                format!("pass@{k} (any run)"),
+                any,
+                card.total
+            );
         }
     } else {
         println!(
@@ -706,13 +764,19 @@ fn print_scorecard(card: &Scorecard, graded: &[GradedCase], show_failures: bool)
     println!("  runs errored        {}", card.runs_errored);
 
     println!("\n  mean turns          {:.1}", card.mean_turns);
-    println!("  median latency      {:.1}s", card.median_latency_ms as f64 / 1000.0);
+    println!(
+        "  median latency      {:.1}s",
+        card.median_latency_ms as f64 / 1000.0
+    );
     println!(
         "  tokens              {} in / {} out",
         card.total_usage.total_input(),
         card.total_usage.output_tokens
     );
-    println!("  wall clock          {:.1}s", card.wall_clock_ms as f64 / 1000.0);
+    println!(
+        "  wall clock          {:.1}s",
+        card.wall_clock_ms as f64 / 1000.0
+    );
 
     if !card.by_tag.is_empty() {
         println!("\n  by tag");
@@ -728,7 +792,10 @@ fn print_scorecard(card: &Scorecard, graded: &[GradedCase], show_failures: bool)
                 .filter(|a| *a != tag.passed)
                 .map(|a| format!("  (any {a})"))
                 .unwrap_or_default();
-            println!("    {:<18} {} {}/{}{}", tag.tag, bar, tag.passed, tag.total, any);
+            println!(
+                "    {:<18} {} {}/{}{}",
+                tag.tag, bar, tag.passed, tag.total, any
+            );
         }
     }
 
@@ -764,14 +831,19 @@ fn print_scorecard(card: &Scorecard, graded: &[GradedCase], show_failures: bool)
 fn compare(paths: &[PathBuf]) -> Result<()> {
     let mut cards = Vec::new();
     for path in paths {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let report: Report = serde_json::from_str(&text)
             .with_context(|| format!("{} is not a mecha eval report", path.display()))?;
         cards.push(report.scorecard);
     }
 
-    let w = cards.iter().map(|c| c.model.len()).max().unwrap_or(10).max(10);
+    let w = cards
+        .iter()
+        .map(|c| c.model.len())
+        .max()
+        .unwrap_or(10)
+        .max(10);
     let row = |label: &str, values: Vec<String>| {
         print!("  {label:<22}");
         for (card, value) in cards.iter().zip(values) {
@@ -815,18 +887,36 @@ fn compare(paths: &[PathBuf]) -> Result<()> {
     }
     row(
         "pass rate",
-        cards.iter().map(|c| format!("{:.0}%", c.pass_rate() * 100.0)).collect(),
+        cards
+            .iter()
+            .map(|c| format!("{:.0}%", c.pass_rate() * 100.0))
+            .collect(),
     );
     row(
         "checks",
-        cards.iter().map(|c| format!("{:.0}%", c.check_pass_rate * 100.0)).collect(),
+        cards
+            .iter()
+            .map(|c| format!("{:.0}%", c.check_pass_rate * 100.0))
+            .collect(),
     );
     row(
         "malformed args",
-        cards.iter().map(|c| c.malformed_tool_args.to_string()).collect(),
+        cards
+            .iter()
+            .map(|c| c.malformed_tool_args.to_string())
+            .collect(),
     );
-    row("invented tools", cards.iter().map(|c| c.unknown_tools.to_string()).collect());
-    row("mean turns", cards.iter().map(|c| format!("{:.1}", c.mean_turns)).collect());
+    row(
+        "invented tools",
+        cards.iter().map(|c| c.unknown_tools.to_string()).collect(),
+    );
+    row(
+        "mean turns",
+        cards
+            .iter()
+            .map(|c| format!("{:.1}", c.mean_turns))
+            .collect(),
+    );
     row(
         "median latency",
         cards
@@ -836,7 +926,10 @@ fn compare(paths: &[PathBuf]) -> Result<()> {
     );
     row(
         "output tokens",
-        cards.iter().map(|c| c.total_usage.output_tokens.to_string()).collect(),
+        cards
+            .iter()
+            .map(|c| c.total_usage.output_tokens.to_string())
+            .collect(),
     );
 
     // Per-tag rows only where the tag exists in every report.
@@ -846,9 +939,7 @@ fn compare(paths: &[PathBuf]) -> Result<()> {
             c.by_tag
                 .iter()
                 .map(|t| t.tag.clone())
-                .filter(|tag| {
-                    cards.iter().all(|c| c.by_tag.iter().any(|t| &t.tag == tag))
-                })
+                .filter(|tag| cards.iter().all(|c| c.by_tag.iter().any(|t| &t.tag == tag)))
                 .collect()
         })
         .unwrap_or_default();
@@ -886,8 +977,8 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("mecha-eval-test-{name}-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("mecha-eval-test-{name}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             Scratch(dir)
         }
@@ -937,8 +1028,11 @@ mod tests {
         let toml_path = scratch.0.join("mcp.toml");
         // A whole config file pasted here must fail loudly, not silently
         // contribute only its `[[mcp]]` tables.
-        std::fs::write(&toml_path, "default_provider = \"local\"\n[[mcp]]\nname = \"x\"\n")
-            .unwrap();
+        std::fs::write(
+            &toml_path,
+            "default_provider = \"local\"\n[[mcp]]\nname = \"x\"\n",
+        )
+        .unwrap();
         assert!(load_mcp_file(&toml_path).is_err());
     }
 

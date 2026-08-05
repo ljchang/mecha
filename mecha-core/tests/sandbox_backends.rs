@@ -19,12 +19,18 @@ const IMAGE: &str = "debian:stable-slim";
 /// Naming `image` here too would silently override a caller that set it, which
 /// is exactly how the broken-image test first passed against a working image.
 fn docker(cfg: SandboxConfig) -> Sandbox {
-    Sandbox::new(SandboxConfig { kind: Backend::Docker, ..cfg })
+    Sandbox::new(SandboxConfig {
+        kind: Backend::Docker,
+        ..cfg
+    })
 }
 
 /// A policy pointed at the image these tests expect to be local.
 fn working() -> SandboxConfig {
-    SandboxConfig { image: IMAGE.into(), ..Default::default() }
+    SandboxConfig {
+        image: IMAGE.into(),
+        ..Default::default()
+    }
 }
 
 async fn run(sandbox: &Sandbox, script: &str, workspace: &std::path::Path) -> (bool, String) {
@@ -35,13 +41,19 @@ async fn run(sandbox: &Sandbox, script: &str, workspace: &std::path::Path) -> (b
         .output()
         .await
         .expect("running the confined command");
-    (out.status.success(), String::from_utf8_lossy(&out.stdout).trim().to_string())
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).trim().to_string(),
+    )
 }
 
 #[tokio::test]
 async fn a_disabled_sandbox_preflights_without_running_anything() {
     let dir = tmpdir("preflight-none");
-    Sandbox::new(SandboxConfig::default()).preflight(&dir).await.unwrap();
+    Sandbox::new(SandboxConfig::default())
+        .preflight(&dir)
+        .await
+        .unwrap();
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -81,7 +93,10 @@ async fn a_backend_that_cannot_run_fails_preflight_rather_than_degrading_to_unco
     .expect_err("a broken backend preflighted clean")
     .to_string();
 
-    assert!(err.contains("docker"), "the error should name the backend: {err}");
+    assert!(
+        err.contains("docker"),
+        "the error should name the backend: {err}"
+    );
     assert!(
         err.contains("image") || err.contains("daemon"),
         "the error should say what to check: {err}"
@@ -96,7 +111,10 @@ async fn bwrap_preflight_explains_itself_when_user_namespaces_are_blocked() {
         return;
     }
     let dir = tmpdir("preflight-bwrap");
-    let sandbox = Sandbox::new(SandboxConfig { kind: Backend::Bwrap, ..Default::default() });
+    let sandbox = Sandbox::new(SandboxConfig {
+        kind: Backend::Bwrap,
+        ..Default::default()
+    });
 
     match sandbox.preflight(&dir).await {
         // Where user namespaces are permitted, working is the correct outcome.
@@ -107,7 +125,9 @@ async fn bwrap_preflight_explains_itself_when_user_namespaces_are_blocked() {
             // looking at file modes for an afternoon.
             let msg = e.to_string().to_lowercase();
             assert!(
-                msg.contains("apparmor") || msg.contains("user namespace") || msg.contains("loopback"),
+                msg.contains("apparmor")
+                    || msg.contains("user namespace")
+                    || msg.contains("loopback"),
                 "an unusable bwrap must say what to do about it: {msg}"
             );
         }
@@ -134,7 +154,12 @@ async fn a_confined_command_loses_the_network_your_home_and_your_environment() {
     #[cfg(unix)]
     assert_eq!(uid, unsafe { libc::getuid() }.to_string());
 
-    let (_, home) = run(&sandbox, r#"[ -d "$HOME/.ssh" ] && echo YES || echo NO"#, &dir).await;
+    let (_, home) = run(
+        &sandbox,
+        r#"[ -d "$HOME/.ssh" ] && echo YES || echo NO"#,
+        &dir,
+    )
+    .await;
     assert_eq!(home, "NO", "the confined command can see your ssh keys");
 
     // No network is the single line that lets the interlock *relax*: with no
@@ -149,7 +174,10 @@ async fn a_confined_command_loses_the_network_your_home_and_your_environment() {
 
     let (_, count) = run(&sandbox, "env | wc -l", &dir).await;
     let count: usize = count.parse().expect("a count");
-    assert!(count < 12, "the container inherited {count} environment variables");
+    assert!(
+        count < 12,
+        "the container inherited {count} environment variables"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -165,7 +193,10 @@ async fn network_is_available_when_the_policy_asks_for_it() {
     // The other half of the previous test: if `network = true` did not actually
     // open it, the "no network" assertion above would pass for the wrong reason
     // and prove nothing.
-    let sandbox = docker(SandboxConfig { network: true, ..working() });
+    let sandbox = docker(SandboxConfig {
+        network: true,
+        ..working()
+    });
     let (_, net) = run(
         &sandbox,
         "timeout 5 bash -c 'echo > /dev/tcp/1.1.1.1/53' 2>/dev/null && echo YES || echo NO",

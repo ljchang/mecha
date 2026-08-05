@@ -50,7 +50,9 @@ pub enum ProviderError {
 impl std::fmt::Display for ProviderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProviderError::RateLimit { retry_after: Some(d) } => {
+            ProviderError::RateLimit {
+                retry_after: Some(d),
+            } => {
                 write!(f, "rate limited (retry after {}s)", d.as_secs())
             }
             ProviderError::RateLimit { retry_after: None } => write!(f, "rate limited"),
@@ -165,13 +167,17 @@ impl RetryPolicy {
             return None;
         }
         match error {
-            ProviderError::RateLimit { retry_after: Some(after) } => {
+            ProviderError::RateLimit {
+                retry_after: Some(after),
+            } => {
                 // Above the cap is a failure, not a nap: sleeping an hour on
                 // a header's say-so takes the process hostage.
                 (*after <= self.retry_after_cap).then_some(*after)
             }
             _ => {
-                let exp = self.base_delay.saturating_mul(1u32 << (attempt - 1).min(16));
+                let exp = self
+                    .base_delay
+                    .saturating_mul(1u32 << (attempt - 1).min(16));
                 Some(exp.min(Self::MAX_DELAY))
             }
         }
@@ -249,11 +255,17 @@ mod tests {
 
     #[test]
     fn each_class_gets_its_policy() {
-        let p = RetryPolicy { base_delay: Duration::from_millis(10), ..Default::default() };
+        let p = RetryPolicy {
+            base_delay: Duration::from_millis(10),
+            ..Default::default()
+        };
 
         // Transient classes back off, doubling, capped.
-        for err in [ProviderError::Overloaded, ProviderError::ServerError, ProviderError::Transport]
-        {
+        for err in [
+            ProviderError::Overloaded,
+            ProviderError::ServerError,
+            ProviderError::Transport,
+        ] {
             assert_eq!(p.delay_for(&err, 1), Some(Duration::from_millis(10)));
             assert_eq!(p.delay_for(&err, 2), Some(Duration::from_millis(20)));
             assert_eq!(p.delay_for(&err, 4), None, "exhausted past max_retries");
@@ -274,12 +286,16 @@ mod tests {
     #[test]
     fn retry_after_is_honoured_when_sane_and_a_failure_when_hostile() {
         let p = RetryPolicy::default();
-        let soon = ProviderError::RateLimit { retry_after: Some(Duration::from_secs(3)) };
+        let soon = ProviderError::RateLimit {
+            retry_after: Some(Duration::from_secs(3)),
+        };
         assert_eq!(p.delay_for(&soon, 1), Some(Duration::from_secs(3)));
 
         // An hour-long Retry-After would put the process to sleep past every
         // budget; control must return to a layer that can decide.
-        let hostile = ProviderError::RateLimit { retry_after: Some(Duration::from_secs(3_600)) };
+        let hostile = ProviderError::RateLimit {
+            retry_after: Some(Duration::from_secs(3_600)),
+        };
         assert_eq!(p.delay_for(&hostile, 1), None);
 
         let unstated = ProviderError::RateLimit { retry_after: None };
@@ -288,14 +304,23 @@ mod tests {
 
     #[test]
     fn zero_max_retries_disables_retrying() {
-        let p = RetryPolicy { max_retries: 0, ..Default::default() };
+        let p = RetryPolicy {
+            max_retries: 0,
+            ..Default::default()
+        };
         assert_eq!(p.delay_for(&ProviderError::Transport, 1), None);
     }
 
     #[test]
     fn the_backoff_never_exceeds_the_ceiling() {
-        let p = RetryPolicy { max_retries: 40, ..Default::default() };
-        assert_eq!(p.delay_for(&ProviderError::Transport, 39), Some(RetryPolicy::MAX_DELAY));
+        let p = RetryPolicy {
+            max_retries: 40,
+            ..Default::default()
+        };
+        assert_eq!(
+            p.delay_for(&ProviderError::Transport, 39),
+            Some(RetryPolicy::MAX_DELAY)
+        );
     }
 
     #[test]
@@ -305,10 +330,15 @@ mod tests {
         assert_eq!(classify_http(403, "", None), Auth);
         assert_eq!(
             classify_http(429, "", Some(Duration::from_secs(2))),
-            RateLimit { retry_after: Some(Duration::from_secs(2)) }
+            RateLimit {
+                retry_after: Some(Duration::from_secs(2))
+            }
         );
         assert_eq!(classify_http(529, "", None), Overloaded);
-        assert_eq!(classify_http(503, "The server is overloaded", None), Overloaded);
+        assert_eq!(
+            classify_http(503, "The server is overloaded", None),
+            Overloaded
+        );
         assert_eq!(classify_http(500, "", None), ServerError);
         assert_eq!(classify_http(503, "", None), ServerError);
 

@@ -66,11 +66,18 @@ pub async fn request_device_code(
     let scope = SCOPES.join(" ");
     let params = [("client_id", client_id), ("scope", scope.as_str())];
 
-    let resp = client.post(devicecode_url(tenant)).form(&params).send().await?;
+    let resp = client
+        .post(devicecode_url(tenant))
+        .form(&params)
+        .send()
+        .await?;
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        return Err(MailError::ApiError { status, message: humanize_aadsts(&body) });
+        return Err(MailError::ApiError {
+            status,
+            message: humanize_aadsts(&body),
+        });
     }
     resp.json::<DeviceCode>().await.map_err(MailError::from)
 }
@@ -101,7 +108,11 @@ pub fn interpret_poll(status: u16, body: &str) -> PollOutcome {
         )));
     }
 
-    match json.get("error").and_then(|e| e.as_str()).unwrap_or_default() {
+    match json
+        .get("error")
+        .and_then(|e| e.as_str())
+        .unwrap_or_default()
+    {
         "authorization_pending" => PollOutcome::Pending,
         "slow_down" => PollOutcome::SlowDown,
         other => {
@@ -174,9 +185,15 @@ pub async fn refresh_token(
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        return Err(MailError::ApiError { status, message: humanize_aadsts(&body) });
+        return Err(MailError::ApiError {
+            status,
+            message: humanize_aadsts(&body),
+        });
     }
-    Ok(crate::google::auth::parse_token_response(resp.json().await?, Some(refresh_tok)))
+    Ok(crate::google::auth::parse_token_response(
+        resp.json().await?,
+        Some(refresh_tok),
+    ))
 }
 
 /// The complete device-code sign-in: request a code, tell the human where to
@@ -204,7 +221,11 @@ pub async fn device_flow(
     let tokens = poll_for_token(&tenant, &client_id, &device, &client, |remaining| {
         // One line per half-minute, so a long sign-in does not scroll.
         if last_line == 0 || last_line - remaining >= 30 {
-            eprintln!("waiting for sign-in… ({}:{:02} left)", remaining / 60, remaining % 60);
+            eprintln!(
+                "waiting for sign-in… ({}:{:02} left)",
+                remaining / 60,
+                remaining % 60
+            );
             last_line = remaining;
         }
     })
@@ -215,18 +236,17 @@ pub async fn device_flow(
         .clone()
         .context("Entra returned no refresh token — check that `offline_access` is consented")?;
 
-    let account = match crate::microsoft::graph_mail::OutlookProvider::new(
-        tokens.access_token.clone(),
-    )
-    .profile_address()
-    .await
-    {
-        Ok(addr) => Some(addr),
-        Err(e) => {
-            eprintln!("(signed in, but could not read the account address: {e})");
-            None
-        }
-    };
+    let account =
+        match crate::microsoft::graph_mail::OutlookProvider::new(tokens.access_token.clone())
+            .profile_address()
+            .await
+        {
+            Ok(addr) => Some(addr),
+            Err(e) => {
+                eprintln!("(signed in, but could not read the account address: {e})");
+                None
+            }
+        };
 
     Ok(crate::token::StoredCredentials {
         client_id,
@@ -294,7 +314,8 @@ mod tests {
 
     #[test]
     fn a_successful_poll_yields_tokens() {
-        let body = r#"{"access_token":"at","refresh_token":"rt","expires_in":3599,"token_type":"Bearer"}"#;
+        let body =
+            r#"{"access_token":"at","refresh_token":"rt","expires_in":3599,"token_type":"Bearer"}"#;
         match interpret_poll(200, body) {
             PollOutcome::Success(t) => {
                 assert_eq!(t.access_token, "at");
@@ -308,17 +329,26 @@ mod tests {
     #[test]
     fn terminal_errors_stop_the_loop_with_an_actionable_message() {
         let expired = r#"{"error":"expired_token","error_description":"code expired"}"#;
-        assert!(matches!(interpret_poll(400, expired), PollOutcome::Failed(_)));
+        assert!(matches!(
+            interpret_poll(400, expired),
+            PollOutcome::Failed(_)
+        ));
 
         let declined = r#"{"error":"access_denied","error_description":"user declined"}"#;
-        assert!(matches!(interpret_poll(400, declined), PollOutcome::Failed(_)));
+        assert!(matches!(
+            interpret_poll(400, declined),
+            PollOutcome::Failed(_)
+        ));
 
         // The one a CLI is most likely to hit on a fresh registration.
         let public = r#"{"error":"invalid_client","error_description":"AADSTS7000218: The request body must contain client_assertion or client_secret."}"#;
         match interpret_poll(400, public) {
             PollOutcome::Failed(msg) => {
                 assert!(msg.contains("Allow public client flows"), "{msg}");
-                assert!(msg.contains("AADSTS7000218"), "raw text must survive: {msg}");
+                assert!(
+                    msg.contains("AADSTS7000218"),
+                    "raw text must survive: {msg}"
+                );
             }
             other => panic!("expected failure, got {other:?}"),
         }
@@ -326,16 +356,25 @@ mod tests {
 
     #[test]
     fn a_non_json_body_is_a_failure_not_a_panic() {
-        assert!(matches!(interpret_poll(500, "<html>gateway</html>"), PollOutcome::Failed(_)));
+        assert!(matches!(
+            interpret_poll(500, "<html>gateway</html>"),
+            PollOutcome::Failed(_)
+        ));
     }
 
     #[test]
     fn scopes_request_offline_access_and_no_readwrite() {
         let joined = SCOPES.join(" ");
-        assert!(joined.contains("offline_access"), "no refresh token without it");
+        assert!(
+            joined.contains("offline_access"),
+            "no refresh token without it"
+        );
         assert!(joined.contains("Mail.Read") && joined.contains("Mail.Send"));
         assert!(joined.contains("Calendars.ReadWrite"));
-        assert!(!joined.contains("Mail.ReadWrite"), "nothing here modifies a message");
+        assert!(
+            !joined.contains("Mail.ReadWrite"),
+            "nothing here modifies a message"
+        );
     }
 
     #[test]
