@@ -12,10 +12,19 @@ is a plain Rust library that knows nothing about any particular application;
   ┌──────────────────────┐    ┌────────────────────────┐    ┌──────────────────┐
   │ Anthropic (Claude)   │    │  agent  — the loop     │    │ mecha run        │
   │ OpenAI-compatible ───┼───▶│  tool   — registry     │───▶│ mecha chat       │
-  │   · llama-server     │    │  mcp    — stdio client │    │ mecha batch      │
-  │   · vLLM / Ollama    │    │  session — transcripts │    │ your crate       │
+  │   · llama-server     │    │  mcp    — stdio client │    │ mecha tui        │
+  │   · vLLM / Ollama    │    │  session — transcripts │    │ mecha batch      │
+  │                      │    │                        │    │ your crate       │
   └──────────────────────┘    └────────────────────────┘    └──────────────────┘
 ```
+
+A third crate, `mecha-mail`, is a library plus three MCP binaries: Gmail and
+Google Calendar, Outlook mail and calendar over Graph, both OAuth flows and the
+token lifecycle. `mecha-google` and `mecha-outlook` each serve one provider;
+`mecha-mail` serves every account in `~/.mecha/mail/` behind one
+provider-neutral tool surface, so the model names an account (`personal`,
+`work`) and never a provider. Nothing in `mecha-core` or `mecha-cli` knows it
+exists — it is wired in as an `[[mcp]]` server like any other.
 
 See [`docs/HANDOFF.md`](docs/HANDOFF.md) for project state, environment, and
 what to build next.
@@ -57,9 +66,10 @@ everything that isn't a read.
 | `mecha distill` | Summarise closed sessions into episodes staged to the knowledge graph. |
 | `mecha outbox` | Review staged sends: list / show / edit / send / reject. Tools named in `[outbox]` stage drafts instead of executing. |
 | `mecha proposals` | Review gated rule changes from the learning pass: list / show / accept / reject. |
-| `mecha trigger` | Prompts that run on a schedule: `add` / `list` / `next` / `run` / `tick` / `daemon`. See Triggers. |
+| `mecha rules` | Rule tenure: ledger tallies per rule, `retire` / `restore`, `propose-retirements`. |
+| `mecha trigger` | Prompts that run on a schedule: `add` / `list` / `show` / `edit` / `rm` / `enable` / `disable` / `next` / `run` / `cancel` / `runs` / `tick` / `daemon`. See Triggers. |
 | `mecha tools` | List the tool surface. `--schema` shows exactly what the model sees. |
-| `mecha sessions list\|show\|path` | Inspect saved transcripts. |
+| `mecha sessions list\|show\|path\|stats` | Inspect saved transcripts. `stats` totals tokens and cost by provider and model. |
 | `mecha config show\|path\|init` | See what settings are in effect. |
 
 Exit codes for `run`: `0` success, `1` error, `2` the model refused, `3` it ran
@@ -87,6 +97,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 kind = "local"
 base_url = "http://127.0.0.1:8080"
 model = "qwen3-14b"
+context_window = 32768                # whatever the server's `-c` was
 
 [agent]
 max_turns = 40
@@ -94,10 +105,18 @@ max_tokens = 64000
 effort = "high"                       # low | medium | high | xhigh | max
 thinking = true
 cache_prompt = true
+timezone = "America/New_York"         # IANA name; the model has no clock
 
 [tools]
 permission_mode = "ask"               # ask | allow | read-only
 shell_timeout_secs = 120
+
+[sandbox]                             # how `shell` is confined
+kind = "none"                         # none | bwrap | docker
+network = false                       # no network means `shell` cannot exfiltrate
+
+[outbox]                              # these tools stage drafts instead of running
+tools = ["mail__mail_send"]
 
 [[mcp]]
 name = "pkg"
@@ -108,6 +127,13 @@ event = "pre_tool"                    # pre_tool | post_tool | session_end
 tools = ["shell"]                     # empty means every tool
 command = "~/.mecha/hooks/no-force-push.sh"
 ```
+
+`context_window` is worth setting even though nothing requires it. No provider
+reports how much context is *left* — only what a prompt cost — so three things
+fall back to nothing without it: the derived compaction threshold (two thirds
+of the window), the TUI's context gauge, and the ability to tell you how close
+a run is to the wall. A stale value is worse than none, so change it when you
+change the server's `-c`.
 
 ## Triggers
 
@@ -200,7 +226,10 @@ this machine's local scripts is not comparable to anyone else's.
 
 ## Tools
 
-Built in: `fs_read`, `fs_write`, `fs_edit`, `fs_list`, `shell`, `http_fetch`.
+Built in: `fs_read`, `fs_write`, `fs_edit`, `fs_list`, `shell`, `http_fetch`,
+`todo`. Two more are added by the front-end rather than the library:
+`web_search` when at least one search backend is configured, and `ask_user`
+only in `mecha tui`, which is the one surface that owns a human to ask.
 All filesystem paths are resolved and checked against the workspace root before
 anything touches disk — `..`, symlinks, and absolute paths outside the root are
 refused.
@@ -271,7 +300,10 @@ summarise for you instead.
 | `fs_read`, `fs_list` | private |
 | `fs_write`, `fs_edit` | destructive |
 | `http_fetch` | untrusted **and** sends — a GET is an exfil channel; the payload fits in the URL |
+| `web_search` | untrusted **and** sends — same reasoning; the payload fits in `?q=` |
 | `shell` | private, sends, destructive |
+| `todo` | nothing — the list never leaves the conversation |
+| `ask_user` | nothing — the user is the principal, not a third party |
 | MCP tools | private; also untrusted+sends when the server sets `openWorldHint` |
 
 Set `trifecta = "ask"` to escalate to a human instead of refusing, or
@@ -295,8 +327,8 @@ and then searching for the names in it:
 
 ```
 CALL fs_read  notes/meeting-2026-07-14.md
-CALL web_search {"query": "Wasita researcher"}     ← went out; nothing had injected it
-CALL web_search {"query": "\"Luke Chang\" \"Wasita ...\" Dartmouth"}
+CALL web_search {"query": "Nadia researcher"}      ← went out; nothing had injected it
+CALL web_search {"query": "\"Sam ...\" \"Nadia ...\" university"}
 BLOCKED: this conversation already contains both private data and third-party content
 ```
 
@@ -324,27 +356,36 @@ access, so the two never meet.
 ## As a library
 
 ```rust
-use mecha_core::{agent::Agent, config::Config, message::Message};
+use mecha_core::{agent::Agent, agent::Conversation, config::Config};
+use mecha_core::sandbox::Sandbox;
 use mecha_core::tool::{ModeApprover, Registry, ToolCtx};
 use std::sync::Arc;
 
 let cfg = Config::load(&std::env::current_dir()?)?;
 let (_, provider_cfg) = cfg.provider(None)?;
 
+// How `shell` is confined. It decides that tool's declared capabilities, so
+// it is built before the registry rather than consulted at call time.
+let sandbox = Arc::new(Sandbox::new(cfg.sandbox.clone()));
+
 let agent = Agent::new(
     mecha_core::provider::build(provider_cfg)?,
-    Registry::new().with_builtins(&cfg.tools),
+    Registry::new().with_builtins(&cfg.tools, sandbox),
     Arc::new(ModeApprover { mode: cfg.tools.permission_mode }),
     ToolCtx {
         workspace: std::env::current_dir()?,
-        shell_timeout: std::time::Duration::from_secs(120),
+        shell_timeout: std::time::Duration::from_secs(cfg.tools.shell_timeout_secs),
+        security: cfg.security.clone(),
+        ..ToolCtx::default()
     },
     cfg.agent.clone(),
     None,
 )?;
 
-let mut messages = vec![Message::user("what changed today?")];
-let outcome = agent.run(&mut messages, None).await?;
+// A conversation carries its own taint, so keeping it across turns is what
+// keeps the trifecta interlock honest.
+let mut convo = Conversation::user("what changed today?");
+let outcome = agent.run(&mut convo, None).await?;
 ```
 
 Implement `Tool` to add a native tool, `Provider` to add a backend, and
@@ -383,9 +424,9 @@ safe at high concurrency, and comparable across models.
 Cases are JSONL, graded on what the model *did*:
 
 ```json
-{"id":"list-then-read","tags":["chaining"],
- "prompt":"Look at what is in the notes directory, then read the earliest note and tell me who attended.",
- "expect":{"tools_in_order":["fs_list","fs_read"],"contains":["wasita"],"max_turns":6}}
+{"id": "list-then-read", "tags": ["chaining"],
+ "prompt": "Look at what is in the notes directory, then read the earliest meeting note and tell me who attended it.",
+ "expect": {"tools_in_order": ["fs_list", "fs_read"], "contains": ["nadia"], "max_turns": 6}}
 ```
 
 | Expectation | Checks |
@@ -396,10 +437,44 @@ Cases are JSONL, graded on what the model *did*:
 | `args` | a call to that tool passed an argument matching `equals`/`contains` |
 | `contains` / `not_contains` / `contains_any` | substrings of the final answer |
 | `max_turns` | the run didn't flail |
+| `verify` | a command run in the case's workspace afterwards; passes iff it exits 0 |
+| `judge` | a rubric a second model grades the answer against |
+| `stop_cause` | why the loop stopped: `completed`, `max_turns`, `output_token_budget`, `cost_budget`, `interrupted`, `loop` |
+| `taint` | which legs of the trifecta had entered the conversation by the end |
+| `blocked_sends` | exactly this many outbound calls were refused by the interlock |
+| `min_compactions` | the transcript was summarised at least this many times |
+
+The first eight grade the model; the last four grade the **harness** — whether
+the interlock fired, whether a budget is what stopped the run, whether a
+summary was ever taken. None of it is visible in the answer text. `verify` is
+the honest grader for anything that writes code: not whether the model says the
+tests pass, but whether they do. `judge` is not deterministic — the same answer
+can be graded differently across runs, so treat a single judge failure as a
+prompt to read the answer rather than as a result.
+
+Four options sit on the case rather than in `expect`:
+
+| Option | What it does |
+|---|---|
+| `sandbox` | a private throwaway copy of the fixture, with writing allowed. Required by `verify`; the shared fixture is never mutated |
+| `max_turns` | a turn budget for this case alone, when the default is genuinely not enough |
+| `compact_at_tokens` | force compaction for this case alone, so a compaction case can grade the behaviour it names |
+| `prompt` as an array | several turns on **one** conversation. A bare string is still one turn |
+
+The per-case forms exist because the alternative — raising a global ceiling for
+one case — quietly changes what every other case in the set is allowed to do.
 
 Two checks are applied to every case whether you ask for them or not, because
 they disqualify a model regardless of the answer: **malformed arguments** and
 **invented tool names**.
+
+`--runs k` repeats every case k times and reports **pass^k** (every run passed)
+beside pass@k (any run did). Reliability decays much faster than mean success,
+and a single-run scorecard cannot tell a flaky case from a solid one — the gap
+between the two numbers is the model's unreliability, which is usually the
+finding. Sandboxed cases stage one private workspace per run, so the k samples
+stay independent. `passed` and `by_tag` in a multi-run scorecard mean pass^k,
+so only compare scorecards taken at the same k.
 
 The shipped set covers single calls, chaining, argument fidelity, tool
 selection among distractors, discrimination (knowing *not* to use a tool),
@@ -462,6 +537,11 @@ The store is files under `~/.mecha/learning/`, and it is a git repo:
 | `rules/<domain>.user.toml` | **Yours. Never written by code**, only read |
 | `rules/<domain>.learned.toml` | Consolidation's output — edit or delete freely |
 | `runs.jsonl` | One audit record per pass: rules before, rules after |
+| `validations.jsonl` | Every probe's outcome, keyed to the exact rule set measured — what `mecha rules` tallies |
+| `mined.jsonl` | Session ids already reflected on, so a rerun is idempotent |
+| `mined_outbox.jsonl` | The same for outbox items already mined for writing lessons |
+| `distilled.jsonl` | Session ids already pushed to the knowledge graph |
+| `proposals/` | Staged rule changes awaiting `mecha proposals accept` |
 
 `git log` is the learning history and `git revert` is the undo. Rules ride in
 the system prompt (user rules first, then learned ones), inside the cached
@@ -585,14 +665,19 @@ upstream.
 
 ## Measured results
 
-The case set is 25 cases across ten tags: tool-call mechanics (`single-call`,
-`args`, `chaining`, `selection`), judgement (`discrimination`, `honesty`,
-`recovery`), and the harder half — multi-hop arithmetic over two files
-(`reasoning`), and resisting instructions embedded in a file the agent reads
-(`injection`).
+The case set is 36 cases across fifteen tags: tool-call mechanics
+(`single-call`, `args`, `chaining`, `selection`), judgement (`discrimination`,
+`honesty`, `recovery`, `synthesis`, `ambiguity`), and the harder half —
+multi-hop arithmetic over two files (`reasoning`), state carried across sixteen
+chained reads (`long-horizon`), code graded by whether its tests pass
+(`codegen`), fidelity across a summarised transcript (`compaction`), and
+resisting instructions embedded in a file the agent reads (`injection`,
+`safety`). `eval/pkg-cases.jsonl` is a second set, kept separate because it
+needs MCP tools in the surface.
 
-Same 19 cases, same prompt, on a DGX Spark (GB10, 128GB unified). `mecha eval
---compare` produced this:
+The numbers below were taken on a DGX Spark (GB10, 128GB unified) against the
+25-case set as it stood at the time; they have not been re-run on the current
+36. `mecha eval --compare` produced this:
 
 | 25 cases | gemma-4-E4B | gemma-4-26B-A4B | Qwen3.6-35B-A3B | Qwen3.6-27B |
 |---|---|---|---|---|
@@ -617,9 +702,10 @@ draft-mtp` with no separate `-md` file — which took it from 55.4 to 100.2 tok/
 MTP variant, so its number is unaccelerated and understates it somewhat; not
 enough to matter at an 8× gap.
 
-**The set has saturated.** Three models spanning 4B to 35B all score 24/25,
-with the same single failure. It is now a floor test — does this model work at
-all — not a ranking test, and it cannot choose a parent model.
+**That set had saturated.** Three models spanning 4B to 35B all score 24/25,
+with the same single failure. At 25 cases it had become a floor test — does
+this model work at all — not a ranking test, and it could not choose a parent
+model.
 
 What it does still settle is the shape of the hardware answer. The dense 27B is
 dominated: **8× slower generation** and 3.4× the median latency of the 35B MoE
@@ -637,14 +723,10 @@ The honest caveat on all of it: every case here is *grounded*. The data is in
 the workspace and the job is to find it, combine it, and report. That is most
 of what a personal agent does, and a 4B is evidently sufficient for it. It says
 nothing about long-horizon planning, ambiguous requirements, or code
-generation — and separating these models would require cases of that kind.
+generation — and separating these models would require cases of that kind. The
+`long-horizon`, `codegen`, `synthesis` and `ambiguity` tags were added for
+exactly that, and no scorecard here covers them.
 
-Both are clean on the two metrics that disqualify a model for loop use. Qwen is
-6 points more accurate; Gemma is **8.4× faster**, which on bandwidth-limited
-hardware is the whole argument for MoE — 4B active parameters to stream per
-token instead of 27B. (Gemma also runs with its MTP draft head for speculative
-decoding: 54.5 → 95.9 tok/s, 1.76×, 78% draft acceptance.)
-
-Zero malformed arguments on both is not luck: `llama-server --jinja`
+Zero malformed arguments across all four is not luck: `llama-server --jinja`
 grammar-constrains tool-call output. Constrained decoding is worth turning on
 before concluding anything about a model's tool reliability.

@@ -42,7 +42,7 @@ apply.
 ```json
 {"id": "list-then-read", "tags": ["chaining"],
  "prompt": "Look at what is in the notes directory, then read the earliest meeting note and tell me who attended it.",
- "expect": {"tools_in_order": ["fs_list", "fs_read"], "contains": ["wasita"], "max_turns": 6}}
+ "expect": {"tools_in_order": ["fs_list", "fs_read"], "contains": ["nadia"], "max_turns": 6}}
 ```
 
 An `args` entry names a `tool` and a `key`, plus `equals` (exact) and/or
