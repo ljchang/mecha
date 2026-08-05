@@ -81,22 +81,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // operator who thinks commands are confined when they aren't is the exact
     // failure this whole subsystem exists to prevent.
     if registry.get("shell").is_some() {
-        let sandbox = &prepared.sandbox;
-        if sandbox.is_enabled() {
+        println!("\nshell {}", setup::sandbox_line(&prepared.sandbox));
+        if !prepared.sandbox.is_enabled() {
             println!(
-                "\nshell sandbox: {} · network {} · reads {}",
-                sandbox.backend().as_str(),
-                if sandbox.can_reach_network() { "on" } else { "off" },
-                if sandbox.reaches_beyond_workspace() {
-                    "beyond the workspace"
-                } else {
-                    "the workspace only"
-                }
-            );
-        } else {
-            println!(
-                "\nshell sandbox: none — commands run as you, with your credentials, \
-                 and the path jail does not cover them.\n  \
+                "  the path jail does not cover them. \
                  Set [sandbox] kind = \"bwrap\" (or \"docker\") to confine them."
             );
         }
