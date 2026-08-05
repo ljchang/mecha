@@ -18,8 +18,8 @@ use crate::{probe, setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
 use mecha_core::learning::{
-    domain_rules_section, wrap_rules_block, Learner, LearningStore, LeapRun, Proposal, Trigger,
-    RULES_CHAR_BUDGET,
+    budget_refuses, domain_rules_section, wrap_rules_block, Learner, LearningStore, LeapRun,
+    Proposal, Trigger, MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
 };
 use mecha_core::session::Session;
 use std::collections::BTreeMap;
@@ -244,6 +244,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 "{domain}: warning — the new rule set renders to {rendered} chars, over the \
                  {RULES_CHAR_BUDGET} budget; kept, but the next pass should consolidate harder"
             );
+        }
+
+        // The count cap is a refusal, not a warning: the always-loaded block
+        // may never grow past it, however the learner argued. The frames
+        // already say fifteen; this is the check that does not depend on the
+        // model listening. The batch stays unprocessed, so the reflections
+        // return to the next pass — which must merge or retire first.
+        let active_before = learned_before.iter().filter(|r| r.active()).count();
+        let active_after = rules.iter().filter(|r| r.active()).count();
+        if budget_refuses(active_before, active_after) {
+            eprintln!(
+                "{domain}: refused — {active_after} active rules is over the cap of \
+                 {MAX_ACTIVE_RULES_PER_DOMAIN} and no smaller than the current \
+                 {active_before}. Nothing changed; consolidate or retire before adding."
+            );
+            continue;
         }
 
         // ── the gate: measure the candidate, stage it, never apply it ──

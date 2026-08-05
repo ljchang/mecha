@@ -481,6 +481,21 @@ impl LearningStore {
         Ok(wrap_rules_block(parts))
     }
 
+    /// Domains whose active learned rules exceed
+    /// [`MAX_ACTIVE_RULES_PER_DOMAIN`] — the always-loaded block drifting
+    /// past the adherence cliff. Startup warns on these (the routed-name
+    /// precedent); the learn gate refuses to grow them further.
+    pub fn over_budget_domains(&self) -> Result<Vec<(String, usize)>> {
+        let mut out = Vec::new();
+        for domain in self.domains() {
+            let active = self.learned_rules(&domain)?.iter().filter(|r| r.active()).count();
+            if active > MAX_ACTIVE_RULES_PER_DOMAIN {
+                out.push((domain, active));
+            }
+        }
+        Ok(out)
+    }
+
     /// Take the store's writer lock, blocking until it is free.
     ///
     /// Every pass that writes (reflect, learn) takes this **before reading
@@ -1186,6 +1201,23 @@ pub fn strip_rules_block(system: &str) -> String {
 /// grows the system prompt without bound; this is the bound.
 pub const RULES_CHAR_BUDGET: usize = 1600;
 
+/// Hard cap on *active* learned rules per domain — the count half of the
+/// budget, where [`RULES_CHAR_BUDGET`] is the size half. The learner frames
+/// already say "never exceed 15"; this is the check that does not depend on
+/// the model listening. Fifteen because rule adherence falls off well before
+/// the drift literature's ~50-entry cap, and the block rides in every run's
+/// cached prefix. User rules are not counted: they are the user's own budget
+/// to spend.
+pub const MAX_ACTIVE_RULES_PER_DOMAIN: usize = 15;
+
+/// The budget gate's arithmetic: a candidate set that ends over the cap may
+/// land only by *shrinking* an already-over set toward it. Growth past the
+/// cap — however the learner argued for it — is refused, and the refusal is
+/// what forces the next pass to merge or retire before it may add.
+pub fn budget_refuses(active_before: usize, active_after: usize) -> bool {
+    active_after > MAX_ACTIVE_RULES_PER_DOMAIN && active_after > active_before
+}
+
 const LEARNER_SYSTEM: &str = "\
 You maintain the learned behavior rules for an AI assistant that works in a \
 terminal with tools. Reflections — lessons drawn from moments its user \
@@ -1638,6 +1670,51 @@ mod tests {
             .join("mecha-learning-test")
             .join(uuid::Uuid::new_v4().to_string());
         LearningStore::open(dir).unwrap()
+    }
+
+    fn active_rule(text: &str) -> Rule {
+        Rule {
+            text: text.into(),
+            enabled: true,
+            confidence: None,
+            based_on_count: None,
+            id: None,
+            sources: Vec::new(),
+            created_at: None,
+            retired_at: None,
+            retired_reason: None,
+        }
+    }
+
+    #[test]
+    fn the_rule_budget_refuses_growth_over_the_cap_and_allows_shrinking_toward_it() {
+        const CAP: usize = MAX_ACTIVE_RULES_PER_DOMAIN;
+        assert!(!budget_refuses(3, CAP), "filling up to the cap is fine");
+        assert!(budget_refuses(CAP, CAP + 1), "growing past the cap is refused");
+        assert!(budget_refuses(CAP + 5, CAP + 6), "an over-cap set may not grow further");
+        // The two ways an over-cap legacy set is allowed to move: shrinking
+        // toward the cap, or a same-size rewrite — consolidation must be able
+        // to land, or the refusal wedges the store it exists to shrink.
+        assert!(!budget_refuses(CAP + 6, CAP + 2));
+        assert!(!budget_refuses(CAP + 2, CAP + 2));
+    }
+
+    #[test]
+    fn over_budget_domains_counts_active_learned_rules_only() {
+        let store = temp_store();
+        let mut rules: Vec<Rule> = (0..=MAX_ACTIVE_RULES_PER_DOMAIN)
+            .map(|i| active_rule(&format!("rule {i}")))
+            .collect();
+        store.write_learned_rules("behavior", &rules).unwrap();
+
+        let over = store.over_budget_domains().unwrap();
+        assert_eq!(over, vec![("behavior".to_string(), MAX_ACTIVE_RULES_PER_DOMAIN + 1)]);
+
+        // Retiring one brings the domain back under: a retired rule stays in
+        // the file as evidence and costs the budget nothing.
+        rules[0].retired_at = Some("2026-08-05T00:00:00Z".into());
+        store.write_learned_rules("behavior", &rules).unwrap();
+        assert!(store.over_budget_domains().unwrap().is_empty());
     }
 
     #[test]
