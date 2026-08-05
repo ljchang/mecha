@@ -140,7 +140,7 @@ constraint. 89 tasks × k=5 = **445 rollouts**. At a 10-minute average that is
 
 - **k=1 first** (89 rollouts, ~15 hours) to shake out the adapter, then k=5
   once for a leaderboard-comparable number.
-- **Concurrency breaks the seed.** `HANDOFF.md` already records this:
+- **Concurrency breaks the seed.** `CLAUDE.md` already records this:
   llama-server's continuous batching perturbs numerics, so a seeded run only
   replays token-for-token at `--concurrency 1`. For a benchmark that is fine —
   pass^k *wants* independent samples — but do not expect a Terminal-Bench run
