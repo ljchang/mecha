@@ -413,6 +413,12 @@ pub enum StopCause {
     CostBudget,
     /// Someone cancelled it — a user pressing Ctrl-C, a shutdown, a timeout.
     Interrupted,
+    /// The model repeated an identical tool call, with an identical result,
+    /// right after a compaction — the sign that compaction did not carry the
+    /// task and the run is stuck re-living it. Distinct from `MaxTurns` on
+    /// purpose: "hit the turn limit" reads as the task being too big, when a
+    /// stuck run is a different problem with a different fix.
+    Loop,
 }
 
 impl StopCause {
@@ -428,7 +434,62 @@ impl StopCause {
             StopCause::OutputTokenBudget => "hit the output-token budget",
             StopCause::CostBudget => "hit the cost budget",
             StopCause::Interrupted => "was interrupted",
+            StopCause::Loop => "repeated an identical tool call after compacting",
         }
+    }
+}
+
+/// Detects a run re-living the turns a compaction just summarised away.
+///
+/// Dormant until a compaction arms it — repeated calls in ordinary work are
+/// the model's business, and a guard watching all of them needs a measurement
+/// this one does not: the failure this catches is specific, post-compaction,
+/// and expensive, because a stuck run there is burning the largest prompts it
+/// will ever send. Keyed on call *and* result: identical arguments with a
+/// changing result is polling, and a poll must never grade as stuck.
+struct LoopGuard {
+    enabled: bool,
+    armed: bool,
+    recent: std::collections::VecDeque<u64>,
+}
+
+impl LoopGuard {
+    /// How many prior calls a repeat is checked against.
+    const WINDOW: usize = 3;
+
+    fn new(enabled: bool) -> Self {
+        LoopGuard { enabled, armed: false, recent: std::collections::VecDeque::new() }
+    }
+
+    fn arm(&mut self) {
+        if self.enabled {
+            self.armed = true;
+        }
+    }
+
+    /// Record one executed call; true when this exact call-and-result was
+    /// already seen in the window.
+    fn observe(&mut self, name: &str, input: &Value, result: &str) -> bool {
+        if !self.armed {
+            return false;
+        }
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        name.hash(&mut hasher);
+        // `serde_json::Map` is a BTreeMap, so this string is canonical
+        // whatever order the model wrote the arguments in. A 64-bit hash, not
+        // a cryptographic one: nothing adversarial is being resisted, and a
+        // collision needs two different calls in a window of three.
+        input.to_string().hash(&mut hasher);
+        result.hash(&mut hasher);
+        let digest = hasher.finish();
+
+        let repeated = self.recent.contains(&digest);
+        self.recent.push_back(digest);
+        if self.recent.len() > Self::WINDOW {
+            self.recent.pop_front();
+        }
+        repeated
     }
 }
 
@@ -653,6 +714,8 @@ impl Agent {
         let mut prompt_tokens = 0u64;
         let mut compaction_gave_up = false;
         let mut compactions = 0u32;
+        let mut loop_guard = LoopGuard::new(self.cfg.loop_guard);
+        let mut loop_detected = false;
 
         // Carried in from the transcript, not started fresh. Everything the
         // conversation has already seen still applies — this is the whole
@@ -695,8 +758,10 @@ impl Agent {
             // Summarise the middle if the last prompt came back too big. Done
             // here, between turns, because it rewrites the transcript and there
             // is no safe moment to do that while a turn is in flight.
+            // `!loop_detected`: the run is about to stop; a summary spent on a
+            // transcript that is about to be abandoned is pure waste.
             if let Some(limit) = self.compact_limit(cx) {
-                if prompt_tokens >= limit && !compaction_gave_up {
+                if prompt_tokens >= limit && !compaction_gave_up && !loop_detected {
                     // Cheapest pass first: evict results a later call has
                     // superseded. Lossless — the newest result still says
                     // everything the transcript knows — and it removes the
@@ -734,6 +799,7 @@ impl Agent {
                         Ok(Some(spent)) => {
                             usage.add(&spent);
                             compactions += 1;
+                            loop_guard.arm();
                         }
                         // Nothing legal to drop — a short conversation holding
                         // one enormous tool result, usually. Cheap to
@@ -756,9 +822,12 @@ impl Agent {
                 }
             }
 
-            // Any ceiling — turns, tokens, or dollars — ends the run the same
-            // way: one last tool-less turn so there is an answer to return.
-            let ceiling = if turns >= cx.budget.max_turns.unwrap_or(self.cfg.max_turns) {
+            // Any ceiling — turns, tokens, dollars, or a detected loop — ends
+            // the run the same way: one last tool-less turn so there is an
+            // answer to return.
+            let ceiling = if loop_detected {
+                Some(StopCause::Loop)
+            } else if turns >= cx.budget.max_turns.unwrap_or(self.cfg.max_turns) {
                 Some(StopCause::MaxTurns)
             } else {
                 self.over_budget(&cx.budget, &usage)
@@ -852,6 +921,7 @@ impl Agent {
                         Ok(Some(spent)) => {
                             usage.add(&spent);
                             compactions += 1;
+                            loop_guard.arm();
                         }
                         Ok(None) => compaction_gave_up = true,
                         Err(e) => {
@@ -933,6 +1003,32 @@ impl Agent {
                         let outcome = self.finish(text, &response, usage, turns, trace, malformed, blocked_sends, taint, compactions);
                         emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
                         return Ok(outcome);
+                    }
+
+                    // Feed the guard every call-with-result. The results still
+                    // reach the transcript — the transcript must stay legal,
+                    // and the ceiling path gives the model one tool-less turn
+                    // to answer with what it has before the run stops.
+                    let inputs: std::collections::HashMap<&str, (&str, &Value)> = response
+                        .message
+                        .tool_uses()
+                        .into_iter()
+                        .map(|(id, name, input)| (id, (name, input)))
+                        .collect();
+                    for block in &results {
+                        let Block::ToolResult { tool_use_id, content, .. } = block else {
+                            continue;
+                        };
+                        let Some(&(name, input)) = inputs.get(tool_use_id.as_str()) else {
+                            continue;
+                        };
+                        if loop_guard.observe(name, input, content) {
+                            tracing::warn!(
+                                tool = name,
+                                "identical call and result repeated after a compaction; stopping"
+                            );
+                            loop_detected = true;
+                        }
                     }
                     messages.push(Message::tool_results(results));
                 }
@@ -2781,6 +2877,119 @@ mod tests {
             "a truncated summary reached the transcript"
         );
         assert_eq!(outcome.text, "done", "the run should carry on uncompacted");
+    }
+
+    fn echo_call(id: &str, value: &str) -> CompletionResponse {
+        assistant(
+            vec![Block::ToolUse {
+                id: id.into(),
+                name: "echo".into(),
+                input: json!({"value": value}),
+            }],
+            StopReason::ToolUse,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_repeated_identical_call_after_compaction_stops_the_run_as_a_loop() {
+        // Three distinct calls to get past `worth_compacting`, the summary and
+        // its passing verdict, then the model re-lives the same call twice.
+        let mut turns = three_calls();
+        turns.push(assistant(vec![Block::text("a summary")], StopReason::EndTurn));
+        turns.push(assistant(vec![Block::text("NONE")], StopReason::EndTurn));
+        turns.push(echo_call("r0", "same question"));
+        turns.push(echo_call("r1", "same question"));
+
+        let (agent, _) = compacting_agent(turns);
+        let mut convo = Conversation::user("audit the entries");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Loop);
+        assert!(outcome.exhausted, "a loop stop is the harness cutting the run short");
+        // The wire name the eval's `expect.stop_cause` will grade on.
+        assert_eq!(serde_json::to_value(StopCause::Loop).unwrap(), json!("loop"));
+    }
+
+    #[tokio::test]
+    async fn identical_arguments_with_changing_results_are_polling_not_a_loop() {
+        // A tool whose answer moves: same call, different result each time.
+        struct Poll(std::sync::atomic::AtomicUsize);
+        #[async_trait]
+        impl Tool for Poll {
+            fn name(&self) -> &str {
+                "echo"
+            }
+            fn description(&self) -> &str {
+                "polls"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(ToolOutput::ok(format!("state {n}")))
+            }
+        }
+
+        let mut turns = three_calls();
+        turns.push(assistant(vec![Block::text("a summary")], StopReason::EndTurn));
+        turns.push(assistant(vec![Block::text("NONE")], StopReason::EndTurn));
+        turns.push(echo_call("r0", "same question"));
+        turns.push(echo_call("r1", "same question"));
+        // At this threshold the transcript compacts again before the answer;
+        // the poll must survive that too, since eviction has already retired
+        // the older poll result by then.
+        turns.push(assistant(vec![Block::text("a second summary")], StopReason::EndTurn));
+        turns.push(assistant(vec![Block::text("NONE")], StopReason::EndTurn));
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (mut agent, _) = compacting_agent(turns);
+        agent.registry_mut().insert(Arc::new(Poll(Default::default())));
+        let mut convo = Conversation::user("watch the value");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Completed, "a poll graded as stuck");
+        assert_eq!(outcome.text, "done");
+    }
+
+    #[tokio::test]
+    async fn the_guard_stays_dormant_until_a_compaction_arms_it() {
+        // The same repeat, but nothing ever compacted: repeated calls in
+        // ordinary work are the model's business.
+        let (agent, _) = agent_with(
+            vec![
+                echo_call("r0", "same question"),
+                echo_call("r1", "same question"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+    }
+
+    #[tokio::test]
+    async fn the_loop_guard_can_be_switched_off() {
+        let mut turns = three_calls();
+        turns.push(assistant(vec![Block::text("a summary")], StopReason::EndTurn));
+        turns.push(assistant(vec![Block::text("NONE")], StopReason::EndTurn));
+        turns.push(echo_call("r0", "same question"));
+        turns.push(echo_call("r1", "same question"));
+        turns.push(assistant(vec![Block::text("a second summary")], StopReason::EndTurn));
+        turns.push(assistant(vec![Block::text("NONE")], StopReason::EndTurn));
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (mut agent, _) = compacting_agent(turns);
+        agent.cfg.loop_guard = false;
+        let mut convo = Conversation::user("audit the entries");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Completed, "the off switch did not take");
     }
 
     #[tokio::test]
