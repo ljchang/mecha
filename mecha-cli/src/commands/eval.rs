@@ -44,6 +44,16 @@ pub struct Args {
     #[arg(long, short = 'c', default_value_t = 4)]
     pub concurrency: usize,
 
+    /// Run every case this many times and report pass^k — the fraction of
+    /// cases that pass *all* k runs — beside pass@k (any run).
+    ///
+    /// Reliability decays much faster than mean success, and a single-run
+    /// scorecard cannot see it: a case that passes 4 runs of 5 looks identical
+    /// to one that passes 5 of 5, and the flaky one is the finding. Costs k×
+    /// the inference, so the default stays 1.
+    #[arg(long, short = 'k', default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
+    pub runs: u32,
+
     /// Run only cases carrying this tag (repeatable).
     #[arg(long = "tag")]
     pub tags: Vec<String>,
@@ -187,21 +197,60 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // graded should fail in the first second, not after an hour of inference.
     let judge = build_judge(&args, &prepared, &cases)?;
 
-    // Stage a private workspace for every sandboxed case, up front, so a
+    // With `--runs k` every case becomes k independent batch items — each its
+    // own conversation, and (for sandboxed cases) its own staged workspace —
+    // so the k samples are as independent as the harness can make them. The
+    // suffixed ids keep results, contexts and staging directories from
+    // colliding; grading maps them back to the case.
+    let runs = args.runs;
+    let mut items = Vec::new();
+    let mut item_of: HashMap<String, (usize, u32)> = HashMap::new();
+    for (i, case) in cases.iter().enumerate() {
+        for run in 1..=runs {
+            let id =
+                if runs == 1 { case.id.clone() } else { format!("{}#r{run}", case.id) };
+            item_of.insert(id.clone(), (i, run));
+            items.push(mecha_core::batch::BatchItem {
+                id,
+                prompt: case.prompt.clone(),
+                meta: None,
+            });
+        }
+    }
+
+    // Stage a private workspace for every sandboxed item, up front, so a
     // staging failure is not discovered halfway through the run.
     let sandbox_root =
         std::env::temp_dir().join(format!("mecha-eval-{}", std::process::id()));
-    let contexts = prepare_contexts(&cases, &fixture, &sandbox_root, &prepared)?;
-    let sandboxed = cases.iter().filter(|c| c.sandbox).count();
+    let item_cases: Vec<(&str, &EvalCase)> =
+        items.iter().map(|it| (it.id.as_str(), &cases[item_of[&it.id].0])).collect();
+    let contexts = prepare_contexts(&item_cases, &fixture, &sandbox_root, &prepared)?;
+    let sandboxed = item_cases.iter().filter(|(_, c)| c.sandbox).count();
 
     eprintln!(
-        "mecha eval: {} cases · {} ({}) · {} tools · fixture {}",
+        "mecha eval: {} cases{} · {} ({}) · {} tools · fixture {}",
         cases.len(),
+        if runs > 1 { format!(" × {runs} runs") } else { String::new() },
         prepared.model,
         prepared.provider_name,
         prepared.agent.registry().len(),
         fixture.display()
     );
+    // Repeated runs only measure reliability if they are actually independent
+    // samples. A pinned seed replays token-for-token when requests run one at
+    // a time; only concurrent batching perturbs it. Warn rather than guess —
+    // whether to unpin is the caller's call.
+    if runs > 1 && args.concurrency == 1 {
+        if let Ok((_, pc)) = prepared.config.provider(Some(&prepared.provider_name)) {
+            if pc.seed.is_some() {
+                eprintln!(
+                    "mecha: --runs {runs} at --concurrency 1 with a pinned seed: identical \
+                     sequential requests repeat token-for-token, so this may be one sample \
+                     counted {runs} times. Raise --concurrency or unset `seed`."
+                );
+            }
+        }
+    }
     if sandboxed > 0 {
         eprintln!("  {sandboxed} sandboxed case(s) staged under {}", sandbox_root.display());
     }
@@ -215,7 +264,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         prepared.config.tools.shell_timeout_secs.max(120),
     );
 
-    let items: Vec<_> = cases.iter().map(EvalCase::to_item).collect();
     let started = std::time::Instant::now();
     let total = items.len();
     let mut done = 0usize;
@@ -238,8 +286,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Results come back in completion order; grade against the matching case.
     let mut graded: Vec<GradedCase> = Vec::new();
     for result in &results {
-        let Some(case) = cases.iter().find(|c| c.id == result.id) else { continue };
+        let Some(&(case_idx, run)) = item_of.get(&result.id) else { continue };
+        let case = &cases[case_idx];
         let mut g = grade(case, result);
+        g.run = run;
 
         // What the run left behind, checked before anything a model says about
         // it. For a codegen case this is the only check that isn't hearsay.
@@ -248,7 +298,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // context is a bug here rather than a case-file mistake. Fail the
             // check saying so — falling back to the shared fixture would run
             // the command against the very directory sandboxing protects.
-            g.add_check(match contexts.get(&case.id) {
+            g.add_check(match contexts.get(&result.id) {
                 Some(cx) => {
                     mecha_core::eval::verify_workspace(
                         command,
@@ -275,8 +325,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
         graded.push(g);
     }
-    // Report in case-file order so two runs read the same way.
-    graded.sort_by_key(|g| cases.iter().position(|c| c.id == g.id).unwrap_or(usize::MAX));
+    // Report in case-file order (then run order) so two runs read the same way.
+    graded.sort_by_key(|g| {
+        (cases.iter().position(|c| c.id == g.id).unwrap_or(usize::MAX), g.run)
+    });
 
     let scorecard = Scorecard::of(
         &graded,
@@ -329,28 +381,33 @@ impl Asker for NoOneToAsk {
     }
 }
 
-/// Build the per-case contexts: a private staged workspace for sandboxed cases,
+/// Build the per-item contexts: a private staged workspace for sandboxed cases,
 /// a raised turn budget for cases that ask for one, or both.
 ///
-/// Cases needing neither get no entry and run on the agent's own context.
+/// Keyed by *item* id, not case id: under `--runs` a sandboxed case appears k
+/// times, and two runs sharing one workspace would see each other's writes —
+/// the exact contamination the sandbox exists to prevent, and it would also
+/// make the k samples dependent, which is what pass^k assumes they are not.
+///
+/// Items needing nothing get no entry and run on the agent's own context.
 fn prepare_contexts(
-    cases: &[EvalCase],
+    items: &[(&str, &EvalCase)],
     fixture: &Path,
     root: &Path,
     prepared: &setup::Prepared,
 ) -> Result<HashMap<String, Arc<RunContext>>> {
     let mut contexts = HashMap::new();
 
-    for case in cases
+    for (id, case) in items
         .iter()
-        .filter(|c| c.sandbox || c.max_turns.is_some() || c.compact_at_tokens.is_some())
+        .filter(|(_, c)| c.sandbox || c.max_turns.is_some() || c.compact_at_tokens.is_some())
     {
         let base = prepared.agent.context();
 
         let cx = if case.sandbox {
-            let dir = root.join(safe_dir_name(&case.id));
+            let dir = root.join(safe_dir_name(id));
             stage_workspace(fixture, &dir)
-                .with_context(|| format!("staging a workspace for case `{}`", case.id))?;
+                .with_context(|| format!("staging a workspace for `{id}`"))?;
 
             // Canonicalize now: the path jail compares canonical paths, and a
             // temp directory reached through a symlink would otherwise make the
@@ -366,7 +423,7 @@ fn prepare_contexts(
 
         let budget = Budget { max_turns: case.max_turns, ..Budget::default() };
         let cx = cx.with_budget(budget).with_compact_at(case.compact_at_tokens);
-        contexts.insert(case.id.clone(), Arc::new(cx));
+        contexts.insert(id.to_string(), Arc::new(cx));
     }
     Ok(contexts)
 }
@@ -491,12 +548,28 @@ fn print_scorecard(card: &Scorecard, graded: &[GradedCase], show_failures: bool)
     println!("\n{}  ({})", card.model, card.provider);
     println!("{}", "─".repeat(60));
 
-    println!(
-        "  cases passed        {}/{}  ({:.0}%)",
-        card.passed,
-        card.total,
-        card.pass_rate() * 100.0
-    );
+    if card.runs_per_case > 1 {
+        // The gap between these two lines is the model's unreliability, which
+        // is the thing k runs were bought to measure.
+        let k = card.runs_per_case;
+        println!(
+            "  {:<19} {}/{}  ({:.0}%)",
+            format!("pass^{k} (all runs)"),
+            card.passed,
+            card.total,
+            card.pass_rate() * 100.0
+        );
+        if let Some(any) = card.passed_any {
+            println!("  {:<19} {}/{}", format!("pass@{k} (any run)"), any, card.total);
+        }
+    } else {
+        println!(
+            "  cases passed        {}/{}  ({:.0}%)",
+            card.passed,
+            card.total,
+            card.pass_rate() * 100.0
+        );
+    }
     println!("  checks passed       {:.0}%", card.check_pass_rate * 100.0);
 
     // The reliability block: these are what disqualify a model for loop use,
@@ -524,7 +597,12 @@ fn print_scorecard(card: &Scorecard, graded: &[GradedCase], show_failures: bool)
                 let filled = (tag.passed * 10).div_ceil(tag.total.max(1));
                 format!("{}{}", "█".repeat(filled), "·".repeat(10 - filled))
             };
-            println!("    {:<18} {} {}/{}", tag.tag, bar, tag.passed, tag.total);
+            let any = tag
+                .passed_any
+                .filter(|a| *a != tag.passed)
+                .map(|a| format!("  (any {a})"))
+                .unwrap_or_default();
+            println!("    {:<18} {} {}/{}{}", tag.tag, bar, tag.passed, tag.total, any);
         }
     }
 
@@ -538,7 +616,12 @@ fn print_scorecard(card: &Scorecard, graded: &[GradedCase], show_failures: bool)
                 .filter(|c| !c.passed)
                 .map(|c| c.name.as_str())
                 .collect();
-            println!("    {:<24} {}", case.id, reasons.join(", "));
+            let label = if card.runs_per_case > 1 {
+                format!("{} (run {})", case.id, case.run)
+            } else {
+                case.id.clone()
+            };
+            println!("    {label:<24} {}", reasons.join(", "));
             if show_failures {
                 for check in case.checks.iter().filter(|c| !c.passed) {
                     if !check.detail.is_empty() {
@@ -584,6 +667,26 @@ fn compare(paths: &[PathBuf]) -> Result<()> {
             .map(|c| format!("{}/{}", c.passed, c.total))
             .collect(),
     );
+    // Only when some card is multi-run: `cases passed` above is then pass^k,
+    // and these two rows are what make that legible — and warn that a
+    // single-run card beside it is not measuring the same thing.
+    if cards.iter().any(|c| c.runs_per_case > 1) {
+        row(
+            "runs/case",
+            cards.iter().map(|c| c.runs_per_case.to_string()).collect(),
+        );
+        row(
+            "any-run pass",
+            cards
+                .iter()
+                .map(|c| {
+                    c.passed_any
+                        .map(|a| format!("{}/{}", a, c.total))
+                        .unwrap_or_else(|| "—".into())
+                })
+                .collect(),
+        );
+    }
     row(
         "pass rate",
         cards.iter().map(|c| format!("{:.0}%", c.pass_rate() * 100.0)).collect(),
