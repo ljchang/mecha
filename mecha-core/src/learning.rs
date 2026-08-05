@@ -136,6 +136,16 @@ impl Reflexion {
 // ─── Rules ──────────────────────────────────────────────────────────────────
 
 /// One rule in a domain's TOML file.
+///
+/// A rule outlives the pass that wrote it, so it carries its own lineage:
+/// `id` is what the validation ledger keys on, `sources` closes the
+/// provenance chain from a live rule back to the reflections it was argued
+/// from (batch-level — the learner's per-rule attributions would be its own
+/// unverifiable testimony), and `created_at` is the staleness signal. Every
+/// new field defaults, so rule files written before they existed load
+/// unchanged — the same trick as [`Reflexion::origin`], minus the fail-closed
+/// semantics, because absent lineage on an already-accepted rule is history,
+/// not a threat.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule {
     pub text: String,
@@ -145,6 +155,102 @@ pub struct Rule {
     pub confidence: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub based_on_count: Option<u32>,
+    /// Minted when the rule first enters the store; stable across
+    /// consolidations that keep the text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Reflexion ids of the batch that produced (or last rewrote) this rule.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// Set instead of deleting: a retired rule is evidence — the learner is
+    /// told it was tried and measured harmful, which a deleted line cannot
+    /// say — and the invalidation is reversible where erasure is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired_reason: Option<String>,
+}
+
+impl Rule {
+    /// Whether this rule rides in prompts. Retirement implies inactive even
+    /// if `enabled` was left true by a hand edit — the stronger claim wins.
+    pub fn active(&self) -> bool {
+        self.enabled && self.retired_at.is_none()
+    }
+}
+
+impl Default for Rule {
+    /// A blank *enabled* rule — `enabled: true` mirrors the serde default, so
+    /// `..Default::default()` at a construction site cannot silently disable.
+    fn default() -> Self {
+        Rule {
+            text: String::new(),
+            enabled: true,
+            confidence: None,
+            based_on_count: None,
+            id: None,
+            sources: Vec::new(),
+            created_at: None,
+            retired_at: None,
+            retired_reason: None,
+        }
+    }
+}
+
+/// Mint identity for a freshly learned rule set, carrying lineage forward.
+///
+/// The learner rewrites whole sets, so identity has to survive the rewrite:
+/// a rule whose text matches one in `previous` keeps that rule's id,
+/// `created_at` and sources (it is the same rule restated by a new pass); a
+/// rule with new text is new — it gets a fresh id, now, and the batch's
+/// reflexion ids as sources. Retired rules in `previous` are carried into
+/// the result untouched, so a consolidation can never silently resurrect or
+/// erase what retirement recorded.
+pub fn finalize_rules(
+    new_rules: Vec<Rule>,
+    previous: &[Rule],
+    batch_sources: &[String],
+    now: &str,
+) -> Vec<Rule> {
+    let mut out: Vec<Rule> = new_rules
+        .into_iter()
+        .map(|mut r| {
+            if let Some(prev) = previous.iter().find(|p| p.text == r.text) {
+                r.id = prev.id.clone();
+                r.created_at = prev.created_at.clone();
+                if r.sources.is_empty() {
+                    r.sources = prev.sources.clone();
+                }
+                r.retired_at = prev.retired_at.clone();
+                r.retired_reason = prev.retired_reason.clone();
+            }
+            if r.id.is_none() {
+                r.id = Some(mint_rule_id());
+                r.created_at = Some(now.to_string());
+                r.sources = batch_sources.to_vec();
+            }
+            r
+        })
+        .collect();
+    // Retired rules survive every rewrite: the learner never sees them as
+    // rewritable (they are context in its prompt at most), and dropping one
+    // would erase the measurement trail retirement exists to keep.
+    for prev in previous {
+        if prev.retired_at.is_some() && !out.iter().any(|r| r.text == prev.text) {
+            out.push(prev.clone());
+        }
+    }
+    out
+}
+
+fn mint_rule_id() -> String {
+    format!(
+        "r-{}-{}",
+        chrono::Utc::now().format("%Y%m%d"),
+        &uuid::Uuid::new_v4().to_string()[..8]
+    )
 }
 
 fn default_true() -> bool {
@@ -342,7 +448,7 @@ impl LearningStore {
     }
 
     /// Domains that have any rules file on disk.
-    fn domains(&self) -> Vec<String> {
+    pub fn domains(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         if let Ok(entries) = std::fs::read_dir(self.root.join("rules")) {
             for entry in entries.flatten() {
@@ -565,6 +671,112 @@ impl LearningStore {
         std::fs::write(&tmp, out)?;
         std::fs::rename(&tmp, &path)?;
         Ok(marked)
+    }
+}
+
+// ─── The validation ledger ──────────────────────────────────────────────────
+
+/// One probe's measurement, written down instead of printed and discarded.
+///
+/// The ledger is what turns `mecha validate` from a report into evidence:
+/// per-rule tallies accumulate across nights, and a retirement proposal can
+/// cite the rows that argue for it. Keyed to the exact rule set measured
+/// (`rules_hash`), because a tally that mixes generations measures nothing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationRecord {
+    pub reflexion_id: String,
+    pub trigger: String,
+    pub domain: String,
+    /// [`rules_hash`] of the rendered block the treatment arm carried.
+    pub rules_hash: String,
+    /// Ids of the active learned rules riding in that block. Every row is a
+    /// (weak) observation for each of them; `attributed_rule_id` is the
+    /// strong signal.
+    pub rule_ids: Vec<String>,
+    /// `improved` | `regressed` | `unchanged_pass` | `unchanged_fail` |
+    /// `inconclusive`.
+    pub outcome: String,
+    /// Set when a bisection localised a regression to one rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attributed_rule_id: Option<String>,
+    /// The model the probe drove — tallies are only comparable within one.
+    pub model: String,
+    pub created_at: String,
+}
+
+/// Stable content hash of a rendered rules block. FNV-1a written out here
+/// because the std hasher is deliberately unstable across Rust releases, and
+/// a ledger key that drifts with the toolchain would silently split every
+/// tally.
+pub fn rules_hash(block: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in block.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+/// What the ledger says about one rule, folded from its rows.
+#[derive(Debug, Clone, Default)]
+pub struct RuleTally {
+    /// Probes whose measured block carried this rule.
+    pub observations: u32,
+    /// Block-level outcomes while it rode along — context, not credit.
+    pub improved: u32,
+    pub regressed: u32,
+    /// Regressions a bisection pinned on this rule specifically. The number
+    /// retirement argues from.
+    pub attributed_regressions: u32,
+    pub last_validated: Option<String>,
+}
+
+/// Fold ledger rows into per-rule tallies.
+pub fn rule_tallies(records: &[ValidationRecord]) -> std::collections::BTreeMap<String, RuleTally> {
+    let mut out: std::collections::BTreeMap<String, RuleTally> = Default::default();
+    for rec in records {
+        for id in &rec.rule_ids {
+            let t = out.entry(id.clone()).or_default();
+            t.observations += 1;
+            match rec.outcome.as_str() {
+                "improved" => t.improved += 1,
+                "regressed" => t.regressed += 1,
+                _ => {}
+            }
+            if t.last_validated.as_deref() < Some(rec.created_at.as_str()) {
+                t.last_validated = Some(rec.created_at.clone());
+            }
+        }
+        if let Some(id) = &rec.attributed_rule_id {
+            out.entry(id.clone()).or_default().attributed_regressions += 1;
+        }
+    }
+    out
+}
+
+impl LearningStore {
+    pub fn append_validation(&self, rec: &ValidationRecord) -> Result<()> {
+        self.append_line("validations.jsonl", &serde_json::to_string(rec)?)
+    }
+
+    pub fn validations(&self) -> Result<Vec<ValidationRecord>> {
+        let path = self.root.join("validations.jsonl");
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for line in std::fs::read_to_string(&path)?.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // One corrupt line loses one measurement, not the ledger.
+            match serde_json::from_str(line) {
+                Ok(r) => out.push(r),
+                Err(e) => tracing::warn!("skipping corrupt validation line: {e}"),
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -938,7 +1150,7 @@ pub fn domain_rules_section(domain: &str, user: &[Rule], learned: &[Rule]) -> Op
     let lines: Vec<String> = user
         .iter()
         .chain(learned.iter())
-        .filter(|r| r.enabled)
+        .filter(|r| r.active())
         .map(|r| format!("- {}", r.text))
         .collect();
     (!lines.is_empty()).then(|| format!("### {domain}\n{}", lines.join("\n")))
@@ -1068,9 +1280,9 @@ pub(crate) fn parse_learner_reply(text: &str) -> Option<Vec<Rule>> {
             .filter(|r| !r.rule.trim().is_empty())
             .map(|r| Rule {
                 text: r.rule.trim().to_string(),
-                enabled: true,
                 confidence: r.confidence,
                 based_on_count: r.based_on_count,
+                ..Default::default()
             })
             .collect(),
     )
@@ -1145,14 +1357,38 @@ impl Learner {
             .collect::<Vec<_>>()
             .join("\n");
 
+        // Retired rules are context the learner must not rewrite — and must
+        // not re-derive: they were measured to make probes worse. Shown so
+        // the same lesson cannot come back under new wording every pass.
+        let (active, retired): (Vec<&Rule>, Vec<&Rule>) =
+            learned_rules.iter().partition(|r| r.retired_at.is_none());
+        let retired_section = if retired.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "## Retired rules (IMMUTABLE, measured harmful — never restate or re-derive \
+                 these)\n{}\n\n",
+                retired
+                    .iter()
+                    .map(|r| format!(
+                        "- {}{}",
+                        r.text,
+                        r.retired_reason.as_deref().map(|w| format!(" (retired: {w})")).unwrap_or_default()
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
+
         let user = format!(
             "Domain: {domain}\n\n\
              ## User rules (IMMUTABLE, context only)\n{}\n\n\
+             {retired_section}\
              ## Current learned rules (to be rewritten)\n{}\n\n\
              ## New reflections ({})\n{}\n\n\
              Rewrite the learned rule set. Reply with the JSON object only.",
             render_rules(user_rules),
-            render_rules(learned_rules),
+            render_rules(&active.iter().map(|r| (*r).clone()).collect::<Vec<_>>()),
             reflexions.len(),
             if rendered_reflexions.is_empty() { "(none)" } else { &rendered_reflexions },
         );
@@ -1411,9 +1647,9 @@ mod tests {
             rules_before: Vec::new(),
             rules: vec![Rule {
                 text: "Never edit reports/".into(),
-                enabled: true,
                 confidence: Some(0.9),
                 based_on_count: Some(1),
+                ..Default::default()
             }],
             evidence: "steer probe improved".into(),
             created_at: "2026-08-04T06:00:00Z".into(),
@@ -1473,7 +1709,7 @@ mod tests {
         store
             .write_learned_rules(
                 "behavior",
-                &[Rule { text: "Learned.".into(), enabled: true, confidence: None, based_on_count: None }],
+                &[Rule { text: "Learned.".into(), ..Default::default() }],
             )
             .unwrap();
         let live = store.rules_prompt_block().unwrap().unwrap();
@@ -1548,16 +1784,11 @@ mod tests {
                 &[
                     Rule {
                         text: "Ask before rewriting more than one file.".into(),
-                        enabled: true,
                         confidence: Some(0.8),
                         based_on_count: Some(3),
+                        ..Default::default()
                     },
-                    Rule {
-                        text: "A disabled rule must not appear.".into(),
-                        enabled: false,
-                        confidence: None,
-                        based_on_count: None,
-                    },
+                    Rule { text: "A disabled rule must not appear.".into(), enabled: false, ..Default::default() },
                 ],
             )
             .unwrap();
@@ -1709,5 +1940,120 @@ mod tests {
         // must never satisfy the other.
         assert!(!store.mined_sessions().unwrap().contains("item-1"));
         std::fs::remove_dir_all(store.root()).ok();
+    }
+
+    #[test]
+    fn a_rules_file_written_before_identity_existed_still_loads() {
+        // The R1 fields all default: an old TOML with only text/enabled must
+        // parse, or the upgrade bricks every existing store at startup.
+        let store = temp_store();
+        std::fs::write(
+            store.root().join("rules/behavior.learned.toml"),
+            "[[rules]]\ntext = \"Old rule.\"\nconfidence = 0.8\n",
+        )
+        .unwrap();
+        let rules = store.learned_rules("behavior").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].id.is_none() && rules[0].sources.is_empty());
+        assert!(rules[0].active(), "an old rule is live until someone says otherwise");
+        std::fs::remove_dir_all(store.root()).ok();
+    }
+
+    #[test]
+    fn finalize_mints_identity_for_new_rules_and_carries_it_for_survivors() {
+        let survivor = Rule {
+            text: "Keep asking before mass edits.".into(),
+            id: Some("r-old".into()),
+            sources: vec!["refl-a".into()],
+            created_at: Some("2026-08-01T00:00:00Z".into()),
+            ..Default::default()
+        };
+        let out = finalize_rules(
+            vec![Rule { text: survivor.text.clone(), ..Default::default() }, Rule {
+                text: "New lesson.".into(),
+                ..Default::default()
+            }],
+            &[survivor],
+            &["refl-b".into(), "refl-c".into()],
+            "2026-08-05T00:00:00Z",
+        );
+        // Same text ⇒ same rule: the consolidation restated it, nothing more.
+        assert_eq!(out[0].id.as_deref(), Some("r-old"));
+        assert_eq!(out[0].created_at.as_deref(), Some("2026-08-01T00:00:00Z"));
+        assert_eq!(out[0].sources, vec!["refl-a"]);
+        // New text ⇒ new identity, provenance = the batch that argued it.
+        let new = &out[1];
+        assert!(new.id.as_deref().unwrap().starts_with("r-"));
+        assert_eq!(new.created_at.as_deref(), Some("2026-08-05T00:00:00Z"));
+        assert_eq!(new.sources, vec!["refl-b", "refl-c"]);
+        assert_ne!(out[0].id, out[1].id);
+    }
+
+    #[test]
+    fn a_retired_rule_survives_consolidation_and_never_renders() {
+        let retired = Rule {
+            text: "Always summarize every file first.".into(),
+            enabled: false,
+            id: Some("r-bad".into()),
+            retired_at: Some("2026-08-05T00:00:00Z".into()),
+            retired_reason: Some("3 attributed regressions".into()),
+            ..Default::default()
+        };
+        assert!(!retired.active());
+        // Retirement wins over a hand edit that flipped enabled back on:
+        // the measurement trail outranks a stray toggle.
+        assert!(!Rule { enabled: true, ..retired.clone() }.active());
+
+        // A learner rewrite that (correctly) omits the retired rule must not
+        // erase it from the file — the evidence trail is the point.
+        let out = finalize_rules(
+            vec![Rule { text: "Fresh rule.".into(), ..Default::default() }],
+            std::slice::from_ref(&retired),
+            &["refl-x".into()],
+            "2026-08-06T00:00:00Z",
+        );
+        assert!(out.iter().any(|r| r.id.as_deref() == Some("r-bad")), "retired rule dropped");
+
+        // And it never reaches a prompt.
+        let section = domain_rules_section("behavior", &[], &out).unwrap();
+        assert!(!section.contains("summarize every file"));
+        assert!(section.contains("Fresh rule."));
+    }
+
+    #[test]
+    fn the_validation_ledger_round_trips_and_tallies_fold() {
+        let store = temp_store();
+        let rec = |outcome: &str, attributed: Option<&str>, at: &str| ValidationRecord {
+            reflexion_id: "refl-1".into(),
+            trigger: "steer".into(),
+            domain: "behavior".into(),
+            rules_hash: rules_hash("block"),
+            rule_ids: vec!["r-a".into(), "r-b".into()],
+            outcome: outcome.into(),
+            attributed_rule_id: attributed.map(Into::into),
+            model: "qwen".into(),
+            created_at: at.into(),
+        };
+        store.append_validation(&rec("improved", None, "2026-08-05T01:00:00Z")).unwrap();
+        store.append_validation(&rec("regressed", Some("r-b"), "2026-08-05T02:00:00Z")).unwrap();
+        let back = store.validations().unwrap();
+        assert_eq!(back.len(), 2);
+
+        let tallies = rule_tallies(&back);
+        let a = &tallies["r-a"];
+        assert_eq!((a.observations, a.improved, a.regressed, a.attributed_regressions), (2, 1, 1, 0));
+        let b = &tallies["r-b"];
+        assert_eq!(b.attributed_regressions, 1, "the bisection's verdict lands on r-b alone");
+        assert_eq!(b.last_validated.as_deref(), Some("2026-08-05T02:00:00Z"));
+        std::fs::remove_dir_all(store.root()).ok();
+    }
+
+    #[test]
+    fn the_rules_hash_is_stable_forever() {
+        // FNV-1a 64 of "abc" — a known vector. If this ever fails, the ledger
+        // key changed and every accumulated tally silently split; that is a
+        // migration, not a refactor.
+        assert_eq!(rules_hash("abc"), "e71fa2190541574b");
+        assert_ne!(rules_hash("abc"), rules_hash("abd"));
     }
 }

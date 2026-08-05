@@ -8,6 +8,7 @@ pub mod outbox;
 pub mod proposals;
 pub mod reflect;
 pub mod replay;
+pub mod rules;
 pub mod run;
 pub mod sessions;
 pub mod tools;

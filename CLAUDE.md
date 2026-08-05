@@ -163,6 +163,31 @@ deliberately no knob — a switch that lets third-party text into every future
 prompt is the silently-degrading-sandbox shape. Excluded reflections stay in
 the archive as evidence; they are simply never candidates.
 
+**Acceptance is not tenure.** A rule that clears the proposal gate rides in
+every future prompt's cached prefix, so it keeps earning that seat or loses
+it. Rules carry `id`/`sources`/`created_at` (minted by `finalize_rules`,
+carried by text-match across consolidations; pre-identity TOML loads
+unchanged). `mecha validate` appends every probe's outcome to the
+**validation ledger** (`validations.jsonl`, keyed to the exact rule set
+measured), and a regressed trace-graded probe **bisects** the active learned
+rules against the same recorded prefix to name the rule that flips it — user
+rules ride in every test arm (they are not on trial), a regression they
+cause alone attributes to nothing, and an inconclusive arm aborts the
+attribution rather than guessing. `mecha rules` folds the ledger into
+per-rule tallies; `rules propose-retirements` (nightly, after learn) stages
+`enabled = false` + `retired_*` through the same proposal gate as any other
+rule change once a rule accumulates 3 attributed regressions — a
+deterministic ledger scan, no model anywhere. Retirement is a flag, never a
+deletion: the rule stays in the file as evidence, the learner is shown it as
+"measured harmful — never re-derive", and `rules restore` undoes it.
+Deliberately absent: decay, TTLs, usage-based eviction (the rarely-fired
+rule that must never expire), and any policy built on model-rated
+confidence — only measured harm argues for retirement, and a human accepts
+the argument. `mecha eval --ab-rules` is the coarse complement: the case set
+runs rules-free then rules-on and the per-case flips are their own artifact,
+never a comparable scorecard. The evidence behind all of this is
+`docs/MEMORY-RESEARCH.md`.
+
 **Distillation is not learning, and its provenance rule differs on purpose.**
 `mecha distill` (`distill.rs`) summarises each closed session into an episode
 staged to the knowledge graph through pkg's `kg_upsert` — evidence, not

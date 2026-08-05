@@ -9,6 +9,21 @@ policies specifically.
 **Venue key**: ✅ peer-reviewed · 📄 preprint · 📰 vendor/blog · 🔮 folklore
 (no measurement exists anywhere).
 
+> **Addendum, 2026-08-05 (same day): R1 and R2 shipped.** Rule
+> identity/provenance/tenure (`Rule.id`/`sources`/`created_at`/`retired_*`,
+> `finalize_rules` carrying identity across consolidations); the
+> `validations.jsonl` ledger with regression **bisection** attributing a
+> regressed probe to the single rule that flips it (user rules pinned in
+> every arm, interactions and inconclusive arms attribute nothing); `mecha
+> rules` (list with tallies / retire / restore / propose-retirements — the
+> deterministic ledger scan staging `enabled = false` + `retired_*` through
+> the existing proposal gate, wired into `ruminate.sh` after learn); and
+> `mecha eval --ab-rules`, the paired-arm task-outcome A/B reporting flips
+> as its own artifact. Still open: R3's hard cap on the always-loaded block
+> (the soft `RULES_CHAR_BUDGET` warning stands), and nothing yet retires on
+> the R1 staleness signal — by design; see R2's "what this deliberately is
+> not".
+
 ---
 
 ## The one-sentence answer

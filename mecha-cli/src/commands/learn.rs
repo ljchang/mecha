@@ -223,15 +223,28 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             continue;
         };
 
-        let rendered: usize = rules.iter().map(|r| r.text.len() + 2).sum();
+        // Identity before anything persists or is measured: surviving rules
+        // keep their id and lineage, new ones are minted with this batch as
+        // provenance, retired rules are carried through untouched. The gate
+        // below measures exactly what acceptance would deploy.
+        let ids: Vec<String> = reflexions.iter().map(|r| r.id.clone()).collect();
+        let rules = mecha_core::learning::finalize_rules(
+            rules,
+            &learned_before,
+            &ids,
+            &chrono::Utc::now().to_rfc3339(),
+        );
+
+        // Retired rules stay in the file but never render, so they cost the
+        // budget nothing.
+        let rendered: usize =
+            rules.iter().filter(|r| r.active()).map(|r| r.text.len() + 2).sum();
         if rendered > RULES_CHAR_BUDGET {
             eprintln!(
                 "{domain}: warning — the new rule set renders to {rendered} chars, over the \
                  {RULES_CHAR_BUDGET} budget; kept, but the next pass should consolidate harder"
             );
         }
-
-        let ids: Vec<String> = reflexions.iter().map(|r| r.id.clone()).collect();
 
         // ── the gate: measure the candidate, stage it, never apply it ──
         if args.propose {

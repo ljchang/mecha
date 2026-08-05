@@ -152,7 +152,9 @@ fn reject(store: &LearningStore, id: &str, reason: Option<String>) -> Result<()>
 
 /// A text diff of two rule sets, matched by rule text — order is not meaning
 /// in a rules file, and a reordering that changes nothing should show as
-/// nothing.
+/// nothing. A rule whose text survives but whose *liveness* changed is a real
+/// change too: retirement proposals are exactly that shape, and a diff that
+/// answered them with "(no textual change)" would show a reviewer nothing.
 fn render_diff(before: &[Rule], after: &[Rule]) -> String {
     let mut out = String::new();
     for r in before {
@@ -161,8 +163,17 @@ fn render_diff(before: &[Rule], after: &[Rule]) -> String {
         }
     }
     for r in after {
-        if !before.iter().any(|b| b.text == r.text) {
-            out.push_str(&format!("  + {}\n", r.text));
+        match before.iter().find(|b| b.text == r.text) {
+            None => out.push_str(&format!("  + {}\n", r.text)),
+            Some(b) if b.active() && !r.active() => out.push_str(&format!(
+                "  ~ retired: {}{}\n",
+                r.text,
+                r.retired_reason.as_deref().map(|w| format!(" ({w})")).unwrap_or_default()
+            )),
+            Some(b) if !b.active() && r.active() => {
+                out.push_str(&format!("  ~ restored: {}\n", r.text))
+            }
+            Some(_) => {}
         }
     }
     if out.is_empty() {
@@ -184,7 +195,7 @@ mod tests {
     use super::*;
 
     fn rule(text: &str) -> Rule {
-        Rule { text: text.into(), enabled: true, confidence: None, based_on_count: None }
+        Rule { text: text.into(), ..Default::default() }
     }
 
     #[test]
@@ -197,6 +208,21 @@ mod tests {
 
         let reordered = render_diff(&[rule("a"), rule("b")], &[rule("b"), rule("a")]);
         assert!(reordered.contains("no textual change"), "{reordered}");
+    }
+
+    #[test]
+    fn a_retirement_shows_in_the_diff_even_though_the_text_survives() {
+        let before = vec![rule("keep"), rule("bad")];
+        let mut after = before.clone();
+        after[1].enabled = false;
+        after[1].retired_at = Some("2026-08-05T00:00:00Z".into());
+        after[1].retired_reason = Some("3 attributed regressions".into());
+        let d = render_diff(&before, &after);
+        assert!(d.contains("~ retired: bad (3 attributed regressions)"), "{d}");
+        assert!(!d.contains("no textual change"), "{d}");
+
+        let back = render_diff(&after, &before);
+        assert!(back.contains("~ restored: bad"), "{back}");
     }
 
     #[test]
