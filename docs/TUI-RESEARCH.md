@@ -3,6 +3,27 @@
 Research pass, 2026-08-05. The question was what the good agent TUIs do that
 `mecha tui` does not, and which of it is worth stealing.
 
+> **Addendum, 2026-08-05 (later the same day): most of this was built.**
+> Landed as one commit series: the §1 history-cell cache (measured 5.5× on
+> 100 streaming frames over ~500 entries, and cached cost no longer grows
+> with the session) plus CSI 2026 synchronized output; the kitty keyboard
+> protocol (Shift+Enter newline where negotiated, Alt+Enter everywhere —
+> resolving the "not researched" item below); the §5 set in full — `?` help
+> overlay, live `^O` disclosure toggle (the transcript now records
+> everything and filters at render), nested subagent rendering (which
+> required core plumbing: `ToolCtx` carries the run's events/cancel/phase
+> across the `Tool::call` boundary, and fixed two real bugs — the subagent
+> cancel chain and phase inheritance were both aspirational), the live todo
+> pane (`TodoTool` handle threaded through `Prepared`), `@` path completion,
+> `!` shell escape, `^G` external compose, and the terminal title; plus a
+> `/tools` modal with capability badges and a detail view, and the first
+> `TestBackend` frame tests (§7's missing middle — the cache is pinned by
+> cached-vs-uncached buffer equality). §4 branching became
+> `BRANCHING-DESIGN.md`, design only, by decision. Still open from this
+> file: §2 (`/export`, copy, alternate-screen config, the mouse toggle),
+> §3 steer-vs-queue as two keys, §6 the semantic colour table and
+> `NO_COLOR`, and keymap configuration.
+
 | Project | Stack | What was read |
 |---|---|---|
 | [codex](https://github.com/openai/codex) | Rust, **ratatui + crossterm** — the same stack as mecha | TUI architecture (DeepWiki), the shortcut/slash-command reference, the keymap/theme/statusline customisation reference |

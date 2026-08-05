@@ -525,24 +525,33 @@ a runtime "is it done yet", and the answer must be a command's exit code.
 - **Structured-output abstraction** — a `structured_output` knob on `Provider`
   that each backend spells natively (GBNF for llama.cpp, `guided_json` for
   vLLM, `output_config.format` for Anthropic). Don't hardcode GBNF.
-- **TUI polish** — the `todo` list is not a live pane, and nested subagent calls
-  render flat rather than as a tool-call tree. Both were asked for. Surveyed
-  2026-08-05 against codex, pi, opencode, crush and Claude Code — see
-  `docs/TUI-RESEARCH.md`. mecha's TUI holds up better than expected (fuel
-  gauge, silent follow-mode re-arm, bracketed paste, panic-safe restore, the
-  plan badge shown only while planning). Three findings worth acting on:
-  `Transcript::draw` **re-wraps the entire transcript every frame**
-  (`transcript.rs:154`), where codex — same ratatui stack — keeps immutable
-  history cells plus one mutable active cell; **steer and queue want to be two
-  keys** (codex: Enter steers the running turn, Tab queues the next), which is
-  openclaw's queue modes surfaced where the choice is actually made; and
-  **branching** (`/fork`, codex's `Esc Esc` walk-back, pi's in-place session
-  tree) is the item mecha is most ready for and least likely to build — the
-  replay and counterfactual machinery already exists, and no surveyed project
-  has that half. Cheap wins listed there: a `?` overlay, a live verbose toggle,
-  `@` path completion reusing `command.rs`, `!` shell escape, `/export`,
-  terminal title, and `TestBackend` frame snapshots (the TUI has six unit tests
-  and none renders a frame).
+- ~~**TUI polish**~~ — **built 2026-08-05**, the survey's recommendations as a
+  twelve-commit series (see `docs/TUI-RESEARCH.md`, addendum at the top).
+  The two asked-for items landed — the **live todo pane** (a concrete
+  `TodoTool` handle threaded through `Prepared`/`Live`; pane appears only
+  while the list is non-empty, `/todo` vetoes) and **nested subagent
+  rendering** (`AgentEvent::Nested`, indented per depth) — and the latter's
+  plumbing fixed two real core bugs found during planning: `ToolCtx` now
+  carries the run's events/cancel/phase across the `Tool::call` boundary,
+  because `Subagent::call` was reading the child agent's *default* context,
+  so **the cancel chain and phase inheritance had never actually worked**
+  (Ctrl-C waited out the whole child run; a plan-phase parent under Allow
+  could get writes executed by delegating). Both fixes have tests that fail
+  on the old behaviour. Also landed: the §1 **history-cell render cache**
+  (measured 5.5× on streaming frames at ~500 entries, cached cost no longer
+  grows with the session, pinned by cached-vs-uncached buffer equality) +
+  CSI 2026 synchronized output; kitty keyboard protocol (Shift+Enter
+  newline, Alt+Enter fallback); `?` help overlay; live `^O` disclosure
+  toggle; `/tools` as a modal with capability badges and a detail view
+  (sharing `setup::sandbox_line` with `mecha tools`); `!` shell escape
+  (local, no model, no taint, no approval); `@` path completion; `^G`
+  external compose (the `$EDITOR` shell-out extracted from `outbox edit`
+  into `editor.rs`, shared); terminal title; and the first `TestBackend`
+  frame tests. **Branching** is now `docs/BRANCHING-DESIGN.md` — design
+  only, deliberately: the taint-timeline and provenance interactions make
+  it a security-adjacent session-format change, not a TUI feature. Still
+  open from the survey: steer-vs-queue as two keys, `/export`/copy, the
+  semantic colour table + `NO_COLOR`, keymap config.
 - ~~**Public benchmarks** — tau-bench fits best~~ — researched 2026-08-05, see
   `docs/BENCHMARK-RESEARCH.md`, and the answer changed. **Terminal-Bench 2.0**
   is the first move, not tau-bench, for one reason: its leaderboard has
