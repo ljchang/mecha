@@ -48,6 +48,50 @@ use std::path::{Path, PathBuf};
 
 // ─── Reflections ────────────────────────────────────────────────────────────
 
+/// Where a reflection's evidence came from, provenance-wise.
+///
+/// Written by classification code from the transcript's *recorded* taint,
+/// never inferred from the text — prose claiming to be from the user does not
+/// make it user content. The stake: a learned rule outlives the conversation
+/// that produced it and rides in the system prompt of every future run,
+/// inside the cached prefix, where nothing will ever check it again. The
+/// interlock stops exfiltration inside a tainted conversation; this is the
+/// only guard on the longer-half-life path *out* of one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    /// No third-party content had entered the conversation when the
+    /// intervention happened.
+    Clean,
+    /// Third-party content was in context. Kept as readable evidence, never
+    /// consolidated into rules — excluded structurally, not scored down.
+    Untrusted,
+    /// Not an interactive session: a subagent, eval case or batch item. A
+    /// subagent's steer is mecha correcting itself, not the user correcting
+    /// mecha — learning from it is a feedback loop, not a lesson. (Those
+    /// conversations do not record sessions today, so nothing classifies to
+    /// this yet; the variant exists so the schema does not move when they do.)
+    Derived,
+}
+
+fn origin_unknown() -> Origin {
+    // The default for reflections recorded before provenance existed:
+    // position cannot be established, and the answer to that is never Clean.
+    Origin::Untrusted
+}
+
+/// Classify a reflection's origin from the taint covering its intervention.
+///
+/// Deterministic code over the transcript's recorded taint — no model in the
+/// loop. `None` coverage — a torn transcript, or one recorded before taint
+/// was — fails closed to `Untrusted`.
+pub fn classify_origin(covering: Option<crate::agent::Taint>) -> Origin {
+    match covering {
+        Some(taint) if !taint.untrusted => Origin::Clean,
+        _ => Origin::Untrusted,
+    }
+}
+
 /// One learned note, tied to the intervention that produced it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reflexion {
@@ -71,6 +115,21 @@ pub struct Reflexion {
     #[serde(default)]
     pub leap_run_id: Option<String>,
     pub created_at: String,
+    /// Provenance of the session the lesson was drawn from. Reflections
+    /// recorded before this field existed load as `Untrusted` — see
+    /// [`Origin`].
+    #[serde(default = "origin_unknown")]
+    pub origin: Origin,
+}
+
+impl Reflexion {
+    /// Whether a learning pass may consume this reflection. Structural, not a
+    /// score: there is deliberately no knob that loosens it, because a switch
+    /// that lets untrusted content into every future prompt is the
+    /// silently-degrading-sandbox shape.
+    pub fn learnable(&self) -> bool {
+        self.origin == Origin::Clean
+    }
 }
 
 // ─── Rules ──────────────────────────────────────────────────────────────────
@@ -538,6 +597,10 @@ pub struct Intervention {
     /// first false lesson in this store was exactly that, caught by
     /// `mecha validate` probing it.
     pub aftermath: String,
+    /// Index of the message the intervention rides in. What lets provenance
+    /// classification look up the taint covering this exact moment rather
+    /// than guessing from the whole session.
+    pub at: usize,
 }
 
 const CONTEXT_BUDGET: usize = 600;
@@ -597,6 +660,7 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                                             context: doing.clone(),
                                             text: reason.trim().to_string(),
                                             aftermath: String::new(),
+                                            at: msg_idx,
                                         },
                                     ));
                                 }
@@ -622,6 +686,7 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                                 context: doing.clone(),
                                 text: steer_text,
                                 aftermath: String::new(),
+                                at: msg_idx,
                             },
                         ));
                     }
@@ -634,6 +699,7 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                                 context: truncate(&last_assistant_text, CONTEXT_BUDGET),
                                 text: steer_text,
                                 aftermath: String::new(),
+                                at: msg_idx,
                             },
                         ));
                     }
@@ -813,6 +879,10 @@ impl Reflector {
             is_processed: false,
             leap_run_id: None,
             created_at: chrono::Utc::now().to_rfc3339(),
+            // Fail-closed placeholder, like session_id: the caller holds the
+            // transcript and must classify. A reflection nobody classified
+            // must never be learnable.
+            origin: origin_unknown(),
         }))
     }
 }
@@ -1136,6 +1206,87 @@ mod tests {
     }
 
     #[test]
+    fn an_intervention_knows_which_message_it_rides_in() {
+        // `at` is what provenance classification keys on — a wrong index would
+        // look up the wrong taint checkpoint and could classify a poisoned
+        // session's lesson as clean.
+        let messages = vec![
+            Message::user("do the thing"),
+            Message::assistant(vec![tool_use("t1")]),
+            Message {
+                role: Role::User,
+                content: vec![result("t1", "ok", false), Block::text("skip the rest")],
+            },
+        ];
+        let found = extract_interventions(&messages);
+        assert_eq!(found[0].at, 2, "the steer rides in message index 2");
+    }
+
+    #[test]
+    fn origin_classification_fails_closed() {
+        use crate::agent::Taint;
+        // A clean covering taint is the only road to Clean.
+        assert_eq!(
+            classify_origin(Some(Taint { private: true, untrusted: false })),
+            Origin::Clean,
+            "private-but-trusted is still the user's own conversation"
+        );
+        assert_eq!(
+            classify_origin(Some(Taint { private: false, untrusted: true })),
+            Origin::Untrusted
+        );
+        // Unknown coverage — torn transcript, pre-taint recording — is never
+        // Clean. This is the arm that keeps old sessions out of the rules.
+        assert_eq!(classify_origin(None), Origin::Untrusted);
+    }
+
+    #[test]
+    fn only_clean_reflections_are_learnable() {
+        let r = |origin| Reflexion {
+            id: "r".into(),
+            domain: "behavior".into(),
+            session_id: "s".into(),
+            trigger: "steer".into(),
+            context: String::new(),
+            intervention: "x".into(),
+            reflexion_text: "y".into(),
+            error_type: None,
+            confidence: None,
+            is_processed: false,
+            leap_run_id: None,
+            created_at: "t".into(),
+            origin,
+        };
+        assert!(r(Origin::Clean).learnable());
+        // The attack this closes: one sentence from a hostile page surviving
+        // into a lesson, then riding in every future run's cached prefix.
+        assert!(!r(Origin::Untrusted).learnable());
+        // A subagent's steer is mecha correcting itself — a feedback loop,
+        // not a lesson.
+        assert!(!r(Origin::Derived).learnable());
+    }
+
+    #[test]
+    fn a_reflection_recorded_before_origin_existed_loads_untrusted() {
+        // The archive predates the field; those lines cannot establish their
+        // provenance, and unknown is never Clean. A default of Clean here
+        // would grandfather every old reflection straight past the gate.
+        let old = r#"{"id":"r0","domain":"behavior","session_id":"s","trigger":"steer",
+            "context":"","intervention":"x","reflexion_text":"y","error_type":null,
+            "confidence":null,"created_at":"t"}"#;
+        let r: Reflexion = serde_json::from_str(old).unwrap();
+        assert_eq!(r.origin, Origin::Untrusted);
+        assert!(!r.learnable());
+
+        // And a classified one round-trips without decay.
+        let mut clean = r.clone();
+        clean.origin = Origin::Clean;
+        let back: Reflexion =
+            serde_json::from_str(&serde_json::to_string(&clean).unwrap()).unwrap();
+        assert_eq!(back.origin, Origin::Clean);
+    }
+
+    #[test]
     fn a_denied_tool_call_is_an_intervention_with_the_reason() {
         let messages = vec![
             Message::user("clean up"),
@@ -1342,6 +1493,7 @@ mod tests {
             is_processed: false,
             leap_run_id: None,
             created_at: "2026-08-04T00:00:00Z".into(),
+            origin: Origin::Clean,
         };
         store.append_reflexion(&r).unwrap();
         let back = store.reflexions().unwrap();
@@ -1457,6 +1609,7 @@ mod tests {
                     is_processed: false,
                     leap_run_id: None,
                     created_at: "t".into(),
+                    origin: Origin::Clean,
                 })
                 .unwrap();
         }

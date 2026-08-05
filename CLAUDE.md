@@ -131,6 +131,20 @@ Two distinctions that are easy to get wrong:
 - `http_fetch` is `read_only` (it doesn't touch your data) but is still an
   `external_send` sink, because the payload fits in a query string.
 
+**Provenance gates learning.** A learned rule outlives the conversation that
+produced it and rides in every future run's system prompt, inside the cached
+prefix — a longer-half-life injection path than anything the interlock
+guards. So every reflection carries an `Origin` (`clean` / `untrusted` /
+`derived`), classified by deterministic code from the transcript's *recorded*
+taint (`Session::taint_timeline` — checkpoints are written after the run they
+describe, so coverage can over-taint, never under-taint), and `mecha learn`
+excludes non-clean reflections structurally, before any prompt is built.
+Fail-closed throughout: unknown position, torn transcript, or a reflection
+recorded before the field existed all classify `untrusted`, and there is
+deliberately no knob — a switch that lets third-party text into every future
+prompt is the silently-degrading-sandbox shape. Excluded reflections stay in
+the archive as evidence; they are simply never candidates.
+
 Known gap: `shell` is universal and taint tracking can't see inside a command,
 so it is not treated as an untrusted *source*. The mitigation is the sandbox.
 

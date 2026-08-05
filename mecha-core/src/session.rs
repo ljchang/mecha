@@ -253,6 +253,25 @@ impl Session {
         Ok((meta, Conversation::resumed(messages, taint)))
     }
 
+    /// The taint checkpoints of a transcript, positioned against its messages.
+    ///
+    /// Every front-end appends a `Record::Taint` checkpoint *after* the
+    /// messages of the run it describes, so the checkpoint that covers a
+    /// message is the first one written after it — and by then the taint of
+    /// everything earlier in that run, hostile fetches included, has merged
+    /// in. That ordering is what makes [`TaintTimeline::covering`] safe to
+    /// gate on: it can over-taint a message (a fetch later in the same run
+    /// counts against it), never under-taint one.
+    pub fn taint_timeline(path: &Path) -> Result<TaintTimeline> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        Ok(TaintTimeline::from_records(
+            text.lines()
+                .filter(|l| !l.trim().is_empty())
+                .filter_map(|l| serde_json::from_str::<Record>(l).ok()),
+        ))
+    }
+
     /// Every run configuration in a transcript, in the order the runs happened.
     ///
     /// A replay driver needs this per run rather than per session: resuming
@@ -304,6 +323,44 @@ impl Session {
             1 => Ok(matches.into_iter().next().unwrap().1),
             n => anyhow::bail!("{id_prefix:?} matches {n} sessions; use a longer prefix"),
         }
+    }
+}
+
+/// Where each taint checkpoint sits relative to the messages — built by
+/// [`Session::taint_timeline`], consumed by provenance classification in
+/// `learning`.
+#[derive(Debug, Clone, Default)]
+pub struct TaintTimeline {
+    /// (messages recorded before this checkpoint, taint merged up to it).
+    /// Merged, not raw: taint only grows, so each entry is the union of every
+    /// checkpoint at or before it.
+    checkpoints: Vec<(usize, Taint)>,
+}
+
+impl TaintTimeline {
+    pub fn from_records(records: impl IntoIterator<Item = Record>) -> Self {
+        let mut checkpoints = Vec::new();
+        let mut messages = 0usize;
+        let mut merged = Taint::default();
+        for record in records {
+            match record {
+                Record::Message(_) => messages += 1,
+                Record::Taint(t) => {
+                    merged.merge(t);
+                    checkpoints.push((messages, merged));
+                }
+                _ => {}
+            }
+        }
+        TaintTimeline { checkpoints }
+    }
+
+    /// The merged taint covering the message at `index`, or `None` when no
+    /// checkpoint was written after it — a torn transcript, or one recorded
+    /// before taint was. The caller must treat `None` as *unknown*, and
+    /// unknown provenance is never clean.
+    pub fn covering(&self, index: usize) -> Option<Taint> {
+        self.checkpoints.iter().find(|(n, _)| *n > index).map(|(_, t)| *t)
     }
 }
 
@@ -458,6 +515,54 @@ mod tests {
         session.append_messages(&[Message::user("hello")]).unwrap();
 
         assert!(Session::run_configs(&session.path).unwrap().is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_taint_timeline_covers_each_message_with_its_runs_checkpoint() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-tl")).unwrap();
+
+        // Run one: clean. Its checkpoint lands after its messages.
+        session.append_messages(&[Message::user("list the files")]).unwrap();
+        session.append_messages(&[Message::assistant(vec![Block::text("done")])]).unwrap();
+        session.append(&Record::Taint(Taint::default())).unwrap();
+        // Run two: a hostile page enters; the checkpoint records it.
+        session.append_messages(&[Message::user("fetch that page")]).unwrap();
+        session.append_messages(&[Message::assistant(vec![Block::text("fetched")])]).unwrap();
+        session
+            .append(&Record::Taint(Taint { untrusted: true, private: false }))
+            .unwrap();
+
+        let tl = Session::taint_timeline(&session.path).unwrap();
+
+        // Messages 0–1 are covered by the clean checkpoint...
+        assert!(!tl.covering(0).unwrap().untrusted);
+        assert!(!tl.covering(1).unwrap().untrusted);
+        // ...2–3 by the armed one. Over-tainting within a run is the safe
+        // direction: a fetch later in the same run counts against a message
+        // before it, never the reverse.
+        assert!(tl.covering(2).unwrap().untrusted);
+        assert!(tl.covering(3).unwrap().untrusted);
+        // Beyond the last checkpoint is unknown, and unknown is the caller's
+        // cue to fail closed.
+        assert_eq!(tl.covering(4).map(|t| t.untrusted), None);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_pre_taint_transcript_has_an_empty_timeline() {
+        // Sessions recorded before taint existed can establish nothing, so
+        // every position must come back None — which classification turns
+        // into Untrusted, never Clean.
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-notl")).unwrap();
+        session.append_messages(&[Message::user("hello")]).unwrap();
+
+        let tl = Session::taint_timeline(&session.path).unwrap();
+        assert!(tl.covering(0).is_none());
 
         std::fs::remove_dir_all(&dir).ok();
     }

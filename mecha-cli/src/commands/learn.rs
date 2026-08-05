@@ -99,6 +99,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Group unprocessed reflections by domain.
     let mut by_domain: BTreeMap<String, Vec<_>> = BTreeMap::new();
     let mut awaiting_review = 0usize;
+    let mut excluded_by_origin = 0usize;
     for r in store.reflexions()? {
         if r.is_processed {
             continue;
@@ -107,12 +108,27 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             awaiting_review += 1;
             continue;
         }
+        // Structural, before any prompt is built: a lesson drawn while
+        // third-party content sat in context must never become a rule that
+        // rides in every future run's system prompt. Excluded here rather
+        // than scored inside the consolidation — no amount of confidence
+        // promotes untrusted evidence.
+        if !r.learnable() {
+            excluded_by_origin += 1;
+            continue;
+        }
         by_domain.entry(r.domain.clone()).or_default().push(r);
     }
     if awaiting_review > 0 {
         println!(
             "{awaiting_review} reflection(s) are claimed by pending proposal(s) — \
              review with `mecha proposals`"
+        );
+    }
+    if excluded_by_origin > 0 {
+        println!(
+            "{excluded_by_origin} reflection(s) excluded by origin — evidence from \
+             untrusted or non-interactive sessions stays in the archive, never in rules"
         );
     }
 

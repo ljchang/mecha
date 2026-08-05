@@ -14,8 +14,10 @@
 use crate::GlobalOpts;
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
-use mecha_core::learning::{extract_interventions, Intervention, LearningStore, Reflector, Trigger};
-use mecha_core::session::Session;
+use mecha_core::learning::{
+    classify_origin, extract_interventions, Intervention, LearningStore, Origin, Reflector, Trigger,
+};
+use mecha_core::session::{Session, TaintTimeline};
 use std::path::PathBuf;
 
 #[derive(clap::Args, Debug)]
@@ -110,12 +112,27 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let interventions = extract_interventions(&convo.messages);
         interventions_found += interventions.len();
 
+        // Provenance, read from the transcript's recorded taint — not from
+        // anything a model says. A reflection from a conversation that held
+        // third-party content becomes a rule in every future run's prompt,
+        // so the classification must fail closed: a timeline that cannot be
+        // read covers nothing, and uncovered means Untrusted.
+        let timeline = Session::taint_timeline(path).unwrap_or_else(|e| {
+            eprintln!("· cannot read taint from {}: {e:#}; treating as untrusted", meta.id);
+            TaintTimeline::default()
+        });
+
         if args.dry_run {
             for i in &interventions {
                 println!(
-                    "{} [{}] {}",
+                    "{} [{}] ({}) {}",
                     meta.id,
                     i.trigger.as_str(),
+                    match classify_origin(timeline.covering(i.at)) {
+                        Origin::Clean => "clean",
+                        Origin::Untrusted => "untrusted",
+                        Origin::Derived => "derived",
+                    },
                     i.text.lines().next().unwrap_or("")
                 );
             }
@@ -137,6 +154,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             match reflector.reflect(intervention).await {
                 Ok(Some(mut r)) => {
                     r.session_id = meta.id.clone();
+                    r.origin = classify_origin(timeline.covering(intervention.at));
                     pending.push(r);
                 }
                 Ok(None) => {
@@ -187,6 +205,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     // The drafting session, when the front-end knew it — the
                     // same lineage a behavior reflection carries.
                     r.session_id = item.session_id.clone().unwrap_or_default();
+                    // The item snapshots the conversation's taint at staging,
+                    // which is exactly the provenance question: was there
+                    // third-party text in context when this draft was written.
+                    r.origin = if item.taint.untrusted {
+                        Origin::Untrusted
+                    } else {
+                        Origin::Clean
+                    };
                     store.append_reflexion(&r)?;
                     reflections_written += 1;
                     println!("· [edit] {}", r.reflexion_text);
@@ -247,5 +273,8 @@ fn outbox_intervention(item: &mecha_core::outbox::OutboxItem) -> Intervention {
             mecha_core::outbox::diff_args(&item.args_before, &item.args)
         ),
         aftermath: format!("the user sent the edited version:\n{}", pretty(&item.args)),
+        // Not a transcript position: an edit lives in the outbox item, and its
+        // provenance comes from the item's taint snapshot, not a timeline.
+        at: 0,
     }
 }
