@@ -1,0 +1,36 @@
+# The scheduler for `mecha trigger`. Install:
+#   cp scripts/mecha-triggers.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now mecha-triggers
+#   loginctl enable-linger "$USER"     # so it runs while logged out
+#
+# This is the daemon form: one process, ticking every minute. The other form
+# needs no unit of its own — point any timer at `mecha trigger tick` and it
+# reaches the same answer, because due-ness is computed from the ledger and the
+# clock rather than from anything the daemon remembers.
+#
+# WorkingDirectory is deliberately the home directory and not a project: a
+# trigger run reads `~/.mecha/config.toml` only, never a `mecha.toml` that
+# arrived with a cloned repository. Setting this to a checkout would not change
+# that, but it would make the intent look like the opposite.
+
+[Unit]
+Description=mecha triggers: scheduled agent runs
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStart=%h/.cargo/bin/mecha trigger daemon
+# The daemon survives a bad tick on its own; this covers the process dying.
+Restart=on-failure
+RestartSec=30
+# SIGTERM reaches the in-flight run itself, not just the tick loop: it stops at
+# its next safe point, keeps the partial answer, and still writes its ledger
+# row. The stop window has to outlast a tool call in progress — tools are never
+# interrupted mid-call — which is what this is sized for.
+KillSignal=SIGTERM
+TimeoutStopSec=180
+
+[Install]
+WantedBy=default.target
