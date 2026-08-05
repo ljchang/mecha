@@ -8,3 +8,4 @@
 /.mecha/
 *.jsonl
 !eval/*.jsonl
+jobs/
