@@ -452,6 +452,25 @@ and the first two have research threads running as of this writing.
   (breaks the cache prefix), plugin marketplaces (their own threat model rates
   it P0 critical), and model-reviewed approvals.
 
+- ~~**Memory curation**~~ — researched 2026-08-05, see
+  `docs/MEMORY-RESEARCH.md` (raised by the user: "Claude Code has a memory md
+  file — what are the best practices?"). The audit finding: mecha already
+  implements the field's consensus positions structurally (write-path
+  provenance gating, queue-before-belief distillation, verbatim session
+  retention, human-gated rule changes) — **the one gap is that rules have no
+  lifecycle after acceptance.** `Rule` is four fields with no id, no
+  timestamps, no link back to its reflexions, and `mecha validate` discards
+  its measurements. The literature's endpoint for that configuration is a
+  store that drifts negative (LLM-authored skills measured +0.0pp vs
+  human-curated +16.2pp until outcome-driven retirement was added). Five
+  recommendations, R1–R5 in the doc: rule identity/provenance/tenure fields;
+  a `validations.jsonl` outcome ledger with retirement flowing through the
+  existing proposal gate; a per-domain cap on the always-loaded rules block;
+  a scheduled reflect → validate → learn → distill cadence (ruminate.sh is
+  most of this already — the missing piece is validate feeding a ledger);
+  and a do-not-build list (no vector store, no extraction replacing
+  transcripts, no LLM-adjudicated DELETE, no auto-decay, no policy on
+  model-rated importance).
 - ~~**Sandboxes**~~ — researched 2026-08-04, see `docs/SANDBOX-RESEARCH.md`.
   Answer: **Landlock + seccomp at 1.28 ms against `docker run`'s 192 ms**, no
   root and no userns, so it works on this box where bwrap is blocked. WASM
