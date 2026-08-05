@@ -54,6 +54,9 @@ everything that isn't a read.
 | `mecha reflect` | Mine transcripts for the moments you stepped in. See Learning. |
 | `mecha learn` | Turn those reflections into rules. |
 | `mecha validate` | Measure whether the rules actually changed an answer. |
+| `mecha distill` | Summarise closed sessions into episodes staged to the knowledge graph. |
+| `mecha outbox` | Review staged sends: list / show / edit / send / reject. Tools named in `[outbox]` stage drafts instead of executing. |
+| `mecha proposals` | Review gated rule changes from the learning pass: list / show / accept / reject. |
 | `mecha tools` | List the tool surface. `--schema` shows exactly what the model sees. |
 | `mecha sessions list\|show\|path` | Inspect saved transcripts. |
 | `mecha config show\|path\|init` | See what settings are in effect. |
@@ -367,6 +370,12 @@ mecha reflect     # mine transcripts for interventions → one lesson each
 mecha learn       # absorb reflections into a consolidated rule set
 mecha validate    # measure whether those rules change an answer
 ```
+
+Beside it, `mecha distill` remembers *what happened* rather than how to work:
+each closed session becomes a short episode staged to a knowledge-graph MCP
+server (`--server`, default `pkg`) through its `kg_upsert` tool — evidence
+with agent provenance, whose extracted facts wait in that graph's own review
+queue.
 
 The cycle can also drive itself — a `session_end` hook fires reflect the
 moment a session closes, detached so the hook timeout never kills a model

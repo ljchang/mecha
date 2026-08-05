@@ -37,6 +37,9 @@ fi
 echo "· reflect"
 "$MECHA" reflect -p "$PROVIDER"
 
+echo "· distill (episodes → the knowledge graph; catches whatever a hook missed)"
+"$MECHA" distill -p "$PROVIDER"
+
 echo "· validate (held-out + fresh, before learn consumes them)"
 "$MECHA" validate -p "$PROVIDER" --judge-provider "$JUDGE" --unprocessed-only
 

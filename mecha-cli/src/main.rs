@@ -159,6 +159,9 @@ pub enum Command {
     /// Absorb unprocessed reflections into the learned rule set.
     Learn(commands::learn::Args),
 
+    /// Summarise closed sessions into episodes staged to the knowledge graph.
+    Distill(commands::distill::Args),
+
     /// Probe whether the learned rules change the answers at the recorded
     /// moments the user stepped in.
     Validate(commands::validate::Args),
@@ -213,6 +216,7 @@ async fn dispatch() -> Result<()> {
         Command::Eval(args) => commands::eval::execute(&cli.global, args).await,
         Command::Reflect(args) => commands::reflect::execute(&cli.global, args).await,
         Command::Learn(args) => commands::learn::execute(&cli.global, args).await,
+        Command::Distill(args) => commands::distill::execute(&cli.global, args).await,
         Command::Validate(args) => commands::validate::execute(&cli.global, args).await,
         Command::Outbox(args) => commands::outbox::execute(&cli.global, args).await,
         Command::Proposals(args) => commands::proposals::execute(args).await,
