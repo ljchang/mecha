@@ -20,7 +20,8 @@ use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+    MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -173,6 +174,10 @@ struct App {
     picker: Option<Picker>,
     /// Every provider entry in config, as (name, model). Fixed for the session.
     providers: Vec<(String, String)>,
+    /// Whether the terminal speaks the kitty keyboard protocol, which is what
+    /// makes Shift+Enter distinguishable from Enter. Alt+Enter works either
+    /// way; help text offers Shift+Enter only where it can actually arrive.
+    kitty_keyboard: bool,
 }
 
 impl App {
@@ -348,6 +353,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
             .iter()
             .map(|(name, cfg)| (name.clone(), cfg.model.clone().unwrap_or_default()))
             .collect(),
+        kitty_keyboard: false,
     };
 
     if !app.convo.is_empty() {
@@ -366,7 +372,8 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     }
 
     let mut live = Live::new(prepared, global.clone());
-    let mut terminal = enter()?;
+    let (mut terminal, kitty) = enter()?;
+    app.kitty_keyboard = kitty;
     let result = run_loop(
         &mut terminal,
         &mut app,
@@ -620,7 +627,12 @@ fn on_key(
                 }
                 return Ok(());
             }
-            KeyCode::Enter if !app.input.trim().is_empty() => {
+            // Modified Enter falls through to the editor below and becomes a
+            // newline — an answer is allowed to have paragraphs.
+            KeyCode::Enter
+                if !app.input.trim().is_empty()
+                    && !key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+            {
                 let answer = app.input.trim().to_string();
                 app.input.clear();
                 app.cursor = 0;
@@ -698,6 +710,18 @@ fn on_key(
                 Phase::Plan => "planning — writing tools are not offered".into(),
                 Phase::Execute => "executing — every tool is available".into(),
             }));
+        }
+
+        // A newline, not a submission. Shift+Enter needs the kitty keyboard
+        // protocol to be distinguishable at all; Alt+Enter arrives distinctly
+        // on almost every terminal, so it is the fallback spelling.
+        KeyCode::Enter
+            if key.modifiers.contains(KeyModifiers::SHIFT)
+                || key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            app.quit_armed = false;
+            app.input.insert(app.cursor, '\n');
+            app.cursor += 1;
         }
 
         KeyCode::Enter => {
@@ -1397,15 +1421,30 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
+/// Whether the kitty keyboard flags were pushed, for the teardown paths. A
+/// static because the panic hook — installed before the probe has run — must
+/// know whether there is anything to pop.
+static KITTY_PUSHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn kitty_pushed() -> bool {
+    KITTY_PUSHED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Take over the terminal, and make sure a panic gives it back.
 ///
 /// Without the hook, a panic in raw mode leaves the user with an unusable shell
 /// and no visible message — the backtrace is drawn into the alternate screen
 /// that never gets torn down.
-fn enter() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>> {
+///
+/// The second return says whether the terminal speaks the kitty keyboard
+/// protocol — probed here because the probe needs raw mode.
+fn enter() -> Result<(Terminal<CrosstermBackend<std::io::Stdout>>, bool)> {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
+        if kitty_pushed() {
+            let _ = crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+        }
         let _ = crossterm::execute!(
             std::io::stdout(),
             LeaveAlternateScreen,
@@ -1427,11 +1466,33 @@ fn enter() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>> {
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
-    Ok(Terminal::new(CrosstermBackend::new(stdout))?)
+
+    // The kitty keyboard protocol is what makes Shift+Enter a different key
+    // from Enter. Only where the terminal reports it: pushed blind, terminals
+    // that half-implement it can start reporting keys this loop does not
+    // expect. Pushed *after* entering the alternate screen, because kitty
+    // keeps a separate flag stack per screen buffer — pushed before, the flags
+    // would outlive the TUI on the main screen.
+    let kitty = matches!(crossterm::terminal::supports_keyboard_enhancement(), Ok(true));
+    if kitty {
+        crossterm::execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+        KITTY_PUSHED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    Ok((Terminal::new(CrosstermBackend::new(stdout))?, kitty))
 }
 
 fn leave(terminal: &mut Terminal<impl Backend>) -> Result<()> {
     disable_raw_mode()?;
+    // Popped before leaving the alternate screen, mirroring the push order —
+    // the flags belong to the alternate screen's stack.
+    if kitty_pushed() {
+        crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
+        KITTY_PUSHED.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
     crossterm::execute!(
         std::io::stdout(),
         LeaveAlternateScreen,
