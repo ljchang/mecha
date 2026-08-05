@@ -23,6 +23,7 @@ wins and the research doc keeps the reasoning.
 | Templates | **Yes, and they are the extension point** — `report`, `notebook`, `booking`, plus request-type starters. | Adding a kind of output or a kind of ask is writing a directory, not writing code. |
 | marimo | **First-class. Three render modes, and only the third needs its own origin.** | Section 7. `marimo-book` already implements the modes and settles the asset question. |
 | Where notebooks live | **Ours by default; molab as a second target** (`target = factory \| molab \| both`). | §7.7. molab is for notebooks that could go in a public GitHub repo; it has no publish API, no expiry, no revocation and no documented versioning. |
+| Frontend | **Plain HTML + vanilla JS. No framework.** Server-rendered from MiniJinja, progressively enhanced. | §5.1. Confirmed by the user after reviewing the alternative. The form works with JavaScript disabled; JS only sharpens it. |
 | Injection defense | **Four layers, in mecha, not on the server. The classifier is never a gate.** | Section 8. The server filters *shape*; only mecha can filter *meaning*, and a model on the public box would put a provider key on the box we assumed lost. |
 | Scheduling | **Book-me first, then group availability *seeded by mine*.** | Section 9. The seeding makes the group case strictly easier than when2meet. |
 | WebMCP | **Design for it, ship it later, behind a flag.** | Section 10. The manifest already emits everything it needs. |
@@ -103,6 +104,16 @@ longer one of them:
 - **It is a deployed server.** Its release cycle is "push a binary to a box you
   patch forever"; mecha's is `cargo install`. Coupling those means a docs typo
   in mecha is a reason to think about the VPS.
+
+  On Rust rather than Fastify, and stated at its real width rather than wider:
+  the user's `pbs_knowledge` backend is Fastify with `@fastify/helmet`,
+  `@fastify/swagger` and Ajv, and it is the right choice for what it is — a
+  large application behind SAML with Firestore, Redis, Graph and Excel export.
+  `mecha-factory` is a static file server plus **one unauthenticated write
+  endpoint on a box we have agreed to assume is lost**, which is precisely
+  where one static binary pays and a `node_modules` tree costs. That is the
+  whole argument; it does not generalise to "Rust is better here in general",
+  and the four-verb interface keeps the choice swappable.
 - **The credential-isolation property becomes checkable by looking.** "The
   public box holds none of mecha's code and none of its credentials" is a
   claim you verify from what is deployed rather than from build discipline.
@@ -359,6 +370,62 @@ inputs = ["notebook_path", "title"]
 build = "marimo export html-wasm {notebook} -o {out} --mode run"
 vendor = true                    # rewrite every external reference, or fail
 ```
+
+### 5.1 How the form is actually generated
+
+Plain HTML and vanilla JavaScript, no framework. The decision is the user's,
+made after reviewing the alternative, and it is the simpler option rather than
+a compromise — an earlier draft of this document argued for it too strongly and
+then over-corrected; the honest position is that a framework would have been
+*fine*, and going without costs little here because there are five forms rather
+than an application.
+
+The generation has two layers, and the first does most of the work:
+
+- **HTML5 constraint attributes, emitted from the manifest.** `required`,
+  `type="email"`, `type="date"`, `min`, `max`, `step`, `maxlength`, `pattern`,
+  and `<select>` for every enum. The browser validates natively, announces
+  errors to a screen reader natively, and **needs no JavaScript at all**. For
+  the majority of every form, this is the entire client-side story.
+- **A small declarative-condition evaluator** for the rest: show/hide, and
+  cross-field rules that HTML5 cannot express. A few hundred lines of vanilla
+  JS reading the same manifest, with the server re-evaluating every rule on
+  submit because a client-side check is a convenience and never a control.
+
+Multi-step is server-side — one page per step, a POST between them — so it
+works with JavaScript off and survives a closed tab. Drafts key off the
+capability token rather than `localStorage`, for the same reason.
+
+**What we are taking from `pbs_knowledge`, and what we are not.** The user's
+departmental site already runs a schema-driven form system in production —
+`FormRenderer`, `WizardEntityForm`, an admin `FormConfigEditor`, and thirteen
+live configs (honors thesis, dissertation, annual review, mentoring forms,
+award nomination, fellowship application). Since we are not using Svelte, the
+*components* are not reusable. **The config format is**, and it is the more
+valuable half: a shape someone has lived with across thirteen real forms beats
+one invented in a design document, which is the same argument as mining the
+mail rather than guessing at request types.
+
+Three things to lift directly:
+
+- **`WizardStep`** — `fields`, `requiredFields`, `hiddenFields`,
+  `conditionalFields`, `stepType`. This is the manifest's step model, already
+  proven.
+- **`AcknowledgmentConfig`** — a required checkbox with a label, a description
+  and an `infoLink`. That *is* the FERPA-consent-as-a-field design from §9,
+  already solved: consent is a boolean a human sets, with a link to what they
+  are consenting to.
+- **`WizardDraft`** — save and resume a partial submission. Worth having from
+  the start; it is what lets a reply carry a link back into the same typed flow
+  rather than asking a question in prose.
+
+And one rule to impose that their config does not need: **the declarative
+subset only.** `pbs_knowledge` allows a step's `showWhen`, `validate`,
+`skipWhen` and `canProceed` to be either a `DeclarativeCondition` or an
+arbitrary TypeScript closure. A closure cannot cross to a Rust server, and the
+server must evaluate exactly the rules the browser did — so the manifest takes
+`DeclarativeCondition` (`field`, `operator`, `value`) and forbids the function
+form. Their type is already a union of the two; we keep one arm of it.
 
 Three rules for templates, each of which is a bug if undone:
 
