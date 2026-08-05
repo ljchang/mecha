@@ -12,10 +12,18 @@ jobs:
   review:
     name: review
     runs-on: ubuntu-latest
+    # Two exclusions, both for the same reason: a red X that means "no API key"
+    # is worse than no check at all.
+    #
     # A pull request from a fork gets no access to repository secrets, so the
-    # action cannot authenticate and the job would fail on every external
-    # contribution. Skipping is honest; a red X that means "no API key" is not.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # action cannot authenticate and would fail on every external contribution.
+    #
+    # A Dependabot pull request reads Dependabot's own secret store rather than
+    # the repository's, so it cannot authenticate either — and an LLM review of
+    # a version bump is not worth the tokens even when it can.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.type != 'Bot'
     permissions:
       contents: read
       pull-requests: write
