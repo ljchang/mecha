@@ -420,6 +420,21 @@ so they do not jump the queue ahead of the outbox.
 `docs/CONTEXT-RESEARCH.md` is the first of these, done. The rest are open,
 and the first two have research threads running as of this writing.
 
+- ~~**Prior art: what other harnesses do**~~ — surveyed 2026-08-05, see
+  `docs/PRIOR-ART-RESEARCH.md`. openclaw, codex and hermes-agent read against
+  this one (their docs, not their source). Five things worth building, with
+  specs: **provenance on reflections** — untrusted-origin lessons must never
+  reach `learn`, which is the one real hole found (a learned rule outlives the
+  taint that should quarantine it and rides in every future run's cached
+  prefix); **a provider error taxonomy with retry and fallback** — mecha has
+  none, any non-2xx bails, and the invariant to keep is that a turn is
+  retryable only before a tool has run; **the post-compaction loop guard**;
+  **per-command approval policy** (`ModeApprover` ignores its `input`
+  entirely); and **pruning on a cache-TTL cadence** rather than only inside
+  compaction. Rejected with reasons: hermes's every-turn micro-compaction
+  (breaks the cache prefix), plugin marketplaces (their own threat model rates
+  it P0 critical), and model-reviewed approvals.
+
 - ~~**Sandboxes**~~ — researched 2026-08-04, see `docs/SANDBOX-RESEARCH.md`.
   Answer: **Landlock + seccomp at 1.28 ms against `docker run`'s 192 ms**, no
   root and no userns, so it works on this box where bwrap is blocked. WASM
@@ -470,14 +485,16 @@ they are all *offline or pre-execution*:
 | outbox | a human reads exactly what will be sent | human |
 | startup | `Sandbox::preflight` proves confinement works before the agent can call anything | execution |
 
-**Nothing verifies anything *during* a run.** No critic, no "did that edit
-apply", no post-condition on a tool call, no convergence test. Every loop above
-runs after the fact or before the first call. That is the actual gap behind the
-ralph-loop question — a ralph loop needs a runtime answer to "is it done yet",
-and mecha has no way to ask. The cheapest candidate from the research is
-Slipstream's shape: validate one specific artifact (they validated compaction
-summaries) with a grounded judge, measured at **+6.4–8.8 points on SWE-bench
-Verified for <1% latency**, where ~90% of what it catches is omission.
+**Nothing verifies anything *during* a run** — no longer quite true. The
+cheapest candidate from the research was Slipstream's shape: validate one
+specific artifact (they validated compaction summaries) with a grounded
+judge, measured at **+6.4–8.8 points on SWE-bench Verified for <1% latency**,
+where ~90% of what it catches is omission. **Built 2026-08-05** as
+`compact_validate` (default on): a deterministic truncation refusal plus a
+grounded omission check with one omissions-named regeneration — the first
+in-run verifier. The larger gap stands: no critic on ordinary work, no
+post-condition on a tool call, no convergence test — a ralph loop still needs
+a runtime "is it done yet", and the answer must be a command's exit code.
 
 ### 4. Smaller, high-value items
 
@@ -488,14 +505,38 @@ Verified for <1% latency**, where ~90% of what it catches is omission.
   vLLM, `output_config.format` for Anthropic). Don't hardcode GBNF.
 - **TUI polish** — the `todo` list is not a live pane, and nested subagent calls
   render flat rather than as a tool-call tree. Both were asked for.
-- **Public benchmarks** — tau-bench fits best (it grades tool-call traces, which
-  is what this rig grades); SWE-bench Verified next, since the `codegen` cases
-  already use its shape. Both free. Worth a sprint once the case set stops
-  discriminating.
-- **pass@k in the eval** — cases are graded per-run, so a flaky judge or a
-  borderline case shows up as noise. Running each case k times would cost k×
-  and is worth it for the `ambiguity` tag specifically. Now also worth it for
-  `long-horizon`, which moves more than this file used to claim.
+- ~~**Public benchmarks** — tau-bench fits best~~ — researched 2026-08-05, see
+  `docs/BENCHMARK-RESEARCH.md`, and the answer changed. **Terminal-Bench 2.0**
+  is the first move, not tau-bench, for one reason: its leaderboard has
+  separate `Agent` and `Model` columns, and **Qwen3.6-35B-A3B is already on it
+  at 24.6% ± 3.2** under the `little-coder` harness — the exact model on port
+  8080. That is a like-for-like harness comparison, which no other leaderboard
+  in the survey offers. 89 container tasks, each verified by three human
+  reviewers, graded by test scripts; wrap mecha as a Harbor
+  `BaseInstalledAgent` so mecha's own sandbox and tools are what get measured.
+  Budget ~15h at k=1 and ~74h at k=5 on local inference, and note concurrency
+  breaks the seed. Then **AgentDojo** (97 tasks + 629 injection cases, grades
+  utility *and* attack-success jointly — the only public measurement of what
+  the interlock is for, and the only one that will price its false-refusal
+  cost), and **SWE-bench Bash Only** as the minimum-viable-harness control
+  (mini-swe-agent is ~100 lines, bash only, no tool-calling API — if mecha
+  cannot beat it on the same model, the extra machinery is not paying for
+  itself). Calibration from the Terminal-Bench paper: swapping the harness
+  moved one model **17%**; swapping the model moved one harness **52%**.
+- ~~**pass@k in the eval**~~ — built 2026-08-05, as **pass^k**, which the
+  research says is the number that matters (τ-bench: 61% pass^1 → <25%
+  pass^8). `mecha eval --runs k` turns every case into k independent items —
+  own conversation, own staged workspace for sandboxed cases — and the
+  scorecard groups by case: `passed` becomes cases-passing-every-run, with
+  pass@k kept beside it (`passed_any`, omitted from single-run JSON so old
+  reports stay byte-compatible and `--compare` still loads them). Per-tag
+  scores get the same split. Verified live: 3 discrimination cases × 3 runs,
+  and the codegen pair × 2 runs with four separate staged workspaces and
+  `verify` grading each run's own copy. One trap the pinned sampler sets:
+  at `--concurrency 1` a seeded run replays token-for-token, so k runs are
+  one sample counted k times — the harness warns on exactly that
+  combination rather than silently reporting fake reliability. Worth doing
+  next with it: re-baseline `ambiguity` and `long-horizon` at k=5.
 - **`context_window` on `ProviderConfig`** — the compaction threshold is an
   absolute token count because nothing here knows any model's window. Would let
   it be a fraction, and wants the same treatment as pricing: configured, never

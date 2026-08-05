@@ -314,13 +314,22 @@ independent variable, and would be novel rather than replications.
 
 ## Ordered implications for mecha
 
-1. **Staleness-aware eviction, before and above compaction.** The largest
-   measured effect in the review, and it is lossless. Dedup superseded file
-   reads and failed operations by target; adopt Cline's skip-if-it-was-enough
-   gate.
-2. **Cache the messages.** One breakpoint on the last system block means the
-   whole history is re-sent uncached every turn, and cache operations are ~80%
-   of billed cost where it has been measured.
+1. ~~**Staleness-aware eviction, before and above compaction.**~~ Built
+   2026-08-05: `compact::evict_superseded_results`, run ahead of thinning at
+   both compaction sites. Same `path` supersedes across tools (a write
+   invalidates an earlier read of the file it changed); identical calls dedup
+   otherwise; errors neither supersede nor get evicted (they carry the
+   don't-retry signal, not target state — a deliberate departure from
+   "dedup failed operations" as written here). The gate is
+   any-eviction-defers-the-summary-a-turn, simpler than Cline's ≥30% test:
+   the next reported prompt size is the ground truth for whether it was
+   enough, and mecha already re-checks it every turn.
+2. ~~**Cache the messages.**~~ Built 2026-08-05: a second, moving breakpoint
+   on the last message block (backing off thinking blocks, which reject the
+   marker). Verified live on the Anthropic API: a two-request tool round-trip
+   paid **8 uncached input tokens total** — turn 1 wrote 18,494, turn 2 read
+   all of it and wrote only its 2,138-token increment. Same `cache_prompt`
+   knob; local providers are unaffected.
 3. **Spill oversized tool output to a file with a path and a line number**,
    rather than truncating at `MAX_OUTPUT_BYTES = 200_000` (~50k tokens, 1.5×
    the whole window). Divide the budget across a parallel batch, per Amazon Q.
@@ -329,9 +338,13 @@ independent variable, and would be novel rather than replications.
    with the right tool present.
 5. **pass^k over the eval set.** Reliability is the metric the research says
    matters, and every scorecard in `results/` is single-run.
-6. **Validate compactions** (Slipstream: +6.4–8.8 points, <1% overhead, 90% of
-   catches are omission) — and make the summariser hierarchical rather than
-   incremental if compaction is kept.
+6. ~~**Validate compactions**~~ Built 2026-08-05 (`compact_validate`, default
+   on): a deterministic truncation refusal (`max_tokens` on the summariser
+   never installs) plus a grounded omission check — a second tool-less call
+   with both texts in the request — and one regeneration with the omissions
+   named. Advisory, not a gate: no verdict still installs, because a run may
+   need the compaction to survive. Hierarchical-vs-incremental summarisation
+   remains open.
 7. **Compact later, not earlier.** Every ablation puts summarization below
    keeping history; two-thirds is the most conservative threshold surveyed.
    Consider `TokensRemaining` as the threshold shape.
