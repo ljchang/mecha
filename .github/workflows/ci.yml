@@ -25,7 +25,8 @@ jobs:
       matrix:
         # `stable` is what contributors use; the MSRV pin is what the manifest
         # promises. Breaking either should be a deliberate act, not a surprise.
-        rust: [stable, "1.85"]
+        # Keep this arm in step with `rust-version` in the workspace manifest.
+        rust: [stable, "1.88"]
     steps:
       - uses: actions/checkout@v4
 
@@ -82,11 +83,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bubblewrap
 
+      # Installing bwrap is not enough on Ubuntu 23.10 and later, which is what
+      # these runners are. AppArmor gained a separate switch that blocks
+      # unprivileged user namespaces even when userns is otherwise permitted,
+      # so `bwrap` fails with a confusing permissions error. This is the same
+      # trap documented for end users in CLAUDE.md; the difference is that a
+      # CI runner is disposable, so relaxing it here is fine.
+      - name: Permit unprivileged user namespaces
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+
       - name: Report backend availability
         run: |
           echo "bwrap: $(bwrap --version 2>&1 || echo MISSING)"
           echo "docker: $(docker --version 2>&1 || echo MISSING)"
           echo "python3: $(python3 --version 2>&1 || echo MISSING)"
+          echo "-- proving bwrap actually runs, not just that it is installed:"
+          bwrap --ro-bind / / --unshare-all true && echo "bwrap: WORKS" || echo "bwrap: PRESENT BUT NON-FUNCTIONAL"
 
       - name: Integration tests, with skips promoted to failures
         env:
