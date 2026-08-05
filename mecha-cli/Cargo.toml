@@ -12,7 +12,7 @@ name = "mecha"
 path = "src/main.rs"
 
 [dependencies]
-mecha-core = { path = "../mecha-core" }
+mecha-core = { path = "../mecha-core", version = "0.1.0" }
 
 anyhow.workspace = true
 async-trait.workspace = true
