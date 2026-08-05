@@ -15,7 +15,7 @@
 //! other case or to the next run.
 
 use crate::agent::StopCause;
-use crate::batch::{BatchItem, BatchResult, Prompt};
+use crate::batch::{BatchResult, Prompt};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,10 +58,6 @@ pub struct EvalCase {
 }
 
 impl EvalCase {
-    pub fn to_item(&self) -> BatchItem {
-        BatchItem { id: self.id.clone(), prompt: self.prompt.clone(), meta: None }
-    }
-
     /// Catch case-file mistakes at load time. A case that cannot measure what
     /// it claims to should fail before the run, not produce a green tick.
     pub fn validate(&self) -> Result<()> {
@@ -285,6 +281,10 @@ pub struct Check {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GradedCase {
     pub id: String,
+    /// Which repetition of the case this is, 1-based. Reports written before
+    /// `--runs` existed carry no field and load as run 1.
+    #[serde(default = "one")]
+    pub run: u32,
     pub passed: bool,
     pub tags: Vec<String>,
     pub checks: Vec<Check>,
@@ -298,6 +298,10 @@ pub struct GradedCase {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub text: String,
+}
+
+fn one() -> u32 {
+    1
 }
 
 /// Normalize prose before substring matching.
@@ -505,6 +509,7 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
 
     GradedCase {
         id: case.id.clone(),
+        run: 1,
         passed: checks.iter().all(|c| c.passed),
         tags: case.tags.clone(),
         checks,
@@ -754,13 +759,33 @@ pub(crate) fn extract_json(text: &str) -> Option<String> {
 }
 
 /// Aggregate view of one model's run over the whole case set.
+///
+/// When each case ran more than once (`runs_per_case > 1`), `total` counts
+/// *cases*, and `passed` counts cases that passed **every** run — pass^k, the
+/// reliability number. Reliability decays much faster than mean success
+/// (τ-bench measured 61% pass^1 falling under 25% by pass^8), and a scorecard
+/// reporting only the mean hides exactly that. `passed_any` (pass@k, the
+/// capability number) is kept beside it; the gap between the two is the
+/// model's unreliability, made visible. With one run per case the two
+/// coincide and everything reads as it always did.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scorecard {
     pub model: String,
     pub provider: String,
+    /// Distinct cases, regardless of how many times each ran.
     pub total: usize,
+    /// Cases that passed every run — pass^k.
     pub passed: usize,
-    /// Checks passed / checks attempted. Partial credit, unlike `passed`.
+    /// Cases that passed at least one run — pass@k. `None` on single-run
+    /// scorecards (it would merely repeat `passed`), which is also what keeps
+    /// reports written before `--runs` existed loading unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passed_any: Option<usize>,
+    /// How many times each case ran.
+    #[serde(default = "one_run")]
+    pub runs_per_case: usize,
+    /// Checks passed / checks attempted, over every run. Partial credit,
+    /// unlike `passed`.
     pub check_pass_rate: f64,
     pub malformed_tool_args: u32,
     pub unknown_tools: u32,
@@ -778,8 +803,16 @@ pub struct Scorecard {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TagScore {
     pub tag: String,
+    /// Cases passing every run — pass^k, like the scorecard's `passed`.
     pub passed: usize,
     pub total: usize,
+    /// Cases passing at least one run. `None` on single-run scorecards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passed_any: Option<usize>,
+}
+
+fn one_run() -> usize {
+    1
 }
 
 impl Scorecard {
@@ -789,8 +822,25 @@ impl Scorecard {
         provider: String,
         wall_clock_ms: u64,
     ) -> Self {
-        let total = graded.len();
-        let passed = graded.iter().filter(|g| g.passed).count();
+        // One entry per case, in first-seen order, holding every run of it.
+        // With one run per case each group is a singleton and the whole
+        // scorecard reduces to what it computed before `--runs` existed.
+        let mut cases: Vec<(&str, Vec<&GradedCase>)> = Vec::new();
+        for g in graded {
+            match cases.iter_mut().find(|(id, _)| *id == g.id) {
+                Some((_, runs)) => runs.push(g),
+                None => cases.push((&g.id, vec![g])),
+            }
+        }
+
+        let runs_per_case = cases.iter().map(|(_, runs)| runs.len()).max().unwrap_or(1);
+        let all = |runs: &[&GradedCase]| runs.iter().all(|g| g.passed);
+        let any = |runs: &[&GradedCase]| runs.iter().any(|g| g.passed);
+
+        let total = cases.len();
+        let passed = cases.iter().filter(|(_, runs)| all(runs)).count();
+        let passed_any = (runs_per_case > 1)
+            .then(|| cases.iter().filter(|(_, runs)| any(runs)).count());
 
         let checks_total: usize = graded.iter().map(|g| g.checks.len()).sum();
         let checks_passed: usize =
@@ -817,10 +867,15 @@ impl Scorecard {
         let by_tag = tags
             .into_iter()
             .map(|tag| {
-                let cases: Vec<_> = graded.iter().filter(|g| g.tags.contains(&tag)).collect();
+                let tagged: Vec<_> = cases
+                    .iter()
+                    .filter(|(_, runs)| runs[0].tags.contains(&tag))
+                    .collect();
                 TagScore {
-                    passed: cases.iter().filter(|g| g.passed).count(),
-                    total: cases.len(),
+                    passed: tagged.iter().filter(|(_, runs)| all(runs)).count(),
+                    passed_any: (runs_per_case > 1)
+                        .then(|| tagged.iter().filter(|(_, runs)| any(runs)).count()),
+                    total: tagged.len(),
                     tag,
                 }
             })
@@ -831,6 +886,8 @@ impl Scorecard {
             provider,
             total,
             passed,
+            passed_any,
+            runs_per_case,
             check_pass_rate: if checks_total == 0 {
                 1.0
             } else {
@@ -840,10 +897,10 @@ impl Scorecard {
             unknown_tools: graded.iter().map(|g| g.unknown_tools).sum(),
             tool_errors: graded.iter().map(|g| g.tool_errors).sum(),
             runs_errored: graded.iter().filter(|g| g.error.is_some()).count(),
-            mean_turns: if total == 0 {
+            mean_turns: if graded.is_empty() {
                 0.0
             } else {
-                graded.iter().map(|g| g.turns as f64).sum::<f64>() / total as f64
+                graded.iter().map(|g| g.turns as f64).sum::<f64>() / graded.len() as f64
             },
             median_latency_ms: latencies.get(latencies.len() / 2).copied().unwrap_or(0),
             total_usage: usage,
@@ -1150,6 +1207,96 @@ mod tests {
         assert_eq!(std::fs::read_to_string(fixture.join("README.md")).unwrap(), "original");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn graded(id: &str, run: u32, passed: bool, tags: &[&str]) -> GradedCase {
+        GradedCase {
+            id: id.into(),
+            run,
+            passed,
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            checks: vec![Check {
+                name: "c".into(),
+                passed,
+                detail: String::new(),
+            }],
+            turns: 2,
+            elapsed_ms: 10,
+            malformed_tool_args: 0,
+            unknown_tools: 0,
+            tool_errors: 0,
+            tools_called: vec![],
+            usage: Default::default(),
+            error: None,
+            text: String::new(),
+        }
+    }
+
+    #[test]
+    fn passed_counts_cases_that_survive_every_run() {
+        // Case `a` passes 3/3, case `b` passes 2/3. pass^k must charge `b`
+        // with its one failure; pass@k must still credit it.
+        let runs = vec![
+            graded("a", 1, true, &["t1"]),
+            graded("a", 2, true, &["t1"]),
+            graded("a", 3, true, &["t1"]),
+            graded("b", 1, true, &["t2"]),
+            graded("b", 2, false, &["t2"]),
+            graded("b", 3, true, &["t2"]),
+        ];
+        let card = Scorecard::of(&runs, "m".into(), "p".into(), 0);
+
+        assert_eq!(card.total, 2, "total counts cases, not runs");
+        assert_eq!(card.passed, 1, "pass^k");
+        assert_eq!(card.passed_any, Some(2), "pass@k");
+        assert_eq!(card.runs_per_case, 3);
+        // Checks are still graded per run — 5 of 6 passed.
+        assert!((card.check_pass_rate - 5.0 / 6.0).abs() < 1e-9);
+
+        let t2 = card.by_tag.iter().find(|t| t.tag == "t2").unwrap();
+        assert_eq!((t2.passed, t2.passed_any, t2.total), (0, Some(1), 1));
+    }
+
+    #[test]
+    fn a_single_run_scorecard_reads_exactly_as_before() {
+        let runs = vec![graded("a", 1, true, &["t"]), graded("b", 1, false, &["t"])];
+        let card = Scorecard::of(&runs, "m".into(), "p".into(), 0);
+
+        assert_eq!((card.total, card.passed), (2, 1));
+        assert_eq!(card.runs_per_case, 1);
+        // `passed_any` would merely repeat `passed`; it is absent so the JSON
+        // report is byte-compatible with pre-`--runs` scorecards.
+        assert_eq!(card.passed_any, None);
+        assert!(card.by_tag.iter().all(|t| t.passed_any.is_none()));
+        let json = serde_json::to_value(&card).unwrap();
+        assert!(json.get("passed_any").is_none());
+    }
+
+    #[test]
+    fn a_report_written_before_runs_existed_still_loads() {
+        // The fields `--runs` added must all default: old scorecards in
+        // `results/` are the baselines everything gets compared against.
+        let old = json!({
+            "model": "m", "provider": "p", "total": 2, "passed": 1,
+            "check_pass_rate": 0.5, "malformed_tool_args": 0,
+            "unknown_tools": 0, "tool_errors": 0, "runs_errored": 0,
+            "mean_turns": 2.0, "median_latency_ms": 10,
+            "total_usage": crate::message::Usage::default(),
+            "wall_clock_ms": 5,
+            "by_tag": [{"tag": "t", "passed": 1, "total": 2}],
+        });
+        let card: Scorecard = serde_json::from_value(old).unwrap();
+        assert_eq!(card.runs_per_case, 1);
+        assert_eq!(card.passed_any, None);
+
+        let old_case = json!({
+            "id": "c", "passed": true, "tags": ["t"], "checks": [],
+            "turns": 1, "elapsed_ms": 1, "malformed_tool_args": 0,
+            "unknown_tools": 0, "tool_errors": 0, "tools_called": [],
+            "usage": crate::message::Usage::default(), "text": "",
+        });
+        let g: GradedCase = serde_json::from_value(old_case).unwrap();
+        assert_eq!(g.run, 1);
     }
 
     #[test]
