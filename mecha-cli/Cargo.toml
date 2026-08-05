@@ -17,6 +17,7 @@ mecha-core = { path = "../mecha-core" }
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 futures.workspace = true
 rustyline = "15"

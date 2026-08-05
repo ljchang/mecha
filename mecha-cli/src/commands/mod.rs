@@ -12,4 +12,5 @@ pub mod rules;
 pub mod run;
 pub mod sessions;
 pub mod tools;
+pub mod trigger;
 pub mod validate;

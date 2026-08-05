@@ -120,6 +120,16 @@ pub struct GlobalOpts {
     /// Print tool calls, results, and token usage as they happen.
     #[arg(long, short = 'v', global = true)]
     pub verbose: bool,
+
+    /// Not a flag: read `~/.mecha/config.toml` only, ignoring any `mecha.toml`
+    /// in the working directory.
+    ///
+    /// Set by the trigger runner, which builds this struct itself rather than
+    /// parsing it. A scheduled unattended run must not take its MCP servers,
+    /// hooks or tool surface from whatever repository the daemon happens to
+    /// have been started in — see [`mecha_core::trigger`].
+    #[arg(skip)]
+    pub global_config_only: bool,
 }
 
 /// Same shape as `chat`, so switching between them is muscle memory.
@@ -168,6 +178,10 @@ pub enum Command {
 
     /// Review, edit, release, or reject staged outbound actions.
     Outbox(commands::outbox::Args),
+
+    /// Prompts that run on a schedule: a morning briefing, overnight inbox
+    /// triage, calendar prep. `tick` fires what is due; `daemon` loops it.
+    Trigger(commands::trigger::Args),
 
     /// Review, accept, or reject rule changes staged by `mecha learn --propose`.
     Proposals(commands::proposals::Args),
@@ -223,6 +237,7 @@ async fn dispatch() -> Result<()> {
         Command::Distill(args) => commands::distill::execute(&cli.global, args).await,
         Command::Validate(args) => commands::validate::execute(&cli.global, args).await,
         Command::Outbox(args) => commands::outbox::execute(&cli.global, args).await,
+        Command::Trigger(args) => commands::trigger::execute(&cli.global, args).await,
         Command::Proposals(args) => commands::proposals::execute(args).await,
         Command::Rules(args) => commands::rules::execute(args).await,
         Command::Replay(args) => commands::replay::execute(&cli.global, args).await,
