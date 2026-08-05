@@ -7,9 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# The library is the piece a future flowmail depends on directly; each binary
-# is the MCP face for one provider, so a deployment can wire either or both
-# and their credentials stay in separate stores.
+# The library is the piece a future flowmail depends on directly. The
+# per-provider binaries serve one provider each with its own credential
+# store; `mecha-mail` serves every account in ~/.mecha/mail behind one
+# provider-neutral surface, which is the one deployments should wire.
 [[bin]]
 name = "mecha-google"
 path = "src/bin/mecha-google.rs"
@@ -17,6 +18,10 @@ path = "src/bin/mecha-google.rs"
 [[bin]]
 name = "mecha-outlook"
 path = "src/bin/mecha-outlook.rs"
+
+[[bin]]
+name = "mecha-mail"
+path = "src/bin/mecha-mail.rs"
 
 [dependencies]
 anyhow.workspace = true
@@ -26,6 +31,7 @@ chrono.workspace = true
 chrono-tz.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 dirs.workspace = true
+futures.workspace = true
 htmd = "0.1"
 pulldown-cmark = "0.13"
 rand = "0.8"
@@ -35,6 +41,7 @@ serde_json.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
 tiny_http = "0.12"
+toml.workspace = true
 # io-std on top of the workspace set: stdout is each binary's MCP transport.
 tokio = { workspace = true, features = ["io-std"] }
 tracing.workspace = true

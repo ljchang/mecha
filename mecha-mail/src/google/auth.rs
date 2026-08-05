@@ -251,6 +251,54 @@ pub async fn wait_for_oauth_redirect(port: u16) -> Result<(String, String), Mail
     Ok((code, state.unwrap_or_default()))
 }
 
+/// The complete interactive sign-in: PKCE, browser hand-off, loopback
+/// redirect, code exchange, and a profile read that both records whose
+/// mailbox this is and proves the scopes work before anything is saved.
+/// Lives in the library so `mecha-google auth` and the unified
+/// `mecha-mail auth` are the same flow rather than two drifting copies.
+pub async fn interactive_flow(
+    client_id: String,
+    client_secret: String,
+    port: u16,
+) -> anyhow::Result<crate::token::StoredCredentials> {
+    use anyhow::Context;
+
+    let config = google_oauth_config(client_id.clone(), client_secret.clone(), port);
+    let pkce = generate_pkce();
+    // The PKCE verifier already proves the callback pairs with this attempt;
+    // state adds CSRF protection for the browser leg.
+    let state = generate_pkce().code_verifier;
+    let url = build_auth_url(&config, &pkce, &state);
+
+    eprintln!("Open this URL to authorize (listening on 127.0.0.1:{port}):\n\n{url}\n");
+    let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+
+    let (code, returned_state) = wait_for_oauth_redirect(port).await?;
+    anyhow::ensure!(returned_state == state, "OAuth state mismatch — try again");
+
+    let tokens =
+        exchange_code(&config, &code, &pkce.code_verifier, &crate::http::client()).await?;
+    let refresh_token = tokens.refresh_token.clone().context(
+        "Google returned no refresh token; remove the app's access at myaccount.google.com/permissions and re-run",
+    )?;
+
+    // Whose mailbox did we just get? Also the first authenticated call, so a
+    // scope or consent problem surfaces here rather than at first use.
+    let account = crate::google::gmail::GmailProvider::new(tokens.access_token.clone())
+        .profile_address()
+        .await?;
+
+    Ok(crate::token::StoredCredentials {
+        client_id,
+        client_secret,
+        tenant: None,
+        access_token: tokens.access_token,
+        refresh_token,
+        expires_at: tokens.expires_at.unwrap_or_default(),
+        account: Some(account),
+    })
+}
+
 /// Simple percent-encoding for URL parameters.
 fn urlencoding(s: &str) -> String {
     let mut result = String::with_capacity(s.len());

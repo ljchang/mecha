@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use mecha_mail::microsoft::{auth, graph_mail::OutlookProvider, server::OutlookTools};
+use mecha_mail::microsoft::{auth, server::OutlookTools};
 use mecha_mail::{mcp, token};
 
 #[derive(Parser, Debug)]
@@ -58,55 +58,9 @@ async fn authenticate(client_id: Option<String>, tenant: Option<String>) -> Resu
         .or_else(|| existing.as_ref().and_then(|c| c.tenant.clone()))
         .context("no tenant: pass --tenant or set OUTLOOK_TENANT_ID")?;
 
-    let client = mecha_mail::http::client();
-    let device = auth::request_device_code(&tenant, &client_id, &client).await?;
-
-    // The whole point of device code: the human signs in wherever they have a
-    // browser, which need not be this machine.
-    eprintln!(
-        "\nTo sign in, open {} on any device\nand enter this code:\n\n    {}\n",
-        device.verification_uri, device.user_code
-    );
-
-    let mut last_line = 0i64;
-    let tokens = auth::poll_for_token(&tenant, &client_id, &device, &client, |remaining| {
-        // One line per half-minute, so a long sign-in does not scroll.
-        if last_line == 0 || last_line - remaining >= 30 {
-            eprintln!("waiting for sign-in… ({}:{:02} left)", remaining / 60, remaining % 60);
-            last_line = remaining;
-        }
-    })
-    .await?;
-
-    let refresh_token = tokens
-        .refresh_token
-        .clone()
-        .context("Entra returned no refresh token — check that `offline_access` is consented")?;
-
-    // Which account signed in — nice to record, but **never fatal**. Losing a
-    // completed sign-in because a cosmetic lookup failed would make the user
-    // authenticate twice for nothing; the tokens are the point.
-    let account = match OutlookProvider::new(tokens.access_token.clone()).profile_address().await
-    {
-        Ok(addr) => Some(addr),
-        Err(e) => {
-            eprintln!("(signed in, but could not read the account address: {e})");
-            None
-        }
-    };
-
-    token::save(
-        &path,
-        &token::StoredCredentials {
-            client_id,
-            client_secret: String::new(), // public client: never a secret
-            tenant: Some(tenant),
-            access_token: tokens.access_token,
-            refresh_token,
-            expires_at: tokens.expires_at.unwrap_or_default(),
-            account: account.clone(),
-        },
-    )?;
+    let creds = auth::device_flow(client_id, tenant).await?;
+    let account = creds.account.clone();
+    token::save(&path, &creds)?;
     eprintln!(
         "\n✓ authenticated{}\n  credentials saved to {}",
         account.map(|a| format!(" as {a}")).unwrap_or_default(),

@@ -1,0 +1,306 @@
+//! `mecha-mail` — every configured mail/calendar account behind one
+//! provider-neutral MCP surface. Default mode serves MCP over stdio;
+//! the subcommands manage the account registry (`~/.mecha/mail/`).
+
+use anyhow::{bail, Context, Result};
+use clap::Parser;
+use mecha_mail::accounts::{self, AccountEntry, Provider};
+use mecha_mail::unified::MailTools;
+use mecha_mail::{google, mcp, microsoft, token};
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "mecha-mail",
+    about = "All configured mail and calendar accounts as one MCP tool surface"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Sign an account in and add it to the registry.
+    Auth {
+        /// Account name the model will use (lowercase, digits, - and _).
+        name: String,
+        /// google (loopback OAuth) or outlook (device code).
+        #[arg(long)]
+        provider: Provider,
+        /// OAuth client id (Google Desktop app / Entra application id).
+        /// Env: GMAIL_CLIENT_ID / OUTLOOK_CLIENT_ID per provider. Without
+        /// one, the whole client config is taken from this account's stored
+        /// login, else from a configured sibling of the same provider — a
+        /// second mailbox on the same app registration needs no flags.
+        #[arg(long)]
+        client_id: Option<String>,
+        /// The Google Desktop client's pseudo-secret. Google only.
+        /// Env: GMAIL_CLIENT_SECRET.
+        #[arg(long)]
+        client_secret: Option<String>,
+        /// Entra directory (tenant) id. Outlook only.
+        /// Env: OUTLOOK_TENANT_ID.
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Loopback port for the Google OAuth redirect.
+        #[arg(long, default_value_t = google::auth::DEFAULT_REDIRECT_PORT)]
+        port: u16,
+    },
+    /// Copy an existing mecha-google / mecha-outlook login into the registry.
+    Import {
+        /// Account name to register it under.
+        name: String,
+        /// Which legacy store to copy: google (~/.mecha/google) or outlook
+        /// (~/.mecha/outlook).
+        #[arg(long)]
+        provider: Provider,
+    },
+    /// List configured accounts.
+    Accounts,
+    /// Set (or with no argument, show) the default account for new mail and
+    /// events sent without an explicit account.
+    Default { name: Option<String> },
+    /// Serve MCP over stdio (the default when no subcommand is given).
+    Serve,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    mecha_mail::init_tracing();
+    let cli = Cli::parse();
+    match cli.command {
+        Some(Command::Auth { name, provider, client_id, client_secret, tenant, port }) => {
+            auth(name, provider, client_id, client_secret, tenant, port).await
+        }
+        Some(Command::Import { name, provider }) => import(name, provider),
+        Some(Command::Accounts) => list_accounts(),
+        Some(Command::Default { name }) => set_default(name),
+        Some(Command::Serve) | None => mcp::serve(MailTools::load()?).await,
+    }
+}
+
+/// Load the registry, or start an empty one — `auth` and `import` are how
+/// the file comes to exist.
+fn load_or_empty() -> Result<accounts::AccountsFile> {
+    match accounts::file_path()?.exists() {
+        true => accounts::load(),
+        false => Ok(accounts::AccountsFile::default()),
+    }
+}
+
+/// Register `name` as `provider`, refusing to silently repurpose a name that
+/// already means a different provider's mailbox.
+fn register(file: &mut accounts::AccountsFile, name: &str, provider: Provider) -> Result<()> {
+    if !accounts::valid_name(name) {
+        bail!("account name `{name}` is invalid: lowercase letters, digits, `-` and `_` only");
+    }
+    match file.accounts.iter().find(|a| a.name == name) {
+        Some(existing) if existing.provider != provider => bail!(
+            "account `{name}` already exists as {} — pick another name or remove it first",
+            existing.provider
+        ),
+        Some(_) => {}
+        None => file
+            .accounts
+            .push(AccountEntry { name: name.to_string(), provider }),
+    }
+    Ok(())
+}
+
+/// One coherent client registration. Resolved as a **unit** from a single
+/// source — flags/env, this account's store, or one sibling account — never
+/// assembled field-by-field across sources, because a client id paired with
+/// a different registration's secret (or a Google id fed to Entra) fails
+/// only after the user completes the whole browser flow.
+struct ClientConfig {
+    client_id: String,
+    client_secret: String,
+    tenant: Option<String>,
+}
+
+/// A stored login is usable as a client-config source for `provider` only
+/// when it plausibly belongs to it: Entra logins record a tenant, Google
+/// ones never do. Guards against a leftover oauth.json from a removed
+/// account of the other provider being consumed silently.
+fn consistent_with(creds: &token::StoredCredentials, provider: Provider) -> bool {
+    match provider {
+        Provider::Google => creds.tenant.is_none(),
+        Provider::Outlook => creds.tenant.is_some(),
+    }
+}
+
+fn resolve_client(
+    provider: Provider,
+    name: &str,
+    file: &accounts::AccountsFile,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    tenant: Option<String>,
+) -> Result<ClientConfig> {
+    // The legacy binaries' env names, per provider on purpose: one shared
+    // variable would feed a Google client id to the Entra flow.
+    let env = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
+    let (id_env, secret_env, tenant_env) = match provider {
+        Provider::Google => ("GMAIL_CLIENT_ID", Some("GMAIL_CLIENT_SECRET"), None),
+        Provider::Outlook => ("OUTLOOK_CLIENT_ID", None, Some("OUTLOOK_TENANT_ID")),
+    };
+
+    let explicit_id = client_id.or_else(|| env(id_env));
+    let explicit_secret =
+        client_secret.or_else(|| secret_env.and_then(env)).unwrap_or_default();
+    let explicit_tenant = tenant.or_else(|| tenant_env.and_then(env));
+
+    if let Some(client_id) = explicit_id {
+        let tenant = match provider {
+            Provider::Outlook => Some(explicit_tenant.with_context(|| {
+                format!("no tenant: pass --tenant or set {}", tenant_env.unwrap())
+            })?),
+            Provider::Google => None,
+        };
+        return Ok(ClientConfig { client_id, client_secret: explicit_secret, tenant });
+    }
+
+    // No explicit id: take the whole registration from one stored login —
+    // this account's own (re-auth needs no flags), else the first
+    // provider-consistent sibling.
+    let stored = accounts::credentials_path(name)
+        .ok()
+        .and_then(|p| token::load(&p).ok())
+        .filter(|c| consistent_with(c, provider));
+    let sibling = || {
+        file.accounts
+            .iter()
+            .filter(|a| a.provider == provider && a.name != name)
+            .find_map(|a| {
+                accounts::credentials_path(&a.name)
+                    .ok()
+                    .and_then(|p| token::load(&p).ok())
+                    .filter(|c| consistent_with(c, provider))
+            })
+    };
+    let source = stored.or_else(sibling).with_context(|| {
+        format!("no client id: pass --client-id or set {id_env}")
+    })?;
+    Ok(ClientConfig {
+        client_id: source.client_id,
+        client_secret: source.client_secret,
+        tenant: source.tenant,
+    })
+}
+
+async fn auth(
+    name: String,
+    provider: Provider,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    tenant: Option<String>,
+    port: u16,
+) -> Result<()> {
+    let mut file = load_or_empty()?;
+    register(&mut file, &name, provider)?;
+    let path = accounts::credentials_path(&name)?;
+    let client = resolve_client(provider, &name, &file, client_id, client_secret, tenant)?;
+
+    let creds = match provider {
+        Provider::Google => {
+            google::auth::interactive_flow(client.client_id, client.client_secret, port)
+                .await?
+        }
+        Provider::Outlook => {
+            // resolve_client guarantees a tenant for Outlook.
+            microsoft::auth::device_flow(client.client_id, client.tenant.unwrap()).await?
+        }
+    };
+
+    let address = creds.account.clone();
+    token::save(&path, &creds)?;
+    accounts::save(&file)?;
+    eprintln!(
+        "\n✓ account `{name}` ({provider}) authenticated{}\n  credentials in {}",
+        address.map(|a| format!(" as {a}")).unwrap_or_default(),
+        path.display()
+    );
+    Ok(())
+}
+
+fn import(name: String, provider: Provider) -> Result<()> {
+    let legacy = match provider {
+        Provider::Google => token::provider_path("google", "MECHA_GOOGLE_DIR")?,
+        Provider::Outlook => token::provider_path("outlook", "MECHA_OUTLOOK_DIR")?,
+    };
+    // Parse rather than copy bytes: a torn or foreign file should fail here,
+    // not at first serve.
+    let creds = token::load(&legacy)
+        .with_context(|| format!("no importable {provider} login at {}", legacy.display()))?;
+
+    let mut file = load_or_empty()?;
+    register(&mut file, &name, provider)?;
+    // Never overwrite a live login: `auth` re-authing in place is expected;
+    // a byte-copy silently swapping which mailbox answers to `name` — and
+    // destroying its working refresh token — is not.
+    let existing = accounts::credentials_path(&name)?;
+    if existing.exists() {
+        bail!(
+            "account `{name}` already has credentials at {} — pick another name, \
+             or remove that file first if you mean to replace the login",
+            existing.display()
+        );
+    }
+    token::save(&accounts::credentials_path(&name)?, &creds)?;
+    accounts::save(&file)?;
+    eprintln!(
+        "✓ imported {} as account `{name}`{}",
+        legacy.display(),
+        creds.account.map(|a| format!(" ({a})")).unwrap_or_default()
+    );
+    Ok(())
+}
+
+fn list_accounts() -> Result<()> {
+    let file = accounts::load()?;
+    for entry in &file.accounts {
+        let address = accounts::credentials_path(&entry.name)
+            .ok()
+            .and_then(|p| token::load(&p).ok())
+            .and_then(|c| c.account)
+            .unwrap_or_else(|| "(no stored address)".into());
+        let default = if file.default.as_deref() == Some(entry.name.as_str()) {
+            "  [default]"
+        } else {
+            ""
+        };
+        println!("{:<12} {:<8} {address}{default}", entry.name, entry.provider.to_string());
+    }
+    if file.default.is_none() {
+        println!(
+            "\nno default set — new mail/events need an explicit account \
+             (set one: mecha-mail default <name>)"
+        );
+    }
+    Ok(())
+}
+
+fn set_default(name: Option<String>) -> Result<()> {
+    let mut file = accounts::load()?;
+    match name {
+        None => {
+            match &file.default {
+                Some(d) => println!("{d}"),
+                None => println!("(none)"),
+            }
+            Ok(())
+        }
+        Some(name) => {
+            if !file.accounts.iter().any(|a| a.name == name) {
+                bail!(
+                    "no account `{name}`; configured: {}",
+                    file.accounts.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")
+                );
+            }
+            file.default = Some(name.clone());
+            accounts::save(&file)?;
+            eprintln!("✓ default account: {name}");
+            Ok(())
+        }
+    }
+}

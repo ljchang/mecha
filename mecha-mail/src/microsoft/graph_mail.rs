@@ -80,12 +80,16 @@ impl OutlookProvider {
         Ok(emails)
     }
 
-    /// Most recent messages, newest first. `$orderby` is legal here precisely
-    /// because there is no `$filter` or `$search` beside it.
+    /// Most recent **inbox** messages, newest first. Scoped to the inbox
+    /// folder because `/me/messages` spans every folder — Deleted Items,
+    /// Sent, Drafts — and "what just came in" answered with the user's own
+    /// sent replies and trashed mail reads as correct while being wrong.
+    /// `$orderby` is legal here precisely because there is no `$filter` or
+    /// `$search` beside it.
     pub async fn recent(&self, max_results: u32) -> Result<Vec<Email>, MailError> {
         let top = max_results.clamp(1, 100);
         let url = format!(
-            "{GRAPH}/me/messages?$top={top}&$select={SELECT}&$orderby=receivedDateTime%20desc"
+            "{GRAPH}/me/mailFolders/inbox/messages?$top={top}&$select={SELECT}&$orderby=receivedDateTime%20desc"
         );
         let json = self.get_json(&url).await?;
         Ok(json["value"]

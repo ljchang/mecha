@@ -270,11 +270,19 @@ async fn dispatch(
                     }
                     // In the user's zone before the model ever sees them: a
                     // model handed UTC reports UTC, and a noon meeting
-                    // announced at 4pm reads as correct.
+                    // announced at 4pm reads as correct. All-day events are
+                    // exempt — Graph states them as midnight UTC, and
+                    // converting a day as if it were an instant moves it to
+                    // the previous evening.
                     let tz = crate::time::configured_zone();
                     for e in &mut events {
-                        e.start_time = crate::time::in_zone(&e.start_time, tz);
-                        e.end_time = crate::time::in_zone(&e.end_time, tz);
+                        if e.is_all_day {
+                            e.start_time = e.start_time.get(..10).unwrap_or(&e.start_time).to_string();
+                            e.end_time = e.end_time.get(..10).unwrap_or(&e.end_time).to_string();
+                        } else {
+                            e.start_time = crate::time::in_zone(&e.start_time, tz);
+                            e.end_time = crate::time::in_zone(&e.end_time, tz);
+                        }
                     }
                     serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".into())
                 })

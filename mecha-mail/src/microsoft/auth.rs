@@ -179,6 +179,66 @@ pub async fn refresh_token(
     Ok(crate::google::auth::parse_token_response(resp.json().await?, Some(refresh_tok)))
 }
 
+/// The complete device-code sign-in: request a code, tell the human where to
+/// type it, poll until they do. In the library so `mecha-outlook auth` and
+/// the unified `mecha-mail auth` share one flow. The account lookup is
+/// deliberately **never fatal** — losing a completed sign-in over a cosmetic
+/// detail makes the user authenticate twice; the tokens are the point.
+pub async fn device_flow(
+    client_id: String,
+    tenant: String,
+) -> anyhow::Result<crate::token::StoredCredentials> {
+    use anyhow::Context;
+
+    let client = crate::http::client();
+    let device = request_device_code(&tenant, &client_id, &client).await?;
+
+    // The whole point of device code: the human signs in wherever they have a
+    // browser, which need not be this machine.
+    eprintln!(
+        "\nTo sign in, open {} on any device\nand enter this code:\n\n    {}\n",
+        device.verification_uri, device.user_code
+    );
+
+    let mut last_line = 0i64;
+    let tokens = poll_for_token(&tenant, &client_id, &device, &client, |remaining| {
+        // One line per half-minute, so a long sign-in does not scroll.
+        if last_line == 0 || last_line - remaining >= 30 {
+            eprintln!("waiting for sign-in… ({}:{:02} left)", remaining / 60, remaining % 60);
+            last_line = remaining;
+        }
+    })
+    .await?;
+
+    let refresh_token = tokens
+        .refresh_token
+        .clone()
+        .context("Entra returned no refresh token — check that `offline_access` is consented")?;
+
+    let account = match crate::microsoft::graph_mail::OutlookProvider::new(
+        tokens.access_token.clone(),
+    )
+    .profile_address()
+    .await
+    {
+        Ok(addr) => Some(addr),
+        Err(e) => {
+            eprintln!("(signed in, but could not read the account address: {e})");
+            None
+        }
+    };
+
+    Ok(crate::token::StoredCredentials {
+        client_id,
+        client_secret: String::new(), // public client: never a secret
+        tenant: Some(tenant),
+        access_token: tokens.access_token,
+        refresh_token,
+        expires_at: tokens.expires_at.unwrap_or_default(),
+        account,
+    })
+}
+
 /// Translate the AADSTS codes that actually block people into instructions,
 /// keeping the raw text so nothing is lost. Ported from flowmail, with the
 /// codes a CLI hits added.
