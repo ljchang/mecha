@@ -58,4 +58,5 @@ pub async fn run_interruptible(
 // has no consumer here on purpose. Reading stdin *while* a run streams needs a
 // second reader on the same file descriptor, and whichever one is blocked when
 // the run ends steals the user's next prompt line. The fix is a single owner of
-// input with a persistent input area, which is a TUI. See docs/HANDOFF.md.
+// input with a persistent input area, which is a TUI. See CLAUDE.md,
+// "Interruption and steering".
