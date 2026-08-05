@@ -10,7 +10,7 @@
 use crate::config::ProviderConfig;
 use crate::message::*;
 use crate::provider::{Provider, StreamEvent, StreamSink};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::{json, Value};
@@ -24,6 +24,7 @@ pub struct OpenAiCompatible {
     temperature: Option<f64>,
     seed: Option<u64>,
     id: String,
+    retry: crate::provider::retry::RetryPolicy,
 }
 
 impl OpenAiCompatible {
@@ -42,6 +43,7 @@ impl OpenAiCompatible {
             temperature: cfg.temperature,
             seed: cfg.seed,
             id: cfg.kind.clone(),
+            retry: crate::provider::retry::RetryPolicy::from_config(cfg),
         })
     }
 
@@ -118,12 +120,23 @@ impl Provider for OpenAiCompatible {
         sink: Option<&StreamSink>,
     ) -> Result<CompletionResponse> {
         let body = self.body(req, sink.is_some());
-        let resp = self.request(&body).send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            bail!("{} {}: {}", self.id, status, text.chars().take(500).collect::<String>());
-        }
+        // Retries cover the send and the status line — nothing has streamed
+        // yet. Mid-stream failures below propagate without a `ProviderError`,
+        // which is what keeps them out of the retry and failover paths:
+        // deltas may already be on the user's screen.
+        let resp = crate::provider::retry::send_with_retry(|| self.request(&body), &self.retry)
+            .await
+            .map_err(|f| {
+                let message = match f.status {
+                    Some(status) => format!(
+                        "{} {status}: {}",
+                        self.id,
+                        f.detail.chars().take(500).collect::<String>()
+                    ),
+                    None => format!("{}: {}", self.id, f.detail),
+                };
+                anyhow::Error::new(f.class).context(message)
+            })?;
 
         let Some(sink) = sink else {
             let v: Value = resp.json().await.context("malformed response body")?;

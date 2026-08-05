@@ -95,6 +95,23 @@ raw HTTP. Things that will 400 if forgotten:
 
 Model IDs are exact strings with no date suffix (`claude-opus-5`).
 
+**Provider failures are classified, and transient ones retry**
+(`provider/retry.rs`, both backends). The taxonomy: `RateLimit` (429,
+`Retry-After` honoured but capped — default 60s; above the cap is a failure,
+not a nap), `Overloaded`/`ServerError`/`Transport` (backoff 2.5s doubling to
+30s, `max_retries` default 3), and the terminal classes `Auth`, `Billing`,
+`Invalid`, `ContextOverflow` — never retried; overflow stays in the loop's
+compaction path. The invariant that carries the design: **a retry must never
+duplicate work** — retries cover the send and the status line only, so
+nothing of a retried attempt was ever shown or acted on. Mid-stream failures
+propagate without a `ProviderError` in their chain, which is also what tells
+the `Failover` wrapper it must not re-issue them. `[providers.X] fallbacks`
+tries other configured providers on transient exhaustion, turn-local, each
+answering with its own model (never the primary's name — that was a real
+recorded bug). Empty by default: strict beats silently answering with a
+different model. `mecha eval` forces `--no-fallback`, like MCP, hooks and the
+outbox, because a scorecard grades the model it names.
+
 ## Security model
 
 Two things are enforced structurally rather than by prompting:
