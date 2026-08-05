@@ -49,6 +49,7 @@ pub mod agent;
 pub mod batch;
 pub mod compact;
 pub mod config;
+pub mod cron;
 pub mod eval;
 pub mod mcp;
 pub mod message;
@@ -65,6 +66,7 @@ pub mod search;
 pub mod session;
 pub mod subagent;
 pub mod tool;
+pub mod trigger;
 
 pub use agent::{Agent, AgentEvent, RunOutcome};
 pub use config::Config;
