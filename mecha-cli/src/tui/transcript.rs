@@ -199,7 +199,15 @@ impl Transcript {
                     Entry::ToolResult {
                         name: name.clone(),
                         is_error: *is_error,
-                        content: content.clone(),
+                        // Clipped at record time, not just at render: results
+                        // are kept even while hidden (that is what makes ^O
+                        // retroactive), and rendering shows at most 400 chars
+                        // of a result — storing a 200KB shell dump behind a
+                        // 400-char window is memory the screen can never
+                        // spend. The full result still lives in the
+                        // conversation and the session file; the transcript
+                        // is a view.
+                        content: truncate(content, RESULT_KEEP_CHARS),
                         depth,
                         group,
                     },
@@ -478,6 +486,10 @@ fn indent(depth: u8) -> String {
     "  ".repeat(depth as usize)
 }
 
+/// What a tool result keeps at record time. Slightly over the 400 chars
+/// rendering shows, so the render-side truncation still owns the ellipsis.
+const RESULT_KEEP_CHARS: usize = 500;
+
 fn truncate(s: &str, max: usize) -> String {
     let flat = s.replace('\n', " ");
     if flat.chars().count() <= max {
@@ -672,6 +684,28 @@ mod tests {
             t.entries.len(),
             (uncached.as_nanos() / cached.as_nanos().max(1))
         );
+    }
+
+    #[test]
+    fn a_recorded_tool_result_is_bounded_by_what_render_can_show() {
+        // Results are kept even while hidden (that is what makes ^O
+        // retroactive), so an unclipped 200KB shell dump would sit in memory
+        // behind a 400-char render window for the rest of the session.
+        let mut t = Transcript::new(false);
+        t.absorb(&AgentEvent::ToolResult {
+            id: "t1".into(),
+            name: "shell".into(),
+            is_error: false,
+            content: "x".repeat(200_000),
+        });
+        match &t.entries[0] {
+            Entry::ToolResult { content, .. } => assert!(
+                content.chars().count() <= RESULT_KEEP_CHARS + 1,
+                "stored {} chars",
+                content.chars().count()
+            ),
+            _ => panic!("expected a tool result"),
+        }
     }
 
     #[test]
