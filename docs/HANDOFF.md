@@ -441,6 +441,34 @@ writes are the trifecta in one tool (invites send; descriptions exfiltrate),
 so they do not jump the queue ahead of the outbox. *(Every stage of this
 roadmap has now shipped — distillation, the last leg, on 2026-08-05.)*
 
+### 3c. Artifacts and where they live — researched 2026-08-05
+
+`docs/ARTIFACT-RESEARCH.md`, raised by the user off the back of the morning
+briefing: does a scheduled run produce a readable artifact, and can the TUI
+show what has been generated? Both answers were no. The survey covers Claude
+Code Artifacts (June 2026), Codex Sites, Cursor canvases, the third-party
+layer that exists to fill their gaps, hosting options for permissioned static
+sites, and documentation generators (zensical, Astro/Starlight, Hugo,
+Docusaurus, Zola, mdBook).
+
+The finding that matters here: **publishing an artifact is an outbound send,
+and mecha needs no new safety machinery for it** — declare the publish tool
+`external_send`, name it in `[outbox] tools`, and staging plus the recorded
+taint snapshot plus a human release is the whole gate. Three threats that are
+easy to collapse into one and should not be: the publish moves private data
+off the machine; the *page* is itself an exfiltration vehicle that fires in
+the viewer's browser (which is why Anthropic's strict CSP is the security
+model rather than a polish item, and why the host must set it rather than the
+model); and a public artifact is readable by people the report was never about.
+
+Six recommendations, A1–A5 and D1. The cheapest is A1: write a trigger's
+report **into its own workspace** rather than `~/.mecha`, so `fs_read` reaches
+it with no change to the path jail. Also recorded: capability URLs done
+properly (CSPRNG id, expiry, one URL per recipient so revocation can be
+targeted) are the one thing no surveyed product does, and about a day's work;
+and if the artifact host becomes its own repository the reusable shape is
+service + CLI + MCP server, with site generation the least interesting part.
+
 ### 3b. Research backlog (raised 2026-08-04, not yet acted on)
 
 `docs/CONTEXT-RESEARCH.md` is the first of these, done. The rest are open,
