@@ -506,8 +506,7 @@ impl TriggerStore {
         if let Ok(dir) = std::env::var("MECHA_TRIGGERS_DIR") {
             return Ok(PathBuf::from(dir));
         }
-        let home = dirs::home_dir().context("cannot determine home directory")?;
-        Ok(home.join(".mecha").join("triggers"))
+        Ok(crate::work::mecha_home()?.join("triggers"))
     }
 
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
