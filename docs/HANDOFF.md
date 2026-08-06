@@ -35,12 +35,12 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **484 tests**, no warnings — verified 2026-08-06:
+Expect **489 tests**, no warnings — verified 2026-08-06:
 
 | Suite | Count |
 |---|---:|
 | `mecha-core` unit | 329 |
-| `mecha-cli` unit | 75 |
+| `mecha-cli` unit | 80 |
 | `mecha-mail` unit | 66 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
 | doctest | 1 |
@@ -80,10 +80,10 @@ A working agent harness, used and measured rather than just compiled.
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
-| Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/send/reject; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner |
+| Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/**review**/send/reject, several ids or `--all` narrowed by `--kind`/`--via`; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner |
 | Workspaces | `~/.mecha/work/<producer>/` is a run's workspace and its output directory; `mecha work list/path/clean`, retention nightly. A workspace containing the mecha home is refused |
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed |
-| Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, systemd unit in `scripts/` |
+| Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, **the daemon is installed and running here**; a failed `notify` is recorded on the run |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B) |
 | Eval | 36 cases, 15 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `pkg-cases.jsonl` — 8 memory/interlock cases against fixture MCP servers (`--mcp-file`) |
 
@@ -91,7 +91,8 @@ A working agent harness, used and measured rather than just compiled.
 
 ## Environment as left
 
-Running on the DGX Spark (GB10, aarch64, 128GB unified). **Verified 2026-08-06:**
+Running on the DGX Spark (GB10, aarch64, 128GB unified). **Re-verified
+2026-08-06, end of session:**
 
 | Port | Model | State |
 |---|---|---|
@@ -100,15 +101,10 @@ Running on the DGX Spark (GB10, aarch64, 128GB unified). **Verified 2026-08-06:*
 | 8082 | gemma-4-26B-A4B | up, `total_slots=1` — the eval judge and nightly validate's judge |
 | 8888 | SearXNG | up (docker, JSON format enabled) |
 
-**`-np 1` is load-bearing.** The llama-server build in use defaults to **4
-parallel slots**, which silently splits `-c` across them: for a period on
-2026-08-04 every request ran against **8192 tokens of context, not 32768**,
-while mecha's `context_window` said otherwise. Past 8192 the server
-context-shifts instead of erroring, so the model saw a mangled transcript and
-returned *empty completions* — the mysterious empty-EndTurn deaths in the k=5
-compaction runs were this, not a mecha regression, and every scorecard taken
-between the two restarts is confounded. Check
-`curl :8080/props | jq .total_slots` is 1 before believing any measurement.
+**`-np 1` is load-bearing**, and the check before believing any measurement is
+`curl :8080/props | jq .total_slots` — it must be 1. The build in use defaults
+to 4 parallel slots and silently splits `-c` across them; the story of what
+that cost is in [`HISTORY.md`](HISTORY.md) under Traps → Environment.
 
 Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
 `start-gemma26.sh`); they resolve the model through `$HOME` with `HF_HUB` and
@@ -128,21 +124,10 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
   `~/.mecha/learning/logs/<date>.log`; pending proposals wait in
   `mecha proposals`. **Confirmed enabled 2026-08-05.**
 - **The trigger daemon is installed and running.** `mecha-triggers.service`
-  (systemd user, linger on) was enabled 2026-08-06 and fired the morning
-  briefing for that day's 07:00 slot on the first tick. The first real run found
-  the one bug two days of testing had not: `notify` exits 127 under systemd,
-  whose children get a minimal `PATH` — fixed in the unit, and a failed notify
-  now lands in the ledger rather than only on stderr, because the run is `ok`
-  either way. `morning.toml` carries
-  `workspace = ~/.mecha/work/morning` explicitly.
-  Its `notify` was rewritten the same day to
-  `d=$(date +%F); cat > $d.md && factory-publish render …` — relative paths,
-  because `notify` now runs in the run's workspace like a hook does. Fired by
-  hand and verified: the briefing landed in the workspace, rendered, published
-  as `morning-brief` v1, and `mecha work clean` then refused to remove its
-  source. Publishing stays a deliberate act rather than part of `notify`,
-  because it is the verb that costs a review and there is no MCP surface to
-  stage it through yet.
+  (systemd user, linger on), enabled 2026-08-06 and confirmed firing on its own.
+  `morning.toml` is jailed to `~/.mecha/work/morning`, and its `notify` writes
+  the briefing then renders it. A failed `notify` is recorded on the run, so a
+  briefing that has quietly stopped rendering does not read as a healthy one.
 - **The automation consumes `~/.cargo/bin/`, not the repo build.** Reinstall
   (`cp target/release/mecha ~/.cargo/bin/`) after changing anything in the
   learning path, and `factory-publish` too, since `morning.toml`'s `notify`
@@ -155,6 +140,20 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
 - The learning store (`~/.mecha/learning`) holds **zero live rules** — the one
   early rule was reverted with its poisoned reflection — so everything from here
   accumulates from real usage through the gate.
+
+### The public box
+
+[redacted: operational detail — see docs/OPERATIONS.md]
+`mecha-factory`. Reached over SSH with a **dedicated** key at
+[redacted: operational detail — see docs/OPERATIONS.md]
+[redacted: operational detail — see docs/OPERATIONS.md]
+[redacted: operational detail — see docs/OPERATIONS.md]
+[redacted: operational detail — see docs/OPERATIONS.md]
+would be.
+
+The box holds no credential that reaches home: two Argon2id key hashes, the
+published bytes, and a certificate. Packets go one way — mecha publishes and
+drains, and the origin never dials home.
 
 ### The Anthropic key
 
@@ -182,81 +181,48 @@ multipliers (1.25 write, 0.1 read) are already correct.
 
 ## What the measurements say
 
-On the original 25 grounded cases, all four local models score 23–24/25 with
-zero malformed arguments and zero invented tools. **That set saturated** — it is
-a floor test, not a ranking test, and it stays in the file as exactly that.
+Two things a reader needs before trusting any number here, both with the detail
+in [`HISTORY.md`](HISTORY.md) under "The measurement record":
 
-Two conclusions hold from it anyway:
+- **The original 25-case set is saturated** — all four local models score 23–24
+  of 25. It is a floor test, not a ranking test, and it stays in the file as
+  exactly that. The tags added since (`long-horizon`, `codegen`, `synthesis`,
+  `ambiguity`) do discriminate; qwen3.6-35b-a3b scored 32/34 on the set as it
+  stood (`results/qwen-hard-v2.json`).
+- **Scorecards taken before the fixture expansion are not comparable to ones
+  after it.** The shared workspace went from 11 files to 44, so every case that
+  searches it got harder. If you add fixtures, re-baseline every model rather
+  than comparing across the boundary.
 
-1. **MoE wins on this hardware.** Decode tracks *active* parameters. The dense
-   27B is 8× slower than the 3B-active MoE for identical accuracy.
-2. **Constrained decoding is doing real work.** `llama-server --jinja`
-   grammar-constrains tool calls; that is why malformed-argument counts are zero
-   across the board. Don't conclude anything about a model's tool reliability
-   from an unconstrained sampler.
-
-The cases added since (`long-horizon`, `codegen`, `synthesis`, `ambiguity`) do
-discriminate. qwen3.6-35b-a3b judged by gemma-4-26b-a4b scored **32/34** on the
-set as it stood then (`results/qwen-hard-v2.json`):
-
-- **long-horizon 2/2**, at ~17.5 turns — it walks a 16-link chain without losing
-  the running total, and does not take the shortcut of summing the decoys.
-  Confirmed at n=5 on 2026-08-03: `chain-total` is **5/5** uncompacted,
-  `chain-largest` **4/5**. A single earlier failure looked like a regression and
-  was variance — which is the whole argument for pass^k.
-- **codegen 2/2** — implements `median`, finds the one-line duration-parsing
-  bug, and runs the tests itself. Graded by running them, not by asking.
-- **synthesis 2/2** — finds the majority figure and the outlier, and notices
-  which report supersedes which.
-- **ambiguity 8/9 across the tag**, once `ask_user` existed *and* the cases
-  graded the trace rather than the answer. `ambiguous-rate` asserts
-  `tools: ["ask_user"]`; `false-premise` asserts `forbid_tools: ["ask_user"]`,
-  because the right move there is *not* to ask — the file simply does not
-  exist. How that was arrived at, and why a clean A/B said the tool made no
-  difference while the transcripts said otherwise, is in
-  [`HISTORY.md`](HISTORY.md) under Traps → Measuring. Read the transcripts
-  before believing a score.
-
-Only `ambiguity` and `synthesis` have a judge in the loop, and judges disagree
-with themselves across runs. Read the answer before believing a single verdict.
-
-**Scorecards in `results/` taken before the fixture expansion are not comparable
-to ones after it.** The new fixtures took the shared workspace from 11 files to
-44, so every case that searches the whole workspace got harder — two of them
-started failing on turn ceilings calibrated against the smaller tree. If you add
-fixtures, expect to recalibrate, and re-baseline every model rather than
-comparing across the boundary.
-
-The compaction arc — seven measured arms, and the finding that a summariser
-preserves *what is true* while dropping *how far you got* — is in
-[`HISTORY.md`](HISTORY.md). It is the reason compaction is shaped the way it is,
-and it is worth reading before changing that code.
+Everything a judge touched — `ambiguity` and `synthesis` — is worth reading the
+answer for rather than trusting the verdict, because judges disagree with
+themselves across runs.
 
 ---
 
 ## What to do next
 
-**Sequenced.** One ordering is load-bearing and was decided deliberately:
+**Sequenced**, and the ordering changed on 2026-08-06 because the factory
+stopped being hypothetical. It is deployed and reachable; what it is *not* is
+reachable by an agent.
 
-**The mecha-side items below come before `mecha-factory`.** They serve the
-email-responsiveness goal directly and need no VPS, no domains and no origin
-decisions. Build the factory because artifacts have nowhere to live — not
-because mail goes unanswered.
+So the short path, in order:
 
-The other ordering — the workspace fix before the trigger daemon — is **done**:
-the jail default and the mecha-home refusal shipped 2026-08-06, so installing
-`mecha trigger daemon` no longer arms a latent `$HOME` jail. See
-[`HISTORY.md`](HISTORY.md).
+1. **Wire the factory into this machine's config** — two blocks, and until then
+   only the CLI can publish.
+2. **The quarantine layers (§8)**, which are what stands between a drained
+   stranger's record and a triage run. They are the mecha-side half of factory
+   step 7, and nothing about the inbound path is safe to switch on without
+   them.
+3. **A mailer**, after which a stranger can actually use a form.
+
+Everything else below is independent of that path.
 
 Every item below was verified against source on 2026-08-06 to still be unbuilt.
 Ordered by value per unit of effort, not by size.
 
 ### Cheap, and worth doing first
 
-- **Batch review in the outbox.** `mecha outbox send` takes exactly one id
-  (`mecha-cli/src/commands/outbox.rs`), as do `show`/`edit`/`reject`. An
-  overnight triage trigger that stages nine replies is then nine invocations.
-  Wants grouping by kind and bulk approve/reject.
 - **`calendar_freebusy` on the unified mail surface.** Nothing in
   `mecha-mail/src` implements it, and every scheduling question needs it.
 - **Re-baseline `ambiguity` and `long-horizon` at k=5.** No scorecard in
@@ -372,63 +338,41 @@ behaviour came from the reflector model declining. If the design was always
 
 ### Larger, and deliberately not started
 
-- **`mecha-factory` — the public surface.** Its own repository, created
-  2026-08-06 at `~/Github/mecha-factory`: local only, no remote, MIT, CI
-  written. **Build steps 1–6 of §12 are done** (162 tests) — the manifest, the
-  bundle store, the vendoring gate, the notebook path, the MCP surface, and
-  **the server**. What it does and why is documented there; the design that
-  governs it is [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) — §0 for
-  scope, §12 for the order, §13 for what is still open. Do not re-derive any of
-  it here.
-
-  **It is wired into mecha and verified end to end**, which is the fact this
-  file exists to carry: two config blocks (`[[mcp]]` plus `[outbox]
-  publish_tools`, see that repo's README), and an agent asked to publish gets
-  "drafted, not sent", `mecha outbox show` leads with the rendered page, `edit`
-  is refused, and `send` lands an immutable version. The cross-repo retention
-  contract holds too: the publisher writes an absolute `sources` array into
-  each `<id>/<version>/bundle.json`, and `mecha work clean` refuses to remove
-  anything named there.
-
-  **The server exists and has never been deployed.** `factory serve --dev`
-  binds three loopback ports to the three roles and takes the same path through
-  `Host` resolution, routing and headers as the deployed program; the only
-  untried code is the ACME acceptor, which cannot be exercised without a domain.
-  Verified end to end on 2026-08-06 against a real server: render → publish →
-  push → follow the alias → read the page → take it down → put it back.
-  `docs/DEPLOY.md` in that repository is the procedure.
-
+- **`mecha-factory` — the public surface. It is deployed.**
+  Its own repository, public at **github.com/ljchang/mecha-factory** (187
 [redacted: operational detail — see docs/OPERATIONS.md]
-  be at **Cloudflare — DNS-only, never proxied**. Proxying would terminate TLS
-  at Cloudflare (which reads the plaintext of every drained submission, the one
-  thing §13.2 chose against) and would break TLS-ALPN-01, forcing DNS-01 and a
-  zone API token onto the box we assume is lost. The three registrable names are
-  still unchosen, and they are all that blocks a deploy.
+  `https://gate.mecha-factory.ai`, artifacts at
+  `https://<handle>.art.mecha-factory.ai`, notebooks at `…compute…`. Verified
+  live 2026-08-06 — a bundle rendered here, pushed there, served under the
+  `static` policy behind a certificate the binary obtained for itself. The
+[redacted: operational detail — see docs/OPERATIONS.md]
 
-  **Three things are deliberately not true yet**, each recorded in the code
-  rather than implied:
+  Steps 1–7's server half are built: publishing, multi-tenancy (a user owns
+  every row, artifacts are served from their own hostname, handles are never
+  reissued, withhold/suspend/quota), and the intake path (a form from the
+  manifest, a single-use verification link, nothing queued until somebody
+  clicks). The design is [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md)
+  §14–15; the deploy procedure and its traps are that repository's
+  `docs/DEPLOY.md`. Do not re-derive either here.
 
-  - **There is no unauthenticated write endpoint.** The public form, the
-    magic-link verification and the state machine are step 7, so nothing but a
-    held key can put a row in the queue; `factory queue add` on the box is the
-    only writer, and it validates against an uploaded type exactly as the form
-    endpoint will. Capability URLs for private bundles land with the same step —
-    until then a private bundle is served to nobody.
-  - The `notebook` renderer **executes the notebook and is not confined**. It
-    must not be wired to a trigger until it is.
-  - `bundle_list`/`bundle_status` need mecha's capability override the day they
-    read from an origin rather than the local store, because `openWorldHint`
-    cannot set `untrusted_input` without also setting `external_send`.
+  **Four things open, in the order they bite:**
 
-  *`visibility` used to be listed here as recorded-and-unenforced. It is
-  enforced now: a private bundle answers exactly what a bundle that never
-  existed answers, byte for byte, because any difference between them is the
-  answer to the question a capability URL exists to withhold.*
+  - **The factory is not wired into this machine's mecha.** No `[[mcp]]` block,
+    no `[outbox] publish_tools`, so no agent here can publish — only the CLI
+    can. Two config blocks, in that repository's README. This file previously
+    claimed the wiring existed; that was true of a scratch config during one
+    session and never of this machine.
+  - **No mailer.** Verification links go to the journal rather than to anyone.
+    It is the gap before a stranger can use a form at all, and §15.5 is the
+    shape it has to take.
+  - **A release binary from CI**, so the box needs no Rust toolchain to patch.
+  - **A wildcard certificate** (needs DNS-01, and a zone token on the box).
+    Until then a new user needs a restart to get one — and note what that buys
+    today: an unowned handle fails at the TLS handshake, so the 404 is only the
+    second line of defence and a wildcard would remove the first.
 
-  **Next is step 7** — verification, the templated acknowledgment, and the state
-  machine end to end with one request type. It depends on the mecha-side
-  quarantine layers and on batch review in the outbox, both of which are open
-  items above.
+  The mecha-side half of step 7 — §8's quarantine layers — is unbuilt, and is
+  what stands between a drained record and a triage run.
 
 - **Slack as a transport.** Zero lines exist. The blocking decision is the
   identity model, not the socket.
