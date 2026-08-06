@@ -1282,7 +1282,14 @@ impl Agent {
             }
         }
 
-        let rebuilt = crate::compact::rebuild(messages, cut, &summary);
+        // Asked at install time, not before the summariser ran: a tool's state
+        // is whatever it is *now*, and now is after the round trip.
+        let carried = self.registry.carried_state();
+        let carried: Vec<(&str, &str)> = carried
+            .iter()
+            .map(|state| (state.label.as_str(), state.body.as_str()))
+            .collect();
+        let rebuilt = crate::compact::rebuild(messages, cut, &summary, &carried);
 
         // Checked before it is installed, not after. The rebuild is unit
         // tested, but this is the real transcript, and a guard that fires only
@@ -3023,6 +3030,76 @@ mod tests {
     }
 
     // --- compaction ---
+
+    /// The list the model keeps for itself is exactly the state a summariser is
+    /// measured to drop, and it does not live in the messages at all — so it
+    /// crosses a compaction verbatim, read from the tool at install time.
+    ///
+    /// Before this, the model saw its own plan only through the echo in the
+    /// last `todo` result, which made the whole mechanism conditional on the
+    /// transcript never getting long.
+    #[tokio::test]
+    async fn the_task_list_survives_a_compaction() {
+        let todo = Arc::new(crate::tool::todo::TodoTool::new());
+
+        // Turn one writes the list; the rest are ordinary work, enough of it to
+        // trip the threshold and push that turn out of the kept tail.
+        let mut turns = vec![assistant(
+            vec![
+                Block::text("planning"),
+                Block::ToolUse {
+                    id: "todo1".into(),
+                    name: "todo".into(),
+                    input: json!({"items": [
+                        {"content": "read the config", "status": "completed"},
+                        {"content": "fix the port", "status": "in_progress"},
+                        {"content": "run the tests", "status": "pending"}
+                    ]}),
+                },
+            ],
+            StopReason::ToolUse,
+        )];
+        for i in 0..10 {
+            turns.push(assistant(
+                vec![
+                    Block::text(format!("step {i}")),
+                    Block::ToolUse {
+                        id: format!("t{i}"),
+                        name: "echo".into(),
+                        input: json!({"value": "x"}),
+                    },
+                ],
+                StopReason::ToolUse,
+            ));
+        }
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![Arc::new(EchoTool), todo.clone()],
+            PermissionMode::Allow,
+        );
+        agent.cfg.compact_at_tokens = Some(1);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.max_turns = 6;
+        agent.cfg.force_final_answer = false;
+        agent.cfg.compact_validate = false;
+
+        let mut convo = Conversation::user("the original task");
+        agent.run(&mut convo, None).await.unwrap();
+
+        // The turn that wrote the list is gone from the transcript…
+        let tail: String = convo.messages[1..].iter().map(|m| m.text()).collect();
+        assert!(
+            !tail.contains("fix the port"),
+            "the fixture did not actually compact the list away: {tail}"
+        );
+        // …and the list itself is still in front of the model, current.
+        let head = convo.messages[0].text();
+        assert!(head.contains("[~] fix the port"), "{head}");
+        assert!(head.contains("[ ] run the tests"), "{head}");
+        assert!(head.contains(crate::compact::CARRIED_HEADER), "{head}");
+    }
 
     #[tokio::test]
     async fn the_loop_compacts_when_the_prompt_grows_and_keeps_the_taint() {

@@ -134,6 +134,34 @@ pub trait Tool: Send + Sync {
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput>;
 
+    /// State this tool holds that a compaction must not lose.
+    ///
+    /// Compaction replaces the middle of a transcript with prose, and the
+    /// measured failure mode is that a summariser preserves *what is true* and
+    /// drops *how far you got*. Some of "how far you got" does not live in the
+    /// messages at all — it lives in a tool — and for that state a summary is
+    /// the wrong mechanism twice over: it is lossy, and the tool already has
+    /// the exact current answer.
+    ///
+    /// So a tool may hand its state to the compaction to be carried across
+    /// **verbatim**. Three rules make this safe rather than a second source of
+    /// truth:
+    ///
+    /// - It is read at compaction time, so it is current by construction. A
+    ///   stale copy is impossible because nothing stores one.
+    /// - Exactly one copy survives: the carried block replaces the previous
+    ///   one rather than accumulating beside it, or an old list would sit in
+    ///   the prompt contradicting the new one.
+    /// - It is for state the tool *owns*, not a summary of what happened. A
+    ///   tool that returned prose here would be smuggling a second summariser
+    ///   into the loop, unvalidated.
+    ///
+    /// `None` — the default — means "nothing worth carrying", which is the
+    /// honest answer for every stateless tool.
+    fn carried_state(&self) -> Option<CarriedState> {
+        None
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: self.name().to_string(),
@@ -141,6 +169,16 @@ pub trait Tool: Send + Sync {
             input_schema: self.input_schema(),
         }
     }
+}
+
+/// A tool's own state, on its way across a compaction.
+///
+/// `label` names it in the rebuilt prompt (the tool's name is the obvious
+/// choice); `body` is reproduced exactly, because verbatim is the whole point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CarriedState {
+    pub label: String,
+    pub body: String,
 }
 
 /// What a tool is allowed to touch.
@@ -434,6 +472,20 @@ impl Registry {
 
     pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn Tool>> {
         self.tools.values()
+    }
+
+    /// Everything the registered tools want carried across a compaction.
+    ///
+    /// In the registry's stable order, so a compaction does not reorder the
+    /// prompt for a reason nobody can see. Asked of every tool, including an
+    /// MCP server's — the loop does not learn which tools have state, only
+    /// that some do, which is the same reason it never learns where a tool
+    /// came from.
+    pub fn carried_state(&self) -> Vec<CarriedState> {
+        self.tools
+            .values()
+            .filter_map(|t| t.carried_state())
+            .collect()
     }
 
     /// Specs in a stable order — the tool list is the very front of the prompt

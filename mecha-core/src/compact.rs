@@ -210,20 +210,56 @@ fn is_safe_cut(messages: &[Message], i: usize) -> bool {
     messages.get(i).is_some_and(|m| m.role == Role::Assistant)
 }
 
+/// Marks the block holding tool state carried across a compaction.
+///
+/// A sentinel rather than a convention: [`rebuild`] finds the previous carried
+/// block by this prefix and *replaces* it. Without that, a second compaction
+/// would leave last hour's task list sitting in the prompt above this one's,
+/// and a model reading two contradictory lists is worse off than one reading
+/// neither.
+pub const CARRIED_HEADER: &str =
+    "[Live state, carried past the compaction and current as of now — it supersedes \
+     anything about it in the summaries above:]";
+
 /// Rebuild the transcript around `summary`.
 ///
 /// The original task keeps its place at the top with the summary appended to
 /// it, rather than the summary becoming a message of its own — two user
 /// messages in a row are rejected by some providers, and the task and the
 /// summary of what happened to it belong together anyway.
-pub fn rebuild(messages: &[Message], cut: usize, summary: &str) -> Vec<Message> {
+///
+/// `carried` is `(label, body)` state a tool asked to keep verbatim (see
+/// `Tool::carried_state`). It goes *after* the summary, because it is the one
+/// part of the rebuilt head that is known to be current rather than
+/// paraphrased, and last is where a model reads most carefully.
+pub fn rebuild(
+    messages: &[Message],
+    cut: usize,
+    summary: &str,
+    carried: &[(&str, &str)],
+) -> Vec<Message> {
     let mut out = Vec::with_capacity(messages.len() - cut + 1);
 
     let mut head = messages[0].clone();
+    // Drop the carried block a previous compaction left. Summaries accumulate
+    // on purpose — each describes a different stretch of the conversation —
+    // but there is only ever one *current* state, and keeping the old copy
+    // would be keeping a wrong one.
+    head.content.retain(|block| match block {
+        Block::Text { text } => !text.trim_start().starts_with(CARRIED_HEADER),
+        _ => true,
+    });
     head.content.push(Block::text(format!(
         "\n\n[Earlier turns were compacted to fit the context window. What \
          happened in them:]\n{summary}"
     )));
+    if !carried.is_empty() {
+        let mut block = format!("\n\n{CARRIED_HEADER}\n");
+        for (label, body) in carried {
+            block.push_str(&format!("\n## {label}\n{}\n", body.trim_end()));
+        }
+        head.content.push(Block::text(block));
+    }
     out.push(head);
 
     out.extend(messages[cut..].iter().cloned());
@@ -832,7 +868,7 @@ mod tests {
             let Some(cut) = cut_point(&messages, target) else {
                 continue;
             };
-            let rebuilt = rebuild(&messages, cut, "a summary");
+            let rebuilt = rebuild(&messages, cut, "a summary", &[]);
 
             assert!(
                 orphaned_tool_results(&rebuilt).is_empty(),
@@ -864,7 +900,7 @@ mod tests {
     fn the_original_task_survives_and_the_recent_turns_are_verbatim() {
         let messages = transcript(6);
         let cut = cut_point(&messages, 6).unwrap();
-        let rebuilt = rebuild(&messages, cut, "we established that X is 42");
+        let rebuilt = rebuild(&messages, cut, "we established that X is 42", &[]);
 
         // The task is still there, so the agent still knows what it is doing.
         assert!(rebuilt[0].text().contains("do the thing"));
@@ -885,7 +921,7 @@ mod tests {
         // "prepend the summary as a message" would produce.
         let messages = transcript(6);
         let cut = cut_point(&messages, 5).unwrap();
-        let rebuilt = rebuild(&messages, cut, "s");
+        let rebuilt = rebuild(&messages, cut, "s", &[]);
 
         for pair in rebuilt.windows(2) {
             assert!(
@@ -893,6 +929,72 @@ mod tests {
                 "consecutive user messages"
             );
         }
+    }
+
+    /// The measured failure of summarising is that it keeps what is true and
+    /// drops how far you got. A task list is nothing but how far you got, and
+    /// it lives in a tool rather than in the messages — so it crosses verbatim.
+    #[test]
+    fn tool_state_crosses_a_compaction_verbatim() {
+        let messages = transcript(6);
+        let cut = cut_point(&messages, 6).unwrap();
+        let list = "1/3 done\n[x] read the config\n[~] fix the port\n[ ] run the tests\n";
+        let rebuilt = rebuild(
+            &messages,
+            cut,
+            "we established that X is 42",
+            &[("todo", list)],
+        );
+
+        let head = rebuilt[0].text();
+        assert!(head.contains("X is 42"), "the summary is still there");
+        assert!(head.contains("[~] fix the port"), "{head}");
+        assert!(head.contains("[ ] run the tests"), "{head}");
+        // After the summary, not before: it is the one part known to be current
+        // rather than paraphrased.
+        assert!(
+            head.find(CARRIED_HEADER).unwrap() > head.find("X is 42").unwrap(),
+            "{head}"
+        );
+    }
+
+    /// The bug a second compaction would otherwise introduce: two task lists in
+    /// the prompt, one of them wrong, with nothing to say which.
+    #[test]
+    fn a_second_compaction_replaces_the_carried_state_rather_than_stacking_it() {
+        let messages = transcript(6);
+        let cut = cut_point(&messages, 6).unwrap();
+        let first = rebuild(&messages, cut, "summary one", &[("todo", "[ ] step one")]);
+
+        // Now compact the already-compacted transcript, as a long run does.
+        let cut = cut_point(&first, first.len().saturating_sub(2)).unwrap();
+        let second = rebuild(
+            &first,
+            cut,
+            "summary two",
+            &[("todo", "[x] step one\n[ ] step two")],
+        );
+
+        let head = second[0].text();
+        assert_eq!(head.matches(CARRIED_HEADER).count(), 1, "{head}");
+        assert!(head.contains("[ ] step two"), "{head}");
+        assert!(
+            !head.contains("[ ] step one"),
+            "last compaction's list survived beside this one's: {head}"
+        );
+        // Summaries *do* accumulate — each describes a different stretch — and
+        // that is the difference being tested.
+        assert!(head.contains("summary one") && head.contains("summary two"));
+    }
+
+    /// Nothing to carry must produce nothing, not an empty section: a heading
+    /// with no list under it reads as "the plan is finished".
+    #[test]
+    fn no_tool_state_leaves_no_trace() {
+        let messages = transcript(6);
+        let cut = cut_point(&messages, 6).unwrap();
+        let rebuilt = rebuild(&messages, cut, "a summary", &[]);
+        assert!(!rebuilt[0].text().contains(CARRIED_HEADER));
     }
 
     #[test]
@@ -915,7 +1017,7 @@ mod tests {
         assert_eq!(messages.last().unwrap().role, Role::User);
 
         let cut = cut_point(&messages, 3).unwrap();
-        let rebuilt = rebuild(&messages, cut, "s");
+        let rebuilt = rebuild(&messages, cut, "s", &[]);
         assert!(orphaned_tool_results(&rebuilt).is_empty());
     }
 }
