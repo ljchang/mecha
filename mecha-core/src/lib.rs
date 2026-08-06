@@ -53,6 +53,7 @@ pub mod counterfactual;
 pub mod cron;
 pub mod distill;
 pub mod eval;
+pub mod frontdoor;
 pub mod hooks;
 pub mod learning;
 pub mod mcp;
