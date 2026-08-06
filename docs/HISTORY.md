@@ -167,6 +167,91 @@ compaction to be carried verbatim; the loop learns that some tools have state,
 never which. Exactly one copy survives a second compaction, because two
 contradictory task lists in a prompt are worse than none.
 
+**Batch review landed in the outbox**, which had taken exactly one id per verb
+— so an overnight triage staging nine replies was nine invocations and nine
+startups of every configured MCP server. The tension worth naming is that bulk
+approval is how a review queue becomes a rubber stamp, so the batching saves
+invocations and never saves reading: `outbox review` walks the pending items
+one at a time, with the draft and its taint warning in front of you at the
+moment you decide. Ids may be given several at a time, `--all` is narrowed by
+`--kind` and `--via`, and the selection rules are a pure function with a test
+each — a selection naming nothing is an error rather than "everything", and a
+filter matching nothing is an error too, because a typo'd filter acting on zero
+items reads exactly like an empty queue.
+
+**And the factory went from built to deployed.** Step 6.5 made it
+multi-tenant — a user owns every row, and their artifacts are served from
+`<handle>.art.…` rather than a path prefix, because origin is the only
+isolation a browser enforces and a published URL has to stay resolvable
+forever. Step 7's server half followed: a form rendered from the manifest, a
+single-use verification link, and a state machine where nothing reaches the
+queue until somebody clicks. Then it was actually stood up — a DigitalOcean
+droplet serving `gate.mecha-factory.ai` and `ljchang.art.mecha-factory.ai`
+under a Let's Encrypt certificate the binary obtained for itself over
+TLS-ALPN-01, with the first bundle published from this machine to that one.
+The design doc gained §14 (multi-tenancy, the two axes, the request-path
+invariant, the attachment lease) and §15 (users, handles never reused,
+withhold versus purge, the outbound-mail abuse surface); the deployment
+procedure and its two traps live in that repository's `docs/DEPLOY.md`.
+
+---
+
+## The measurement record
+
+Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
+length bound: this is a record of what was measured, which is what this
+document is for.
+
+On the original 25 grounded cases, all four local models score 23–24/25 with
+zero malformed arguments and zero invented tools. **That set saturated** — it is
+a floor test, not a ranking test, and it stays in the file as exactly that.
+
+Two conclusions hold from it anyway:
+
+1. **MoE wins on this hardware.** Decode tracks *active* parameters. The dense
+   27B is 8× slower than the 3B-active MoE for identical accuracy.
+2. **Constrained decoding is doing real work.** `llama-server --jinja`
+   grammar-constrains tool calls; that is why malformed-argument counts are zero
+   across the board. Don't conclude anything about a model's tool reliability
+   from an unconstrained sampler.
+
+The cases added since (`long-horizon`, `codegen`, `synthesis`, `ambiguity`) do
+discriminate. qwen3.6-35b-a3b judged by gemma-4-26b-a4b scored **32/34** on the
+set as it stood then (`results/qwen-hard-v2.json`):
+
+- **long-horizon 2/2**, at ~17.5 turns — it walks a 16-link chain without losing
+  the running total, and does not take the shortcut of summing the decoys.
+  Confirmed at n=5 on 2026-08-03: `chain-total` is **5/5** uncompacted,
+  `chain-largest` **4/5**. A single earlier failure looked like a regression and
+  was variance — which is the whole argument for pass^k.
+- **codegen 2/2** — implements `median`, finds the one-line duration-parsing
+  bug, and runs the tests itself. Graded by running them, not by asking.
+- **synthesis 2/2** — finds the majority figure and the outlier, and notices
+  which report supersedes which.
+- **ambiguity 8/9 across the tag**, once `ask_user` existed *and* the cases
+  graded the trace rather than the answer. `ambiguous-rate` asserts
+  `tools: ["ask_user"]`; `false-premise` asserts `forbid_tools: ["ask_user"]`,
+  because the right move there is *not* to ask — the file simply does not
+  exist. How that was arrived at, and why a clean A/B said the tool made no
+  difference while the transcripts said otherwise, is in
+  [`HISTORY.md`](HISTORY.md) under Traps → Measuring. Read the transcripts
+  before believing a score.
+
+Only `ambiguity` and `synthesis` have a judge in the loop, and judges disagree
+with themselves across runs. Read the answer before believing a single verdict.
+
+**Scorecards in `results/` taken before the fixture expansion are not comparable
+to ones after it.** The new fixtures took the shared workspace from 11 files to
+44, so every case that searches the whole workspace got harder — two of them
+started failing on turn ceilings calibrated against the smaller tree. If you add
+fixtures, expect to recalibrate, and re-baseline every model rather than
+comparing across the boundary.
+
+The compaction arc — seven measured arms, and the finding that a summariser
+preserves *what is true* while dropping *how far you got* — is in
+[`HISTORY.md`](HISTORY.md). It is the reason compaction is shaped the way it is,
+and it is worth reading before changing that code.
+
 ---
 
 ## The compaction measurement record
@@ -379,6 +464,30 @@ All found by pre-push review or by running it.
   failure. Any turn containing tool_use blocks is now a tool turn regardless.
   Assume the same class of bug exists for other local servers.
 
+### Containment and state
+
+- **`Path::starts_with` is lexical, so it is not a containment check.**
+  `<staging>/../escape.html` starts with `<staging>` by that test and lands one
+  directory up. The factory's bundle installer used it to prove a path stayed
+  inside a staging directory; a test caught it. Build the path from components
+  and refuse anything that is not a normal one — a check that reasons about
+  strings is not a check about where a write lands.
+- **`last_insert_rowid()` is per-connection and per-*any*-table.** Using it to
+  select back a row you just `UPDATE`d works right up until something else
+  inserts anything on that connection — in this case minting a key between a
+  form submission and its confirmation click, which made verification silently
+  fail. If you need the row you changed, read it and change it by its key,
+  inside one transaction. The general shape: a value that is *usually* the one
+  you meant is worse than one that never is, because it passes the test you
+  wrote first.
+- **A privileged dry-run can create state with the wrong owner.** Running
+  `factory check` as root before the service had ever started created the
+  SQLite ledger owned by root, after which the service could read it and not
+  write it — and the failure surfaced two steps later as "attempt to write a
+  readonly database" from an unrelated command. Anything that lazily creates
+  state should be run as whoever will own it, which is why the systemd unit
+  runs its pre-flight as the service user.
+
 ### Unattended runs
 
 - **A systemd unit gives its children a minimal environment, and that is where
@@ -398,6 +507,15 @@ All found by pre-push review or by running it.
 
 ### Environment
 
+- **`-np 1` is load-bearing.** The llama-server build in use defaults to **4
+  parallel slots**, which silently splits `-c` across them: for a period on
+  2026-08-04 every request ran against **8192 tokens of context, not 32768**,
+  while mecha's `context_window` said otherwise. Past 8192 the server
+  context-shifts instead of erroring, so the model saw a mangled transcript and
+  returned *empty completions* — the mysterious empty-EndTurn deaths in the k=5
+  compaction runs were this, not a mecha regression, and every scorecard taken
+  between the two restarts is confounded. Check
+  `curl :8080/props | jq .total_slots` is 1 before believing any measurement.
 - **`pkill -f llama-server` kills your own shell**, because the pattern matches
   the command line running it. Use `pkill -x llama-server`.
 - **`hf download repo --include X Y`** silently ignores `--include` when
