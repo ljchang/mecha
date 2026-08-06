@@ -131,16 +131,24 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
   is not installed — `scripts/mecha-triggers.service` is written and untried
   (confirmed absent from `systemctl --user` 2026-08-05). Installing it is three
   lines, and until then triggers fire only when someone runs
-  `mecha trigger tick` or `run` by hand. The blocker is gone: the `$HOME` jail
-  default that made installing it hazardous was fixed 2026-08-06, and the
-  shipped `morning` trigger now resolves to `~/.mecha/work/morning/`. Its
-  `notify` still shell-redirects into `~/.mecha/briefings/`, which is now
-  strictly worse than writing into the workspace — a one-line edit to
-  `~/.mecha/triggers/morning.toml`, deliberately left to the user since it is
-  their machine's config rather than the repo's.
+  `mecha trigger tick` or `run` by hand. **The blocker is gone**: the `$HOME`
+  jail default that made installing it hazardous was fixed 2026-08-06, and
+  `morning.toml` now carries `workspace = ~/.mecha/work/morning` explicitly.
+  Its `notify` was rewritten the same day to
+  `d=$(date +%F); cat > $d.md && factory-publish render …` — relative paths,
+  because `notify` now runs in the run's workspace like a hook does. Fired by
+  hand and verified: the briefing landed in the workspace, rendered, published
+  as `morning-brief` v1, and `mecha work clean` then refused to remove its
+  source. Publishing stays a deliberate act rather than part of `notify`,
+  because it is the verb that costs a review and there is no MCP surface to
+  stage it through yet.
 - **Both consume `~/.cargo/bin/mecha`**, not the repo build — reinstall
   (`cp target/release/mecha ~/.cargo/bin/`) after changing anything in the
-  learning path, or the automation runs stale behaviour.
+  learning path, or the automation runs stale behaviour. This bit on
+  2026-08-06: `ruminate.sh` gained a `work clean` step while the installed
+  binary had no such subcommand, and the nightly was 41 minutes away. Both
+  binaries are installed as of then — `mecha` and `factory-publish`, the
+  latter because `morning.toml`'s `notify` now calls it.
 - The learning store (`~/.mecha/learning`) holds **zero live rules** — the one
   early rule was reverted with its poisoned reflection — so everything from here
   accumulates from real usage through the gate.
