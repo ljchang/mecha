@@ -1054,10 +1054,12 @@ that answers two other open items, which is a good sign it is the right shape.
 `<producer>` is a trigger's name, or `chat`, or a session id. **This is also
 the run's workspace**, which is what makes it worth more than tidiness:
 
-- **It fixes the jail default.** A trigger with no explicit workspace currently
-  jails to `$HOME`, which contains the mail tokens and the learning store
-  (`HANDOFF.md`, Triggers). Defaulting it to `~/.mecha/work/<name>/` roots the
-  jail somewhere containing nothing sensitive.
+- **It fixes the jail default.** A trigger with no explicit workspace jailed to
+  `$HOME`, which contains the mail tokens and the learning store. Defaulting it
+  to `~/.mecha/work/<name>/` roots the jail somewhere containing nothing
+  sensitive. *Shipped 2026-08-06, along with a `setup` refusal of any workspace
+  that contains the mecha home — the hazard was never trigger-specific, since
+  `mecha chat` from a home directory had the identical shape.*
 - **It fixes cross-run read-back within a producer.** Yesterday's briefing is an
   ordinary file in today's run, because the directory is stable and named.
   `bundle_fetch` (§2.2c) still handles the cross-producer and version-addressed

@@ -87,6 +87,32 @@ ledger, a CLI where `tick` is the primitive and `daemon` a loop over it, and a
 The repository went public under the MIT license and was tagged **v0.1.0** on
 2026-08-05, with CI, a documentation site, and a changelog alongside it.
 
+**2026-08-06 (later) — the public surface, built and measured.**
+`mecha-factory` was created as its own repository and taken through build steps
+1–5 of `PUBLIC-SURFACE-DESIGN.md` §12 plus the MCP surface, 104 tests. In order:
+`mecha-manifest`, the versioned data contract that turns one TOML request type
+into a JSON Schema, an HTML form and the validator both ends run; a
+content-addressed immutable bundle store with a moving alias, and a markdown
+`report` template; the external-reference gate, which **fails** a publish rather
+than warning and distinguishes a link a reader clicks from a resource the page
+fetches; the `notebook` template on `marimo export html-wasm`; and an MCP server
+whose seven tools mecha reaches with two config blocks.
+
+The part worth the day was step 4. `marimo export html-wasm` is not
+self-contained — it loads Pyodide, the standard library and every wheel from
+three hosts at runtime — so a vendorer fetches from a hardcoded allowlist,
+verifies each wheel against the sha256 in Pyodide's own lock file, caches per
+version and copies into each bundle. Verified in a browser rather than asserted:
+a notebook boots and computes under the full compute CSP with **zero off-origin
+loads**. Two design corrections came out of measuring instead of quoting notes —
+`unsafe-eval` was never needed, and §7.3's `data:` URL problem belongs to the
+islands path and not to ours.
+
+The loop closed end to end the same day: an agent asked to publish got "drafted,
+not sent", `mecha outbox show` led with the rendered page, `edit` was refused
+naming the real action, and `send` executed the call and landed an immutable
+version with its source recorded.
+
 **2026-08-06 — the work directory, and closing the jail default.** The
 prerequisites the public-surface design exposed, built ahead of `mecha-factory`
 itself. `~/.mecha/work/<producer>/` became a run's workspace (`work.rs`,
@@ -339,6 +365,36 @@ All found by pre-push review or by running it.
 
 The rest of the original design-notes section duplicated `CLAUDE.md` and was
 dropped in the split. These are the fragments that had no other home.
+
+### The public surface
+
+**A manifest is read for resolution, not just for downloads.** Vendoring
+Pyodide, the obvious economy was to drop the 359 lock-file entries we were not
+fetching. It broke the notebook with no console error at all — a kernel that
+never finished booting — because Pyodide reads that file to answer *what is this
+package and what does it depend on*, so a missing name is not a missing download
+but a resolver that gives up. Keeping every entry and letting an unvendored one
+fail at *fetch* made the next bug announce itself by name. **When you prune a
+manifest, ask what reads it besides the thing you are pruning for; and prefer
+the failure that names itself over the tidiness that does not.**
+
+**A CSP violation and a broken page look identical in a console.** The compute
+policy blocked an `eval` in marimo's bundle, which read as "the policy must be
+relaxed". It was zod's memoized feature probe — `try { Function("") } catch` —
+detecting that dynamic evaluation is unavailable and taking a slower path. The
+browser reports a violation; the code degrades. **Before relaxing a policy to
+fix a violation, find out whether anything actually broke.**
+
+**Verify the layer you are about to change, not the one you suspect.** When the
+vendored notebook still failed, serving the same bundle with the policy *off*
+produced the same failure — which proved the CSP was not the cause and sent the
+search to the lock file instead of the headers. One differential run replaced an
+afternoon of guessing at directives.
+
+**A record-and-replay of a live run misses what it cannot see.** Watching a
+browser load the notebook gave a precise list of what it fetched — and omitted
+`pyodide.asm.mjs`, which is loaded by dynamic `import()` and does not surface as
+a request event. **An observed list is a lower bound.**
 
 ### The TUI
 
