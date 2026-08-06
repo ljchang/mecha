@@ -12,6 +12,15 @@
 //! measurement: a user edit before sending is a writing correction, and
 //! `mecha reflect` mines `diff(args_before, args)` into the learning store.
 //!
+//! **Staging is sink-agnostic; reviewing is not.** The outbox generalised to a
+//! new kind of outbound action — publishing a bundle to the public surface —
+//! without a line changing here, which was the design goal. Its *review*
+//! affordances did not: `show` printing arguments, `edit` opening them in
+//! `$EDITOR`, and the writing miner reading the diff all assume the staged
+//! thing is a message someone wrote. That is why an item carries an
+//! [`OutboxKind`], set at staging from `[outbox] publish_tools`, and why the
+//! miner keys on it — see [`OutboxKind::Publish`].
+//!
 //! Storage follows the learning store's rules: one pretty-printed JSON file
 //! per item so `$EDITOR` and `git diff` work on it, temp-sibling-and-rename
 //! for every rewrite so a reader never sees a half-written file, and an
@@ -28,6 +37,40 @@ use std::path::{Path, PathBuf};
 use crate::agent::Taint;
 use crate::session::Session;
 
+/// What kind of outbound action a staged item is, which decides how it is
+/// *reviewed* rather than how it is staged.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutboxKind {
+    /// Prose somebody wrote and somebody else will read: an email, a calendar
+    /// invitation, a message. The reviewable object *is* the arguments, and an
+    /// edit before release is a writing correction worth learning from.
+    #[default]
+    Message,
+    /// A publication to the public surface: a rendered bundle, an alias move,
+    /// a request-type push. Three things follow, and each is a bug if undone:
+    ///
+    /// - The reviewable object is the **rendered page**, not the arguments —
+    ///   which are a path and a visibility flag.
+    /// - `edit` is refused. Editing the content means editing the source and
+    ///   re-rendering, which stages a new item; rewriting the path is not
+    ///   editing the draft.
+    /// - The writing miner **excludes it**. Feeding `diff(args_before, args)`
+    ///   of a changed directory path to a reflector that mines voice rules
+    ///   would carry noise into every future run's cached prefix. Same mistake
+    ///   as learning from `"Blocked by a hook:"`, in a new costume.
+    Publish,
+}
+
+impl OutboxKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OutboxKind::Message => "message",
+            OutboxKind::Publish => "publish",
+        }
+    }
+}
+
 /// One staged outbound action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxItem {
@@ -36,6 +79,10 @@ pub struct OutboxItem {
     pub status: String,
     /// The tool a release will execute, by registry name (`web__fetch`).
     pub tool: String,
+    /// How this is reviewed. Defaulted rather than required, so items staged
+    /// before the field existed load as the kind they in fact were.
+    #[serde(default)]
+    pub kind: OutboxKind,
     /// The arguments as the agent drafted them. Never modified — this is the
     /// baseline the learning capture diffs against.
     pub args_before: Value,
@@ -68,6 +115,26 @@ impl OutboxItem {
     pub fn edited(&self) -> bool {
         self.args != self.args_before
     }
+
+    /// Whether `mecha reflect` may mine this item as a **writing** correction.
+    ///
+    /// A `writing`-domain reflection can become a consolidated rule, and a rule
+    /// rides in every future run's system prompt inside the cached prefix. That
+    /// is the longest half-life anything in this project has, so what feeds it
+    /// is filtered structurally rather than by a prompt asking the reflector to
+    /// use its judgement:
+    ///
+    /// - **Sent, and edited.** An unedited release is not a correction (that it
+    ///   is *positive* evidence is a separate, unread signal); a rejected one
+    ///   never went out.
+    /// - **A message.** A publish's `diff(args_before, args)` is a changed
+    ///   filesystem path or visibility flag. Mining it would teach voice rules
+    ///   from bookkeeping — the same mistake as learning from
+    ///   `"Blocked by a hook:"`, which is machine policy read as a human
+    ///   correction.
+    pub fn mineable_as_writing(&self) -> bool {
+        self.kind == OutboxKind::Message && self.status == "sent" && self.edited()
+    }
 }
 
 /// What the agent loop consults per call: the store plus the routed names.
@@ -79,14 +146,20 @@ impl OutboxItem {
 pub struct OutboxRoute {
     pub store: OutboxStore,
     routed: std::collections::BTreeSet<String>,
+    publishes: std::collections::BTreeSet<String>,
     session_id: std::sync::Mutex<Option<String>>,
 }
 
 impl OutboxRoute {
-    pub fn new(store: OutboxStore, routed: impl IntoIterator<Item = String>) -> Self {
+    pub fn new(
+        store: OutboxStore,
+        routed: impl IntoIterator<Item = String>,
+        publishes: impl IntoIterator<Item = String>,
+    ) -> Self {
         OutboxRoute {
             store,
             routed: routed.into_iter().collect(),
+            publishes: publishes.into_iter().collect(),
             session_id: std::sync::Mutex::new(None),
         }
     }
@@ -97,6 +170,28 @@ impl OutboxRoute {
 
     pub fn routed(&self) -> impl Iterator<Item = &str> {
         self.routed.iter().map(String::as_str)
+    }
+
+    /// A tool's kind, which is config's to declare and never the tool's: the
+    /// loop must not learn what a publish is, and a third-party MCP server
+    /// cannot be trusted to say. Anything unnamed is a message, which is the
+    /// conservative default — it keeps the arguments reviewable and the item
+    /// mineable, and the cost of getting it wrong is a voice rule learned from
+    /// a path rather than a page nobody could review.
+    pub fn kind_of(&self, tool: &str) -> OutboxKind {
+        if self.publishes.contains(tool) {
+            OutboxKind::Publish
+        } else {
+            OutboxKind::Message
+        }
+    }
+
+    /// Names declared as publishes. Used at startup to warn about one that is
+    /// not routed at all — it would execute unstaged, which is the
+    /// silently-degrading-sandbox shape the routed-name warning already
+    /// catches.
+    pub fn publishes(&self) -> impl Iterator<Item = &str> {
+        self.publishes.iter().map(String::as_str)
     }
 
     pub fn set_session_id(&self, id: &str) {
@@ -149,6 +244,7 @@ impl OutboxStore {
     pub fn stage(
         &self,
         tool: &str,
+        kind: OutboxKind,
         args: Value,
         taint: Taint,
         session_id: Option<String>,
@@ -157,6 +253,7 @@ impl OutboxStore {
             id: Session::new_id(),
             status: "pending".into(),
             tool: tool.to_string(),
+            kind,
             summary: summarize(tool, &args),
             args_before: args.clone(),
             args,
@@ -340,6 +437,7 @@ mod tests {
         let a = store
             .stage(
                 "web__fetch",
+                OutboxKind::Message,
                 json!({"url": "https://a"}),
                 Taint::default(),
                 None,
@@ -348,6 +446,7 @@ mod tests {
         let b = store
             .stage(
                 "email__send",
+                OutboxKind::Message,
                 json!({"to": "x@y"}),
                 Taint {
                     private: true,
@@ -376,8 +475,12 @@ mod tests {
     fn a_prefix_that_matches_two_items_is_an_error_not_a_guess() {
         let root = scratch("prefix");
         let store = OutboxStore::open(&root).unwrap();
-        store.stage("t", json!({}), Taint::default(), None).unwrap();
-        store.stage("t", json!({}), Taint::default(), None).unwrap();
+        store
+            .stage("t", OutboxKind::Message, json!({}), Taint::default(), None)
+            .unwrap();
+        store
+            .stage("t", OutboxKind::Message, json!({}), Taint::default(), None)
+            .unwrap();
 
         // Both ids share the timestamp prefix of the second they were made in.
         let err = store.item("2").unwrap_err();
@@ -393,6 +496,7 @@ mod tests {
         let item = store
             .stage(
                 "web__fetch",
+                OutboxKind::Message,
                 json!({"url": "https://a"}),
                 Taint::default(),
                 None,
@@ -409,11 +513,98 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The rule that protects every future run's system prompt. A publish's
+    /// edit diff is a changed filesystem path, and a `writing` reflection
+    /// becomes a rule in the cached prefix — the same class of mistake as
+    /// mining `"Blocked by a hook:"` as if a human had said it. Fails on the
+    /// old behaviour, which mined any sent-and-edited item.
+    #[test]
+    fn the_writing_miner_takes_edited_messages_and_never_publishes() {
+        let root = scratch("mineable");
+        let store = OutboxStore::open(&root).unwrap();
+
+        let cases = [
+            (OutboxKind::Message, "sent", true, true),
+            // A publish, edited and sent — the one the old filter accepted.
+            (OutboxKind::Publish, "sent", true, false),
+            // Unedited is not a correction; rejected never went out.
+            (OutboxKind::Message, "sent", false, false),
+            (OutboxKind::Message, "rejected", true, false),
+            (OutboxKind::Message, "pending", true, false),
+        ];
+        for (kind, status, edited, expected) in cases {
+            let mut item = store
+                .stage(
+                    "x__send",
+                    kind,
+                    json!({"path": "/tmp/a"}),
+                    Taint::default(),
+                    None,
+                )
+                .unwrap();
+            item.status = status.into();
+            if edited {
+                item.args = json!({"path": "/tmp/b"});
+            }
+            assert_eq!(
+                item.mineable_as_writing(),
+                expected,
+                "{kind:?} / {status} / edited={edited}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The kind is config's to declare, and anything unnamed stays a message —
+    /// which keeps the arguments reviewable rather than silently hiding them.
+    #[test]
+    fn a_routes_kind_comes_from_config_and_defaults_to_message() {
+        let root = scratch("kindof");
+        let store = OutboxStore::open(&root).unwrap();
+        let route = OutboxRoute::new(
+            store,
+            [
+                "mail__send".to_string(),
+                "factory__bundle_publish".to_string(),
+            ],
+            ["factory__bundle_publish".to_string()],
+        );
+        assert_eq!(
+            route.kind_of("factory__bundle_publish"),
+            OutboxKind::Publish
+        );
+        assert_eq!(route.kind_of("mail__send"), OutboxKind::Message);
+        assert_eq!(route.kind_of("never__heard_of_it"), OutboxKind::Message);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Items written before the field existed must load as what they in fact
+    /// were, or an upgrade would reclassify every staged email as unknown.
+    #[test]
+    fn an_item_recorded_before_kinds_existed_loads_as_a_message() {
+        let item: OutboxItem = serde_json::from_value(json!({
+            "id": "20260101-000000-abc",
+            "status": "sent",
+            "tool": "mail__send",
+            "args_before": {"body": "a"},
+            "args": {"body": "b"},
+            "summary": "mail__send",
+            "created_at": "2026-01-01T00:00:00Z",
+        }))
+        .unwrap();
+        assert_eq!(item.kind, OutboxKind::Message);
+        assert!(item.mineable_as_writing());
+    }
+
     #[test]
     fn resolution_rewrites_in_place_and_only_pending_resolves() {
         let root = scratch("resolve");
         let store = OutboxStore::open(&root).unwrap();
-        let item = store.stage("t", json!({}), Taint::default(), None).unwrap();
+        let item = store
+            .stage("t", OutboxKind::Message, json!({}), Taint::default(), None)
+            .unwrap();
 
         let sent = store.resolve(&item.id, "sent", None).unwrap();
         assert_eq!(sent.status, "sent");
@@ -436,7 +627,9 @@ mod tests {
     fn a_failed_release_records_the_error_and_stays_pending() {
         let root = scratch("error");
         let store = OutboxStore::open(&root).unwrap();
-        let item = store.stage("t", json!({}), Taint::default(), None).unwrap();
+        let item = store
+            .stage("t", OutboxKind::Message, json!({}), Taint::default(), None)
+            .unwrap();
 
         store.record_error(&item.id, "server unreachable").unwrap();
         let loaded = store.item(&item.id).unwrap();

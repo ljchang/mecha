@@ -1834,10 +1834,13 @@ impl Agent {
             // approval, later and out of band.
             if routed {
                 let route = cx.outbox.as_ref().expect("routed implies a route");
-                match route
-                    .store
-                    .stage(name, input.clone(), *taint, route.session_id())
-                {
+                match route.store.stage(
+                    name,
+                    route.kind_of(name),
+                    input.clone(),
+                    *taint,
+                    route.session_id(),
+                ) {
                     Ok(item) => {
                         let content = format!(
                             "Drafted, not sent: this call is staged in the outbox as \
@@ -4425,6 +4428,7 @@ mod tests {
         let route = Arc::new(crate::outbox::OutboxRoute::new(
             store,
             ["send_data".to_string()],
+            [],
         ));
         (route, root)
     }
