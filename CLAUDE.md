@@ -36,6 +36,7 @@ trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
 learning.rs  the reflection/rule store behind reflect, learn, validate
 distill.rs   session → episode, staged to the knowledge graph over MCP
 session.rs   append-only JSONL transcripts
+work.rs      ~/.mecha/work/<producer>/ — a run's workspace, and its retention
 batch.rs     bounded-concurrency fan-out over many prompts
 eval.rs      case types, graders, the LLM judge
 config.rs    layered TOML config
@@ -122,6 +123,20 @@ Two things are enforced structurally rather than by prompting:
 **The path jail.** Every model-supplied path goes through `ToolCtx::resolve`,
 which canonicalizes and proves containment in the workspace. Never call `fs::*`
 on a raw path from tool input.
+
+**And a jail has to be rooted somewhere harmless, which for a long time it was
+not.** `setup` refuses any workspace that *contains* the mecha home
+(`work::ensure_outside_mecha_home`), because `$HOME` contains `~/.mecha/` — the
+mail OAuth tokens, every session transcript, the learning store. So `mecha chat`
+started from a home directory was jailed over all of it, and an unattended
+trigger with no explicit workspace was worse: it fell through to
+`current_dir()`, and the shipped systemd unit sets `WorkingDirectory=%h`. The
+shipped `morning` trigger escaped only by accident of its `mail__*` allowlist.
+Note the direction of the check — a workspace *inside* the mecha home is fine and
+is now the default (see "The work directory"); what is refused is one the mecha
+home sits under. The interlock remained a backstop throughout, but a backstop is
+not a boundary, and a jail rooted where the secrets live is the
+silently-degrading-sandbox pattern.
 
 **The trifecta interlock.** Taint is a property of the **conversation**, not of
 one run — it lives on `agent::Conversation` alongside the messages, and the
@@ -389,6 +404,78 @@ knowledge of the outbox to be covered by it. Decisions that carry it:
   temp-sibling-and-rename, advisory flock (never held across `$EDITOR`;
   staging takes no lock at all, so the agent never blocks on a review).
   `send` holds the lock across execution so two sends cannot double-fire.
+
+**Staging is sink-agnostic; reviewing is not.** The outbox generalised to a
+second kind of outbound action — publishing a bundle to the public surface —
+with no change to `outbox.rs` at all, which was the design goal. Every one of
+its *review* affordances broke, because all three assume the staged thing is
+prose someone wrote. So an item carries an `OutboxKind` (`message` | `publish`),
+set at staging from `[outbox] publish_tools` and defaulted on load so items
+written before the field load as what they were:
+
+- **`show` on a publish leads with the rendered page**, not the arguments — which
+  are a path and a visibility flag. It names the local bundle directory, the file
+  to open (`index.html`), and warns when the path is gone because retention
+  already swept it.
+- **`edit` on a publish is refused**, with a message naming the real action:
+  edit the source, re-render, publish again — which stages a new item. Rewriting
+  a directory path is not editing the draft.
+- **The writing miner excludes publishes** (`OutboxItem::mineable_as_writing`,
+  which is where the rule lives so it can be tested). This is the load-bearing
+  one: a `writing` reflection becomes a rule in every future run's cached
+  prefix, so mining `diff(args_before, args)` of a changed path would teach
+  voice rules from bookkeeping. Exactly the `"Blocked by a hook:"` mistake in a
+  new costume — machine state read as a human correction — and it has a test
+  named on it for the same reason that one does.
+
+The kind is **config's to declare, never the tool's**: the loop must not learn
+what a publish is, and a third-party MCP server cannot be trusted to say.
+Anything unnamed is a `message`, which is the conservative default — it keeps
+the arguments visible and the item mineable. A name in `publish_tools` that is
+not in `tools` warns on every start, like a routed name that matches nothing,
+because it means the tool executes unstaged while config reads as though it were
+under review.
+
+## The work directory
+
+`~/.mecha/work/<producer>/` (`work.rs`, `mecha work`) is where a run's generated
+output goes, and it is **also the run's workspace**. Two directories that mean
+opposite things:
+
+```
+~/.mecha/work/<producer>/       generated · mutable · disposable · cleanable
+~/.mecha/bundles/<id>/<ver>/    published · immutable · versioned · never deleted
+```
+
+A *producer* is a trigger's name, or `chat`, or a session id. One change closes
+four things, which is the sign the shape is right: it roots the jail somewhere
+holding nothing sensitive (see the Security model), gives an unattended run a
+durable artifact, makes yesterday's output an ordinary file in today's run
+because the directory is **stable across runs of the same producer**, and gives
+`notify` something better to be than
+`mkdir -p ~/.mecha/briefings && cat > …` — a shell redirect into a directory it
+created on the way past, outside every path jail, so nothing could read it back.
+
+Three decisions:
+
+- **`mecha trigger add` writes the workspace down** rather than leaving it
+  implicit, and the runner resolves the same default when the field is unset — so
+  a trigger authored before this is fixed by upgrading rather than by remembering
+  to edit it. `trigger show` prints the resolved default too: "where is this
+  jailed" must not be answered by an omitted line.
+- **Retention is a policy, not an intention.** `mecha work clean` keeps the last
+  `[work] keep` entries per producer (default 10) and says exactly what it
+  removed; the nightly runs it. Anything without a policy becomes a pile nobody
+  opens.
+- **It never removes anything a published bundle names as a source**, because
+  "regenerate last week's report" must not silently lose its input. The contract
+  is one field of data rather than a shared type — a mirrored version directory
+  may carry a `bundle.json` with a `"sources": [...]` array — and a mirror that
+  does not exist protects nothing, which is correct rather than a stub.
+
+Entries are counted, not files: a rendered bundle is a directory. The producer
+directory itself is never removed — an empty one is a directory, not an absence,
+and deleting it would just make tomorrow's run recreate it.
 
 ## Triggers
 
