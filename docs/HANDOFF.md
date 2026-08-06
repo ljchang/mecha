@@ -35,12 +35,12 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **478 tests**, no warnings — verified 2026-08-06:
+Expect **484 tests**, no warnings — verified 2026-08-06:
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 325 |
-| `mecha-cli` unit | 73 |
+| `mecha-core` unit | 329 |
+| `mecha-cli` unit | 75 |
 | `mecha-mail` unit | 66 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
 | doctest | 1 |
@@ -74,7 +74,7 @@ A working agent harness, used and measured rather than just compiled.
 | Sandbox | `shell` and MCP servers confined via bubblewrap or docker; no network by default |
 | Budgets | `max_turns`, `max_output_tokens`, `max_cost_usd`, cost accounting |
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
-| Context | Two-pass compaction: thin tool results, then summarise. Taint preserved |
+| Context | Two-pass compaction: thin tool results, then summarise. Taint preserved, and a tool's own state (the todo list) crosses verbatim |
 | Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep |
 | TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
@@ -127,13 +127,14 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
   Logs land in
   `~/.mecha/learning/logs/<date>.log`; pending proposals wait in
   `mecha proposals`. **Confirmed enabled 2026-08-05.**
-- **Triggers are built but nothing schedules them here.** `mecha trigger daemon`
-  is not installed — `scripts/mecha-triggers.service` is written and untried
-  (confirmed absent from `systemctl --user` 2026-08-05). Installing it is three
-  lines, and until then triggers fire only when someone runs
-  `mecha trigger tick` or `run` by hand. **The blocker is gone**: the `$HOME`
-  jail default that made installing it hazardous was fixed 2026-08-06, and
-  `morning.toml` now carries `workspace = ~/.mecha/work/morning` explicitly.
+- **The trigger daemon is installed and running.** `mecha-triggers.service`
+  (systemd user, linger on) was enabled 2026-08-06 and fired the morning
+  briefing for that day's 07:00 slot on the first tick. The first real run found
+  the one bug two days of testing had not: `notify` exits 127 under systemd,
+  whose children get a minimal `PATH` — fixed in the unit, and a failed notify
+  now lands in the ledger rather than only on stderr, because the run is `ok`
+  either way. `morning.toml` carries
+  `workspace = ~/.mecha/work/morning` explicitly.
   Its `notify` was rewritten the same day to
   `d=$(date +%F); cat > $d.md && factory-publish render …` — relative paths,
   because `notify` now runs in the run's workspace like a hook does. Fired by
@@ -148,7 +149,9 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
   calls it. This bit twice on 2026-08-06: once when `ruminate.sh` gained a
   `work clean` step the installed binary did not have, 41 minutes before the
   nightly, and once when a `factory-publish` fix sat unbuilt in the repo for
-  nine hours. **Both verified installed 2026-08-06 12:16.**
+  nine hours, and a third time the same evening when the daemon's own `notify`
+  could not see `~/.cargo/bin` at all. **Both verified installed 2026-08-06
+  13:35**, after the trigger and compaction work.
 - The learning store (`~/.mecha/learning`) holds **zero live rules** — the one
   early rule was reverted with its poisoned reflection — so everything from here
   accumulates from real usage through the gate.
@@ -254,10 +257,6 @@ Ordered by value per unit of effort, not by size.
   (`mecha-cli/src/commands/outbox.rs`), as do `show`/`edit`/`reject`. An
   overnight triage trigger that stages nine replies is then nine invocations.
   Wants grouping by kind and bulk approve/reject.
-- **Re-inject the todo list at compaction time.** `compact.rs` has no knowledge
-  of the todo tool, so the model sees its list only through the echo in the last
-  `todo` result — a compaction that summarises past that echo loses it. The list
-  is exactly the "how far you got" state the summariser is measured to drop.
 - **`calendar_freebusy` on the unified mail surface.** Nothing in
   `mecha-mail/src` implements it, and every scheduling question needs it.
 - **Re-baseline `ambiguity` and `long-horizon` at k=5.** No scorecard in
