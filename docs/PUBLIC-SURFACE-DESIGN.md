@@ -564,15 +564,44 @@ values are the user's private policy and live with the evidence, not here.) That
 thing to optimise, and it is why the typed request matters: a policy answer
 can act on a typed field and cannot act on free prose.
 
-This needs a component that does not exist. **`ask_user` is absent from
-unattended runs by construction** — it is only ever registered by a front-end
-that owns a human — so a trigger cannot ask anything today; it can only stage.
-So: a **question queue**, the inbound twin of the outbox. The outbox stages
-what mecha would say to the world; the question queue stages what mecha needs
-to ask the user. Same discipline — durable store, batched review, a ledger
-that answers "why didn't that happen" — and a hard rule that a question must
-name the class it unblocks and how many pending items it would resolve. A
-question that unblocks one item is a draft, not a question.
+This needs somewhere to put a question. **`ask_user` is absent from unattended
+runs by construction** — it is only ever registered by a front-end that owns a
+human — so a trigger cannot ask anything today; it can only stage.
+
+**It should not be a third queue, and it should not be called an inbox.**
+
+*Not an inbox*, for two reasons. In a system whose primary job is triaging
+mail, `inbox` is the most overloaded word available — `mecha inbox` would be
+ambiguous with the user's actual inbox, in exactly the context where the
+ambiguity costs the most. And it imports the connotation the project exists to
+fight: an unbounded pile you dread opening. This queue's *defining* property is
+that it is **capped**. The symmetry with `outbox` is also weaker than it looks:
+an outbox item is complete and needs approval; a question is incomplete and
+needs an answer. Different verbs.
+
+*Not a third queue*, because the right home already exists. **`mecha
+proposals`** is the learning system's gate — mecha proposes a rule, the user
+accepts or declines, and future behaviour changes. A policy question is the
+same shape and the same review cadence, and §3.1 already says autonomy
+graduation should go "through a gate the user accepts, exactly as learned rules
+are". If that is true it should go through the *actual* gate rather than a
+parallel one.
+
+So the surface is **two queues, and they split on a clean line**:
+
+| Queue | Holds | Verb |
+|---|---|---|
+| **`mecha outbox`** | things that would leave the machine | approve / edit / reject |
+| **`mecha proposals`** | things that would change how mecha behaves | accept / decline |
+
+`proposals` gains kinds alongside the existing `rule` and `retirement`:
+**`policy`** (a question whose answer governs a class) and **`autonomy`**
+(graduate a category to auto-send). Two surfaces is learnable as a morning
+routine; three is one too many.
+
+The hard rule stands wherever it lives: **a question must name the class it
+unblocks and how many pending items it would resolve.** A question that unblocks
+one item is a draft, not a question.
 
 **Autonomy is earned by measurement, per category, and revoked by evidence.**
 This is the project's existing philosophy applied to a new subject: *acceptance
