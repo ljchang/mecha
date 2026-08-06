@@ -35,11 +35,11 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **489 tests**, no warnings — verified 2026-08-06:
+Expect **491 tests**, no warnings — verified 2026-08-06:
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 329 |
+| `mecha-core` unit | 331 |
 | `mecha-cli` unit | 80 |
 | `mecha-mail` unit | 66 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
@@ -80,7 +80,7 @@ A working agent harness, used and measured rather than just compiled.
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
-| Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/**review**/send/reject, several ids or `--all` narrowed by `--kind`/`--via`; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner |
+| Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/**review**/send/reject, several ids or `--all` narrowed by `--kind`/`--via`; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner — and the jail they were drafted under, so a release resolves paths against the agent's workspace rather than the reviewer's |
 | Workspaces | `~/.mecha/work/<producer>/` is a run's workspace and its output directory; `mecha work list/path/clean`, retention nightly. A workspace containing the mecha home is refused |
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed |
 | Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, **the daemon is installed and running here**; a failed `notify` is recorded on the run |
@@ -203,13 +203,18 @@ themselves across runs.
 ## What to do next
 
 **Sequenced**, and the ordering changed on 2026-08-06 because the factory
-stopped being hypothetical. It is deployed and reachable; what it is *not* is
-reachable by an agent.
+stopped being hypothetical. It is deployed, reachable, and — since the wiring
+landed the same day — reachable *by an agent*. The outbound half is done; the
+inbound half is what is left.
 
 So the short path, in order:
 
-1. **Wire the factory into this machine's config** — two blocks, and until then
-   only the CLI can publish.
+1. **The drain client at home.** The server half exists (`GET /v1/queue` with a
+   scoped key, `~/.mecha/factory/drain.key` already minted), and nothing on
+   this side speaks it: `mecha-factory-publish`'s `remote.rs` knows only
+   bundles and health, and there is no `drain` subcommand. It is a CLI and not
+   a tool on purpose — the common case is "nothing new", and it must cost zero
+   tokens.
 2. **The quarantine layers (§8)**, which are what stands between a drained
    stranger's record and a triage run. They are the mecha-side half of factory
    step 7, and nothing about the inbound path is safe to switch on without
@@ -355,13 +360,21 @@ behaviour came from the reflector model declining. If the design was always
   §14–15; the deploy procedure and its traps are that repository's
   `docs/DEPLOY.md`. Do not re-derive either here.
 
-  **Four things open, in the order they bite:**
+  **Wired into this machine 2026-08-06**, and verified by publishing through
+  it: an agent rendered a page, `bundle_publish` staged instead of executing,
+  `outbox show` led with the rendered file, `edit` was refused, and `send`
+  pushed it to the droplet — live at
+  `https://ljchang.art.mecha-factory.ai/b/factory-smoke/`. Two things had to
+  change for that to work, both in the "Traps" record: an unconfined MCP server
+  now starts in the run's workspace, and a staged item records the jail it was
+  drafted under. `sandbox = true` is deliberately **not** set here and the
+  config says why at length — bwrap does not work on this box, docker would
+  need a custom image plus global writable mounts, and neither confines the
+  notebook render subprocess, which is the one path that executes code we did
+  not write.
 
-  - **The factory is not wired into this machine's mecha.** No `[[mcp]]` block,
-    no `[outbox] publish_tools`, so no agent here can publish — only the CLI
-    can. Two config blocks, in that repository's README. This file previously
-    claimed the wiring existed; that was true of a scratch config during one
-    session and never of this machine.
+  **Three things open, in the order they bite:**
+
   - **No mailer.** Verification links go to the journal rather than to anyone.
     It is the gap before a stranger can use a form at all, and §15.5 is the
     shape it has to take.

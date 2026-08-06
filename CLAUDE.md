@@ -259,6 +259,15 @@ model asked for out loud. Two rules:
   warning — the same rule as `shell`, for the same reason. Per-server `network`
   overrides the global switch, because otherwise you would have to give `shell`
   the network to let one server reach its own API.
+- **A server starts in the run's workspace, confined or not.** The confined
+  branch always did — the workspace is its only writable mount and `wrap_argv`
+  `--chdir`s into it — while the unconfined branch inherited *mecha's* working
+  directory, so a server resolving a relative path resolved it against wherever
+  the user launched mecha. That is not a containment hole (an unconfined server
+  can reach everything regardless); it is the two branches disagreeing about
+  where the model's paths point, which breaks any server that takes one.
+  `mecha-factory-publish` documents `--root` as defaulting to the working
+  directory on exactly this assumption.
 
 On Ubuntu 23.10+, `bwrap` fails even when installed and
 `kernel.unprivileged_userns_clone=1`, because AppArmor gained a separate switch:
@@ -400,6 +409,19 @@ knowledge of the outbox to be covered by it. Decisions that carry it:
 - **A routed name that matches no registered tool warns on every start** — a
   typo means the real tool executes unrouted, which is the silently-degrading
   sandbox shape again.
+- **An item records the jail it was drafted under**, and the release rebuilds
+  its tool surface rooted there. A staged call is a *deferred* tool call, and a
+  tool call means nothing apart from its workspace: the drafting run said
+  `{"bundle": "site"}` inside `~/.mecha/work/<producer>/`, and `outbox send`
+  runs in another process, hours later, from wherever the reviewer is standing.
+  An absolute path fails loudly there; a **relative one is worse**, because a
+  same-named directory beside the reviewer publishes the wrong bytes with no
+  error anywhere. It is also the stricter jail of the two — the agent's, not
+  the human's — which is the one the interlock reasoned about. A batch builds
+  one surface per distinct workspace, lazily, so the ordinary
+  nine-replies-from-one-run case still starts the MCP servers exactly once.
+  Defaulted on load, like `kind`: an item staged before the field releases
+  against the reviewer's workspace, which is what it always did.
 - The store follows the learning store's rules: one pretty JSON per item,
   temp-sibling-and-rename, advisory flock (never held across `$EDITOR`;
   staging takes no lock at all, so the agent never blocks on a review).

@@ -562,6 +562,33 @@ browser load the notebook gave a precise list of what it fetched — and omitted
 `pyodide.asm.mjs`, which is loaded by dynamic `import()` and does not surface as
 a request event. **An observed list is a lower bound.**
 
+**A deferred call carries its arguments and forgot its jail.** Wiring the
+factory into this machine (2026-08-06) turned up two bugs that only exist where
+a *path* crosses between processes, and neither had bitten because no routed
+tool had ever taken one — mail and calendar arguments are text.
+
+First: an unconfined MCP server inherited mecha's working directory rather than
+the run's workspace, because only the confined branch of `build_command` set
+one. Every server that resolves a relative path — the factory publisher roots
+its own `--root` there — was resolving against wherever mecha was launched.
+Confinement was never the point; the two branches simply disagreed about where
+the model's paths pointed.
+
+Second, and the one worth the entry: `mecha outbox send` runs in a *different
+process from a different directory* than the run that staged the draft. The
+first release failed loudly, because the agent had written an absolute path and
+the reviewer's jail rejected it. The second attempt is the one that mattered —
+the agent wrote `{"bundle": "site"}`, and a relative path resolves silently
+against whatever the reviewer is standing in. Had a `site/` directory existed
+beside them, that release would have published the wrong bytes and reported
+success. The fix is to record the drafting workspace on the item and rebuild
+the release's tool surface rooted there, which is also the stricter of the two
+jails. **A staged call is a deferred tool call, and a tool call means nothing
+apart from the workspace it was made in — so the workspace is part of the
+draft, not part of the reviewer.** The loud failure was luck: an absolute path
+is the case that announces itself, and the design has to hold for the quiet
+one.
+
 ### The TUI
 
 Written before Shift+Tab phase gating and the `/triggers` modal, both of which

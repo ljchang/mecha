@@ -19,6 +19,7 @@
 use anyhow::{bail, Context, Result};
 use mecha_core::outbox::{OutboxItem, OutboxKind, OutboxStore};
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 
 use crate::{setup, GlobalOpts};
 
@@ -457,16 +458,32 @@ fn edit(store: &OutboxStore, id: &str) -> Result<()> {
 /// all: this construction starts every configured MCP server, so nine
 /// invocations of `send` were nine startups of the mail server to deliver nine
 /// replies that were already written.
+///
+/// One per *workspace*, though (see [`Surfaces`]), because a staged call's
+/// paths are relative to the jail it was drafted under and not to wherever the
+/// reviewer is standing.
 struct Surface {
     tools: setup::PreparedTools,
     ctx: mecha_core::tool::ToolCtx,
 }
 
 impl Surface {
-    async fn build(global: &GlobalOpts) -> Result<Surface> {
+    async fn build(global: &GlobalOpts, workspace: Option<&Path>) -> Result<Surface> {
         // The same construction a run uses, minus the provider: releasing a
         // draft needs no model.
-        let tools = setup::prepare_tools(global, false).await?;
+        //
+        // `workspace` is the item's, so the release is jailed exactly as the
+        // drafting run was. `None` — an item staged before the field existed —
+        // falls through to the reviewer's own workspace, which is the old
+        // behaviour and the only thing there is to fall back to.
+        let global = match workspace {
+            Some(dir) => GlobalOpts {
+                workspace: Some(dir.to_path_buf()),
+                ..global.clone()
+            },
+            None => global.clone(),
+        };
+        let tools = setup::prepare_tools(&global, false).await?;
         let ctx = mecha_core::tool::ToolCtx {
             workspace: tools.workspace.clone(),
             shell_timeout: std::time::Duration::from_secs(tools.config.tools.shell_timeout_secs),
@@ -509,6 +526,30 @@ impl Surface {
         }
         store.resolve(&item.id, "sent", None)?;
         Ok(output.content.trim().to_string())
+    }
+}
+
+/// The surfaces a batch needs, one per distinct workspace, built on first use.
+///
+/// A batch almost always shares one workspace — an overnight triage staging
+/// nine replies drafted them in one run — so this is one construction and one
+/// set of MCP startups, exactly as before. It stops being one only when the
+/// batch genuinely spans jails, and then two surfaces is the correct cost of
+/// releasing each call under the root it was written against.
+#[derive(Default)]
+struct Surfaces {
+    by_workspace: Vec<(Option<PathBuf>, Surface)>,
+}
+
+impl Surfaces {
+    async fn for_item(&mut self, global: &GlobalOpts, item: &OutboxItem) -> Result<&Surface> {
+        let key = item.workspace.clone();
+        if let Some(i) = self.by_workspace.iter().position(|(k, _)| *k == key) {
+            return Ok(&self.by_workspace[i].1);
+        }
+        let surface = Surface::build(global, key.as_deref()).await?;
+        self.by_workspace.push((key, surface));
+        Ok(&self.by_workspace.last().unwrap().1)
     }
 }
 
@@ -586,10 +627,14 @@ async fn send(
         }
     }
 
-    let surface = Surface::build(global).await?;
+    let mut surfaces = Surfaces::default();
     let (mut sent, mut failed) = (0usize, 0usize);
     for item in &items {
-        match surface.release(store, item).await {
+        let release = match surfaces.for_item(global, item).await {
+            Ok(surface) => surface.release(store, item).await,
+            Err(e) => Err(e),
+        };
+        match release {
             Ok(output) => {
                 sent += 1;
                 println!("sent {} via `{}`", item.id, item.tool);
@@ -644,7 +689,7 @@ async fn review(global: &GlobalOpts, store: &OutboxStore, selection: &Selection)
 
     // Built on the first release rather than up front, so a review that ends in
     // nothing but rejections never starts an MCP server.
-    let mut surface: Option<Surface> = None;
+    let mut surfaces = Surfaces::default();
     let (mut sent, mut rejected, mut kept) = (0usize, 0usize, 0usize);
 
     for (i, item) in pending.iter().enumerate() {
@@ -672,11 +717,9 @@ async fn review(global: &GlobalOpts, store: &OutboxStore, selection: &Selection)
             }
             match line.trim().to_ascii_lowercase().as_str() {
                 "s" | "send" => {
-                    if surface.is_none() {
-                        surface = Some(Surface::build(global).await?);
-                    }
+                    let surface = surfaces.for_item(global, &current).await?;
                     let _lock = store.lock()?;
-                    match surface.as_ref().unwrap().release(store, &current).await {
+                    match surface.release(store, &current).await {
                         Ok(output) => {
                             sent += 1;
                             println!("sent via `{}`", current.tool);
@@ -761,6 +804,7 @@ mod tests {
             args: json!({"to": "a@example.com"}),
             summary: format!("{tool} to a@example.com"),
             session_id: None,
+            workspace: None,
             taint: Default::default(),
             created_at: "2026-08-06T07:00:00Z".into(),
             resolved_at: None,
