@@ -1135,6 +1135,33 @@ Cross-Origin-Embedder-Policy: require-corp
 Cross-Origin-Resource-Policy: same-origin
 ```
 
+> **Verified in a browser 2026-08-06**, which is what §12 step 4 asks for, and
+> the result is that this policy stands — with one addition and one correction
+> to how it was reasoned about.
+>
+> Served under exactly the policy above, a real `marimo export html-wasm`
+> produced **six violations and did not boot**: four blocked inline scripts, a
+> blocked `data:` font, and a blocked `eval`. Then:
+>
+> - **`font-src 'self' data:`** — marimo embeds a woff2 inline. A font that is
+>   already in the page is not a fetch, so this grants no reach it did not have.
+> - **The four inline scripts are extracted into files**, not hashed. Both work;
+>   hashes would make the policy **per bundle**, and a CSP that varies per
+>   artifact is one nobody can state, test, or check by looking. Extraction
+>   keeps `script-src 'self'` exact for every compute bundle.
+> - **`unsafe-eval` is *not* needed, and the rule below survives.** The blocked
+>   `eval` is zod's memoized feature probe —
+>   `try { return Function(""), true } catch { return false }` — which detects
+>   that dynamic evaluation is unavailable and takes a slower path. The browser
+>   reports a violation; the code degrades gracefully. Worth recording precisely,
+>   because "a CSP violation appeared" and "the page is broken" look identical in
+>   a console and are not the same thing.
+>
+> With those two changes the page reports **one** violation (that probe), **zero
+> off-origin loads**, and fails at exactly one remaining place: Pyodide, which
+> `connect-src 'self'` correctly refuses to let it fetch. The harness is
+> `factory-publish serve` plus `scripts/csp-probe.py` in `mecha-factory`.
+
 Notes on the choices, because each cost something to decide:
 
 - **`wasm-unsafe-eval`, never `unsafe-eval`.** The narrow directive permits
