@@ -66,13 +66,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // whose released arguments differ from the drafted ones is the user
     // editing mecha's writing, recorded structurally by `mecha outbox edit`.
     // Open non-creating: reflect must not conjure an outbox as a side effect.
+    //
+    // **Messages only, and this is a security filter rather than a tidiness
+    // one.** A publish's arguments are a path and a visibility flag, so its
+    // diff is a changed directory name — and a `writing`-domain reflection
+    // rides in every future run's system prompt inside the cached prefix. That
+    // is the longest-half-life path anything in this project has, and teaching
+    // it voice rules from filesystem noise is the same mistake as learning from
+    // `"Blocked by a hook:"`: machine bookkeeping read as a human correction.
+    // The filter is structural, before any prompt is built.
     let outbox = mecha_core::outbox::OutboxStore::open_existing_default();
     let outbox_mined = store.mined_outbox()?;
     let outbox_todo: Vec<_> = match &outbox {
         Some(ob) => ob
             .items()?
             .into_iter()
-            .filter(|i| i.status == "sent" && i.edited() && !outbox_mined.contains(&i.id))
+            .filter(|i| i.mineable_as_writing() && !outbox_mined.contains(&i.id))
             .collect(),
         None => Vec::new(),
     };

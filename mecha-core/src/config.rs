@@ -56,6 +56,16 @@ pub struct OutboxConfig {
     /// Where items are staged. Defaults to `~/.mecha/outbox`
     /// (or `$MECHA_OUTBOX_DIR`).
     pub dir: Option<PathBuf>,
+    /// Which of the routed names are *publications* rather than messages
+    /// (`factory__bundle_publish`, `factory__bundle_alias`). They stage
+    /// identically; they are **reviewed** differently — the reviewable object
+    /// is the rendered page, `edit` is refused, and the writing-reflection
+    /// miner skips them so a changed directory path never becomes a voice
+    /// rule. See [`crate::outbox::OutboxKind`].
+    ///
+    /// Config's to declare, not the tool's: the loop must not learn what a
+    /// publish is, and a third-party MCP server cannot be trusted to say.
+    pub publish_tools: Vec<String>,
 }
 
 /// How much of a producer's generated output survives a `mecha work clean`.
@@ -694,6 +704,7 @@ struct WorkLayer {
 struct OutboxLayer {
     tools: Option<Vec<String>>,
     dir: Option<PathBuf>,
+    publish_tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -903,6 +914,9 @@ impl ConfigLayer {
             }
             if x.dir.is_some() {
                 t.dir = x.dir;
+            }
+            if let Some(v) = x.publish_tools {
+                t.publish_tools = v;
             }
         }
         if let Some(x) = self.work {
