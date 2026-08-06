@@ -1822,9 +1822,15 @@ this component. Build the factory because artifacts have nowhere to live.
    end**, with one request type. *Depends on the mecha-side quarantine layers
    and on batch review in the outbox — the latter shipped 2026-08-06.*
 
-   **6.5 now comes first: the tenant column** (§14.1). It is a day's work, it is
-   the whole collision story even for a single user with two agents, and every
-   row the steps below add is a row that would otherwise need migrating.
+   **6.5 comes first: the tenant column** (§14.1). *Built 2026-08-06.* Every
+   row belongs to a user, each user's artifacts are served from
+   `<handle>.<origin>`, handles are never reissued, and withhold/suspend/quota
+   exist. Two leaks were closed on the way: `GET /v1/types` was public, which
+   multi-user means "everybody's forms", and `/v1/health` reported the box's
+   totals to any key. One gap was caught before it shipped: ACME was ordering
+   only the base names, so every user's hostname would have failed the
+   handshake in a browser — it now orders one per active user, and the
+   restart-per-new-user limitation is written down rather than discovered.
 8. **The booking page**, and then **group availability seeded by the user's
    own**. *Depends on `calendar_freebusy` and the availability engine.*
 
