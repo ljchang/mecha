@@ -87,6 +87,29 @@ ledger, a CLI where `tick` is the primitive and `daemon` a loop over it, and a
 The repository went public under the MIT license and was tagged **v0.1.0** on
 2026-08-05, with CI, a documentation site, and a changelog alongside it.
 
+**2026-08-06 — the work directory, and closing the jail default.** The
+prerequisites the public-surface design exposed, built ahead of `mecha-factory`
+itself. `~/.mecha/work/<producer>/` became a run's workspace (`work.rs`,
+`mecha work list/path/clean`), which closed four open items with one change: it
+roots the path jail somewhere holding nothing sensitive, gives an unattended run
+a durable artifact, makes yesterday's output an ordinary file in today's run,
+and replaces the morning trigger's `mkdir -p && cat >` improvisation. `setup`
+now refuses any workspace that contains the mecha home — the bug was live for
+`mecha chat` from `$HOME`, not just for triggers, and the shipped `morning`
+trigger was safe only by accident of its tool allowlist. Retention shipped with
+it (keep the last `[work] keep` = 10 per producer, run nightly, protected
+sources named rather than skipped silently), settling open decision §13.3.
+
+The outbox gained `OutboxKind`, which is the half of §2.2b that had to land
+*before* anything stages a publish rather than after: `show` leads with the
+rendered page, `edit` is refused with the real action named, and the
+writing-reflection miner excludes publishes. The last one is why the ordering
+mattered — a `writing` reflection becomes a rule in every future run's cached
+prefix, so mining a changed directory path would have taught voice rules from
+bookkeeping, and the damage would have been retroactive by the time anyone
+noticed. Same class of mistake as learning from `"Blocked by a hook:"`, and it
+carries a test named on it for the same reason.
+
 ---
 
 ## The compaction measurement record
