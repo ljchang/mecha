@@ -460,6 +460,15 @@ pub struct RunRecord {
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Why delivery failed, when the run itself did not.
+    ///
+    /// Separate from `error` because they mean different things and want
+    /// different reactions: `error` is a run that produced no answer, this is
+    /// an answer that was produced and did not get where it was going. Recorded
+    /// for the same reason `stop_cause` is — a briefing that has quietly not
+    /// rendered for a week looks exactly like one that works.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_error: Option<String>,
     /// `mecha trigger run <name>`, not the clock.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub manual: bool,
@@ -482,6 +491,7 @@ impl RunRecord {
             stop_cause: None,
             summary: String::new(),
             error: None,
+            notify_error: None,
             manual,
         }
     }
