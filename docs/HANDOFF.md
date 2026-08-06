@@ -394,10 +394,20 @@ behaviour came from the reflector model declining. If the design was always
   layout is two levels exactly — a `v/` level would silently turn retention into
   something that deletes a published report's input.
 
-  Next is step 3, the vendoring gate. Note what is *not* yet true: `visibility`
-  is recorded and unenforced (the tailnet is the boundary), and the publish
-  refuses script in a `static` bundle but does not yet name every external
-  reference. Steps 3–5 still need no VPS. **Two purposes:** publish what mecha makes (reports, dashboards, a
+  **Step 3 is done too** (72 tests): the external-reference gate. A publish
+  *fails* — never warns — on anything the page would fetch off its own origin,
+  with every finding named by file, line, URL and reason, and resolved back to
+  the line in the markdown source rather than in generated HTML. A `<a href>` is
+  never a finding; `<img src>`, `<link href>`, `@import`, `url()` and anything
+  in a script are. `factory-publish check <dir>` runs it alone, and the
+  factory's CI runs it instead of the grep it shipped with.
+
+  Next is step 4, the `notebook` template, which is also where the *fetching*
+  half of vendoring lands — from a pinned allowlist, since marimo's six CDN
+  references are known and version-pinned. Note what is still *not* true:
+  `visibility` is recorded and unenforced (the tailnet is the boundary), and
+  marimo's `data:` script URLs are detected but not yet rewritten. Steps 4–5
+  still need no VPS. **Two purposes:** publish what mecha makes (reports, dashboards, a
   morning briefing, marimo notebooks) as durable versioned permissioned URLs,
   and build typed interfaces back into mecha — a form being the default
   rendering rather than the point, since one manifest also emits the WebMCP
