@@ -9,7 +9,7 @@
 //! It also gives the *user* something to look at during a long run, which is
 //! most of why it's worth having.
 
-use super::{Tool, ToolCtx, ToolOutput};
+use super::{CarriedState, Tool, ToolCtx, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -118,6 +118,33 @@ impl Tool for TodoTool {
     fn read_only(&self) -> bool {
         // Touches nothing outside the agent's own head.
         true
+    }
+
+    /// The list survives a compaction verbatim.
+    ///
+    /// The model re-reads its plan every turn through the echo in the last
+    /// `todo` result — which is a *message*, and therefore exactly the kind of
+    /// thing a compaction summarises away. That made this tool's whole
+    /// mechanism quietly conditional on the transcript never getting long,
+    /// which is the one situation the list matters most in: the measured
+    /// failure of summarisation is that it keeps what is true and drops how
+    /// far you got, and this list is nothing but how far you got.
+    ///
+    /// Rendered rather than summarised, because the tool holds the exact
+    /// current answer and a summariser would only be a lossy path to a worse
+    /// copy of it.
+    fn carried_state(&self) -> Option<CarriedState> {
+        let items = self.items.lock().unwrap();
+        // An empty list is genuinely nothing to carry, and an empty section in
+        // the prompt reads as "the plan is finished" rather than "there was
+        // never a plan".
+        if items.is_empty() {
+            return None;
+        }
+        Some(CarriedState {
+            label: "todo".into(),
+            body: Self::render(&items),
+        })
     }
 
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
