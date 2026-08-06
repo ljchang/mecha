@@ -224,15 +224,31 @@ Ordered by value per unit of effort, not by size.
 
 ### Cheap, and worth doing first
 
-- **Write a trigger's report into its own workspace.** A trigger already carries
-  an optional workspace (`mecha-core/src/trigger.rs`), but nothing writes a
-  report file into it — the run's answer exists only in the session transcript,
-  which is why the TUI reads it back from there. An unattended run that leaves a
-  durable artifact is the difference between a scheduled agent and a scheduled
-  agent you can actually use. This is an afternoon.
+- **`~/.mecha/work/<producer>/` as the default run workspace.** One change
+  that closes four things at once, designed in `PUBLIC-SURFACE-DESIGN.md` §6.1
+  and the highest-value item on this list. Today a trigger carries an *optional*
+  workspace (`mecha-core/src/trigger.rs`) that nothing sets, so the jail falls
+  back to `$HOME` (see Triggers below), the run's answer survives only in the
+  session transcript, and the one shipped trigger improvises a `notify` shell
+  redirect into a directory it `mkdir -p`s on the way past. Giving every
+  producer a stable named directory: roots the jail somewhere harmless, gives
+  unattended runs a durable artifact, makes yesterday's output an ordinary file
+  in today's run, and gives `notify` something better to be. Needs a retention
+  policy with it — keep last *N*, a `clean` that says what it removed, and
+  never delete anything a published bundle references.
 - **Batch review in the outbox.** `mecha outbox send` takes exactly one id
   (`mecha-cli/src/commands/outbox.rs`), as do `show`/`edit`/`reject`. An
   overnight triage trigger that stages nine replies is then nine invocations.
+  Wants grouping by kind and bulk approve/reject.
+- **The outbox's review affordances assume every item is a message.** `show`
+  prints args, `edit` opens `$EDITOR` on them, and `diff(args_before, args)`
+  feeds the `writing`-domain reflection miner. All three are wrong for a staged
+  *publish*, whose args are a path and a visibility flag — and the third is
+  actively harmful, since the miner would learn voice rules from directory-path
+  edits and carry them in every future run's cached prefix. Needs kind-aware
+  `show`, a refusal on `edit`, and a kind filter in the miner. Reasoning in
+  `PUBLIC-SURFACE-DESIGN.md` §2.2b. **Staging generalised to a new sink without
+  changing; reviewing did not.**
 - **Re-inject the todo list at compaction time.** `compact.rs` has no knowledge
   of the todo tool, so the model sees its list only through the echo in the last
   `todo` result — a compaction that summarises past that echo loses it. The list
@@ -328,6 +344,21 @@ behaviour came from the reflector model declining. If the design was always
   `~/.mecha/workspaces/<name>/` at `add` time (which also gives triggers
   stable cross-run read-back, see `PUBLIC-SURFACE-DESIGN.md` §2.2c), and
   refuse in `setup` any workspace that contains the mecha home.
+- **A durable task and deadline store, and a `/tasks` TUI modal.** Nothing
+  tracks these: `~/.mecha/` has no task store and the `todo` tool is an in-run
+  scratchpad that dies with the run. This is what turns silence from an absence
+  into a state that can be surfaced and escalated — an unanswered message is
+  currently invisible because there is no object to hang a state on. Three
+  sources: an inbound request's SLA, a **commitment the user made** (extractable
+  from released outbox items, where mecha already knows what went out), and
+  direct capture. Stored in pkg with an `Origin` per task so only user-origin
+  tasks escalate unattended; recurrence reuses `cron.rs`. The modal drives the
+  CLI like `/triggers` does. Design in `PUBLIC-SURFACE-DESIGN.md` §3.2–3.3.
+- **A question queue — the inbound twin of the outbox.** `ask_user` is absent
+  from unattended runs by construction, so a trigger can stage but cannot ask.
+  The elicitation that makes autonomy grow is *policy* questions that unblock a
+  class, not per-item approvals; a question that unblocks one item is a draft.
+  §3.1.
 - **File watchers.** `Trigger` has no watcher kind. Needs debounce and a
   "what changed" payload injected into the prompt.
 - **Inbound webhooks.** Nothing listens. The interesting part is that the payload
@@ -346,34 +377,43 @@ behaviour came from the reflector model declining. If the design was always
 
 ### Larger, and deliberately not started
 
-- **The public surface.** `publish`/`read`/`write`/`drain` verbs, a
-  request-type manifest generating schema/form/validators/tool declarations,
-  published bundles (reports, dashboards, marimo notebooks), origin isolation
-  and CSP content classes. Nothing is built, on purpose. Two documents:
-  [`PUBLIC-SURFACE-RESEARCH.md`](PUBLIC-SURFACE-RESEARCH.md) is the survey and
-  the argument, [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) is what
-  the user decided to build — **read the design doc for what, the research doc
-  for why.** Note this is unrelated to the repository being public; it is a
-  surface for the user's correspondents.
+- **`mecha-factory` — the public surface.** Its own repository, not yet
+  created. **Two purposes:** publish what mecha makes (reports, dashboards, a
+  morning briefing, marimo notebooks) as durable versioned permissioned URLs,
+  and build typed interfaces back into mecha — a form being the default
+  rendering rather than the point, since one manifest also emits the WebMCP
+  tool, the MCP tool and the A2A skill. Note this is unrelated to *this*
+  repository being public; it is a surface for the user's correspondents.
 
-  The decisions in one paragraph: our own server (`mecha-surface`, one Rust
-  binary, SQLite/WAL, on a VPS, forbidden from depending on `mecha-core`),
-  reached over two scoped **API keys** rather than OAuth, push–pull posture
-  unchanged; **immutable content-addressed bundle versions behind a moving
-  alias**, mirrored to `~/.mecha/bundles/` so an agent can read what it
-  published; **templates as the extension point**; **marimo first-class** on
-  its own origin with `wasm-unsafe-eval` + COOP/COEP, vendored assets, and a
-  publish that *fails* on any surviving external reference; a four-layer
-  **quarantine** whose real work is a tool-less extraction pass turning a
-  stranger's prose into typed fields before anything privileged sees it, with
-  the injection classifier as a label and never a gate; **scheduling** as
-  book-me first, then group availability *seeded by mine* so participants
-  never see a blank grid; WebMCP designed for and deferred behind a flag;
-  compliance deferred deliberately, with the manifest fields kept.
+  **The design is finished and buildable.**
+  [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) is what to build —
+  start at §0 for scope, §12 for the order.
+  [`PUBLIC-SURFACE-RESEARCH.md`](PUBLIC-SURFACE-RESEARCH.md) is why, and is
+  only needed when a decision looks arbitrary. Seven decisions remain open
+  (§13); **none block build steps 1–5**, which need no VPS, no domains and no
+  origin decisions. Step 6 is the first that creates a box to patch forever.
 
-  The cheapest prerequisite is unchanged and still unstarted: mining twelve
-  months of mail for the request types that actually recur, which no artifact
-  records yet — and it should happen before any field list is frozen.
+  Settled: our own Rust server (SQLite/WAL, its own ACME, no CDN, forbidden
+  from depending on `mecha-core`) reached over two scoped API keys rather than
+  OAuth, push–pull posture, immutable content-addressed bundle versions behind
+  a moving alias, templates as the extension point, marimo first-class on its
+  own origin with vendored assets and a publish that *fails* on any surviving
+  external reference, plain HTML and vanilla JS for forms with Svelte only
+  where there is real reactivity, and an eight-tool MCP surface (§2.2a is the
+  canonical table).
+
+  **Do not build this first if answered mail is the pressing problem.** Email
+  responsiveness is a goal of *mecha*, and the items above in "Cheap" and
+  "Triggers" — the work directory, batch review, tasks, the question queue,
+  `calendar_freebusy` — serve it directly and need none of this. Build the
+  factory because artifacts have nowhere to live and requests have no shape.
+
+  **Evidence gathered 2026-08-05:** twelve months of the user's mail mined for
+  the request types that actually recur. Lives at
+  `~/.mecha/analysis/`, outside every checkout, and **must not be committed** —
+  design conclusions may be, figures and personal policy may not. See
+  `.gitignore`.
+
 - **Slack as a transport.** Zero lines exist. The blocking decision is the
   identity model, not the socket.
 - **Public benchmarks.** The Terminal-Bench adapter (`bench/`) is written and

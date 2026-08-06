@@ -274,13 +274,25 @@ path, one hop later.
 the capability declarations follow `mecha-mail`'s precedent exactly rather than
 being invented here.
 
+**This table is canonical.** §2.2c gives the reasoning behind four of the rows;
+where the two disagree, this one is right.
+
 | Tool | Does | `readOnlyHint` | `openWorldHint` | Capabilities | Outbox |
 |---|---|---|---|---|---|
-| `bundle_publish` | upload a rendered bundle, get a version | no | **yes** | `external_send` | **routed** |
+| `bundle_render` | template + source → a directory, locally | no | no | `private_data` | no |
+| `bundle_publish` | upload a **rendered** bundle, get a version | no | **yes** | `external_send` | **routed** |
 | `bundle_alias` | point a share URL at a version | no | **yes** | `external_send` | **routed** |
+| `bundle_unpublish` | alias to nothing + private; destroys nothing | no | **yes** | `external_send` | **routed** |
+| `bundle_fetch` | copy a published bundle from the **local mirror** into the workspace | **yes** | no | `private_data` | no |
 | `bundle_list` | what is published, and at which version | **yes** | no | `untrusted_input` | no |
 | `bundle_status` | one bundle: versions, alias, visibility | **yes** | no | `untrusted_input` | no |
 | `type_push` | upload a request-type manifest + schema | no | **yes** | `external_send` | **routed** |
+
+Two capability calls worth the sentence. `bundle_render` and `bundle_fetch`
+are **`private_data` but not `untrusted_input`**: both touch bytes that are
+ours — a source in the workspace, a mirror we wrote — so they carry the same
+label `fs_read` does and do not arm the untrusted leg. The two `bundle_*`
+reads that hit the *origin* do arm it, because that box is assumed lost.
 
 Three things that fall out of the precedent and are worth stating so nobody
 re-derives them:
@@ -331,7 +343,7 @@ Brainstormed after writing §2.2a down. Five of these are things that table got
 wrong or left out; the first is the one that improves the whole shape.
 
 **1. `bundle_render` is a separate tool, and the trust boundary turns out to be
-the workflow boundary.** §2.3 splits rendering from publishing because
+the workflow boundary.** *(Now row one of the table in §2.2a.)* §2.3 splits rendering from publishing because
 rendering executes notebook code. The *workflow* wants the same split for an
 unrelated reason: **rendering is cheap and publishing is expensive**, because
 publishing costs a human review. Without a render tool, every iteration —
@@ -365,7 +377,7 @@ tool schema offering `molab` as a publish destination is offering something the
 tool cannot do.
 
 **4. `bundle_unpublish` should exist, for discoverability rather than
-capability.** §2.2a says there is no delete and that taking something down is
+capability.** *(Now in the table in §2.2a.)* §2.2a says there is no delete and that taking something down is
 `bundle_alias` to nothing plus a visibility flag. Correct, and useless: a model
 asked to "take that down" will look for a takedown tool, not deduce it from
 alias semantics. Name the composite. It still destroys nothing — versions stay
@@ -1627,7 +1639,7 @@ Things this document deliberately does not settle, and which need an answer
 before the step that depends on them.
 
 1. **Which domains.** Three registrable names are needed (gate, artifacts,
-   compute) and none are chosen. Blocks step 8, nothing earlier.
+   compute) and none are chosen. **Blocks build step 6, nothing earlier.**
 2. **Which VPS, and who patches it.** The failure mode of forgetting is not
    "the site is down", it is "the site is someone else's". Unattended-upgrades
    plus a `GET /v1/health` check from a trigger is the minimum, and the health
@@ -1644,16 +1656,19 @@ before the step that depends on them.
    absorption. For a personal booking page that is an annoyance, not a crisis,
    and putting a CDN in front later changes nothing about the origin — which
    is the point of keeping it a plain program.
-3. **Does `mecha-factory` render the booking page, or does it serve a published
+3. **Is the scratch directory `work/` or something else** (§6.1), and what is
+   *N* in "keep the last N per producer"? Naming is cheap now and annoying
+   later; the retention number wants one week of real output to pick.
+4. **Does `mecha-factory` render the booking page, or does it serve a published
    bundle?** Serving a bundle keeps the server dumber; rendering lets
    availability be fresher than the last publish. Probably: serve a bundle,
    with the *slot list* as a small JSON the server can refresh independently.
-4. **How fresh is availability allowed to be?** A published page showing
+5. **How fresh is availability allowed to be?** A published page showing
    yesterday's slots is what youcanbookme does when its sync lags, and it
    degrades gracefully. Fifteen minutes is probably right; it is a trigger
    interval, not an architecture.
-5. **Does the `question` type ship at all** (§11).
-6. **Where the extraction pass runs.** Local model on `:8080` is free and
+6. **Does the `question` type ship at all** (§11).
+7. **Where the extraction pass runs.** Local model on `:8080` is free and
    private and is exactly the kind of small structured task it is good at;
    Anthropic is better at it and costs money per stranger. Probably local, with
    the failure path routing to me.
