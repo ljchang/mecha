@@ -127,6 +127,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         Some(Arc::new(mecha_core::outbox::OutboxRoute::new(
             store,
             cfg.outbox.tools.iter().cloned(),
+            cfg.outbox.publish_tools.iter().cloned(),
         )))
     } else {
         None
@@ -204,6 +205,17 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                 eprintln!(
                     "mecha: [outbox] routes `{name}`, which is not a registered tool — \
                      check the spelling, or this routing protects nothing"
+                );
+            }
+        }
+        // A name declared a publish but not routed is worse than a typo: the
+        // tool executes for real, unstaged, while config reads as though it
+        // were under review. Same shape as the warning above, and it fires on
+        // every start for the same reason.
+        for name in outbox.publishes() {
+            if !outbox.routes(name) {
+                eprintln!(
+                    "mecha: [outbox] calls `{name}` a publish but does not route it —                      add it to `tools`, or it executes unstaged"
                 );
             }
         }
