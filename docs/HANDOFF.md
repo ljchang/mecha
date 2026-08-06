@@ -369,11 +369,27 @@ behaviour came from the reflector model declining. If the design was always
 
 - **`mecha-factory` — the public surface.** Its own repository, created
   2026-08-06 at `~/Github/mecha-factory` (local only, no remote yet, MIT, CI
-  written). **Build step 1 of §12 is done**: `mecha-manifest` — the request-type
-  and bundle types, the JSON Schema generator, the HTML form generator and the
-  one validator both ends run, 47 tests, four request-type starters, and a
-  `render` example that writes a form you can open. Steps 2–5 are next and need
-  no VPS. **Two purposes:** publish what mecha makes (reports, dashboards, a
+  written). **Build steps 1 and 2 of §12 are done**, 59 tests:
+
+  - `mecha-manifest` — the request-type and bundle types, the JSON Schema
+    generator, the HTML form generator, the one validator both ends run, four
+    request-type starters, and a `render` example that writes a form you can
+    open.
+  - `mecha-factory-publish` (bin `factory-publish`) — `render` / `publish` /
+    `alias` / `unpublish` / `list` / `status` / `fetch` over a content-addressed
+    immutable bundle store in `~/.mecha/bundles`, plus the markdown `report`
+    template. Point `tailscale serve` at that directory and the share URLs work.
+
+  **The cross-repo contract is verified end to end**: `factory-publish` writes
+  an absolute `sources` array into each `<id>/<version>/bundle.json`, and
+  `mecha work clean` refuses to remove anything named there and says why. The
+  layout is two levels exactly — a `v/` level would silently turn retention into
+  something that deletes a published report's input.
+
+  Next is step 3, the vendoring gate. Note what is *not* yet true: `visibility`
+  is recorded and unenforced (the tailnet is the boundary), and the publish
+  refuses script in a `static` bundle but does not yet name every external
+  reference. Steps 3–5 still need no VPS. **Two purposes:** publish what mecha makes (reports, dashboards, a
   morning briefing, marimo notebooks) as durable versioned permissioned URLs,
   and build typed interfaces back into mecha — a form being the default
   rendering rather than the point, since one manifest also emits the WebMCP
