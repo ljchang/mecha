@@ -219,6 +219,16 @@ and it is worth reading before changing that code.
 
 ## What to do next
 
+**Sequenced.** Two orderings are load-bearing and were decided deliberately:
+
+1. **The workspace fix lands before the trigger daemon is installed.** Nothing
+   fires unattended today, so the `$HOME` path jail is latent; installing the
+   daemon is what makes it live.
+2. **The mecha-side items below come before `mecha-factory`.** They serve the
+   email-responsiveness goal directly and need no VPS, no domains and no origin
+   decisions. Build the factory because artifacts have nowhere to live — not
+   because mail goes unanswered.
+
 Every item below was verified against source on 2026-08-05 to still be unbuilt.
 Ordered by value per unit of effort, not by size.
 
@@ -354,11 +364,16 @@ behaviour came from the reflector model declining. If the design was always
   direct capture. Stored in pkg with an `Origin` per task so only user-origin
   tasks escalate unattended; recurrence reuses `cron.rs`. The modal drives the
   CLI like `/triggers` does. Design in `PUBLIC-SURFACE-DESIGN.md` §3.2–3.3.
-- **A question queue — the inbound twin of the outbox.** `ask_user` is absent
-  from unattended runs by construction, so a trigger can stage but cannot ask.
-  The elicitation that makes autonomy grow is *policy* questions that unblock a
-  class, not per-item approvals; a question that unblocks one item is a draft.
-  §3.1.
+- **Policy questions as a new `proposals` kind — not a third queue.**
+  `ask_user` is absent from unattended runs by construction, so a trigger can
+  stage but cannot ask. The elicitation that grows autonomy is *policy*
+  questions that unblock a class, not per-item approvals. These belong in
+  `mecha proposals` beside `rule` and `retirement`, because it is the same
+  shape — mecha asks, the user decides, future behaviour changes — and because
+  two review surfaces (`outbox` for what leaves, `proposals` for what changes
+  behaviour) is a learnable morning routine where three is not. Deliberately
+  **not** called an inbox: ambiguous with the user's real one, and this queue is
+  capped by design where an inbox is unbounded by definition. §3.1.
 - **File watchers.** `Trigger` has no watcher kind. Needs debounce and a
   "what changed" payload injected into the prompt.
 - **Inbound webhooks.** Nothing listens. The interesting part is that the payload
