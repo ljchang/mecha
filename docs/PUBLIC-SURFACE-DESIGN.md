@@ -1808,6 +1808,16 @@ this component. Build the factory because artifacts have nowhere to live.
    `bundle_fetch` for the cross-producer and version-addressed cases.*
 6. **`mecha-factory`**: the four verbs, two scoped keys, SQLite, the three
    origins, the CSPs. **The first step that creates a box to patch forever.**
+   *Built 2026-08-06, and not yet deployed — a dev mode binds the three roles to
+   three loopback ports and takes the identical path through `Host` resolution,
+   routing and headers, so everything but the ACME acceptor is exercised without
+   a domain existing. Three findings worth carrying: `visibility` is now
+   **enforced** (a private bundle answers what a nonexistent one answers, byte
+   for byte); the manifest's `sources` array had to be stripped at the boundary,
+   since `bundle.json` is itself served and the array holds absolute paths
+   inside the user's home; and `unpublish` was flipping visibility to private as
+   well as clearing the version, which made the honest "this has been taken
+   down" page exist and be unreachable.*
 7. **Verification, the templated acknowledgment, and the state machine end to
    end**, with one request type. *Depends on the mecha-side quarantine layers
    and on batch review in the outbox.*
@@ -1828,8 +1838,17 @@ Things this document deliberately does not settle, and which need an answer
 before the step that depends on them.
 
 1. **Which domains.** Three registrable names are needed (gate, artifacts,
-   compute) and none are chosen. **Blocks build step 6, nothing earlier.**
-2. **Which VPS, and who patches it.** The failure mode of forgetting is not
+   compute) and none are chosen. It no longer blocks *building* step 6 — the
+   names are configuration and dev mode uses loopback ports — but it is now the
+   only thing between a built server and a deployed one.
+2. **Which VPS, and who patches it.** *Settled 2026-08-06: **DigitalOcean**,
+   with DNS at **Cloudflare in DNS-only mode**. Proxying is the decision to
+   avoid rather than to make later: it terminates TLS at Cloudflare, which reads
+   the plaintext of every drained submission, and it breaks TLS-ALPN-01 by
+   answering the handshake the challenge lives in — forcing DNS-01 and a
+   zone-wide API token onto the box we have agreed to assume is lost. Turning it
+   on later changes nothing about the origin, which is the point of keeping the
+   origin a plain program.* The failure mode of forgetting is not
    "the site is down", it is "the site is someone else's". Unattended-upgrades
    plus a `GET /v1/health` check from a trigger is the minimum, and the health
    check should be a trigger that stages a warning rather than something you
