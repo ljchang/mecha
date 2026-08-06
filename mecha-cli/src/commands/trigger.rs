@@ -796,7 +796,7 @@ async fn fire(
         Ok(text) => {
             record.status = RunStatus::Ok;
             record.summary = first_line(&text);
-            notify(t, &text);
+            notify(t, &workspace_of(t), &text);
         }
         Err(e) => {
             record.status = RunStatus::Error;
@@ -989,13 +989,32 @@ async fn run_agent(
     Ok(outcome.text)
 }
 
+/// Where a run of this trigger is jailed, and therefore where `notify` runs.
+/// Resolved the same way `run_agent` resolves it, so the two cannot disagree
+/// about which directory the answer belongs beside.
+fn workspace_of(t: &Trigger) -> std::path::PathBuf {
+    t.workspace
+        .clone()
+        .or_else(|| mecha_core::work::ensure(&t.name).ok())
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
 /// Delivery. An observer, like a `post_tool` hook: its failure is reported and
 /// never fails the run, because the answer is already safe in the transcript.
-fn notify(t: &Trigger, text: &str) {
+///
+/// Run **in the run's workspace**, which is what hooks already do and what
+/// `notify` should always have done. It inherited the daemon's directory
+/// instead — and the shipped unit sets `WorkingDirectory=%h`, so every notify
+/// command had to spell out an absolute path or write into the home directory.
+/// That is how the morning briefing ended up doing `mkdir -p ~/.mecha/briefings
+/// && cat > …`, dumping its output somewhere outside every path jail where no
+/// later run could read it back.
+fn notify(t: &Trigger, workspace: &std::path::Path, text: &str) {
     let Some(command) = &t.notify else { return };
     let spawned = std::process::Command::new("sh")
         .arg("-c")
         .arg(command)
+        .current_dir(workspace)
         .stdin(std::process::Stdio::piped())
         .spawn();
     let mut child = match spawned {
