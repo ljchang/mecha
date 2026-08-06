@@ -1168,6 +1168,28 @@ guessed:
 | Gravatar (blog avatars) | `gravatar.com` | drop it; a default avatar is a local asset |
 | third-party wheels | micropip/Pyodide at runtime | yes — declare and vendor at publish time |
 
+> **Measured 2026-08-06, and the table above is about the *islands* path.** A
+> real `marimo export html-wasm` (marimo 0.23.16, a four-cell notebook) was
+> exported and scanned. What it actually produces:
+>
+> - **710 files, 27 MB**, with marimo's own frontend assets copied in locally.
+>   `index.html` is **clean** — zero external references at the markup level.
+> - **Pyodide is not vendored.** There are *no* local Pyodide files at all. Two
+>   minified workers (`worker-*.js`, `save-worker-*.js`) hardcode
+>   ``indexURL: `https://cdn.jsdelivr.net/pyodide/${version}/full/` `` **and**
+>   `lockFileURL: https://wasm.marimo.app/pyodide-lock.json?…`. So under
+>   `script-src 'self'` / `connect-src 'self'` **the notebook does not boot.**
+>   marimo's own help text calls the export "completely self-contained"; with
+>   respect to Pyodide it is not.
+> - **There is no configuration hook.** `packageBaseUrl` exists as a parameter
+>   and would win over the CDN fallback — but marimo sets it to the CDN literal
+>   itself, so it is unreachable from outside. Vendoring is a string
+>   substitution in two minified files, plus shipping the pinned Pyodide dist
+>   and lock file. Filed as work with a known shape rather than a risk.
+> - Also CDN: `mathjax-full@3.2.2` and `lucide-static@0.452.0` icons.
+> - marimo ships a **367-line `CLAUDE.md`** (an AI-assistant prompt) into every
+>   export, which would otherwise be published with it.
+
 So it is **four hosts and six references, all version-pinned** — a bounded
 afternoon, not a research project. The rule stands unchanged and is now known
 to be achievable: **the publisher rewrites external references to vendored
@@ -1181,13 +1203,55 @@ pass is **new work we add on top of marimo-book**, not something to borrow from
 it. That asymmetry is worth stating plainly so nobody wonders why the existing
 tool doesn't already do it.
 
-The verification recipe stays, as a publish-time gate rather than a one-off:
+The verification recipe was the starting point, and running it on a real bundle
+is what showed why it cannot be the gate:
 
 ```bash
 grep -rIoE 'https?://[^"'\''` )]+' "$bundle" | sort -u    # must be empty
 ```
 
-### 7.3 The `data:` URL problem, which is new and specific
+> **Measured 2026-08-06.** On the export above that recipe yields **541 hits,
+> 224 distinct URLs**, of which **234 are XML namespace identifiers**
+> (`http://www.w3.org/2000/svg` and friends — declarations, never fetched),
+> most of the rest are documentation and attribution links, and roughly **30**
+> are genuinely fetchable at runtime (jsdelivr, `basemaps.cartocdn.com`,
+> `fonts.openmaptiles.org`, `mapbox.com`, buried in charting libraries). A
+> check that reports 541 things nobody will read is not a check.
+>
+> **So the gate has two modes**, and the split is between kinds of object
+> rather than kinds of URL:
+>
+> - **Files we emit** — strict, zero tolerance, every finding named by file,
+>   line, URL and reason. A link (`<a href>`) is never a finding; anything the
+>   page *fetches* on load is.
+> - **A vendored third-party tree** — the unit of review is the **tree**. It is
+>   declared with a digest, reviewed once at the version pinned, and not walked
+>   line by line; **the CSP is the runtime enforcement**, which is what §7.1 was
+>   always for. `connect-src 'self'` means a map-tile fetch inside a charting
+>   library simply fails.
+>
+> Fail-closed in both directions: an *undeclared* subtree is scanned strictly,
+> so nothing becomes vendored by being forgotten, and a declared tree whose
+> digest no longer matches is a finding rather than a pass — otherwise
+> "reviewed once" quietly means "reviewed once, then never again". And because
+> a pin is a claim rather than a conclusion, `check` prints what was pinned
+> beside the verdict instead of absorbing it: the marimo tree above passes the
+> gate while still being unable to boot under the CSP, and a report that read
+> simply "self-contained" would be the wrong thing to believe.
+>
+> Built and verified against the real 710-file export.
+
+### 7.3 The `data:` URL problem — which turns out not to be ours
+
+> **Corrected 2026-08-06 by measurement.** Everything below is true, and it is
+> a property of **`MarimoIslandGenerator`**, which runs under
+> `ScriptRuntimeContext` with `virtual_files_supported=False`. A real
+> `marimo export html-wasm` was scanned for `data:` URLs in script positions
+> and contains **none**. marimo-book hits this because it embeds islands into
+> MkDocs pages; we publish standalone bundles and take the export path, so the
+> anywidget shim and the data-URL rewrite are **work we do not have to do**.
+> Kept in full because the reasoning is what tells us the two paths differ, and
+> because an islands path would resurrect it exactly.
 
 marimo-book's source records a trap that would have cost us a day. Under
 marimo's `ScriptRuntimeContext`, `virtual_files_supported=False`, so every
@@ -1671,7 +1735,12 @@ this component. Build the factory because artifacts have nowhere to live.
    WASM anyway.
 4. **The `notebook` template** on `marimo export html-wasm`, and the `compute`
    origin's headers — verified locally under a real CSP before there is a VPS
-   to configure. The step most likely to surprise us.
+   to configure. The step most likely to surprise us. *Scoped by measurement
+   2026-08-06 (§7.2, §7.3): the anywidget/data-URL work is **not needed** on
+   this path, and the real work is vendoring Pyodide — two string substitutions
+   in minified workers, plus the pinned dist and lock file, plus MathJax and
+   the icon set. `export html-wasm` over islands, because only it reads PEP
+   723.*
 5. **`bundle_fetch` and stable trigger workspaces** (§2.2c), which is what
    makes "read back what a previous run published" true across runs rather
    than within one. *The mecha-side workspace fix shipped 2026-08-06, so the
