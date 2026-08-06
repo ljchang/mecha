@@ -9,9 +9,15 @@
 //! item keeps the drafted arguments beside the edited ones, and
 //! `mecha reflect` mines `diff(staged, sent)` as a writing-domain lesson.
 //! That is why `edit` rewrites `args` and never `args_before`.
+//!
+//! **All of which is true of a message and false of a publish.** Staging is
+//! sink-agnostic; reviewing is not. So `show` and `edit` branch on
+//! [`OutboxKind`]: a publish's reviewable object is the rendered page rather
+//! than a path and a visibility flag, and editing its arguments would be
+//! editing neither the draft nor anything a reader sees.
 
 use anyhow::{bail, Context, Result};
-use mecha_core::outbox::OutboxStore;
+use mecha_core::outbox::{OutboxKind, OutboxStore};
 use serde_json::Value;
 
 use crate::{setup, GlobalOpts};
@@ -83,9 +89,10 @@ fn list(store: &OutboxStore) -> Result<()> {
         items.into_iter().partition(|i| i.status == "pending");
     for item in pending.iter().chain(resolved.iter()) {
         println!(
-            "{}  {:<8} {}{}{}",
+            "{}  {:<8} {:<8} {}{}{}",
             item.id,
             item.status,
+            item.kind.as_str(),
             item.summary,
             if item.taint.trifecta_armed() {
                 "  ⚠ tainted"
@@ -100,7 +107,13 @@ fn list(store: &OutboxStore) -> Result<()> {
 
 fn show(store: &OutboxStore, id: &str) -> Result<()> {
     let item = store.item(id)?;
-    println!("outbox item {} · {} · {}", item.id, item.tool, item.status);
+    println!(
+        "outbox item {} · {} · {} · {}",
+        item.id,
+        item.kind.as_str(),
+        item.tool,
+        item.status
+    );
     println!("created {}", item.created_at);
     if let Some(session) = &item.session_id {
         println!("drafted by session {session}");
@@ -124,22 +137,90 @@ fn show(store: &OutboxStore, id: &str) -> Result<()> {
     if let Some(error) = &item.error {
         println!("last send attempt failed: {error}");
     }
-    println!("\narguments a release would execute:");
-    println!("{}", indent(&pretty(&item.args)));
-    if item.edited() {
-        println!("\nedited since drafting:");
-        println!(
-            "{}",
-            mecha_core::outbox::diff_args(&item.args_before, &item.args)
-        );
+    match item.kind {
+        // For a message the arguments *are* the draft, so print them and the
+        // diff that a release would carry.
+        OutboxKind::Message => {
+            println!("\narguments a release would execute:");
+            println!("{}", indent(&pretty(&item.args)));
+            if item.edited() {
+                println!("\nedited since drafting:");
+                println!(
+                    "{}",
+                    mecha_core::outbox::diff_args(&item.args_before, &item.args)
+                );
+            }
+        }
+        // For a publish they are a path and a visibility flag. Reviewing means
+        // opening the page, so lead with where it is; the arguments follow as
+        // the smaller half rather than as the thing under review.
+        OutboxKind::Publish => {
+            for (label, path) in local_paths(&item.args) {
+                println!("\n{label}: {}", path.display());
+                if let Some(entry) = entry_point(&path) {
+                    println!("open  {}", entry.display());
+                }
+                if !path.exists() {
+                    println!(
+                        "  ⚠ gone — this was rendered into a run's work directory,                          which retention may since have swept. Re-render before                          releasing."
+                    );
+                }
+            }
+            println!("\nwhat a release would publish:");
+            println!("{}", indent(&pretty(&item.args)));
+        }
     }
     if item.status == "pending" {
-        println!(
-            "\nrelease with `mecha outbox send {}`, or `edit` / `reject` it",
-            item.id
-        );
+        match item.kind {
+            OutboxKind::Message => println!(
+                "\nrelease with `mecha outbox send {}`, or `edit` / `reject` it",
+                item.id
+            ),
+            OutboxKind::Publish => println!(
+                "\nrelease with `mecha outbox send {}`, or `reject` it. To change \
+                 the content, edit the source and re-render — that stages a new item.",
+                item.id
+            ),
+        }
     }
     Ok(())
+}
+
+/// Arguments that name something on this machine, so `show` can point a
+/// reviewer at the bytes instead of at a JSON blob.
+///
+/// Keyed on the argument *name* rather than on the value looking path-shaped:
+/// a subject line that happens to start with `/` is not a directory, and
+/// guessing would put a wrong "open this" line in front of a human whose whole
+/// job here is to check what goes out.
+fn local_paths(args: &Value) -> Vec<(&'static str, std::path::PathBuf)> {
+    const KEYS: [(&str, &str); 3] = [
+        ("bundle_path", "rendered bundle"),
+        ("path", "rendered bundle"),
+        ("source", "source"),
+    ];
+    let Some(map) = args.as_object() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, label) in KEYS {
+        if let Some(value) = map.get(key).and_then(|v| v.as_str()) {
+            out.push((label, std::path::PathBuf::from(value)));
+        }
+    }
+    out
+}
+
+/// The file a reviewer should actually open, when the argument named a
+/// directory.
+fn entry_point(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+    ["index.html", "index.md", "README.md"]
+        .iter()
+        .map(|name| path.join(name))
+        .find(|candidate| candidate.is_file())
 }
 
 fn edit(store: &OutboxStore, id: &str) -> Result<()> {
@@ -149,6 +230,21 @@ fn edit(store: &OutboxStore, id: &str) -> Result<()> {
     let item = store.item(id)?;
     if item.status != "pending" {
         bail!("outbox item {} is {}, not pending", item.id, item.status);
+    }
+    // Refused rather than allowed-but-pointless. Editing a publish's arguments
+    // rewrites a filesystem path or a visibility flag — it does not edit the
+    // draft, and nothing a reader sees changes. Naming the real action is the
+    // whole value of the refusal.
+    if item.kind == OutboxKind::Publish {
+        bail!(
+            "outbox item {} is a publish, and its arguments are a path and a \
+             visibility flag rather than a draft — editing them would change \
+             neither the page nor what a reader sees.\n\
+             To change the content: edit the source, re-render, and publish \
+             again, which stages a new item. Then `reject {}`.",
+            item.id,
+            item.id
+        );
     }
 
     let text = crate::editor::edit_text(
