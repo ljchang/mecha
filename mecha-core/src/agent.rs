@@ -1847,6 +1847,11 @@ impl Agent {
                     input.clone(),
                     *taint,
                     route.session_id(),
+                    // The jail this call was drafted under. A release happens
+                    // in another process from another directory, and a staged
+                    // path means nothing without the root it was written
+                    // against.
+                    Some(cx.tools.workspace.clone()),
                 ) {
                     Ok(item) => {
                         let content = format!(
