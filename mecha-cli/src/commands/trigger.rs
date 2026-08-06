@@ -465,6 +465,11 @@ fn print_run(r: &RunRecord) {
     } else if !r.summary.is_empty() {
         println!("    {}", r.summary);
     }
+    // After the summary rather than instead of it: the run produced an answer,
+    // and both facts matter — this one is the reason it did not arrive.
+    if let Some(e) = &r.notify_error {
+        println!("    notify: {e}");
+    }
 }
 
 // ----------------------------------------------------------------- authoring
@@ -796,7 +801,7 @@ async fn fire(
         Ok(text) => {
             record.status = RunStatus::Ok;
             record.summary = first_line(&text);
-            notify(t, &workspace_of(t), &text);
+            record.notify_error = notify(t, &workspace_of(t), &text);
         }
         Err(e) => {
             record.status = RunStatus::Error;
@@ -999,8 +1004,15 @@ fn workspace_of(t: &Trigger) -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-/// Delivery. An observer, like a `post_tool` hook: its failure is reported and
-/// never fails the run, because the answer is already safe in the transcript.
+/// Delivery. An observer, like a `post_tool` hook: its failure never fails the
+/// run, because the answer is already safe in the transcript.
+///
+/// It does, however, go **into the ledger** rather than only onto stderr. This
+/// is the same argument `stop_cause` exists for: a run whose delivery failed
+/// records as plain `ok`, and a trigger that has quietly not rendered its
+/// briefing for a week looks exactly like one that works. Nobody reads
+/// `journalctl` for a thing that is supposed to be unattended. Returns `None`
+/// when there was nothing to do or it worked.
 ///
 /// Run **in the run's workspace**, which is what hooks already do and what
 /// `notify` should always have done. It inherited the daemon's directory
@@ -1009,8 +1021,8 @@ fn workspace_of(t: &Trigger) -> std::path::PathBuf {
 /// That is how the morning briefing ended up doing `mkdir -p ~/.mecha/briefings
 /// && cat > …`, dumping its output somewhere outside every path jail where no
 /// later run could read it back.
-fn notify(t: &Trigger, workspace: &std::path::Path, text: &str) {
-    let Some(command) = &t.notify else { return };
+fn notify(t: &Trigger, workspace: &std::path::Path, text: &str) -> Option<String> {
+    let command = t.notify.as_ref()?;
     let spawned = std::process::Command::new("sh")
         .arg("-c")
         .arg(command)
@@ -1020,11 +1032,9 @@ fn notify(t: &Trigger, workspace: &std::path::Path, text: &str) {
     let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
-            eprintln!(
-                "mecha: notify command for `{}` failed to start — {e}",
-                t.name
-            );
-            return;
+            let failure = format!("failed to start: {e}");
+            eprintln!("mecha: notify command for `{}` {failure}", t.name);
+            return Some(failure);
         }
     };
     if let Some(mut stdin) = child.stdin.take() {
@@ -1032,10 +1042,25 @@ fn notify(t: &Trigger, workspace: &std::path::Path, text: &str) {
     }
     match child.wait() {
         Ok(status) if !status.success() => {
-            eprintln!("mecha: notify command for `{}` exited {status}", t.name)
+            // 127 is a command that is not on `PATH`, which is the failure this
+            // reporting was added for: a systemd unit gives its children a
+            // minimal environment, so a `notify` calling anything installed in
+            // `~/.cargo/bin` works by hand and not under the daemon.
+            let hint = if status.code() == Some(127) {
+                " — 127 usually means a command was not found on PATH"
+            } else {
+                ""
+            };
+            let failure = format!("exited {status}{hint}");
+            eprintln!("mecha: notify command for `{}` {failure}", t.name);
+            Some(failure)
         }
-        Err(e) => eprintln!("mecha: notify command for `{}` failed — {e}", t.name),
-        _ => {}
+        Err(e) => {
+            let failure = format!("failed: {e}");
+            eprintln!("mecha: notify command for `{}` {failure}", t.name);
+            Some(failure)
+        }
+        _ => None,
     }
 }
 
@@ -1084,6 +1109,75 @@ fn indent(text: &str) -> String {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    fn trigger_with_notify(command: &str) -> Trigger {
+        let mut t = Trigger::new("t", "0 7 * * *".parse().unwrap(), "p");
+        t.notify = Some(command.to_string());
+        t
+    }
+
+    /// The failure that actually happened on the first real scheduled run: a
+    /// systemd unit hands its children a minimal environment, so a `notify`
+    /// calling anything installed by cargo exits 127 under the daemon while
+    /// working perfectly by hand.
+    ///
+    /// The unit now sets `PATH`, which is the fix. This is the *reporting* —
+    /// because the run itself succeeds either way, and a briefing that has
+    /// quietly not rendered for a week has to look different from one that has.
+    #[test]
+    fn a_notify_that_could_not_run_is_reported_rather_than_swallowed() {
+        let dir = std::env::temp_dir();
+
+        let failure = notify(
+            &trigger_with_notify("definitely-not-a-real-command-3f9a"),
+            &dir,
+            "the answer",
+        )
+        .expect("a command that is not on PATH has to be reported");
+        assert!(failure.contains("127"), "{failure}");
+        assert!(
+            failure.contains("PATH"),
+            "the hint names the actual cause: {failure}"
+        );
+
+        // A command that runs and fails is reported too, without the hint —
+        // which would be a wrong explanation.
+        let failure = notify(&trigger_with_notify("exit 3"), &dir, "x").unwrap();
+        assert!(failure.contains("exit"), "{failure}");
+        assert!(!failure.contains("PATH"), "{failure}");
+
+        // And silence when it worked, or every successful run would carry a
+        // line saying something went wrong.
+        assert!(notify(&trigger_with_notify("true"), &dir, "x").is_none());
+        assert!(notify(
+            &Trigger::new("t", "0 7 * * *".parse().unwrap(), "p"),
+            &dir,
+            "x"
+        )
+        .is_none());
+    }
+
+    /// `notify` delivers the answer on stdin and runs **in the run's
+    /// workspace**, which is what makes a relative path in the command mean the
+    /// place the run's own files are.
+    #[test]
+    fn notify_writes_the_answer_into_the_runs_workspace() {
+        let workspace = std::env::temp_dir().join(format!("mecha-notify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&workspace);
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        assert!(notify(
+            &trigger_with_notify("cat > out.md"),
+            &workspace,
+            "the briefing"
+        )
+        .is_none());
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("out.md")).unwrap(),
+            "the briefing"
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
 
     /// A short flag that collides with a global one is a **runtime panic**, on
     /// the subcommand that has it and nowhere else — so `mecha trigger add`

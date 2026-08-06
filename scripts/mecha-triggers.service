@@ -22,6 +22,12 @@ After=network-online.target
 Type=simple
 WorkingDirectory=%h
 ExecStart=%h/.cargo/bin/mecha trigger daemon
+# systemd gives a unit a minimal environment, and `notify` runs a shell command
+# as a child of this process. Without this line a notify calling anything
+# installed by cargo — `factory-publish`, `mecha` itself — exits 127 under the
+# daemon while working perfectly by hand, which is the worst shape of bug this
+# project keeps finding. Measured on the first real scheduled run.
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # The daemon survives a bad tick on its own; this covers the process dying.
 Restart=on-failure
 RestartSec=30
