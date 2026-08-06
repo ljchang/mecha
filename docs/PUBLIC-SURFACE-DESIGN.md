@@ -9,44 +9,57 @@ wins and the research doc keeps the reasoning.
 
 ---
 
-## 0. What this is for, and the honest scope of it
+## 0. What `mecha-factory` is for
 
-**The project's goal is email responsiveness.** The user is bad at email and
-dislikes it; the point of all of this is that mail gets answered. Everything
-below is machinery in service of that, and the document is easy to misread
-without it — a reader who starts at §1 will build the public front door first,
-which is the wrong first thing.
+**Two purposes, matching the two directions of one boundary:**
 
-The scope correction that follows, stated plainly because it cost a week to
-see:
+- **Publish what mecha makes.** Reports, dashboards, briefings, marimo
+  notebooks — as durable, versioned, permissioned URLs that can be read on a
+  phone, sent to a collaborator, or read back by a later agent run. Today a
+  run's output dies in a workspace, or lands in `~/.mecha/briefings/` where
+  nothing can read it and nobody can be sent it.
+- **Give the outside world a typed way to interact.** Structured requests with
+  schemas, state and deadlines, in place of unstructured email — meetings,
+  letters, applications, invitations.
 
-- **The failure mode is silence, and overload causes the silence.** These are
-  not alternatives. A large fraction of the inbox has never been opened, and
-  for the highest-volume request types the modal outcome is no reply at all.
-- **Therefore drafting is not the primary fix.** A queue of forty drafts to
-  approve every morning is the inbox with extra steps, and it would be
-  abandoned for the same reason the inbox was. **The job is to reduce what
-  reaches a human, not to relocate it.**
-- **Inbound mail is four tiers wanting four treatments**: machine-generated
-  (suppress — never shown), human-typed broadcast (digest — one line, weekly),
-  addressed-and-expecting-a-reply (draft), and genuine stranger requests (the
-  typed front door). **The first two dominate volume**, and no amount of good
-  drafting touches them.
-- **The front door earns its place anyway**, but not as a time-saver: a typed
-  request with a deterministic decline path means some requests *never reach a
-  human at all*. That is suppression at the source. It is simply not the
-  largest tier, so it is not the first build.
-- **A booking link nobody clicks is not a booking system.** The evidence is
-  twelve months of it sitting in a signature while every meeting was still
-  negotiated by hand. **The link has to *be* the reply**, staged and sent —
-  which is why scheduling is near the front of the build order despite being
-  late in this document.
+The unifying claim, which is why these are one system rather than two: **a
+typed, versioned, schema-described object crossing the boundary between the
+user and the world, staged for human review in both directions.**
 
-Two things this document therefore is *not*. It is not the whole project — the
-suppression and drafting tiers are the larger half and live in mecha proper,
-not in `mecha-factory`. And it is not ordered by importance: §1–§11 are ordered
-for a reader learning the system, while **§12 is ordered for someone
-building it**, and the two differ sharply.
+### How this relates to mecha's goals, since it is easy to conflate
+
+Email responsiveness is a **goal of mecha**, not of `mecha-factory`. This
+component *contributes* to it and does not deliver it:
+
+- The inbound half reduces unstructured mail **at the source** — a typed
+  request that meets a deterministic decline rule never becomes an email
+  thread at all.
+- A booking page collapses scheduling threads, but only if the link is *in the
+  reply* rather than in a signature. Composing and sending that reply is
+  mecha's job; the page is this component's.
+
+So the largest near-term wins for responsiveness — suppressing machine mail,
+digesting broadcast, drafting the remainder, batching the review — are **mecha
+work and live outside this document**. `mecha-factory` should not be built
+first if answered mail is the pressing problem. It should be built because the
+artifacts have nowhere to live and the requests have no shape.
+
+### Sections here that describe mecha, not the factory
+
+The conversation that produced this document drifted across the boundary, and
+these sections are mecha-side machinery that `mecha-factory` depends on or
+forces. They are kept here because the reasoning is entangled, and flagged so
+nobody looks for them in the wrong repository:
+
+| Section | Actually lives in |
+|---|---|
+| §2.2b outbox review affordances for a publish | mecha — forced by this |
+| §3.1 the autonomy ratchet, the question queue | mecha |
+| §3.2, §3.3 tasks, deadlines, the `/tasks` modal | mecha + pkg |
+| §8 layers 1–3 of the quarantine | mecha |
+| §9 `calendar_freebusy`, the availability engine | mecha-mail + mecha |
+
+Worth splitting into its own document once any of it is built.
 
 ---
 
@@ -1500,73 +1513,47 @@ anything.
 
 ## 12. Build order
 
-Ordered for the goal in §0 — mail gets answered — which is **not** the order
-this document explains things in. Each step is useful alone.
+**Scoped to `mecha-factory`.** The mecha-side prerequisites are noted where a
+step depends on one, but their own ordering belongs in `HANDOFF.md`.
 
-**Tier 0 — turn on what is already built.** *Hours.*
+**Where this sits overall:** if answered mail is the pressing problem, the
+mecha-side suppression and drafting work (§0) comes first — none of it needs
+this component. Build the factory because artifacts have nowhere to live.
 
-0. **Install the trigger daemon.** `mecha trigger` is built and tested;
-   `scripts/mecha-triggers.service` is written and has never been installed, so
-   the one existing trigger fires only when someone runs it by hand — which is
-   precisely what will not happen. **Do the workspace fix first**
-   (`HANDOFF.md`, Triggers): unattended runs are what make a jail rooted at
-   `$HOME` live rather than latent.
+1. **`mecha-manifest`**: the request-type and bundle types, the JSON Schema
+   generator, the HTML form generator, both validators. Pure, unit-tested,
+   renders to a file you can open. Seeded from `pbs_knowledge`'s `FormConfig`
+   (§5.1) and from the mail evidence, which is now gathered. *Two days, and it
+   is the architecture.*
+2. **The bundle store and a plain markdown `report`**, published to
+   `tailscale serve <dir>`. No public box, no inbound, no origin decisions, no
+   Python. Proves publish, versioning, aliasing and workspace read-back.
+3. **The vendoring pass and the publish-time external-reference gate**
+   (§7.2, §7.3), then `report` on marimo-book's static + precompute pipeline
+   (§7.5). Before the notebook path on purpose: it covers the common case,
+   needs no third origin, and the vendoring it forces is the prerequisite for
+   WASM anyway.
+4. **The `notebook` template** on `marimo export html-wasm`, and the `compute`
+   origin's headers — verified locally under a real CSP before there is a VPS
+   to configure. The step most likely to surprise us.
+5. **`bundle_fetch` and stable trigger workspaces** (§2.2c), which is what
+   makes "read back what a previous run published" true across runs rather
+   than within one. *Depends on the mecha-side workspace fix in `HANDOFF.md`.*
+6. **`mecha-factory`**: the four verbs, two scoped keys, SQLite, the three
+   origins, the CSPs. **The first step that creates a box to patch forever.**
+7. **Verification, the templated acknowledgment, and the state machine end to
+   end**, with one request type. *Depends on the mecha-side quarantine layers
+   and on batch review in the outbox.*
+8. **The booking page**, and then **group availability seeded by the user's
+   own**. *Depends on `calendar_freebusy` and the availability engine.*
 
-**Tier 1 — reduce what reaches a human.** *Days. The largest win.*
-
-1. **The suppression and digest tiers.** A standing classifier deciding, per
-   message: never show / digest / needs you / draftable. This is the step that
-   attacks the volume, and nothing after it works without it.
-2. **Batch review in the outbox**, grouped by type, with bulk approve and
-   reject. Sized for a set that is already small.
-3. **The queue cap** (§3.1) as a hard invariant from the start, so improvement
-   in drafting cannot quietly become a bigger pile.
-
-**Tier 2 — answer what is left.** *Days.*
-
-4. **Overnight triage that stages drafts** for the near-deterministic
-   categories: declines, acknowledgments, "here is the link". Read-only and
-   outbox-routed, which trigger runs already are by default.
-5. **Tasks and deadlines** (§3.2) in pkg, with the `/tasks` modal (§3.3).
-   This is what turns silence from an absence into a state that can be
-   surfaced and escalated.
-6. **The question queue** (§3.1) — policy questions that unblock a class,
-   distinct from the draft queue.
-
-**Tier 3 — the scheduling collapse.** *Days, and the biggest volume win after
-tier 1.*
-
-7. **`calendar_freebusy`** in mecha-mail. Half a day, useful the day it lands.
-8. **The availability engine.** Pure, unit-tested, DST in both directions.
-9. **A booking page whose link goes in mecha's reply**, not a signature.
-
-**Tier 4 — artifacts, which serve a different goal and are wanted anyway.**
-
-10. **`mecha-manifest`**: the request-type and bundle types, schema generator,
-    HTML form generator, validators. Seeded from `pbs_knowledge`'s `FormConfig`
-    (§5.1) and from the mail evidence, which is now gathered.
-11. **The bundle store and a plain markdown `report`**, to
-    `tailscale serve <dir>`. No public box, no origin decisions, no Python.
-12. **The vendoring pass and the external-reference gate**, then `report` on
-    marimo-book's static + precompute pipeline.
-13. **The `notebook` template** and the `compute` origin's headers, verified
-    locally under a real CSP. The step most likely to surprise us.
-
-**Tier 5 — the public front door.** *The first step that creates a box to
-patch forever.*
-
-14. **`mecha-factory`**: four verbs, two scoped keys, SQLite, three origins,
-    the CSPs.
-15. **Verification, the templated acknowledgment, and the state machine end to
-    end**, with one request type. The quarantine layers land here.
-16. **Group availability**, seeded by the user's own.
-
-Tiers 0–3 need no VPS, no domains and no origin decisions, and they are where
-the stated goal is actually served. Step 14 is the commitment.
+Steps 1–5 need no VPS, no domains and no origin decisions, and they deliver the
+publishing half — which is the half with no alternative today. Step 6 is the
+commitment.
 
 **Done:** mining twelve months of mail for the real request types
-(2026-08-05). The evidence lives outside this repository — see `.gitignore` and
-the note in §5.1 — and its conclusions are folded into §0, §3.1 and §3.2.
+(2026-08-05). The evidence lives outside this repository; its conclusions are
+folded into §5.1 and into the mecha-side sections listed in §0.
 
 ## 13. Open decisions
 
