@@ -136,6 +136,37 @@ bookkeeping, and the damage would have been retroactive by the time anyone
 noticed. Same class of mistake as learning from `"Blocked by a hook:"`, and it
 carries a test named on it for the same reason.
 
+**2026-08-06 (later still) — the factory's server, the scheduler, and the plan
+that stopped evaporating.** Three things, of which the middle one is the only
+one that had to be *run* to be found.
+
+`mecha-factory` reached §12 step 6: three origins under three CSPs told apart
+by `Host`, two Argon2id-hashed scoped keys, SQLite as the index with the bytes
+on disk, its own ACME over TLS-ALPN-01, and a home side that pushes. Built and
+verified end to end against a real server; never yet deployed. Three findings
+came out of building it, all recorded in that repository's history: `visibility`
+stopped being decorative and is now enforced (a private bundle answers what a
+nonexistent one answers, byte for byte); the manifest's `sources` array had to
+be stripped at the boundary, because `bundle.json` is itself served publicly and
+that array holds absolute paths inside the user's home; and `unpublish` was
+flipping visibility to private as well as clearing the version, which made the
+honest "this has been taken down" page exist and be unreachable.
+
+**`mecha trigger daemon` was installed**, which had been three lines and a
+blocker for two days. It fired the morning briefing for that day's 07:00 slot
+within a second of starting — `catch_up = 3h` and the slot was two and a half
+hours old — which is exactly the designed behaviour and had never once happened
+unattended. See the trap below for what the first real run found.
+
+**A tool's own state now crosses a compaction.** The `todo` list only reached
+the model through the echo in the last `todo` result, which is a message, and
+therefore exactly what a compaction summarises away — so the mechanism was
+quietly conditional on the transcript never getting long, in the one situation
+the list matters most. `Tool::carried_state` lets any tool hand state to the
+compaction to be carried verbatim; the loop learns that some tools have state,
+never which. Exactly one copy survives a second compaction, because two
+contradictory task lists in a prompt are worse than none.
+
 ---
 
 ## The compaction measurement record
@@ -347,6 +378,23 @@ All found by pre-push review or by running it.
   returned an empty string — which graded as a model failure and was a harness
   failure. Any turn containing tool_use blocks is now a tool turn regardless.
   Assume the same class of bug exists for other local servers.
+
+### Unattended runs
+
+- **A systemd unit gives its children a minimal environment, and that is where
+  `notify` runs.** The first real scheduled trigger run produced its briefing
+  and then exited **127**: the unit named `%h/.cargo/bin/mecha` in `ExecStart`
+  so the daemon started, but `factory-publish` was not on the child's `PATH`.
+  Works by hand, fails under the scheduler — the shape of bug this project keeps
+  finding. The unit now sets `PATH`; more importantly, **the failure goes into
+  the ledger**, because the run itself is `ok` either way and a briefing that
+  has quietly not rendered for a week has to look different from one that works.
+  Same argument as `stop_cause`, and it applies to any observer whose failure
+  is invisible: report it where the thing it failed at is recorded, not only on
+  stderr that nobody reads for an unattended process.
+- **Installing a thing is how you find out about it.** Everything above was
+  built, tested and documented for two days before anybody ran it on a
+  schedule, and one minute of real scheduling produced a bug no test had.
 
 ### Environment
 
