@@ -1187,8 +1187,39 @@ guessed:
 >   substitution in two minified files, plus shipping the pinned Pyodide dist
 >   and lock file. Filed as work with a known shape rather than a risk.
 > - Also CDN: `mathjax-full@3.2.2` and `lucide-static@0.452.0` icons.
-> - marimo ships a **367-line `CLAUDE.md`** (an AI-assistant prompt) into every
->   export, which would otherwise be published with it.
+> - **The export is `marimo/_static/` copied wholesale** — all eleven files,
+>   byte-identical — with `index.html` rewritten and `.nojekyll` added. So a
+>   published notebook carries marimo's `CLAUDE.md`: a 367-line prompt telling
+>   an agent how to *edit* marimo notebooks, alongside a page exported
+>   `--mode run` that nobody can edit. Nothing references it — it is the one
+>   file in the export with no inbound references at all. Drop it, and drop
+>   `.nojekyll` with it (a GitHub Pages marker, meaningless here).
+>
+>   Worth stating the real reason rather than the tidiness one: it is
+>   **instruction-shaped text served from an origin we hand to
+>   correspondents**. marimo's file is plainly benign; the bad default is a
+>   published artifact containing imperative AI instructions we did not write
+>   and did not read, on the one surface whose whole posture is *assume the
+>   public box is lost*.
+>
+>   **But the prune has to follow references transitively, not scan the entry
+>   point.** Measured: `logo.png` is unreferenced by `index.html` and
+>   referenced by two assets; `android-chrome-192/512.png` are unreferenced by
+>   `index.html` and named in `manifest.json`. A naive "delete what the page
+>   does not mention" breaks both. So the `notebook` template prunes to a
+>   **declared list** rather than to whatever the exporter happened to leave —
+>   a published bundle contains what we meant to publish, which is the same
+>   argument the vendoring gate makes one layer down.
+>
+> - `manifest.json` declares `"short_name": "Marimo"`, `"name": "A Marimo
+>   App"`. Installed to a home screen a published notebook would be called *A
+>   Marimo App*; it wants rewriting to the bundle's own title at publish time.
+>
+> - **Pinning the asset tree hides the Pyodide problem from the gate**, since a
+>   pinned tree is not walked. The `notebook` template therefore needs its own
+>   check that the runtime is actually vendored — the general gate cannot be
+>   the thing that catches it, and a notebook that passes the gate and cannot
+>   boot is precisely the failure the gate exists to prevent.
 
 So it is **four hosts and six references, all version-pinned** — a bounded
 afternoon, not a research project. The rule stands unchanged and is now known
