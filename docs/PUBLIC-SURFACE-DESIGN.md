@@ -300,14 +300,51 @@ The error lists every one, with the file and line. Same reasoning as every
 other expected failure in this project: reserve `Err` for what the model cannot
 route around.
 
-**6. Cross-run read-back is still open.** §6 mirrors bundles to
+**6. Cross-run read-back — resolved, two cheap pieces.** §6 mirrors bundles to
 `~/.mecha/bundles/`, which no jailed run can read, and the workspace copy
 belongs to the run that made it. So *this* run can read what it published and a
-*later* run cannot — which is the question that started this entire line of
-work, answered for one hop and not two. Either a `bundle_fetch` tool pulls a
-published bundle back into the current workspace, or trigger workspaces are
-stable and named. **Unresolved**, and it should be resolved before the read-back
-claim is repeated anywhere.
+*later* run cannot — the question that started this entire line of work,
+answered for one hop and not two.
+
+**Stable per-trigger workspaces**, which need no new code at all: `workspace`
+is already a field on `Trigger`, written at `add` time and persisted in the
+TOML. Nobody has set it. Setting it makes yesterday's report an ordinary file
+in today's run, and it simultaneously fixes a live hazard — see the note below,
+which is the more urgent half of this finding.
+
+**`bundle_fetch` for everything else** — across triggers, from a chat session,
+and version-addressed ("diff this against what I published Monday"). Two
+properties make it safe rather than a hole in the jail:
+
+- **It copies from the local mirror into the current workspace, and the model
+  names a bundle id, never a path.** The tool resolves id → mirror path
+  internally, so `ToolCtx::resolve` is never handed a path that could escape.
+  Same pattern as *the model names an account, never a provider*.
+- **The mirror, not the origin.** If it fetched from the server, an agent
+  reading *its own last report* would get it back `.from_outside()` — the box
+  is assumed lost — arming the untrusted taint leg every time anything looked
+  at its own work. The local mirror is trusted, so it does not.
+
+> **Live hazard, and not really about artifacts at all.** A trigger's
+> `workspace` is `Option<PathBuf>`; when unset, `setup::prepare_tools` falls
+> back to `std::env::current_dir()`, and the daemon's unit sets
+> `WorkingDirectory=%h`. So **a trigger with filesystem tools and no explicit
+> workspace is path-jailed to `$HOME`, which contains `~/.mecha/`** — mail
+> OAuth tokens, every session transcript, the learning store. The shipped
+> `morning.toml` is safe only by accident of its tool allowlist, not by the
+> jail.
+>
+> It is broader than triggers: running `mecha chat` from your home directory
+> has the identical shape. The interlock is still a backstop — reading a token
+> arms `private_data`, and exfiltration needs an `external_send` the interlock
+> refuses — but a jail rooted where the secrets live is close to no jail, which
+> is the silently-degrading-sandbox pattern this project keeps naming.
+>
+> Two fixes, and the first delivers stable read-back for free: **default a
+> trigger's workspace to `~/.mecha/workspaces/<name>/`**, created at `add`
+> time, durable across runs and containing nothing sensitive. And **refuse in
+> `setup` any workspace that contains the mecha home**, which catches the
+> interactive case and every future variant rather than this one instance.
 
 And one smaller thing, recorded rather than solved: **staging takes no lock**,
 deliberately, so a retried tool call stages twice. Content-addressing makes the

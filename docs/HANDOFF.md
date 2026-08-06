@@ -314,6 +314,20 @@ behaviour came from the reflector model declining. If the design was always
 
 ### Triggers
 
+- **A trigger's path jail defaults to `$HOME`, and `$HOME` contains
+  `~/.mecha/`.** `Trigger::workspace` is `Option<PathBuf>`; unset, it falls
+  through `setup::prepare_tools` to `std::env::current_dir()`, and
+  `scripts/mecha-triggers.service` sets `WorkingDirectory=%h`. A trigger with
+  filesystem tools and no explicit workspace can therefore `fs_read` the mail
+  OAuth tokens, the session transcripts and the learning store. The shipped
+  `morning.toml` escapes only because its tool allowlist is `mail__*` — the
+  jail is not what saves it. **Not trigger-specific**: `mecha chat` started
+  from your home directory has the same shape. The interlock remains a
+  backstop, but a jail rooted where the secrets live is the
+  silently-degrading-sandbox pattern. Two fixes: default the workspace to
+  `~/.mecha/workspaces/<name>/` at `add` time (which also gives triggers
+  stable cross-run read-back, see `PUBLIC-SURFACE-DESIGN.md` §2.2c), and
+  refuse in `setup` any workspace that contains the mecha home.
 - **File watchers.** `Trigger` has no watcher kind. Needs debounce and a
   "what changed" payload injected into the prompt.
 - **Inbound webhooks.** Nothing listens. The interesting part is that the payload
