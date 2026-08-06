@@ -280,8 +280,7 @@ impl LearningStore {
         if let Ok(dir) = std::env::var("MECHA_LEARNING_DIR") {
             return Ok(PathBuf::from(dir));
         }
-        let home = dirs::home_dir().context("cannot determine home directory")?;
-        Ok(home.join(".mecha").join("learning"))
+        Ok(crate::work::mecha_home()?.join("learning"))
     }
 
     /// Open the store, creating the layout (and, best-effort, the git repo) if

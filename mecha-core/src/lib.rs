@@ -67,6 +67,7 @@ pub mod session;
 pub mod subagent;
 pub mod tool;
 pub mod trigger;
+pub mod work;
 
 pub use agent::{Agent, AgentEvent, RunOutcome};
 pub use config::Config;

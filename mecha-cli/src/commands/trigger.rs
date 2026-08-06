@@ -315,8 +315,17 @@ fn show(name: &str, last: bool) -> Result<()> {
     if let Some(m) = &t.model {
         println!("  model       {m}");
     }
-    if let Some(w) = &t.workspace {
-        println!("  workspace   {}", w.display());
+    // Always shown, including the default a run would resolve to: "where is
+    // this jailed" is the question, and an omitted line answers it with
+    // silence.
+    match &t.workspace {
+        Some(w) => println!("  workspace   {}", w.display()),
+        None => println!(
+            "  workspace   {} (default)",
+            mecha_core::work::producer_dir(&t.name)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "unresolvable".into())
+        ),
     }
     if !t.tools.is_empty() {
         println!("  tools       {}", t.tools.join(", "));
@@ -495,12 +504,17 @@ fn add(global: &GlobalOpts, a: AddArgs) -> Result<()> {
     } else {
         PermissionMode::ReadOnly
     };
+    // Written down, not left implicit. An unset workspace fell through to the
+    // daemon's working directory — `WorkingDirectory=%h` in the shipped unit —
+    // which jails an unattended run over `~/.mecha/`. The trigger's own work
+    // directory holds nothing sensitive, and being stable across runs is what
+    // makes yesterday's output an ordinary file in today's run.
     t.workspace = match &global.workspace {
         Some(w) => Some(
             w.canonicalize()
                 .with_context(|| format!("workspace {} does not exist", w.display()))?,
         ),
-        None => None,
+        None => Some(mecha_core::work::ensure(&a.name)?),
     };
     t.tools = global.tools.clone();
     t.no_mcp = global.no_mcp;
@@ -814,11 +828,20 @@ async fn run_agent(
         format!("{base}\n\n{UNATTENDED}")
     };
 
+    // `add` writes the workspace down, but triggers authored before it did are
+    // on disk with the field unset — and unset is exactly the case that jailed
+    // to `$HOME`. Resolve it here too, so an existing trigger is fixed by
+    // upgrading rather than by remembering to edit it.
+    let workspace = match &t.workspace {
+        Some(w) => w.clone(),
+        None => mecha_core::work::ensure(&t.name)?,
+    };
+
     let opts = GlobalOpts {
         provider: t.provider.clone().or_else(|| global.provider.clone()),
         model: t.model.clone().or_else(|| global.model.clone()),
         system: Some(system),
-        workspace: t.workspace.clone(),
+        workspace: Some(workspace),
         // The trigger's own policy, never the config's `ask` — see the module
         // docs on trigger.rs. `ask` stays expressible and means "read-only plus
         // a denial that says so", which is what ModeApprover already does.

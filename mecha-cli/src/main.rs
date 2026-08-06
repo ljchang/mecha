@@ -179,6 +179,11 @@ pub enum Command {
     /// Review, edit, release, or reject staged outbound actions.
     Outbox(commands::outbox::Args),
 
+    /// What runs have generated, and removing what is past. Every producer —
+    /// a trigger, a chat — writes into its own directory, which is also the
+    /// path jail its runs get.
+    Work(commands::work::Args),
+
     /// Prompts that run on a schedule: a morning briefing, overnight inbox
     /// triage, calendar prep. `tick` fires what is due; `daemon` loops it.
     Trigger(commands::trigger::Args),
@@ -237,6 +242,7 @@ async fn dispatch() -> Result<()> {
         Command::Distill(args) => commands::distill::execute(&cli.global, args).await,
         Command::Validate(args) => commands::validate::execute(&cli.global, args).await,
         Command::Outbox(args) => commands::outbox::execute(&cli.global, args).await,
+        Command::Work(args) => commands::work::execute(args).await,
         Command::Trigger(args) => commands::trigger::execute(&cli.global, args).await,
         Command::Proposals(args) => commands::proposals::execute(args).await,
         Command::Rules(args) => commands::rules::execute(args).await,
