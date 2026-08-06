@@ -1891,7 +1891,7 @@ before the step that depends on them.
    degrades gracefully. Fifteen minutes is probably right; it is a trigger
    interval, not an architecture.
 6. **Does the `question` type ship at all** (§11).
-7. **Multi-tenancy's five open questions** are in §14.6 — what a tenant is,
+7. **Multi-tenancy's five open questions** are in §14.9 — what a tenant is,
    who is responsible for a tenant's content, per-tenant quotas, what a detached
    artifact says to a stranger, and how an agent on a new machine gets the
    user's public signing key. The first two are decisions about what this is
@@ -1992,7 +1992,71 @@ tenant until its own subdomain exists**, with the refusal naming why. Fail
 closed, and the notebook path keeps working for the operator's own tenant
 meanwhile.
 
-### 14.3 Live artifacts, and the attachment lease
+### 14.3 Two axes, not one
+
+The content class (`static` / `interactive` / `compute`) says how a thing is
+**served** — its CSP, and therefore its origin. It says nothing about whether
+the thing **collects**, and those are independent:
+
+| Kind | Examples | Has |
+|---|---|---|
+| **Publication** | a report, a blog page, a WASM notebook | immutable versions, a moving alias |
+| **Instrument** | an intake form, a booking page | a schema, an inbox, a lease, a handler |
+
+Everything in §§1–13 is about publications, and publications are finished when
+they are published: no inbox, no lease, nothing to attach, and a notebook is a
+publication however much code it runs. **Only an instrument needs any of what
+follows**, which is worth being exact about because it keeps the attachment
+machinery off the ninety percent of artifacts that would only be burdened by it.
+
+One consequence is a simplification: an instrument is server-rendered HTML with
+no script (§5.1), so it executes nothing and does **not** need a per-tenant
+origin the way a notebook does. Instruments can share the gate with tenancy
+enforced as namespace and queue. The expensive half of §14.2 — wildcards,
+DNS-01, a zone token on the box — is a cost of hosting other people's
+*notebooks*, not of hosting their forms.
+
+### 14.4 The request path may never require an agent
+
+The instinct that an instrument is "broken" when its agent is gone is right
+about a design where the agent answers the stranger, and that design is
+avoidable. Split it:
+
+- **Collection** — serve the form, validate against the schema, store the row,
+  return the templated acknowledgment. Deterministic, from data mecha uploaded
+  earlier. No model, no agent.
+- **Processing** — triage, compose a reply, write a calendar event. The handler.
+
+> **The origin must be able to answer a stranger completely, alone.** Nothing a
+> submitter sees synchronously may require the agent to be reachable.
+
+Then a detached instrument degrades from *responsive* to *collecting*, which is
+what every form product does when nobody reads the responses: they still land.
+Nothing a stranger sends is lost, and the failure is latency rather than
+breakage. It also protects two decisions already made for other reasons — no
+model on the public box (§8), and no token spend per stranger, since an
+unauthenticated endpoint that costs money per submission is the faucet the whole
+posture exists to close.
+
+Three concrete consequences, each of which is the rule biting:
+
+- **Acknowledgments are templated in the manifest**, never composed live.
+- **Booking slots are a small JSON the agent refreshes on a schedule**, served
+  from cache and stale by up to that interval — which is what youcanbookme does
+  when its sync lags, and it degrades gracefully (§13.5).
+- **Conditional form logic stays declarative**, which §5.1 already forced for a
+  different reason: the browser and the server must evaluate identical rules.
+
+What *does* break while detached is the **promise**. An acknowledgment saying
+"you will hear back within two days" is a lie if nobody attaches for a week. The
+artifact knows its own attachment state and its queue depth, so the honest
+answers are an acknowledgment that does not promise a turnaround it cannot keep,
+and an escalation on our side when a lease has been dead longer than the SLA it
+advertised. Silence is the failure mode this project exists to fix; an
+instrument that has quietly stopped being read is that failure with a form in
+front of it.
+
+### 14.5 Live artifacts, and the attachment lease
 
 A report is finished when it is published. **A form is not**: it has an inbox,
 and somewhere there has to be something that reads it. Today that something is
@@ -2027,7 +2091,7 @@ and nothing else. Not per-consumer cursors — two agents reading the same recor
 would both triage them, and the second one's work is a duplicate reply to a
 stranger.
 
-### 14.4 The handler lives on the server, and the server can never author one
+### 14.6 The handler lives on the server, and the server can never author one
 
 For a session to be genuinely transferable, the *mecha side* has to travel with
 the artifact: the prompt that triages a submission, the schedule that chases a
@@ -2058,7 +2122,59 @@ Two rules follow, and both are the fail-closed direction:
 - **The signing key never goes to the box.** It lives where the outbox key
   lives, at home, mode 0600. The box holds public keys only.
 
-### 14.5 What this changes about everything above
+### 14.7 What survives mecha dying
+
+Three different things persist, they fail differently, and conflating them is
+how a restart turns into a takeover or a duplicate reply to a stranger.
+
+**The handler definition — persistent in two places, and one of them is
+authoritative.** Home holds the source (`~/.mecha/instruments/<id>.toml`, the
+trigger store's neighbour); the factory holds the signed copy that any agent can
+pick up. Same relationship as a bundle and its mirror, and it settles the
+divergence question the same way: **the signed copy on the box is what is live**,
+because that is what a different machine would attach to, and home's copy is the
+source it was published from. Content-addressed, so a divergence is detectable
+rather than a matter of trust. If the box is unreachable, a restarted mecha can
+still read its own source and carry on; if *home* is lost, a new machine can
+recover the handler from the box and verify it against the user's public key.
+
+**The binding — a lease held by a key, not by a session.** This is the detail
+that decides whether a restart is ordinary or alarming. A session is a
+conversation and dies constantly; if the lease belonged to a session, every
+restart would look like a takeover and every takeover would look like a restart.
+So there are three levels, and the middle one is the durable one:
+
+```
+  tenant   the isolation boundary        (a person or a lab)
+  key      holds the lease, with a TTL   (an agent, a machine)   ← durable
+  session  attaches inside the lease     (a conversation)        ← ephemeral
+```
+
+A restart re-attaches under the same key and nothing happened. A *different*
+key attaching to a live lease is a takeover and must be explicit. A lease past
+its TTL is free for anyone in the tenant — which is what makes a dead laptop
+recoverable without shell access on the box.
+
+**Work in flight — replayed, never lost, and deduplicated at the far end.**
+`drain` is a pure read and `ack` is the delete (§4), so a record being processed
+when mecha dies is un-acked and comes back on the next drain. That is
+at-least-once by construction, which is the right side to err on for a
+stranger's request. The hazard it creates is a **duplicate side effect**: mecha
+drafted a reply, died before acknowledging, re-drained, and drafted again. The
+outbox makes that visible rather than harmful — two staged drafts are two things
+a human sees — but visible is not the same as handled, so **a staged item
+records the queue seq it came from**, and a second draft for a seq that already
+has one is collapsed rather than staged twice.
+
+**The schedule needs no new machinery.** Attaching an instrument installs its
+handler's schedule into the local trigger store; detaching removes it. Every
+property triggers already have then applies unchanged and for free: due-ness
+computed backwards from the ledger, so a laptop closed for a week wakes owing
+one run rather than forty; `catch_up` deciding whether a stale slot still fires;
+one run at a time behind a flock; a timeout that cancels rather than aborts. A
+second scheduler would have had to re-earn all of that.
+
+### 14.8 What this changes about everything above
 
 - §4's `GET /v1/queue` becomes lease-scoped rather than global.
 - §6's bundle ids are unique **within a tenant**, and the share URL carries the
@@ -2068,8 +2184,11 @@ Two rules follow, and both are the fail-closed direction:
 - §7.6's "one compute origin is fine" is replaced by per-tenant compute
   subdomains, which that section had already sketched as the "later, if we ever
   host a notebook someone else wrote" case. This is that case.
+- §5.1's "intake forms are server-rendered HTML with no framework" turns out to
+  be load-bearing twice: it is what lets instruments share one origin safely
+  (§14.3), and it is what makes §14.4's rule achievable at all.
 
-### 14.6 Open, and each blocks something specific
+### 14.9 Open, and each blocks something specific
 
 1. **Is a tenant a person or an institution?** It decides whether provisioning
    is the operator running `factory tenant create` or something self-serve, and
