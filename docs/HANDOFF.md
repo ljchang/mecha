@@ -375,10 +375,12 @@ behaviour came from the reflector model declining. If the design was always
 
 - **`mecha-factory` — the public surface.** Its own repository, created
   2026-08-06 at `~/Github/mecha-factory`: local only, no remote, MIT, CI
-  written. **Build steps 1–5 of §12 plus the MCP surface are done** (104
-  tests). What it does and why is documented there; the design that governs it
-  is [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) — §0 for scope, §12
-  for the order, §13 for what is still open. Do not re-derive any of it here.
+  written. **Build steps 1–6 of §12 are done** (153 tests) — the manifest, the
+  bundle store, the vendoring gate, the notebook path, the MCP surface, and
+  **the server**. What it does and why is documented there; the design that
+  governs it is [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) — §0 for
+  scope, §12 for the order, §13 for what is still open. Do not re-derive any of
+  it here.
 
   **It is wired into mecha and verified end to end**, which is the fact this
   file exists to carry: two config blocks (`[[mcp]]` plus `[outbox]
@@ -389,21 +391,45 @@ behaviour came from the reflector model declining. If the design was always
   each `<id>/<version>/bundle.json`, and `mecha work clean` refuses to remove
   anything named there.
 
+  **The server exists and has never been deployed.** `factory serve --dev`
+  binds three loopback ports to the three roles and takes the same path through
+  `Host` resolution, routing and headers as the deployed program; the only
+  untried code is the ACME acceptor, which cannot be exercised without a domain.
+  Verified end to end on 2026-08-06 against a real server: render → publish →
+  push → follow the alias → read the page → take it down → put it back.
+  `docs/DEPLOY.md` in that repository is the procedure.
+
+[redacted: operational detail — see docs/OPERATIONS.md]
+  be at **Cloudflare — DNS-only, never proxied**. Proxying would terminate TLS
+  at Cloudflare (which reads the plaintext of every drained submission, the one
+  thing §13.2 chose against) and would break TLS-ALPN-01, forcing DNS-01 and a
+  zone API token onto the box we assume is lost. The three registrable names are
+  still unchosen, and they are all that blocks a deploy.
+
   **Three things are deliberately not true yet**, each recorded in the code
   rather than implied:
 
-  - `visibility` is recorded and **unenforced** — the tailnet is the boundary
-    until there is a gate origin.
+  - **There is no unauthenticated write endpoint.** The public form, the
+    magic-link verification and the state machine are step 7, so nothing but a
+    held key can put a row in the queue; `factory queue add` on the box is the
+    only writer, and it validates against an uploaded type exactly as the form
+    endpoint will. Capability URLs for private bundles land with the same step —
+    until then a private bundle is served to nobody.
   - The `notebook` renderer **executes the notebook and is not confined**. It
     must not be wired to a trigger until it is.
   - `bundle_list`/`bundle_status` need mecha's capability override the day they
     read from an origin rather than the local store, because `openWorldHint`
     cannot set `untrusted_input` without also setting `external_send`.
 
-  **Next is step 6**, the server on the public box — the first thing that
-  creates a machine to patch forever, and the first that needs the open
-  decisions in §13 (which domains, which VPS, who patches it). Nothing before
-  it needed any of them.
+  *`visibility` used to be listed here as recorded-and-unenforced. It is
+  enforced now: a private bundle answers exactly what a bundle that never
+  existed answers, byte for byte, because any difference between them is the
+  answer to the question a capability URL exists to withhold.*
+
+  **Next is step 7** — verification, the templated acknowledgment, and the state
+  machine end to end with one request type. It depends on the mecha-side
+  quarantine layers and on batch review in the outbox, both of which are open
+  items above.
 
 - **Slack as a transport.** Zero lines exist. The blocking decision is the
   identity model, not the socket.
