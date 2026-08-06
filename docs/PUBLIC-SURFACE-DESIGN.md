@@ -1820,7 +1820,11 @@ this component. Build the factory because artifacts have nowhere to live.
    down" page exist and be unreachable.*
 7. **Verification, the templated acknowledgment, and the state machine end to
    end**, with one request type. *Depends on the mecha-side quarantine layers
-   and on batch review in the outbox.*
+   and on batch review in the outbox — the latter shipped 2026-08-06.*
+
+   **6.5 now comes first: the tenant column** (§14.1). It is a day's work, it is
+   the whole collision story even for a single user with two agents, and every
+   row the steps below add is a row that would otherwise need migrating.
 8. **The booking page**, and then **group availability seeded by the user's
    own**. *Depends on `calendar_freebusy` and the availability engine.*
 
@@ -1840,7 +1844,10 @@ before the step that depends on them.
 1. **Which domains.** Three registrable names are needed (gate, artifacts,
    compute) and none are chosen. It no longer blocks *building* step 6 — the
    names are configuration and dev mode uses loopback ports — but it is now the
-   only thing between a built server and a deployed one.
+   only thing between a built server and a deployed one. **§14.2 changes the
+   shape of the answer**: multi-tenancy makes the two artifact names wildcards
+   (`*.a.example.org`, `*.c.example.org`), so pick names that read well with a
+   tenant in front of them.
 2. **Which VPS, and who patches it.** *Settled 2026-08-06: **DigitalOcean**,
    with DNS at **Cloudflare in DNS-only mode**. Proxying is the decision to
    avoid rather than to make later: it terminates TLS at Cloudflare, which reads
@@ -1853,6 +1860,11 @@ before the step that depends on them.
    plus a `GET /v1/health` check from a trigger is the minimum, and the health
    check should be a trigger that stages a warning rather than something you
    remember to run.
+
+   **Partly reversed by §14.2**: the artifact origins need wildcard
+   certificates, and DNS-01 is the only challenge that issues one. The gate
+   keeps TLS-ALPN-01. What follows is the reasoning as it stood, and it still
+   holds for everything except the wildcards.
 
    Settled alongside it: **no CDN in front, to start.** A proxy that terminates
    TLS sees the plaintext of every request and response, which is the one thing
@@ -1879,10 +1891,205 @@ before the step that depends on them.
    degrades gracefully. Fifteen minutes is probably right; it is a trigger
    interval, not an architecture.
 6. **Does the `question` type ship at all** (§11).
-7. **Where the extraction pass runs.** Local model on `:8080` is free and
+7. **Multi-tenancy's five open questions** are in §14.6 — what a tenant is,
+   who is responsible for a tenant's content, per-tenant quotas, what a detached
+   artifact says to a stranger, and how an agent on a new machine gets the
+   user's public signing key. The first two are decisions about what this is
+   willing to be, not about how to build it.
+8. **Where the extraction pass runs.** Local model on `:8080` is free and
    private and is exactly the kind of small structured task it is good at;
    Anthropic is better at it and costs money per stranger. Probably local, with
    the failure path routing to me.
+
+---
+
+## 14. Multi-tenancy, and artifacts that stay attached
+
+**Decided 2026-08-06, and it reverses two things this document settled
+earlier.** Everything above assumes one person's surface: one set of keys, one
+namespace, one compute origin whose isolation argument is "everything on it was
+written by you or your agent". That assumption makes every user of mecha stand
+up their own box, which is a tax nobody pays — so the factory becomes
+multi-tenant, and the arguments that rested on single-tenancy have to be
+re-made rather than inherited.
+
+The second half of this section is a different idea that arrived with it: some
+artifacts are not *output*. A form and a booking page have an inbox, and
+something has to be listening. That makes them stateful objects with a handler
+attached, which is a kind of thing this design did not previously have.
+
+### 14.1 Two levels, because isolation and collision-avoidance are not the same question
+
+Tenant isolation and "two of my agents must not clobber each other" look like
+one problem and are two. Collapsing them costs something real: if a tenant
+*is* an agent, then `bundle_fetch` across agents stops working, and reading
+back what a previous run published — the question that started §2.2c — is
+answered "no" for every run on a different machine.
+
+So there are two levels, and each is the boundary for exactly one thing:
+
+| | What it is | What it bounds |
+|---|---|---|
+| **Tenant** | a person or a lab | isolation: namespace, queue, disk, origin, keys |
+| **Key** | one agent within a tenant | attribution: which agent created a row, and may move it |
+
+A key may **read** anything in its tenant and **write** only what it owns.
+That is what makes "all agents can see all artifacts, but two agents cannot
+collide" true without cutting an agent off from its own user's work.
+
+**Users are firewalled from each other completely.** No shared namespace, no
+shared origin, no shared queue, no cross-tenant read of any kind — including
+"a bundle id that happens to be the same word".
+
+### 14.2 Per-tenant origins, which is the part that costs something
+
+§7.6 argued one `compute` origin was enough because every notebook on it was
+ours. That argument is now false, and the failure is not theoretical: notebooks
+run under `wasm-unsafe-eval`, and **origin is the browser's only real isolation
+boundary** — same origin means shared storage, shared IndexedDB, and
+same-origin `fetch` of each other's URLs.
+
+The consequence to state plainly, because it is the one that gets skipped:
+**a path prefix is not isolation.** `/t/<tenant>/b/<id>/` gives a per-tenant
+namespace and *zero* browser-level separation. It is fine for `static`, where
+nothing executes, and it is not fine for anything that does.
+
+So each tenant gets its own hostnames, per class:
+
+```
+  <tenant>.a.example.org     artifacts   (static, interactive)
+  <tenant>.c.example.org     compute     (notebooks)
+  gate.example.org           the API, forms, and the capability check
+```
+
+Three consequences, each a reversal or a cost:
+
+- **DNS-01 becomes necessary**, reversing §13.2. A wildcard certificate is the
+  only way to serve `<tenant>.a.…` without an issuance per tenant, and DNS-01 is
+  the only challenge that gets a wildcard. That puts a zone-scoped API token on
+  the box we have agreed to assume is lost. The mitigation is a token scoped to
+  one delegated zone that holds nothing else — `_acme-challenge` records under
+  `a.example.org` and nothing at the apex — so a compromised box can forge
+  certificates for the artifact subdomains it already serves and for nothing
+  else.
+- **A wildcard per class, never one wildcard over everything.** `*.example.org`
+  would let a page at `a.example.org` set a cookie for `.example.org` that is
+  sent to every other tenant — the related-domain attack, and it turns the
+  isolation back off. Separate registrable names per class already exist for the
+  CSP; they carry this too.
+- **Public Suffix List submission stops being optional.** §7.6 deferred it
+  ("only if it becomes genuinely multi-tenant; do not block on it"). It is now
+  genuinely multi-tenant, and PSL membership is what makes `<tenant>.a.…`
+  cookie-independent of its siblings by rule rather than by our discipline. It
+  is not a blocker — the design carries no cookies today, and a capability that
+  travels in a URL or a header is unaffected — but the day a capability becomes
+  a cookie, this is what has to already be true.
+
+**Staged so the expensive half does not block the useful half:** a tenant may
+publish `static` and `interactive` on a shared origin behind a path prefix from
+day one, because nothing in a static bundle runs. **`compute` is refused for any
+tenant until its own subdomain exists**, with the refusal naming why. Fail
+closed, and the notebook path keeps working for the operator's own tenant
+meanwhile.
+
+### 14.3 Live artifacts, and the attachment lease
+
+A report is finished when it is published. **A form is not**: it has an inbox,
+and somewhere there has to be something that reads it. Today that something is
+whichever mecha happens to run `drain`, which is fine for one machine and
+meaningless for several.
+
+So an interactive artifact — a form, a booking page — carries an
+**attachment**, and the model is tmux: the artifact lives on the server and
+outlives every agent; an agent *attaches* to it; exactly one attachment exists
+at a time; and it can be detached and picked up somewhere else.
+
+- **The lease is held on the server**, because that is the only place two
+  machines can agree. A SQLite transaction, the same primitive as §9.1's slot
+  claim.
+- **It expires.** A lease with no expiry is a dead laptop holding a booking page
+  hostage forever. The holder renews on each drain; a lease past its TTL is
+  free.
+- **Takeover is explicit and possible.** `tmux attach -d`: an agent may seize a
+  live lease, the previous holder learns it on its next call, and the event is
+  in the ledger. Without this, the only recovery from a wedged holder is shell
+  access on the box.
+- **Detached is a state, not an absence** — the rule this project keeps
+  arriving at. An artifact with no holder keeps *collecting*: the origin serves
+  the form and queues submissions regardless, so nothing a stranger sends is
+  ever lost to an agent being down. What changes is that the queue grows and
+  the artifact can say so. A booking page detached for a week should probably
+  stop promising a reply within a day, and it is in a position to know.
+
+**The lease is also the queue partition**, which resolves the multi-agent drain
+question without a second mechanism: an agent drains the artifacts it holds,
+and nothing else. Not per-consumer cursors — two agents reading the same records
+would both triage them, and the second one's work is a duplicate reply to a
+stranger.
+
+### 14.4 The handler lives on the server, and the server can never author one
+
+For a session to be genuinely transferable, the *mecha side* has to travel with
+the artifact: the prompt that triages a submission, the schedule that chases a
+non-response, the callbacks on data arriving. Left in one machine's
+`~/.mecha/triggers/`, an artifact handed to another agent arrives inert.
+
+This is the dangerous part, and it is the same hazard §2 (Triggers) already
+names: a trigger is a scheduled unattended agent run, so **`[[trigger]]` is
+deliberately not declarable in a project's `mecha.toml`** — a repository you
+cloned would otherwise have been handed a cron slot on your machine. Putting
+handlers on the public box is that hazard again, one hop further away and on
+hardware we have agreed to assume is lost.
+
+So: **the factory stores handlers and cannot write one.** A handler is signed
+at home with the user's own key; an agent verifies the signature against that
+user's public key before it will run anything. A compromised box can serve a
+handler, delete one, or refuse to hand one over — it cannot forge one, and an
+unsigned or badly-signed handler is refused rather than run in a degraded mode.
+Exactly the property §4 already claims for drained records ("the server can only
+return objects that validate against a schema mecha itself uploaded"), applied
+to behaviour instead of to data.
+
+Two rules follow, and both are the fail-closed direction:
+
+- **Verification failure refuses the attach**, it does not attach read-only or
+  run a subset. A handler that cannot be proved to be yours is not a weaker
+  handler, it is somebody else's.
+- **The signing key never goes to the box.** It lives where the outbox key
+  lives, at home, mode 0600. The box holds public keys only.
+
+### 14.5 What this changes about everything above
+
+- §4's `GET /v1/queue` becomes lease-scoped rather than global.
+- §6's bundle ids are unique **within a tenant**, and the share URL carries the
+  tenant in its hostname rather than in its path.
+- §13.2's "no CDN, own ACME over TLS-ALPN-01" survives for the gate and dies
+  for the artifact origins, which need DNS-01 for their wildcards.
+- §7.6's "one compute origin is fine" is replaced by per-tenant compute
+  subdomains, which that section had already sketched as the "later, if we ever
+  host a notebook someone else wrote" case. This is that case.
+
+### 14.6 Open, and each blocks something specific
+
+1. **Is a tenant a person or an institution?** It decides whether provisioning
+   is the operator running `factory tenant create` or something self-serve, and
+   self-serve is a different program: it needs sign-up, abuse handling, and a
+   deletion path.
+2. **Whose responsibility is a tenant's content?** Hosting other people's
+   bytes on your domain and your IP address brings takedowns, abuse reports, and
+   the deletion request §11 deferred under "compliance". This is a decision about
+   what you are willing to be responsible for, not a technical one.
+3. **Per-tenant quotas.** The publish endpoint is the one place a held key can
+   fill the disk, and a global cap stops being a cap the moment the disk is
+   shared. Needs a per-tenant byte budget before the second tenant exists.
+4. **What a detached artifact tells a stranger.** "Collecting, nobody
+   processing" is honest and it is also an operational detail about somebody
+   else's week. Probably: the artifact's *owner* chooses, with the safe default
+   being silence.
+5. **Signing algorithm and key distribution.** Ed25519 is the obvious choice;
+   the question is how an agent on a new machine gets the user's public key —
+   from the box (which cannot be trusted to hand over the right one) or from the
+   user (which means a second thing to install alongside the API key).
 
 ---
 
