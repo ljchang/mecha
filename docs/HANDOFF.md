@@ -35,11 +35,11 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **468 tests**, no warnings — verified 2026-08-05:
+Expect **478 tests**, no warnings — verified 2026-08-06:
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 315 |
+| `mecha-core` unit | 325 |
 | `mecha-cli` unit | 73 |
 | `mecha-mail` unit | 66 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
@@ -80,7 +80,8 @@ A working agent harness, used and measured rather than just compiled.
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
-| Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/send/reject; edits mined as writing reflections |
+| Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/send/reject; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner |
+| Workspaces | `~/.mecha/work/<producer>/` is a run's workspace and its output directory; `mecha work list/path/clean`, retention nightly. A workspace containing the mecha home is refused |
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed |
 | Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, systemd unit in `scripts/` |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B) |
@@ -122,14 +123,21 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
 - **Nightly rumination**: `mecha-ruminate.timer` (systemd user, 03:30,
   `Persistent=true`, linger on) runs `scripts/ruminate.sh`: reflect → distill →
   validate `--unprocessed-only` (judge: gemma26) → learn
-  `--holdout 0.25 --propose` → `rules propose-retirements`. Logs land in
+  `--holdout 0.25 --propose` → `rules propose-retirements` → `work clean`.
+  Logs land in
   `~/.mecha/learning/logs/<date>.log`; pending proposals wait in
   `mecha proposals`. **Confirmed enabled 2026-08-05.**
 - **Triggers are built but nothing schedules them here.** `mecha trigger daemon`
   is not installed — `scripts/mecha-triggers.service` is written and untried
   (confirmed absent from `systemctl --user` 2026-08-05). Installing it is three
   lines, and until then triggers fire only when someone runs
-  `mecha trigger tick` or `run` by hand.
+  `mecha trigger tick` or `run` by hand. The blocker is gone: the `$HOME` jail
+  default that made installing it hazardous was fixed 2026-08-06, and the
+  shipped `morning` trigger now resolves to `~/.mecha/work/morning/`. Its
+  `notify` still shell-redirects into `~/.mecha/briefings/`, which is now
+  strictly worse than writing into the workspace — a one-line edit to
+  `~/.mecha/triggers/morning.toml`, deliberately left to the user since it is
+  their machine's config rather than the repo's.
 - **Both consume `~/.cargo/bin/mecha`**, not the repo build — reinstall
   (`cp target/release/mecha ~/.cargo/bin/`) after changing anything in the
   learning path, or the automation runs stale behaviour.
@@ -219,46 +227,27 @@ and it is worth reading before changing that code.
 
 ## What to do next
 
-**Sequenced.** Two orderings are load-bearing and were decided deliberately:
+**Sequenced.** One ordering is load-bearing and was decided deliberately:
 
-1. **The workspace fix lands before the trigger daemon is installed.** Nothing
-   fires unattended today, so the `$HOME` path jail is latent; installing the
-   daemon is what makes it live.
-2. **The mecha-side items below come before `mecha-factory`.** They serve the
-   email-responsiveness goal directly and need no VPS, no domains and no origin
-   decisions. Build the factory because artifacts have nowhere to live — not
-   because mail goes unanswered.
+**The mecha-side items below come before `mecha-factory`.** They serve the
+email-responsiveness goal directly and need no VPS, no domains and no origin
+decisions. Build the factory because artifacts have nowhere to live — not
+because mail goes unanswered.
 
-Every item below was verified against source on 2026-08-05 to still be unbuilt.
+The other ordering — the workspace fix before the trigger daemon — is **done**:
+the jail default and the mecha-home refusal shipped 2026-08-06, so installing
+`mecha trigger daemon` no longer arms a latent `$HOME` jail. See
+[`HISTORY.md`](HISTORY.md).
+
+Every item below was verified against source on 2026-08-06 to still be unbuilt.
 Ordered by value per unit of effort, not by size.
 
 ### Cheap, and worth doing first
 
-- **`~/.mecha/work/<producer>/` as the default run workspace.** One change
-  that closes four things at once, designed in `PUBLIC-SURFACE-DESIGN.md` §6.1
-  and the highest-value item on this list. Today a trigger carries an *optional*
-  workspace (`mecha-core/src/trigger.rs`) that nothing sets, so the jail falls
-  back to `$HOME` (see Triggers below), the run's answer survives only in the
-  session transcript, and the one shipped trigger improvises a `notify` shell
-  redirect into a directory it `mkdir -p`s on the way past. Giving every
-  producer a stable named directory: roots the jail somewhere harmless, gives
-  unattended runs a durable artifact, makes yesterday's output an ordinary file
-  in today's run, and gives `notify` something better to be. Needs a retention
-  policy with it — keep last *N*, a `clean` that says what it removed, and
-  never delete anything a published bundle references.
 - **Batch review in the outbox.** `mecha outbox send` takes exactly one id
   (`mecha-cli/src/commands/outbox.rs`), as do `show`/`edit`/`reject`. An
   overnight triage trigger that stages nine replies is then nine invocations.
   Wants grouping by kind and bulk approve/reject.
-- **The outbox's review affordances assume every item is a message.** `show`
-  prints args, `edit` opens `$EDITOR` on them, and `diff(args_before, args)`
-  feeds the `writing`-domain reflection miner. All three are wrong for a staged
-  *publish*, whose args are a path and a visibility flag — and the third is
-  actively harmful, since the miner would learn voice rules from directory-path
-  edits and carry them in every future run's cached prefix. Needs kind-aware
-  `show`, a refusal on `edit`, and a kind filter in the miner. Reasoning in
-  `PUBLIC-SURFACE-DESIGN.md` §2.2b. **Staging generalised to a new sink without
-  changing; reviewing did not.**
 - **Re-inject the todo list at compaction time.** `compact.rs` has no knowledge
   of the todo tool, so the model sees its list only through the echo in the last
   `todo` result — a compaction that summarises past that echo loses it. The list
@@ -340,20 +329,6 @@ behaviour came from the reflector model declining. If the design was always
 
 ### Triggers
 
-- **A trigger's path jail defaults to `$HOME`, and `$HOME` contains
-  `~/.mecha/`.** `Trigger::workspace` is `Option<PathBuf>`; unset, it falls
-  through `setup::prepare_tools` to `std::env::current_dir()`, and
-  `scripts/mecha-triggers.service` sets `WorkingDirectory=%h`. A trigger with
-  filesystem tools and no explicit workspace can therefore `fs_read` the mail
-  OAuth tokens, the session transcripts and the learning store. The shipped
-  `morning.toml` escapes only because its tool allowlist is `mail__*` — the
-  jail is not what saves it. **Not trigger-specific**: `mecha chat` started
-  from your home directory has the same shape. The interlock remains a
-  backstop, but a jail rooted where the secrets live is the
-  silently-degrading-sandbox pattern. Two fixes: default the workspace to
-  `~/.mecha/workspaces/<name>/` at `add` time (which also gives triggers
-  stable cross-run read-back, see `PUBLIC-SURFACE-DESIGN.md` §2.2c), and
-  refuse in `setup` any workspace that contains the mecha home.
 - **A durable task and deadline store, and a `/tasks` TUI modal.** Nothing
   tracks these: `~/.mecha/` has no task store and the `todo` tool is an in-run
   scratchpad that dies with the run. This is what turns silence from an absence
@@ -392,21 +367,36 @@ behaviour came from the reflector model declining. If the design was always
 
 ### Larger, and deliberately not started
 
-- **`mecha-factory` — the public surface.** Its own repository, not yet
-  created. **Two purposes:** publish what mecha makes (reports, dashboards, a
+- **`mecha-factory` — the public surface.** Its own repository, created
+  2026-08-06 at `~/Github/mecha-factory` (local only, no remote yet, MIT, CI
+  written). **Build step 1 of §12 is done**: `mecha-manifest` — the request-type
+  and bundle types, the JSON Schema generator, the HTML form generator and the
+  one validator both ends run, 47 tests, four request-type starters, and a
+  `render` example that writes a form you can open. Steps 2–5 are next and need
+  no VPS. **Two purposes:** publish what mecha makes (reports, dashboards, a
   morning briefing, marimo notebooks) as durable versioned permissioned URLs,
   and build typed interfaces back into mecha — a form being the default
   rendering rather than the point, since one manifest also emits the WebMCP
   tool, the MCP tool and the A2A skill. Note this is unrelated to *this*
   repository being public; it is a surface for the user's correspondents.
 
-  **The design is finished and buildable.**
+  **The design is finished and buildable, and its mecha-side prerequisites are
+  now met.**
   [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) is what to build —
   start at §0 for scope, §12 for the order.
   [`PUBLIC-SURFACE-RESEARCH.md`](PUBLIC-SURFACE-RESEARCH.md) is why, and is
-  only needed when a decision looks arbitrary. Seven decisions remain open
-  (§13); **none block build steps 1–5**, which need no VPS, no domains and no
-  origin decisions. Step 6 is the first that creates a box to patch forever.
+  only needed when a decision looks arbitrary. Six decisions remain open (§13 —
+  §13.3 was settled and built on 2026-08-06); **none block build steps 1–5**,
+  which need no VPS, no domains and no origin decisions. Step 6 is the first
+  that creates a box to patch forever.
+
+  Two things step 2 and step 5 leaned on landed 2026-08-06 and are worth knowing
+  before starting: the run workspace is `~/.mecha/work/<producer>/`, so a
+  rendered bundle has a place to be built and read back; and the outbox reviews
+  a publish differently from a message, keyed on `[outbox] publish_tools`, so
+  **naming the factory's routed publish tools in that list is part of wiring
+  the MCP server**. The publisher also owes `clean` a `"sources"` array in each
+  mirrored `bundle.json`, or the never-delete-a-source rule protects nothing.
 
   Settled: our own Rust server (SQLite/WAL, its own ACME, no CDN, forbidden
   from depending on `mecha-core`) reached over two scoped API keys rather than
