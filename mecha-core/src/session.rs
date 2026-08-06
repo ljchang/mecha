@@ -192,8 +192,7 @@ impl Session {
         if let Ok(dir) = std::env::var("MECHA_SESSION_DIR") {
             return Ok(PathBuf::from(dir));
         }
-        let home = dirs::home_dir().context("cannot determine home directory")?;
-        Ok(home.join(".mecha").join("sessions"))
+        Ok(crate::work::mecha_home()?.join("sessions"))
     }
 
     pub fn create(dir: &Path, meta: SessionMeta) -> Result<Self> {

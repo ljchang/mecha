@@ -386,6 +386,12 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     let workspace = workspace
         .canonicalize()
         .with_context(|| format!("workspace {} does not exist", workspace.display()))?;
+    // A jail rooted where the secrets live is close to no jail. `$HOME`
+    // contains `~/.mecha/` — the mail OAuth tokens, every transcript, the
+    // learning store — so `mecha chat` started from a home directory could
+    // `fs_read` all of it. Caught here rather than per-front-end, so it covers
+    // every future interface too.
+    mecha_core::work::ensure_outside_mecha_home(&workspace)?;
 
     // --- tools ---
     let sandbox = Arc::new(mecha_core::sandbox::Sandbox::new(cfg.sandbox.clone()));
