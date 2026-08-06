@@ -94,6 +94,25 @@ pub struct OutboxItem {
     /// The session that drafted this, when the front-end knew it.
     #[serde(default)]
     pub session_id: Option<String>,
+    /// The path jail the call was drafted under.
+    ///
+    /// A staged call is a *deferred* tool call, and a tool call only means
+    /// anything relative to the workspace it was made in: `bundle` here is a
+    /// directory under the drafting run's jail. Release happens in another
+    /// process, minutes or hours later, from whatever directory the reviewer
+    /// happens to be standing in — so without this the release resolves the
+    /// argument against the wrong root. An absolute path fails loudly; a
+    /// relative one is worse, because a same-named directory beside the
+    /// reviewer would quietly publish the wrong bytes.
+    ///
+    /// Recording it also keeps the release inside the jail the *agent* was
+    /// held to, rather than the reviewer's, which is the stricter of the two
+    /// and the one the interlock reasoned about.
+    ///
+    /// Defaulted, like `kind`: items staged before the field existed load as
+    /// `None` and release exactly as they did before.
+    #[serde(default)]
+    pub workspace: Option<PathBuf>,
     /// The conversation's taint at the moment of staging. An armed snapshot
     /// means third-party text was in context when this draft was written —
     /// review it as possibly an attacker's words, not the assistant's.
@@ -248,6 +267,7 @@ impl OutboxStore {
         args: Value,
         taint: Taint,
         session_id: Option<String>,
+        workspace: Option<PathBuf>,
     ) -> Result<OutboxItem> {
         let item = OutboxItem {
             id: Session::new_id(),
@@ -258,6 +278,7 @@ impl OutboxStore {
             args_before: args.clone(),
             args,
             session_id,
+            workspace,
             taint,
             created_at: chrono::Utc::now().to_rfc3339(),
             resolved_at: None,
@@ -441,6 +462,7 @@ mod tests {
                 json!({"url": "https://a"}),
                 Taint::default(),
                 None,
+                None,
             )
             .unwrap();
         let b = store
@@ -453,6 +475,7 @@ mod tests {
                     untrusted: true,
                 },
                 Some("sess-1".into()),
+                None,
             )
             .unwrap();
 
@@ -476,10 +499,24 @@ mod tests {
         let root = scratch("prefix");
         let store = OutboxStore::open(&root).unwrap();
         store
-            .stage("t", OutboxKind::Message, json!({}), Taint::default(), None)
+            .stage(
+                "t",
+                OutboxKind::Message,
+                json!({}),
+                Taint::default(),
+                None,
+                None,
+            )
             .unwrap();
         store
-            .stage("t", OutboxKind::Message, json!({}), Taint::default(), None)
+            .stage(
+                "t",
+                OutboxKind::Message,
+                json!({}),
+                Taint::default(),
+                None,
+                None,
+            )
             .unwrap();
 
         // Both ids share the timestamp prefix of the second they were made in.
@@ -499,6 +536,7 @@ mod tests {
                 OutboxKind::Message,
                 json!({"url": "https://a"}),
                 Taint::default(),
+                None,
                 None,
             )
             .unwrap();
@@ -539,6 +577,7 @@ mod tests {
                     kind,
                     json!({"path": "/tmp/a"}),
                     Taint::default(),
+                    None,
                     None,
                 )
                 .unwrap();
@@ -596,6 +635,41 @@ mod tests {
         .unwrap();
         assert_eq!(item.kind, OutboxKind::Message);
         assert!(item.mineable_as_writing());
+        // And the same for the jail it was drafted under: an older item names
+        // none, and a release falls back to the reviewer's workspace, which is
+        // exactly what it did before the field existed.
+        assert_eq!(item.workspace, None);
+    }
+
+    /// A staged call is a deferred tool call, and the release happens in
+    /// another process from another directory. Without the drafting jail on
+    /// the item, `{"bundle": "site"}` resolves against wherever the reviewer
+    /// stands — an absolute path fails loudly, and a relative one silently
+    /// publishes whatever `./site` happens to be there.
+    #[test]
+    fn a_staged_call_records_the_jail_it_was_drafted_under() {
+        let root = scratch("workspace");
+        let store = OutboxStore::open(&root).unwrap();
+        let jail = PathBuf::from("/home/someone/.mecha/work/morning");
+
+        let item = store
+            .stage(
+                "factory__bundle_publish",
+                OutboxKind::Publish,
+                json!({"bundle": "site", "id": "brief"}),
+                Taint::default(),
+                None,
+                Some(jail.clone()),
+            )
+            .unwrap();
+        assert_eq!(item.workspace.as_ref(), Some(&jail));
+
+        // And it survives the round-trip through the file, which is the only
+        // form the reviewing process ever sees.
+        let loaded = store.item(&item.id).unwrap();
+        assert_eq!(loaded.workspace.as_ref(), Some(&jail));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -603,7 +677,14 @@ mod tests {
         let root = scratch("resolve");
         let store = OutboxStore::open(&root).unwrap();
         let item = store
-            .stage("t", OutboxKind::Message, json!({}), Taint::default(), None)
+            .stage(
+                "t",
+                OutboxKind::Message,
+                json!({}),
+                Taint::default(),
+                None,
+                None,
+            )
             .unwrap();
 
         let sent = store.resolve(&item.id, "sent", None).unwrap();
@@ -628,7 +709,14 @@ mod tests {
         let root = scratch("error");
         let store = OutboxStore::open(&root).unwrap();
         let item = store
-            .stage("t", OutboxKind::Message, json!({}), Taint::default(), None)
+            .stage(
+                "t",
+                OutboxKind::Message,
+                json!({}),
+                Taint::default(),
+                None,
+                None,
+            )
             .unwrap();
 
         store.record_error(&item.id, "server unreachable").unwrap();
