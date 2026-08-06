@@ -75,7 +75,7 @@ A working agent harness, used and measured rather than just compiled.
 | Budgets | `max_turns`, `max_output_tokens`, `max_cost_usd`, cost accounting |
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
 | Context | Two-pass compaction: thin tool results, then summarise. Taint preserved |
-| Interfaces | `run`, `chat`, `tui`, `batch`, `eval` |
+| Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep |
 | TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
@@ -91,7 +91,7 @@ A working agent harness, used and measured rather than just compiled.
 
 ## Environment as left
 
-Running on the DGX Spark (GB10, aarch64, 128GB unified). **Verified 2026-08-05:**
+Running on the DGX Spark (GB10, aarch64, 128GB unified). **Verified 2026-08-06:**
 
 | Port | Model | State |
 |---|---|---|
@@ -142,13 +142,13 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
   source. Publishing stays a deliberate act rather than part of `notify`,
   because it is the verb that costs a review and there is no MCP surface to
   stage it through yet.
-- **Both consume `~/.cargo/bin/mecha`**, not the repo build — reinstall
+- **The automation consumes `~/.cargo/bin/`, not the repo build.** Reinstall
   (`cp target/release/mecha ~/.cargo/bin/`) after changing anything in the
-  learning path, or the automation runs stale behaviour. This bit on
-  2026-08-06: `ruminate.sh` gained a `work clean` step while the installed
-  binary had no such subcommand, and the nightly was 41 minutes away. Both
-  binaries are installed as of then — `mecha` and `factory-publish`, the
-  latter because `morning.toml`'s `notify` now calls it.
+  learning path, and `factory-publish` too, since `morning.toml`'s `notify`
+  calls it. This bit twice on 2026-08-06: once when `ruminate.sh` gained a
+  `work clean` step the installed binary did not have, 41 minutes before the
+  nightly, and once when a `factory-publish` fix sat unbuilt in the repo for
+  nine hours. **Both verified installed 2026-08-06 12:16.**
 - The learning store (`~/.mecha/learning`) holds **zero live rules** — the one
   early rule was reverted with its poisoned reflection — so everything from here
   accumulates from real usage through the gate.
@@ -205,16 +205,14 @@ set as it stood then (`results/qwen-hard-v2.json`):
   bug, and runs the tests itself. Graded by running them, not by asking.
 - **synthesis 2/2** — finds the majority figure and the outlier, and notices
   which report supersedes which.
-- **ambiguity 8/9 across the tag** once `ask_user` existed *and* the cases were
-  rewritten to grade the trace. The measurement history is the lesson: a clean
-  A/B said the tool made no difference (6/9 either way) and the transcripts said
-  otherwise — without it the model burned **30 tool calls** and died on the turn
-  ceiling with a correct answer; with it, it asked in **3** and failed a rubric
-  that demanded it ask for two missing things at once. A large real improvement
-  was invisible to the grader. `ambiguous-rate` now asserts `tools: ["ask_user"]`
-  and `false-premise` asserts `forbid_tools: ["ask_user"]` — because the right
-  move there is *not* to ask, the file simply does not exist. Read the
-  transcripts before believing a score.
+- **ambiguity 8/9 across the tag**, once `ask_user` existed *and* the cases
+  graded the trace rather than the answer. `ambiguous-rate` asserts
+  `tools: ["ask_user"]`; `false-premise` asserts `forbid_tools: ["ask_user"]`,
+  because the right move there is *not* to ask — the file simply does not
+  exist. How that was arrived at, and why a clean A/B said the tool made no
+  difference while the transcripts said otherwise, is in
+  [`HISTORY.md`](HISTORY.md) under Traps → Measuring. Read the transcripts
+  before believing a score.
 
 Only `ambiguity` and `synthesis` have a judge in the loop, and judges disagree
 with themselves across runs. Read the answer before believing a single verdict.
@@ -376,100 +374,36 @@ behaviour came from the reflector model declining. If the design was always
 ### Larger, and deliberately not started
 
 - **`mecha-factory` — the public surface.** Its own repository, created
-  2026-08-06 at `~/Github/mecha-factory` (local only, no remote yet, MIT, CI
-  written). **Build steps 1 and 2 of §12 are done**, 59 tests:
+  2026-08-06 at `~/Github/mecha-factory`: local only, no remote, MIT, CI
+  written. **Build steps 1–5 of §12 plus the MCP surface are done** (104
+  tests). What it does and why is documented there; the design that governs it
+  is [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) — §0 for scope, §12
+  for the order, §13 for what is still open. Do not re-derive any of it here.
 
-  - `mecha-manifest` — the request-type and bundle types, the JSON Schema
-    generator, the HTML form generator, the one validator both ends run, four
-    request-type starters, and a `render` example that writes a form you can
-    open.
-  - `mecha-factory-publish` (bin `factory-publish`) — `render` / `publish` /
-    `alias` / `unpublish` / `list` / `status` / `fetch` over a content-addressed
-    immutable bundle store in `~/.mecha/bundles`, plus the markdown `report`
-    template. Point `tailscale serve` at that directory and the share URLs work.
+  **It is wired into mecha and verified end to end**, which is the fact this
+  file exists to carry: two config blocks (`[[mcp]]` plus `[outbox]
+  publish_tools`, see that repo's README), and an agent asked to publish gets
+  "drafted, not sent", `mecha outbox show` leads with the rendered page, `edit`
+  is refused, and `send` lands an immutable version. The cross-repo retention
+  contract holds too: the publisher writes an absolute `sources` array into
+  each `<id>/<version>/bundle.json`, and `mecha work clean` refuses to remove
+  anything named there.
 
-  **The cross-repo contract is verified end to end**: `factory-publish` writes
-  an absolute `sources` array into each `<id>/<version>/bundle.json`, and
-  `mecha work clean` refuses to remove anything named there and says why. The
-  layout is two levels exactly — a `v/` level would silently turn retention into
-  something that deletes a published report's input.
+  **Three things are deliberately not true yet**, each recorded in the code
+  rather than implied:
 
-  **Steps 3, 4 and the MCP surface are done too** (100 tests). Step 4 is
-  verified in a browser, not asserted: a marimo notebook boots and computes
-  under the full compute CSP with **zero off-origin loads**, its Python runtime
-  vendored from a pinned allowlist and every wheel checked against the sha256 in
-  Pyodide's own lock file. `factory-publish serve` plus `scripts/csp-probe.py`
-  are the harness. §7.1's policy survived — `unsafe-eval` turned out never to be
-  needed, and §7.3's `data:` URL problem does not apply to the export path at
-  all. Both corrections are recorded in the design.
+  - `visibility` is recorded and **unenforced** — the tailnet is the boundary
+    until there is a gate origin.
+  - The `notebook` renderer **executes the notebook and is not confined**. It
+    must not be wired to a trigger until it is.
+  - `bundle_list`/`bundle_status` need mecha's capability override the day they
+    read from an origin rather than the local store, because `openWorldHint`
+    cannot set `untrusted_input` without also setting `external_send`.
 
-  The MCP surface is wired and verified against a real mecha: seven tools,
-  capabilities as designed, an agent's publish staged as a draft, kind-aware
-  review, and `send` landing an immutable version. Wiring is two config blocks
-  — see `mecha-factory/README.md`.
-
-  Step 3 was the external-reference gate. A publish
-  *fails* — never warns — on anything the page would fetch off its own origin,
-  with every finding named by file, line, URL and reason, and resolved back to
-  the line in the markdown source rather than in generated HTML. A `<a href>` is
-  never a finding; `<img src>`, `<link href>`, `@import`, `url()` and anything
-  in a script are. `factory-publish check <dir>` runs it alone, and the
-  factory's CI runs it instead of the grep it shipped with.
-
-  **What is still not true**, and each is written down in the code rather than
-  implied: `visibility` is recorded and unenforced (the tailnet is the
-  boundary until there is a gate origin); the notebook renderer **executes the
-  notebook and is not confined**, so it must not be wired to a trigger yet; and
-  `bundle_list`/`bundle_status` will need mecha's capability override the day
-  they read from an origin rather than the local store.
-
-  Next is step 6, `mecha-factory` itself — the first thing that creates a box
-  to patch forever, and the first that needs the open decisions in §13.
-  **Two purposes:** publish what mecha makes (reports, dashboards, a
-  morning briefing, marimo notebooks) as durable versioned permissioned URLs,
-  and build typed interfaces back into mecha — a form being the default
-  rendering rather than the point, since one manifest also emits the WebMCP
-  tool, the MCP tool and the A2A skill. Note this is unrelated to *this*
-  repository being public; it is a surface for the user's correspondents.
-
-  **The design is finished and buildable, and its mecha-side prerequisites are
-  now met.**
-  [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) is what to build —
-  start at §0 for scope, §12 for the order.
-  [`PUBLIC-SURFACE-RESEARCH.md`](PUBLIC-SURFACE-RESEARCH.md) is why, and is
-  only needed when a decision looks arbitrary. Six decisions remain open (§13 —
-  §13.3 was settled and built on 2026-08-06); **none block build steps 1–5**,
-  which need no VPS, no domains and no origin decisions. Step 6 is the first
-  that creates a box to patch forever.
-
-  Two things step 2 and step 5 leaned on landed 2026-08-06 and are worth knowing
-  before starting: the run workspace is `~/.mecha/work/<producer>/`, so a
-  rendered bundle has a place to be built and read back; and the outbox reviews
-  a publish differently from a message, keyed on `[outbox] publish_tools`, so
-  **naming the factory's routed publish tools in that list is part of wiring
-  the MCP server**. The publisher also owes `clean` a `"sources"` array in each
-  mirrored `bundle.json`, or the never-delete-a-source rule protects nothing.
-
-  Settled: our own Rust server (SQLite/WAL, its own ACME, no CDN, forbidden
-  from depending on `mecha-core`) reached over two scoped API keys rather than
-  OAuth, push–pull posture, immutable content-addressed bundle versions behind
-  a moving alias, templates as the extension point, marimo first-class on its
-  own origin with vendored assets and a publish that *fails* on any surviving
-  external reference, plain HTML and vanilla JS for forms with Svelte only
-  where there is real reactivity, and an eight-tool MCP surface (§2.2a is the
-  canonical table).
-
-  **Do not build this first if answered mail is the pressing problem.** Email
-  responsiveness is a goal of *mecha*, and the items above in "Cheap" and
-  "Triggers" — the work directory, batch review, tasks, the question queue,
-  `calendar_freebusy` — serve it directly and need none of this. Build the
-  factory because artifacts have nowhere to live and requests have no shape.
-
-  **Evidence gathered 2026-08-05:** twelve months of the user's mail mined for
-  the request types that actually recur. Lives at
-  `~/.mecha/analysis/`, outside every checkout, and **must not be committed** —
-  design conclusions may be, figures and personal policy may not. See
-  `.gitignore`.
+  **Next is step 6**, the server on the public box — the first thing that
+  creates a machine to patch forever, and the first that needs the open
+  decisions in §13 (which domains, which VPS, who patches it). Nothing before
+  it needed any of them.
 
 - **Slack as a transport.** Zero lines exist. The blocking decision is the
   identity model, not the socket.
