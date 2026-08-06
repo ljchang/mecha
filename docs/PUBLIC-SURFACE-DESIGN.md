@@ -987,6 +987,47 @@ minting a new one. That makes "did anything actually change?" a comparison
 rather than a guess, and it makes the nightly briefing that produced the same
 page twice cost one row.
 
+### 6.1 Two directories, and the scratch one solves three problems
+
+Generated output needs somewhere to go that is **not** the published store, and
+today it goes wherever a `notify` shell command improvises. The fix is a
+designated, cleanable directory — and it turns out to be the same directory
+that answers two other open items, which is a good sign it is the right shape.
+
+```
+~/.mecha/work/<producer>/       generated · mutable · disposable · cleanable
+~/.mecha/bundles/<id>/<ver>/    published · immutable · versioned · never deleted
+```
+
+`<producer>` is a trigger's name, or `chat`, or a session id. **This is also
+the run's workspace**, which is what makes it worth more than tidiness:
+
+- **It fixes the jail default.** A trigger with no explicit workspace currently
+  jails to `$HOME`, which contains the mail tokens and the learning store
+  (`HANDOFF.md`, Triggers). Defaulting it to `~/.mecha/work/<name>/` roots the
+  jail somewhere containing nothing sensitive.
+- **It fixes cross-run read-back within a producer.** Yesterday's briefing is an
+  ordinary file in today's run, because the directory is stable and named.
+  `bundle_fetch` (§2.2c) still handles the cross-producer and version-addressed
+  cases.
+- **It gives `notify` something better to be.** The morning trigger's
+  `mkdir -p ~/.mecha/briefings && cat > …` exists only because there was no
+  designated place. With one, the trigger writes into its workspace like any
+  other run, and publishing is `bundle_publish` rather than a shell redirect.
+
+**Retention has to be a policy, not an intention.** The lesson of this entire
+project is that anything without one becomes a pile nobody opens. So: keep the
+last *N* per producer, a `mecha work clean` that says what it removed, and one
+hard rule — **never delete anything a published bundle's source references**,
+because "regenerate last week's report" must not silently lose its input.
+
+**A note on the name.** `artifacts/` is the obvious word and the wrong one
+here: this document uses *artifact* throughout to mean a **published** thing,
+and a directory of unpublished scratch called `artifacts/` sitting next to
+`bundles/` would invert that every time someone read it. `work/` matches
+*workspace*, which is what it actually is. Worth deciding deliberately rather
+than inheriting.
+
 **The transcript is still the record.** A bundle is a rendering of a run, and
 when they disagree the transcript wins — the rule `/triggers` already follows.
 Versioning does not change that; it just means the rendering has a history too.
