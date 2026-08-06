@@ -479,6 +479,17 @@ The general lesson, worth keeping: **the outbox generalised to a new sink
 without changing, which was the design goal — but its *review* affordances did
 not.** Staging is sink-agnostic. Reviewing is not.
 
+> **Built 2026-08-06**, all three, ahead of anything that stages a publish —
+> deliberately, because the miner is the one that does damage retroactively.
+> `OutboxKind` (`message` | `publish`) rides on the item, defaulted on load;
+> the kind comes from `[outbox] publish_tools` in config, never from the tool,
+> since the loop must not learn what a publish is and an MCP server cannot be
+> trusted to say. `show` leads with the bundle directory and the file to open,
+> `edit` is refused with the real action named, and the miner filter lives on
+> `OutboxItem::mineable_as_writing` so it is a property of the type with a test
+> on it. Naming the publish tools in `[outbox] publish_tools` is therefore part
+> of wiring the factory MCP server, not an afterthought.
+
 ### 2.3 Render and publish are split, because rendering executes the notebook
 
 Not an accident of packaging — a trust boundary, and the thing most likely to
@@ -1061,6 +1072,24 @@ project is that anything without one becomes a pile nobody opens. So: keep the
 last *N* per producer, a `mecha work clean` that says what it removed, and one
 hard rule — **never delete anything a published bundle's source references**,
 because "regenerate last week's report" must not silently lose its input.
+
+> **Built 2026-08-06** (mecha-side, `mecha-core/src/work.rs` + `mecha work`),
+> with *N* = 10 as `[work] keep`. Two notes for the publisher, which is the
+> other half of the hard rule:
+>
+> - **The protection contract is one field of data**, not a shared type, for the
+>   same reason the manifest is: a mirrored version directory
+>   (`~/.mecha/bundles/<id>/<ver>/`) may carry a `bundle.json` with a
+>   `"sources": ["<absolute path>", …]` array naming what it was rendered from,
+>   and `clean` reads exactly that. Everything else in the file is
+>   `mecha-factory-publish`'s business. **If the publisher does not write
+>   `sources`, the rule protects nothing** — the mechanism is in place and its
+>   input is the publisher's job to supply, which is worth knowing before
+>   assuming a source is safe.
+> - `clean` counts **entries**, not files, because a rendered bundle is a
+>   directory. It reports protected survivors by name rather than skipping them
+>   silently: an entry that outlives its own retention window reads as a bug in
+>   the sweep unless the reason is on screen.
 
 **A note on the name.** `artifacts/` is the obvious word and the wrong one
 here: this document uses *artifact* throughout to mean a **published** thing,
@@ -1645,7 +1674,9 @@ this component. Build the factory because artifacts have nowhere to live.
    to configure. The step most likely to surprise us.
 5. **`bundle_fetch` and stable trigger workspaces** (§2.2c), which is what
    makes "read back what a previous run published" true across runs rather
-   than within one. *Depends on the mecha-side workspace fix in `HANDOFF.md`.*
+   than within one. *The mecha-side workspace fix shipped 2026-08-06, so the
+   trigger-workspace half of this step is already done — what remains is
+   `bundle_fetch` for the cross-producer and version-addressed cases.*
 6. **`mecha-factory`**: the four verbs, two scoped keys, SQLite, the three
    origins, the CSPs. **The first step that creates a box to patch forever.**
 7. **Verification, the templated acknowledgment, and the state machine end to
@@ -1685,9 +1716,12 @@ before the step that depends on them.
    absorption. For a personal booking page that is an annoyance, not a crisis,
    and putting a CDN in front later changes nothing about the origin — which
    is the point of keeping it a plain program.
-3. **Is the scratch directory `work/` or something else** (§6.1), and what is
-   *N* in "keep the last N per producer"? Naming is cheap now and annoying
-   later; the retention number wants one week of real output to pick.
+3. ~~**Is the scratch directory `work/` or something else** (§6.1), and what is
+   *N* in "keep the last N per producer"?~~ **Settled 2026-08-06 and built:**
+   `work/`, on §6.1's argument, and *N* = 10 — enough to hold a week and a half
+   of a daily producer, so both "what did yesterday say" and "what changed since
+   Monday" survive. Tunable as `[work] keep`, and still wanting a week of real
+   output to confirm; what mattered was that the sweep exists at all.
 4. **Does `mecha-factory` render the booking page, or does it serve a published
    bundle?** Serving a bundle keeps the server dumber; rendering lets
    availability be fresher than the last publish. Probably: serve a bundle,
