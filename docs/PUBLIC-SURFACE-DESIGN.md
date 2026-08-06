@@ -2190,14 +2190,14 @@ second scheduler would have had to re-earn all of that.
 
 ### 14.9 Open, and each blocks something specific
 
-1. **Is a tenant a person or an institution?** It decides whether provisioning
-   is the operator running `factory tenant create` or something self-serve, and
-   self-serve is a different program: it needs sign-up, abuse handling, and a
-   deletion path.
-2. **Whose responsibility is a tenant's content?** Hosting other people's
-   bytes on your domain and your IP address brings takedowns, abuse reports, and
-   the deletion request §11 deferred under "compliance". This is a decision about
-   what you are willing to be responsible for, not a technical one.
+1. ~~**Is a tenant a person or an institution?**~~ **Settled 2026-08-06: a
+   person.** Provisioning is `factory user create` on the box today and a signup
+   flow later, onto the same mechanism. See §15.
+2. ~~**Whose responsibility is a tenant's content?**~~ **Settled 2026-08-06:
+   ours.** Which makes this a service rather than a personal surface, and §15 is
+   what that commits us to — an abuse contact, withhold-versus-purge, enforced
+   retention, and the outbound-mail reputation problem that comes with
+   verification.
 3. **Per-tenant quotas.** The publish endpoint is the one place a held key can
    fill the disk, and a global cap stops being a cap the moment the disk is
    shared. Needs a per-tenant byte budget before the second tenant exists.
@@ -2209,6 +2209,144 @@ second scheduler would have had to re-earn all of that.
    the question is how an agent on a new machine gets the user's public key —
    from the box (which cannot be trusted to hand over the right one) or from the
    user (which means a second thing to install alongside the API key).
+
+---
+
+## 15. Users, and what hosting them commits us to
+
+**Decided 2026-08-06: a tenant is a person, and we are willing to be
+responsible for their content.** Account management and signup come later; this
+section is what has to be true *now* so that later is a new front door rather
+than a migration — and what taking that responsibility actually costs, since
+most of it is not code.
+
+### 15.1 An id, and a handle that is never reused
+
+A user is a person with a verified email address. Two identifiers, and keeping
+them apart is the cheapest decision here and the most expensive one to undo:
+
+- **The id** is opaque, stable, and the only thing rows point at. Emails change,
+  people marry, universities rename their domains — a foreign key on an email
+  address is a foreign key on a mutable fact.
+- **The handle** is the label in the hostname (`lukechang.a.example.org`). It is
+  chosen once and it is **never reused**, not even after the account is gone.
+
+That second rule is the one to get right on the first day. A freed handle is a
+hijack: every URL that person ever shared — in a paper, in an email thread, in a
+grant — would resolve to whoever claimed the name next, on a domain we vouch
+for. Versions are immutable for the same reason at a smaller scale, and this is
+that argument at the scale of a whole namespace. A rename therefore leaves the
+old handle **retired and pointing nowhere**, and a redirect only if the same
+person asked for it.
+
+### 15.2 Provisioning now, signup later, one mechanism
+
+Today: `factory user create --email …` on the box, which mints the user and
+prints their first key once. Later: a signup flow that verifies the address and
+calls exactly that. The rule is the one `tick` and `daemon` already follow —
+**the front door is new, the mechanism is not** — because a parallel path is how
+two ways of creating a user come to disagree about what a valid one is.
+
+Which means the verification machinery step 7 builds for *inbound requests* is
+the same machinery signup needs. Build it once, aimed at strangers, and point it
+at prospective users afterwards.
+
+### 15.3 What "responsible for their content" actually requires
+
+Four things, and only the last is interesting to build:
+
+- **A way to be reached.** An abuse contact that a human answers, published on
+  the origin. Nothing else on this list matters if the first anyone hears of a
+  problem is a registrar complaint.
+- **A way to act fast.** Already present, and this is the payoff of the alias
+  design: moving an alias to nothing takes a page down in one call, everywhere,
+  without destroying evidence. Suspending a *user* is the same move over their
+  whole namespace.
+- **A record of who published what and when.** The ledger has it per key;
+  per-user is one column.
+- **Withholding and purging are different operations, and only one of them
+  destroys anything.** This is where the "nothing is ever deleted" rule meets a
+  legal deletion request, and the answer is not to weaken the rule but to name
+  the exception:
+
+  | | What it does | Reversible | Who |
+  |---|---|---|---|
+  | **withhold** | never served again; bytes stay on disk | yes | us, immediately, on a report |
+  | **purge** | the bytes are gone | **no** | a deliberate act against a specific legal demand |
+
+  Withholding is the default response to anything alarming, because it is
+  instant and costs nothing if the report was wrong. Purge is the only operation
+  in this system that destroys a record, it is logged as its own kind of event,
+  and it is never automatic — a takedown pipeline that can purge is a takedown
+  pipeline that will purge the wrong thing at three in the morning.
+
+### 15.4 Retention stops being deferrable
+
+§11 deferred compliance and said to keep `retain_days` and the consent field so
+that turning it on later is a policy change rather than a migration. With real
+users collecting real strangers' data, one half of that stops being deferrable:
+**`retain_days` has to be enforced from the first user**, or the box accumulates
+an unbounded pile of other people's personal data with no deletion story and no
+way to answer the first person who asks for theirs.
+
+It is a small sweep — the same shape as `mecha work clean`, which already
+demonstrates the pattern of a retention policy that says exactly what it
+removed. What is *not* deferrable is having one at all.
+
+### 15.5 The email path is the abuse surface nobody expects
+
+Verification (§3) means **the box sends email to strangers**, from our domain,
+on behalf of a user's form. That is a spam cannon with a signup flow in front of
+it, and it is the most likely way this service damages something that is hard to
+repair:
+
+- **Rate-limit verification sends per user and per recipient**, not just per
+  address. A form that mails the same person forty times is the abuse; a form
+  that mails forty people once may be a conference.
+- **Use a separate envelope domain** for outbound verification, so one user's
+  abuse burns a reputation we can replace rather than the one our own mail
+  depends on.
+- **A new user's send budget starts small.** Reputation is earned per account,
+  not granted at signup.
+
+Worth stating what this does *not* extend to: **the factory never sends mail as
+a user.** Replies to a stranger go out through that user's own mecha and their
+own mailbox, which is where the outbox review already lives. Keeping delivery
+out of the service keeps us out of the deliverability business for everything
+except our own verification mail.
+
+### 15.6 What we are deliberately not taking on
+
+Each of these is a boundary that keeps the service small enough to run:
+
+- **No server-side execution of user code, ever.** A notebook is WebAssembly in
+  the *reader's* browser, so hosting one costs us bytes and no CPU. This was a
+  security property when there was one user; multi-tenant it is also what keeps
+  the box from being a compute service with a free tier.
+- **No arbitrary hosting.** What can be published is what a template renders.
+  "A directory of files a user uploaded" is a different product with a different
+  abuse profile.
+- **No user-supplied domains** to start. Someone else's DNS pointed at our IP
+  makes their outage our support ticket and their reputation our problem.
+
+### 15.7 What the schema must carry from the first row
+
+So that signup is a front door and not a migration:
+
+```
+users     id (opaque) · handle (unique, never reused, including retired)
+          · email · status (active | suspended) · created_at
+          · quota_bytes · send_budget
+keys      … + user_id
+bundles   … + user_id, withheld_at, withheld_reason
+types     … + user_id
+queue     … + user_id, retain_until
+```
+
+`quota_bytes` and `send_budget` exist before they are enforced, and
+`withheld_at` exists before there is anyone to complain, for the same reason
+`retain_days` was kept in the manifest: a column added under load is a
+migration, and a column added now is a default.
 
 ---
 
