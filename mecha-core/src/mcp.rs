@@ -84,6 +84,17 @@ impl McpClient {
         } else {
             let mut c = tokio::process::Command::new(&cfg.command);
             c.args(&cfg.args);
+            // The workspace, whether or not we confine. A confined server gets
+            // it as the only writable mount and `--chdir`s there; an
+            // unconfined one used to inherit *mecha's* working directory,
+            // which is wherever the user happened to launch it. That is not a
+            // containment hole — an unconfined server can reach anything
+            // regardless — but it silently breaks every server that resolves a
+            // relative path, because the model's paths are relative to the run
+            // workspace and the server's are not. `mecha-factory-publish`
+            // documents `--root` as defaulting to the working directory on
+            // exactly this assumption.
+            c.current_dir(workspace);
             c
         };
 
@@ -512,6 +523,33 @@ mod tests {
             .map(|a| a.to_string_lossy().to_string())
             .collect();
         assert_eq!(args, vec!["-0"]);
+    }
+
+    /// Confined or not, a server starts in the run's workspace.
+    ///
+    /// The confined branch has always done this — the workspace is its only
+    /// writable mount, and `wrap_argv` `--chdir`s into it. The unconfined
+    /// branch inherited mecha's own working directory, so a server that
+    /// resolves relative paths resolved them against wherever the user
+    /// launched mecha. Nothing about confinement changes: an unconfined server
+    /// could always reach the whole filesystem. What changes is that the two
+    /// branches now agree about where the model's paths point.
+    #[test]
+    fn an_unconfined_server_still_starts_in_the_workspace() {
+        let cfg = McpServerConfig {
+            name: "plain".into(),
+            command: "/usr/bin/env".into(),
+            ..Default::default()
+        };
+
+        let workspace = Path::new("/tmp");
+        let cmd = McpClient::build_command(&cfg, &unconfined(), workspace).unwrap();
+
+        assert_eq!(
+            cmd.as_std().get_current_dir(),
+            Some(workspace),
+            "an unconfined server must start in the workspace, not in mecha's cwd"
+        );
     }
 
     /// The measurement that motivated `env_clear()`, as a test: spawn a server
