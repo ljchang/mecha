@@ -13,11 +13,20 @@ wins and the research doc keeps the reasoning.
 
 **Two purposes, matching the two directions of one boundary:**
 
-- **Publish what mecha makes.** Reports, dashboards, briefings, marimo
-  notebooks — as durable, versioned, permissioned URLs that can be read on a
-  phone, sent to a collaborator, or read back by a later agent run. Today a
-  run's output dies in a workspace, or lands in `~/.mecha/briefings/` where
-  nothing can read it and nobody can be sent it.
+- **Publish what mecha makes.** Reports, dashboards, a morning briefing,
+  marimo notebooks — as durable, versioned, permissioned URLs that can be read
+  on a phone, sent to a collaborator, or read back by a later agent run.
+
+  Today there is no answer at all, and the shipped example shows the shape of
+  the gap: the morning-briefing trigger ends with
+  `notify = "mkdir -p ~/.mecha/briefings && cat > .../$(date +%F).md"` — a
+  shell one-liner dumping markdown into a directory it creates on the way past,
+  **outside every path jail**, so no agent can read it back and there is
+  nothing to send anyone. That is not a subsystem and should not become one;
+  it is the absence of one. **A briefing is just a `report`-class bundle**, and
+  making it an ordinary artifact — versioned, addressable, readable — is
+  exactly what step 2 of the build order is for. It is the right first test
+  precisely because it is small, daily, and already produces real content.
 - **Build interfaces back into mecha.** A form is the default rendering, not
   the point. The point is that the outside world gets a *typed way in* —
   meetings, letters, applications, invitations — with schemas, state and
