@@ -394,7 +394,21 @@ behaviour came from the reflector model declining. If the design was always
   layout is two levels exactly — a `v/` level would silently turn retention into
   something that deletes a published report's input.
 
-  **Step 3 is done too** (72 tests): the external-reference gate. A publish
+  **Steps 3, 4 and the MCP surface are done too** (100 tests). Step 4 is
+  verified in a browser, not asserted: a marimo notebook boots and computes
+  under the full compute CSP with **zero off-origin loads**, its Python runtime
+  vendored from a pinned allowlist and every wheel checked against the sha256 in
+  Pyodide's own lock file. `factory-publish serve` plus `scripts/csp-probe.py`
+  are the harness. §7.1's policy survived — `unsafe-eval` turned out never to be
+  needed, and §7.3's `data:` URL problem does not apply to the export path at
+  all. Both corrections are recorded in the design.
+
+  The MCP surface is wired and verified against a real mecha: seven tools,
+  capabilities as designed, an agent's publish staged as a draft, kind-aware
+  review, and `send` landing an immutable version. Wiring is two config blocks
+  — see `mecha-factory/README.md`.
+
+  Step 3 was the external-reference gate. A publish
   *fails* — never warns — on anything the page would fetch off its own origin,
   with every finding named by file, line, URL and reason, and resolved back to
   the line in the markdown source rather than in generated HTML. A `<a href>` is
@@ -402,12 +416,16 @@ behaviour came from the reflector model declining. If the design was always
   in a script are. `factory-publish check <dir>` runs it alone, and the
   factory's CI runs it instead of the grep it shipped with.
 
-  Next is step 4, the `notebook` template, which is also where the *fetching*
-  half of vendoring lands — from a pinned allowlist, since marimo's six CDN
-  references are known and version-pinned. Note what is still *not* true:
-  `visibility` is recorded and unenforced (the tailnet is the boundary), and
-  marimo's `data:` script URLs are detected but not yet rewritten. Steps 4–5
-  still need no VPS. **Two purposes:** publish what mecha makes (reports, dashboards, a
+  **What is still not true**, and each is written down in the code rather than
+  implied: `visibility` is recorded and unenforced (the tailnet is the
+  boundary until there is a gate origin); the notebook renderer **executes the
+  notebook and is not confined**, so it must not be wired to a trigger yet; and
+  `bundle_list`/`bundle_status` will need mecha's capability override the day
+  they read from an origin rather than the local store.
+
+  Next is step 6, `mecha-factory` itself — the first thing that creates a box
+  to patch forever, and the first that needs the open decisions in §13.
+  **Two purposes:** publish what mecha makes (reports, dashboards, a
   morning briefing, marimo notebooks) as durable versioned permissioned URLs,
   and build typed interfaces back into mecha — a form being the default
   rendering rather than the point, since one manifest also emits the WebMCP

@@ -194,7 +194,12 @@ fn show(store: &OutboxStore, id: &str) -> Result<()> {
 /// guessing would put a wrong "open this" line in front of a human whose whole
 /// job here is to check what goes out.
 fn local_paths(args: &Value) -> Vec<(&'static str, std::path::PathBuf)> {
-    const KEYS: [(&str, &str); 3] = [
+    // `bundle` is what the factory's MCP tool actually names its argument —
+    // found by wiring the two together, which is the only way a mismatch like
+    // this surfaces. The others are kept because a different publishing tool
+    // is free to use them, and the cost of an extra key is nothing.
+    const KEYS: [(&str, &str); 4] = [
+        ("bundle", "rendered bundle"),
         ("bundle_path", "rendered bundle"),
         ("path", "rendered bundle"),
         ("source", "source"),
