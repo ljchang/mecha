@@ -49,6 +49,9 @@ echo "· learn (propose-only: unattended learning never applies its own output)"
 echo "· retirements (deterministic ledger scan; staged for review like any rule change)"
 "$MECHA" rules propose-retirements
 
+echo "· work clean (retention on generated output; a published bundle's source is never removed)"
+"$MECHA" work clean
+
 echo "· proposals awaiting review"
 "$MECHA" proposals
 

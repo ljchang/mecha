@@ -40,6 +40,8 @@ pub struct Config {
     /// Outbound tools staged for user review instead of executed. See
     /// [`crate::outbox`].
     pub outbox: OutboxConfig,
+    /// Retention for `~/.mecha/work/`. See [`crate::work`].
+    pub work: WorkConfig,
 }
 
 /// Which tools are outbox-routed, and where staged items live.
@@ -54,6 +56,26 @@ pub struct OutboxConfig {
     /// Where items are staged. Defaults to `~/.mecha/outbox`
     /// (or `$MECHA_OUTBOX_DIR`).
     pub dir: Option<PathBuf>,
+}
+
+/// How much of a producer's generated output survives a `mecha work clean`.
+///
+/// A policy rather than an intention: the lesson of this project is that
+/// anything without one becomes a pile nobody opens. The number is small on
+/// purpose — the directory is scratch, and what matters is published.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorkConfig {
+    /// Entries kept per producer, newest first.
+    pub keep: usize,
+}
+
+impl Default for WorkConfig {
+    fn default() -> Self {
+        WorkConfig {
+            keep: crate::work::DEFAULT_KEEP,
+        }
+    }
 }
 
 /// One hook: a command run at a lifecycle point, with the event payload as
@@ -107,6 +129,7 @@ impl Default for Config {
             search: Vec::new(),
             hooks: Vec::new(),
             outbox: OutboxConfig::default(),
+            work: WorkConfig::default(),
         }
     }
 }
@@ -543,7 +566,9 @@ pub struct McpServerConfig {
 
 impl Config {
     pub fn global_path() -> Option<PathBuf> {
-        dirs::home_dir().map(|h| h.join(".mecha").join("config.toml"))
+        crate::work::mecha_home()
+            .ok()
+            .map(|h| h.join("config.toml"))
     }
 
     pub const PROJECT_FILE: &'static str = "mecha.toml";
@@ -655,6 +680,13 @@ struct ConfigLayer {
     hooks: Option<Vec<HookConfig>>,
     sandbox: Option<SandboxLayer>,
     outbox: Option<OutboxLayer>,
+    work: Option<WorkLayer>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkLayer {
+    keep: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -871,6 +903,11 @@ impl ConfigLayer {
             }
             if x.dir.is_some() {
                 t.dir = x.dir;
+            }
+        }
+        if let Some(x) = self.work {
+            if let Some(v) = x.keep {
+                cfg.work.keep = v;
             }
         }
     }

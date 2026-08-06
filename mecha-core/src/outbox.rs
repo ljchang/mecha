@@ -124,8 +124,7 @@ impl OutboxStore {
         if let Ok(dir) = std::env::var("MECHA_OUTBOX_DIR") {
             return Ok(PathBuf::from(dir));
         }
-        let home = dirs::home_dir().context("cannot determine home directory")?;
-        Ok(home.join(".mecha").join("outbox"))
+        Ok(crate::work::mecha_home()?.join("outbox"))
     }
 
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
