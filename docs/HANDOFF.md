@@ -375,7 +375,7 @@ behaviour came from the reflector model declining. If the design was always
 
 - **`mecha-factory` — the public surface.** Its own repository, created
   2026-08-06 at `~/Github/mecha-factory`: local only, no remote, MIT, CI
-  written. **Build steps 1–6 of §12 are done** (153 tests) — the manifest, the
+  written. **Build steps 1–6 of §12 are done** (162 tests) — the manifest, the
   bundle store, the vendoring gate, the notebook path, the MCP surface, and
   **the server**. What it does and why is documented there; the design that
   governs it is [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) — §0 for
