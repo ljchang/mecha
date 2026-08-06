@@ -3,6 +3,7 @@ pub mod chat;
 pub mod config;
 pub mod distill;
 pub mod eval;
+pub mod frontdoor;
 pub mod learn;
 pub mod outbox;
 pub mod proposals;
