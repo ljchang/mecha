@@ -18,9 +18,25 @@ wins and the research doc keeps the reasoning.
   phone, sent to a collaborator, or read back by a later agent run. Today a
   run's output dies in a workspace, or lands in `~/.mecha/briefings/` where
   nothing can read it and nobody can be sent it.
-- **Give the outside world a typed way to interact.** Structured requests with
-  schemas, state and deadlines, in place of unstructured email — meetings,
-  letters, applications, invitations.
+- **Build interfaces back into mecha.** A form is the default rendering, not
+  the point. The point is that the outside world gets a *typed way in* —
+  meetings, letters, applications, invitations — with schemas, state and
+  deadlines instead of unstructured prose.
+
+  This is what §2's "one manifest, six surfaces" is *for*, and it is worth
+  saying as a purpose rather than as a mechanism: one request type emits the
+  HTML form, the WebMCP tool, the MCP tool and the A2A skill, so **a human
+  with a browser, an agent with a browser, an agent with MCP, and an agent
+  doing discovery all arrive at the same typed object**. Adding a modality is
+  a renderer, not a parallel system.
+
+  And the corollary the mail evidence forced: **a form cannot be the only
+  door.** Requests arrive by email, by a colleague forwarding one, and by a
+  phone call someone typed up afterwards. So there must be a path that turns
+  an inbound message into a typed request — mecha replies with the form link,
+  or fills the request on the sender's behalf and asks them to confirm. A
+  typed system whose only entrance is a URL will be routed around by everyone
+  who does not know the URL exists.
 
 The unifying claim, which is why these are one system rather than two: **a
 typed, versioned, schema-described object crossing the boundary between the
