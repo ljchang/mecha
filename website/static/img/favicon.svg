@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="#b5abfc" role="img" aria-label="mecha">
+  <path d="M0 0h24l8 10 8-10h24v20H0z"></path>
+  <path d="M0 24h16v16H0zM48 24h16v16H48zM0 44h16v20H0zM48 44h16v20H48z"></path>
+  <path d="M16 44v20h12zM48 44v20H36z"></path>
+  <path d="M20 28h24v8H20z"></path>
+</svg>
