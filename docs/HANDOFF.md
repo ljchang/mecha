@@ -24,7 +24,9 @@ maps which document holds what.
 Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.0**.
 CI runs build, test, clippy and rustfmt on every push and pull request; the
 documentation site builds from `website/` and deploys to
-<https://ljchang.github.io/mecha/>.
+<https://docs.mecha-factory.ai/> — GitHub Pages still hosts it; the custom
+domain is asserted by `website/static/CNAME`, which ships inside the deployed
+artifact because `actions/deploy-pages` writes no such file itself.
 
 Every commit was verified to build and pass tests **in isolation**, so the
 history bisects rather than merely ending in a good state.

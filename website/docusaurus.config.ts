@@ -10,14 +10,17 @@ const config: Config = {
   // Both are generated from brand/favicon.svg by scripts/build-brand-assets.py.
   favicon: 'img/favicon.ico',
 
+  // These are absolute paths rather than baseUrl-relative ones, because
+  // Docusaurus does not rewrite headTags attributes. They track `baseUrl`
+  // below by hand, which is only tolerable because it is now `/`.
   headTags: [
     {
       tagName: 'link',
-      attributes: {rel: 'icon', type: 'image/svg+xml', href: '/mecha/img/favicon.svg'},
+      attributes: {rel: 'icon', type: 'image/svg+xml', href: '/img/favicon.svg'},
     },
     {
       tagName: 'link',
-      attributes: {rel: 'apple-touch-icon', href: '/mecha/img/apple-touch-icon.png'},
+      attributes: {rel: 'apple-touch-icon', href: '/img/apple-touch-icon.png'},
     },
   ],
 
@@ -25,8 +28,17 @@ const config: Config = {
     v4: true,
   },
 
-  url: 'https://ljchang.github.io',
-  baseUrl: '/mecha/',
+  // Served from GitHub Pages under a custom domain, which is why `baseUrl` is
+  // `/` rather than `/mecha/`. The custom domain is asserted by `static/CNAME`
+  // — a file in the *artifact*, since the deploy goes through
+  // `actions/deploy-pages` and nothing else writes one.
+  //
+  // Docs stay on Pages deliberately: the factory box serves three origins under
+  // deliberately strict policies, and a docs site is exactly the "arbitrary
+  // hosting" it declines to be. Nothing here needs the box, so nothing here
+  // costs it.
+  url: 'https://docs.mecha-factory.ai',
+  baseUrl: '/',
 
   organizationName: 'ljchang',
   projectName: 'mecha',
