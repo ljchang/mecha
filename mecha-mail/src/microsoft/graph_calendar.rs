@@ -247,6 +247,57 @@ impl OutlookCalendarProvider {
         Ok(parse_event(&resp.json::<Value>().await?, ""))
     }
 
+    /// Busy intervals from `getSchedule` — `(start, end)` stamp pairs in
+    /// UTC, no event details. `getSchedule` refuses a window over 62 days,
+    /// so a longer span is chunked and the chunks are queried in sequence.
+    /// It also wants a mailbox address (it is a query *about* schedules,
+    /// even one's own), which is why the caller must pass one.
+    pub async fn freebusy(
+        &self,
+        address: &str,
+        time_min: &str,
+        time_max: &str,
+    ) -> Result<Vec<(String, String)>, MailError> {
+        let parse = |raw: &str| {
+            crate::freebusy::parse_stamp(raw).ok_or_else(|| {
+                MailError::InvalidInput(format!("not an RFC 3339 timestamp: `{raw}`"))
+            })
+        };
+        let (start, end) = (parse(time_min)?, parse(time_max)?);
+
+        let mut busy = Vec::new();
+        for (from, to) in crate::freebusy::chunk_windows(start, end, 62) {
+            let body = json!({
+                "schedules": [address],
+                "startTime": {
+                    "dateTime": from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "timeZone": "UTC"
+                },
+                "endTime": {
+                    "dateTime": to.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "timeZone": "UTC"
+                },
+            });
+            let resp = send_with_retry(
+                self.client
+                    .post(format!("{GRAPH}/me/calendar/getSchedule"))
+                    .bearer_auth(&self.access_token)
+                    .json(&body),
+            )
+            .await?;
+            if !resp.status().is_success() {
+                let status = resp.status().as_u16();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(MailError::ApiError {
+                    status,
+                    message: super::auth::humanize_aadsts(&text),
+                });
+            }
+            busy.extend(parse_schedule_items(&resp.json::<Value>().await?)?);
+        }
+        Ok(busy)
+    }
+
     pub async fn delete_event(&self, event_id: &str) -> Result<(), MailError> {
         let resp = send_with_retry(
             self.client
@@ -265,6 +316,54 @@ impl OutlookCalendarProvider {
             message: super::auth::humanize_aadsts(&text),
         })
     }
+}
+
+/// Busy pairs out of a getSchedule response. Everything that is not free
+/// counts as busy — `tentative`, `oof` and `workingElsewhere` all block a
+/// booking slot, because "probably in a meeting" is not a time to offer
+/// strangers. Graph states the zone beside the stamp rather than inside it;
+/// we only ever ask in UTC, so a `Z` is appended — and an answer in any
+/// other zone is an error rather than a stamp the caller would silently
+/// drop, because a dropped busy interval reads as free time. A per-schedule
+/// `error` surfaces for the same reason: an unreadable calendar is not a
+/// free one.
+fn parse_schedule_items(body: &Value) -> Result<Vec<(String, String)>, MailError> {
+    let Some(schedule) = body["value"].as_array().and_then(|v| v.first()) else {
+        return Err(MailError::ParseError(
+            "getSchedule answered with no schedule".into(),
+        ));
+    };
+    if let Some(err) = schedule.get("error").filter(|e| !e.is_null()) {
+        let message = err["message"]
+            .as_str()
+            .unwrap_or("unreadable schedule")
+            .to_string();
+        return Err(MailError::ApiError {
+            status: 200,
+            message: format!("getSchedule reported: {message}"),
+        });
+    }
+    let stamp = |item: &Value, side: &str| -> Result<String, MailError> {
+        let dt = item[side]["dateTime"].as_str().ok_or_else(|| {
+            MailError::ParseError(format!("scheduleItem missing {side} time"))
+        })?;
+        match item[side]["timeZone"].as_str() {
+            Some("UTC") | None => Ok(format!("{dt}Z")),
+            Some(tz) => Err(MailError::ParseError(format!(
+                "getSchedule answered in `{tz}` though UTC was requested"
+            ))),
+        }
+    };
+    schedule["scheduleItems"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|i| i["status"].as_str() != Some("free"))
+                .map(|i| Ok((stamp(i, "start")?, stamp(i, "end")?)))
+                .collect()
+        })
+        .unwrap_or_else(|| Ok(Vec::new()))
 }
 
 /// Graph wants `{dateTime, timeZone}`; all-day events want midnight local.
@@ -360,6 +459,51 @@ mod tests {
             e.title, "(No title)",
             "an empty subject must not render blank"
         );
+    }
+
+    #[test]
+    fn schedule_items_yield_busy_pairs_and_skip_free() {
+        let body = json!({"value": [{
+            "scheduleId": "me@dartmouth.edu",
+            "scheduleItems": [
+                {"status": "busy",
+                 "start": {"dateTime": "2026-08-10T14:00:00.0000000", "timeZone": "UTC"},
+                 "end":   {"dateTime": "2026-08-10T15:00:00.0000000", "timeZone": "UTC"}},
+                {"status": "free",
+                 "start": {"dateTime": "2026-08-10T15:00:00.0000000", "timeZone": "UTC"},
+                 "end":   {"dateTime": "2026-08-10T16:00:00.0000000", "timeZone": "UTC"}},
+                {"status": "tentative",
+                 "start": {"dateTime": "2026-08-11T09:00:00.0000000", "timeZone": "UTC"},
+                 "end":   {"dateTime": "2026-08-11T10:00:00.0000000", "timeZone": "UTC"}}
+            ]
+        }]});
+        let busy = parse_schedule_items(&body).unwrap();
+        assert_eq!(busy.len(), 2, "free is skipped, tentative blocks");
+        assert!(busy[0].0.ends_with('Z'), "UTC stamps gain their Z: {}", busy[0].0);
+        assert!(crate::freebusy::parse_stamp(&busy[0].0).is_some());
+    }
+
+    /// An unreadable schedule (or a zone we did not ask for) must be an
+    /// error — a dropped busy interval reads as free time.
+    #[test]
+    fn schedule_errors_and_foreign_zones_are_errors_not_free_time() {
+        let errored = json!({"value": [{
+            "scheduleId": "me@dartmouth.edu",
+            "error": {"message": "mailbox not found", "responseCode": "ErrorMailRecipientNotFound"}
+        }]});
+        let err = parse_schedule_items(&errored).unwrap_err();
+        assert!(err.to_string().contains("mailbox not found"), "{err}");
+
+        let foreign = json!({"value": [{
+            "scheduleItems": [{"status": "busy",
+                "start": {"dateTime": "2026-08-10T10:00:00.0000000", "timeZone": "Eastern Standard Time"},
+                "end":   {"dateTime": "2026-08-10T11:00:00.0000000", "timeZone": "Eastern Standard Time"}}]
+        }]});
+        let err = parse_schedule_items(&foreign).unwrap_err();
+        assert!(err.to_string().contains("Eastern Standard Time"), "{err}");
+
+        let empty = json!({"value": []});
+        assert!(parse_schedule_items(&empty).is_err());
     }
 
     #[test]
