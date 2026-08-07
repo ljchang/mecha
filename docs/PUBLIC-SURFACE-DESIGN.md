@@ -1653,6 +1653,13 @@ A short list, worth having as tests:
 
 The user wants both halves, in this order.
 
+> **Expanded 2026-08-07 into a buildable design: `SCHEDULING-DESIGN.md`** —
+> the availability engine's signature, the slot-push freshness path, the
+> booking instrument (week-column page, two-phase claim, box-sent templated
+> mail with ICS lifecycle, manage links), the seeded poll grid, guardrailed
+> auto-finalize, and the nine-step build order. The section below remains the
+> original framing; the new document is the authority where they differ.
+
 ### 9.1 Book me
 
 The one-sided page. `availability(windows, busy[], holds[], bookings[], now)`
