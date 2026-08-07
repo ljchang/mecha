@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" role="img" aria-label="mecha — one loop, any model, native and MCP tools">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b1e3a"></stop>
+      <stop offset="0.55" stop-color="#161826"></stop>
+      <stop offset="1" stop-color="#12141f"></stop>
+    </linearGradient>
+    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
+      <path d="M44 0H0v44" fill="none" stroke="#9184d9" stroke-opacity="0.07" stroke-width="1"></path>
+    </pattern>
+  </defs>
+  <rect width="1200" height="630" fill="url(#g)"></rect>
+  <rect width="1200" height="630" fill="url(#grid)"></rect>
+  <g transform="translate(96 96) scale(2.1)" fill="#b5abfc">
+  <path d="M0 0h24l7.5 8.5L39 0h24v16H0z"></path>
+  <path d="M0 20h14v15H0zM49 20h14v15H49zM0 39h14v15H0zM49 39h14v15H49z"></path>
+  <path d="M14 39v15h13.24zM49 39v15H35.76z"></path>
+  <path d="M21 24h21v7H21z"></path>
+  </g>
+  <text x="96" y="330" font-family="&#39;JetBrains Mono&#39;, ui-monospace, monospace" font-size="19" letter-spacing="3.4" fill="#e8a24a">AGENT HARNESS · RUST · MIT</text>
+  <text x="96" y="404" font-family="Inter, system-ui, sans-serif" font-size="60" font-weight="500" letter-spacing="-1.8" fill="#e9e9ed">One loop, any model,</text>
+  <text x="96" y="474" font-family="Inter, system-ui, sans-serif" font-size="60" font-weight="500" letter-spacing="-1.8" fill="#e9e9ed">native and MCP tools</text>
+  <text x="96" y="534" font-family="Inter, system-ui, sans-serif" font-size="24" fill="#9a9aa8">Extracted so it can be reused, not rewritten.</text>
+  <rect x="96" y="562" width="132" height="2" fill="#e8a24a"></rect>
+</svg>

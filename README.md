@@ -1,3 +1,13 @@
+<!-- The mark is accent-400, a dark-ground colour, and the wordmark is near-white.
+     GitHub honours prefers-color-scheme in a <picture>, so the light theme gets
+     the accent-700 twin instead of two invisible words. -->
+<p align="left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/logo-lockup.svg">
+    <img src="brand/logo-lockup-light.svg" alt="mecha — agent harness · Rust" height="54">
+  </picture>
+</p>
+
 # mecha
 
 A standalone agent harness. One loop, any model, native and MCP tools —
