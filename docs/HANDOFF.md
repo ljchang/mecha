@@ -446,12 +446,24 @@ behaviour came from the reflector model declining. If the design was always
     It does **not** unlock wildcard certificates either: `rustls-acme` speaks
     only HTTP-01 and TLS-ALPN-01, so the library forecloses them whoever
     hosts the zone.
-  - **Two design passes queued, auth-first in both cases:** the operator
-    admin page (accounts with usage, suspend/restore — `/v1/admin/*` has
-    the data; the open question is a browser operator session that shares
-    nothing with tenant sessions), and capability URLs for private bundles
-    (which likely also carries display identity to artifact origins — the
-    viewer inversion covered the gate side).
+  - **The operator admin page is built, reviewed, and committed — not yet
+    deployed** (2026-08-07 evening; the arc landed mixed into the parallel
+    lane's factory commits `37e9a50`/`ad4d8ff`, review fixes in `86df0a7`).
+    The open question resolved as: the operate key never enters a browser.
+    `factory-publish operator signin` asks `POST /v1/admin/signin` for a
+    one-time URL (10 min, hashed at rest); its scanner-proof GET/POST
+    interstitial becomes a 12-hour session in its own `operator_sessions`
+    table, bound to the **key id**, under its own `__Host-factory-operator`
+    cookie — the session dies with the key (the lookup joins on the key
+    being live and `operate`), and neither cookie means anything at the
+    other surface. `/admin` renders accounts/invites/keys/withheld with the
+    same rows the CLI drives; signed out it has instructions and no form.
+    Tests in `tests/operator.rs` (browser-panel section). Remaining: deploy
+    the box binary, and reinstall `factory-publish` at home for the
+    `signin` verb.
+  - **One design pass still queued, auth-first:** capability URLs for
+    private bundles (which likely also carries display identity to artifact
+    origins — the viewer inversion covered the gate side).
 
   The mecha-side half of step 7 is **built**: `mecha-factory-publish drain`
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
