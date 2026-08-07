@@ -404,6 +404,35 @@ crashes: `mecha run` exits non-zero on exhaustion, so harbor records a
 40-turn `MaxTurns` run as an agent error (the verifier still grades the
 artifact — one such trial scored 1.0). Relaunch is an open decision.
 
+**2026-08-07/08, night — a stranger's file crosses the whole system, and the
+factory grows a face.** The attachment arc shipped in seven staged commits,
+each green in isolation: `FieldKind::File` in the manifest (sniffed magic as
+the gate, a validation `Phase` so submit and complete are two named moments,
+`take_attachments` as the filename quarantine no caller can skip); the box's
+blob store where blob lifetime *is* queue-row lifetime, plus the sweep timer
+the manual-only sweep needed before attachments made it a disk-fill vector;
+the verified-requesters-only upload page (the one multipart route); the
+drain protocol's attachment array and blob route; home's
+blobs-before-record-before-ack with digest proof; and the frontdoor's
+metadata-only brief — a poisoned-values test pins that even a regressed
+drain leaks no filename to a privileged run. Verified twice: a 13-step
+loopback rehearsal, then live — `letter` v2 with its CV field is deployed.
+
+The same night the public surface got its chrome: header band, splash,
+sign-in and account dropdowns, per-version artifact controls (which caught
+"Make private" silently also un-aliasing — two decisions wearing one
+label), a `/v/` version switcher, and finally the **viewer inversion**: the
+signed-in viewer lives on the gate, where the session is, and frames the
+bundle cross-origin — owner controls with the account page's own CSRF, a
+return address honoured only for `/view/` paths, and bundles granting
+exactly one new frame ancestor, the configured gate. The old
+`frame-ancestors 'none'` rule's stated fear (a notebook framed by the gate)
+was always enforced by origin isolation; what the directive governs is UI
+redressing, and the only admitted pages are ones tenants cannot author.
+Magic links became scanner-proof the same night, after Microsoft Safe Links
+ate the first real sign-in (the trap below). Eight hand deploys; the CI
+release tag is the standing fix.
+
 ---
 
 ## The measurement record
@@ -743,6 +772,18 @@ All found by pre-push review or by running it.
 
 ### Environment
 
+- **A magic link spent on GET is spent by the mail scanner, not the
+  person.** The first real sign-in from a university mailbox arrived already
+  dead: Microsoft Safe Links fetches a mail's URLs on delivery, and both the
+  sign-in and form-verification links redeemed on GET — so the robot's fetch
+  consumed them seconds before the human's click, and worse, robots were
+  verifying submissions no human had confirmed. The fix is the shape every
+  magic-link system eventually grows: GET renders one button and touches no
+  token at all (not even a peek — a page that varied on token state would
+  hand the scanner an oracle), and only the POST spends. **Any single-use
+  URL that will travel through institutional email must not have side
+  effects on GET**, and the test to write is that the interstitial answers
+  byte-identically for a live, spent, and invented token alike.
 - **A tmux pane is a systemd scope, and an OOM inside it kills everything in
   it.** A runaway test allocated 80 GB and was OOM-killed four times in half an
   hour; ninety seconds after each kill, systemd tore down the whole

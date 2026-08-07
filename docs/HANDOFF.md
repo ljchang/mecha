@@ -37,7 +37,9 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **511 tests**, no warnings — verified 2026-08-07:
+Expect **512 tests** at the last clean commit, no warnings — verified
+2026-08-08. (A dirty tree may count more: a scheduling/free-busy arc was in
+flight in a parallel session as this was written, with its own tests.)
 
 | Suite | Count |
 |---|---:|
@@ -248,6 +250,12 @@ Ordered by value per unit of effort, not by size.
 
 ### Cheap, and worth doing first
 
+- **`calendar_freebusy` — IN FLIGHT, do not re-start.** As of 2026-08-08 a
+  parallel session holds uncommitted work on exactly this
+  (`mecha-mail/src/freebusy.rs`, `docs/SCHEDULING-DESIGN.md`, and an
+  `instruments/slots` route in the factory). If the tree is clean when you
+  read this, check `git log` for a scheduling arc before assuming the item
+  below is still open. The original item:
 - **`calendar_freebusy` on the unified mail surface.** Nothing in
   `mecha-mail/src` implements it, and every scheduling question needs it.
 - **Re-baseline `ambiguity` and `long-horizon` at k=5.** No scorecard in
@@ -395,7 +403,21 @@ behaviour came from the reflector model declining. If the design was always
   `scripts/mcp-drive.py` is the harness, kept as the second-client smoke
   test).
 
-  **Three things open, in the order they bite:**
+  **The 2026-08-07/08 night shipped the inbound-attachments arc and the web
+  face, all deployed and verified live.** Form attachments end to end
+  (`FieldKind::File`, sniffed magic, verified-requesters-only upload page,
+  blob-lifetime-equals-row-lifetime, drain fetch with digest proof, the
+  frontdoor's metadata-only brief — `letter` v2 is live with a CV field);
+  the gate chrome (header band, sign-in dropdown, splash, account artifact
+  controls with per-version pin/release/take-down); magic links made
+  scanner-proof (GET is an interstitial, only POST spends — found when
+  Safe Links ate the first real sign-in); and the signed-in artifact viewer
+  at `gate…/view/{handle}/{id}/{version}` — the gate frames the bundle
+  cross-origin, so owner controls live where the session is and bundles
+  gained exactly one frame ancestor, the configured gate. The arcs are in
+  [`HISTORY.md`](HISTORY.md) and both repos' commit messages.
+
+  **Open there, in the order they bite:**
 
   - **Verify the release workflow** (`release.yml`, authored 2026-08-07:
     static musl `factory` with an asserted-static gate and a checksum). Push a
@@ -407,6 +429,15 @@ behaviour came from the reflector model declining. If the design was always
     packaged-dependency resolution). What remains is `cargo publish` with the
     owner's token — claiming the names is forever, so it stays a human's
     button to press.
+  - **The apex redirect is deployed but dormant, waiting on DNS.**
+    `redirect_hosts` (301 to the gate, path kept, riding the base
+    certificate) is in the deployed binary; the config line was deliberately
+    removed because the apex still points at the registrar's parking
+    servers, and an ACME challenge for a name not resolving here would jam
+    renewal for the real origins. Sequence: point apex and `www` A-records
+    at the box, then add
+    `redirect_hosts = ["mecha-factory.ai", "www.mecha-factory.ai"]` to the
+    deployed `factory.toml` and restart.
   - **The DNS is at a registrar with no API for custom records** — every
     row is typed by hand, including the five SES ones. Moving the zone to
     Cloudflare (DNS-only, never proxied) is independent of everything else —
@@ -415,6 +446,12 @@ behaviour came from the reflector model declining. If the design was always
     It does **not** unlock wildcard certificates either: `rustls-acme` speaks
     only HTTP-01 and TLS-ALPN-01, so the library forecloses them whoever
     hosts the zone.
+  - **Two design passes queued, auth-first in both cases:** the operator
+    admin page (accounts with usage, suspend/restore — `/v1/admin/*` has
+    the data; the open question is a browser operator session that shares
+    nothing with tenant sessions), and capability URLs for private bundles
+    (which likely also carries display identity to artifact origins — the
+    viewer inversion covered the gate side).
 
   The mecha-side half of step 7 is **built**: `mecha-factory-publish drain`
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
