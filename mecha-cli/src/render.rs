@@ -184,6 +184,12 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                                     // Not a budget: raising a ceiling won't
                                     // unstick it. Starting over will.
                                     StopCause::Loop => "the task did not survive compaction; retry, or raise the compaction threshold",
+                                    // Also not a budget. The per-turn budget
+                                    // went to reasoning before the answer
+                                    // started, so raising it buys a longer
+                                    // runaway; bounding the thinking is what
+                                    // helps. See scripts/start-moe-mtp.sh.
+                                    StopCause::NoOutput => "the model reasoned past its per-turn budget without answering; cap its thinking (llama-server: --reasoning-budget) or retry",
                                     StopCause::Completed | StopCause::Interrupted => "",
                                 };
                                 format!(
