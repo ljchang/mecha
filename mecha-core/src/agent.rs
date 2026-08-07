@@ -466,6 +466,19 @@ pub enum StopCause {
     /// purpose: "hit the turn limit" reads as the task being too big, when a
     /// stuck run is a different problem with a different fix.
     Loop,
+    /// The model returned turns with no content at all — no text, no tool
+    /// calls — and did not recover when asked to answer. A thinking model does
+    /// this when the whole per-turn budget goes to reasoning and the answer
+    /// never starts; the provider reports `max_tokens`, or even `stop`, with an
+    /// empty message.
+    ///
+    /// Distinct from `Completed` for the reason `Loop` is distinct from
+    /// `MaxTurns`: this used to report *success*. A run that produced nothing
+    /// returned `StopCause::Completed` with `exhausted: false`, so it was
+    /// indistinguishable from a model that finished and had nothing to say —
+    /// which is how it went unnoticed until it accounted for 15 of 28
+    /// Terminal-Bench trials, every one of them scored as an ordinary failure.
+    NoOutput,
 }
 
 impl StopCause {
@@ -482,9 +495,30 @@ impl StopCause {
             StopCause::CostBudget => "hit the cost budget",
             StopCause::Interrupted => "was interrupted",
             StopCause::Loop => "repeated an identical tool call after compacting",
+            StopCause::NoOutput => "produced no answer, and did not recover when asked",
         }
     }
 }
+
+/// How many times a turn may come back with nothing before the run gives up.
+///
+/// A const rather than config on purpose. Adding a field to `Config` is two
+/// edits, not one — the `ConfigLayer` trap in `CLAUDE.md` — and there is no
+/// question a user is better placed to answer here: below 1 the recovery does
+/// not exist, and above a handful the run is paying for requests that a
+/// measured ~50% per-attempt recovery rate says have already failed.
+const EMPTY_TURN_RETRIES: u32 = 3;
+
+/// What the model is told after a turn that produced nothing.
+///
+/// Wording is load-bearing, the way `ask_user`'s decline wording was: a vague
+/// nudge invites the model to start the task over from the top, which burns the
+/// budget that was already the problem. So it names the cause, forbids the
+/// restart, and offers exactly two concrete continuations.
+const EMPTY_TURN_NUDGE: &str = "Your previous turn ended without producing anything — the token \
+budget went entirely to reasoning before you began your answer. Do not start the task over and do \
+not re-derive what you already worked out. Either give your answer now, briefly, using what you \
+already know, or make the single next tool call. Keep your reasoning short this turn.";
 
 /// Detects a run re-living the turns a compaction just summarised away.
 ///
@@ -796,6 +830,11 @@ impl Agent {
         let mut compactions = 0u32;
         let mut loop_guard = LoopGuard::new(self.cfg.loop_guard);
         let mut loop_detected = false;
+        // Counts across the whole run, not per turn: a model that answers once
+        // and then goes quiet again has the same problem, and resetting on
+        // success would let a run alternate empty/answer forever inside its
+        // turn budget.
+        let mut empty_turns = 0u32;
 
         // Carried in from the transcript, not started fresh. Everything the
         // conversation has already seen still applies — this is the whole
@@ -1051,6 +1090,40 @@ impl Agent {
             if !text.is_empty() {
                 emit(&events, AgentEvent::AssistantText(text.clone()));
             }
+
+            // A turn that produced nothing usable — no text, no tool calls. A
+            // thinking model does this when the per-turn budget is spent before
+            // the answer starts: measured against llama-server, a hard prompt at
+            // max_tokens 8192 returned 23,682 characters of reasoning and an
+            // empty `content`, and raising the budget only bought a longer
+            // runaway. Retrying the same request recovers it about half the
+            // time, so it is worth asking rather than ending the run.
+            //
+            // Note what is *not* checked: the stop reason. Providers disagree
+            // about what to call this — `max_tokens` from one, plain `stop`
+            // from another with the reasoning silently truncated — and keying
+            // on the label would miss the ones that lie. What matters is that
+            // the turn carried nothing the loop can act on.
+            //
+            // The empty message is deliberately not pushed. An assistant turn
+            // with empty content is rejected outright by some providers, and
+            // keeping it would make the retry send a transcript that cannot be
+            // sent. The nudge is folded into the preceding user message instead
+            // — the same rule steering follows, because two user messages in a
+            // row are invalid and there is no legal slot between a `tool_use`
+            // and its result.
+            let produced_nothing = text.trim().is_empty() && response.message.tool_uses().is_empty();
+            if produced_nothing && empty_turns < EMPTY_TURN_RETRIES {
+                empty_turns += 1;
+                tracing::warn!(
+                    stop_reason = ?response.stop_reason,
+                    attempt = empty_turns,
+                    "turn produced no content; asking the model to answer"
+                );
+                append_user_text(messages, EMPTY_TURN_NUDGE.to_string());
+                continue;
+            }
+
             messages.push(response.message.clone());
 
             // A turn that contains tool calls is a tool turn, whatever the
@@ -1139,7 +1212,7 @@ impl Agent {
                 // conversation as-is resumes it; no extra user message.
                 StopReason::PauseTurn => continue,
                 _ => {
-                    let outcome = self.finish(
+                    let mut outcome = self.finish(
                         text,
                         &response,
                         usage,
@@ -1150,6 +1223,14 @@ impl Agent {
                         taint,
                         compactions,
                     );
+                    // Reaching here with nothing means the retries above are
+                    // spent. Say so: `finish` reports `Completed`, and a run
+                    // that produced no answer reporting success is the thing
+                    // that hid this bug for the whole life of the project.
+                    if produced_nothing {
+                        outcome.stop_cause = StopCause::NoOutput;
+                        outcome.exhausted = true;
+                    }
                     emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
                     return Ok(outcome);
                 }
@@ -3013,11 +3094,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_completed_run_never_returns_an_empty_answer_either() {
-        // The early-stop path already guaranteed this; a normal stop did not,
-        // so a silent final turn reached the caller as "".
-        let (agent, _) = agent_with(
-            vec![assistant(vec![], StopReason::EndTurn)],
+    async fn a_run_that_produces_nothing_says_so_instead_of_reporting_success() {
+        // This test used to assert the opposite of its own name: one empty turn
+        // ended the run as `Completed` with `exhausted: false`, on the reading
+        // that the model had simply finished with nothing to say. Terminal-Bench
+        // showed what that reading costs — 15 of 28 trials died this way and
+        // every one was recorded as an ordinary failure, because nothing in the
+        // outcome distinguished "produced no answer" from "answered".
+        //
+        // Two guarantees now. The caller still never receives an empty string,
+        // and the outcome names what happened.
+        let (agent, provider) = agent_with(
+            (0..EMPTY_TURN_RETRIES + 1)
+                .map(|_| assistant(vec![], StopReason::EndTurn))
+                .collect(),
             PermissionMode::Allow,
         );
         let mut convo = Conversation::from(vec![Message::user("go")]);
@@ -3029,9 +3119,13 @@ mod tests {
             "{}",
             outcome.text
         );
-        // It completed; it just had nothing to say. Don't misreport that.
-        assert_eq!(outcome.stop_cause, StopCause::Completed);
-        assert!(!outcome.exhausted);
+        assert_eq!(outcome.stop_cause, StopCause::NoOutput);
+        assert!(outcome.exhausted);
+        // Bounded: the retries, then one last attempt that gave up.
+        assert_eq!(
+            provider.seen.lock().unwrap().len() as u32,
+            EMPTY_TURN_RETRIES + 1
+        );
     }
 
     // --- compaction ---
@@ -4821,5 +4915,75 @@ mod tests {
             }
             other => panic!("expected a staging failure, got {other:?}"),
         }
+    }
+
+    /// An empty turn is what a thinking model returns when the per-turn budget
+    /// goes to reasoning and the answer never starts. It used to end the run:
+    /// `outcome.text` was the "no answer was produced" filler, `turns` was 1,
+    /// and `stop_cause` was `Completed`.
+    #[tokio::test]
+    async fn an_empty_turn_is_retried_instead_of_ending_the_run() {
+        let (agent, provider) = agent_with(
+            vec![
+                // All budget spent reasoning: no text, no tool calls.
+                assistant(vec![], StopReason::MaxTokens),
+                assistant(vec![Block::text("the answer")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+
+        let mut convo = Conversation::from(vec![Message::user("do the hard thing")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.text, "the answer");
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+        assert!(!outcome.exhausted);
+
+        // The nudge folded into the existing user message rather than becoming
+        // a second one — two user messages in a row are invalid, and the empty
+        // assistant turn must not be in the transcript at all, because some
+        // providers reject an assistant message with empty content.
+        let roles: Vec<_> = convo.messages.iter().map(|m| m.role).collect();
+        assert_eq!(roles, vec![Role::User, Role::Assistant], "{roles:?}");
+        assert!(convo.messages[0].text().contains("do the hard thing"));
+        assert!(convo.messages[0].text().contains("budget went entirely to reasoning"));
+
+        // And the retry actually carried the nudge to the provider.
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        let retried = seen[1].messages.last().unwrap().text();
+        assert!(retried.contains("give your answer now"), "{retried}");
+    }
+
+    /// A turn carrying tool calls but no text is *not* empty — it is the
+    /// ordinary shape of a tool turn, and nudging it would inject a spurious
+    /// user message between a `tool_use` and its result.
+    #[tokio::test]
+    async fn a_tool_call_without_text_is_not_treated_as_an_empty_turn() {
+        let (agent, provider) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "echo".into(),
+                        input: json!({"value": "pong"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+
+        let mut convo = Conversation::from(vec![Message::user("ping")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.text, "done");
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+        // user, assistant(tool_use), user(tool_result), assistant(text) —
+        // no nudge anywhere.
+        assert_eq!(convo.messages.len(), 4);
+        assert!(!convo.messages[2].text().contains("budget went entirely"));
+        assert_eq!(provider.seen.lock().unwrap().len(), 2);
     }
 }
