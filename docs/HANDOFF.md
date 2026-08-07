@@ -163,29 +163,30 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
 
 ### The public box
 
-[redacted: operational detail — see docs/OPERATIONS.md]
-`mecha-factory`. Reached over SSH with a **dedicated** key at
-[redacted: operational detail — see docs/OPERATIONS.md]
-[redacted: operational detail — see docs/OPERATIONS.md]
-[redacted: operational detail — see docs/OPERATIONS.md]
-[redacted: operational detail — see docs/OPERATIONS.md]
-would be.
+A single small VPS runs `mecha-factory`. Its deployment posture — host, sizing,
+the dedicated deploy key, the firewall policy — is inventory rather than
+engineering, so it lives in `docs/OPERATIONS.md`, which is gitignored. The
+deploy procedure and its traps are in that repository's `docs/DEPLOY.md`.
 
-The box holds no credential that reaches home: two Argon2id key hashes, the
+What is worth stating publicly is the invariant the posture exists to protect:
+**the box holds no credential that reaches home.** Two Argon2id key hashes, the
 published bytes, and a certificate. Packets go one way — mecha publishes and
-drains, and the origin never dials home.
+drains, and the origin never dials home. That is a property you can verify by
+inspection, which is why it is the one written down here.
 
-### The Anthropic key
+### Provider credentials
 
-[redacted: operational detail — see docs/OPERATIONS.md]
+Where the keys live is in `docs/OPERATIONS.md`. Two gotchas from wiring a key
+through a shell profile, both of which cost time and neither of which is
+specific to this machine:
 
 - **`~/.bashrc` returns early for non-interactive shells** (the `case $- in *i*)`
-  guard near the top). The export sits well below it, so a non-interactive shell
-  — which is what tooling runs — never reaches it. Load it explicitly:
-[redacted: operational detail — see docs/OPERATIONS.md]
-- **Take the *last* match, not the first.** There were two exports for a while,
-  a placeholder above the real key; `grep -m1` silently found the placeholder
-  and produced a `401 invalid x-api-key` that looked like a bad key.
+  guard near the top). An export below that line is invisible to a
+  non-interactive shell, which is what tooling runs — so a key that works when
+  you type a command by hand vanishes under systemd or a hook.
+- **Take the *last* match, not the first**, when grepping a profile for an
+  export. A placeholder above the real key meant `grep -m1` silently found the
+  placeholder and produced a `401 invalid x-api-key` that looked like a bad key.
 
 **No prices are configured**, so `cost_usd` is `None` and `--max-cost` silently
 never fires on a paid provider. For `[providers.anthropic]`:
@@ -230,14 +231,15 @@ their day (`factory-publish operator …`) from home. Routine SSH to the box is
 over; what remains on it is deploys and disaster recovery, deliberately. The
 whole arc is in [`HISTORY.md`](HISTORY.md) under 2026-08-07.
 
-[redacted: operational detail — see docs/OPERATIONS.md]
+Two clicks close loops, both waiting in the operator's inbox (the specifics are
+in `docs/OPERATIONS.md`):
 
-1. **The form-verification link** from 2026-08-07 05:28 — the one leg of the
-   inbound chain never run: the row should move `submitted → verified`, and
-   `factory-publish drain` should then bring it home.
-2. **A sign-in link**, whenever curiosity strikes: `gate.mecha-factory.ai/account`
-[redacted: operational detail — see docs/OPERATIONS.md]
-   release buttons, machines with last-used stamps.
+1. **The form-verification link** — the one leg of the inbound chain never run:
+   the row should move `submitted → verified`, and `factory-publish drain`
+   should then bring it home.
+2. **A sign-in link**, whenever curiosity strikes: the gate's `/account` page is
+   the operator's own tenant page — bundles with release buttons, machines with
+   last-used stamps.
 
 Everything else below is independent of that.
 
@@ -363,13 +365,13 @@ behaviour came from the reflector model declining. If the design was always
 
 - **`mecha-factory` — the public surface. It is deployed, it sends mail, and
   it is self-serve.** Its own repository, public at
-[redacted: operational detail — see docs/OPERATIONS.md]
-[redacted: operational detail — see docs/OPERATIONS.md]
+  **github.com/ljchang/mecha-factory** (249 tests), running on a small VPS:
+  the API at `https://gate.mecha-factory.ai`, artifacts at
   `https://<handle>.art.mecha-factory.ai`, notebooks at `…compute…`. Verified
   live 2026-08-06 — a bundle rendered here, pushed there, served under the
-  `static` policy behind a certificate the binary obtained for itself. The
-[redacted: operational detail — see docs/OPERATIONS.md]
-  them, `publish`, `release`, `drain` and `operate`.
+  `static` policy behind a certificate the binary obtained for itself. Four
+  scoped keys exist — `publish`, `release`, `drain` and `operate`; which
+  handles and key files exist locally is in `docs/OPERATIONS.md`.
 
   Everything through self-serve is **built, deployed, and verified live**:
   SES mail, the scope split that moved "a human releases" onto the credential
@@ -405,7 +407,7 @@ behaviour came from the reflector model declining. If the design was always
     packaged-dependency resolution). What remains is `cargo publish` with the
     owner's token — claiming the names is forever, so it stays a human's
     button to press.
-[redacted: operational detail — see docs/OPERATIONS.md]
+  - **The DNS is at a registrar with no API for custom records** — every
     row is typed by hand, including the five SES ones. Moving the zone to
     Cloudflare (DNS-only, never proxied) is independent of everything else —
     and it gates nothing: the wildcard `A` records already resolve any new

@@ -185,8 +185,8 @@ multi-tenant — a user owns every row, and their artifacts are served from
 isolation a browser enforces and a published URL has to stay resolvable
 forever. Step 7's server half followed: a form rendered from the manifest, a
 single-use verification link, and a state machine where nothing reaches the
-[redacted: operational detail — see docs/OPERATIONS.md]
-[redacted: operational detail — see docs/OPERATIONS.md]
+queue until somebody clicks. Then it was actually stood up — a small VPS
+serving the gate and the first tenant's artifact origin
 under a Let's Encrypt certificate the binary obtained for itself over
 TLS-ALPN-01, with the first bundle published from this machine to that one.
 The design doc gained §14 (multi-tenancy, the two axes, the request-path
@@ -273,10 +273,10 @@ Setting the account up produced the more transferable finding. The zone
 already published `v=spf1 -all` and `p=reject; adkim=s; aspf=s`, so a naive
 SES setup would not have landed in spam — receivers would have **refused the
 message outright** while SES reported success. Easy DKIM signing as the domain
-[redacted: operational detail — see docs/OPERATIONS.md]
-therefore the proof DMARC passed, since that host would have rejected it
-otherwise. Production access came free, inherited from another project on the
-same account.
+itself is what satisfies strict alignment. Delivery to a mailbox at a
+strict-DMARC host is therefore the proof it passed, since that host would have
+rejected it otherwise. Production access came free, inherited from another
+project on the same account.
 
 Then the review gate moved off the client. `Scope::Publish` had authorised all
 five write endpoints, so one key could push a version *and* move the alias
