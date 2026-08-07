@@ -1,0 +1,19 @@
+# Install: cp scripts/mecha-frontdoor.{service,timer} ~/.config/systemd/user/
+#          systemctl --user daemon-reload
+#          systemctl --user enable --now mecha-frontdoor.timer
+#          loginctl enable-linger "$USER"
+#
+# Hourly, not minutely: every draft waits for a human review regardless, so
+# the latency that matters is "before the next time the outbox is read", and
+# an hour clears that with room. Persistent, so a closed laptop owes one tick
+# on wake, not a backlog.
+[Unit]
+Description=Run the mecha front door hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

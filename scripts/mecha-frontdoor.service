@@ -1,0 +1,12 @@
+# Install: cp scripts/mecha-frontdoor.{service,timer} ~/.config/systemd/user/
+#
+# No WorkingDirectory, for the reason mecha-ruminate.service spells out: the
+# script resolves its own directory (`mecha work path frontdoor`), so it is
+# correct however it is launched, and an unattended run is never handed a
+# project's `mecha.toml`.
+[Unit]
+Description=mecha front door (drain, extract, triage)
+
+[Service]
+Type=oneshot
+ExecStart=%h/Github/mecha/scripts/frontdoor.sh
