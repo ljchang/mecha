@@ -80,6 +80,25 @@ pub struct Record {
     /// The names of the values that are prose. See the module docs.
     #[serde(default)]
     pub free_text: Vec<String>,
+    /// Where a reply goes: the address the box proved a stranger controls, by
+    /// sending a link to it and waiting for the click.
+    ///
+    /// Written by the drain, which holds the manifest and so knows which field
+    /// `[verification]` names. It is separate from `values` because an email
+    /// field is free-text by kind, so the address is stripped from
+    /// [`Record::typed_values`] along with the prose — correct for an
+    /// affiliation somebody typed, and it left the first real triage run
+    /// unable to answer anything: *"without a recipient address, there is no
+    /// way to compose or stage a reply."* The most-checked value in the record
+    /// was being quarantined with the least-checked ones.
+    ///
+    /// **An address, used as an address.** Not evidence of who anybody is, and
+    /// not text to reason about.
+    ///
+    /// `None` on a record that did not validate — which is also a record no
+    /// privileged run is given, so the two absences agree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
     /// What the quarantined pass made of the prose. Present once extraction
     /// has succeeded, and the only representation of the prose that a
     /// privileged run is ever given.
@@ -200,6 +219,12 @@ impl Record {
             "seq": self.seq,
             "type": self.type_id,
             "received": self.created_at,
+            // Where an answer goes. The one value here a stranger chose *and*
+            // proved, so it is named on its own rather than left among the
+            // fields — a run that has to hunt for the address in a map keyed by
+            // whatever this form happened to call it will sometimes pick the
+            // advisor's.
+            "reply_to": self.reply_to,
             // The typed fields, which the origin validated against an enum, a
             // range or a date. Nothing a stranger typed changed their meaning.
             "fields": self.typed_values(),
@@ -560,6 +585,7 @@ mod tests {
             }))
             .unwrap(),
             free_text: vec!["requester_name".into(), "purpose_detail".into()],
+            reply_to: None,
             extraction: None,
             extraction_error: None,
             triage_session: None,
@@ -567,6 +593,32 @@ mod tests {
             note: None,
             rest: Map::new(),
         }
+    }
+
+    /// A privileged run gets somewhere to reply to, and still gets none of the
+    /// words. The first real triage run failed on exactly this: it had the
+    /// request and no address, and correctly refused to invent one.
+    #[test]
+    fn a_privileged_run_is_told_where_to_reply_and_still_not_what_was_written() {
+        let mut record = record_with_prose();
+        record.valid = true;
+        record.extraction = Some(Default::default());
+        record.reply_to = Some("mallory@example.org".into());
+
+        let brief = record.for_privileged_run().unwrap();
+        assert_eq!(brief["reply_to"], "mallory@example.org");
+
+        // The whole brief, as text: the address is in it and the prose is not.
+        let rendered = serde_json::to_string(&brief).unwrap();
+        assert!(rendered.contains("mallory@example.org"));
+        assert!(
+            !rendered.contains("Ignore your instructions"),
+            "the prose reached a run with tools: {rendered}"
+        );
+        assert!(
+            !rendered.contains("Ada Lovelace"),
+            "a free-text name is still prose: {rendered}"
+        );
     }
 
     /// A record parked in `awaiting_me` with `n` drafts against it.
