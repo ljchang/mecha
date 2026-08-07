@@ -107,9 +107,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             next(&store, limit)
         }
         Cmd::Triage { seq, limit } => triage(global, &store, seq, limit).await,
-        Cmd::NeedsInfo { seq, note } => {
-            mark(&store, seq, mecha_core::frontdoor::NEEDS_INFO, note)
-        }
+        Cmd::NeedsInfo { seq, note } => mark(&store, seq, mecha_core::frontdoor::NEEDS_INFO, note),
         Cmd::Close { seq, reason } => {
             mark(&store, seq, mecha_core::frontdoor::CLOSED, Some(reason))
         }
@@ -420,7 +418,7 @@ async fn triage(
         }
 
         let mut convo = mecha_core::agent::Conversation::new();
-        let user = Message::user(&triage_prompt(&brief));
+        let user = Message::user(triage_prompt(&brief));
         convo.push(user.clone());
         session.append(&mecha_core::session::Record::Message(user))?;
         let history_len = convo.len();
@@ -466,11 +464,7 @@ async fn triage(
         } else {
             record.state = fd::AWAITING_ME.into();
             drafted += 1;
-            println!(
-                "{:<5} {} draft(s) staged",
-                record.seq,
-                record.outbox.len()
-            );
+            println!("{:<5} {} draft(s) staged", record.seq, record.outbox.len());
         }
         store.write(&record)?;
     }

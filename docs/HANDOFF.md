@@ -35,12 +35,12 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **491 tests**, no warnings — verified 2026-08-06:
+Expect **506 tests**, no warnings — verified 2026-08-07:
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 331 |
-| `mecha-cli` unit | 80 |
+| `mecha-core` unit | 343 |
+| `mecha-cli` unit | 83 |
 | `mecha-mail` unit | 66 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
 | doctest | 1 |
@@ -83,6 +83,7 @@ A working agent harness, used and measured rather than just compiled.
 | Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/**review**/send/reject, several ids or `--all` narrowed by `--kind`/`--via`; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner — and the jail they were drafted under, so a release resolves paths against the agent's workspace rather than the reviewer's |
 | Workspaces | `~/.mecha/work/<producer>/` is a run's workspace and its output directory; `mecha work list/path/clean`, retention nightly. A workspace containing the mecha home is refused |
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed |
+| Front door | `mecha frontdoor` list/show/extract/next/**triage**/**needs-info**/**close** over `~/.mecha/requests/` — the quarantine between a stranger's request and a run with tools, and the state machine that lets one reach an answer. The extractor is issued no tools and no history; `Record::for_privileged_run` has no argument that returns the prose; an extraction failure routes to a human. `triage` drafts into the outbox and refuses to run unrouted; `reconcile` closes the loop from released items on its own, with no verb to remember. `mecha-factory-publish drain` fills the directory |
 | Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, **the daemon is installed and running here**; a failed `notify` is recorded on the run |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B) |
 | Eval | 36 cases, 15 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `pkg-cases.jsonl` — 8 memory/interlock cases against fixture MCP servers (`--mcp-file`) |
@@ -202,28 +203,25 @@ themselves across runs.
 
 ## What to do next
 
-**Sequenced**, and the ordering changed on 2026-08-06 because the factory
-stopped being hypothetical. It is deployed, reachable, and — since the wiring
-landed the same day — reachable *by an agent*. The outbound half is done; the
-inbound half is what is left.
+**Sequenced.** As of 2026-08-07 the inbound path is built end to end in code
+and blocked on one thing that is not code: a stranger can reach the form, but
+the box cannot send them the link back.
 
-So the short path, in order:
+1. **Set up Amazon SES, and write the procedure down.** The mailer itself
+   shipped (`mecha-factory/src/mail.rs` — SigV4 by hand against SES v2, no
+   SDK). What does not exist is the account behind it: a verified domain
+   identity, DKIM CNAMEs and an SPF record in Squarespace's DNS, an IAM user
+   scoped to `ses:SendEmail`, and production access — a new SES account is in
+   the sandbox, where the API *accepts* a send to an unverified address and
+   silently never delivers it. Until that is done, `[mail]` is absent and
+   verification links go to the journal, which `factory check` says out loud.
+   `docs/DEPLOY.md` in the factory repository names all of this as a
+   requirement and gives no procedure for any of it; the gap was found by
+   trying to follow it.
 
-1. **The drain client at home.** The server half exists (`GET /v1/queue` with a
-   scoped key, `~/.mecha/factory/drain.key` already minted), and nothing on
-   this side speaks it: `mecha-factory-publish`'s `remote.rs` knows only
-   bundles and health, and there is no `drain` subcommand. It is a CLI and not
-   a tool on purpose — the common case is "nothing new", and it must cost zero
-   tokens.
-2. **The quarantine layers (§8)**, which are what stands between a drained
-   stranger's record and a triage run. They are the mecha-side half of factory
-   step 7, and nothing about the inbound path is safe to switch on without
-   them.
-3. **A mailer**, after which a stranger can actually use a form.
+Everything else below is independent of that.
 
-Everything else below is independent of that path.
-
-Every item below was verified against source on 2026-08-06 to still be unbuilt.
+Every item below was verified against source on 2026-08-07 to still be unbuilt.
 Ordered by value per unit of effort, not by size.
 
 ### Cheap, and worth doing first
@@ -352,40 +350,35 @@ behaviour came from the reflector model declining. If the design was always
   `static` policy behind a certificate the binary obtained for itself. The
   first user is `ljchang`; the keys are at `~/.mecha/factory/`.
 
-  Steps 1–7's server half are built: publishing, multi-tenancy (a user owns
-  every row, artifacts are served from their own hostname, handles are never
-  reissued, withhold/suspend/quota), and the intake path (a form from the
-  manifest, a single-use verification link, nothing queued until somebody
-  clicks). The design is [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md)
+  Steps 1–7's server half are built: publishing, multi-tenancy, and the intake
+  path. The design is [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md)
   §14–15; the deploy procedure and its traps are that repository's
-  `docs/DEPLOY.md`. Do not re-derive either here.
+  `docs/DEPLOY.md`; how it was built and verified is in
+  [`HISTORY.md`](HISTORY.md). Do not re-derive any of it here.
 
-  **Wired into this machine 2026-08-06**, and verified by publishing through
-  it: an agent rendered a page, `bundle_publish` staged instead of executing,
-  `outbox show` led with the rendered file, `edit` was refused, and `send`
-  pushed it to the droplet — live at
-  `https://ljchang.art.mecha-factory.ai/b/factory-smoke/`. Two things had to
-  change for that to work, both in the "Traps" record: an unconfined MCP server
-  now starts in the run's workspace, and a staged item records the jail it was
-  drafted under. `sandbox = true` is deliberately **not** set here and the
-  config says why at length — bwrap does not work on this box, docker would
+  **Wired into this machine and published through, end to end, 2026-08-06.**
+  `sandbox = true` is deliberately **not** set on the factory MCP server and
+  the config says why at length — bwrap does not work on this box, docker would
   need a custom image plus global writable mounts, and neither confines the
   notebook render subprocess, which is the one path that executes code we did
   not write.
 
   **Three things open, in the order they bite:**
 
-  - **No mailer.** Verification links go to the journal rather than to anyone.
-    It is the gap before a stranger can use a form at all, and §15.5 is the
-    shape it has to take.
+  - **SES is not set up**, so verification links still go to the journal. The
+    mailer is built (`mail.rs`, SigV4 by hand against SES v2); what is missing
+    is the account, the DNS records and production access. See the sequenced
+    item at the top of this section — it is the one thing standing between a
+    stranger and a working form.
   - **A release binary from CI**, so the box needs no Rust toolchain to patch.
   - **A wildcard certificate** (needs DNS-01, and a zone token on the box).
     Until then a new user needs a restart to get one — and note what that buys
     today: an unowned handle fails at the TLS handshake, so the 404 is only the
     second line of defence and a wildcard would remove the first.
 
-  The mecha-side half of step 7 — §8's quarantine layers — is unbuilt, and is
-  what stands between a drained record and a triage run.
+  The mecha-side half of step 7 is **built**: `mecha-factory-publish drain`
+  fetches the queue, and `mecha frontdoor` is the quarantine between a drained
+  record and a triage run. See `CLAUDE.md`.
 
 - **Slack as a transport.** Zero lines exist. The blocking decision is the
   identity model, not the socket.

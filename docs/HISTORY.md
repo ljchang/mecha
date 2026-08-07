@@ -194,6 +194,70 @@ invariant, the attachment lease) and §15 (users, handles never reused,
 withhold versus purge, the outbound-mail abuse surface); the deployment
 procedure and its two traps live in that repository's `docs/DEPLOY.md`.
 
+**2026-08-06 (last) — the inbound half, and the quarantine at the centre of
+it.** The drain client landed on the home side: `mecha-factory-publish drain`
+speaks `GET /v1/queue` with the scoped key and writes each row into
+`~/.mecha/requests/`. A CLI rather than a tool on purpose — the common case is
+"nothing new", and it has to cost zero tokens and no model.
+
+Then `mecha frontdoor` (`frontdoor.rs`, `commands/frontdoor.rs`), which is
+everything that happens to a stranger's request afterwards and exists to serve
+one sentence: **the privileged run sees the extraction, never the prose.** A
+run holding the calendar and the mailbox is the most dangerous context in this
+system, and a free-text field is the one place a stranger controls the bytes.
+The typed form already does most of the work — nothing anyone types can change
+what *kind* of request theirs is, because those are enums the origin
+validated — so what is left is prose, and prose is where an instruction hides.
+CaMeL's dual-LLM split, at a size where it is cheap.
+
+Four things carry it. `Record::for_privileged_run` is a **function with no
+argument that returns the prose**, so the boundary is unreachable rather than
+remembered; the extractor's own `reading` stays behind too, because a
+paraphrase of an injection is the injection rearranged. `extract` is issued a
+request with an **empty tool list and one user message** — not a model told not
+to use tools. An extraction failure routes to a human instead of passing the
+prose on, which is the one behaviour that would make the layer decorative. And
+which fields are prose is decided by the drain from the manifest, never guessed
+at on this side by looking for long strings.
+
+**2026-08-07 — a request can reach an answer.** The state machine stopped at
+`extracted`. `Record` named the chain `drained → extracted → triaged →
+awaiting_me → answered`, but the only states anything ever wrote were the first
+two and `extraction_failed` — so a stranger's request could arrive, verify,
+queue, drain and pass safely through the quarantine, and then there was nowhere
+for it to go. The queue only grew.
+
+`triage`, `needs-info` and `close` finish it, and the join needed no building: a
+staged outbox item already records the session that drafted it, so a triage run
+with its own session says which drafts belong to which request. `reconcile`
+reads the outbox and updates the request store, and runs on its own rather than
+on a verb someone has to remember — a state that is only correct after you run a
+command is a state nobody can trust. A rejected draft returns the request to
+`extracted` rather than closing it, because "not this reply" is not "not this
+request"; a partly-resolved set is left alone, because some sent and some
+pending is a person mid-review; and `triage` refuses to run without the outbox
+route rather than running unrouted, since a stranger's inbox is not where you
+want to find out `[outbox] tools` was unset.
+
+**2026-08-07 — a brand, and two documents catching up with the code.** The 9A
+mark landed in `brand/` with `scripts/build-brand-assets.py` generating the
+three rasters SVG cannot serve, and the Docusaurus scaffold's own artwork was
+deleted — shipping another project's mark as this one's is worse than having
+none. The site had had no logo at all until then, for exactly that reason.
+
+The public documentation caught up with everything above: three pages that did
+not exist (the work directory, publishing, the front door), and three gaps in
+pages that did — `web_search` was missing from the built-in tool table,
+`Tool::carried_state` was undocumented on both sides of itself, and the MCP
+working-directory fix was unrecorded. The CLI and config references were
+checked against the binary rather than by reading, which is the only way that
+check means anything.
+
+Then the same pass on `CLAUDE.md`, which had drifted further and matters more,
+being loaded into every session as project instructions: its architecture map
+was missing nine modules, and it had no account of the front door, the search
+backends, subagents, or replay.
+
 ---
 
 ## The measurement record
@@ -504,6 +568,24 @@ All found by pre-push review or by running it.
 - **Installing a thing is how you find out about it.** Everything above was
   built, tested and documented for two days before anybody ran it on a
   schedule, and one minute of real scheduling produced a bug no test had.
+- **A new global precondition breaks the callers you did not think of, and a
+  lazy caller breaks selectively.** Refusing a workspace that contains the
+  mecha home fixed a real jail bug and silently broke the nightly rumination:
+  `validate` and `learn --propose` both build a tool surface and so both hit
+  the new check, and a systemd *user* unit with no `WorkingDirectory` runs in
+  `$HOME`, which contains `~/.mecha`. The part worth the entry is that they
+  build that surface **lazily** — only when there is a proposal to gate or a
+  probe to replay — so quiet nights passed and the nights with work aborted.
+  A precondition added centrally needs its callers enumerated, and a caller
+  that only sometimes trips it is worse than one that always does: the failure
+  correlates with the work being worth doing, which is exactly when nobody is
+  watching. Found by an automated review, not by running it.
+- **Check-then-act across a human is a race, not a formality.** `outbox send`
+  holds the store lock across execution so two sends cannot both pass the
+  pending check. `outbox review` checked pending, printed the draft, and then
+  *waited at a prompt* — the check and the act separated by however long a
+  person takes to read. Anywhere a human sits between the test and the action,
+  the test has to be repeated on the far side of them.
 
 ### Environment
 
