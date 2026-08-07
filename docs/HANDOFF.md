@@ -37,11 +37,11 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **509 tests**, no warnings — verified 2026-08-07:
+Expect **511 tests**, no warnings — verified 2026-08-07:
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 346 |
+| `mecha-core` unit | 348 |
 | `mecha-cli` unit | 83 |
 | `mecha-mail` unit | 66 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
@@ -99,7 +99,7 @@ Running on the DGX Spark (GB10, aarch64, 128GB unified). **Re-verified
 
 | Port | Model | State |
 |---|---|---|
-| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1` — MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **Now a transient unit** (`systemctl --user status llama-qwen`), not a tmux pane — see below |
+| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, `-c 32768`, **`--reasoning-budget 4096`** (new 2026-08-07 — it is what stops this model reasoning without terminating and returning empty content). `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` (= `-c`) and `max_tokens` (**above** the budget; 8192) — four numbers that move together. **Do not raise `-c`**: 131072 was tried and cost a 50x generation slowdown with no error anywhere. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **Now a transient unit** (`systemctl --user status llama-qwen`), not a tmux pane — see below |
 | 8081 | gemma-4-E4B | down; nothing currently depends on it |
 | 8082 | gemma-4-26B-A4B | **down — restart it before any judged run.** The eval judge and nightly validate's judge both point here, so `mecha eval` with a `judge` rubric and the nightly validate will fail without it. `scripts/start-gemma26.sh` |
 | 8888 | SearXNG | up (docker, JSON format enabled) |
@@ -212,22 +212,22 @@ themselves across runs.
 
 ## What to do next
 
-**Sequenced.** As of 2026-08-07 the inbound path runs end to end **in
-production**: a stranger reaches the form, the box sends the link through SES,
-and the click is the only leg never exercised. What is left is a second person
-being able to do any of it without an SSH session.
+**As of the evening of 2026-08-07, self-serve is done.** All six steps of the
+factory's `SELF-SERVE.md` are built, deployed, and verified live — a stranger
+with an invite claims a handle, gets a certificate in seconds, pairs their
+machine, publishes, signs in, and releases from a browser; the operator runs
+their day (`factory-publish operator …`) from home. Routine SSH to the box is
+over; what remains on it is deploys and disaster recovery, deliberately. The
+whole arc is in [`HISTORY.md`](HISTORY.md) under 2026-08-07.
 
-1. **Self-serve signup on the factory** — the plan is
-   `docs/SELF-SERVE.md` in the factory repository, written before the code so
-   the decisions are still cheap. In order: a certificate that arrives without
-   an operator (option B over **HTTP-01**, because TLS-ALPN-01 is what forces
-   the `pub(crate)` acceptor that blocks a per-user resolver), then signup
-   reusing `intake.rs`, then pairing, then the tenant and operator surfaces.
-   The scope split it depends on is already done and deployed.
 [redacted: operational detail — see docs/OPERATIONS.md]
-   2026-08-07 05:28. It is the one leg of the inbound chain never run: the
-   row should move `submitted → verified`, and `factory-publish drain` should
-   then bring it home. Costs nothing and closes the loop.
+
+1. **The form-verification link** from 2026-08-07 05:28 — the one leg of the
+   inbound chain never run: the row should move `submitted → verified`, and
+   `factory-publish drain` should then bring it home.
+2. **A sign-in link**, whenever curiosity strikes: `gate.mecha-factory.ai/account`
+[redacted: operational detail — see docs/OPERATIONS.md]
+   release buttons, machines with last-used stamps.
 
 Everything else below is independent of that.
 
@@ -351,15 +351,15 @@ behaviour came from the reflector model declining. If the design was always
 
 ### Larger, and deliberately not started
 
-- **`mecha-factory` — the public surface. It is deployed, and it sends mail.**
-  Its own repository, public at **github.com/ljchang/mecha-factory** (209
+- **`mecha-factory` — the public surface. It is deployed, it sends mail, and
+  it is self-serve.** Its own repository, public at
 [redacted: operational detail — see docs/OPERATIONS.md]
-  `https://gate.mecha-factory.ai`, artifacts at
+[redacted: operational detail — see docs/OPERATIONS.md]
   `https://<handle>.art.mecha-factory.ai`, notebooks at `…compute…`. Verified
   live 2026-08-06 — a bundle rendered here, pushed there, served under the
   `static` policy behind a certificate the binary obtained for itself. The
 [redacted: operational detail — see docs/OPERATIONS.md]
-  them, `publish`, `release` and `drain`.
+  them, `publish`, `release`, `drain` and `operate`.
 
   **Amazon SES is wired and live (2026-08-07).** A real submission to the live
   form produced `verification sent` in the journal and a message that arrived
@@ -390,20 +390,33 @@ behaviour came from the reflector model declining. If the design was always
   notebook render subprocess, which is the one path that executes code we did
   not write.
 
-  **Three things open, in the order they bite:**
+  **Self-serve shipped end to end on 2026-08-07** — all six steps of the
+  factory's `SELF-SERVE.md`, each deployed and verified live the same day:
+  per-user certificates over HTTP-01 reconciled from the ledger (a throwaway
+  handle certificated in ~30s with nothing restarting), invite → handle-claim
+  signup, pairing whose handle assertion the **server** checks (a wrong
+  assertion spends nothing and reveals nothing — refused live), the tenant
+  page at `/account` (magic-link sessions, `__Host-` cookie, release
+  authority, machines with last-used, per-key revoke), `factory-publish
+  disconnect`, and the operator surface — `Scope::Operate` driving
+  `/v1/admin/*` through `factory-publish operator …`, CLI-only and never MCP
+  tools. Routine SSH to the box is over; deploys and disaster recovery stay
+  on it deliberately. The build order in that repo's `SELF-SERVE.md` records
+  each step's decisions; the arc is in [`HISTORY.md`](HISTORY.md).
 
-  - **Nothing about signup is self-serve.** `user create` is a root SSH
-    command and a new handle has no certificate until the process restarts, so
-    a second person cannot arrive without an operator. `docs/SELF-SERVE.md` in
-    the factory repository is the plan; the certificate is the only part that
-    is not ordinary work.
+  **Two things open, in the order they bite:**
+
   - **A release binary from CI**, so the box needs no Rust toolchain to patch.
+    Each deploy is currently a five-minute `cargo build --release` on one
 [redacted: operational detail — see docs/OPERATIONS.md]
 [redacted: operational detail — see docs/OPERATIONS.md]
     row is typed by hand, including the five SES ones. Moving the zone to
-    Cloudflare (DNS-only, never proxied) is independent of everything else.
-    Note it does **not** unlock wildcards: `rustls-acme` speaks only HTTP-01
-    and TLS-ALPN-01, so the library forecloses them whoever hosts the zone.
+    Cloudflare (DNS-only, never proxied) is independent of everything else —
+    and it gates nothing: the wildcard `A` records already resolve any new
+    handle, which is what let per-user issuance ship without touching DNS.
+    It does **not** unlock wildcard certificates either: `rustls-acme` speaks
+    only HTTP-01 and TLS-ALPN-01, so the library forecloses them whoever
+    hosts the zone.
 
   The mecha-side half of step 7 is **built**: `mecha-factory-publish drain`
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained

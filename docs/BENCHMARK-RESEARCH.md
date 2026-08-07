@@ -158,6 +158,170 @@ Long-Horizon-Terminal-Bench (46 tasks, ~9.9M tokens and 85 minutes *per task*,
 53–71 hours for one pass) — the latter is out of reach here and is noted only
 so nobody starts it by accident.
 
+### Running it on this box — what the first passes cost to learn
+
+Everything above was research. This is what actually happened on the DGX
+(aarch64), and every item below is a thing that produced a *plausible wrong
+number* rather than an error.
+
+**The denominator is 75, not 89.** The prebuilt task images are amd64-only and
+this host is aarch64, so `bench/run.sh` passes `--force-build` and each task is
+built from its own Dockerfile. Fourteen tasks then fail *their own reference
+solution* here — mostly the numerical and scientific-toolchain ones
+(`mcmc-sampling-stan`, `rstan-to-pystan`, `caffe-cifar-10`, `mteb-*`,
+`largest-eigenval`, `protein-assembly`) plus four builds and the two MIPS
+tasks. A mecha score on those measures the architecture, not the agent. The
+list lives in `bench/oracle-arm64-excluded.txt`, derived from the sweep's
+`result.json` rather than typed by hand, and **any published number must name
+the 75**.
+
+**The oracle sweep is calibration, not a score.** `harbor run` with no `-a`
+runs the `oracle` agent — each task's shipped reference solution, no model
+anywhere. The 2026-08-05 sweep took **14.4 hours** and answered exactly one
+question: which tasks work here. Nearly all of that was building 89 images;
+the reference solutions themselves are fast. Worth stating plainly because the
+duration reads like a benchmark run and is not one — a 14-hour job had
+completed and the agent had still never been scored.
+
+**`-x` and `-i` match dataset-qualified names, and a miss is silent.** Harbor
+matches globs against `terminal-bench/<task>`, so a bare `-x make-mips-interpreter`
+matches **nothing**, excludes **nothing**, warns about nothing, and exits 0.
+The job then runs all 89 while every artifact still says "subset", and the
+scorecard is indexed by a denominator that was never true. This cost two runs
+before it was noticed — the 2026-08-05 job carrying `exclude_task_names:
+["make-mips*"]` has `make-mips-interpreter` in its own results, which is the
+tell nobody read. Two guards now: `bench/run-subset.sh` refuses a name without
+a `/`, and `bench/check-subset.py` compares a job's `lock.json` against the
+calibrated list. `lock.json` is written before any trial runs, so the check is
+a genuine preflight — and it compares *name sets*, not counts, because 75 of
+the wrong 75 is still wrong.
+
+**Pin the dataset ref to the one the oracle measured.** `bench/run.sh` defaults
+to `terminal-bench/terminal-bench-2`, which resolves `latest` at launch. The
+exclusion list is a claim about 89 *particular* tasks, so a dataset that gained
+or changed a task would silently invalidate it. `bench/run-subset.sh` pins the
+sha the sweep ran against; moving it means re-running the sweep.
+
+**`--n-concurrent-agents 1` is load-bearing, not tuning.** The host runs one
+llama-server with `-np 1` — a single slot holding the whole 32768 context,
+which `bench/run.sh` refuses to start without (4 default slots quarter the
+context to 8192, the confound that voided a day of scorecards). Concurrent
+trials do not get concurrent slots: they queue, and each switch evicts the
+other's KV prefix, so prompt caching collapses and agent timeouts start firing
+on the queue rather than on the work. The run therefore uses `-n 4` with the
+agent phase capped at 1 — builds and verifiers overlap, since those are CPU
+work with no model in them.
+
+**The binary must be statically linked, or it does not start.** A host
+`cargo build --release` links glibc 2.39; the task containers are other
+people's images — Debian 11 (2.31), Ubuntu 22.04 (2.35), Alpine (musl). The
+binary is uploaded into each one and fails there with
+
+```
+/installed-agent/mecha: /lib/aarch64-linux-gnu/libc.so.6:
+    version `GLIBC_2.39' not found (required by /installed-agent/mecha)
+```
+
+and — this is the part that matters — it fails **as an agent error**. The trial
+records `NonZeroAgentExitCodeError` and reward 0.0, which in a scorecard is
+indistinguishable from a model that tried and failed. `bench/build-portable.sh`
+builds static musl in a container (`ring` needs a C toolchain, musl-tools needs
+root; rustls means no OpenSSL), asserts the result is actually static, and
+`bench/run.sh` points `MECHA_BENCH_BINARY` at it. Verified the way this project
+requires — the old binary fails on all three bases, the new one runs on all
+three, Alpine included, where an older-glibc build would still be "not found".
+
+**The per-turn budget is a *reasoning* budget, and 8192 was not enough.** This
+is a thinking model. Measured directly against the local server: a hard task at
+`max_tokens: 8192` returns `finish_reason: length`, **23,682 characters of
+`reasoning_content`, and an empty `content`**. Raising to 16384 and 24576 gave
+49,587 and 59,917 characters of reasoning and still no answer; easy and moderate
+prompts finish with `stop` and real content in a few hundred tokens. So the
+failure is specific to hard tasks, which is exactly the set a benchmark is made
+of.
+
+What mecha does with that is the harness half of the bug: an assistant turn with
+no content ends the run — **exit 0, no answer, reward 0.0, no exception**. Both
+completed trials of the first real run died that way, one after 2 turns and one
+after 7. It reproduces outside the benchmark in one command, which is how it was
+confirmed rather than inferred.
+
+**Raising the budget is not the fix, and the first attempt at it did real
+damage.** The server went to `-c 131072` and the posture to `max_tokens: 32768`
+on the theory that thinking needed room. Every part of that was wrong:
+
+- `circuit-fibsqrt` spent 33,019 output tokens across 2 turns and *still* ended
+  empty; `overfull-hbox` never finished a single turn inside the harness's
+  20-minute agent timeout. A bigger budget buys a longer runaway, because the
+  reasoning has no upper bound of its own — at `max_tokens: 12288` an answer
+  appeared in **2 of 4 samples**, a coin flip rather than a fix, and the reason
+  some trials passed and some died.
+- **`-c 131072` cost a 50x slowdown**: 64 tokens went from 1.06s to 52.6s, the
+  server pinned at ~97% of one core, because the KV cache stopped fitting
+  alongside the model. Nothing errored. The server answered every request. The
+  only symptom was trials sitting on their first turn for forty minutes — which
+  reads exactly like a hard task. The context is back at 32768, and the lesson
+  is to **measure tokens/sec after touching `-c`**, not just that the server
+  came back up.
+
+**The fix is `--reasoning-budget`, and it has to be a server flag.** llama-server
+caps the thinking block, closes the tag when the cap is hit, and injects
+`--reasoning-budget-message`, after which the model answers. At 4096 the same
+hard prompt produced content in **4 of 4** samples. The per-request
+`reasoning_budget` field is *silently ignored* by this server — A/B tested at
+identical `max_tokens`, the "with" arm still returned empty content — so it
+cannot be set per run and belongs in `scripts/start-moe-mtp.sh`. `max_tokens`
+then only needs to exceed the budget with room for an answer (16384).
+
+Four numbers now move together, and a mismatch is silent in every direction:
+`--reasoning-budget` and `-c` in `scripts/start-moe-mtp.sh`, and a `max_tokens`
+above the budget beside a `context_window` equal to the `-c` in both
+`bench/mecha_agent.py` and `~/.mecha/config.toml`. That last file had
+`max_tokens = 4096` — *at* the reasoning budget, leaving nothing for an answer,
+which would have made hard everyday turns come back empty too. The final
+posture is the original one plus the budget: `-c 32768`,
+`--reasoning-budget 4096`, `max_tokens 8192`.
+
+**Both halves were needed, and the measurement is what proved it.** The first
+75-task run was launched with only the server-side budget, on the reading that
+an empty turn was now rare enough. It was not: at 28 trials, **15 ended empty
+and none of those 15 passed**, while 8 of the 13 that reached a real conclusion
+did. That is a scorecard measuring whether mecha survived, not whether the model
+could do the work, and it is why the run was stopped rather than finished.
+
+So `agent.rs` now treats a turn with no text and no tool calls as recoverable:
+it folds a nudge into the preceding user message — the steering rule, because
+two user messages in a row are invalid — and retries, up to
+`EMPTY_TURN_RETRIES`. The empty assistant message is deliberately never pushed,
+since some providers reject an assistant turn with empty content and keeping it
+would make the retry unsendable. Detection keys on *the turn carrying nothing*
+rather than on the stop reason, because providers disagree about the label —
+`max_tokens` from one, plain `stop` from another with the reasoning silently
+truncated.
+
+When the retries are spent the run stops as `StopCause::NoOutput` with
+`exhausted: true`. That half matters as much as the recovery: `finish` reported
+`Completed` with `exhausted: false`, so **a run that produced nothing reported
+success**, which is precisely why 15 dead trials read as ordinary failures. The
+existing test asserting that behaviour — *"It completed; it just had nothing to
+say. Don't misreport that."* — was rewritten, since the premise was the bug.
+
+Verified against the real model with the server budget removed, which is the
+only way to exercise it (a `ScriptedProvider` replays what you *believe* a
+provider does): three nudge retries fired, the run gave up naming the cause and
+the fix, and exited non-zero instead of 0.
+
+**What a first-pass smoke does and does not tell you.** The single-task smoke
+(`overfull-hbox`, 2026-08-05) scored 0.0 at 61.7k input / 24.6k output tokens.
+That is a working adapter, not a signal about capability: one task at k=1 from
+a set whose published top entry is 84.7% carries no information about the
+harness at all. The sharper lesson from 2026-08-07 is that **three separate
+defects each produced a plausible 0.0** — wrong task set, a binary that could
+not start, and a budget too small to answer in. None of them raised an error a
+scorecard would show. Read a trial's session transcript before believing any
+number, and check `turns` against the budget: a run that stops at 2 of 40 did
+not lose, it died.
+
 ### SWE-bench Bash Only — the baseline to beat
 
 The interesting split is not the main leaderboard. It is **Bash Only**, which
