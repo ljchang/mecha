@@ -447,6 +447,12 @@ async fn triage(
 
         let mut record = record;
         record.triage_session = Some(session.meta.id.clone());
+        // Cleared here rather than left for the success paths to remember: a
+        // note is about the pass that wrote it, and a failed triage followed
+        // by a good one left "triage failed: transport failure" sitting on a
+        // record that had just been triaged fine. Stale state that reads as
+        // current is worse than none.
+        record.note = None;
 
         if let Err(e) = outcome {
             // The record stays where it was. A failed triage is a request that
