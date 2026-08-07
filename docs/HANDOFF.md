@@ -138,6 +138,13 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
   `morning.toml` is jailed to `~/.mecha/work/morning`, and its `notify` writes
   the briefing then renders it. A failed `notify` is recorded on the run, so a
   briefing that has quietly stopped rendering does not read as a healthy one.
+- **The front door runs hourly.** `mecha-frontdoor.timer` →
+  `scripts/frontdoor.sh`: drain (zero tokens, runs even with the model down) →
+  extract → triage, logging to `~/.mecha/requests/logs/`. Enabled 2026-08-07
+  and verified with a live tick the same hour — drain acknowledged a held
+  record at the gate, and the one flagged request stayed parked for a human,
+  which is the quarantine working. Triage refuses to run unrouted, so the
+  `[outbox] tools` list is load-bearing for it.
 - **The automation consumes `~/.cargo/bin/`, not the repo build.** Reinstall
   (`cp target/release/mecha ~/.cargo/bin/`) after changing anything in the
   learning path, and `factory-publish` too, since `morning.toml`'s `notify`
@@ -145,8 +152,11 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
   `work clean` step the installed binary did not have, 41 minutes before the
   nightly, and once when a `factory-publish` fix sat unbuilt in the repo for
   nine hours, and a third time the same evening when the daemon's own `notify`
-  could not see `~/.cargo/bin` at all. **Both verified installed 2026-08-06
-  13:35**, after the trigger and compaction work.
+  could not see `~/.cargo/bin` at all. A fourth near-miss on 2026-08-07: the
+  installed `mecha` predated the frontdoor triage verbs, caught only because
+  the timer's script was checked against it before enabling. **`mecha`
+  reinstalled 2026-08-07 evening** (frontdoor verbs, `StopCause::NoOutput`);
+  `factory-publish` unchanged since 2026-08-06.
 - The learning store (`~/.mecha/learning`) holds **zero live rules** — the one
   early rule was reverted with its poisoned reflection — so everything from here
   accumulates from real usage through the gate.
@@ -361,54 +371,40 @@ behaviour came from the reflector model declining. If the design was always
 [redacted: operational detail — see docs/OPERATIONS.md]
   them, `publish`, `release`, `drain` and `operate`.
 
-  **Amazon SES is wired and live (2026-08-07).** A real submission to the live
-  form produced `verification sent` in the journal and a message that arrived
-[redacted: operational detail — see docs/OPERATIONS.md]
-  domain publishes `p=reject` with strict alignment and would have refused it
-  otherwise. The account was already out of the sandbox (inherited from
-  hyperstudy), so there was no wait. The box's IAM key can send from exactly
-  one address on one identity, verified by two negative tests.
+  Everything through self-serve is **built, deployed, and verified live**:
+  SES mail, the scope split that moved "a human releases" onto the credential
+  (`Scope::Publish` vs `Scope::Release` — the load-bearing decision), and all
+  six self-serve steps, ending with the operator running their day from
+  `factory-publish operator …` and routine SSH over. The arcs, the
+  verification, and the traps are in [`HISTORY.md`](HISTORY.md), the design
+  in [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) §14–15, the
+  deploy procedure in that repo's `docs/DEPLOY.md`. Do not re-derive any of
+  it here. One local fact worth keeping in view: `sandbox = true` is
+  deliberately **not** set on the factory MCP server — bwrap does not work on
+  this box, docker cannot confine the notebook render subprocess, and the
+  config says why at length.
 
-  **Releasing is a separate scope (2026-08-07), and this is the load-bearing
-  one.** `Scope::Publish` writes immutable versions nobody can read;
-  `Scope::Release` moves an alias or serves a form (`db.rs:102`,
-  `v1.rs:332,429`). Before this, "an agent drafts, a human releases" lived in
-  *mecha's* `[outbox] tools` — so a different MCP client, or a typo in that
-  list, silently had no review at all. Verified against the live box: the
-  publish key is refused on `/alias`, the release key is accepted.
+  **A second client is verified and documented (2026-08-07 evening).** The MCP
+  surface was driven from a Claude Code session over raw stdio — handshake,
+  `tools/list` (all `bundle_*`, no drain tool), `bundle_render` under the
+  `--root` jail. `docs/SECOND-CLIENT.md` in that repo is the onboarding path.
+  Still unexercised from a second client: `bundle_publish` against the live
+  box (blocked mid-verification by a permission gate — that repo's
+  `scripts/mcp-drive.py` is the harness, kept as the second-client smoke
+  test).
 
-  Steps 1–7's server half are built: publishing, multi-tenancy, and the intake
-  path. The design is [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md)
-  §14–15; the deploy procedure and its traps are that repository's
-  `docs/DEPLOY.md`; how it was built and verified is in
-  [`HISTORY.md`](HISTORY.md). Do not re-derive any of it here.
+  **Three things open, in the order they bite:**
 
-  **Wired into this machine and published through, end to end, 2026-08-06.**
-  `sandbox = true` is deliberately **not** set on the factory MCP server and
-  the config says why at length — bwrap does not work on this box, docker would
-  need a custom image plus global writable mounts, and neither confines the
-  notebook render subprocess, which is the one path that executes code we did
-  not write.
-
-  **Self-serve shipped end to end on 2026-08-07** — all six steps of the
-  factory's `SELF-SERVE.md`, each deployed and verified live the same day:
-  per-user certificates over HTTP-01 reconciled from the ledger (a throwaway
-  handle certificated in ~30s with nothing restarting), invite → handle-claim
-  signup, pairing whose handle assertion the **server** checks (a wrong
-  assertion spends nothing and reveals nothing — refused live), the tenant
-  page at `/account` (magic-link sessions, `__Host-` cookie, release
-  authority, machines with last-used, per-key revoke), `factory-publish
-  disconnect`, and the operator surface — `Scope::Operate` driving
-  `/v1/admin/*` through `factory-publish operator …`, CLI-only and never MCP
-  tools. Routine SSH to the box is over; deploys and disaster recovery stay
-  on it deliberately. The build order in that repo's `SELF-SERVE.md` records
-  each step's decisions; the arc is in [`HISTORY.md`](HISTORY.md).
-
-  **Two things open, in the order they bite:**
-
-  - **A release binary from CI**, so the box needs no Rust toolchain to patch.
-    Each deploy is currently a five-minute `cargo build --release` on one
-[redacted: operational detail — see docs/OPERATIONS.md]
+  - **Verify the release workflow** (`release.yml`, authored 2026-08-07:
+    static musl `factory` with an asserted-static gate and a checksum). Push a
+    `v*` tag and watch it; `DEPLOY.md` already leads with the
+    download-and-verify procedure but says to verify the first release before
+    deleting the box's toolchain.
+  - **The crates.io split.** Both `mecha-manifest` and `mecha-factory-publish`
+    `cargo package` and verify cleanly (checked 2026-08-07, including the
+    packaged-dependency resolution). What remains is `cargo publish` with the
+    owner's token — claiming the names is forever, so it stays a human's
+    button to press.
 [redacted: operational detail — see docs/OPERATIONS.md]
     row is typed by hand, including the five SES ones. Moving the zone to
     Cloudflare (DNS-only, never proxied) is independent of everything else —
@@ -428,12 +424,16 @@ behaviour came from the reflector model declining. If the design was always
   the **oracle arm64 sweep is complete** (2026-08-05, 14.4h): 75 of 89 tasks
   have a reference solution that passes on aarch64, and those 75 are the only
   comparable set — `bench/oracle-arm64-excluded.txt` holds the other 14.
-  `bench/run-subset.sh` runs the calibrated subset; **the first mecha scorecard
-  was launched 2026-08-07 05:22 at k=1** into `jobs/mecha-arm64-subset/`,
-  ~15h expected. Read it with `bench/check-subset.py <job>` first — a harbor
-  `-x` that matches nothing is silent, and two earlier runs scored all 89 while
-  claiming to be a subset (see `docs/BENCHMARK-RESEARCH.md`, "Running it on
-  this box"). k=5 for a leaderboard-comparable number is the follow-up, ~74h.
+  `bench/run-subset.sh` runs the calibrated subset. **No complete scorecard
+  exists yet**: the 2026-08-07 05:22 launch was voided by the glibc trap, and
+  the 11:18 relaunch (portable binary, verified to be exactly the 75) was
+  stopped by hand ~4h in to free the box — the salvaged fragment is 21 trials,
+  8 solved, in `jobs/mecha-arm64-subset/`, with the caveats in HISTORY.
+  Relaunching the full 75 at k=1 (~15h) is an open decision. Read any job with
+  `bench/check-subset.py <job>` first — a harbor `-x` that matches nothing is
+  silent, and two earlier runs scored all 89 while claiming to be a subset
+  (see `docs/BENCHMARK-RESEARCH.md`, "Running it on this box"). k=5 for a
+  leaderboard-comparable number is the follow-up, ~74h.
   AgentDojo (for the interlock) and a SWE-bench Bash Only control are named in
   the research and unstarted.
 - **`mecha replay --json` is not wired into CI.** `scripts/replay-regression.sh`

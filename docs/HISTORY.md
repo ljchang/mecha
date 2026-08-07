@@ -373,6 +373,37 @@ home the same hour: users, keys with last-used, invites, a suspend/restore
 round-trip. What stays on SSH, deliberately: deploys, and minting a
 replacement operate key if every one is lost.
 
+**2026-08-07, evening — a second client is verified real, and the front door
+stops needing anyone to remember it.** The factory's MCP surface was driven
+from a Claude Code session over raw stdio JSON-RPC — the initialize
+handshake, `tools/list`, and `bundle_render` through `tools/call` under the
+`--root` jail — which turned "any MCP client can drive it" from a design
+claim into an observation. Two things the drive confirmed structurally: the
+seven tools are `bundle_*` only, with no drain tool for a client that owns no
+quarantine, and a machine holding all four keys (the operator's own) is the
+one place `bundle_alias` over MCP would really release — which is the
+SELF-SERVE review's warning made concrete. `docs/SECOND-CLIENT.md` in the
+factory repository is the resulting user path; the release workflow
+(`release.yml`, static musl with an asserted-static gate) and the crates.io
+packaging check landed beside it. On this machine, the front door became
+standing machinery: `mecha-frontdoor.timer` runs drain → extract → triage
+hourly (`scripts/frontdoor.sh`, ruminate's conventions), verified with a live
+tick — drain acknowledged a held record at the gate, and the flagged request
+correctly stayed parked for a human. The empty-turn recovery
+(`StopCause::NoOutput`, the nudge, three attempts at a measured ~50%
+per-attempt recovery) was committed the same evening, with the benchmark
+tooling that motivated it.
+
+**2026-08-07 — the first agent scorecard attempt, twice interrupted, once
+useful.** The 05:22 launch was voided by the glibc trap (recorded in
+BENCHMARK-RESEARCH); the 11:18 relaunch with the portable binary ran ~4 hours
+before being stopped to free the box. What the fragment says: 21 trials
+completed, **8 solved, 13 failed** — a real 38% at k=1 on a self-selected
+early slice, not a scorecard. The `NonZeroAgentExitCodeError`s in it were not
+crashes: `mecha run` exits non-zero on exhaustion, so harbor records a
+40-turn `MaxTurns` run as an agent error (the verifier still grades the
+artifact — one such trial scored 1.0). Relaunch is an open decision.
+
 ---
 
 ## The measurement record
@@ -572,6 +603,14 @@ matters is the general shape.
   confinement tests assert no network and no `~/.ssh`; both would pass
   vacuously on a host that had neither. Check the host has them before
   believing the sandbox took them away.
+- **An exit code is an interface, and exhaustion speaks it badly.** `mecha
+  run` exits non-zero when a run stops on `MaxTurns`, so harbor recorded every
+  turn-limit exhaustion as `NonZeroAgentExitCodeError` — 7 of the 21 salvaged
+  benchmark trials read as agent crashes when the agent had run 40 full turns
+  and given a partial answer (one of them *scored 1.0*, because the verifier
+  grades the artifact). Any harness that keys on your exit code will read
+  "gave up" as "broke". Decide which meanings your exit codes carry before a
+  third party starts parsing them.
 - **Read the transcripts before believing the score.** The clean A/B on
   `ask_user` said it made no difference: 6/9 either way. The transcripts said
   otherwise, and they were right — without the tool the model burned **30 tool
