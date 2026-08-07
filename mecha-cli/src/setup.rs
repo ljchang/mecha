@@ -215,7 +215,8 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         for name in outbox.publishes() {
             if !outbox.routes(name) {
                 eprintln!(
-                    "mecha: [outbox] calls `{name}` a publish but does not route it —                      add it to `tools`, or it executes unstaged"
+                    "mecha: [outbox] calls `{name}` a publish but does not route it — \
+                     add it to `tools`, or it executes unstaged"
                 );
             }
         }

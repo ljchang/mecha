@@ -29,6 +29,32 @@ mkdir -p "$LOG_DIR"
 exec >>"$LOG_DIR/$(date +%F).log" 2>&1
 
 echo "── rumination start $(date -Is) ──"
+
+# Stand somewhere the path jail accepts, before any stage that builds a tool
+# surface. `validate` and `learn --propose` both replay against the live
+# registry, so both go through the workspace check that refuses any directory
+# *containing* `~/.mecha` — and a systemd user unit with no WorkingDirectory
+# runs in `$HOME`, which contains it.
+#
+# What makes that worth fixing rather than noting: those two build the surface
+# lazily, only when there is a proposal to gate or a steer/denial probe to
+# replay. So the failure skips the nights that have work and passes the quiet
+# ones, and this script is deliberately not `set -e`, so it would skip them
+# without stopping. A nightly job that works until the night it matters is the
+# shape of bug this project keeps finding.
+#
+# `mecha work path` builds no surface of its own, so it cannot be caught by the
+# check it is resolving, and it creates the directory on the way past. Done
+# here rather than with `WorkingDirectory=` in the unit so the script is
+# correct however it is launched — by hand, by cron, or by the timer. A
+# checkout would be the wrong answer either way: it would put a project's
+# `mecha.toml` in front of an unattended run, which is exactly what the
+# triggers unit refuses to do for the same reason.
+if ! cd "$("$MECHA" work path ruminate)"; then
+    echo "cannot resolve the ruminate work directory; deferring the whole night"
+    exit 0
+fi
+
 if ! curl -sf -m 5 "$HEALTH" >/dev/null; then
     echo "model server not answering at $HEALTH; deferring the whole night"
     exit 0
