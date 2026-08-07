@@ -53,7 +53,7 @@ to `$HOME` — which *contains* `~/.mecha/`: the mail OAuth tokens, every sessio
 transcript, the learning store. The shipped `morning` trigger escaped only by
 accident of its `mail__*` allowlist.
 
-:::note Note the direction of the check
+:::note[Note the direction of the check]
 A workspace *inside* the mecha home is fine, and is now the default. What
 `setup` refuses is a workspace the mecha home sits **under** — which is what
 `mecha chat` in `$HOME` was doing. See [the security

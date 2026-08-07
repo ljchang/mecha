@@ -53,7 +53,7 @@ and warns when the path is already gone because retention swept it.
 re-render, publish again, which stages a new item. Rewriting a directory path
 is not editing the draft.
 
-:::warning The load-bearing one
+:::warning[The load-bearing one]
 The writing miner **excludes publishes**. A `writing` reflection becomes a rule
 in every future run's cached prefix, so mining `diff(args_before, args)` of a
 changed *path* would teach voice rules from bookkeeping. That is exactly the
