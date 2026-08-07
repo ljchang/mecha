@@ -21,7 +21,10 @@ DATASET="${MECHA_BENCH_DATASET:-terminal-bench/terminal-bench-2}"
 FORWARD_PORT=18080
 MODEL_PORT=8080
 
-cargo build --release
+# Not `cargo build --release`: that binary links the host's glibc 2.39 and
+# will not start in most task containers. See bench/build-portable.sh.
+bench/build-portable.sh
+export MECHA_BENCH_BINARY="$(pwd)/target-musl/release/mecha"
 
 # Refuse to measure against a misconfigured server: 4 default slots quarter
 # the context to 8192 and the model returns empty completions past it — the

@@ -103,6 +103,23 @@ class MechaAgent(BaseInstalledAgent):
 
         # The benchmark posture. context_window is what derives the compaction
         # threshold; shell_timeout is generous because TB tasks build things.
+        #
+        # max_tokens has to leave room for an answer *after* the thinking. The
+        # server caps thinking at 4096 (`--reasoning-budget`, in
+        # scripts/start-moe-mtp.sh) because this model otherwise reasons
+        # without terminating on hard tasks and returns empty content — see
+        # that script for the measurements. 8192 leaves ~4k for the answer
+        # after a full-budget think, inside a 32k window.
+        #
+        # Raising max_tokens alone does NOT fix it and makes it worse: at
+        # 32768 with unbounded thinking, one turn ran 20 minutes and hit the
+        # harness's agent timeout without finishing a single turn. The budget
+        # is the fix; this number just has to be bigger than it. Raising the
+        # server's -c to give thinking room was also a dead end — it cost a
+        # 50x slowdown; see scripts/start-moe-mtp.sh.
+        #
+        # context_window tracks scripts/start-moe-mtp.sh's `-c`. Change them
+        # together or the derived compaction threshold is a lie.
         config = f"""\
 default_provider = "local"
 
