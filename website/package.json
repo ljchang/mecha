@@ -5,9 +5,10 @@
   "scripts": {
     "docusaurus": "docusaurus",
     "sync-changelog": "node scripts/sync-changelog.mjs",
-    "prestart": "npm run sync-changelog",
+    "sync-gallery": "node scripts/sync-gallery.mjs",
+    "prestart": "npm run sync-changelog && npm run sync-gallery",
     "start": "docusaurus start",
-    "prebuild": "npm run sync-changelog",
+    "prebuild": "npm run sync-changelog && npm run sync-gallery",
     "build": "docusaurus build",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy",
