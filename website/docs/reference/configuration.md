@@ -224,6 +224,7 @@ See [Sandbox](/docs/features/sandbox) for backend selection.
 |---|---|---|---|
 | `tools` | array of strings | `[]` | Registry names whose calls are staged as drafts instead of executed. |
 | `dir` | path | `~/.mecha/outbox` | Where staged items live. Overridden by `$MECHA_OUTBOX_DIR`. |
+| `publish_tools` | array of strings | `[]` | Of the routed tools, which stage a **publication** rather than a message. Changes how the item is reviewed, never how it is staged. |
 
 Names are registry names, so an MCP tool is `<server>__<tool>`. A call to a routed
 tool is written to the store and reported to the model as a draft awaiting release;
@@ -232,6 +233,23 @@ which is the default — routing a tool is a policy decision.
 
 A routed name that matches no registered tool warns on every start, because a typo
 means the real tool executes unrouted. See [Outbox](/docs/features/outbox).
+
+`publish_tools` is a subset of `tools`; a name in it that is not also in `tools`
+warns on every start, for the same reason. The kind is **config's to declare, never
+the tool's** — the loop must not learn what a publish is, and a third-party MCP
+server cannot be trusted to say. Anything unnamed is a message, which is the
+conservative default. See [Publishing](/docs/features/publishing).
+
+## `[work]`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `keep` | integer | `10` | Entries per producer that survive `mecha work clean`. |
+
+`~/.mecha/work/<producer>/` is where a run's generated output goes, and is also the
+run's path jail. Entries are counted, not files — a rendered bundle is a directory
+and counts as one. `clean` never removes anything a published bundle names as a
+source. See [The work directory](/docs/features/work).
 
 ## `[[hook]]`
 
@@ -453,8 +471,14 @@ image = "debian:stable-slim"       # docker only
 # ------------------------------------------------------------------- outbox --
 
 [outbox]
-tools = ["mail__mail_send"]        # staged as drafts, never executed directly
+tools = ["mail__mail_send", "factory__bundle_publish"]
 # dir = "/var/lib/mecha/outbox"    # defaults to ~/.mecha/outbox
+publish_tools = ["factory__bundle_publish"]  # reviewed as a page, not as prose
+
+# --------------------------------------------------------------------- work --
+
+[work]
+keep = 10                          # entries per producer that survive `work clean`
 
 # -------------------------------------------------------------------- hooks --
 

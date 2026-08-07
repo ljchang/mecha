@@ -98,8 +98,9 @@ the most dangerous one.
 
 ## Built-in tools
 
-`fs_read`, `fs_write`, `fs_edit`, `fs_list`, `shell`, `http_fetch`, and a
-`todo` list. No server required — these are ordinary Rust functions.
+`fs_read`, `fs_write`, `fs_edit`, `fs_list`, `shell`, `http_fetch`,
+`web_search`, and a `todo` list. No server required — these are ordinary Rust
+functions.
 
 | Tool | `read_only` | Declares |
 |---|---|---|
@@ -109,6 +110,7 @@ the most dangerous one.
 | `fs_edit` | no | destructive |
 | `shell` | no | private, sends, destructive (unconfined) |
 | `http_fetch` | yes | untrusted **and** sends |
+| `web_search` | yes | untrusted **and** sends |
 
 Two of these look wrong until you read the reasoning.
 
@@ -137,6 +139,12 @@ See [Sandbox](/docs/features/sandbox).
 connection to the addresses that passed the check so a TTL-0 DNS answer cannot
 rebind between check and connect.
 
+`web_search` is registered only when a `[[search]]` backend is configured, and
+it is a *chain*: backends are tried in order and the first that answers wins, so
+a rate-limited provider degrades to the next one rather than to nothing. It
+carries the same pair of labels as `http_fetch` and for the same reasons — what
+comes back is whatever a stranger published, and a query string is a way out.
+
 Two more tools are registered conditionally. `ask_user` exists only where a
 human is actually present — a batch worker or an eval case has nobody to
 answer, and a tool that blocks forever is worse than one that does not exist.
@@ -147,6 +155,34 @@ model re-reads its own plan without anyone re-prompting it.
 
 Which built-ins are registered is config, via `[tools] enabled` / `disabled`,
 or `--tool` on the command line.
+
+## A tool's own state can cross a compaction
+
+```rust
+/// State this tool holds that a compaction must not lose.
+fn carried_state(&self) -> Option<CarriedState> { None }
+```
+
+The `todo` list reached the model only through the echo in the last `todo`
+result — which is a message, and therefore exactly what a compaction summarises
+away. The mechanism was quietly conditional on the transcript never getting
+long, in the one situation where a plan matters most.
+
+So a tool may hand state to the compaction to be carried across **verbatim**.
+Three rules keep it from becoming a second source of truth:
+
+- It is read *at compaction time*, so it is current by construction. A stale
+  copy is impossible because nothing stores one.
+- Exactly one copy survives. A second compaction **replaces** the carried block
+  rather than stacking beside it — two contradictory task lists in one prompt
+  are worse than none.
+- It is for state the tool *owns*, not a summary of what happened. A tool
+  returning prose here would be smuggling an unvalidated second summariser into
+  the loop.
+
+The loop learns that *some* tools have state, never which — the same shape as
+everything else here. `None` is the default and the honest answer for every
+stateless tool. See [Compaction](/docs/features/compaction).
 
 ## The path jail
 
@@ -350,6 +386,24 @@ The same rule as `shell`, for the same reason: running unconfined after being
 told to confine leaves every downstream decision resting on a belief nothing is
 enforcing. Per-server `network` overrides the global switch, because otherwise
 you would have to give `shell` the network to let one server reach its own API.
+
+### A server starts in the run's workspace, confined or not
+
+```rust
+// The workspace, whether or not we confine.
+c.current_dir(workspace);
+```
+
+The confined branch always did this — the workspace is its only writable mount
+and `wrap_argv` `--chdir`s into it. The unconfined branch inherited *mecha's*
+working directory, so a server resolving a relative path resolved it against
+wherever the user happened to launch mecha.
+
+That is not a containment hole; an unconfined server can reach everything
+regardless. It is the two branches disagreeing about where the model's paths
+point, which silently breaks any server that takes one — `mecha-factory-publish`
+documents `--root` as defaulting to the working directory on exactly this
+assumption. What changed is that they now agree.
 
 ## Inspecting the surface
 
