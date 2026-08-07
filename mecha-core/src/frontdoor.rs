@@ -672,7 +672,9 @@ mod tests {
     #[test]
     fn a_request_whose_drafts_are_gone_waits_for_a_person() {
         let s = Stores::new("swept");
-        s.front.write(&awaiting(1, &["outbox-id-that-is-gone"])).unwrap();
+        s.front
+            .write(&awaiting(1, &["outbox-id-that-is-gone"]))
+            .unwrap();
 
         assert_eq!(s.front.reconcile(&s.outbox).unwrap(), vec![]);
         assert_eq!(s.front.record(1).unwrap().state, AWAITING_ME);
