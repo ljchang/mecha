@@ -37,11 +37,11 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **508 tests**, no warnings — verified 2026-08-07:
+Expect **509 tests**, no warnings — verified 2026-08-07:
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 345 |
+| `mecha-core` unit | 346 |
 | `mecha-cli` unit | 83 |
 | `mecha-mail` unit | 66 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
@@ -95,14 +95,21 @@ A working agent harness, used and measured rather than just compiled.
 ## Environment as left
 
 Running on the DGX Spark (GB10, aarch64, 128GB unified). **Re-verified
-2026-08-06, end of session:**
+2026-08-07, 05:40:**
 
 | Port | Model | State |
 |---|---|---|
-| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1` — MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`) |
+| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1` — MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **Now a transient unit** (`systemctl --user status llama-qwen`), not a tmux pane — see below |
 | 8081 | gemma-4-E4B | down; nothing currently depends on it |
-| 8082 | gemma-4-26B-A4B | up, `total_slots=1` — the eval judge and nightly validate's judge |
+| 8082 | gemma-4-26B-A4B | **down — restart it before any judged run.** The eval judge and nightly validate's judge both point here, so `mecha eval` with a `judge` rubric and the nightly validate will fail without it. `scripts/start-gemma26.sh` |
 | 8888 | SearXNG | up (docker, JSON format enabled) |
+
+**Start model servers as transient units, not from a tmux pane.** Both
+llama-servers were killed on 2026-08-07 as collateral: a runaway test OOMed,
+and systemd then tore down the whole `tmux-spawn-*.scope` they happened to
+share (`OOMPolicy=stop`). 8080 was brought back with
+`systemd-run --user --unit=llama-qwen scripts/start-moe-mtp.sh`, which puts it
+outside any pane's cgroup. 8082 has not been restarted.
 
 **`-np 1` is load-bearing**, and the check before believing any measurement is
 `curl :8080/props | jq .total_slots` — it must be 1. The build in use defaults
@@ -205,21 +212,22 @@ themselves across runs.
 
 ## What to do next
 
-**Sequenced.** As of 2026-08-07 the inbound path is built end to end in code
-and blocked on one thing that is not code: a stranger can reach the form, but
-the box cannot send them the link back.
+**Sequenced.** As of 2026-08-07 the inbound path runs end to end **in
+production**: a stranger reaches the form, the box sends the link through SES,
+and the click is the only leg never exercised. What is left is a second person
+being able to do any of it without an SSH session.
 
-1. **Set up Amazon SES, and write the procedure down.** The mailer itself
-   shipped (`mecha-factory/src/mail.rs` — SigV4 by hand against SES v2, no
-   SDK). What does not exist is the account behind it: a verified domain
+1. **Self-serve signup on the factory** — the plan is
+   `docs/SELF-SERVE.md` in the factory repository, written before the code so
+   the decisions are still cheap. In order: a certificate that arrives without
+   an operator (option B over **HTTP-01**, because TLS-ALPN-01 is what forces
+   the `pub(crate)` acceptor that blocks a per-user resolver), then signup
+   reusing `intake.rs`, then pairing, then the tenant and operator surfaces.
+   The scope split it depends on is already done and deployed.
 [redacted: operational detail — see docs/OPERATIONS.md]
-   scoped to `ses:SendEmail`, and production access — a new SES account is in
-   the sandbox, where the API *accepts* a send to an unverified address and
-   silently never delivers it. Until that is done, `[mail]` is absent and
-   verification links go to the journal, which `factory check` says out loud.
-   `docs/DEPLOY.md` in the factory repository names all of this as a
-   requirement and gives no procedure for any of it; the gap was found by
-   trying to follow it.
+   2026-08-07 05:28. It is the one leg of the inbound chain never run: the
+   row should move `submitted → verified`, and `factory-publish drain` should
+   then bring it home. Costs nothing and closes the loop.
 
 Everything else below is independent of that.
 
@@ -343,14 +351,31 @@ behaviour came from the reflector model declining. If the design was always
 
 ### Larger, and deliberately not started
 
-- **`mecha-factory` — the public surface. It is deployed.**
-  Its own repository, public at **github.com/ljchang/mecha-factory** (187
+- **`mecha-factory` — the public surface. It is deployed, and it sends mail.**
+  Its own repository, public at **github.com/ljchang/mecha-factory** (209
 [redacted: operational detail — see docs/OPERATIONS.md]
   `https://gate.mecha-factory.ai`, artifacts at
   `https://<handle>.art.mecha-factory.ai`, notebooks at `…compute…`. Verified
   live 2026-08-06 — a bundle rendered here, pushed there, served under the
   `static` policy behind a certificate the binary obtained for itself. The
 [redacted: operational detail — see docs/OPERATIONS.md]
+  them, `publish`, `release` and `drain`.
+
+  **Amazon SES is wired and live (2026-08-07).** A real submission to the live
+  form produced `verification sent` in the journal and a message that arrived
+[redacted: operational detail — see docs/OPERATIONS.md]
+  domain publishes `p=reject` with strict alignment and would have refused it
+  otherwise. The account was already out of the sandbox (inherited from
+  hyperstudy), so there was no wait. The box's IAM key can send from exactly
+  one address on one identity, verified by two negative tests.
+
+  **Releasing is a separate scope (2026-08-07), and this is the load-bearing
+  one.** `Scope::Publish` writes immutable versions nobody can read;
+  `Scope::Release` moves an alias or serves a form (`db.rs:102`,
+  `v1.rs:332,429`). Before this, "an agent drafts, a human releases" lived in
+  *mecha's* `[outbox] tools` — so a different MCP client, or a typo in that
+  list, silently had no review at all. Verified against the live box: the
+  publish key is refused on `/alias`, the release key is accepted.
 
   Steps 1–7's server half are built: publishing, multi-tenancy, and the intake
   path. The design is [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md)
@@ -367,16 +392,18 @@ behaviour came from the reflector model declining. If the design was always
 
   **Three things open, in the order they bite:**
 
-  - **SES is not set up**, so verification links still go to the journal. The
-    mailer is built (`mail.rs`, SigV4 by hand against SES v2); what is missing
-    is the account, the DNS records and production access. See the sequenced
-    item at the top of this section — it is the one thing standing between a
-    stranger and a working form.
+  - **Nothing about signup is self-serve.** `user create` is a root SSH
+    command and a new handle has no certificate until the process restarts, so
+    a second person cannot arrive without an operator. `docs/SELF-SERVE.md` in
+    the factory repository is the plan; the certificate is the only part that
+    is not ordinary work.
   - **A release binary from CI**, so the box needs no Rust toolchain to patch.
-  - **A wildcard certificate** (needs DNS-01, and a zone token on the box).
-    Until then a new user needs a restart to get one — and note what that buys
-    today: an unowned handle fails at the TLS handshake, so the 404 is only the
-    second line of defence and a wildcard would remove the first.
+[redacted: operational detail — see docs/OPERATIONS.md]
+[redacted: operational detail — see docs/OPERATIONS.md]
+    row is typed by hand, including the five SES ones. Moving the zone to
+    Cloudflare (DNS-only, never proxied) is independent of everything else.
+    Note it does **not** unlock wildcards: `rustls-acme` speaks only HTTP-01
+    and TLS-ALPN-01, so the library forecloses them whoever hosts the zone.
 
   The mecha-side half of step 7 is **built**: `mecha-factory-publish drain`
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
@@ -384,10 +411,18 @@ behaviour came from the reflector model declining. If the design was always
 
 - **Slack as a transport.** Zero lines exist. The blocking decision is the
   identity model, not the socket.
-- **Public benchmarks.** The Terminal-Bench adapter (`bench/`) is written and
-  smoke-tested at `n_tasks: 1`; the oracle arm64 sweep is incomplete and the full
-  89-task run has never been made. AgentDojo (for the interlock) and a SWE-bench
-  Bash Only control are named in the research and unstarted.
+- **Public benchmarks.** The Terminal-Bench adapter (`bench/`) is written, and
+  the **oracle arm64 sweep is complete** (2026-08-05, 14.4h): 75 of 89 tasks
+  have a reference solution that passes on aarch64, and those 75 are the only
+  comparable set — `bench/oracle-arm64-excluded.txt` holds the other 14.
+  `bench/run-subset.sh` runs the calibrated subset; **the first mecha scorecard
+  was launched 2026-08-07 05:22 at k=1** into `jobs/mecha-arm64-subset/`,
+  ~15h expected. Read it with `bench/check-subset.py <job>` first — a harbor
+  `-x` that matches nothing is silent, and two earlier runs scored all 89 while
+  claiming to be a subset (see `docs/BENCHMARK-RESEARCH.md`, "Running it on
+  this box"). k=5 for a leaderboard-comparable number is the follow-up, ~74h.
+  AgentDojo (for the interlock) and a SWE-bench Bash Only control are named in
+  the research and unstarted.
 - **`mecha replay --json` is not wired into CI.** `scripts/replay-regression.sh`
   consumes it locally, which is the standing regression check; making it a
   workflow needs a single-slot llama-server that CI does not have.

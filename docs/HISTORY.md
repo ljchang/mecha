@@ -258,6 +258,36 @@ being loaded into every session as project instructions: its architecture map
 was missing nine modules, and it had no account of the front door, the search
 backends, subagents, or replay.
 
+**2026-08-07 — the box sends the one message it owes a stranger, and stops
+trusting the client.** A form rendered, validated, stored a row and told the
+visitor to check their email, and then nothing arrived: `Mailer` had one
+implementation and it wrote the link to the journal. Amazon SES over HTTPS
+with SigV4 signed by hand closed it — not the SDK, because the box picks
+`ring` over `aws-lc-rs` for ACME so building needs no cmake, and
+`aws-sdk-sesv2` would bring a second HTTP stack. The dependency list's claim
+that the box "never initiates" had to be spent to do it, and was rewritten
+rather than quietly dropped; the claim that survives is stronger and is the
+one that mattered — *the box holds no credential that reaches home*.
+
+Setting the account up produced the more transferable finding. The zone
+already published `v=spf1 -all` and `p=reject; adkim=s; aspf=s`, so a naive
+SES setup would not have landed in spam — receivers would have **refused the
+message outright** while SES reported success. Easy DKIM signing as the domain
+[redacted: operational detail — see docs/OPERATIONS.md]
+therefore the proof DMARC passed, since that host would have rejected it
+otherwise. Production access came free, inherited from another project on the
+same account.
+
+Then the review gate moved off the client. `Scope::Publish` had authorised all
+five write endpoints, so one key could push a version *and* move the alias
+that publishes it — and the only thing between an agent and a publication was
+mecha's `[outbox] tools`, a list in another repository. Point a different MCP
+client at the same server, or typo one entry, and there was no review and
+nothing said so. The split the data model already implied: publishing writes
+an immutable version nobody can read, releasing is what a reader sees. Now an
+agent holds publish-only, and the worst a stolen agent key does is write
+versions nobody can see. Deployed and verified against the live box.
+
 ---
 
 ## The measurement record
@@ -589,6 +619,21 @@ All found by pre-push review or by running it.
 
 ### Environment
 
+- **A tmux pane is a systemd scope, and an OOM inside it kills everything in
+  it.** A runaway test allocated 80 GB and was OOM-killed four times in half an
+  hour; ninety seconds after each kill, systemd tore down the whole
+  `tmux-spawn-*.scope` (`OOMPolicy=stop`), taking `bash`, `claude`, `pkg-mcp`
+  and eventually a two-day-old `llama-server` with it. The sessions looked like
+  they were crashing on their own. **When a process dies for no local reason,
+  check whether something else in its cgroup died first** — and start anything
+  you want to survive as its own transient unit (`systemd-run --user
+  --unit=…`), not from the pane.
+- **`ulimit -v` is the wrong cap for a tokio program.** It bounds *virtual*
+  address space, and thread stacks are reserved there, so a memory cap that
+  looks generous makes `thread::spawn` fail in a way that reads as a real test
+  failure. `systemd-run --user --scope -p MemoryMax=…` is RSS-based and
+  behaves. The general shape: **a limit that measures something other than
+  what you meant produces failures in an unrelated subsystem.**
 - **`-np 1` is load-bearing.** The llama-server build in use defaults to **4
   parallel slots**, which silently splits `-c` across them: for a period on
   2026-08-04 every request ran against **8192 tokens of context, not 32768**,
@@ -615,6 +660,28 @@ The rest of the original design-notes section duplicated `CLAUDE.md` and was
 dropped in the split. These are the fragments that had no other home.
 
 ### The public surface
+
+**A hand-copied list of variants is a bug waiting for the next variant.**
+`keys::split` named `mk_pub_` and `mk_drn_` inline, so adding a third scope
+minted tokens nothing could parse — and the symptom was `401: a valid bearer
+token is required`, a server-side omission reported as the caller's mistake.
+It derives from `Scope::ALL` now, with a test that mints every scope. The
+general shape: **when a match would have caught it, a copied list will not**,
+and the giveaway is an error blaming the other side.
+
+**A guarantee that depends on which client connected is not a guarantee.**
+"An agent drafts, a human releases" was a property of mecha's `[outbox] tools`
+rather than of the factory, so any other MCP client — or a typo in that list —
+silently had none of it. Ask of any safety property: *what happens if the
+component holding it is replaced by a different one?* If the answer is "it
+quietly stops", the property is in the wrong place.
+
+**Reading the library beat reading its docs, twice.** `rustls-acme` cannot add
+a domain at runtime and has no DNS-01 at all — so wildcards are foreclosed by
+the crate, not by the DNS provider, which reversed a plan built on moving DNS.
+And the blocker on per-user certificates turned out to be one `pub(crate)`
+constructor reachable only from the TLS-ALPN-01 path, which HTTP-01 avoids
+entirely. Both answers were twenty lines of source and neither was in a doc.
 
 **A manifest is read for resolution, not just for downloads.** Vendoring
 Pyodide, the obvious economy was to drop the 359 lock-file entries we were not
