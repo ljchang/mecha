@@ -56,3 +56,5 @@ Thumbs.db
 *-evidence.md
 *.mbox
 *.eml
+target-musl/
+.cargo-musl/

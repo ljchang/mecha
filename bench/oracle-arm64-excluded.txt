@@ -1,0 +1,19 @@
+# Task names are dataset-qualified ('terminal-bench/<task>') because that
+# is what harbor's -i/-x match against. A BARE name matches NOTHING, and
+# harbor does not warn — it just runs the task you meant to exclude.
+# Derived from the oracle sweep's result.json against the job lock.json.
+# The 14 where the oracle FAILS here: architecture, not agent.
+terminal-bench/build-cython-ext
+terminal-bench/build-pmars
+terminal-bench/build-pov-ray
+terminal-bench/caffe-cifar-10
+terminal-bench/install-windows-3-11
+terminal-bench/largest-eigenval
+terminal-bench/make-doom-for-mips
+terminal-bench/make-mips-interpreter
+terminal-bench/mcmc-sampling-stan
+terminal-bench/mteb-leaderboard
+terminal-bench/mteb-retrieve
+terminal-bench/password-recovery
+terminal-bench/protein-assembly
+terminal-bench/rstan-to-pystan
