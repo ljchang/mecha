@@ -2,8 +2,10 @@ import type {ReactNode} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+import useBaseUrl from '@docusaurus/useBaseUrl';
 import Layout from '@theme/Layout';
 import CodeBlock from '@theme/CodeBlock';
+import ThemedImage from '@theme/ThemedImage';
 import HomepageFeatures from '@site/src/components/HomepageFeatures';
 import Heading from '@theme/Heading';
 
@@ -14,9 +16,25 @@ function HomepageHeader() {
   return (
     <header className={clsx('hero', styles.heroBanner)}>
       <div className="container">
+        {/* Decorative: the <h1> below already says "mecha", and a screen reader
+            announcing it twice is noise rather than information. ThemedImage
+            rather than a CSS filter because accent-400 and accent-700 are two
+            different marks in the brand, not one mark dimmed. */}
+        <div className={styles.heroMark} aria-hidden="true">
+          <ThemedImage
+            alt=""
+            sources={{
+              light: useBaseUrl('/img/logo-light.svg'),
+              dark: useBaseUrl('/img/logo.svg'),
+            }}
+          />
+        </div>
         <Heading as="h1" className="hero__title">
           {siteConfig.title}
         </Heading>
+        <p className={clsx('hero__subtitle', styles.kicker)}>
+          AGENT HARNESS · RUST · MIT
+        </p>
         <p className="hero__subtitle">{siteConfig.tagline}</p>
         <div className={styles.buttons}>
           <Link
