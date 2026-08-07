@@ -128,6 +128,20 @@ fn open_store() -> Result<OutboxStore> {
     OutboxStore::open(root)
 }
 
+/// `--kind` as a kind, or an error naming the two that exist.
+///
+/// Shared by `select` and `list` so a typo cannot mean "error" on one surface
+/// and "empty queue" on the other. It used to: `list` reused `select` for its
+/// filter rules and then `unwrap_or_default()`, which swallowed exactly this.
+fn parse_kind(kind: Option<&str>) -> Result<Option<OutboxKind>> {
+    match kind {
+        None => Ok(None),
+        Some("message") => Ok(Some(OutboxKind::Message)),
+        Some("publish") => Ok(Some(OutboxKind::Publish)),
+        Some(other) => bail!("`{other}` is not a kind (message | publish)"),
+    }
+}
+
 /// The items a [`Selection`] names, in store order.
 ///
 /// Pure, over a list somebody else read, because the rules here are the ones
@@ -140,16 +154,11 @@ fn open_store() -> Result<OutboxStore> {
 /// - **`--all` means every *pending* item**, subject to the filters. Already
 ///   resolved items are not candidates: re-sending something marked sent is not
 ///   a thing anyone means, and `resolve` would refuse it anyway.
-/// - **A filter that matches nothing is an error too.** `--tool mail__send`
+/// - **A filter that matches nothing is an error too.** `--via mail__send`
 ///   with a typo silently acting on zero items reads exactly like an empty
 ///   queue, and the two want opposite reactions.
 fn select(items: Vec<OutboxItem>, selection: &Selection) -> Result<Vec<OutboxItem>> {
-    let kind = match selection.kind.as_deref() {
-        None => None,
-        Some("message") => Some(OutboxKind::Message),
-        Some("publish") => Some(OutboxKind::Publish),
-        Some(other) => bail!("`{other}` is not a kind (message | publish)"),
-    };
+    let kind = parse_kind(selection.kind.as_deref())?;
     let matches_filters = |item: &OutboxItem| {
         kind.is_none_or(|k| item.kind == k)
             && selection
@@ -194,7 +203,7 @@ fn select(items: Vec<OutboxItem>, selection: &Selection) -> Result<Vec<OutboxIte
 
     if !selection.all {
         bail!(
-            "name the items, or pass --all (optionally with --kind or --tool). \
+            "name the items, or pass --all (optionally with --kind or --via). \
              A command with no selection acts on nothing rather than on everything."
         );
     }
@@ -209,6 +218,12 @@ fn select(items: Vec<OutboxItem>, selection: &Selection) -> Result<Vec<OutboxIte
 }
 
 fn list(store: &OutboxStore, kind: Option<&str>, via: Option<&str>) -> Result<()> {
+    // Before anything is read or printed. A bad `--kind` is a typo, and the one
+    // thing it must not produce is a clean empty listing — that reads as "the
+    // queue is clear" while nine drafts sit in it, which is the same failure
+    // `a_filter_that_matches_nothing_is_an_error` was written against.
+    let kind = parse_kind(kind)?;
+
     let items = store.items()?;
     if items.is_empty() {
         println!("outbox empty — calls to [outbox]-routed tools are staged here");
@@ -216,7 +231,7 @@ fn list(store: &OutboxStore, kind: Option<&str>, via: Option<&str>) -> Result<()
     }
     let filter = Selection {
         all: true,
-        kind: kind.map(String::from),
+        kind: kind.map(|k| k.as_str().to_string()),
         via: via.map(String::from),
         ..Selection::default()
     };
@@ -227,9 +242,7 @@ fn list(store: &OutboxStore, kind: Option<&str>, via: Option<&str>) -> Result<()
     let resolved: Vec<OutboxItem> = items
         .into_iter()
         .filter(|i| i.status != "pending")
-        .filter(|i| {
-            kind.is_none_or(|k| i.kind.as_str() == k) && via.is_none_or(|t| i.tool.contains(t))
-        })
+        .filter(|i| kind.is_none_or(|k| i.kind == k) && via.is_none_or(|t| i.tool.contains(t)))
         .collect();
 
     // Grouped by kind, because the two are reviewed differently — a message is
@@ -251,7 +264,7 @@ fn list(store: &OutboxStore, kind: Option<&str>, via: Option<&str>) -> Result<()
         println!(
             "\nreview them one at a time with `mecha outbox review --all`{}",
             match (kind, via) {
-                (Some(k), _) => format!(" --kind {k}"),
+                (Some(k), _) => format!(" --kind {}", k.as_str()),
                 (_, Some(t)) => format!(" --via {t}"),
                 _ => String::new(),
             }
@@ -339,7 +352,9 @@ fn show(store: &OutboxStore, id: &str) -> Result<()> {
                 }
                 if !path.exists() {
                     println!(
-                        "  ⚠ gone — this was rendered into a run's work directory,                          which retention may since have swept. Re-render before                          releasing."
+                        "  ⚠ gone — this was rendered into a run's work directory, \
+                         which retention may since have swept. Re-render before \
+                         releasing."
                     );
                 }
             }
@@ -452,6 +467,32 @@ fn edit(store: &OutboxStore, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Re-read what the caller reviewed, and refuse anything not still pending.
+///
+/// The caller holds the store lock; this is the check-and-act that must happen
+/// inside it. `send` reads its whole batch and executes straight away, so its
+/// own pre-loop check is nearly enough — but `review` reads an item, shows it
+/// to a human, and *waits*, and a minute at a prompt is long enough for another
+/// terminal to send the same draft. Checking before the wait and executing
+/// after it is a check-then-act race whose losing side is a stranger's email
+/// delivered twice.
+///
+/// `store.resolve` refusing a non-pending item is too late to help: by the time
+/// it runs, the tool has already gone out for real. Returning the freshly-read
+/// item rather than the caller's copy is the other half — what executes and
+/// what gets recorded are then the same object.
+fn claim_for_release(store: &OutboxStore, reviewed: &OutboxItem) -> Result<OutboxItem> {
+    let current = store.item(&reviewed.id)?;
+    anyhow::ensure!(
+        current.status == "pending",
+        "outbox item {} is {}, not pending — it was resolved while you were \
+         deciding, so nothing was sent",
+        current.id,
+        current.status
+    );
+    Ok(current)
+}
+
 /// The tool surface a release executes through.
 ///
 /// Built **once per batch**, which is most of why batching is worth having at
@@ -499,7 +540,11 @@ impl Surface {
     /// Returns `Err` for a failure the *item* survives — it stays pending with
     /// the error recorded — so a batch reports it and carries on to the next
     /// draft rather than abandoning eight good ones over one bad address.
+    ///
+    /// **The caller must hold the store lock**, because the pending check is
+    /// [`claim_for_release`] and it has to happen inside that lock.
     async fn release(&self, store: &OutboxStore, item: &OutboxItem) -> Result<String> {
+        let item = &claim_for_release(store, item)?;
         let Some(tool) = self.tools.registry.get(&item.tool) else {
             bail!(
                 "tool `{}` is not available in this configuration. Available: {}",
@@ -827,11 +872,109 @@ mod tests {
         ]
     }
 
+    fn temp_store() -> OutboxStore {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir()
+            .join("mecha-outbox-test")
+            .join(format!("{}-{nanos}", std::process::id()));
+        OutboxStore::open(dir).unwrap()
+    }
+
+    /// `review` shows a draft and then waits for a human, so the copy it holds
+    /// can go stale in the only way that matters: another terminal sends it.
+    /// The check has to happen against the store under the lock, not against
+    /// what was on screen a minute ago — `resolve` refusing afterwards is too
+    /// late, because by then the mail has gone out for real.
+    #[test]
+    fn a_draft_sent_while_you_were_deciding_is_not_sent_again() {
+        let store = temp_store();
+        let staged = store
+            .stage(
+                "mail__mail_send",
+                OutboxKind::Message,
+                json!({"to": "a@example.com"}),
+                Default::default(),
+                None,
+                None,
+            )
+            .unwrap();
+
+        // What the reviewer read, and still believes.
+        let reviewed = staged.clone();
+        assert_eq!(reviewed.status, "pending");
+        claim_for_release(&store, &reviewed).expect("pending is releasable");
+
+        // The other terminal wins the race.
+        store.resolve(&staged.id, "sent", None).unwrap();
+
+        let err = claim_for_release(&store, &reviewed)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not pending"), "{err}");
+        assert!(err.contains("nothing was sent"), "{err}");
+    }
+
+    /// The item that executes is the one the store holds, so the tool call and
+    /// the record of it cannot describe different arguments.
+    #[test]
+    fn the_claim_returns_the_stores_copy_rather_than_the_callers() {
+        let store = temp_store();
+        let staged = store
+            .stage(
+                "mail__mail_send",
+                OutboxKind::Message,
+                json!({"to": "a@example.com"}),
+                Default::default(),
+                None,
+                None,
+            )
+            .unwrap();
+        store
+            .update_args(&staged.id, json!({"to": "corrected@example.com"}))
+            .unwrap();
+
+        let claimed = claim_for_release(&store, &staged).unwrap();
+        assert_eq!(claimed.args, json!({"to": "corrected@example.com"}));
+    }
+
     fn selection(ids: &[&str]) -> Selection {
         Selection {
             ids: ids.iter().map(|s| s.to_string()).collect(),
             ..Selection::default()
         }
+    }
+
+    /// A typo'd `--kind` must not read as a clear queue. `list` used to take
+    /// `select`'s error and `unwrap_or_default()` it, so `--kind publishes`
+    /// printed "nothing pending" while the drafts sat there — the same failure
+    /// `a_filter_that_matches_nothing_is_an_error` was written against, on the
+    /// one surface that had not been checked for it.
+    #[test]
+    fn a_kind_that_is_not_a_kind_is_refused_on_every_surface() {
+        let err = parse_kind(Some("publishes")).unwrap_err().to_string();
+        assert!(err.contains("message | publish"), "{err}");
+
+        // `select` and `list` both go through it, so neither can disagree.
+        let err = select(
+            queue(),
+            &Selection {
+                all: true,
+                kind: Some("publishes".into()),
+                ..Selection::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("message | publish"), "{err}");
+
+        assert_eq!(parse_kind(None).unwrap(), None);
+        assert_eq!(
+            parse_kind(Some("publish")).unwrap(),
+            Some(OutboxKind::Publish)
+        );
     }
 
     /// The most expensive mistake this surface can make is releasing drafts

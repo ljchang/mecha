@@ -1,4 +1,14 @@
 # Install: cp scripts/mecha-ruminate.{service,timer} ~/.config/systemd/user/
+#
+# There is deliberately no WorkingDirectory here. A user unit without one runs
+# in `$HOME`, which *contains* `~/.mecha`, and the stages that replay against
+# the live tool surface refuse a workspace the mecha home sits under. The
+# script resolves its own directory instead (`mecha work path ruminate`), so it
+# is correct however it is launched rather than only under this unit.
+#
+# Do not "fix" that by pointing this at a checkout: an unattended run must not
+# be handed a project's `mecha.toml`, which is the same reason the triggers
+# unit stays out of one.
 [Unit]
 Description=mecha nightly rumination (reflect, validate, learn)
 
