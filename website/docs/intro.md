@@ -115,7 +115,17 @@ harness instead of something each email tool has to implement.
 cron schedule — a morning briefing, overnight inbox triage that stages replies
 for review. It is a small feature because everything a scheduled run needs
 already existed: the outbox stages sends, the interlock refuses exfiltration,
-the sandbox confines `shell`, budgets bound the spend.
+the sandbox confines `shell`, budgets bound the spend. What such a run generates
+goes to [its work directory](/docs/features/work), which is also its path jail —
+so an unattended run writes somewhere durable, reads back what it wrote
+yesterday, and is confined to a directory holding nothing sensitive.
+
+**A public surface, in both directions.** An agent can turn what it made into a
+durable versioned URL — [publishing](/docs/features/publishing) rides on the
+outbox, so a bundle is staged and reviewed before anything is served. Requests
+coming the other way pass through [the front door](/docs/features/frontdoor),
+whose whole job is one sentence: the privileged run sees the extraction, never
+the prose a stranger wrote.
 
 **Memory, in two different senses.** [Learning](/docs/features/learning) mines
 transcripts for the moments you stepped in — a steer, a denied call, a
