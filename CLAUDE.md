@@ -29,13 +29,22 @@ message.rs   provider-agnostic Message/Block/Usage/StopReason types
 provider/    Provider trait + anthropic.rs (raw HTTP) + openai.rs (compatible)
 tool/        Tool trait, Registry, Approver, builtin.rs
 mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
+search.rs    web_search: a chain of backends, first to answer wins
 agent.rs     the loop: ask → run tools → feed results back → repeat
+subagent.rs  a profile-narrowed child agent, exposed to the parent as a tool
 hooks.rs     user commands at lifecycle points; pre_tool can deny a call
+outbox.rs    the store behind staged sends and publishes
+sandbox.rs   bwrap/docker confinement for shell and MCP servers
+compact.rs   the cut, the rebuild, and the state carried across one
 cron.rs      five-field cron, resolved in an IANA zone (both DST directions)
 trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
+frontdoor.rs inbound requests from strangers, and the quarantine over them
 learning.rs  the reflection/rule store behind reflect, learn, validate
+counterfactual.rs  did the rules change the answer at the recorded moment?
 distill.rs   session → episode, staged to the knowledge graph over MCP
 session.rs   append-only JSONL transcripts
+replay.rs    re-run a transcript against its recorded tool results
+replay_run.rs  the driver behind that, shared with the validation probes
 work.rs      ~/.mecha/work/<producer>/ — a run's workspace, and its retention
 batch.rs     bounded-concurrency fan-out over many prompts
 eval.rs      case types, graders, the LLM judge
@@ -274,6 +283,101 @@ On Ubuntu 23.10+, `bwrap` fails even when installed and
 `kernel.apparmor_restrict_unprivileged_userns=1`. Use `docker` there, or install
 an AppArmor profile. `mecha tools` prints the active sandbox, and
 `mecha tools --json` prints each tool's capabilities.
+
+## The front door
+
+`frontdoor.rs` and `mecha frontdoor` are everything that happens to a stranger's
+request after `mecha-factory-publish drain` writes it into `~/.mecha/requests/`,
+and the whole of it serves one sentence:
+
+> **The privileged run sees the extraction, never the prose.**
+
+A run holding the calendar and the mailbox is the most dangerous context in this
+system, and a free-text field is the one place a stranger controls the bytes.
+The typed form is already doing most of the work — nothing anyone types can
+change what *kind* of request theirs is, or its priority, or whether consent
+exists, because those are enums and booleans the origin validated. What remains
+is prose, and prose is where an instruction can hide. So the shape is CaMeL's
+dual-LLM split, at a size where it is cheap: free text goes to an extractor with
+no tools and no history, and only its typed output reaches a run with tools.
+
+The verbs split along that line. **`list` and `show` are for you** — `show`
+prints the prose, because a person reading a stranger's request in a terminal is
+the safe context; you cannot be prompt-injected into sending your own calendar
+somewhere. **`extract` is the quarantined pass.** **`next` is what a triage
+trigger runs**, and it prints what the boundary allows and nothing else.
+Draining is deliberately *not* here: the common case is "nothing new", which has
+to cost zero tokens and no model at all.
+
+**And a request has to be able to reach an answer**, or the queue only grows.
+`triage` drafts a reply per extracted request into the outbox; `needs-info`
+parks one until the requester answers; `close` ends one and **requires a
+reason**. The join needed no building: a staged outbox item already records the
+session that drafted it, so a triage run with its own session is enough to say
+which drafts belong to which request. The record keeps the session id and the
+item ids, the outbox has still never heard of a request, and `mecha outbox
+send` — another process, hours later — closes the loop without knowing it is
+doing so. `reconcile` reads the outbox and updates the request store, and runs
+on its own rather than on a verb you have to remember: a state that is only
+correct after someone runs a command is a state nobody can trust.
+
+Three more decisions there:
+
+- **A rejected draft returns the request to `extracted`, never to `closed`.**
+  "Not this reply" is not "not this request", and a request closed because its
+  first draft was wrong is precisely the silence this component exists to fix.
+  The rejection reason rides along and it becomes a triage candidate again.
+- **A partly-resolved set is left alone.** Some sent and some pending is a
+  person mid-review, not a state to settle on their behalf. So is a request
+  whose drafts have been swept: unknown stays unknown and waits for a person.
+- **`triage` refuses to run without the outbox route** rather than running
+  unrouted — without it a `mail_send` the model makes actually sends, and a
+  stranger's inbox is not where you want to discover `[outbox] tools` was unset.
+  Each request gets a fresh `Conversation`, so flagged prose cannot arm the
+  interlock for the request behind it.
+
+Five decisions, each a bug if undone:
+
+- **The boundary is a function, not a rule.** `Record::for_privileged_run`
+  returns the non-prose values plus the extraction, and there is deliberately no
+  argument that makes it return the prose. The extractor's own `reading` stays
+  behind too — a paraphrase of an injection is the injection rearranged. If this
+  were "remember not to include the free text", it would hold until the first
+  person in a hurry.
+- **Which fields are prose is not decided here.** The drain writes `free_text`
+  onto the record from the manifest, where free-text-ness derives from the field
+  kind. Guessing at it on this side — by looking for long strings, say — is the
+  same mistake as letting a caller be wrong about which values are dangerous.
+- **An extraction failure is not a silent pass-through.** The record goes to
+  `extraction_failed` and waits for a human. It never falls back to handing the
+  prose on, which is the one behaviour that would make the layer decorative.
+- **The extractor gets no tools and no conversation.** Not "is told not to use
+  tools" — is *issued a request with an empty tool list and a single user
+  message*. There is nothing for an injected instruction to reach.
+- **Reasoning comes first in the output, the typed fields after.** Constrained
+  decoding degrades reasoning when the answer precedes the thinking, and this is
+  the one call in the system whose output is trusted downstream by construction.
+
+The seam is a directory of JSON rather than a shared crate: records deserialise
+structurally, and unknown fields are preserved on write because the writer on
+the other side may know things this one does not. The store is owner-only like
+every other directory under `~/.mecha` — it holds the least of the user's own
+data and the most of someone else's.
+
+## Web search
+
+`search.rs` registers `web_search` when at least one `[[search]]` backend is
+configured. Backends are **a chain tried in order, first to answer wins**, which
+is what makes stacking two free tiers a working strategy rather than a hack:
+run out on the first, the second answers. Swappable for the same reason models
+are — the landscape moves and no provider is right for every query.
+
+Search results are the single largest indirect prompt-injection surface an agent
+has, *and* the query itself is an exfiltration channel, because the payload fits
+in `?q=`. So the tool declares both `untrusted_input` and `external_send` and
+marks its output `from_outside` — the same pair as `http_fetch`, for the same
+two reasons. A backend that synthesizes an answer gets no more trust than its
+snippets: it was written from the same pages.
 
 ## mecha-mail
 
@@ -697,6 +801,23 @@ Four things that decide the design:
 - **Taint survives compaction.** Summarising away the text of a hostile page
   does not un-read it. Taint lives on `Conversation`, which the compaction code
   never touches — the type does the work, and there is a test.
+- **A tool's own state crosses a compaction, verbatim.** The measured failure
+  mode is that a summariser preserves *what is true* and drops *how far you
+  got*, and some of "how far you got" does not live in the messages at all. The
+  `todo` list reached the model only through the echo in the last `todo`
+  result — a message, and therefore exactly what a summary replaces — so the
+  mechanism was quietly conditional on the transcript never getting long, in the
+  one situation a plan matters most. `Tool::carried_state` lets any tool hand
+  state to the compaction to be kept as-is; `rebuild` puts it *after* the
+  summary, because it is the one part of the rebuilt head known to be current
+  rather than paraphrased. Three rules keep it from becoming a second source of
+  truth: it is read **at compaction time**, so a stale copy is impossible
+  because nothing stores one; **exactly one copy survives**, since `rebuild`
+  finds the previous block by the `CARRIED_HEADER` sentinel and replaces it
+  rather than stacking (two contradictory task lists are worse than none); and
+  it is for state the tool *owns*, because a tool returning prose here would be
+  smuggling an unvalidated second summariser into the loop. The loop learns that
+  some tools have state, never which — `registry.carried_state()`, never a name.
 
 ## The eval rig
 
