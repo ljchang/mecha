@@ -46,6 +46,43 @@ it is not jailed, and nothing else in the harness will notice.
 The workspace comes from `ToolCtx` at call time, not from global config, which
 is what lets one agent serve concurrent runs jailed to different directories.
 
+### A jail has to be rooted somewhere harmless
+
+A correct containment check around the wrong directory contains nothing worth
+containing, and for a long time that is what shipped.
+
+`~/.mecha/` holds the mail OAuth tokens, every session transcript, and the
+learning store — and `$HOME` **contains** `~/.mecha/`. So `mecha chat` started
+from a home directory was jailed over all of it. An unattended
+[trigger](/docs/features/triggers) with no explicit workspace was worse: it
+fell through to `std::env::current_dir()`, and the shipped systemd unit sets
+`WorkingDirectory=%h`. The shipped `morning` trigger escaped only by accident
+of its `mail__*` allowlist.
+
+Two changes close it:
+
+- `setup` **refuses any workspace that contains the mecha home**. Note the
+  direction: a workspace *inside* `~/.mecha/` is fine and is now the default.
+  What is refused is one the mecha home sits under.
+- An unattended run's default workspace is now
+  [`~/.mecha/work/<producer>/`](/docs/features/work) — a directory that holds
+  nothing sensitive, and that the run is meant to write to.
+
+```
+workspace /home/you contains the mecha home (/home/you/.mecha), so the path
+jail would cover the mail tokens, every session transcript and the learning
+store.
+Run from a project directory instead, or name one explicitly with
+`--workspace <dir>`.
+```
+
+A path that cannot be canonicalized is compared as written: over-refusing a
+workspace is recoverable, under-refusing one is the bug.
+
+The capability interlock below remained a backstop throughout. But a backstop
+is not a boundary, and a jail rooted where the secrets live is the
+silently-degrading-sandbox pattern this project keeps finding.
+
 ## Capabilities
 
 Every tool declares what it can do:

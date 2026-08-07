@@ -1,6 +1,6 @@
 ---
 title: Compaction
-sidebar_position: 11
+sidebar_position: 14
 description: Making a long conversation fit — eviction first, a legal cut, a validated summary, and what must survive all of it.
 ---
 
@@ -199,6 +199,41 @@ anyhow::ensure!(
 A guard that fires once the damage is done is not a guard. The caller treats an
 error here as "carry on uncompacted", which is survivable; carrying on with a
 transcript the API will reject is not.
+
+## A tool's own state is carried, not summarised
+
+The measured failure mode is that a summariser preserves *what is true* and
+drops *how far you got*. Some of "how far you got" does not live in the messages
+at all — it lives in a tool. For that state a summary is the wrong mechanism
+twice over: it is lossy, and the tool already holds the exact current answer.
+
+The `todo` list was the case that proved it. It reached the model only through
+the echo in the last `todo` result, which is a message, and therefore precisely
+what a compaction summarises away — so the plan evaporated in the one situation
+where a long run needs it most.
+
+`Tool::carried_state` lets any tool hand state to the compaction to be kept
+**verbatim**. `rebuild` places it after the summary, because it is the one part
+of the rebuilt head known to be current rather than paraphrased, and last is
+where a model reads most carefully:
+
+```
+[Live state, carried past the compaction and current as of now — it supersedes
+anything about it in the summaries above:]
+
+## todo
+1. [x] read the transcripts
+2. [ ] write the report
+```
+
+That header is a sentinel, not a convention. `rebuild` finds the previous
+carried block by it and **replaces** it, so exactly one copy survives a second
+compaction — summaries accumulate on purpose, each describing a different
+stretch, but there is only ever one *current* state and keeping the old copy
+would be keeping a wrong one.
+
+The loop learns that some tools have state, never which one. See
+[Tools and MCP](/docs/features/tools-and-mcp).
 
 ## The summariser gets prose, not a replay
 
