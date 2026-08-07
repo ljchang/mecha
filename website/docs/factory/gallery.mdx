@@ -1,0 +1,180 @@
+---
+title: Component gallery
+sidebar_position: 4
+description: Every field kind, every state, in every built-in theme — rendered by the code that serves the real forms.
+---
+
+import GalleryFrame from '@site/src/components/GalleryFrame';
+
+# Component gallery
+
+Every frame on this page is a **live form**, not a screenshot. It is produced by
+`RequestType::form` — the same function behind every form the factory serves —
+from a manifest you can read, and it is regenerated and diffed in CI on every
+change to the renderer.
+
+That matters more than it sounds. A gallery of hand-written HTML is a lie the
+first time the renderer changes, and a lie about what a form looks like is the
+most convincing kind, because nobody diffs a screenshot. So none of this is
+drawn: `cargo run --example gallery` walks the field kinds, loops over the
+built-in themes, and writes what you see below.
+
+:::note[These forms submit nowhere]
+They are static pages. Clicking **Submit** demonstrates the HTML5 constraint
+layer — the browser refuses to navigate while a required field is empty, and
+announces why to a screen reader — and nothing else. Everything else works:
+type in the fields, tick the boxes, watch the conditional ones appear.
+:::
+
+Use the palette buttons to switch themes. The frames follow this site's own
+light/dark setting, so what you see is what a reader with your preferences
+would get.
+
+## Every field kind
+
+Ten kinds, one of each, plus the two acknowledgments that follow them. The help
+text under each label says what that kind enforces — which is a real answer, not
+a description, because [validation is one function run at both
+ends](/docs/features/frontdoor): the browser's check is a convenience and the
+server runs the same rules again.
+
+<GalleryFrame page="kinds.html" caption="kinds.html — one field of every kind, plus acknowledgments." />
+
+Two things worth looking at rather than reading about. The **file** field is
+not an input here: it renders as a note saying the upload comes after
+verification, because uploads happen once an address is proven and the public
+form has no file input at all. And every label is set in the theme's mono
+stack — a field label is a name for a value, which is closer to code than to
+prose, and that one choice is most of why a generated form reads as designed.
+
+[The manifest](pathname:///factory/gallery/source/kinds.toml) ·
+[its JSON Schema](pathname:///factory/gallery/schema/kinds.json)
+
+## When a submission is rejected
+
+The same form, re-served with a deliberately bad submission on it. **The
+messages below came out of the validator**, not out of a designer's
+placeholder text — the gallery builds a wrong submission, runs
+`validate_at(…, Phase::Submit)` on it, and renders whatever comes back.
+
+<GalleryFrame page="kinds.errors.html" caption="kinds.errors.html — eleven real validation failures, and the submitter's own answers handed back." />
+
+The summary at the top *and* a message beside each field, deliberately: the
+summary is what a screen reader announces on load, and the per-field message is
+what a sighted reader needs while fixing it.
+
+Note what is **not** flagged. `reference_code` holds `nh-301`, which does not
+match the field's `pattern` — and there is no error on it, because a pattern is
+enforced by the browser and never by the server. The server enforces the cap
+and the type. If you are writing a second client, that distinction is the kind
+of thing to get from this page rather than from a surprise.
+
+Note also `supporting_document`: a urlencoded string aimed at a file field is
+somebody probing, so it is refused rather than ignored.
+
+## Conditional fields
+
+Change the format, tick the travel box, put a large number in attendance. Each
+of those reveals a field, and each rule is a `show_when` in the manifest that
+**the server re-evaluates on submit** — a client-side check is a convenience
+and never a control.
+
+<GalleryFrame page="conditions.html" caption="conditions.html — in, ne, is_true, gt, present. Most of the form is hidden until you answer something." minHeight={520} />
+
+The form starts nearly empty, which is correct rather than broken: none of the
+conditions hold yet. Turn JavaScript off and every conditional field is simply
+*shown* — the safe direction, since a visible optional field is a question you
+can ignore where a hidden required one is a form that cannot be submitted and
+does not say why.
+
+The rule that surprises people: a field is **required only when it is visible**.
+The browser did not show it, so the server cannot insist on it.
+
+[The manifest](pathname:///factory/gallery/source/conditions.toml)
+
+## A form in steps
+
+Multi-step is server-side — one page per step, a POST between them — so it
+works with JavaScript off and survives a closed tab.
+
+<GalleryFrame page="stepped.step-who.html" caption="stepped.step-who.html — the first of three steps, served on its own." minHeight={360} />
+
+The other two: [what you're
+asking](pathname:///factory/gallery/nocturne/stepped.step-what.html) and
+[travel](pathname:///factory/gallery/nocturne/stepped.step-travel.html) — the
+last of which only exists when the format is not remote. A whole step, skipped.
+A field on a hidden step is not required however it is declared, because a
+record carrying a field the browser never showed is a record that differs from
+what was submitted.
+
+[The manifest](pathname:///factory/gallery/source/stepped.toml)
+
+## The upload page
+
+The one place a file input exists. A submitter reaches it after clicking the
+link in their verification mail, and by then every visibility question has
+already been answered by values that are no longer editable.
+
+<GalleryFrame page="kinds.upload.html" caption="kinds.upload.html — file fields and nothing else." minHeight={340} />
+
+Submitting with nothing chosen is how an optional attachment is declined —
+absence is the decline, so there is no separate skip button to fall out of sync
+with the validator. The accepted kinds and the cap are stated under the input,
+and both are enforced against **sniffed magic** rather than a claimed
+media type or a filename extension.
+
+## The shipped starters
+
+Request types are data, not code: copy one, edit the fields, and the form, both
+validators, the schema and the tool declarations regenerate. These four ship
+with `mecha-manifest`, and they render through the path everything above does.
+
+<GalleryFrame page="speaking.html" caption="speaking.html — the 'invite a talk' starter, whose travel fields are the canonical conditional step." minHeight={560} />
+
+[lab-application](pathname:///factory/gallery/nocturne/lab-application.html) ·
+[letter](pathname:///factory/gallery/nocturne/letter.html) ·
+[meeting](pathname:///factory/gallery/nocturne/meeting.html) ·
+[speaking](pathname:///factory/gallery/nocturne/speaking.html)
+
+## Why there are two palettes
+
+A schema-driven form should look designed without anyone designing it, and
+certainly without an *agent* designing it — a model that writes CSS per request
+produces a different form every time, which is the opposite of a surface people
+learn to trust. So the layout is fixed and shared, and **a theme is tokens,
+never rules**: nine role-named custom properties, and no selectors.
+
+`paper` exists to prove that. One built-in theme is a stylesheet with extra
+steps; a second, deliberately unlike the first, is what shows the structural
+sheet hardcodes nothing. Switch any frame above between the two — if a violet
+edge or a dark ground survived into `paper`, a colour would be written
+somewhere it should not be.
+
+The palette buttons are built from the gallery's own
+[`index.json`](pathname:///factory/gallery/index.json), so a theme added in
+mecha-factory appears here without anyone editing this page.
+
+## Where this comes from
+
+```sh
+git clone https://github.com/ljchang/mecha-factory
+cd mecha-factory
+cargo run --example gallery -- gallery
+xdg-open gallery/index.html
+```
+
+The output is committed at `gallery/`, and CI regenerates it and refuses a
+diff. That is the same shape as a golden-file test, on purpose: a change to the
+renderer or to a palette arrives as a reviewable diff of the rendered HTML,
+which is the review a form generator deserves.
+
+Two guards keep it honest as the crate moves. The generator matches `FieldKind`
+**exhaustively**, so adding a variant stops it compiling and then fails until a
+real field of that kind exists — a gallery missing a kind is worse than no
+gallery, because it reads as a complete list. And themes come from the built-in
+array rather than a list written by hand, which is what makes the sentence above
+about a third palette true rather than aspirational.
+
+The whole directory also passes the publish gate — the same check a bundle
+faces, which refuses any external reference. Every page you have scrolled past
+fetches nothing.
