@@ -1,30 +1,214 @@
 /**
- * Any CSS included here will be global. The classic template
- * bundles Infima by default. Infima is a CSS framework designed to
- * work well for content-centric websites.
+ * mecha — Docusaurus theme.
+ *
+ * The tokens and the type rules come from `brand/brand.md`, which is the
+ * source of truth; everything below the token block is the Docusaurus-specific
+ * wiring that makes Infima use them. If a colour disagrees with `brand.md`,
+ * `brand.md` is right.
+ *
+ * Two things worth knowing before editing:
+ *
+ * - The accent is the *only* hue. Contrast is meant to come from the ramp, not
+ *   from a second colour. Hazard amber is a signal, not a palette entry: lines,
+ *   ticks and single characters, never an area fill, and never decoration.
+ * - This is a dark-first brand. The light theme is a courtesy and is allowed to
+ *   be plainer; it is not allowed to be broken.
  */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
-/* You can override the default Infima variables here. */
 :root {
-  --ifm-color-primary: #2e8555;
-  --ifm-color-primary-dark: #29784c;
-  --ifm-color-primary-darker: #277148;
-  --ifm-color-primary-darkest: #205d3b;
-  --ifm-color-primary-light: #33925d;
-  --ifm-color-primary-lighter: #359962;
-  --ifm-color-primary-lightest: #3cad6e;
-  --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  /* accent ramp */
+  --mecha-accent-100: #e7e5fe;
+  --mecha-accent-300: #d2cefd;
+  --mecha-accent-400: #b5abfc;
+  --mecha-accent-500: #9184d9;
+  --mecha-accent-600: #796cbf;
+  --mecha-accent-700: #5d5294;
+  --mecha-accent-900: #2b2741;
+
+  /* grounds */
+  --mecha-void: #12141f;
+  --mecha-bg: #161826;
+  --mecha-surface: #232532;
+  --mecha-section: #262a60;
+
+  /* text */
+  --mecha-text: #e9e9ed;
+  --mecha-text-muted: #9a9aa8;
+
+  /* signal — lines, ticks and single characters only, never a fill */
+  --mecha-hazard: #e8a24a;
+
+  --ifm-color-primary: var(--mecha-accent-500);
+  --ifm-color-primary-dark: var(--mecha-accent-600);
+  --ifm-color-primary-darker: #6d61ae;
+  --ifm-color-primary-darkest: var(--mecha-accent-700);
+  --ifm-color-primary-light: #a297e2;
+  --ifm-color-primary-lighter: var(--mecha-accent-400);
+  --ifm-color-primary-lightest: var(--mecha-accent-300);
+
+  --ifm-font-family-base: Inter, system-ui, sans-serif;
+  --ifm-heading-font-family: Inter, system-ui, sans-serif;
+  --ifm-font-family-monospace: 'JetBrains Mono', ui-monospace, monospace;
+  --ifm-heading-font-weight: 500;
+  --ifm-h1-font-size: 2.6rem;
+  --ifm-global-radius: 8px;
+  --ifm-code-font-size: 90%;
+
+  --docusaurus-highlighted-code-line-bg: rgba(145, 132, 217, 0.14);
 }
 
-/* For readability concerns, you should choose a lighter palette in dark mode. */
+/* mecha is a dark-first brand; the light theme stays a courtesy */
 [data-theme='dark'] {
-  --ifm-color-primary: #25c2a0;
-  --ifm-color-primary-dark: #21af90;
-  --ifm-color-primary-darker: #1fa588;
-  --ifm-color-primary-darkest: #1a8870;
-  --ifm-color-primary-light: #29d5b0;
-  --ifm-color-primary-lighter: #32d8b4;
-  --ifm-color-primary-lightest: #4fddbf;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+  --ifm-color-primary: var(--mecha-accent-400);
+  --ifm-color-primary-dark: var(--mecha-accent-500);
+  --ifm-color-primary-darker: var(--mecha-accent-600);
+  --ifm-color-primary-darkest: var(--mecha-accent-700);
+  --ifm-color-primary-light: var(--mecha-accent-300);
+  --ifm-color-primary-lighter: var(--mecha-accent-100);
+  --ifm-color-primary-lightest: #f1f0ff;
+
+  --ifm-background-color: var(--mecha-bg);
+  --ifm-background-surface-color: var(--mecha-surface);
+  --ifm-navbar-background-color: var(--mecha-bg);
+  --ifm-footer-background-color: var(--mecha-void);
+  --ifm-font-color-base: var(--mecha-text);
+  --ifm-heading-color: var(--mecha-text);
+  --ifm-toc-border-color: rgba(233, 233, 237, 0.1);
+  --ifm-hr-background-color: rgba(233, 233, 237, 0.1);
+  --docusaurus-highlighted-code-line-bg: rgba(145, 132, 217, 0.14);
+}
+
+/* ---- chrome ------------------------------------------------------------- */
+
+[data-theme='dark'] .navbar {
+  border-bottom: 1px solid rgba(233, 233, 237, 0.1);
+  box-shadow: none;
+}
+[data-theme='dark'] .footer {
+  border-top: 1px solid rgba(233, 233, 237, 0.1);
+}
+
+.navbar__title {
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.navbar__logo {
+  height: 1.6rem;
+}
+
+/* ---- type --------------------------------------------------------------- */
+
+/* Mono for labels and anything a user would type — never for prose, which is
+   why the sidebar and the table of contents are deliberately *not* here: their
+   entries are page titles ("What mecha is"), and a sentence in mono is a
+   sentence in the wrong face however much it suits a terminal tool. */
+kbd,
+.tabs__item {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.85em;
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: -0.02em;
+}
+
+/* ---- actions ------------------------------------------------------------ */
+
+/* primary actions are an accent outline, never a fill */
+.button.button--primary {
+  background: transparent;
+  border: 1px solid var(--ifm-color-primary);
+  color: var(--mecha-accent-300);
+}
+.button.button--primary:hover {
+  background: rgba(145, 132, 217, 0.12);
+  border-color: var(--mecha-accent-400);
+  color: var(--mecha-accent-100);
+}
+.button.button--primary:active {
+  background: rgba(145, 132, 217, 0.2);
+}
+[data-theme='light'] .button.button--primary {
+  color: var(--mecha-accent-700);
+}
+
+.button.button--secondary {
+  background: transparent;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  color: var(--ifm-font-color-base);
+}
+.button.button--secondary:hover {
+  border-color: var(--ifm-color-primary);
+  background: transparent;
+  color: var(--ifm-font-color-base);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ifm-color-primary);
+  outline-offset: 2px;
+}
+::selection {
+  background: rgba(145, 132, 217, 0.3);
+}
+
+/* ---- code --------------------------------------------------------------- */
+
+[data-theme='dark'] .theme-code-block {
+  border: 1px solid rgba(233, 233, 237, 0.08);
+}
+
+/* Hazard is the held-send colour, so it marks the blocks a reader must not run
+   past without deciding something. Opt in per block with a `mecha-hazard`
+   title, e.g. ```bash title="mecha-hazard: this sends" — a bar on every code
+   block would make the signal mean nothing, which is the whole point of having
+   exactly one. */
+.theme-code-block[class*='hazard'],
+.mecha-hazard {
+  border-left: 2px solid var(--mecha-hazard);
+}
+
+/* ---- admonitions -------------------------------------------------------- */
+
+/* Warning and danger are the one called-out rule, so they carry hazard. Every
+   other admonition stays on the accent — a second hue would be a second brand. */
+.theme-admonition-warning,
+.theme-admonition-danger {
+  border-left-color: var(--mecha-hazard);
+}
+
+/* ---- tables ------------------------------------------------------------- */
+
+table thead tr {
+  border-bottom: 1px solid var(--ifm-color-primary);
+}
+table th {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--mecha-text-muted);
+}
+[data-theme='dark'] table tr:nth-child(2n) {
+  background: rgba(233, 233, 237, 0.02);
+}
+
+/* ---- the block mark, when set in a code fence --------------------------- */
+
+.mecha-mark {
+  font-family: var(--ifm-font-family-monospace);
+  line-height: 1;
+  color: var(--mecha-accent-400);
+  white-space: pre;
+}
+
+/* ---- mermaid ------------------------------------------------------------ */
+
+/* Diagrams inherit the page ground rather than mermaid's own, so an
+   architecture diagram does not arrive as a white rectangle in a dark page. */
+[data-theme='dark'] .docusaurus-mermaid-container svg {
+  background: transparent;
 }

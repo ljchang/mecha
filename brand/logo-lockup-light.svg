@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 234 54" width="234" height="54" role="img" aria-label="mecha — agent harness">
+  <g fill="#5d5294">
+  <path d="M0 0h24l7.5 8.5L39 0h24v16H0z"></path>
+  <path d="M0 20h14v15H0zM49 20h14v15H49zM0 39h14v15H0zM49 39h14v15H49z"></path>
+  <path d="M14 39v15h13.24zM49 39v15H35.76z"></path>
+  <path d="M21 24h21v7H21z"></path>
+  </g>
+  <text x="84" y="32" font-family="Inter, system-ui, sans-serif" font-size="31" font-weight="500" letter-spacing="-0.62" fill="#12141f">mecha</text>
+  <text x="85" y="46" font-family="&#39;JetBrains Mono&#39;, ui-monospace, monospace" font-size="9" letter-spacing="1.2" fill="#5c5c68">AGENT HARNESS · RUST</text>
+</svg>

@@ -1,9 +1,75 @@
+/**
+ * The hero is the one saturated field in the brand (--mecha-section). Nothing
+ * else on the site fills an area with colour, so this band is doing all of the
+ * work — which is why it gets the grid and the mark rather than a gradient.
+ */
 .heroBanner {
-  padding: 5rem 0 3rem;
+  padding: 4rem 0 3.5rem;
   text-align: center;
   position: relative;
   overflow: hidden;
   border-bottom: 1px solid var(--ifm-color-emphasis-200);
+}
+
+[data-theme='dark'] .heroBanner {
+  background: linear-gradient(
+    160deg,
+    var(--mecha-section) 0%,
+    #1b1e3a 45%,
+    var(--mecha-bg) 100%
+  );
+  border-bottom-color: rgba(233, 233, 237, 0.1);
+}
+
+/* The light theme gets the same band an order of magnitude quieter: a tint of
+   the accent rather than the saturated field, because on a white ground the
+   section colour is a wall. */
+[data-theme='light'] .heroBanner {
+  background: linear-gradient(160deg, #f2f0ff 0%, #f8f7ff 55%, #ffffff 100%);
+}
+
+/* The same 44-unit grid as the social card, so the hero and the link preview
+   are recognisably one surface. */
+.heroBanner::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(145, 132, 217, 0.07) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(145, 132, 217, 0.07) 1px, transparent 1px);
+  background-size: 44px 44px;
+  pointer-events: none;
+}
+
+[data-theme='light'] .heroBanner::before {
+  background-image:
+    linear-gradient(to right, rgba(93, 82, 148, 0.08) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(93, 82, 148, 0.08) 1px, transparent 1px);
+}
+
+.heroBanner > * {
+  position: relative;
+}
+
+.heroMark {
+  margin-bottom: 1.25rem;
+}
+
+.heroMark img {
+  height: 3.25rem;
+  width: auto;
+}
+
+.heroBanner :global(.hero__title) {
+  letter-spacing: -0.03em;
+}
+
+.kicker {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.78rem !important;
+  letter-spacing: 0.22em;
+  color: var(--mecha-hazard) !important;
+  margin-bottom: 1rem !important;
 }
 
 .heroBanner :global(.hero__subtitle) {
@@ -13,6 +79,10 @@
   font-size: 1.25rem;
 }
 
+[data-theme='dark'] .heroBanner :global(.hero__subtitle) {
+  color: var(--mecha-text-muted);
+}
+
 @media screen and (max-width: 996px) {
   .heroBanner {
     padding: 3rem 1rem 2rem;
@@ -20,6 +90,10 @@
 
   .heroBanner :global(.hero__subtitle) {
     font-size: 1.1rem;
+  }
+
+  .heroMark {
+    height: 2.5rem;
   }
 }
 
@@ -43,4 +117,8 @@
 .sample p {
   color: var(--ifm-color-emphasis-700);
   font-size: 0.95rem;
+}
+
+[data-theme='dark'] .sample p {
+  color: var(--mecha-text-muted);
 }
