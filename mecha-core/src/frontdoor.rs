@@ -200,7 +200,14 @@ pub struct Frontdoor {
 impl Frontdoor {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
+        // Owner-only, like every other store under `~/.mecha` — sessions, the
+        // learning store, triggers, the outbox, a run's work directory. This
+        // one was the exception, and it holds the least of ours and the most
+        // of someone else's: a stranger's name, institution and free text,
+        // submitted through a form and kept until a human answers it. The
+        // 0700 on the directory is the boundary, which is why the record
+        // writes below match the outbox's rather than setting their own mode.
+        crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
         Ok(Frontdoor { root })
     }
 
@@ -425,6 +432,31 @@ mod tests {
             extraction_error: None,
             rest: Map::new(),
         }
+    }
+
+    /// The other stores under `~/.mecha` are owner-only and this one holds a
+    /// stranger's name, institution and free text — the least of the user's own
+    /// data and the most of someone else's.
+    #[cfg(unix)]
+    #[test]
+    fn the_request_store_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        // A fresh path, so `open` is what creates the directory. Deliberately
+        // world-readable parents: the leaf is the boundary, and a test that
+        // passed only because the parent was tight would prove nothing.
+        let dir = std::env::temp_dir()
+            .join("mecha-frontdoor-perms")
+            .join(format!("{}-{nanos}", std::process::id()));
+        Frontdoor::open(&dir).unwrap();
+
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "requests directory is {mode:o}");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The whole point of the module, as a test: what a run with a calendar and
