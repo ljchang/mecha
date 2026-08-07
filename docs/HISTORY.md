@@ -288,6 +288,91 @@ an immutable version nobody can read, releasing is what a reader sees. Now an
 agent holds publish-only, and the worst a stolen agent key does is write
 versions nobody can see. Deployed and verified against the live box.
 
+**2026-08-07 — a new handle gets a certificate, and nothing restarts.** The
+factory's certificate was ordered once at startup for a fixed list, so a user
+created while the server ran had no hostname until a restart — the assumption
+`SELF-SERVE.md` exists to remove, and the one part of self-serve that was not
+ordinary web work. Shipped in the factory repository:
+`mecha-factory/src/certificates.rs` plus a rewritten `tls.rs`. Issuance moved
+from TLS-ALPN-01 to HTTP-01 (the `pub(crate)` acceptor was only ever needed by
+the challenge, not the goal), one `AcmeState` per certificate group sits
+behind an SNI-dispatching resolver, and the certificate set is *reconciled
+from the ledger* every thirty seconds rather than announced — `factory user
+create` runs in another process, so a notification channel would only have
+served the signup endpoint that does not exist yet. Port 80 became
+load-bearing for issuance, so `[listen] http` is refused-if-absent beside
+`[tls]`, and the DEPLOY.md sentences that said otherwise changed with the
+code. A high-effort review before deploy confirmed eight defects — nearly all
+one shape, the machinery degrading with no log line on the port that had just
+become load-bearing. The fixes: seed one ACME account before any order (a
+cold cache raced N groups into N registrations, capped at 10 per IP per 3
+hours), migrate the old combined certificate into the per-group cache keys
+(the upgrade would have re-ordered everything against the 50/week budget with
+every name failing handshakes meanwhile), answer no-SNI handshakes with the
+base certificate (monitors and curl-by-IP send none), release a dead ACME
+task's claim so the reconcile loop can actually repair it, and survive a
+transiently locked ledger at startup instead of exiting before the listener
+was up. Deployed the same day: the migration made the restart zero-downtime,
+and a throwaway `smoketest` user went from `user create` to a served Let's
+Encrypt production certificate in about thirty seconds with nothing
+restarting. The unclaimed-handle property survived — no resolver, dead
+handshake, the 404 still the second line of defence. The plan's own surprise:
+the wildcard `A` records the deployment already had meant the Cloudflare zone
+move gated nothing after all.
+
+**2026-08-07 — an invited stranger becomes a tenant, no operator anywhere in
+the path.** Steps 3 and 4 of `SELF-SERVE.md`, built and deployed the same
+afternoon. `factory invite create` mints the right to claim one handle (token
+hashed at rest, seven days); `/signup/<token>` on the gate claims it through
+the same `create_user_in` the CLI calls, spending the invite in the same
+transaction, and the welcome page ends with the exact `factory-publish
+connect` command — code included — because the moment a person has just
+proved themselves at a browser is the moment to hand them the next step. The
+pairing confirmation became the protocol rather than a prompt: `POST
+/v1/pair` takes the code *and the asserted handle*, the server redeems only
+on a match, and a mismatch spends nothing and answers byte-for-byte what a
+nonexistent code answers — no client, human or agent, can wave it through,
+which is what the Claude-Code review demanded. Redemption mints the machine's
+own publish and drain keys (never release) in the transaction that spends the
+code. Proven live within minutes of deploying: a real invite, a claimed
+handle, a wrong assertion refused with the code surviving, keys installed at
+0600, a push landing on the box, and the unreleased bundle serving to nobody
+— which is the scope split working for a stranger's account end to end. The
+live proof also caught a real bug: `mirror()`'s "bytes up, not published,
+release elsewhere" arm was unreachable (a missing `release.key` hard-errored
+first), found by the first machine ever to be in the designed
+publish-without-release state, fixed as `Remote::installed()`. The schema
+work established two standing rules: **migrations are additive from 3 on**
+("delete the database" retired the day the box went live), and **a guarded
+ALTER must be idempotent** — a half-run migration that wedges forever on
+"duplicate column" turns a one-off transient failure into a bricked ledger.
+
+**2026-08-07 — the second release door, and the operator puts down SSH.**
+Steps 5 and 6, same evening. `/account` is the tenant surface: magic-link
+sign-in (oracle-free, budgeted per account per day), a `__Host-`-prefixed
+session cookie — the prefix is what stops a tenant's page on `alice.art`
+tossing a `Domain=` cookie onto the gate, deferring the move-the-gate
+question instead of forcing it — CSRF tokens derived from the session on top
+of `SameSite=Lax`, release/unrelease driving the same `alias_set` the
+release key drives, and machines-connected as the keys ledger with
+`last_used_at` stamped on every authenticated call (a key that is used is a
+machine that is alive, and a silent compromise shows as life where none was
+expected). A session deliberately cannot publish. `factory-publish
+disconnect` lets a credential retire itself — `POST /v1/disconnect`
+authenticated by the key being revoked, which is what makes a compromised
+laptop recoverable by its owner. The operator surface is a fourth scope
+rather than a second session system: `Scope::Operate`, bound to the box (no
+tenant), minted once over SSH, driving `/v1/admin/*` through
+`factory-publish operator …` — users with queue depths, suspend/restore,
+invites mailed by the box, every key, break-glass revoke, withhold. The two
+surfaces are kept apart by the credential (tenant keys die at the admin
+door, the operate key dies at the tenant door, tested both ways), and the
+operator verbs are CLI-only, never MCP tools — suspending users is not
+power an agent wields as a side effect of conversation. Proven live from
+home the same hour: users, keys with last-used, invites, a suspend/restore
+round-trip. What stays on SSH, deliberately: deploys, and minting a
+replacement operate key if every one is lost.
+
 ---
 
 ## The measurement record
@@ -645,6 +730,32 @@ All found by pre-push review or by running it.
   `curl :8080/props | jq .total_slots` is 1 before believing any measurement.
 - **`pkill -f llama-server` kills your own shell**, because the pattern matches
   the command line running it. Use `pkill -x llama-server`.
+- **A git worktree sharing the main `CARGO_TARGET_DIR` poisons the cache with
+  its own paths.** Verifying a commit in a temporary worktree with the shared
+  target dir rebuilt a test binary whose `env!("CARGO_MANIFEST_DIR")` was baked
+  as the worktree path; after the worktree was removed, the cached binary
+  matched fingerprints and kept being reused, and seven tests in an untouched
+  crate failed with `NotFound` only on full-workspace runs — hours later,
+  looking exactly like a regression in that day's work. **Compile-time paths
+  live in the artifact, not the fingerprint: give a throwaway worktree its own
+  target dir.** (2026-08-07, in the factory repo; the lesson is generic.)
+- **A one-shot HTTP stub that answers after one `read()` races the client's
+  body write.** The connect tests' stub gate read once, replied, and closed;
+  under a loaded parallel run the request arrived in two segments and the
+  close became a reset, surfacing as a flaky connection error in whichever
+  test drew the slow lane — while passing every isolated run. **A test stub
+  must consume the full request (headers plus declared Content-Length)
+  before answering**, or the flake lands on whoever loads the machine next.
+  (2026-08-07, factory repo.)
+- **Two tests that set the same environment variable flake only under
+  parallel load.** `set_var`/`remove_var` are process-global and the test
+  harness is threaded, so one test's `remove_var` lands mid-way through
+  another's read — it never fails in isolation, only when the whole workspace
+  runs at once, which reads as a bug in whatever else changed that day. A
+  shared `env_lock()` both tests take is the fix; the general shape is that
+  **anything process-global touched by a threaded test harness needs a lock,
+  and the flake will not reproduce under `-p <crate>`.** (2026-08-07, factory
+  repo, `MECHA_HOME`.)
 - **`hf download repo --include X Y`** silently ignores `--include` when
   positional filenames are given. Pass filenames positionally *or* use
   `--include`, not both.
