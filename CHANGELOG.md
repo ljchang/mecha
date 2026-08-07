@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### The work directory
+
+- **`~/.mecha/work/<producer>/` is a run's workspace as well as its output
+  directory**, where a producer is a trigger's name, or `chat`, or a session id.
+  It is stable across runs of the same producer, so yesterday's output is an
+  ordinary file in today's run rather than something that has to be plumbed.
+- **`mecha work`** — `list` (what each producer has generated, with counts,
+  size, and the newest entry), `path <producer>` (for `cd $(mecha work path x)`),
+  and `clean` with `--keep`, `--producer` and `--dry-run`. Retention is a policy
+  rather than an intention: the last `[work] keep` entries per producer survive,
+  the nightly job runs it, and it says exactly what it removed.
+- `clean` **never removes anything a published bundle names as a source**, and
+  names the entries it kept for that reason instead of skipping them silently.
+- `[work] keep` in config (default 10).
+
+#### The public surface, outbound
+
+- **Publishing rides on the outbox.** The factory's MCP tools render a bundle
+  locally and stage the publish for review, so nothing reaches a public URL
+  without a human releasing it.
+- **`[outbox] publish_tools`** names which routed tools are publications. An
+  item now carries a kind (`message` or `publish`) that decides how it is
+  *reviewed*: `show` leads with the rendered page rather than the arguments,
+  `edit` is refused with the real action named (edit the source, re-render,
+  publish again), and the writing-reflection miner excludes publishes so a
+  changed directory path can never be mined into a voice rule.
+- **The kind is config's to declare, never the tool's.** Anything unnamed is a
+  `message`, and a name in `publish_tools` that is not in `tools` warns on every
+  start.
+- **An item records the workspace it was drafted under**, and a release rebuilds
+  its tool surface rooted there. A batch release builds one surface per distinct
+  workspace, lazily.
+
+#### The public surface, inbound
+
+- **`mecha frontdoor`** — `list`, `show`, `extract` and `next` over the requests
+  drained from the public surface into `~/.mecha/requests/`. The whole layer
+  serves one sentence: the privileged run sees the extraction, never the prose a
+  stranger wrote.
+- The extractor is issued a request with an **empty tool list and no
+  conversation**, so there is nothing for an injected instruction to reach; an
+  extraction failure routes to a human rather than passing the prose through.
+- `Record::for_privileged_run` is a function with no argument that returns the
+  original text, so the boundary is structural rather than a rule to remember.
+
+#### Elsewhere
+
+- **`mecha outbox review`** walks pending items one at a time, deciding each —
+  the overnight-triage case, where nine drafts used to mean nine invocations and
+  nine startups of every MCP server. Batching saves the invocations and never
+  the reading. Ids may be given several at a time; `--all` is narrowed by
+  `--kind` and `--via`; `list` is grouped by kind. A selection naming nothing,
+  or a filter matching nothing, is an error rather than "everything".
+- **`Tool::carried_state`** lets a tool hand state to a compaction to be carried
+  verbatim. The `todo` list reached the model only through the echo in its last
+  result — a message, and therefore exactly what a compaction summarises away.
+  Exactly one copy survives a second compaction.
+
+### Fixed
+
+- **A path jail rooted where the secrets live.** `setup` now refuses any
+  workspace that *contains* the mecha home, because `$HOME` contains
+  `~/.mecha/` — the mail OAuth tokens, every session transcript, the learning
+  store. `mecha chat` from a home directory was jailed over all of it, and an
+  unattended trigger with no explicit workspace was worse: it fell through to
+  `current_dir()`, and the shipped systemd unit sets `WorkingDirectory=%h`. A
+  workspace *inside* the mecha home is fine and is now the default.
+- **`mecha trigger add` writes the workspace down** rather than leaving it
+  implicit, and `trigger show` prints the resolved default — "where is this
+  jailed" must not be answered by an omitted line.
+- **An unconfined MCP server now starts in the run's workspace**, like a
+  confined one always did. It used to inherit mecha's own working directory, so
+  a server resolving a relative path resolved it against wherever the user
+  launched mecha.
+- **A trigger's `notify` command runs in the run's workspace**, as a hook
+  already did. It inherited the daemon's directory, so the only way to put the
+  answer somewhere was to spell out an absolute path — which is how the morning
+  briefing came to end in `mkdir -p ~/.mecha/briefings && cat > …`, outside
+  every path jail and unreadable by any later run.
+
 ## [0.1.0] - 2026-08-05
 
 First public release. Everything is new, so the whole feature surface is listed

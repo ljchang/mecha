@@ -307,14 +307,19 @@ Review, edit, release, or reject staged outbound actions. `list` is the default
 subcommand.
 
 ```
-mecha outbox [list|show|edit|send|reject] [ARGS]
+mecha outbox [list|show|edit|review|send|reject] [ARGS]
 ```
 
 | Subcommand | Flag | Description |
 |---|---|---|
-| `list` | | List staged items. |
+| `list` | | List staged items, grouped by kind. |
+| `list` | `--kind <KIND>` | Only `message` or only `publish`. |
+| `list` | `--via <VIA>` | Only items staged by a tool whose name contains this. |
 | `show` | `<ID>` | The exact arguments a release would execute, its provenance, and the edit diff if there is one. |
 | `edit` | `<ID>` | Open the item's arguments in `$EDITOR`. What you save is what `send` executes. |
+| `review` | `[IDS]...` | Walk items one at a time, deciding each. Ids, or unique prefixes; several is fine. |
+| `review` | `--all` | Every pending item, subject to the filters. |
+| `review` | `--kind <KIND>` | Only `message` or only `publish`. |
 | `send` | `<ID>` | Execute the item's tool call, for real, and mark it sent. |
 | `send` | `-y`, `--yes` | Skip the confirmation shown for items drafted in a tainted conversation. |
 | `reject` | `<ID>` | Refuse an item. It stays on file as the record of the refusal. |
@@ -324,12 +329,85 @@ mecha outbox [list|show|edit|send|reject] [ARGS]
 `mecha reflect` mines into `writing`-domain reflections. `send` holds the store's
 lock across execution so two sends cannot double-fire.
 
+An item's **kind** decides how it is reviewed, not how it was staged. A
+`publish` shows the rendered page rather than the arguments, and refuses
+`edit` — see [Publishing](/docs/features/publishing).
+
 ```bash
 mecha outbox
 mecha outbox show 3f2a
 mecha outbox edit 3f2a && mecha outbox send 3f2a
+mecha outbox review --all --kind message
 mecha outbox reject 3f2a --reason "wrong recipient"
 ```
+
+## `work`
+
+What runs have generated, and removing what is past. Every producer — a
+trigger, a chat, a session — writes into its own directory, which is also the
+path jail its runs get. `list` is the default subcommand.
+
+```
+mecha work [list|path|clean] [ARGS]
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `list` | | What each producer has generated, with entry counts, size, and the newest entry. |
+| `path` | `<PRODUCER>` | Print one producer's directory, creating it if absent. For `cd $(mecha work path x)`. |
+| `clean` | `--keep <N>` | How many entries survive per producer. Defaults to `[work] keep` (10). |
+| `clean` | `--producer <NAME>` | Only this producer. |
+| `clean` | `--dry-run` | Say what would go, and remove nothing. |
+
+`clean` never removes anything a published bundle names as a source, and says
+which entries survived for that reason. The producer directory itself is never
+removed.
+
+```bash
+mecha work
+mecha work path briefing
+mecha work clean --dry-run
+mecha work clean --producer briefing --keep 3
+```
+
+See [The work directory](/docs/features/work).
+
+## `frontdoor`
+
+Requests that arrived through the public surface, and the quarantine they pass
+through before any run with tools is told about them. `list` is the default
+subcommand.
+
+```
+mecha frontdoor [list|show|extract|next] [ARGS]
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `list` | | What has arrived, and what state each request is in. |
+| `list` | `--state <STATE>` | Only this state: `drained`, `extracted`, `extraction_failed`, … |
+| `show` | `<SEQ>` | One request in full, **including the prose a stranger wrote**. |
+| `extract` | | Run the quarantined extraction over everything not yet extracted. |
+| `extract` | `--seq <SEQ>` | Just this one. |
+| `extract` | `--force` | Re-extract records that already have an extraction. |
+| `next` | `--limit <N>` | What a triage run may be told, as JSON — extractions only, never prose. Default 5. |
+
+`show` is the one place the original text is printed, and a terminal is where
+that is safe. `next` is what a triage trigger pipes into a prompt; it is
+structurally incapable of including the words a stranger typed.
+
+Draining is deliberately not here — `mecha-factory-publish drain` holds the key
+and speaks the protocol.
+
+```bash
+mecha frontdoor
+mecha frontdoor list --state extraction_failed
+mecha frontdoor show 42
+mecha frontdoor extract
+mecha frontdoor next --limit 3
+```
+
+See [The front door](/docs/features/frontdoor).
 
 ## `trigger`
 
