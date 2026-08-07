@@ -131,10 +131,38 @@ pub struct Record {
     /// exists to fix.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The files that arrived with this request, as the drain wrote them.
+    ///
+    /// Typed rather than left in `rest`, because the boundary below is a
+    /// function *over* this list: the privileged brief excludes any field
+    /// named here from `fields` and emits measurements only. The stranger's
+    /// `filename` and the on-disk `path` surface in exactly one place —
+    /// `frontdoor show`, for a human.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
     /// Anything the other side wrote that this side does not model. Kept so a
     /// round-trip through here never drops a field.
     #[serde(flatten)]
     pub rest: Map<String, Value>,
+}
+
+/// One attached file, as the drain recorded it. The bytes are beside the
+/// store, never inside a value — and never inside a workspace, which is what
+/// keeps `fs_read` and `shell` from becoming a way around the quarantine.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Attachment {
+    /// The box's blob id, kept for provenance; useless once drained.
+    #[serde(default)]
+    pub id: String,
+    pub field: String,
+    /// What the stranger called it. A stranger's string: shown to a human in
+    /// `show`, never given to a run, never used as a path.
+    pub filename: String,
+    pub size: u64,
+    pub sha256: String,
+    pub content_type: String,
+    /// Where the bytes rest, relative to the request store's root.
+    pub path: String,
 }
 
 /// What the quarantined pass returns.
@@ -177,11 +205,18 @@ impl Record {
         format!("{:010}-{}.json", self.seq, self.type_id)
     }
 
-    /// The values that are **not** prose.
+    /// The values that are **not** prose — and not files either.
+    ///
+    /// A file field's value is measurements the box took, but the drain
+    /// strips the stranger's filename out of it and a *regressed* drain might
+    /// not. Excluding the whole field here means even that regression leaks
+    /// nothing: the brief carries the measurements through its own
+    /// `attachments` key, built from the sidecar, never from `values`.
     pub fn typed_values(&self) -> Map<String, Value> {
         self.values
             .iter()
             .filter(|(name, _)| !self.free_text.contains(name))
+            .filter(|(name, _)| !self.attachments.iter().any(|a| &a.field == *name))
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect()
     }
@@ -237,6 +272,19 @@ impl Record {
                 "dates_mentioned": extraction.dates_mentioned,
                 "institution": extraction.institution,
             },
+            // The files, as measurements: size, digest, our derived content
+            // type. Absent on purpose: the stranger's filename (their
+            // characters), the path (a run must not be handed a road to the
+            // bytes), and the bytes themselves — no model has read them, and
+            // the prompt that carries this brief says so out loud.
+            "attachments": self.attachments.iter().map(|a| {
+                serde_json::json!({
+                    "field": a.field,
+                    "size": a.size,
+                    "content_type": a.content_type,
+                    "sha256": a.sha256,
+                })
+            }).collect::<Vec<_>>(),
         }))
     }
 }
@@ -591,6 +639,7 @@ mod tests {
             triage_session: None,
             outbox: Vec::new(),
             note: None,
+            attachments: Vec::new(),
             rest: Map::new(),
         }
     }
@@ -890,6 +939,62 @@ mod tests {
         // `requester_name` is prose by the manifest's reckoning, so it is not
         // in the typed fields either — even though it looks harmless.
         assert!(handed["fields"].get("requester_name").is_none());
+    }
+
+    /// Attachments reach a run as measurements and nothing else: no filename
+    /// (a stranger's characters), no path (a road to bytes no model may
+    /// read), no id — and even a drain regression that leaves the filename
+    /// inside the file field's value leaks nothing, because `fields` excludes
+    /// attachment-named fields structurally rather than trusting the values
+    /// to have been cleaned.
+    #[test]
+    fn a_privileged_run_gets_attachment_measurements_and_no_road_to_the_bytes() {
+        let mut record = record_with_prose();
+        record.extraction = Some(Extraction::default());
+        record.attachments = vec![Attachment {
+            id: "blobblob".into(),
+            field: "cv".into(),
+            filename: "Mallory Résumé FINAL (2).pdf".into(),
+            size: 20_000,
+            sha256: format!("sha256:{}", "ab".repeat(32)),
+            content_type: "application/pdf".into(),
+            path: "attachments/0000000012/cv.pdf".into(),
+        }];
+        // The regression this boundary absorbs: a filename still in `values`.
+        record.values.insert(
+            "cv".into(),
+            json!({
+                "filename": "Mallory Résumé FINAL (2).pdf",
+                "size": 20_000,
+                "sha256": format!("sha256:{}", "ab".repeat(32)),
+                "content_type": "application/pdf",
+            }),
+        );
+
+        let handed = record.for_privileged_run().expect("extracted and valid");
+        let serialized = handed.to_string();
+
+        assert_eq!(handed["attachments"][0]["field"], json!("cv"));
+        assert_eq!(handed["attachments"][0]["size"], json!(20_000));
+        assert_eq!(handed["attachments"][0]["content_type"], json!("application/pdf"));
+        assert!(handed["attachments"][0]["sha256"].is_string());
+
+        assert!(
+            !serialized.contains("Mallory Résumé"),
+            "a stranger's filename reached the privileged run: {serialized}"
+        );
+        assert!(
+            !serialized.contains("attachments/0000000012"),
+            "the on-disk path reached the privileged run: {serialized}"
+        );
+        assert!(
+            !serialized.contains("blobblob"),
+            "the blob id reached the privileged run: {serialized}"
+        );
+        assert!(
+            handed["fields"].get("cv").is_none(),
+            "the file field's value must be excluded from `fields` wholesale"
+        );
     }
 
     /// Nothing unextracted reaches a run, whatever the reason. An invalid

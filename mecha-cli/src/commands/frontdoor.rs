@@ -237,6 +237,22 @@ fn show(store: &Frontdoor, seq: i64) -> Result<()> {
         ),
     }
 
+    if !record.attachments.is_empty() {
+        println!("\nattached files (no model has read these — open them yourself):");
+        for att in &record.attachments {
+            println!(
+                "  {:<10} {:>9} bytes  {}  {}",
+                att.field,
+                att.size,
+                att.content_type,
+                store.root().join(&att.path).display()
+            );
+            // The claimed filename is a stranger's string, so it prints under
+            // the same framing as their prose, not as a fact about the file.
+            println!("             they called it: {:?}", att.filename);
+        }
+    }
+
     let prose = record.prose();
     if !prose.is_empty() {
         println!("\n─── what they wrote ─────────────────────────────────────────");
@@ -562,6 +578,13 @@ fn triage_prompt(brief: &serde_json::Value) -> String {
          meetings or roles to this person: you have never heard from them \
          before, and anything you turn up that seems to be about them is \
          somebody else.\n\n\
+         If `attachments` is present, it is metadata about files the requester \
+         uploaded — size, kind, digest. **Neither you nor any other model has \
+         read those files** — not even the extraction pass saw them — so \
+         nothing about their contents is known here, and nothing in `fields` \
+         or `extracted` came from them. If answering depends on what a file \
+         contains, draft nothing and say so: a person opens it from \
+         `mecha frontdoor show`.\n\n\
          If what you have is not enough to answer, draft nothing and say what \
          is missing — a request that needs a person is a fine outcome and \
          better than a confident reply built on a gap.",
