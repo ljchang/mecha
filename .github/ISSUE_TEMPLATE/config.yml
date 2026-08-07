@@ -4,7 +4,7 @@ contact_links:
     url: https://github.com/ljchang/mecha/security/advisories/new
     about: Report privately through a draft advisory, not as a public issue.
   - name: Documentation
-    url: https://ljchang.github.io/mecha/
+    url: https://docs.mecha-factory.ai/
     about: Configuration reference, the command surface, and how each subsystem works.
   - name: Design rationale
     url: https://github.com/ljchang/mecha/blob/main/CLAUDE.md
