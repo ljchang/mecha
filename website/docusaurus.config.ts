@@ -5,7 +5,21 @@ import type * as Preset from '@docusaurus/preset-classic';
 const config: Config = {
   title: 'mecha',
   tagline: 'A standalone agent harness — extracted so it can be reused, not rewritten',
+  // The .ico rather than the .svg: it is what a bare request for /favicon.ico
+  // gets, and that request happens whether or not the <link> below is honoured.
+  // Both are generated from brand/favicon.svg by scripts/build-brand-assets.py.
   favicon: 'img/favicon.ico',
+
+  headTags: [
+    {
+      tagName: 'link',
+      attributes: {rel: 'icon', type: 'image/svg+xml', href: '/mecha/img/favicon.svg'},
+    },
+    {
+      tagName: 'link',
+      attributes: {rel: 'apple-touch-icon', href: '/mecha/img/apple-touch-icon.png'},
+    },
+  ],
 
   future: {
     v4: true,
@@ -54,13 +68,28 @@ const config: Config = {
   ],
 
   themeConfig: {
-    // No logo or social card: the scaffold ships Docusaurus' own artwork, and
-    // shipping someone else's mark as this project's is worse than having none.
+    // The social card is a PNG, not the SVG it is generated from: Twitter,
+    // Slack and iMessage will not render an SVG preview, so the vector would
+    // silently produce no card at all.
+    image: 'img/og-card.png',
+    // Dark-first, and it does not follow the OS. The palette is built on the
+    // void ground; the light theme is a courtesy and reads as the alternate.
     colorMode: {
-      respectPrefersColorScheme: true,
+      defaultMode: 'dark',
+      respectPrefersColorScheme: false,
     },
     navbar: {
       title: 'mecha',
+      logo: {
+        alt: 'mecha',
+        // Two files rather than one filtered file. accent-400 is a dark-ground
+        // colour and brand.md swaps it to accent-700 on a light one; supplying
+        // both also means Docusaurus renders its themed pair, which is what it
+        // does regardless — with only `src` it emits the dark variant and then
+        // hides it in the light theme, so the mark disappears.
+        src: 'img/logo-light.svg',
+        srcDark: 'img/logo.svg',
+      },
       items: [
         {
           type: 'docSidebar',
@@ -82,6 +111,12 @@ const config: Config = {
     },
     footer: {
       style: 'dark',
+      logo: {
+        alt: 'mecha',
+        src: 'img/logo-mono.svg',
+        href: 'https://github.com/ljchang/mecha',
+        width: 42,
+      },
       links: [
         {
           title: 'Documentation',
@@ -115,7 +150,11 @@ const config: Config = {
     },
     prism: {
       theme: prismThemes.github,
-      darkTheme: prismThemes.dracula,
+      // palenight, not dracula: its ground (#292d3e) sits inside the void→surface
+      // range and its accents are violet, so a code block reads as part of the
+      // page. Dracula's green and pink are a second and third hue, and the brand
+      // has exactly one.
+      darkTheme: prismThemes.palenight,
       additionalLanguages: ['rust', 'toml', 'bash', 'json'],
     },
   } satisfies Preset.ThemeConfig,
