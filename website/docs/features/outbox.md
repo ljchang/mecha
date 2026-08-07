@@ -16,6 +16,7 @@ arguments that will be used.
 [outbox]
 tools = ["mail__mail_send", "mail__mail_reply", "mail__calendar_create"]
 dir = "~/.mecha/outbox"     # optional; $MECHA_OUTBOX_DIR also works
+publish_tools = []          # of the above, which are publications — see below
 ```
 
 The gate lives in core, which is the whole point: an email or calendar tool —
@@ -35,9 +36,10 @@ and do not retry the call.
 ## Reviewing
 
 ```bash
-mecha outbox                  # list (pending first)
+mecha outbox                  # list (pending first), grouped by kind
 mecha outbox show <id>        # the exact arguments a release would execute
 mecha outbox edit <id>        # open those arguments in $EDITOR
+mecha outbox review --all     # walk the pending items, deciding each
 mecha outbox send <id>        # execute the call, for real, and mark it sent
 mecha outbox reject <id> --reason "wrong recipient"
 ```
@@ -49,6 +51,11 @@ conversation and items that have been edited:
 ```
 20260805-a1b2  pending  mail__mail_send {"to":"dean@…","subject":"re: budget"}  ⚠ tainted  (edited)
 ```
+
+`review` is the overnight-triage case: nine drafts from one run, decided in one
+sitting. It walks them one at a time rather than presenting a list to
+bulk-approve — batching the queue must not batch away the reading, which is the
+only thing the outbox is for. `--kind` and `--via` narrow what it walks.
 
 `send` builds the real tool surface — MCP servers included — and calls the
 tool. A failed release records the error and leaves the item **pending**: the
@@ -120,6 +127,48 @@ would destroy it.
 rather than staging arguments you did not mean, and the lock is taken only
 *after* `$EDITOR` exits.
 
+## Staging is sink-agnostic; reviewing is not
+
+The outbox generalised to a second kind of outbound action — publishing a
+rendered bundle to the public surface — **with no change to `outbox.rs` at
+all**, which was the design goal. Every one of its *review* affordances broke,
+because all three assume the staged thing is prose someone wrote.
+
+So an item carries a kind, set at staging from `[outbox] publish_tools`:
+
+| | `message` | `publish` |
+|---|---|---|
+| The reviewable object | the arguments | the **rendered page** |
+| `show` | prints the arguments | names the bundle directory and `index.html` |
+| `edit` | opens `$EDITOR` | **refused** — edit the source and re-render |
+| Mined for `writing` rules | yes | **no** |
+
+The last row is the load-bearing one: a `writing` reflection becomes a rule in
+every future run's cached prefix, so mining the diff of a changed *path* would
+teach voice rules from bookkeeping.
+
+The kind is **config's to declare, never the tool's.** Anything unnamed is a
+`message`, which is the conservative default. See
+[Publishing](/docs/features/publishing).
+
+## An item records the jail it was drafted under
+
+A staged call is a *deferred* tool call, and a tool call means nothing apart
+from its workspace. The drafting run said `{"bundle": "site"}` inside
+`~/.mecha/work/<producer>/`; `send` runs in another process, hours later, from
+wherever the reviewer is standing.
+
+So the item records its workspace and the release rebuilds the tool surface
+rooted there. An absolute path fails loudly in the wrong place; **a relative one
+is worse**, because a same-named directory beside the reviewer publishes the
+wrong bytes with no error anywhere. It is also the stricter jail of the two —
+the agent's, not the human's — which is the one the interlock reasoned about.
+
+A batch release builds one surface per distinct workspace, lazily, so the
+ordinary nine-replies-from-one-run case still starts the MCP servers exactly
+once. An item staged before the field existed releases against the reviewer's
+workspace, which is what it always did.
+
 ## Subagents, and eval
 
 **Subagents inherit the parent's route**, like hooks — or delegating would be
@@ -161,6 +210,7 @@ double-fire.
 ## Where to go next
 
 - [Security model](/docs/features/security) — the interlock that staging bypasses, and why that is safe.
+- [Publishing](/docs/features/publishing) — the second kind of staged action, and what review had to learn.
 - [Triggers](/docs/features/triggers) — where the outbox does the most work: overnight triage that leaves a review queue.
 - [Learning](/docs/features/learning) — what the staged/sent diff feeds.
 - [Mail and calendar](/docs/features/mail) — the tools most often routed.

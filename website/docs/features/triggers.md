@@ -1,6 +1,6 @@
 ---
 title: Triggers
-sidebar_position: 8
+sidebar_position: 9
 description: Prompts that run unattended on a cron schedule, and the five decisions that make an unwatched agent run safe.
 ---
 
@@ -276,8 +276,23 @@ The full answer stays in the session transcript rather than being copied into
 the ledger. `--notify` is a command handed that answer on stdin — an observer,
 like `post_tool`: its failure is logged and never fails the run.
 
+**`notify` runs in the run's [workspace](/docs/features/work)**, like a hook
+already did. It used to inherit the daemon's working directory, and the shipped
+systemd unit sets `WorkingDirectory=%h` — so the only way to put the answer
+somewhere useful was to spell out an absolute path. That is how the shipped
+morning briefing came to end in
+
+```bash
+mkdir -p ~/.mecha/briefings && cat > ~/.mecha/briefings/$(date +%F).md
+```
+
+which wrote outside every path jail, into a directory it created on the way
+past, where no later run could read it back. The workspace is the answer to all
+three.
+
 ## Where to go next
 
+- [The work directory](/docs/features/work) — where an unattended run's output goes, and its path jail.
 - [The outbox](/docs/features/outbox) — what makes overnight triage safe.
 - [Security model](/docs/features/security) — the interlock, which applies unchanged to an unattended run.
 - [Sessions and replay](/docs/features/sessions-and-replay) — where a trigger's answer actually lives.
