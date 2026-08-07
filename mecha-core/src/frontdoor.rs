@@ -88,6 +88,30 @@ pub struct Record {
     /// Why extraction failed, when it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extraction_error: Option<String>,
+    /// The session a triage run happened in.
+    ///
+    /// This is the join between a request and the reply drafted for it, and it
+    /// is the reason nothing here had to be added to the outbox: a staged item
+    /// already records the session that drafted it, so the association is a
+    /// fact both stores independently hold rather than a pointer one of them
+    /// has to maintain. The dependency runs one way — this module reads the
+    /// outbox and the outbox has never heard of a request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_session: Option<String>,
+    /// The outbox items that triage staged for this request.
+    ///
+    /// Recorded rather than recomputed from `triage_session` on demand,
+    /// because the outbox is swept and a released item eventually stops being
+    /// findable — and "this was answered" must outlive the draft that answered
+    /// it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outbox: Vec<String>,
+    /// Why this reached the state it is in, when a person or a reconciliation
+    /// had a reason worth keeping. The design document's rule for `closed` is
+    /// "with a reason", and silence is the failure mode this whole component
+    /// exists to fix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     /// Anything the other side wrote that this side does not model. Kept so a
     /// round-trip through here never drops a field.
     #[serde(flatten)]
@@ -251,6 +275,97 @@ impl Frontdoor {
         std::fs::rename(&temp, &path)?;
         Ok(())
     }
+
+    /// Advance anything whose draft has since been released or rejected.
+    ///
+    /// **The outbox is the truth about a draft, and this store is the truth
+    /// about a request.** Neither writes into the other; this reads the first
+    /// and updates the second, which is why releasing a draft with
+    /// `mecha outbox send` — a different process, hours later, knowing nothing
+    /// about requests — still closes the loop. The alternative was a callback
+    /// from the outbox, which would have made every sink in the system learn
+    /// what a request is.
+    ///
+    /// Called before `list` and `next` rather than only on demand: a state
+    /// that is only correct after you remember to run a verb is a state nobody
+    /// can trust, and the whole point of `awaiting_me` is that it answers
+    /// "what is on me right now".
+    pub fn reconcile(&self, outbox: &crate::outbox::OutboxStore) -> Result<Vec<Transition>> {
+        let items = outbox.items()?;
+        let mut moved = Vec::new();
+
+        for mut record in self.records()? {
+            if record.state != AWAITING_ME || record.outbox.is_empty() {
+                continue;
+            }
+            let mine: Vec<_> = items
+                .iter()
+                .filter(|i| record.outbox.iter().any(|id| id == &i.id))
+                .collect();
+
+            // Swept, or a store that was moved. Not an error and not a reason
+            // to guess: a request whose drafts have vanished stays where it is
+            // and waits for a person, which is what every other unknown here
+            // does.
+            if mine.is_empty() {
+                continue;
+            }
+
+            let (to, note) = if mine.iter().all(|i| i.status == "sent") {
+                (ANSWERED, None)
+            } else if mine.iter().all(|i| i.status == "rejected") {
+                // Back to `extracted`, not to `closed`. Rejecting a draft says
+                // "not this reply", never "not this request" — and a request
+                // closed because its first draft was wrong is exactly the
+                // silence this component exists to prevent. It becomes a
+                // candidate for triage again.
+                (
+                    EXTRACTED,
+                    Some(
+                        mine.iter()
+                            .find_map(|i| i.reason.clone())
+                            .unwrap_or_else(|| "the draft was rejected".into()),
+                    ),
+                )
+            } else {
+                // Anything still pending: leave it. A partly-sent set is a
+                // person mid-review, not a state to resolve on their behalf.
+                continue;
+            };
+
+            moved.push(Transition {
+                seq: record.seq,
+                from: record.state.clone(),
+                to: to.to_string(),
+            });
+            record.state = to.into();
+            if note.is_some() {
+                record.note = note;
+            }
+            self.write(&record)?;
+        }
+        Ok(moved)
+    }
+}
+
+/// A request has one row and the row is the truth, so the states it can hold
+/// are named here rather than spelled at each call site — the bug this avoids
+/// is a typo'd string becoming a state nothing lists and nothing advances.
+pub const DRAINED: &str = "drained";
+pub const EXTRACTED: &str = "extracted";
+pub const EXTRACTION_FAILED: &str = "extraction_failed";
+pub const TRIAGED: &str = "triaged";
+pub const AWAITING_ME: &str = "awaiting_me";
+pub const NEEDS_INFO: &str = "needs_info";
+pub const ANSWERED: &str = "answered";
+pub const CLOSED: &str = "closed";
+
+/// One state change, for a caller that wants to say what it did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transition {
+    pub seq: i64,
+    pub from: String,
+    pub to: String,
 }
 
 /// The prompt the quarantined pass runs.
@@ -430,8 +545,172 @@ mod tests {
             free_text: vec!["requester_name".into(), "purpose_detail".into()],
             extraction: None,
             extraction_error: None,
+            triage_session: None,
+            outbox: Vec::new(),
+            note: None,
             rest: Map::new(),
         }
+    }
+
+    /// A record parked in `awaiting_me` with `n` drafts against it.
+    fn awaiting(seq: i64, outbox_ids: &[&str]) -> Record {
+        Record {
+            seq,
+            state: AWAITING_ME.into(),
+            extraction: Some(Default::default()),
+            triage_session: Some("sess-1".into()),
+            outbox: outbox_ids.iter().map(|s| s.to_string()).collect(),
+            ..record_with_prose()
+        }
+    }
+
+    struct Stores {
+        dir: PathBuf,
+        front: Frontdoor,
+        outbox: crate::outbox::OutboxStore,
+    }
+
+    impl Stores {
+        fn new(name: &str) -> Stores {
+            let dir = std::env::temp_dir().join(format!(
+                "frontdoor-{name}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            Stores {
+                front: Frontdoor::open(dir.join("requests")).unwrap(),
+                outbox: crate::outbox::OutboxStore::open(dir.join("outbox")).unwrap(),
+                dir,
+            }
+        }
+
+        /// Stage a draft and return its id, so a test can name it on a record.
+        fn draft(&self) -> String {
+            self.outbox
+                .stage(
+                    "mail__send",
+                    crate::outbox::OutboxKind::Message,
+                    json!({"to": "ada@example.com"}),
+                    Default::default(),
+                    Some("sess-1".into()),
+                    None,
+                )
+                .unwrap()
+                .id
+        }
+    }
+
+    impl Drop for Stores {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Releasing the draft is what answers the request — and it happens in
+    /// another process that has never heard of a request, so this is the only
+    /// thing that can notice.
+    #[test]
+    fn a_released_draft_answers_the_request_it_was_drafted_for() {
+        let s = Stores::new("answered");
+        let id = s.draft();
+        s.front.write(&awaiting(1, &[&id])).unwrap();
+
+        // Nothing yet: the draft is still pending review.
+        assert_eq!(s.front.reconcile(&s.outbox).unwrap(), vec![]);
+        assert_eq!(s.front.record(1).unwrap().state, AWAITING_ME);
+
+        s.outbox.resolve(&id, "sent", None).unwrap();
+        let moved = s.front.reconcile(&s.outbox).unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].to, ANSWERED);
+        assert_eq!(s.front.record(1).unwrap().state, ANSWERED);
+    }
+
+    /// "Not this reply" is not "not this request". A rejected draft has to
+    /// leave the request answerable, or the first bad draft silently closes
+    /// it — which is the exact failure this component exists to prevent.
+    #[test]
+    fn a_rejected_draft_returns_the_request_for_another_pass_and_says_why() {
+        let s = Stores::new("rejected");
+        let id = s.draft();
+        s.front.write(&awaiting(1, &[&id])).unwrap();
+
+        s.outbox
+            .resolve(&id, "rejected", Some("too formal".into()))
+            .unwrap();
+        let moved = s.front.reconcile(&s.outbox).unwrap();
+
+        assert_eq!(moved[0].to, EXTRACTED);
+        let after = s.front.record(1).unwrap();
+        assert_eq!(after.state, EXTRACTED);
+        assert_eq!(after.note.as_deref(), Some("too formal"));
+        // Still a triage candidate, which is the whole point of going back.
+        assert!(after.for_privileged_run().is_some());
+    }
+
+    /// A person part-way through reviewing three drafts has not finished, and
+    /// resolving on their behalf would send the request onward while a draft
+    /// they have not read is still staged.
+    #[test]
+    fn a_partly_reviewed_set_is_left_alone() {
+        let s = Stores::new("partial");
+        let (a, b) = (s.draft(), s.draft());
+        s.front.write(&awaiting(1, &[&a, &b])).unwrap();
+
+        s.outbox.resolve(&a, "sent", None).unwrap();
+        assert_eq!(s.front.reconcile(&s.outbox).unwrap(), vec![]);
+        assert_eq!(s.front.record(1).unwrap().state, AWAITING_ME);
+
+        s.outbox.resolve(&b, "sent", None).unwrap();
+        assert_eq!(s.front.reconcile(&s.outbox).unwrap().len(), 1);
+        assert_eq!(s.front.record(1).unwrap().state, ANSWERED);
+    }
+
+    /// The outbox is swept; a request outlives its draft. Losing the item must
+    /// not silently advance or revert anything.
+    #[test]
+    fn a_request_whose_drafts_are_gone_waits_for_a_person() {
+        let s = Stores::new("swept");
+        s.front.write(&awaiting(1, &["outbox-id-that-is-gone"])).unwrap();
+
+        assert_eq!(s.front.reconcile(&s.outbox).unwrap(), vec![]);
+        assert_eq!(s.front.record(1).unwrap().state, AWAITING_ME);
+    }
+
+    /// Reconciliation only ever looks at `awaiting_me`. A record a person has
+    /// deliberately closed must not be reopened by a draft resolving late.
+    #[test]
+    fn nothing_outside_awaiting_me_is_touched() {
+        let s = Stores::new("closed");
+        let id = s.draft();
+        let mut record = awaiting(1, &[&id]);
+        record.state = CLOSED.into();
+        s.front.write(&record).unwrap();
+
+        s.outbox.resolve(&id, "sent", None).unwrap();
+        assert_eq!(s.front.reconcile(&s.outbox).unwrap(), vec![]);
+        assert_eq!(s.front.record(1).unwrap().state, CLOSED);
+    }
+
+    /// Records written before these fields existed must load and behave, the
+    /// same rule the outbox's `kind` and `workspace` follow.
+    #[test]
+    fn a_record_from_before_the_new_fields_still_loads() {
+        let older = json!({
+            "seq": 7,
+            "type_id": "meeting",
+            "state": "extracted",
+            "created_at": "2026-08-06T00:00:00Z",
+            "drained_at": "2026-08-06T01:00:00Z",
+            "valid": true,
+            "values": {},
+            "free_text": []
+        });
+        let record: Record = serde_json::from_value(older).unwrap();
+        assert_eq!(record.state, EXTRACTED);
+        assert!(record.triage_session.is_none());
+        assert!(record.outbox.is_empty());
     }
 
     /// The other stores under `~/.mecha` are owner-only and this one holds a
