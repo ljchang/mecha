@@ -37,6 +37,10 @@ node_modules/
 /website/.cache-loader/
 # Generated from CHANGELOG.md at build time; the root file is the source.
 /website/docs/changelog.md
+# Copied from mecha-factory at build time, where it is generated and where the
+# drift check lives. Two repositories owning the same bytes would mean one of
+# them holding a stale copy.
+/website/static/factory/gallery/
 
 # Editors and operating systems.
 .DS_Store
