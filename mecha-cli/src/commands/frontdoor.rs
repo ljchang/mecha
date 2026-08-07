@@ -133,9 +133,11 @@ fn mark(store: &Frontdoor, seq: i64, state: &str, note: Option<String>) -> Resul
     let mut record = store.record(seq)?;
     let from = record.state.clone();
     record.state = state.into();
-    if note.is_some() {
-        record.note = note;
-    }
+    // Always, even when `None`. Keeping the previous note means
+    // `needs-info 5` with no `--note` displays the last rejection reason as the
+    // reason it is parked — a stale explanation attached to a new state reads
+    // as an explanation of that state, which is worse than none.
+    record.note = note;
     store.write(&record)?;
     println!("{seq}  {from} → {state}");
     if let Some(note) = &record.note {
@@ -401,6 +403,9 @@ async fn triage(
     let (mut drafted, mut nothing) = (0usize, 0usize);
 
     for record in records {
+        // What the state was when this record was read, to compare against
+        // after the run. See the re-read before the write below.
+        let state_before = record.state.clone();
         let brief = record.for_privileged_run().expect("filtered above");
         let session = mecha_core::session::Session::create(
             &session_dir,
@@ -431,6 +436,14 @@ async fn triage(
         )
         .await;
         session.append_messages(&convo.messages[history_len..])?;
+        // Taint too, like every other front-end that writes a session. It
+        // cannot be recovered by reading the transcript back, because it keys
+        // off *provenance* and the transcript stores only content — so without
+        // this, `mecha chat --resume <id>` reloads a run that read a stranger's
+        // request and the mailbox with both interlock legs clear. This session
+        // lands in `Session::default_dir()` like any other, which is what makes
+        // it resumable and therefore what makes the omission matter.
+        session.append(&mecha_core::session::Record::Taint(convo.taint))?;
 
         let mut record = record;
         record.triage_session = Some(session.meta.id.clone());
@@ -440,6 +453,26 @@ async fn triage(
             // has not been looked at, which is exactly what `extracted` means.
             eprintln!("{:<5} triage failed: {e:#}", record.seq);
             record.note = Some(format!("triage failed: {e:#}"));
+            store.write(&record)?;
+            continue;
+        }
+        let outcome = outcome.expect("checked above");
+
+        // A run that stopped early did not decide anything, and `Ok` is what
+        // cancellation looks like — so without this, Ctrl-C during triage reads
+        // as "considered, nothing to draft" and moves the request to `triaged`,
+        // which nothing re-triages. The token is per-call, so the loop starts
+        // the next record after each interrupt: five requests could leave the
+        // queue on five Ctrl-Cs, silently. Budgets and the turn limit are the
+        // same shape, which is why this asks `is_early` and not `== Cancelled`.
+        if outcome.stop_cause.is_early() {
+            eprintln!(
+                "{:<5} triage {} — left at `{}`",
+                record.seq,
+                outcome.stop_cause.describe(),
+                record.state
+            );
+            record.note = Some(format!("triage {}", outcome.stop_cause.describe()));
             store.write(&record)?;
             continue;
         }
@@ -453,6 +486,31 @@ async fn triage(
             .filter(|i| i.session_id.as_deref() == Some(session.meta.id.as_str()))
             .map(|i| i.id)
             .collect();
+
+        // The record was read before an agent run that can take twenty minutes,
+        // and `close`/`needs-info` are commands a person can type in that
+        // window. Writing the stale copy back would silently undo them — the
+        // same check-then-act shape as the outbox review race, with an agent
+        // rather than a human sitting between the read and the write. The
+        // drafts still exist and are still attributed, so the recovery is to
+        // re-run `reconcile`, not to guess here.
+        match store.record(record.seq) {
+            Ok(current) if current.state != state_before => {
+                eprintln!(
+                    "{:<5} moved to `{}` while triage was running; leaving it \
+                     there — {} draft(s) staged and attributed",
+                    record.seq,
+                    current.state,
+                    record.outbox.len()
+                );
+                continue;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("{:<5} cannot re-read before writing: {e:#}", record.seq);
+                continue;
+            }
+        }
 
         if record.outbox.is_empty() {
             // Considered and nothing drafted. A real outcome — a request that
