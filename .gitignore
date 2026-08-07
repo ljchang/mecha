@@ -46,6 +46,15 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Operational inventory: what runs where, which credentials exist and where
+# they sit, which handles and mailboxes are the operator's. No secret *values*
+# live here, but together it is a map of the operator's machines, which a public
+# repository should not carry. docs/HANDOFF.md keeps the engineering lessons and
+# points at this file for the specifics.
+/docs/OPERATIONS.md
+# Scratch output from runs. Nothing generated belongs in the repository.
+/artifacts/
+
 # Anything mined from real correspondence stays out of a public repository.
 # The analysis lives in ~/.mecha/analysis/, outside every checkout, which is
 # the actual control; these patterns are a backstop for a stray copy landing

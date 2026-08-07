@@ -1854,8 +1854,8 @@ before the step that depends on them.
    shape of the answer**: multi-tenancy makes the two artifact names wildcards
    (`*.a.example.org`, `*.c.example.org`), so pick names that read well with a
    tenant in front of them.
-[redacted: operational detail — see docs/OPERATIONS.md]
-   with DNS at **Cloudflare in DNS-only mode**. Proxying is the decision to
+2. **Which VPS, and who patches it.** *Settled 2026-08-06: **a single small
+   VPS**, with DNS at **Cloudflare in DNS-only mode**. Proxying is the decision to
    avoid rather than to make later: it terminates TLS at Cloudflare, which reads
    the plaintext of every drained submission, and it breaks TLS-ALPN-01 by
    answering the handshake the challenge lives in — forcing DNS-01 and a
