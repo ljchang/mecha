@@ -60,6 +60,29 @@ enum Command {
     /// Set (or with no argument, show) the default account for new mail and
     /// events sent without an explicit account.
     Default { name: Option<String> },
+    /// Merged busy intervals across every account, as data. Built for the
+    /// slot-refresh pipeline (`mecha-mail freebusy --json | …`), which is a
+    /// scheduled command with no model in it — so unlike the MCP surface,
+    /// this fails when ANY account is unreadable: a mailbox that could not
+    /// be read is not a mailbox with free time, and a booking page built
+    /// from a partial answer offers strangers slots the user does not have.
+    Freebusy {
+        /// Days ahead to query, starting now.
+        #[arg(long, default_value_t = 60)]
+        days: u32,
+        /// Window start, RFC 3339 (with --to, replaces --days).
+        #[arg(long, requires = "to")]
+        from: Option<String>,
+        /// Window end, RFC 3339.
+        #[arg(long, requires = "from")]
+        to: Option<String>,
+        /// Query one account instead of all of them.
+        #[arg(long)]
+        account: Option<String>,
+        /// Machine-readable output (the pipeline contract).
+        #[arg(long)]
+        json: bool,
+    },
     /// Serve MCP over stdio (the default when no subcommand is given).
     Serve,
 }
@@ -80,8 +103,68 @@ async fn main() -> Result<()> {
         Some(Command::Import { name, provider }) => import(name, provider),
         Some(Command::Accounts) => list_accounts(),
         Some(Command::Default { name }) => set_default(name),
+        Some(Command::Freebusy {
+            days,
+            from,
+            to,
+            account,
+            json,
+        }) => freebusy(days, from, to, account, json).await,
         Some(Command::Serve) | None => mcp::serve(MailTools::load()?).await,
     }
+}
+
+async fn freebusy(
+    days: u32,
+    from: Option<String>,
+    to: Option<String>,
+    account: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let now = chrono::Utc::now();
+    let stamp =
+        |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let (time_min, time_max) = match (from, to) {
+        (Some(from), Some(to)) => (from, to),
+        _ => (stamp(now), stamp(now + chrono::Duration::days(i64::from(days)))),
+    };
+
+    let tools = MailTools::load()?;
+    let (busy, failures) = tools
+        .freebusy(&time_min, &time_max, account.as_deref())
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Fail closed: an unreadable account is not a free one. `--account`
+    // scopes the query when partial coverage is genuinely wanted.
+    if !failures.is_empty() {
+        bail!(
+            "refusing a partial answer — busy time would be missing:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "generated_at": stamp(now),
+                "time_min": time_min,
+                "time_max": time_max,
+                "busy": busy,
+            }))?
+        );
+    } else {
+        let tz = mecha_mail::time::configured_zone();
+        println!("busy {time_min} → {time_max} ({} intervals)", busy.len());
+        for iv in &busy {
+            let render = |t: &chrono::DateTime<chrono::Utc>| {
+                mecha_mail::time::in_zone(&t.to_rfc3339(), tz)
+            };
+            println!("  {} — {}", render(&iv.start), render(&iv.end));
+        }
+    }
+    Ok(())
 }
 
 /// Load the registry, or start an empty one — `auth` and `import` are how

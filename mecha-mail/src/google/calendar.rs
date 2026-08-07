@@ -290,6 +290,39 @@ impl CalendarProvider {
         Ok(parse_event(&result, calendar_id))
     }
 
+    /// Busy intervals from `freeBusy.query` — `(start, end)` stamp pairs,
+    /// no event details, which is the privacy property the caller wants.
+    /// Primary calendar only for now: secondary calendars that should count
+    /// against availability are a policy question the caller owns, and the
+    /// endpoint answers per-calendar when that day comes.
+    pub async fn freebusy(
+        &self,
+        time_min: &str,
+        time_max: &str,
+    ) -> Result<Vec<(String, String)>, MailError> {
+        let body = json!({
+            "timeMin": time_min,
+            "timeMax": time_max,
+            "items": [{"id": "primary"}],
+        });
+        let resp = send_with_retry(
+            self.client
+                .post("https://www.googleapis.com/calendar/v3/freeBusy")
+                .bearer_auth(&self.access_token)
+                .json(&body),
+        )
+        .await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(MailError::ApiError {
+                status,
+                message: body,
+            });
+        }
+        parse_google_freebusy(&resp.json::<Value>().await?)
+    }
+
     pub async fn delete_event(&self, calendar_id: &str, event_id: &str) -> Result<(), MailError> {
         let url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
@@ -310,6 +343,37 @@ impl CalendarProvider {
             message: body,
         })
     }
+}
+
+/// Pull the primary calendar's busy list out of a freeBusy response. The
+/// response nests per-calendar errors rather than failing the request, so an
+/// errored calendar must surface as an error here — swallowing it would
+/// report a calendar that could not be read as a calendar that is free.
+fn parse_google_freebusy(body: &Value) -> Result<Vec<(String, String)>, MailError> {
+    let calendar = &body["calendars"]["primary"];
+    if let Some(errors) = calendar["errors"].as_array().filter(|e| !e.is_empty()) {
+        let reasons: Vec<&str> = errors
+            .iter()
+            .filter_map(|e| e["reason"].as_str())
+            .collect();
+        return Err(MailError::ApiError {
+            status: 200,
+            message: format!("freeBusy reported errors: {}", reasons.join(", ")),
+        });
+    }
+    Ok(calendar["busy"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|b| {
+                    Some((
+                        b["start"].as_str()?.to_string(),
+                        b["end"].as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 /// The first 10 chars of an RFC 3339 stamp — its `YYYY-MM-DD`. Safe on short
@@ -382,6 +446,33 @@ mod tests {
         let e = parse_event(&all_day, "primary");
         assert!(e.is_all_day);
         assert_eq!(e.start_time, "2026-08-10");
+    }
+
+    #[test]
+    fn freebusy_yields_interval_pairs() {
+        let body = json!({
+            "calendars": {"primary": {"busy": [
+                {"start": "2026-08-10T14:00:00Z", "end": "2026-08-10T15:00:00Z"},
+                {"start": "2026-08-11T09:00:00Z", "end": "2026-08-11T09:30:00Z"}
+            ]}}
+        });
+        let busy = parse_google_freebusy(&body).unwrap();
+        assert_eq!(busy.len(), 2);
+        assert_eq!(busy[0].0, "2026-08-10T14:00:00Z");
+
+        let empty = json!({"calendars": {"primary": {"busy": []}}});
+        assert!(parse_google_freebusy(&empty).unwrap().is_empty());
+    }
+
+    /// freeBusy nests failures instead of failing the request; an errored
+    /// calendar must not read as a free one.
+    #[test]
+    fn freebusy_calendar_errors_are_errors_not_free_time() {
+        let body = json!({
+            "calendars": {"primary": {"errors": [{"domain": "global", "reason": "notFound"}]}}
+        });
+        let err = parse_google_freebusy(&body).unwrap_err();
+        assert!(err.to_string().contains("notFound"), "{err}");
     }
 
     #[test]

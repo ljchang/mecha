@@ -264,6 +264,19 @@ pub fn tool_definitions(names: &[String], default: Option<&str>) -> Vec<Value> {
             "annotations": {"readOnlyHint": true}
         },
         {
+            "name": "calendar_freebusy",
+            "description": "Busy intervals merged across every account (or one, when `account` is given) — when the user is busy, with no event details. Times are RFC 3339; the answer is in UTC with a local rendering beside it when a zone is configured. Omit both bounds for the next 7 days. Use this for scheduling questions ('when am I free?'); use calendar_list_events when the events themselves matter.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "time_min": {"type": "string"},
+                    "time_max": {"type": "string"},
+                    "account": account("Omit to merge every account's busy time.")
+                }
+            },
+            "annotations": {"readOnlyHint": true}
+        },
+        {
             "name": "calendar_create_event",
             "description": "Create a calendar event; attendees receive invitations. Times are RFC 3339 (or YYYY-MM-DD with all_day). With no `account` the default account's calendar is used; if none is set, the call fails and you should ask the user which calendar.",
             "inputSchema": {
@@ -397,6 +410,50 @@ async fn calendars_one(a: &Account) -> Result<Value, MailError> {
         }
     })
     .await
+}
+
+/// One account's busy intervals, parsed. A stamp pair that does not parse is
+/// an error for the whole account, never a skipped interval — a dropped busy
+/// interval reads as free time, and the consumer of this call offers free
+/// time to strangers.
+async fn freebusy_one(
+    a: &Account,
+    time_min: &str,
+    time_max: &str,
+) -> Result<Vec<crate::freebusy::Interval>, MailError> {
+    let pairs = with_token(&a.manager, |t| async move {
+        match a.provider {
+            Provider::Google => gcal::CalendarProvider::new(t).freebusy(time_min, time_max).await,
+            Provider::Outlook => {
+                let Some(address) = a.address.as_deref() else {
+                    return Err(MailError::InvalidInput(format!(
+                        "account `{}` has no stored mailbox address, which Graph's \
+                         getSchedule needs — re-run `mecha-mail auth {} --provider outlook`",
+                        a.name, a.name
+                    )));
+                };
+                mcal::OutlookCalendarProvider::new(t)
+                    .freebusy(address, time_min, time_max)
+                    .await
+            }
+        }
+    })
+    .await?;
+
+    pairs
+        .into_iter()
+        .map(|(start, end)| {
+            let parse = |raw: &str| {
+                crate::freebusy::parse_stamp(raw).ok_or_else(|| {
+                    MailError::ParseError(format!("unparseable busy stamp `{raw}`"))
+                })
+            };
+            Ok(crate::freebusy::Interval {
+                start: parse(&start)?,
+                end: parse(&end)?,
+            })
+        })
+        .collect()
 }
 
 /// Events as raw JSON values, times still in the provider's UTC — sorting
@@ -617,6 +674,37 @@ pub(crate) fn gmail_reply_fields(
 // ------------------------------------------------------------------ dispatch
 
 impl MailTools {
+    /// Merged busy intervals across accounts (or one named account), with
+    /// per-account failures reported beside the result. `Err` only when the
+    /// account cannot resolve or *every* account failed — the CLI decides
+    /// how strict to be about partial failure, because its consumers differ:
+    /// a model can reason over "one mailbox was unreadable", a slot pipeline
+    /// must refuse to treat it as free time.
+    pub async fn freebusy(
+        &self,
+        time_min: &str,
+        time_max: &str,
+        account: Option<&str>,
+    ) -> Result<(Vec<crate::freebusy::Interval>, Vec<String>), String> {
+        let picked = self.pick(account, Mode::Read)?;
+        let results = futures::future::join_all(picked.iter().map(|a| async {
+            (
+                a.name.clone(),
+                a.provider,
+                freebusy_one(a, time_min, time_max).await,
+            )
+        }))
+        .await;
+        let (ok, failures, all_failed) = merge(results);
+        if all_failed {
+            return Err(failures.join("\n"));
+        }
+        let intervals = crate::freebusy::merge(
+            ok.into_iter().flat_map(|(_, _, iv)| iv).collect(),
+        );
+        Ok((intervals, failures))
+    }
+
     fn pick(&self, arg: Option<&str>, mode: Mode) -> Result<Vec<&Account>, String> {
         let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
         resolve(&names, self.default.as_deref(), arg, mode)
@@ -890,6 +978,44 @@ impl MailTools {
                 let body = serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".into());
                 Some((with_notes(body, &failures), false))
             }
+            "calendar_freebusy" => {
+                let now = chrono::Utc::now();
+                let time_min = str_arg("time_min").unwrap_or_else(|| now.to_rfc3339());
+                let time_max = str_arg("time_max")
+                    .unwrap_or_else(|| (now + chrono::Duration::days(7)).to_rfc3339());
+                let (busy, failures) = match self
+                    .freebusy(&time_min, &time_max, account_arg.as_deref())
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => return fail(e),
+                };
+                let tz = crate::time::configured_zone();
+                let rows: Vec<Value> = busy
+                    .iter()
+                    .map(|iv| {
+                        let mut row = serde_json::to_value(iv).unwrap_or_else(|_| json!({}));
+                        if tz.is_some() {
+                            let render = |t: &chrono::DateTime<chrono::Utc>| {
+                                crate::time::in_zone(&t.to_rfc3339(), tz)
+                            };
+                            row["local"] = json!(format!(
+                                "{} — {}",
+                                render(&iv.start),
+                                render(&iv.end)
+                            ));
+                        }
+                        row
+                    })
+                    .collect();
+                let body = serde_json::to_string_pretty(&json!({
+                    "time_min": time_min,
+                    "time_max": time_max,
+                    "busy": rows,
+                }))
+                .unwrap_or_else(|_| "{}".into());
+                Some((with_notes(body, &failures), false))
+            }
             "calendar_create_event" => {
                 let (Some(title), Some(start), Some(end)) =
                     (str_arg("title"), str_arg("start_time"), str_arg("end_time"))
@@ -1111,6 +1237,7 @@ mod tests {
                 "mail_get_thread",
                 "calendar_list",
                 "calendar_list_events",
+                "calendar_freebusy",
             ],
             &[
                 "mail_send",
