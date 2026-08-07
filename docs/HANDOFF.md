@@ -35,11 +35,11 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **506 tests**, no warnings — verified 2026-08-07:
+Expect **508 tests**, no warnings — verified 2026-08-07:
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 343 |
+| `mecha-core` unit | 345 |
 | `mecha-cli` unit | 83 |
 | `mecha-mail` unit | 66 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |

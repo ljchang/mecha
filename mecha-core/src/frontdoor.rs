@@ -311,7 +311,20 @@ impl Frontdoor {
                 continue;
             }
 
-            let (to, note) = if mine.iter().all(|i| i.status == "sent") {
+            // Pending first, and on its own. Asking `all(sent)` then
+            // `all(rejected)` leaves a third case with nowhere to go: send one
+            // draft, reject the other, and neither holds while nothing is
+            // pending — so no later pass can change the answer and the request
+            // sits in `awaiting_me` for ever, which is the exact silence this
+            // component exists to end.
+            if mine.iter().any(|i| i.status == "pending") {
+                // A person mid-review, not a state to resolve on their behalf.
+                continue;
+            }
+
+            let (to, note) = if mine.iter().any(|i| i.status == "sent") {
+                // At least one reply went out. A rejected draft beside a sent
+                // one is someone choosing which reply to send, not a refusal.
                 (ANSWERED, None)
             } else if mine.iter().all(|i| i.status == "rejected") {
                 // Back to `extracted`, not to `closed`. Rejecting a draft says
@@ -328,8 +341,12 @@ impl Frontdoor {
                     ),
                 )
             } else {
-                // Anything still pending: leave it. A partly-sent set is a
-                // person mid-review, not a state to resolve on their behalf.
+                // Unreachable: nothing pending, nothing sent, and not all
+                // rejected has no fourth option. Left as a `continue` rather
+                // than an `unreachable!` because a store written by a future
+                // version could carry a status this one has never seen, and
+                // leaving the request for a person is what every other unknown
+                // here does.
                 continue;
             };
 
@@ -665,6 +682,45 @@ mod tests {
         s.outbox.resolve(&b, "sent", None).unwrap();
         assert_eq!(s.front.reconcile(&s.outbox).unwrap().len(), 1);
         assert_eq!(s.front.record(1).unwrap().state, ANSWERED);
+    }
+
+    /// Send one draft and reject the other. Nothing is pending, so no later
+    /// pass can change the answer — and asking `all(sent)` then `all(rejected)`
+    /// leaves this case matching neither, parking the request in `awaiting_me`
+    /// permanently. One reply going out is an answer; the rejected sibling is
+    /// someone choosing which reply to send.
+    #[test]
+    fn a_set_that_was_partly_sent_and_partly_rejected_still_settles() {
+        let s = Stores::new("mixed-resolved");
+        let sent = s.draft();
+        let rejected = s.draft();
+        s.front
+            .write(&awaiting(1, &[sent.as_str(), rejected.as_str()]))
+            .unwrap();
+        s.outbox.resolve(&sent, "sent", None).unwrap();
+        s.outbox
+            .resolve(&rejected, "rejected", Some("used the other one".into()))
+            .unwrap();
+
+        let moved = s.front.reconcile(&s.outbox).unwrap();
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert_eq!(s.front.record(1).unwrap().state, ANSWERED);
+    }
+
+    /// The pending check has to come first and on its own, or it only catches
+    /// the sets that are otherwise uniform.
+    #[test]
+    fn one_pending_beside_a_sent_one_is_still_a_person_mid_review() {
+        let s = Stores::new("mixed-pending");
+        let sent = s.draft();
+        let pending = s.draft();
+        s.front
+            .write(&awaiting(1, &[sent.as_str(), pending.as_str()]))
+            .unwrap();
+        s.outbox.resolve(&sent, "sent", None).unwrap();
+
+        assert_eq!(s.front.reconcile(&s.outbox).unwrap(), vec![]);
+        assert_eq!(s.front.record(1).unwrap().state, AWAITING_ME);
     }
 
     /// The outbox is swept; a request outlives its draft. Losing the item must
