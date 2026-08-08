@@ -10,10 +10,10 @@ for the group flow, auto-finalize with guardrails, booking page ships first.*
 > the user's account, manage/cancel) and the group poll (seeded candidates,
 > capability URLs, tri-state answers, `rank_poll`/`clean_winner`). §4 was
 > redesigned along the way (provider-native invites; SES is account plumbing
-> only). The same evening a front-end pass landed in the factory working
-> tree (uncommitted, undeployed — the handoff tracks it): §3.2's split-step
-> reveal and duration switch, §5.3's tap-to-cycle/drag-paint/heat layer, a
-> live `slots.json` the open page polls, and the POST error path. Left out
+> only). The same evening a front-end pass shipped (factory `1d531a8`,
+> deployed): §3.2's split-step reveal and duration switch, §5.3's
+> tap-to-cycle/drag-paint/heat layer, a live `slots.json` the open page
+> polls, and the POST error path. Left out
 > of §5.3 on purpose: the axis-locked touch gesture and a separate Group
 > tab — inline heat carries most of the value. Still open: the deterministic
 > auto-book sweep for the clean-winner case (today `polls status --json`
