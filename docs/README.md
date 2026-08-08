@@ -14,7 +14,7 @@ belonged in three other places.
 | [`AGENTS.md`](../AGENTS.md) | Orientation for an AI agent working here; points at CLAUDE.md rather than restating it | present | rarely |
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Build, test, review expectations | present | rarely |
 | [`SECURITY.md`](../SECURITY.md) | Reporting a vulnerability; the threat model and accepted limitations | present | rarely |
-| [`HANDOFF.md`](HANDOFF.md) | Current state and **only the open work** | present | **bounded — stays under ~400 lines** |
+| [`HANDOFF.md`](HANDOFF.md) | Current state and **only the open work** | present | **only with open work — completed items leave** |
 | [`HISTORY.md`](HISTORY.md) | What shipped and when; what was learned the hard way | past | append-only |
 | `*-RESEARCH.md` | One question, researched once, with evidence and a date | past | one per question |
 | `*-DESIGN.md` | One thing, designed before it is built — the decisions, and what is deliberately not in scope | present, then past | one per thing |
@@ -50,14 +50,26 @@ code, and the bug that would come back if it were undone.
 
 State the rule, then the incident in one sentence. Not the other way round.
 
-### `HANDOFF.md` — bounded on purpose
+### `HANDOFF.md` — bounded by what it holds, not by how long it is
 
-Current state and open work only. It has a size ceiling because a to-do list
-nobody finishes reading is a to-do list nobody trusts.
+Current state and open work only.
 
-Every open item must have been verified unbuilt, against source, with
-`file:line`. Every completed item leaves — see the `handoff` skill
+**There is no line limit.** There used to be one, and it was the wrong
+instrument: the file reached 1,965 lines by absorbing completed work and
+material that belonged in three other documents, and a number cannot tell
+those apart from a project that genuinely has a lot open. Trimming to hit a
+target deletes real items instead of finishing them.
+
+What keeps it trustworthy is the two rules underneath. Every open item must
+have been verified unbuilt, against source, with `file:line`. Every completed
+item **leaves** — moved to `HISTORY.md`, never struck through, because
+strikethrough keeps finished work in the reader's way forever and that is
+what actually produced the 1,965 lines. See the `handoff` skill
 (`.claude/skills/handoff/`), which is the procedure for that pass.
+
+Length is then a symptom to read rather than a rule to enforce: if the file
+grew, ask what grew. More open work is honest. A section that has quietly
+become an essay belongs somewhere else.
 
 Do not add a "future ideas" section. Ideas with no verified gap behind them
 are what research docs are for.

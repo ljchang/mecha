@@ -49,11 +49,12 @@ is gitignored — edit the root file.
 decision rule for where a given piece of writing belongs. It is worth two
 minutes before you add to any of them.
 
-Two conventions carry most of the weight. `docs/HANDOFF.md` is bounded — it
-holds current state and open work only, and every item in it has been verified
-unbuilt against source. Completed work moves to `docs/HISTORY.md` rather than
-being struck through, which is how that file stayed readable after growing to
-1,965 lines once already.
+Two conventions carry most of the weight. `docs/HANDOFF.md` is bounded by
+scope rather than by length — it holds current state and open work only, and
+every item in it has been verified unbuilt against source. Completed work
+moves to `docs/HISTORY.md` rather than being struck through, which is how that
+file stayed readable after growing to 1,965 lines once already: what made it
+unreadable was finished work nobody removed, not the line count.
 
 The `handoff` skill (`.claude/skills/handoff/`) is the procedure for that move.
 Run it at the end of a session that changed behaviour.
