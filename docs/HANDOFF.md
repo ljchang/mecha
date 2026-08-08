@@ -43,9 +43,9 @@ scheduling arc landed (the free-busy, bookings and reminder suites in
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 348 |
+| `mecha-core` unit | 349 |
 | `mecha-cli` unit | 83 |
-| `mecha-mail` unit | 66 |
+| `mecha-mail` unit | 83 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
 | doctest | 1 |
 
@@ -97,7 +97,8 @@ A working agent harness, used and measured rather than just compiled.
 ## Environment as left
 
 Running on the DGX Spark (GB10, aarch64, 128GB unified). **Re-verified
-2026-08-07, 05:40:**
+2026-08-08 afternoon** (8080 answering with `total_slots=1`; 8081 and 8082
+both down; the units and binary dates below checked):
 
 | Port | Model | State |
 |---|---|---|
@@ -140,6 +141,11 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
   `morning.toml` is jailed to `~/.mecha/work/morning`, and its `notify` writes
   the briefing then renders it. A failed `notify` is recorded on the run, so a
   briefing that has quietly stopped rendering does not read as a healthy one.
+- **Booking slots refresh every fifteen minutes.** `mecha-slots.timer` →
+  freebusy from the named account → `factory-publish slots push`, and the
+  booking-drain sweep rides the same tick. New with the scheduling arc,
+  2026-08-08; the account it reads is named in the unit because a timer
+  cannot ask.
 - **The front door runs hourly.** `mecha-frontdoor.timer` →
   `scripts/frontdoor.sh`: drain (zero tokens, runs even with the model down) →
   extract → triage, logging to `~/.mecha/requests/logs/`. Enabled 2026-08-07
@@ -233,20 +239,23 @@ their day (`factory-publish operator …`) from home. Routine SSH to the box is
 over; what remains on it is deploys and disaster recovery, deliberately. The
 whole arc is in [`HISTORY.md`](HISTORY.md) under 2026-08-07.
 
-Two clicks close loops, both waiting in the operator's inbox (the specifics are
-in `docs/OPERATIONS.md`):
+Three live checks are owed — each closes an arc that is built, deployed, and
+tested, but has never been exercised against the real box by a person:
 
-1. **The form-verification leg was run live 2026-08-08** by the booking
-   self-test: `submitted → verified → queued`, drained home, acked. The
-   inbound chain is verified end to end in production; the meeting-form
-   click waiting in the inbox is now redundant.
-2. **A sign-in link**, whenever curiosity strikes: the gate's `/account` page is
-   the operator's own tenant page — bundles with release buttons, machines with
-   last-used stamps.
+1. **The operator panel's first sign-in**: `factory-publish operator signin`,
+   open the link, and `/admin` should show accounts, invites, keys and
+   withholds. Two minutes, and it closes the panel arc.
+2. **A real share**: grant an address you control on a private bundle from
+   the viewer's Manage menu, prove the inbox from another browser, watch the
+   bytes appear — then revoke and watch them stop. Closes the sharing arc.
+3. **A tenant sign-in link**, whenever curiosity strikes: the gate's
+   `/account` page is the operator's own tenant page. (The form-verification
+   leg, once waiting here too, was run live 2026-08-08 by the booking
+   self-test — `submitted → verified → queued`, drained home, acked.)
 
 Everything else below is independent of that.
 
-Every item below was verified against source on 2026-08-07 to still be unbuilt.
+Every item below was verified against source on 2026-08-08 to still be unbuilt.
 Ordered by value per unit of effort, not by size.
 
 ### The scheduling instrument — live since 2026-08-08
@@ -475,38 +484,13 @@ behaviour came from the reflector model declining. If the design was always
     It does **not** unlock wildcard certificates either: `rustls-acme` speaks
     only HTTP-01 and TLS-ALPN-01, so the library forecloses them whoever
     hosts the zone.
-  - **The operator admin page is built, reviewed, and committed — not yet
-    deployed** (2026-08-07 evening; the arc landed mixed into the parallel
-    lane's factory commits `37e9a50`/`ad4d8ff`, review fixes in `86df0a7`).
-    The open question resolved as: the operate key never enters a browser.
-    `factory-publish operator signin` asks `POST /v1/admin/signin` for a
-    one-time URL (10 min, hashed at rest); its scanner-proof GET/POST
-    interstitial becomes a 12-hour session in its own `operator_sessions`
-    table, bound to the **key id**, under its own `__Host-factory-operator`
-    cookie — the session dies with the key (the lookup joins on the key
-    being live and `operate`), and neither cookie means anything at the
-    other surface. `/admin` renders accounts/invites/keys/withheld with the
-    same rows the CLI drives; signed out it has instructions and no form.
-    Tests in `tests/operator.rs` (browser-panel section). **Deployed
-    2026-08-08** — the scheduling deploy shipped the same box binary, and
-    `factory-publish` was reinstalled at home the same day. Live
-    verification of the panel itself is still owed.
-  - **Private sharing is built and tested — not yet deployed** (2026-08-08,
-    factory commit `0573bb1`), resolving the last queued design pass
-    (capability URLs). The grant names an *email*: a `shares` row per
-    (owner, bundle, address), managed from the viewer's Manage menu; the
-    box mails the bare viewer URL; the reader proves the inbox through the
-    magic-link machinery and becomes the third session surface
-    (`__Host-factory-viewer`, joins on an email — never a user or key).
-    Bytes still never carry identity to artifact origins: the gate mints a
-    short-lived capability and frames `/g/<cap>/`, whose lookup re-proves
-    the grant at every fetch, so revocation is immediate. Readers see the
-    live version only; owners' private previews now frame real bytes
-    instead of the world's 404. Oracle-free throughout: one sign-in page
-    for every private-or-absent viewer URL, one answer from the sign-in
-    form whoever asks. Tests in `tests/sharing.rs`. **Deployed 2026-08-08** with the
-    scheduling deploy — live verification (a real grant, a real inbox) still
-    owed.
+  - **The operator admin panel and private sharing are built, reviewed,
+    tested, and deployed** (2026-08-07/08; the arcs are in
+    [`HISTORY.md`](HISTORY.md)). What remains is the two live checks at the
+    top of this section — nothing else is open on either. The one fact
+    worth keeping in view here: the box now runs three session surfaces
+    (tenant / operator / reader), deliberately parallel and never unified —
+    `Db::signin`'s doc comment records why, so do not "deduplicate" them.
 
   The mecha-side half of step 7 is **built**: `mecha-factory-publish drain`
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
