@@ -16,6 +16,10 @@ pub enum Command {
     Tools,
     /// Scheduled prompts: see, edit, enable/disable, run, cancel, delete.
     Triggers,
+    /// Staged outbound actions: read, edit, send, reject.
+    Outbox,
+    /// Inbound requests: read (prose included), extract, triage, park, close.
+    Frontdoor,
     /// `None` shows the current model; `Some` switches to it.
     Model(Option<String>),
     Provider(Option<String>),
@@ -39,6 +43,65 @@ pub enum Command {
     BadMode(String),
     /// An on/off argument that was neither.
     BadToggle(String),
+    /// `None` shows the current review mode; `Some` switches to it.
+    Review(Option<ReviewMode>),
+    /// A review mode was named that does not exist.
+    BadReview(String),
+}
+
+/// What happens when a run this session started finishes having staged
+/// outbox items.
+///
+/// A *session mode set here*, deliberately never inferred from the prompt: a
+/// directive the model interprets ("this send is preapproved") is a directive
+/// an injected page can also write, and release policy must not be decidable
+/// by anything that shares the context window with third-party text. Only the
+/// items the finishing run itself staged are in scope — the rest of the queue
+/// (overnight triage, other sessions) is untouched by every mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReviewMode {
+    /// Open the /outbox modal at run end, scoped to that run's drafts. The
+    /// default: a draft you just asked for is a draft you are about to read.
+    #[default]
+    Now,
+    /// A badge and a notice; review whenever you get to it.
+    Later,
+    /// Release the run's drafts at run end — except tainted ones, which stop
+    /// for review regardless: the approval happened *before* the run read
+    /// whatever armed the taint, so it cannot cover what was drafted after.
+    Auto,
+}
+
+impl ReviewMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            ReviewMode::Now => "now",
+            ReviewMode::Later => "later",
+            ReviewMode::Auto => "auto",
+        }
+    }
+
+    /// One line on what the mode does, shown when it is set or asked about.
+    pub fn describe(self) -> &'static str {
+        match self {
+            ReviewMode::Now => "drafts a run stages open for review when it finishes",
+            ReviewMode::Later => "drafts wait — the outbox badge says how many, /outbox reviews",
+            ReviewMode::Auto => {
+                "drafts a run stages are released when it finishes — tainted drafts \
+                 still stop for review, and nothing releases after a failed or \
+                 interrupted run"
+            }
+        }
+    }
+}
+
+fn parse_review(s: &str) -> Option<ReviewMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "now" => Some(ReviewMode::Now),
+        "later" => Some(ReviewMode::Later),
+        "auto" => Some(ReviewMode::Auto),
+        _ => None,
+    }
 }
 
 /// Parse a line of input as a command, or `None` if it is an ordinary message.
@@ -62,6 +125,10 @@ pub fn parse(line: &str) -> Option<Command> {
         // Both spellings: the command is `mecha trigger`, the thing you want
         // to see is all of them.
         "triggers" | "trigger" => Command::Triggers,
+        "outbox" => Command::Outbox,
+        // "requests" because that is what the store holds; `frontdoor` is the
+        // component's name and the CLI's.
+        "frontdoor" | "requests" => Command::Frontdoor,
         "model" | "m" => Command::Model(arg.map(str::to_string)),
         "provider" | "p" => Command::Provider(arg.map(str::to_string)),
         "usage" => Command::Usage,
@@ -96,6 +163,13 @@ pub fn parse(line: &str) -> Option<Command> {
             Some(a) => match parse_mode(a) {
                 Some(m) => Command::Mode(Some(m)),
                 None => Command::BadMode(a.to_string()),
+            },
+        },
+        "review" => match arg {
+            None => Command::Review(None),
+            Some(a) => match parse_review(a) {
+                Some(m) => Command::Review(Some(m)),
+                None => Command::BadReview(a.to_string()),
             },
         },
         other => Command::Unknown(other.to_string()),
@@ -200,8 +274,20 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 11] = [
-    "help", "tools", "triggers", "model", "provider", "mode", "mcp", "usage", "clear", "session",
+pub const NAMES: [&str; 14] = [
+    "help",
+    "tools",
+    "triggers",
+    "outbox",
+    "frontdoor",
+    "review",
+    "model",
+    "provider",
+    "mode",
+    "mcp",
+    "usage",
+    "clear",
+    "session",
     "todo",
 ];
 
@@ -261,6 +347,9 @@ pub const HELP: &str = "\
   /help                  this list
   /tools                 tools this agent can call
   /triggers              scheduled prompts: see, edit, run, cancel
+  /outbox                staged outbound drafts: read, edit, send, reject
+  /frontdoor             inbound requests: read, extract, triage, close
+  /review [now|later|auto]      what happens when a run stages drafts
   /model [id]            show or switch the model
   /provider [name]       show or switch the provider
   /mode [ask|allow|read-only]   show or switch the permission mode
@@ -550,6 +639,30 @@ mod tests {
         assert_eq!(
             parse("/mcp pkg maybe"),
             Some(Command::BadToggle("maybe".into()))
+        );
+    }
+
+    #[test]
+    fn review_modes_parse_and_a_typo_is_reported() {
+        assert_eq!(parse("/review"), Some(Command::Review(None)));
+        assert_eq!(
+            parse("/review now"),
+            Some(Command::Review(Some(ReviewMode::Now)))
+        );
+        assert_eq!(
+            parse("/review LATER"),
+            Some(Command::Review(Some(ReviewMode::Later)))
+        );
+        assert_eq!(
+            parse("/review auto"),
+            Some(Command::Review(Some(ReviewMode::Auto)))
+        );
+        // Silently keeping the old mode would leave someone believing their
+        // drafts now release themselves when they do not — or worse, vice
+        // versa.
+        assert_eq!(
+            parse("/review sometimes"),
+            Some(Command::BadReview("sometimes".into()))
         );
     }
 

@@ -14,6 +14,8 @@
 mod approve;
 mod ask;
 mod command;
+mod frontdoor;
+mod outbox;
 mod tools;
 mod transcript;
 mod triggers;
@@ -63,6 +65,13 @@ struct Running {
     /// against when it comes back. Getting this wrong rewrites the whole
     /// history into the transcript on every turn.
     persisted: usize,
+    /// Every outbox id that existed when the run started. What the run staged
+    /// is the diff against this at completion — which is what scopes the
+    /// review-now flow to *this run's* drafts and keeps `/review auto` from
+    /// ever touching the overnight backlog. `None` when the snapshot could not
+    /// be read, and then nothing is opened or released: acting on a guess
+    /// about what a run staged is worse than a missed convenience.
+    outbox_before: Option<std::collections::HashSet<String>>,
 }
 
 /// Everything a provider or MCP change replaces at once.
@@ -187,9 +196,23 @@ struct App {
     tools: Option<tools::ToolsModal>,
     /// The /triggers modal, when open. Takes every key while it is up.
     scheduled: Option<triggers::TriggersModal>,
+    /// The /outbox modal, when open. Takes every key while it is up.
+    staged: Option<outbox::OutboxModal>,
+    /// The /frontdoor modal, when open. Takes every key while it is up.
+    requests: Option<frontdoor::FrontdoorModal>,
     /// A trigger file to open in $EDITOR, deferred to the event loop for the
     /// same reason `pending_editor` is: suspending the TUI needs the terminal.
     pending_trigger_edit: Option<String>,
+    /// An outbox item's arguments to open in $EDITOR, same deferral.
+    pending_outbox_edit: Option<String>,
+    /// Pending outbox items, for the status-line badge. Refreshed at run end,
+    /// on modal actions, and on the idle tick — never per frame, because the
+    /// count is a directory read.
+    outbox_pending: usize,
+    /// What happens when a run stages drafts. Set by `/review`, and only by
+    /// `/review`: release policy must not be decidable from the prompt, which
+    /// shares a context window with whatever third-party text a tool fetched.
+    review: command::ReviewMode,
     /// Where a finished `!command` posts its output. The receiver lives in
     /// the event loop; running the command on a task keeps the input line
     /// live while it does.
@@ -234,6 +257,16 @@ impl App {
             spans.push(Span::styled(
                 " plan ",
                 Style::new().fg(Color::Black).bg(Color::Magenta),
+            ));
+        }
+
+        // Same rule as the plan badge: drafts waiting on you is the exception
+        // worth a coloured block, and zero drafts is the state that says
+        // nothing. Visible while a run works too — the drafts are usually its.
+        if self.outbox_pending > 0 {
+            spans.push(Span::styled(
+                format!(" outbox {} ", self.outbox_pending),
+                Style::new().fg(Color::Black).bg(Color::Yellow),
             ));
         }
 
@@ -398,7 +431,12 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         todo_visible: true,
         pending_editor: false,
         scheduled: None,
+        staged: None,
+        requests: None,
         pending_trigger_edit: None,
+        pending_outbox_edit: None,
+        outbox_pending: outbox_pending_count(),
+        review: command::ReviewMode::default(),
         shell_tx,
         providers: prepared
             .config
@@ -523,6 +561,12 @@ async fn run_loop(
             continue;
         }
 
+        // Editing an outbox draft's arguments, same again.
+        if let Some(id) = app.pending_outbox_edit.take() {
+            suspend_and_edit_outbox(terminal, app, &id)?;
+            continue;
+        }
+
         if app.should_quit {
             return Ok(());
         }
@@ -563,10 +607,18 @@ async fn run_loop(
             // A finished run: collect the outcome and take the conversation back.
             outcome = wait_for_run(&mut app.running), if app.running.is_some() => {
                 let persisted = app.running.as_ref().map_or(0, |r| r.persisted);
-                finish_run(app, outcome, persisted, session)?;
+                let baseline = app.running.as_mut().and_then(|r| r.outbox_before.take());
+                finish_run(app, outcome, persisted, baseline, session)?;
             }
 
-            _ = tick => {}
+            _ = tick => {
+                // The idle tick doubles as the badge's clock: a trigger in
+                // another process can stage drafts while this session sits
+                // idle. Not while running — run end refreshes it anyway.
+                if app.running.is_none() {
+                    app.outbox_pending = outbox_pending_count();
+                }
+            }
         }
     }
 }
@@ -597,15 +649,23 @@ fn finish_run(
     app: &mut App,
     outcome: RunResult,
     persisted: usize,
+    baseline: Option<std::collections::HashSet<String>>,
     session: Option<&Session>,
 ) -> Result<()> {
     let (result, convo) = outcome;
     app.convo = convo;
 
+    // Whether the run said everything it meant to. `/review auto` releases
+    // nothing after an errored or early-stopped run: a cancelled run's drafts
+    // are half a thought, and the same `is_early` lesson triage learned about
+    // Ctrl-C applies to releasing as to state transitions.
+    let mut finished_clean = false;
+
     match result {
         Ok(outcome) => {
             app.usage = Usage::default();
             app.usage.add(&outcome.usage);
+            finished_clean = !outcome.stop_cause.is_early();
             if outcome.stop_cause.is_early() {
                 app.transcript.push(Entry::Notice(format!(
                     "{} after {}",
@@ -629,7 +689,122 @@ fn finish_run(
 
     app.running = None;
     set_title(&format!("mecha · {}", workspace_name(app)));
+    settle_staged_drafts(app, baseline, finished_clean);
     Ok(())
+}
+
+/// What the finished run staged, and what to do about it — the `/review`
+/// mode's dispatch point.
+///
+/// Scope is the id-diff against the submit-time snapshot, so every mode here
+/// touches only *this run's* drafts: the overnight backlog neither opens nor
+/// releases, whatever the mode. No baseline means no diff, and no diff means
+/// the badge is all that updates.
+fn settle_staged_drafts(
+    app: &mut App,
+    baseline: Option<std::collections::HashSet<String>>,
+    finished_clean: bool,
+) {
+    app.outbox_pending = outbox_pending_count();
+    let Some(baseline) = baseline else { return };
+    let Ok(store) = crate::commands::outbox::open_store() else {
+        return;
+    };
+    let Ok(items) = store.items() else { return };
+    let staged: Vec<mecha_core::outbox::OutboxItem> = items
+        .into_iter()
+        .filter(|i| i.status == "pending" && !baseline.contains(&i.id))
+        .collect();
+    if staged.is_empty() {
+        return;
+    }
+
+    use command::ReviewMode;
+    match app.review {
+        ReviewMode::Later => notice_staged(app, staged.len()),
+        ReviewMode::Now => open_scoped_review(app, staged.iter().map(|i| i.id.clone()).collect()),
+        ReviewMode::Auto => {
+            if !finished_clean {
+                app.transcript.push(Entry::Notice(
+                    "the run stopped early — its drafts wait for review".into(),
+                ));
+                open_scoped_review(app, staged.iter().map(|i| i.id.clone()).collect());
+                return;
+            }
+            // Tainted drafts are never auto-released. The approval `/review
+            // auto` records was given before the run read whatever armed the
+            // taint, so it cannot cover what was drafted afterwards — those
+            // stop for eyes, exactly as if the mode were `now`.
+            let (tainted, clean): (Vec<_>, Vec<_>) =
+                staged.into_iter().partition(|i| i.taint.trifecta_armed());
+            if !clean.is_empty() {
+                let mut args = vec!["outbox".to_string(), "send".to_string()];
+                args.extend(clean.iter().map(|i| i.id.clone()));
+                args.push("--yes".to_string());
+                let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+                app.transcript
+                    .push(Entry::Notice(match spawn_detached(&argv) {
+                        Ok(_) => format!(
+                            "review auto: releasing {} draft(s) — /outbox has the record",
+                            clean.len()
+                        ),
+                        Err(e) => format!(
+                            "review auto: could not release {} draft(s): {e} — they stay pending",
+                            clean.len()
+                        ),
+                    }));
+            }
+            if !tainted.is_empty() {
+                app.transcript.push(Entry::Notice(format!(
+                    "⚠ {} draft(s) were written under the trifecta and are never \
+                     auto-released — review them",
+                    tainted.len()
+                )));
+                open_scoped_review(app, tainted.iter().map(|i| i.id.clone()).collect());
+            }
+        }
+    }
+}
+
+fn notice_staged(app: &mut App, n: usize) {
+    app.transcript.push(Entry::Notice(format!(
+        "{n} draft(s) staged — /outbox to review"
+    )));
+}
+
+/// Open /outbox scoped to `ids` — unless something already owns the keyboard,
+/// in which case a notice is the polite version: an approval or a question is
+/// a run blocked on you, and stacking a second demand over it helps neither.
+fn open_scoped_review(app: &mut App, ids: Vec<String>) {
+    let busy = app.pending.is_some()
+        || app.asking.is_some()
+        || app.picker.is_some()
+        || app.tools.is_some()
+        || app.scheduled.is_some()
+        || app.staged.is_some()
+        || app.requests.is_some()
+        || app.help;
+    if busy {
+        notice_staged(app, ids.len());
+        return;
+    }
+    match outbox::load() {
+        Ok(rows) => {
+            let rows: Vec<outbox::OutboxRow> =
+                rows.into_iter().filter(|r| ids.contains(&r.id)).collect();
+            if rows.is_empty() {
+                // Resolved or swept between the diff and this load; the
+                // notice is all there is left to say.
+                notice_staged(app, ids.len());
+                return;
+            }
+            app.staged = Some(outbox::OutboxModal {
+                scope: Some(ids),
+                ..outbox::OutboxModal::new(rows)
+            });
+        }
+        Err(e) => app.transcript.push(Entry::Error(format!("outbox: {e:#}"))),
+    }
 }
 
 fn on_terminal_event(
@@ -778,6 +953,14 @@ fn on_key(
     // The triggers modal, same rule as /tools: it owns the keyboard.
     if app.scheduled.is_some() {
         return handle_triggers_key(app, key);
+    }
+
+    // The outbox and frontdoor modals, same rule again.
+    if app.staged.is_some() {
+        return handle_outbox_key(app, key);
+    }
+    if app.requests.is_some() {
+        return handle_frontdoor_key(app, key);
     }
 
     // A modal list owns the keyboard while it is up, for the same reason the
@@ -1143,6 +1326,30 @@ fn run_command(
             Err(e) => say(format!("triggers: {e:#}")),
         },
 
+        Command::Outbox => match outbox::load() {
+            Ok(rows) => {
+                app.outbox_pending = rows.iter().filter(|r| r.pending()).count();
+                app.staged = Some(outbox::OutboxModal::new(rows));
+            }
+            Err(e) => say(format!("outbox: {e:#}")),
+        },
+
+        Command::Review(None) => say(format!(
+            "review {} — {}. /review now|later|auto switches",
+            app.review.name(),
+            app.review.describe()
+        )),
+        Command::Review(Some(mode)) => {
+            app.review = mode;
+            say(format!("review {} — {}", mode.name(), mode.describe()));
+        }
+        Command::BadReview(word) => say(format!("`{word}`? review is one of: now, later, auto")),
+
+        Command::Frontdoor => match frontdoor::load() {
+            Ok(rows) => app.requests = Some(frontdoor::FrontdoorModal::new(rows)),
+            Err(e) => say(format!("frontdoor: {e:#}")),
+        },
+
         Command::Usage => say(format!(
             "{} · {} in the last prompt",
             crate::render::format_usage(&app.usage),
@@ -1371,8 +1578,30 @@ fn submit(
         started: std::time::Instant::now(),
         cancelling: false,
         persisted,
+        outbox_before: outbox_ids(),
     });
     Ok(())
+}
+
+/// Every outbox item id right now, or `None` if the store cannot be read.
+///
+/// The submit-time half of "what did this run stage": cheap enough to take on
+/// every submit (a directory listing), and resolved through the same config
+/// path as the review surfaces so the diff cannot be against a different
+/// store.
+fn outbox_ids() -> Option<std::collections::HashSet<String>> {
+    let store = crate::commands::outbox::open_store().ok()?;
+    Some(store.items().ok()?.into_iter().map(|i| i.id).collect())
+}
+
+/// How many items are waiting on a human, for the status-line badge.
+/// Zero on any failure: the badge is an observer, and an observer must not
+/// be load-bearing.
+fn outbox_pending_count() -> usize {
+    crate::commands::outbox::open_store()
+        .and_then(|s| s.items())
+        .map(|items| items.iter().filter(|i| i.status == "pending").count())
+        .unwrap_or(0)
 }
 
 /// Keys for the /triggers modal.
@@ -1459,7 +1688,7 @@ fn handle_triggers_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // lands, and the modal shows both on reload.
         KeyCode::Char('r') => {
             if let Some(name) = modal.selected_name().map(str::to_string) {
-                modal.status = Some(match spawn_trigger_run(&name) {
+                modal.status = Some(match spawn_detached(&["trigger", "run", &name]) {
                     Ok(_) => format!("started `{name}` — reopen /triggers to see how it went"),
                     Err(e) => format!("could not start `{name}`: {e}"),
                 });
@@ -1520,19 +1749,378 @@ fn reload_triggers(app: &mut App) {
     }
 }
 
-/// Run `mecha trigger ...` and return its output.
+/// Keys for the /outbox modal.
+///
+/// Same shape as the triggers handler: every mutation shells out to
+/// `mecha outbox ...`, so the modal can do exactly what the command line can
+/// and no more. What differs is what asks first — **every send confirms**,
+/// because a send is the one keystroke here that cannot be taken back, and a
+/// tainted draft confirms with its arguments on screen.
+fn handle_outbox_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let Some(modal) = &mut app.staged else {
+        return Ok(());
+    };
+
+    // A pending send confirmation swallows the keyboard: y sends, anything
+    // else keeps the draft pending.
+    if let Some(confirm) = modal.confirm.take() {
+        if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+            // Detached, like a trigger's "run now": the release builds a tool
+            // surface (MCP servers included), which has no place on the event
+            // loop. `--yes` is safe *because* the confirmation just happened
+            // here — the item's status and error field are where the result
+            // lands, and reopening the modal reads them back.
+            let outcome = spawn_detached(&["outbox", "send", &confirm.id, "--yes"]);
+            modal.status = Some(match outcome {
+                Ok(_) => format!("sending `{}` — reopen /outbox for the result", confirm.id),
+                Err(e) => format!("could not start the send: {e}"),
+            });
+            reload_outbox(app);
+        }
+        return Ok(());
+    }
+
+    // The rejection reason being typed owns the keyboard. Esc backs out with
+    // nothing rejected; Enter rejects, with the reason if one was given.
+    if modal.rejecting.is_some() {
+        match key.code {
+            KeyCode::Esc => modal.rejecting = None,
+            KeyCode::Enter => {
+                let input = modal.rejecting.take().expect("checked above");
+                let reason = input.buffer.trim().to_string();
+                let mut args = vec!["outbox", "reject", input.id.as_str()];
+                if !reason.is_empty() {
+                    args.extend(["--reason", reason.as_str()]);
+                }
+                modal.status = Some(match self_cli(&args) {
+                    Ok(_) => format!("rejected `{}`; nothing was sent", input.id),
+                    Err(e) => format!("could not reject `{}`: {e}", input.id),
+                });
+                reload_outbox(app);
+            }
+            KeyCode::Backspace => {
+                if let Some(input) = &mut modal.rejecting {
+                    input.buffer.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(input) = &mut modal.rejecting {
+                    input.buffer.push(c);
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    modal.status = None;
+
+    match key.code {
+        KeyCode::Up => {
+            if modal.detail {
+                modal.scroll_detail(-1)
+            } else {
+                modal.move_by(-1)
+            }
+        }
+        KeyCode::Down => {
+            if modal.detail {
+                modal.scroll_detail(1)
+            } else {
+                modal.move_by(1)
+            }
+        }
+        KeyCode::PageUp if modal.detail => modal.scroll_detail(-10),
+        KeyCode::PageDown if modal.detail => modal.scroll_detail(10),
+        KeyCode::Enter => {
+            modal.detail = !modal.detail;
+            modal.detail_scroll = 0;
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            if modal.detail {
+                modal.detail = false;
+            } else {
+                app.staged = None;
+            }
+        }
+        KeyCode::Char('s') => {
+            if let Some(row) = modal.selected_row() {
+                if row.pending() {
+                    modal.confirm = Some(outbox::SendConfirm {
+                        id: row.id.clone(),
+                        summary: row.summary.clone(),
+                        tainted: row.tainted,
+                        args_text: row.args_text.clone(),
+                    });
+                } else {
+                    modal.status = Some(format!("`{}` is {}, not pending", row.id, row.status));
+                }
+            }
+        }
+        // Editing suspends the whole TUI, so it is deferred to the event loop
+        // like a trigger edit. A publish is refused with the real action
+        // named, exactly as the CLI refuses it.
+        KeyCode::Char('e') => {
+            if let Some(row) = modal.selected_row() {
+                if !row.pending() {
+                    modal.status = Some(format!("`{}` is {}, not pending", row.id, row.status));
+                } else if row.kind == mecha_core::outbox::OutboxKind::Publish {
+                    modal.status = Some(
+                        "a publish is not editable — edit the source, re-render, \
+                         and publish again, which stages a new item"
+                            .into(),
+                    );
+                } else {
+                    app.pending_outbox_edit = Some(row.id.clone());
+                }
+            }
+        }
+        KeyCode::Char('r') => {
+            if let Some(row) = modal.selected_row() {
+                if row.pending() {
+                    modal.rejecting = Some(outbox::ReasonInput {
+                        id: row.id.clone(),
+                        buffer: String::new(),
+                    });
+                } else {
+                    modal.status = Some(format!("`{}` is {}, not pending", row.id, row.status));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Rebuild the /outbox modal's rows, keeping the cursor — and the scope —
+/// where they were: acting on one of a run's drafts must not widen the view
+/// to the whole backlog. The badge rides along, counted before the scope
+/// filter so it always describes the store.
+fn reload_outbox(app: &mut App) {
+    let (selected, detail, status, scope) = match &app.staged {
+        Some(m) => (m.selected, m.detail, m.status.clone(), m.scope.clone()),
+        None => return,
+    };
+    match outbox::load() {
+        Ok(rows) => {
+            app.outbox_pending = rows.iter().filter(|r| r.pending()).count();
+            let rows: Vec<outbox::OutboxRow> = match &scope {
+                Some(ids) => rows.into_iter().filter(|r| ids.contains(&r.id)).collect(),
+                None => rows,
+            };
+            let selected = selected.min(rows.len().saturating_sub(1));
+            app.staged = Some(outbox::OutboxModal {
+                selected,
+                detail: detail && !rows.is_empty(),
+                status,
+                scope,
+                ..outbox::OutboxModal::new(rows)
+            });
+        }
+        Err(e) => {
+            app.staged = None;
+            app.transcript.push(Entry::Error(format!("outbox: {e:#}")));
+        }
+    }
+}
+
+/// Keys for the /frontdoor modal.
+///
+/// Extract and triage spawn detached — one is a model call per record, the
+/// other a whole agent run — and their results are read back from the store
+/// on reload, like a trigger's. `close` refuses an empty reason, the same
+/// contract as the CLI's required `--reason`.
+fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let Some(modal) = &mut app.requests else {
+        return Ok(());
+    };
+
+    // A note being typed owns the keyboard.
+    if modal.input.is_some() {
+        match key.code {
+            KeyCode::Esc => modal.input = None,
+            KeyCode::Enter => {
+                let input = modal.input.take().expect("checked above");
+                let note = input.buffer.trim().to_string();
+                let seq = input.seq.to_string();
+                let outcome = match input.action {
+                    frontdoor::NoteAction::Close if note.is_empty() => {
+                        // Refused loudly rather than closed silently: `any →
+                        // closed` is the one transition the design annotates
+                        // "with a reason", and silence is the failure mode the
+                        // component exists to fix.
+                        modal.status = Some(format!("a close needs a reason — {seq} is unchanged"));
+                        return Ok(());
+                    }
+                    frontdoor::NoteAction::Close => {
+                        self_cli(&["frontdoor", "close", &seq, "--reason", &note])
+                            .map(|_| format!("closed {seq}"))
+                    }
+                    frontdoor::NoteAction::NeedsInfo => {
+                        let mut args = vec!["frontdoor", "needs-info", seq.as_str()];
+                        if !note.is_empty() {
+                            args.extend(["--note", note.as_str()]);
+                        }
+                        self_cli(&args).map(|_| format!("{seq} parked until they answer"))
+                    }
+                };
+                modal.status = Some(match outcome {
+                    Ok(done) => done,
+                    Err(e) => format!("could not update {seq}: {e}"),
+                });
+                reload_frontdoor(app);
+            }
+            KeyCode::Backspace => {
+                if let Some(input) = &mut modal.input {
+                    input.buffer.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(input) = &mut modal.input {
+                    input.buffer.push(c);
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    modal.status = None;
+
+    match key.code {
+        KeyCode::Up => {
+            if modal.detail {
+                modal.scroll_detail(-1)
+            } else {
+                modal.move_by(-1)
+            }
+        }
+        KeyCode::Down => {
+            if modal.detail {
+                modal.scroll_detail(1)
+            } else {
+                modal.move_by(1)
+            }
+        }
+        KeyCode::PageUp if modal.detail => modal.scroll_detail(-10),
+        KeyCode::PageDown if modal.detail => modal.scroll_detail(10),
+        KeyCode::Enter => {
+            modal.detail = !modal.detail;
+            modal.detail_scroll = 0;
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            if modal.detail {
+                modal.detail = false;
+            } else {
+                app.requests = None;
+            }
+        }
+        // The quarantined pass, detached: a model call per record. The CLI
+        // decides what is extractable; the invalid guard here just answers
+        // faster than a child process would.
+        KeyCode::Char('x') => {
+            if let Some(row) = modal.selected_row() {
+                if !row.valid {
+                    modal.status = Some(format!(
+                        "{} is invalid — invalid records are never extracted",
+                        row.seq
+                    ));
+                } else {
+                    let seq = row.seq.to_string();
+                    modal.status = Some(
+                        match spawn_detached(&["frontdoor", "extract", "--seq", &seq]) {
+                            Ok(_) => {
+                                format!("extracting {seq} — reopen /frontdoor for the result")
+                            }
+                            Err(e) => format!("could not start the extraction: {e}"),
+                        },
+                    );
+                    reload_frontdoor(app);
+                }
+            }
+        }
+        // The privileged pass, detached: a whole agent run per record, ending
+        // in drafts — which is where /outbox picks up.
+        KeyCode::Char('t') => {
+            if let Some(row) = modal.selected_row() {
+                if row.state != mecha_core::frontdoor::EXTRACTED {
+                    modal.status = Some(format!(
+                        "{} is `{}` — triage runs on `extracted`",
+                        row.seq, row.state
+                    ));
+                } else {
+                    let seq = row.seq.to_string();
+                    modal.status = Some(
+                        match spawn_detached(&["frontdoor", "triage", "--seq", &seq]) {
+                            Ok(_) => format!("triaging {seq} — drafts land in /outbox"),
+                            Err(e) => format!("could not start the triage: {e}"),
+                        },
+                    );
+                    reload_frontdoor(app);
+                }
+            }
+        }
+        KeyCode::Char('n') => {
+            if let Some(row) = modal.selected_row() {
+                modal.input = Some(frontdoor::NoteInput {
+                    seq: row.seq,
+                    action: frontdoor::NoteAction::NeedsInfo,
+                    buffer: String::new(),
+                });
+            }
+        }
+        KeyCode::Char('c') => {
+            if let Some(row) = modal.selected_row() {
+                modal.input = Some(frontdoor::NoteInput {
+                    seq: row.seq,
+                    action: frontdoor::NoteAction::Close,
+                    buffer: String::new(),
+                });
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Rebuild the /frontdoor modal's rows, keeping the cursor where it was.
+fn reload_frontdoor(app: &mut App) {
+    let (selected, detail, status) = match &app.requests {
+        Some(m) => (m.selected, m.detail, m.status.clone()),
+        None => return,
+    };
+    match frontdoor::load() {
+        Ok(rows) => {
+            let selected = selected.min(rows.len().saturating_sub(1));
+            app.requests = Some(frontdoor::FrontdoorModal {
+                selected,
+                detail: detail && !rows.is_empty(),
+                status,
+                ..frontdoor::FrontdoorModal::new(rows)
+            });
+        }
+        Err(e) => {
+            app.requests = None;
+            app.transcript
+                .push(Entry::Error(format!("frontdoor: {e:#}")));
+        }
+    }
+}
+
+/// Run `mecha <args...>` and return its output.
 ///
 /// `current_exe` rather than a bare `mecha`, so a TUI started from
 /// `target/debug` drives the build it is part of and not whatever is on PATH —
-/// otherwise testing a change to triggers would silently exercise the
-/// installed binary.
-fn trigger_cli(args: &[&str]) -> Result<String> {
+/// otherwise testing a change to a subcommand would silently exercise the
+/// installed binary. Every modal mutation goes through here: one
+/// implementation of each verb, and no way for the TUI to do something the
+/// command line cannot.
+fn self_cli(args: &[&str]) -> Result<String> {
     let exe = std::env::current_exe().context("cannot find my own binary")?;
     let out = std::process::Command::new(exe)
-        .arg("trigger")
         .args(args)
         .output()
-        .context("running mecha trigger")?;
+        .with_context(|| format!("running mecha {}", args.first().unwrap_or(&"")))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     } else {
@@ -1541,28 +2129,42 @@ fn trigger_cli(args: &[&str]) -> Result<String> {
     }
 }
 
-/// Start a run and do not wait for it. Output goes nowhere: the TUI owns the
-/// screen, and the run's real record is its session and its ledger row.
-fn spawn_trigger_run(name: &str) -> Result<()> {
+fn trigger_cli(args: &[&str]) -> Result<String> {
+    let mut full = vec!["trigger"];
+    full.extend_from_slice(args);
+    self_cli(&full)
+}
+
+/// Start `mecha <args...>` and do not wait for it. Output goes nowhere: the
+/// TUI owns the screen, and the work's real record is the store it writes —
+/// a trigger's ledger, an outbox item's status, a frontdoor record's state.
+///
+/// stdin is null on purpose beyond tidiness: a child that asks a question
+/// gets EOF, and EOF means "no" on every surface here — so a detached send
+/// or triage can never sit blocked on a confirmation nobody can see.
+fn spawn_detached(args: &[&str]) -> Result<()> {
     let exe = std::env::current_exe().context("cannot find my own binary")?;
     std::process::Command::new(exe)
-        .args(["trigger", "run", name])
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .context("starting the run")?;
+        .context("starting it")?;
     Ok(())
 }
 
-/// Hand the terminal to `$EDITOR` with the current input, and take both back.
+/// The suspend/restore dance around handing the terminal to another process.
 ///
 /// The suspend mirrors `leave()` and the restore mirrors `enter()`, minus the
 /// panic hook (still installed) and the probe (already answered — the kitty
 /// flags are re-pushed if they were pushed before). The full `terminal.clear`
-/// afterwards is load-bearing: the editor drew over everything, and a diff
-/// against the pre-editor buffer would restore only what happened to change.
-fn suspend_and_edit(terminal: &mut Terminal<impl Backend>, app: &mut App) -> Result<()> {
+/// afterwards is load-bearing: whatever ran drew over everything, and a diff
+/// against the pre-suspend buffer would restore only what happened to change.
+fn with_terminal_suspended<T>(
+    terminal: &mut Terminal<impl Backend>,
+    f: impl FnOnce() -> T,
+) -> Result<T> {
     disable_raw_mode()?;
     if kitty_pushed() {
         crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
@@ -1574,10 +2176,7 @@ fn suspend_and_edit(terminal: &mut Terminal<impl Backend>, app: &mut App) -> Res
         DisableBracketedPaste
     )?;
 
-    let result = crate::editor::edit_text(
-        &app.input,
-        &format!("mecha-compose-{}.txt", std::process::id()),
-    );
+    let result = f();
 
     enable_raw_mode()?;
     crossterm::execute!(
@@ -1593,6 +2192,38 @@ fn suspend_and_edit(terminal: &mut Terminal<impl Backend>, app: &mut App) -> Res
         )?;
     }
     terminal.clear()?;
+    Ok(result)
+}
+
+/// Run `mecha <args...>` while the caller has suspended the TUI — for
+/// subcommands that open `$EDITOR` themselves. stdin and stdout are inherited,
+/// because the editor needs the real terminal: `self_cli`'s capture would hand
+/// vim a pipe for a screen and a closed stdin for a keyboard. Only stderr is
+/// captured, so a refusal's text can reach the modal's status line.
+fn self_cli_interactive(args: &[&str]) -> Result<()> {
+    let exe = std::env::current_exe().context("cannot find my own binary")?;
+    let child = std::process::Command::new(exe)
+        .args(args)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("starting it")?;
+    let out = child.wait_with_output().context("waiting for it")?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("{}", err.trim().lines().next().unwrap_or("failed"))
+    }
+}
+
+/// Hand the terminal to `$EDITOR` with the current input, and take both back.
+fn suspend_and_edit(terminal: &mut Terminal<impl Backend>, app: &mut App) -> Result<()> {
+    let result = with_terminal_suspended(terminal, || {
+        crate::editor::edit_text(
+            &app.input,
+            &format!("mecha-compose-{}.txt", std::process::id()),
+        )
+    })?;
 
     match result {
         // Into the input box, not onto the wire: sending is still Enter.
@@ -1620,33 +2251,11 @@ fn suspend_and_edit_trigger(
     app: &mut App,
     name: &str,
 ) -> Result<()> {
-    disable_raw_mode()?;
-    if kitty_pushed() {
-        crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
-    }
-    crossterm::execute!(
-        std::io::stdout(),
-        LeaveAlternateScreen,
-        DisableMouseCapture,
-        DisableBracketedPaste
-    )?;
-
-    let result = trigger_cli(&["edit", name]);
-
-    enable_raw_mode()?;
-    crossterm::execute!(
-        std::io::stdout(),
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableBracketedPaste
-    )?;
-    if kitty_pushed() {
-        crossterm::execute!(
-            std::io::stdout(),
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        )?;
-    }
-    terminal.clear()?;
+    // Interactive, not captured: `trigger edit` opens `$EDITOR`, which needs
+    // the real terminal this function just suspended.
+    let result = with_terminal_suspended(terminal, || {
+        self_cli_interactive(&["trigger", "edit", name])
+    })?;
 
     if let Some(modal) = &mut app.scheduled {
         modal.status = Some(match &result {
@@ -1661,6 +2270,36 @@ fn suspend_and_edit_trigger(
             .push(Entry::Error(format!("trigger `{name}` was not saved: {e}")));
     }
     reload_triggers(app);
+    Ok(())
+}
+
+/// Edit an outbox draft's arguments in `$EDITOR`, then reload the modal.
+///
+/// Saving goes through `mecha outbox edit`'s own path — invalid JSON is
+/// refused and the draft kept, `args_before` is never touched — so the
+/// learning capture that mines `diff(staged, sent)` sees the TUI's edits
+/// exactly as it sees the command line's.
+fn suspend_and_edit_outbox(
+    terminal: &mut Terminal<impl Backend>,
+    app: &mut App,
+    id: &str,
+) -> Result<()> {
+    let result =
+        with_terminal_suspended(terminal, || self_cli_interactive(&["outbox", "edit", id]))?;
+
+    if let Some(modal) = &mut app.staged {
+        modal.status = Some(match &result {
+            Ok(_) => format!("edited `{id}` — send releases the new arguments"),
+            Err(e) => format!("`{id}` unchanged: {e}"),
+        });
+    }
+    // Loud as well as in the title, same as a trigger edit: a rejected edit
+    // must not surface only when the draft goes out unrevised.
+    if let Err(e) = result {
+        app.transcript
+            .push(Entry::Error(format!("outbox `{id}` was not edited: {e}")));
+    }
+    reload_outbox(app);
     Ok(())
 }
 
@@ -1935,6 +2574,12 @@ fn draw(
         modal.draw(frame);
     }
     if let Some(modal) = &app.scheduled {
+        modal.draw(frame);
+    }
+    if let Some(modal) = &app.staged {
+        modal.draw(frame);
+    }
+    if let Some(modal) = &app.requests {
         modal.draw(frame);
     }
     if let Some(question) = &app.asking {
@@ -2323,7 +2968,12 @@ mod tests {
             todo_visible: true,
             pending_editor: false,
             scheduled: None,
+            staged: None,
+            requests: None,
             pending_trigger_edit: None,
+            pending_outbox_edit: None,
+            outbox_pending: 0,
+            review: command::ReviewMode::default(),
             shell_tx,
             providers: Vec::new(),
             kitty_keyboard: false,
@@ -2387,6 +3037,7 @@ mod tests {
             started: std::time::Instant::now(),
             cancelling: false,
             persisted: 0,
+            outbox_before: None,
         });
         let text = frame_text(&mut app, 80, 12, None);
         assert!(text.contains("working"), "{text}");
@@ -2410,6 +3061,51 @@ mod tests {
         app.kitty_keyboard = true;
         let kitty = frame_text(&mut app, 100, 30, None);
         assert!(kitty.contains("shift+enter"), "{kitty}");
+    }
+
+    /// The badge follows the plan badge's rule: pending drafts are the
+    /// exception worth a coloured block; zero is the state that says nothing.
+    #[test]
+    fn the_outbox_badge_appears_only_when_something_is_pending() {
+        let mut app = test_app();
+        let clear = frame_text(&mut app, 110, 12, None);
+        assert!(!clear.contains("outbox"), "{clear}");
+
+        app.outbox_pending = 3;
+        let badged = frame_text(&mut app, 110, 12, None);
+        assert!(badged.contains("outbox 3"), "{badged}");
+    }
+
+    /// A tainted draft's send confirmation puts the arguments on screen —
+    /// what is approved must be what was read, through the real draw path.
+    #[test]
+    fn the_outbox_confirm_puts_a_tainted_drafts_arguments_on_screen() {
+        let mut app = test_app();
+        app.staged = Some(outbox::OutboxModal {
+            confirm: Some(outbox::SendConfirm {
+                id: "abc123".into(),
+                summary: "mail to a@example.com".into(),
+                tainted: true,
+                args_text: "{\n  \"to\": \"a@example.com\"\n}".into(),
+            }),
+            ..outbox::OutboxModal::new(Vec::new())
+        });
+        let frame = frame_text(&mut app, 110, 35, None);
+        assert!(frame.contains("attacker"), "{frame}");
+        assert!(frame.contains("a@example.com"), "{frame}");
+        assert!(frame.contains("y sends it for real"), "{frame}");
+
+        // Untainted: no warning, but still a confirmation — a send is the one
+        // keystroke here that cannot be taken back.
+        app.staged.as_mut().unwrap().confirm = Some(outbox::SendConfirm {
+            id: "abc123".into(),
+            summary: "mail to a@example.com".into(),
+            tainted: false,
+            args_text: String::new(),
+        });
+        let frame = frame_text(&mut app, 110, 35, None);
+        assert!(!frame.contains("attacker"), "{frame}");
+        assert!(frame.contains("send abc123"), "{frame}");
     }
 
     #[test]
