@@ -433,6 +433,32 @@ Magic links became scanner-proof the same night, after Microsoft Safe Links
 ate the first real sign-in (the trap below). Eight hand deploys; the CI
 release tag is the standing fix.
 
+**2026-08-08 — the scheduling instrument, designed to deployed in two days.**
+The youcanbookme replacement and its when2meet half, end to end:
+`calendar_freebusy` on the unified mail surface (fail-closed at every parse —
+an unreadable calendar is never a free one); the pure availability engine,
+moved into `mecha-manifest` when it turned out to be contract; the slot push
+under a new fifth key scope (`slots`, the narrowest, sized for the systemd
+timer it lives beside); the booking page at `/s/<handle>/<id>` with its
+two-phase atomic claim (soft hold at submit, conversion at the magic-link
+click, a lapsed hold *deleting* its queue row so no phantom meeting ever
+reaches a calendar); the manage capability with every state answered
+honestly; and the group poll — box-minted capability URLs over names only
+(addresses never leave home), tri-state answers that work with JavaScript
+off, `rank_poll`/`clean_winner` refusing to auto-book past a tie, an
+if-needed, or a silent participant. Mid-arc the mail design inverted at the
+user's direction: booking mail comes from the user's own account as the
+provider's *native* invite (attendee + notifications on), SES narrowed to
+account plumbing, and the hand-rolled ICS module, the raw-MIME work and the
+deliverability matrix were deleted unbuilt. Deployed the same day and proven
+by a live self-test: book → confirm → Outlook event blocking real freebusy →
+cancel via the manage link → native withdrawal, with the page, the box and
+the calendar agreeing at every step. The deploy also carried the parallel
+lane's admin panel and private sharing onto the box. Two timer lessons came
+home immediately: drain rides the fifteen-minute sweep (an invite must not
+wait on the hourly front door), and the sweep names its account because a
+timer cannot ask.
+
 ---
 
 ## The measurement record
@@ -705,6 +731,14 @@ All found by pre-push review or by running it.
 
 ### Providers
 
+- The unified `calendar_create_event` schema said "attendees receive
+  invitations", and on Google nobody ever had: `events.insert` defaults to
+  `sendUpdates=none`, while Graph mails attendees unconditionally. A unified
+  surface's documented behaviour is a *claim about every backend* — enforce
+  it per backend, or the schema lies for some providers and the lie is
+  invisible until someone waits for a mail that never came.
+
+
 - **Never believe `finish_reason`.** llama-server reports `stop` alongside
   `tool_calls`. The loop believed it, dropped the calls, ended the run and
   returned an empty string — which graded as a model failure and was a harness
@@ -736,6 +770,17 @@ All found by pre-push review or by running it.
   runs its pre-flight as the service user.
 
 ### Unattended runs
+
+- `mecha-mail freebusy --days 60 | slots push` could *never* satisfy a 60-day
+  horizon: the freebusy window was stamped from one process's clock and the
+  horizon deadline computed from another's, a second later. Anchor every
+  derived deadline to the data's own stamp, never the reader's clock — which
+  also makes the pipeline deterministic for free. Found by running the
+  documented pipeline, not by reading it.
+- The bookings sweep's "no new bookings" early-return silently skipped the
+  cancellation and reminder passes on every quiet tick — the common case.
+  When a verb grows a second duty, audit every `return` that predates it.
+
 
 - **A systemd unit gives its children a minimal environment, and that is where
   `notify` runs.** The first real scheduled trigger run produced its briefing
@@ -771,6 +816,15 @@ All found by pre-push review or by running it.
   the test has to be repeated on the far side of them.
 
 ### Environment
+
+- A `grep -o 'mk_slt_[A-Za-z0-9_-]*'` clipped a freshly minted key to 24 of
+  its 88 bytes, and the truncated credential *looked* installed. The tell was
+  indirect: `/v1/health` answers anonymous callers too, so the broken key
+  produced a valid-looking 200 with the authenticated fields silently
+  absent. Prove a just-installed credential against an endpoint that *only*
+  answers authenticated callers — an endpoint serving both cannot fail
+  loudly.
+
 
 - **A magic link spent on GET is spent by the mail scanner, not the
   person.** The first real sign-in from a university mailbox arrived already

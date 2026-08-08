@@ -37,9 +37,9 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **512 tests** at the last clean commit, no warnings — verified
-2026-08-08. (A dirty tree may count more: a scheduling/free-busy arc was in
-flight in a parallel session as this was written, with its own tests.)
+Expect **529 tests**, no failures — verified 2026-08-08, after the
+scheduling arc landed (the free-busy, bookings and reminder suites in
+`mecha-mail` account for the growth since 512).
 
 | Suite | Count |
 |---|---:|
@@ -236,9 +236,10 @@ whole arc is in [`HISTORY.md`](HISTORY.md) under 2026-08-07.
 Two clicks close loops, both waiting in the operator's inbox (the specifics are
 in `docs/OPERATIONS.md`):
 
-1. **The form-verification link** — the one leg of the inbound chain never run:
-   the row should move `submitted → verified`, and `factory-publish drain`
-   should then bring it home.
+1. **The form-verification leg was run live 2026-08-08** by the booking
+   self-test: `submitted → verified → queued`, drained home, acked. The
+   inbound chain is verified end to end in production; the meeting-form
+   click waiting in the inbox is now redundant.
 2. **A sign-in link**, whenever curiosity strikes: the gate's `/account` page is
    the operator's own tenant page — bundles with release buttons, machines with
    last-used stamps.
@@ -248,16 +249,52 @@ Everything else below is independent of that.
 Every item below was verified against source on 2026-08-07 to still be unbuilt.
 Ordered by value per unit of effort, not by size.
 
+### The scheduling instrument — live since 2026-08-08
+
+The booking page (`gate…/s/ljchang/book`) and the group poll are deployed and
+verified in production: the full lifecycle ran live — book, email confirm,
+Outlook event with the manage link in its description, cancel, native
+withdrawal — with page, box and calendar agreeing at every step. The arc is
+in [`HISTORY.md`](HISTORY.md) under 2026-08-08; the design authority is
+[`SCHEDULING-DESIGN.md`](SCHEDULING-DESIGN.md). Open, in the order they bite:
+
+- **The calendar→box freshness window is the one real double-booking risk.**
+  Page-versus-page is already atomic — `booking_hold` is one INSERT-where-
+  no-live-row-overlaps statement (factory `db.rs`), and the losing visitor
+  gets the refreshed week. But an event landing *directly on the calendar*
+  only removes its overlapping slots at the next push, up to 15 minutes
+  later; `min_notice_hours = 24` makes a collision rare, not impossible. Two
+  cheap fixes, complementary: tighten the timer (freebusy is one API call —
+  every 1–2 minutes is free, with a hash-unchanged short-circuit so pushes
+  stay rare), and teach `mecha-mail bookings` to re-verify each drained
+  booking against *live* freebusy before creating the event, flagging a
+  conflict loudly instead of proceeding — home always holds fresher truth
+  than the box. The second closes the loop entirely.
+- **The availability windows are placeholders** (Tue/Thu 13–17, Wed 9–12
+  Eastern — invented, not chosen) in **two files that must agree**:
+  `~/.mecha/instruments/book-policy.toml` and the `[availability]` section
+  of `mecha-manifest/types/book.toml` (then re-`type push`). The page must
+  not be handed to anyone before this edit.
+- **Booking events land on `dartmouth` (Outlook), named in
+  `mecha-slots.service`** because a timer cannot ask the account question.
+  First live confusion already happened: the self-test event was "missing"
+  from Google Calendar because it was never there. Switch the flag if the
+  Google account should own bookings instead.
+- **The vanity gate name is deferred by decision.** A redirect
+  (`mecha-factory.org/book`-style) upgrades transparently to a gate-alias
+  feature later; capability URLs stay minted on the real gate either way.
+- **Poll polish, two pieces:** the tap-to-cycle/heatmap JS layer on the
+  participant grid (today: tri-state radios, server-rendered yes-counts),
+  and a deterministic auto-book sweep for the `clean_winner` case — today
+  `polls status --json` hands the typed verdict to the agent, which books
+  and closes.
+- **Stale-tab refresh on the booking page**: reload on `visibilitychange`
+  after long idle, only when no slot is picked and the form is untouched.
+- **Cosmetic:** `factory-publish type push` prints a `/f/<handle>/<id>` URL
+  for booking manifests; a booking's page is `/s/…`.
+
 ### Cheap, and worth doing first
 
-- **`calendar_freebusy` — IN FLIGHT, do not re-start.** As of 2026-08-08 a
-  parallel session holds uncommitted work on exactly this
-  (`mecha-mail/src/freebusy.rs`, `docs/SCHEDULING-DESIGN.md`, and an
-  `instruments/slots` route in the factory). If the tree is clean when you
-  read this, check `git log` for a scheduling arc before assuming the item
-  below is still open. The original item:
-- **`calendar_freebusy` on the unified mail surface.** Nothing in
-  `mecha-mail/src` implements it, and every scheduling question needs it.
 - **Re-baseline `ambiguity` and `long-horizon` at k=5.** No scorecard in
   `results/` records `runs: 5` outside the compaction arc, and these are the two
   tags whose single-run numbers move.
@@ -373,13 +410,13 @@ behaviour came from the reflector model declining. If the design was always
 
 - **`mecha-factory` — the public surface. It is deployed, it sends mail, and
   it is self-serve.** Its own repository, public at
-  **github.com/ljchang/mecha-factory** (249 tests), running on a small VPS:
+  **github.com/ljchang/mecha-factory** (317 tests, 2026-08-08), running on a small VPS:
   the API at `https://gate.mecha-factory.ai`, artifacts at
   `https://<handle>.art.mecha-factory.ai`, notebooks at `…compute…`. Verified
   live 2026-08-06 — a bundle rendered here, pushed there, served under the
-  `static` policy behind a certificate the binary obtained for itself. Four
-  scoped keys exist — `publish`, `release`, `drain` and `operate`; which
-  handles and key files exist locally is in `docs/OPERATIONS.md`.
+  `static` policy behind a certificate the binary obtained for itself. Five
+  scoped keys exist — `publish`, `release`, `drain`, `slots` and `operate`;
+  which handles and key files exist locally is in `docs/OPERATIONS.md`.
 
   Everything through self-serve is **built, deployed, and verified live**:
   SES mail, the scope split that moved "a human releases" onto the credential
@@ -404,18 +441,10 @@ behaviour came from the reflector model declining. If the design was always
   test).
 
   **The 2026-08-07/08 night shipped the inbound-attachments arc and the web
-  face, all deployed and verified live.** Form attachments end to end
-  (`FieldKind::File`, sniffed magic, verified-requesters-only upload page,
-  blob-lifetime-equals-row-lifetime, drain fetch with digest proof, the
-  frontdoor's metadata-only brief — `letter` v2 is live with a CV field);
-  the gate chrome (header band, sign-in dropdown, splash, account artifact
-  controls with per-version pin/release/take-down); magic links made
-  scanner-proof (GET is an interstitial, only POST spends — found when
-  Safe Links ate the first real sign-in); and the signed-in artifact viewer
-  at `gate…/view/{handle}/{id}/{version}` — the gate frames the bundle
-  cross-origin, so owner controls live where the session is and bundles
-  gained exactly one frame ancestor, the configured gate. The arcs are in
-  [`HISTORY.md`](HISTORY.md) and both repos' commit messages.
+  face — deployed and verified live**: form attachments end to end, the gate
+  chrome, scanner-proof magic links, and the signed-in artifact viewer. The
+  full arcs are in [`HISTORY.md`](HISTORY.md); nothing from that night
+  remains open except what the bullets below name.
 
   **Open there, in the order they bite:**
 
@@ -458,9 +487,10 @@ behaviour came from the reflector model declining. If the design was always
     being live and `operate`), and neither cookie means anything at the
     other surface. `/admin` renders accounts/invites/keys/withheld with the
     same rows the CLI drives; signed out it has instructions and no form.
-    Tests in `tests/operator.rs` (browser-panel section). Remaining: deploy
-    the box binary, and reinstall `factory-publish` at home for the
-    `signin` verb.
+    Tests in `tests/operator.rs` (browser-panel section). **Deployed
+    2026-08-08** — the scheduling deploy shipped the same box binary, and
+    `factory-publish` was reinstalled at home the same day. Live
+    verification of the panel itself is still owed.
   - **Private sharing is built and tested — not yet deployed** (2026-08-08,
     factory commit `0573bb1`), resolving the last queued design pass
     (capability URLs). The grant names an *email*: a `shares` row per
@@ -474,8 +504,9 @@ behaviour came from the reflector model declining. If the design was always
     live version only; owners' private previews now frame real bytes
     instead of the world's 404. Oracle-free throughout: one sign-in page
     for every private-or-absent viewer URL, one answer from the sign-in
-    form whoever asks. Tests in `tests/sharing.rs`. Deploys with the admin
-    panel — same box binary.
+    form whoever asks. Tests in `tests/sharing.rs`. **Deployed 2026-08-08** with the
+    scheduling deploy — live verification (a real grant, a real inbox) still
+    owed.
 
   The mecha-side half of step 7 is **built**: `mecha-factory-publish drain`
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
