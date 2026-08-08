@@ -707,22 +707,28 @@ impl MailTools {
 
     /// Create one event with typed arguments — the bookings handler's
     /// path, beside the tool's. Same account resolution (the default, or
-    /// instructions to ask), same token machinery, and **no attendees on
-    /// purpose**: Graph mails every attendee on create with no way to
-    /// decline to, and the visitor's calendar copy is the ICS mail's job.
-    /// Returns `(account, event_id)`.
-    pub async fn create_event_quiet(
+    /// instructions to ask), same token machinery. With an attendee, the
+    /// **provider sends its native invite** (Graph does unconditionally;
+    /// Google via `sendUpdates=all`) — which is the design: an invite from
+    /// the user's own mailbox is the most deliverable calendar mail that
+    /// exists, its Accept/Decline RSVPs back to the real event, and
+    /// cancellation later is a native retraction. Returns
+    /// `(account, event_id)`.
+    pub async fn create_event_invite(
         &self,
         account: Option<&str>,
         title: &str,
         description: &str,
         start: &str,
         end: &str,
+        attendee: Option<&str>,
     ) -> Result<(String, String), String> {
         let account = self.pick(account, Mode::Create)?[0];
+        let attendees: Vec<String> = attendee.map(str::to_string).into_iter().collect();
         let result = with_token(&account.manager, |t| {
             let (title, description) = (title.to_string(), description.to_string());
             let (start, end) = (start.to_string(), end.to_string());
+            let attendees = attendees.clone();
             async move {
                 match account.provider {
                     Provider::Google => {
@@ -732,7 +738,7 @@ impl MailTools {
                             start_time: start,
                             end_time: end,
                             location: None,
-                            attendees: Vec::new(),
+                            attendees,
                             all_day: false,
                             timezone: None,
                         };
@@ -748,7 +754,7 @@ impl MailTools {
                             start_time: start,
                             end_time: end,
                             location: None,
-                            attendees: Vec::new(),
+                            attendees,
                             all_day: false,
                             timezone: None,
                         };

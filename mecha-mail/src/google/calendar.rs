@@ -205,13 +205,15 @@ impl CalendarProvider {
             "https://www.googleapis.com/calendar/v3/calendars/{}/events",
             urlencode(calendar_id)
         );
-        let resp = send_with_retry(
-            self.client
-                .post(&url)
-                .bearer_auth(&self.access_token)
-                .json(&body),
-        )
-        .await?;
+        // Google's default is sendUpdates=none, so attendees were silently
+        // NOT invited despite the tool schema saying they would be — Graph
+        // always mails attendees, and the surface has one behaviour. Set
+        // only when there are attendees: the parameter is about them.
+        let mut request = self.client.post(&url).bearer_auth(&self.access_token);
+        if !event.attendees.is_empty() {
+            request = request.query(&[("sendUpdates", "all")]);
+        }
+        let resp = send_with_retry(request.json(&body)).await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
