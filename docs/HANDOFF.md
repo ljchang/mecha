@@ -276,10 +276,17 @@ withdrawal — with page, box and calendar agreeing at every step. The arc is
 in [`HISTORY.md`](HISTORY.md) under 2026-08-08; the design authority is
 [`SCHEDULING-DESIGN.md`](SCHEDULING-DESIGN.md). Open, in the order they bite:
 
+**A front-end pass over the whole instrument sits in the factory working
+tree, green but uncommitted and undeployed** (2026-08-08 evening; the arc is
+in [`HISTORY.md`](HISTORY.md)). Committing and deploying it is the next
+action on this section — the items below assume it lands.
+
 - **The calendar→box freshness window is the one real double-booking risk.**
   Page-versus-page is already atomic — `booking_hold` is one INSERT-where-
   no-live-row-overlaps statement (factory `db.rs`), and the losing visitor
-  gets the refreshed week. But an event landing *directly on the calendar*
+  gets the refreshed week; with the front-end pass, an *open tab* also polls
+  `slots.json` and drops a slot the moment someone else holds it. What
+  remains is the calendar side: an event landing *directly on the calendar*
   only removes its overlapping slots at the next push, up to 15 minutes
   later; `min_notice_hours = 24` makes a collision rare, not impossible. Two
   cheap fixes, complementary: tighten the timer (freebusy is one API call —
@@ -301,13 +308,12 @@ in [`HISTORY.md`](HISTORY.md) under 2026-08-08; the design authority is
 - **The vanity gate name is deferred by decision.** A redirect
   (`mecha-factory.org/book`-style) upgrades transparently to a gate-alias
   feature later; capability URLs stay minted on the real gate either way.
-- **Poll polish, two pieces:** the tap-to-cycle/heatmap JS layer on the
-  participant grid (today: tri-state radios, server-rendered yes-counts),
-  and a deterministic auto-book sweep for the `clean_winner` case — today
-  `polls status --json` hands the typed verdict to the agent, which books
-  and closes.
-- **Stale-tab refresh on the booking page**: reload on `visibilitychange`
-  after long idle, only when no slot is picked and the form is untouched.
+- **Poll polish, one piece left:** a deterministic auto-book sweep for the
+  `clean_winner` case — today `polls status --json` hands the typed verdict
+  to the agent, which books and closes. (The tap-to-cycle/drag-paint/heat
+  layer shipped with the front-end pass; the axis-locked touch gesture and
+  a separate Group heatmap tab from `SCHEDULING-DESIGN.md` §5.3 were left
+  out on purpose — inline heat carries most of the value.)
 - **Cosmetic:** `factory-publish type push` prints a `/f/<handle>/<id>` URL
   for booking manifests; a booking's page is `/s/…`.
 
@@ -428,7 +434,9 @@ behaviour came from the reflector model declining. If the design was always
 
 - **`mecha-factory` — the public surface. It is deployed, it sends mail, and
   it is self-serve.** Its own repository, public at
-  **github.com/ljchang/mecha-factory** (317 tests, 2026-08-08), running on a small VPS:
+  **github.com/ljchang/mecha-factory** (317 tests at HEAD; 325 in the
+  working tree, 2026-08-08 evening — see the uncommitted-arcs bullet below),
+  running on a small VPS:
   the API at `https://gate.mecha-factory.ai`, artifacts at
   `https://<handle>.art.mecha-factory.ai`, notebooks at `…compute…`. Verified
   live 2026-08-06 — a bundle rendered here, pushed there, served under the
@@ -466,6 +474,17 @@ behaviour came from the reflector model declining. If the design was always
 
   **Open there, in the order they bite:**
 
+  - **Two finished arcs sit in that repo's working tree, uncommitted and
+    undeployed** (2026-08-08 evening; the full workspace suite passes over
+    both — 325 tests, clippy clean). One: the scheduler front-end pass —
+    the redesigned booking page and poll grid, live `slots.json` refresh,
+    and the POST error path fixed (the arc is in [`HISTORY.md`](HISTORY.md)).
+    Two: the admin **email door** — `operator_email` in `factory.toml` grows
+    a signed-out `/admin` button that mails a one-time sign-in link, killed
+    by revoking the well-known `email-door` key row; built with its own
+    tests (`tests/operator.rs`) and documented in that repo's `DEPLOY.md`.
+    Commit each as its own reviewable change, then deploy — until then the
+    live box serves none of it.
   - **Verify the release workflow** (`release.yml`, authored 2026-08-07:
     static musl `factory` with an asserted-static gate and a checksum). Push a
     `v*` tag and watch it; `DEPLOY.md` already leads with the
@@ -502,15 +521,6 @@ behaviour came from the reflector model declining. If the design was always
     control · what the server enforces) exists nowhere but `request.rs`, and
     `second-client.md` assumes it. `booking.md` is the largest gap, since the
     whole scheduling instrument shipped undocumented for readers.
-  - **Two gaps in the booking POST error path**, both found by rendering the
-    state in the gallery before the server reaches it. `booking_page` renders
-    `values` and `errors`, but both callers pass `BookingOptions::default()`
-    (`mecha-factory/src/http/booking.rs:131` and `:397`), so a failed POST
-    gets the week back with a one-line notice — `:243` says this is pending.
-    When it is built: the error summary lists raw field *names* where
-    `form()`'s summary lists labels, and no `_slot` radio comes back checked,
-    so a visitor who mistypes an address loses the time they picked and may
-    find it gone.
   - **The operator admin panel and private sharing are built, reviewed,
     tested, and deployed** (2026-08-07/08; the arcs are in
     [`HISTORY.md`](HISTORY.md)). What remains is the two live checks at the

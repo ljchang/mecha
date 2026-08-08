@@ -526,6 +526,37 @@ Booking was the first surface here with a time in it, and a golden file
 rendered against `Utc::now()` differs from itself daily until somebody deletes
 the check that keeps saying so.
 
+**2026-08-08, evening — the scheduler grows a front end worth handing out.**
+Built and tested in the factory working tree the same evening (uncommitted
+and undeployed as of this writing — the handoff's factory section tracks
+that step). The booking page's clunk was structural, and each piece came out
+structurally: the meeting length became a server-side `?mins=` link switch —
+week paging's exact shape, so it dedupes with JavaScript off and each start
+time renders once as a mono time chip; the details form hides behind a CSS
+`:has` reveal until a time is picked (browsers without `:has`, and readers
+with CSS off, get the whole page — the reveal has no script behind it), with
+a picked-time chip written by `booking.js` as pure restatement. The page is
+live now: `GET /s/<handle>/<id>/slots.json` serves the same subtraction the
+POST judges (`http/booking.rs:174`, `no-store`), and the script polls it
+every 30s and on tab re-focus — a slot someone else holds collapses out of
+an open tab, a taken *pick* says so out loud, and fresh slots reload only a
+pristine page (anything typed downgrades the reload to an offered link),
+which also closed the stale-tab item as a side effect. The POST error path
+gaps the gallery had surfaced are fixed at the server (`page_back`,
+`http/booking.rs:420`): a rejected submission keeps the typed values, names
+failed fields by label, and re-checks the picked `_slot`; the race loser and
+the lapsed hold keep the visitor's details too — losing a slot must not
+also cost the answers. The poll grid got its polish pass: `poll.js` upgrades
+the tri-state radios to tap-to-cycle cells with drag painting (the anchor's
+new state decides the whole stroke, when2meet's mechanic), autosaving over
+fetch against the same POST (`Accept: application/json` → bare 204/409, the
+radios and Save button staying as the JS-off path), and heat rendered
+server-side as six discrete `heat-N` classes with "n of m yes" in text —
+classes because the gate's CSP forbids inline styles, text because colour
+must never carry the information alone. Verified by screenshot across both
+themes, both schemes, and mobile, plus a live sweep test against a real
+HTTP server; eight new tests took the factory workspace to 325.
+
 ---
 
 ## The measurement record
@@ -715,6 +746,14 @@ matters is the general shape.
   judge spent the entire budget on reasoning and returned empty content with
   `finish_reason: length`. It is 4096 now, and an unparseable verdict reports
   the stop reason rather than just the empty string.
+- **A shared stylesheet is verified against every surface it styles.** The
+  booking page's picked-slot fill was keyed on `.slot:has(input:checked)` —
+  and the poll page's cells are also `.slot`s, each always holding a checked
+  tri-state radio, so every cell flooded solid accent. Unit tests on both
+  pages stayed green; a screenshot of the *other* page caught it in one
+  glance. State selectors on a shared sheet name the control
+  (`input[name="_slot"]`), never the element — and restyling one surface
+  means rendering them all.
 - **A test can pass for a reason you did not write.** The first version of the
   broken-sandbox test named `image:` before `..cfg` in a helper, so Rust's
   struct-update ordering silently overrode the caller's deliberately broken
