@@ -129,14 +129,24 @@ does have `~/.ssh` and can reach the network.
 ## Pull requests
 
 - Branch off `main`. Keep a pull request to one concern.
+- **Parallel work never shares a working tree** — including two AI sessions.
+  Use a git worktree per effort (`git worktree add ../mecha-<arc> -b
+  <branch>`). The rule traces to a real afternoon in the sibling repository:
+  two sessions in one tree, one stashed the other's changes to verify its own
+  commit, and the only copy of code already running in production sat in a
+  stash.
 - Run `cargo fmt --all`, `cargo clippy --all-targets`, and `cargo test
   --workspace` before pushing. CI treats warnings as errors.
+- Every commit builds and passes tests alone — history is bisectable and
+  stays that way.
 - Explain *why* in the description. The code shows what changed; the reasoning
   is the part reviewers cannot reconstruct.
 - If you changed behaviour a user would notice, add an entry to the
   `## [Unreleased]` section of `CHANGELOG.md`.
 - Claude reviews pull requests automatically. Its comments are advisory — a
   maintainer merges.
+- Merge by rebase or fast-forward — linear history, no merge commits. Squash
+  only when a branch's intermediate commits are not worth keeping.
 
 Commit messages should say what changed and why in the subject line. The history
 here favours a declarative sentence over a conventional-commits prefix.
@@ -150,6 +160,32 @@ While the major version is `0`, the minor version carries breaking changes.
 trait that an external implementor could depend on — `Provider`, `Tool`,
 `Approver` — is a breaking change even when nothing inside this repository
 notices.
+
+## Releases
+
+A release is a **tag on main**, nothing else:
+
+1. Move the `## [Unreleased]` entries in `CHANGELOG.md` under the new version,
+   and bump `version` in the workspace `Cargo.toml` (one PR; every crate
+   inherits it).
+2. Tag the merge commit `vX.Y.Z` and push the tag.
+3. The `release` workflow re-runs the full test suite (a tag can be pushed
+   from anywhere; "it was green when I looked" is not a gate), refuses a tag
+   that does not match the workspace version, and publishes the crates to
+   crates.io in dependency order: `mecha-core` → `mecha-mail` → `mecha-cli`.
+
+The same workflow shape lives in the
+[`mecha-factory`](https://github.com/ljchang/mecha-factory) repository, which
+adds the production-box binary and deploy; its `CONTRIBUTING.md` is the
+canonical description of the shared workflow.
+
+Publishing uses crates.io **Trusted Publishing** (GitHub OIDC), so no
+long-lived registry token exists anywhere. One-time setup per crate: the
+first version is published by hand by an owner (`cargo login && cargo publish
+-p <crate>` in dependency order — Trusted Publishing can only be configured
+on a crate that already exists), then crates.io → Settings → Trusted
+Publishing adds this repository and `release.yml`. A published version is
+forever: yankable, never deletable or reusable.
 
 ## Security
 
