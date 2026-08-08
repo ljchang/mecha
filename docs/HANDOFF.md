@@ -28,6 +28,15 @@ documentation site builds from `website/` and deploys to
 domain is asserted by `website/static/CNAME`, which ships inside the deployed
 artifact because `actions/deploy-pages` writes no such file itself.
 
+The site has a **Factory** section as of 2026-08-08, opening with a live
+component gallery at `/docs/factory/gallery`. Its frames are the real pages
+generated in mecha-factory (`cargo run --example gallery`), committed there at
+`gallery/` and copied in at build time by `website/scripts/sync-gallery.mjs` —
+sibling checkout first, public tarball otherwise, warning rather than failing
+so the prose still builds offline. The copy is gitignored here; that repo's CI
+owns the drift check, because that is where the renderer lives. Nine more
+pages are planned in [`FACTORY-DOCS-DESIGN.md`](FACTORY-DOCS-DESIGN.md).
+
 Every commit was verified to build and pass tests **in isolation**, so the
 history bisects rather than merely ending in a good state.
 
@@ -484,6 +493,24 @@ behaviour came from the reflector model declining. If the design was always
     It does **not** unlock wildcard certificates either: `rustls-acme` speaks
     only HTTP-01 and TLS-ALPN-01, so the library forecloses them whoever
     hosts the zone.
+  - **The factory has one documentation page, and needs nine.** The
+    component gallery ships (see "Where the work is"); everything else about
+    the factory is still only in design docs, which is the wrong audience.
+    [`FACTORY-DOCS-DESIGN.md`](FACTORY-DOCS-DESIGN.md) lists the pages with the
+    claims each has to make, sourced from the code. `field-kinds.md` is the
+    one to write first — the four-column table (TOML · JSON Schema · rendered
+    control · what the server enforces) exists nowhere but `request.rs`, and
+    `second-client.md` assumes it. `booking.md` is the largest gap, since the
+    whole scheduling instrument shipped undocumented for readers.
+  - **Two gaps in the booking POST error path**, both found by rendering the
+    state in the gallery before the server reaches it. `booking_page` renders
+    `values` and `errors`, but both callers pass `BookingOptions::default()`
+    (`mecha-factory/src/http/booking.rs:131` and `:397`), so a failed POST
+    gets the week back with a one-line notice — `:243` says this is pending.
+    When it is built: the error summary lists raw field *names* where
+    `form()`'s summary lists labels, and no `_slot` radio comes back checked,
+    so a visitor who mistypes an address loses the time they picked and may
+    find it gone.
   - **The operator admin panel and private sharing are built, reviewed,
     tested, and deployed** (2026-08-07/08; the arcs are in
     [`HISTORY.md`](HISTORY.md)). What remains is the two live checks at the
