@@ -222,6 +222,77 @@ pub fn append(path: &Path, entry: &LedgerEntry) -> Result<()> {
     Ok(())
 }
 
+/// A reminder tier: how long before the meeting it fires, and the ledger
+/// action that remembers it fired. Two tiers, the industry's converged
+/// default; the manifest's `[policy] reminders` can drive this later.
+pub const REMINDER_TIERS: [(i64, &str); 2] =
+    [(24 * 60, "reminded_24h"), (60, "reminded_1h")];
+
+/// Which reminders are owed right now. Pure, so every rule is testable
+/// without a clock or a mailbox:
+///
+/// - only bookings whose event was **created** and never **cancelled**;
+/// - only future meetings — a reminder after the fact is an apology;
+/// - each tier fires once (its ledger action is its memory);
+/// - and a tier whose window was already open when the booking was made is
+///   **suppressed**, not sent late: someone who booked at 9pm for 10am
+///   already has the invite in hand, and a "24 hours to go" at 9:01pm is
+///   machinery talking to itself.
+pub fn reminders_due(
+    bookings: &[DrainedBooking],
+    ledger: &[LedgerEntry],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<(DrainedBooking, &'static str)> {
+    use std::collections::BTreeMap;
+    let mut created: BTreeMap<&str, &LedgerEntry> = BTreeMap::new();
+    let mut done: BTreeSet<(&str, &str)> = BTreeSet::new();
+    let mut cancelled: BTreeSet<&str> = BTreeSet::new();
+    for entry in ledger {
+        match entry.action.as_str() {
+            "created" => {
+                created.insert(&entry.booking_id, entry);
+            }
+            "cancelled" => {
+                cancelled.insert(&entry.booking_id);
+            }
+            action => {
+                done.insert((entry.booking_id.as_str(), action));
+            }
+        }
+    }
+
+    let mut due = Vec::new();
+    for booking in bookings {
+        let Some(entry) = created.get(booking.booking_id.as_str()) else {
+            continue;
+        };
+        if cancelled.contains(booking.booking_id.as_str()) {
+            continue;
+        }
+        let (Ok(start), Ok(booked_at)) = (
+            chrono::DateTime::parse_from_rfc3339(&booking.start),
+            chrono::DateTime::parse_from_rfc3339(&entry.created_at),
+        ) else {
+            continue;
+        };
+        for (minutes, action) in REMINDER_TIERS {
+            let window = chrono::Duration::minutes(minutes);
+            let fires = start.with_timezone(&chrono::Utc) - now;
+            let existed_before_window =
+                start.with_timezone(&chrono::Utc) - booked_at.with_timezone(&chrono::Utc)
+                    > window;
+            if fires > chrono::Duration::zero()
+                && fires <= window
+                && existed_before_window
+                && !done.contains(&(booking.booking_id.as_str(), action))
+            {
+                due.push((booking.clone(), action));
+            }
+        }
+    }
+    due
+}
+
 /// The event's title and description. The description carries the
 /// stranger's own words (name, purpose, notes) — inert text on the user's
 /// own calendar, read by a human, with no model and no tool surface
@@ -391,5 +462,67 @@ mod tests {
         .unwrap();
         assert!(handled(&path).contains("old1"), "pre-action lines are creations");
         assert!(cancelled(&path).contains("old1"));
+    }
+
+    /// Every reminder rule, against one clock: each tier fires inside its
+    /// window and only once, a cancelled booking is silent, the past is
+    /// silent, and a booking made inside a tier's window suppresses that
+    /// tier — the invite in hand IS that reminder.
+    #[test]
+    fn reminders_fire_once_per_tier_and_never_absurdly() {
+        let t = |s: &str| chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let booking = |id: &str, start: &str| DrainedBooking {
+            seq: 1,
+            type_id: "book".into(),
+            booking_id: id.into(),
+            start: start.into(),
+            end: start.replace("T18", "T19"),
+            name: "Priya".into(),
+            email: Some("priya@example.edu".into()),
+            purpose: None,
+            topic: None,
+            manage_url: None,
+        };
+        let entry = |id: &str, action: &str, at: &str| LedgerEntry {
+            booking_id: id.into(),
+            event_id: "ev".into(),
+            account: "a".into(),
+            seq: 1,
+            created_at: at.into(),
+            action: action.into(),
+        };
+        let now = t("2026-08-25T12:00:00Z");
+
+        // Booked a week ago, meeting in 6h: the 24h tier is due, the 1h not.
+        let b = booking("b1", "2026-08-25T18:00:00Z");
+        let ledger = vec![entry("b1", "created", "2026-08-18T12:00:00Z")];
+        let due = reminders_due(std::slice::from_ref(&b), &ledger, now);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].1, "reminded_24h");
+
+        // The 24h already sent: quiet until the 1h window opens…
+        let ledger2 = [ledger.clone(), vec![entry("b1", "reminded_24h", "t")]].concat();
+        assert!(reminders_due(std::slice::from_ref(&b), &ledger2, now).is_empty());
+        // …then the 1h fires, once.
+        let near = t("2026-08-25T17:30:00Z");
+        let due = reminders_due(std::slice::from_ref(&b), &ledger2, near);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].1, "reminded_1h");
+
+        // Cancelled: silent. Past: silent.
+        let cancelled = [ledger.clone(), vec![entry("b1", "cancelled", "t")]].concat();
+        assert!(reminders_due(std::slice::from_ref(&b), &cancelled, now).is_empty());
+        assert!(
+            reminders_due(std::slice::from_ref(&b), &ledger, t("2026-08-25T19:00:00Z")).is_empty(),
+            "a reminder after the fact is an apology"
+        );
+
+        // Booked 30 minutes ago for later today: both windows were already
+        // open at booking time, so both tiers are suppressed — the invite
+        // in hand is the reminder.
+        let fresh = vec![entry("b1", "created", "2026-08-25T11:30:00Z")];
+        assert!(reminders_due(&[b], &fresh, now).is_empty());
     }
 }

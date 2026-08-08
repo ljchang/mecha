@@ -803,6 +803,38 @@ impl MailTools {
         .map_err(|e| format!("account `{}`: {e}", account.name))
     }
 
+    /// Send one plain message from a named account — the reminder path.
+    /// Deterministic machinery beside `create_event_invite`, never a model's
+    /// composition: the body is templated by the caller from typed values.
+    pub async fn send_mail_quiet(
+        &self,
+        account: &str,
+        to: &str,
+        subject: &str,
+        body_markdown: &str,
+    ) -> Result<(), String> {
+        let account = self.pick(Some(account), Mode::Item)?[0];
+        let html = markdown_to_html(body_markdown);
+        with_token(&account.manager, |t| {
+            let (to, subject, html) = (to.to_string(), subject.to_string(), html.clone());
+            async move {
+                match account.provider {
+                    Provider::Google => GmailProvider::new(t)
+                        .send_email(&to, &subject, &html, None, None, None, None)
+                        .await
+                        .map(|_| ()),
+                    Provider::Outlook => {
+                        OutlookProvider::new(t)
+                            .send_email(&to, &subject, &html, None, None)
+                            .await
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|e| format!("account `{}`: {e}", account.name))
+    }
+
     fn pick(&self, arg: Option<&str>, mode: Mode) -> Result<Vec<&Account>, String> {
         let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
         resolve(&names, self.default.as_deref(), arg, mode)
