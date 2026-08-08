@@ -4,6 +4,17 @@
 The four user decisions recorded here: week-column layout, seeded week grid
 for the group flow, auto-finalize with guardrails, booking page ships first.*
 
+> **Status 2026-08-08: built.** Steps 1–8 and the poll are code-complete
+> and tested in both repos — the booking lifecycle end to end (page, claim,
+> provider-native invite from the user's account, manage/cancel, automatic
+> reminders) and the group poll (seeded candidates, capability URLs,
+> tri-state answers, `rank_poll`/`clean_winner`). §4 was redesigned along
+> the way (provider-native invites; SES is account plumbing only). What
+> remains is deployment (DEPLOY.md's scheduling section) and two polish
+> passes: tap-to-cycle/heatmap JS on the poll grid, and a deterministic
+> auto-book sweep for the clean-winner case (today `polls status --json`
+> hands the verdict to the agent, which books and closes).
+
 This is the first official mecha-factory artifact: a replacement for
 youcanbookme that grows when2meet's group half — except the group half is
 seeded, so participants never see a blank grid, only the slots the user can
