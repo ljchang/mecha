@@ -4,14 +4,18 @@
 The four user decisions recorded here: week-column layout, seeded week grid
 for the group flow, auto-finalize with guardrails, booking page ships first.*
 
-> **Status 2026-08-08: built.** Steps 1–8 and the poll are code-complete
-> and tested in both repos — the booking lifecycle end to end (page, claim,
-> provider-native invite from the user's account, manage/cancel, automatic
-> reminders) and the group poll (seeded candidates, capability URLs,
-> tri-state answers, `rank_poll`/`clean_winner`). §4 was redesigned along
-> the way (provider-native invites; SES is account plumbing only). What
-> remains is deployment (DEPLOY.md's scheduling section) and two polish
-> passes: tap-to-cycle/heatmap JS on the poll grid, and a deterministic
+> **Status 2026-08-08: built and deployed; a front-end pass awaits deploy.**
+> Steps 1–8 and the poll are code-complete, tested in both repos, and live —
+> the booking lifecycle end to end (page, claim, provider-native invite from
+> the user's account, manage/cancel) and the group poll (seeded candidates,
+> capability URLs, tri-state answers, `rank_poll`/`clean_winner`). §4 was
+> redesigned along the way (provider-native invites; SES is account plumbing
+> only). The same evening a front-end pass landed in the factory working
+> tree (uncommitted, undeployed — the handoff tracks it): §3.2's split-step
+> reveal and duration switch, §5.3's tap-to-cycle/drag-paint/heat layer, a
+> live `slots.json` the open page polls, and the POST error path. Left out
+> of §5.3 on purpose: the axis-locked touch gesture and a separate Group
+> tab — inline heat carries most of the value. Still open: the deterministic
 > auto-book sweep for the clean-winner case (today `polls status --json`
 > hands the verdict to the agent, which books and closes).
 
