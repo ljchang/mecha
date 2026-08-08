@@ -150,11 +150,20 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
   `morning.toml` is jailed to `~/.mecha/work/morning`, and its `notify` writes
   the briefing then renders it. A failed `notify` is recorded on the run, so a
   briefing that has quietly stopped rendering does not read as a healthy one.
-- **Booking slots refresh every fifteen minutes.** `mecha-slots.timer` →
-  freebusy from the named account → `factory-publish slots push`, and the
-  booking-drain sweep rides the same tick. New with the scheduling arc,
-  2026-08-08; the account it reads is named in the unit because a timer
-  cannot ask.
+- **Booking slots refresh every two minutes, and the drain is a live loop.**
+  `mecha-slots.timer` (retimed from fifteen minutes, 2026-08-08 evening —
+  the calendar→box window was the one real double-booking risk) → freebusy
+  from the named account → `factory-publish slots push`, with the
+  booking-drain sweep riding the same tick as backstop. The fast path is
+  **`mecha-drain.service`**, an always-on loop long-polling the box's queue
+  (`drain --wait 25`) so a confirmed booking becomes a calendar event and
+  its invite seconds after the click — paced down to a 5s poll while the
+  deployed box binary predates `?wait=`. The sweep takes a flock (both
+  runners share it) and re-verifies each booking against live freebusy
+  before creating the event; a conflict parks loudly in the ledger. The
+  account is named in the units because a timer cannot ask; the loop script
+  runs from `~/.cargo/bin/mecha-drain-follow`, installed like the binaries
+  it drives.
 - **The front door runs hourly.** `mecha-frontdoor.timer` →
   `scripts/frontdoor.sh`: drain (zero tokens, runs even with the model down) →
   extract → triage, logging to `~/.mecha/requests/logs/`. Enabled 2026-08-07
