@@ -123,14 +123,75 @@ with the validator. The accepted kinds and the cap are stated under the input,
 and both are enforced against **sniffed magic** rather than a claimed
 media type or a filename extension.
 
+## Booking a time
+
+`kind = "booking"` changes the flow rather than adding a field. The page shows
+a week of slots, a submission names one, a soft hold starts, and the
+verification click converts the hold into the booking. One manifest, two
+readers: `[availability]` is **home's** — the slot pipeline runs it — and
+`[policy]` is the **box's**.
+
+<GalleryFrame page="book.html" caption="book.html — the week view, the details form beneath it, one Submit." minHeight={620} />
+
+Everything here works with JavaScript off: the slots are radio inputs, week
+paging is links, and the times are server-rendered in the host's zone and
+labelled as such. `booking.js` is enhancement only — it re-renders the times in
+*your* zone (which is why the label above probably does not say New York) and
+adds the duration filter. Nothing a submission depends on lives in it.
+
+The slots are real. They come out of the availability engine run against the
+starter's own `[availability]` — Tuesday and Thursday afternoons, Wednesday
+mornings, 30 and 60 minutes, a 10-minute buffer, 24 hours' notice, three
+meetings a day — with two commitments already on the calendar. That is why
+Tuesday is missing its 7pm and why some days are shorter than their window: a
+hand-drawn week would show a layout no policy produces.
+
+**The box never computes availability.** Home pushes slots as data and the box
+can only narrow them — by holds and bookings it knows about, and by the past.
+A public server that could compute your free time would need your calendar.
+
+[The manifest](pathname:///factory/gallery/source/book.toml) ·
+[a week later](pathname:///factory/gallery/nocturne/book.week-1.html)
+
+:::note[One page here is ahead of the server]
+`booking_page` accepts values and errors and renders them, but both server
+callers pass the defaults, so a failed POST currently gets the week back with
+a one-line notice instead. [The rejected
+view](pathname:///factory/gallery/nocturne/book.errors.html) is what that path
+is growing into. Rendering it early is how two gaps became visible: its summary
+lists raw field *names* where an ordinary form's lists labels, and no slot
+comes back selected — so a visitor who mistypes their address would lose the
+time they picked.
+:::
+
+## Asking a group
+
+A poll is the same weekly frame over seeded candidates, each a tri-state
+answer. Seeded, never a blank 7×24 grid: what a participant is shown is only
+what the organizer could actually offer.
+
+<GalleryFrame page="book.poll.html" caption="book.poll.html — one participant's view, three of five answered." minHeight={520} />
+
+Two rows look identical on purpose. **An unanswered candidate renders as
+"no"** — when2meet's rule, where you paint the times you *can* do and silence
+is unavailability. It is worth knowing that the default is a real answer rather
+than an absence, because it means a participant who opens the page and closes
+it has said something.
+
+The yes-counts beside each time are server-rendered. A poll is names,
+capabilities and three words — never an address and never prose — which is what
+lets the page be shown to strangers at all.
+
 ## The shipped starters
 
 Request types are data, not code: copy one, edit the fields, and the form, both
-validators, the schema and the tool declarations regenerate. These four ship
-with `mecha-manifest`, and they render through the path everything above does.
+validators, the schema and the tool declarations regenerate. These five ship
+with `mecha-manifest`, and they render through the path everything above does —
+a new starter appears in this gallery without anyone adding it here.
 
 <GalleryFrame page="speaking.html" caption="speaking.html — the 'invite a talk' starter, whose travel fields are the canonical conditional step." minHeight={560} />
 
+[book](pathname:///factory/gallery/nocturne/book.html) ·
 [lab-application](pathname:///factory/gallery/nocturne/lab-application.html) ·
 [letter](pathname:///factory/gallery/nocturne/letter.html) ·
 [meeting](pathname:///factory/gallery/nocturne/meeting.html) ·
@@ -167,6 +228,14 @@ The output is committed at `gallery/`, and CI regenerates it and refuses a
 diff. That is the same shape as a golden-file test, on purpose: a change to the
 renderer or to a palette arrives as a reviewable diff of the rendered HTML,
 which is the review a form generator deserves.
+
+**The gallery's clock is a literal**, and it has to be. A committed golden file
+rendered against the real clock would differ from itself every day and the
+drift check would cry wolf until somebody deleted it. So the booking pages are
+rendered at a fixed instant — a Monday morning in the starter's own timezone,
+chosen so its 24-hour minimum notice lands inside the first rendered week. The
+`chrono` crate reads no clock here; the caller supplies `now`, which is what
+makes that possible at all.
 
 Two guards keep it honest as the crate moves. The generator matches `FieldKind`
 **exhaustively**, so adding a variant stops it compiling and then fails until a
