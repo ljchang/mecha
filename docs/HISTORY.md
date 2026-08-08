@@ -527,9 +527,8 @@ rendered against `Utc::now()` differs from itself daily until somebody deletes
 the check that keeps saying so.
 
 **2026-08-08, evening — the scheduler grows a front end worth handing out.**
-Built and tested in the factory working tree the same evening (uncommitted
-and undeployed as of this writing — the handoff's factory section tracks
-that step). The booking page's clunk was structural, and each piece came out
+Committed as `1d531a8` in the factory repo and deployed to the box the same
+evening. The booking page's clunk was structural, and each piece came out
 structurally: the meeting length became a server-side `?mins=` link switch —
 week paging's exact shape, so it dedupes with JavaScript off and each start
 time renders once as a mono time chip; the details form hides behind a CSS
@@ -556,6 +555,18 @@ classes because the gate's CSP forbids inline styles, text because colour
 must never carry the information alone. Verified by screenshot across both
 themes, both schemes, and mobile, plus a live sweep test against a real
 HTTP server; eight new tests took the factory workspace to 325.
+
+**2026-08-08, evening — the admin panel grows an email door.** A parallel
+session's arc, committed as `347142b` beside the scheduler pass and
+deployed the same evening: with `operator_email` in `factory.toml`, a
+signed-out `/admin` offers one button that mails a one-time sign-in link to
+the address only configuration knows — admin from any browser, the operate
+key never pasted anywhere. The link redeems into the same session the CLI
+door mints, anchored to a well-known `email-door` key row that can never
+authenticate a bearer, which keeps "an operator session resolves to a key"
+true and makes revoking that row the door's kill switch. Links are budgeted
+per day; sessions from both doors last 30 days and roll on use. The detail
+in that repo's `DEPLOY.md`.
 
 ---
 

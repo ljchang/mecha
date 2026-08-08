@@ -276,10 +276,10 @@ withdrawal — with page, box and calendar agreeing at every step. The arc is
 in [`HISTORY.md`](HISTORY.md) under 2026-08-08; the design authority is
 [`SCHEDULING-DESIGN.md`](SCHEDULING-DESIGN.md). Open, in the order they bite:
 
-**A front-end pass over the whole instrument sits in the factory working
-tree, green but uncommitted and undeployed** (2026-08-08 evening; the arc is
-in [`HISTORY.md`](HISTORY.md)). Committing and deploying it is the next
-action on this section — the items below assume it lands.
+The 2026-08-08 evening front-end pass over the whole instrument —
+redesigned booking page, live `slots.json`, the poll paint grid — is
+committed (`1d531a8` in that repo) and running on the box; the arc is in
+[`HISTORY.md`](HISTORY.md).
 
 - **The calendar→box freshness window is the one real double-booking risk.**
   Page-versus-page is already atomic — `booking_hold` is one INSERT-where-
@@ -434,8 +434,7 @@ behaviour came from the reflector model declining. If the design was always
 
 - **`mecha-factory` — the public surface. It is deployed, it sends mail, and
   it is self-serve.** Its own repository, public at
-  **github.com/ljchang/mecha-factory** (317 tests at HEAD; 325 in the
-  working tree, 2026-08-08 evening — see the uncommitted-arcs bullet below),
+  **github.com/ljchang/mecha-factory** (325 tests, 2026-08-08 evening),
   running on a small VPS:
   the API at `https://gate.mecha-factory.ai`, artifacts at
   `https://<handle>.art.mecha-factory.ai`, notebooks at `…compute…`. Verified
@@ -474,17 +473,6 @@ behaviour came from the reflector model declining. If the design was always
 
   **Open there, in the order they bite:**
 
-  - **Two finished arcs sit in that repo's working tree, uncommitted and
-    undeployed** (2026-08-08 evening; the full workspace suite passes over
-    both — 325 tests, clippy clean). One: the scheduler front-end pass —
-    the redesigned booking page and poll grid, live `slots.json` refresh,
-    and the POST error path fixed (the arc is in [`HISTORY.md`](HISTORY.md)).
-    Two: the admin **email door** — `operator_email` in `factory.toml` grows
-    a signed-out `/admin` button that mails a one-time sign-in link, killed
-    by revoking the well-known `email-door` key row; built with its own
-    tests (`tests/operator.rs`) and documented in that repo's `DEPLOY.md`.
-    Commit each as its own reviewable change, then deploy — until then the
-    live box serves none of it.
   - **Verify the release workflow** (`release.yml`, authored 2026-08-07:
     static musl `factory` with an asserted-static gate and a checksum). Push a
     `v*` tag and watch it; `DEPLOY.md` already leads with the
