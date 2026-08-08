@@ -162,10 +162,6 @@ async fn bookings(
         .into_iter()
         .filter(|b| !done.contains(&b.booking_id))
         .collect();
-    if waiting.is_empty() {
-        println!("no new bookings");
-        return Ok(());
-    }
 
     if dry_run {
         println!("{} booking(s) would get events:", waiting.len());
@@ -173,10 +169,20 @@ async fn bookings(
             let (title, _) = bk::event_text(booking);
             println!("  #{:<4} {}  {}", booking.seq, booking.start, title);
         }
+        let cancels = bk::scan_cancellations(&requests)?
+            .into_iter()
+            .filter(|(_, id)| !bk::cancelled(&ledger).contains(id))
+            .count();
+        let reminders =
+            bk::reminders_due(&bk::scan(&requests)?, &bk::entries(&ledger), chrono::Utc::now());
+        println!("{cancels} cancellation(s) pending, {} reminder(s) due", reminders.len());
         return Ok(());
     }
 
     let tools = MailTools::load()?;
+    if waiting.is_empty() {
+        println!("no new bookings");
+    }
     let mut created = 0usize;
     for booking in &waiting {
         let (title, description) = bk::event_text(booking);
@@ -212,8 +218,11 @@ async fn bookings(
             booking.seq, title
         );
     }
-    println!("{created} event(s) created");
-    cancel_drained(&tools, &requests, &ledger).await
+    if created > 0 {
+        println!("{created} event(s) created");
+    }
+    cancel_drained(&tools, &requests, &ledger).await?;
+    remind_due(&tools, &requests, &ledger).await
 }
 
 /// The other direction: cancellation records become event deletions,
@@ -274,6 +283,71 @@ async fn cancel_drained(
     }
     if removed > 0 {
         println!("{removed} event(s) withdrawn");
+    }
+    Ok(())
+}
+
+/// Reminders, from the same sweep: templated, from the user's own account
+/// (the one that made the event), each tier fired once and remembered in
+/// the ledger. Runs on the same timers as everything else here — the
+/// 15-minute slot refresh gives the 1-hour tier its resolution.
+async fn remind_due(
+    tools: &MailTools,
+    requests: &std::path::Path,
+    ledger: &std::path::Path,
+) -> Result<()> {
+    use mecha_mail::bookings as bk;
+
+    let entries = bk::entries(ledger);
+    let bookings = bk::scan(requests)?;
+    let due = bk::reminders_due(&bookings, &entries, chrono::Utc::now());
+    if due.is_empty() {
+        return Ok(());
+    }
+    let account_of: std::collections::HashMap<&str, &bk::LedgerEntry> = entries
+        .iter()
+        .filter(|e| e.action == "created")
+        .map(|e| (e.booking_id.as_str(), e))
+        .collect();
+    let tz = mecha_mail::time::configured_zone();
+    for (booking, action) in &due {
+        let Some(entry) = account_of.get(booking.booking_id.as_str()) else {
+            continue;
+        };
+        let Some(to) = booking.email.as_deref() else {
+            continue;
+        };
+        let when = mecha_mail::time::in_zone(&booking.start, tz);
+        let manage = booking
+            .manage_url
+            .as_deref()
+            .map(|url| format!("\n\nNeed to change or cancel? {url}"))
+            .unwrap_or_default();
+        tools
+            .send_mail_quiet(
+                &entry.account,
+                to,
+                &format!("Reminder: your meeting on {when}"),
+                &format!(
+                    "A reminder that your meeting is coming up: **{when}**.{manage}"
+                ),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
+            .with_context(|| format!("reminding booking {}", booking.booking_id))?;
+        bk::append(
+            ledger,
+            &bk::LedgerEntry {
+                booking_id: booking.booking_id.clone(),
+                event_id: entry.event_id.clone(),
+                account: entry.account.clone(),
+                seq: booking.seq,
+                created_at: chrono::Utc::now()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                action: (*action).to_string(),
+            },
+        )?;
+        println!("⏰ #{} {action} → {to}", booking.seq);
     }
     Ok(())
 }
