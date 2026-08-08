@@ -331,8 +331,16 @@ impl CalendarProvider {
             urlencode(calendar_id),
             urlencode(event_id)
         );
-        let resp =
-            send_with_retry(self.client.delete(&url).bearer_auth(&self.access_token)).await?;
+        // sendUpdates=all for the same reason as create: the tool schema
+        // says attendees are notified of the cancellation, and Google's
+        // default is that they are not. Harmless on an event with none.
+        let resp = send_with_retry(
+            self.client
+                .delete(&url)
+                .query(&[("sendUpdates", "all")])
+                .bearer_auth(&self.access_token),
+        )
+        .await?;
 
         let status = resp.status().as_u16();
         // 204 = deleted; 404/410 = already gone, which is the outcome asked for.

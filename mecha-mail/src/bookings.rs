@@ -97,9 +97,20 @@ pub fn parse_record(record: &Value) -> Option<DrainedBooking> {
     })
 }
 
-/// Every booking in the request store, oldest first.
-pub fn scan(dir: &Path) -> Result<Vec<DrainedBooking>> {
-    let mut bookings = Vec::new();
+/// Every cancellation in the request store, oldest first.
+pub fn scan_cancellations(dir: &Path) -> Result<Vec<(i64, String)>> {
+    let mut cancellations = Vec::new();
+    for record in read_records(dir)? {
+        if let Some(cancellation) = parse_cancellation(&record) {
+            cancellations.push(cancellation);
+        }
+    }
+    cancellations.sort();
+    Ok(cancellations)
+}
+
+fn read_records(dir: &Path) -> Result<Vec<Value>> {
+    let mut records = Vec::new();
     let entries = std::fs::read_dir(dir)
         .with_context(|| format!("reading the request store at {}", dir.display()))?;
     for entry in entries.flatten() {
@@ -110,9 +121,17 @@ pub fn scan(dir: &Path) -> Result<Vec<DrainedBooking>> {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(record) = serde_json::from_str::<Value>(&text) else {
-            continue;
-        };
+        if let Ok(record) = serde_json::from_str::<Value>(&text) {
+            records.push(record);
+        }
+    }
+    Ok(records)
+}
+
+/// Every booking in the request store, oldest first.
+pub fn scan(dir: &Path) -> Result<Vec<DrainedBooking>> {
+    let mut bookings = Vec::new();
+    for record in read_records(dir)? {
         if let Some(booking) = parse_record(&record) {
             bookings.push(booking);
         }
@@ -121,14 +140,48 @@ pub fn scan(dir: &Path) -> Result<Vec<DrainedBooking>> {
     Ok(bookings)
 }
 
-/// One created event, remembered.
-#[derive(Debug, Serialize, Deserialize)]
+/// One action taken, remembered.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LedgerEntry {
     pub booking_id: String,
     pub event_id: String,
     pub account: String,
     pub seq: i64,
     pub created_at: String,
+    /// `created` or `cancelled`. Lines written before the field existed are
+    /// creations — the only action there was.
+    #[serde(default = "default_action")]
+    pub action: String,
+}
+
+fn default_action() -> String {
+    "created".into()
+}
+
+/// Every complete ledger line, oldest first.
+pub fn entries(path: &Path) -> Vec<LedgerEntry> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<LedgerEntry>(line).ok())
+        .collect()
+}
+
+/// A cancellation record: machinery only, nothing typed by anyone. `None`
+/// for everything else, exactly as [`parse_record`] answers for bookings.
+pub fn parse_cancellation(record: &Value) -> Option<(i64, String)> {
+    if record["valid"].as_bool() != Some(true) {
+        return None;
+    }
+    let values = record["values"].as_object()?;
+    if values.get("_cancelled").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    Some((
+        record["seq"].as_i64().unwrap_or(0),
+        values.get("_booking_id")?.as_str()?.to_string(),
+    ))
 }
 
 /// `~/.mecha/mail/bookings.jsonl` (beside the account registry).
@@ -140,11 +193,18 @@ pub fn ledger_path() -> Result<PathBuf> {
 /// skipped; every complete line counts — under-reading the ledger recreates
 /// an event (visible, deletable), over-reading it silently drops a meeting.
 pub fn handled(path: &Path) -> BTreeSet<String> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return BTreeSet::new();
-    };
-    text.lines()
-        .filter_map(|line| serde_json::from_str::<LedgerEntry>(line).ok())
+    entries(path)
+        .into_iter()
+        .filter(|e| e.action == "created")
+        .map(|e| e.booking_id)
+        .collect()
+}
+
+/// The booking ids whose cancellation is already processed.
+pub fn cancelled(path: &Path) -> BTreeSet<String> {
+    entries(path)
+        .into_iter()
+        .filter(|e| e.action == "cancelled")
         .map(|e| e.booking_id)
         .collect()
 }
@@ -247,6 +307,7 @@ mod tests {
                 account: "dartmouth".into(),
                 seq: 21,
                 created_at: "2026-08-08T12:00:00Z".into(),
+                action: "created".into(),
             },
         )
         .unwrap();
@@ -290,5 +351,45 @@ mod tests {
             description.contains("cancel? https://gate.example.org/s/alice/book/m/tok"),
             "the cancel capability rides the invite: {description}"
         );
+    }
+
+    /// The cancellation loop's data half: a machinery-only record parses as
+    /// a cancellation and nothing else does; ledger lines written before
+    /// `action` existed still count as creations; and a processed
+    /// cancellation is remembered apart from them.
+    #[test]
+    fn cancellations_parse_and_the_ledger_remembers_both_actions() {
+        let cancel = json!({
+            "seq": 30, "type_id": "book", "valid": true,
+            "values": {"_booking_id": "abc123", "_cancelled": true,
+                        "_slot_start": "2026-08-25T18:00:00Z"}
+        });
+        assert_eq!(parse_cancellation(&cancel), Some((30, "abc123".into())));
+        assert!(parse_record(&cancel).is_none(), "a cancellation is not a booking");
+        assert!(parse_cancellation(&record()).is_none(), "a booking is not a cancellation");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bookings.jsonl");
+        // A line from before `action` existed: a creation, the only action
+        // there was.
+        std::fs::write(
+            &path,
+            "{\"booking_id\":\"old1\",\"event_id\":\"ev1\",\"account\":\"a\",\"seq\":1,\"created_at\":\"t\"}\n",
+        )
+        .unwrap();
+        append(
+            &path,
+            &LedgerEntry {
+                booking_id: "old1".into(),
+                event_id: "ev1".into(),
+                account: "a".into(),
+                seq: 30,
+                created_at: "t2".into(),
+                action: "cancelled".into(),
+            },
+        )
+        .unwrap();
+        assert!(handled(&path).contains("old1"), "pre-action lines are creations");
+        assert!(cancelled(&path).contains("old1"));
     }
 }
