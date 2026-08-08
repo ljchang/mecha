@@ -1,13 +1,14 @@
-# The mecha-factory documentation section — a plan
+# The mecha-factory documentation section
 
-The docs site already lives at `docs.mecha-factory.ai` and documents only the
-harness. This is the missing half: what the factory is, what a request type can
-say, and what it renders as.
+*2026-08-07, extended 2026-08-08 when the scheduling instrument landed. The
+docs site already lives at `docs.mecha-factory.ai` and documents only the
+harness; this designs the missing half — what the factory is, what a request
+type can say, and what it renders as.*
 
-Status: the **gallery generator ships** (`mecha-factory`,
-`mecha-manifest/examples/gallery.rs`). Every page below that says "embeds the
-gallery" has real bytes to embed, served from `/factory/gallery/…`. The prose
-is what remains.
+**Partly built.** The gallery generator and `gallery.mdx` shipped 2026-08-07/08
+(see [`HISTORY.md`](HISTORY.md)), so every page below that says "embeds the
+gallery" has real bytes to embed at `/factory/gallery/…`. The other nine pages
+are prose that has not been written. `HANDOFF.md` carries the open item.
 
 ## Where things live, and why
 

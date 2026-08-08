@@ -17,6 +17,7 @@ belonged in three other places.
 | [`HANDOFF.md`](HANDOFF.md) | Current state and **only the open work** | present | **bounded — stays under ~400 lines** |
 | [`HISTORY.md`](HISTORY.md) | What shipped and when; what was learned the hard way | past | append-only |
 | `*-RESEARCH.md` | One question, researched once, with evidence and a date | past | one per question |
+| `*-DESIGN.md` | One thing, designed before it is built — the decisions, and what is deliberately not in scope | present, then past | one per thing |
 | [`CHANGELOG.md`](../CHANGELOG.md) | User-visible changes per release | past | append-only |
 | [`website/docs/`](../website/docs) | User-facing documentation for the published site | present | with features |
 
@@ -30,7 +31,9 @@ Ask in this order; the first match wins.
 4. **Does a reader need it to decide what to build next?** → `HANDOFF.md`
 5. **Is it the answer to one question you went and researched?** → a new
    `docs/<TOPIC>-RESEARCH.md`
-6. **Is it a user-visible change in this release?** → `CHANGELOG.md`
+6. **Is it a thing you are about to build, worked out before writing code?** →
+   a new `docs/<TOPIC>-DESIGN.md`
+7. **Is it a user-visible change in this release?** → `CHANGELOG.md`
 
 If two of these match, it usually belongs in the *later* one, with a one-line
 pointer from the earlier. Duplication across documents is how they drift into
@@ -90,6 +93,21 @@ When something from a research doc ships, add an addendum saying so rather
 than silently leaving the proposal in the present tense. A research doc that
 describes shipped behaviour as unbuilt is worse than one that says nothing,
 because it is the file someone reads before deciding what to build next.
+
+### `*-DESIGN.md` — one thing, decided before it is built
+
+Open with the date and one sentence on what is being designed. Record the
+decisions and, just as importantly, **what is deliberately out of scope** —
+that is the half a reader cannot reconstruct later, and the half that stops
+the same argument being had twice.
+
+Written in the present tense, and it stays that way while the thing is
+unbuilt. When it ships, add a line at the top saying so and pointing at
+`HISTORY.md`, rather than rewriting the body: the design as proposed is
+evidence about how the built thing came to be shaped that way. A design doc
+that describes shipped behaviour as unbuilt is the same failure as a research
+doc that does, and for the same reason — someone reads it to decide what to
+build next.
 
 ### `website/docs/` — the published site
 
