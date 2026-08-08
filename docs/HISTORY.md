@@ -433,6 +433,42 @@ Magic links became scanner-proof the same night, after Microsoft Safe Links
 ate the first real sign-in (the trap below). Eight hand deploys; the CI
 release tag is the standing fix.
 
+**2026-08-07/08 — the operator's browser, and private pages that open to
+named inboxes.** The parallel lane to the scheduling arc, sharing the tree
+and the deploy. The **operator admin panel** resolved its queued open
+question — the operate key never enters a browser: `factory-publish operator
+signin` asks `POST /v1/admin/signin` for a one-time URL, whose scanner-proof
+GET/POST interstitial becomes a 12-hour session in its own
+`operator_sessions` table, bound to the *key id* under its own
+`__Host-factory-operator` cookie. The session dies with the key (the lookup
+joins on the key being live and `operate`), neither cookie means anything at
+the other surface, and `/admin` renders accounts, invites, keys and
+withholds with the same rows the CLI drives — signed out it offers
+instructions and nothing to type into. A 25-agent review of the arc found
+one theme worth naming: database failures dressed as benign states — a
+sign-out that survived a failed revoke, a valid session rendered as
+signed-out, empty security ledgers rendered as truth, a one-time link burned
+by a failure between redeem and session-mint. All fixed (`86df0a7`), the
+last by making redeem-and-mint one transaction — and the same
+burn-the-link flaw was then found and fixed on the *tenant* sign-in
+(`d5b833d`), so all three sign-ins now share the
+spend-only-when-the-session-lands shape. **Private sharing** resolved the
+last queued design pass (`0573bb1`): a grant names an *email* — a `shares`
+row per (owner, bundle, address), managed from the viewer's Manage menu,
+budgeted per owner per day. The box mails the bare viewer URL; the reader
+proves the inbox through the magic-link machinery and becomes the third
+session surface (`__Host-factory-viewer`, joining on an email — never a
+user, never a key). Bytes still never meet identity on artifact origins:
+the gate mints a short-lived capability and frames `/g/<cap>/`, whose
+lookup re-proves the grant at every fetch — revoking a share kills the
+bytes mid-page, and there is a test watching it happen. Readers see the
+live version only; an owner's private preview now frames real bytes where
+it used to frame the world's 404. Oracle-free throughout: one sign-in page
+for every private-or-absent viewer URL, one answer from the form whoever
+asks. Deliberately *not* built: folding the three parallel session surfaces
+into one parameterised abstraction — the tables are the boundary, and
+`Db::signin`'s doc comment says so to whoever next tries to deduplicate it.
+
 **2026-08-08 — the scheduling instrument, designed to deployed in two days.**
 The youcanbookme replacement and its when2meet half, end to end:
 `calendar_freebusy` on the unified mail surface (fail-closed at every parse —
@@ -890,6 +926,15 @@ All found by pre-push review or by running it.
   **anything process-global touched by a threaded test harness needs a lock,
   and the flake will not reproduce under `-p <crate>`.** (2026-08-07, factory
   repo, `MECHA_HOME`.)
+- **Two agent sessions sharing one working tree: a broad `git add` sweeps
+  the other lane's files into your commit.** The scheduling lane's commits
+  (`37e9a50`, `ad4d8ff` in the factory repo) silently carried the admin-panel
+  lane's uncommitted files, so an unrelated arc landed under commit messages
+  that never mention it. Nothing broke — every commit still built — but
+  blame and bisect now attribute that work to the wrong story. **When two
+  lanes share a tree, stage by explicit path, never `git add -A`/`-u`**, and
+  before committing check `git status` for files you did not touch.
+  (2026-08-07/08, factory repo.)
 - **`hf download repo --include X Y`** silently ignores `--include` when
   positional filenames are given. Pass filenames positionally *or* use
   `--include`, not both.
