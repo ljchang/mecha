@@ -362,10 +362,7 @@ impl CalendarProvider {
 fn parse_google_freebusy(body: &Value) -> Result<Vec<(String, String)>, MailError> {
     let calendar = &body["calendars"]["primary"];
     if let Some(errors) = calendar["errors"].as_array().filter(|e| !e.is_empty()) {
-        let reasons: Vec<&str> = errors
-            .iter()
-            .filter_map(|e| e["reason"].as_str())
-            .collect();
+        let reasons: Vec<&str> = errors.iter().filter_map(|e| e["reason"].as_str()).collect();
         return Err(MailError::ApiError {
             status: 200,
             message: format!("freeBusy reported errors: {}", reasons.join(", ")),

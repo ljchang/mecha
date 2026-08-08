@@ -344,9 +344,9 @@ fn parse_schedule_items(body: &Value) -> Result<Vec<(String, String)>, MailError
         });
     }
     let stamp = |item: &Value, side: &str| -> Result<String, MailError> {
-        let dt = item[side]["dateTime"].as_str().ok_or_else(|| {
-            MailError::ParseError(format!("scheduleItem missing {side} time"))
-        })?;
+        let dt = item[side]["dateTime"]
+            .as_str()
+            .ok_or_else(|| MailError::ParseError(format!("scheduleItem missing {side} time")))?;
         match item[side]["timeZone"].as_str() {
             Some("UTC") | None => Ok(format!("{dt}Z")),
             Some(tz) => Err(MailError::ParseError(format!(
@@ -479,7 +479,11 @@ mod tests {
         }]});
         let busy = parse_schedule_items(&body).unwrap();
         assert_eq!(busy.len(), 2, "free is skipped, tentative blocks");
-        assert!(busy[0].0.ends_with('Z'), "UTC stamps gain their Z: {}", busy[0].0);
+        assert!(
+            busy[0].0.ends_with('Z'),
+            "UTC stamps gain their Z: {}",
+            busy[0].0
+        );
         assert!(crate::freebusy::parse_stamp(&busy[0].0).is_some());
     }
 
