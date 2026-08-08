@@ -123,18 +123,22 @@ Anything in `## Environment as left` that you verified should carry the date
 you verified it. Anything you could not verify should say so rather than
 carrying an old claim forward.
 
-### 6. Check the length
+### 6. Check for material that belongs elsewhere
 
-If `docs/HANDOFF.md` is over ~400 lines, something in it belongs elsewhere:
+Read the file for things that are not current state or open work. There is no
+line budget — a project with a lot genuinely open has a long handoff, and
+truncating it to hit a number is how a real item gets deleted instead of
+finished. What matters is that everything in it is *the right kind of thing*:
 
 - Explaining *why* the code is shaped a certain way → `CLAUDE.md`
 - A completed thing, or a lesson → `docs/HISTORY.md`
 - A question you researched → its own `docs/*-RESEARCH.md`
+- A thing designed but not yet built → its own `docs/*-DESIGN.md`
 - How a user operates the feature → `website/docs/`
 
-```bash
-wc -l docs/HANDOFF.md
-```
+Length is a symptom worth reading, not a rule to enforce. If the file has
+grown, ask *what* grew: more open work is honest, and a section that has
+quietly become an essay is the thing to move.
 
 ### 7. Follow the cross-references
 

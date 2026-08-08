@@ -3,7 +3,7 @@
 Where the project stands and what is actually left to do. Written to be picked
 up cold.
 
-Two companion documents, so this one can stay short:
+Two companion documents, so this one can hold open work and nothing else:
 
 - [`CLAUDE.md`](../CLAUDE.md) — why each subsystem is shaped the way it is. The
   canonical design document. This file deliberately does not restate it.
