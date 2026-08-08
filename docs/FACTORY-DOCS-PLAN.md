@@ -154,6 +154,36 @@ Embeds the same page in both themes, side by side. That comparison *is* the
 argument, and it is why the gallery iterates `BUILT_IN` rather than listing
 palettes by hand — a third theme appears here for free.
 
+### `booking.md` [5.5] — Scheduling
+
+Added after the scheduling subsystem landed (2026-08-07/08). The gallery page
+already shows the week view, the poll and the rejected view; this is the page
+for what they mean.
+
+- **`kind = "booking"` changes the flow, not the field list.** Week view →
+  submission names a slot → soft hold → the verification click converts the
+  hold into the booking.
+- **One manifest, two readers.** `[availability]` is home's, `[policy]` is the
+  box's. Say which is which, because a reader will otherwise assume the box
+  computes the week.
+- **The box never computes availability**, it only narrows what home pushed —
+  by holds, by bookings, and by the past. A public server that could compute
+  your free time would need your calendar.
+- The `BookingPolicy` defaults, all three, with the reasoning that every
+  default is stated in one place because "what happens if I omit this" must
+  have one answer: `hold_minutes = 30`, `cancel_cutoff_hours = 2`,
+  `reminders = ["24h", "1h"]`. Note that a reminder inside the
+  booking-to-start gap is suppressed at send time, not at parse.
+- **A slot can be claimed exactly once**, and the loser gets the week back.
+- **The manage link answers every state honestly** and cancels exactly once.
+- **Unanswered in a poll means "no"** — when2meet's rule. Worth stating: the
+  default is a real answer rather than an absence.
+- **A poll is names, capabilities and three words** — never an address, never
+  prose. That is what lets the page be shown to strangers.
+- JS-off contract: radios carry UTC instants, week paging is links, times are
+  server-rendered in the host's zone and re-rendered client-side in the
+  visitor's.
+
 ### `bundles.md` [6] — Publishing what an agent made
 
 `bundle_render` → `bundle_publish` → `bundle_alias`, and the two directories
