@@ -11,13 +11,15 @@
 //!
 //! Two decisions worth their comments:
 //!
-//! - **The event is created with no attendees.** Google's `events.insert`
-//!   defaults to mailing nobody, but Graph mails every attendee on create
-//!   with no way to decline to — and the visitor's calendar copy is the ICS
-//!   mail's job (sent by the box, with the UID the cancellation path needs).
-//!   The provider event exists to block the user's own free/busy and to put
-//!   the meeting in front of their eyes; the requester lives in the
-//!   description.
+//! - **The invite is the provider's own.** The event is created with the
+//!   requester as attendee and notifications on, so the confirmation the
+//!   visitor receives is a native calendar invite from the user's real
+//!   mailbox — the most deliverable calendar mail that exists, with an
+//!   Accept/Decline that RSVPs back to the real event, and a native
+//!   retraction when the event is later deleted. The box's SES sends only
+//!   account plumbing (magic links); it never speaks for the user. The
+//!   cancel capability rides in the event description, which both Gmail
+//!   and Outlook render in the invite.
 //! - **The ledger is the idempotency.** Records persist in the request
 //!   store after handling — they are the archive — so "which bookings
 //!   already have events" cannot be derived from the directory. One line
@@ -47,6 +49,8 @@ pub struct DrainedBooking {
     pub email: Option<String>,
     pub purpose: Option<String>,
     pub topic: Option<String>,
+    /// The box-minted cancel capability, when the record carries one.
+    pub manage_url: Option<String>,
 }
 
 /// Parse one record, if it is a booking this handler should act on.
@@ -89,6 +93,7 @@ pub fn parse_record(record: &Value) -> Option<DrainedBooking> {
             .or_else(|| text("requester_email")),
         purpose: text("purpose"),
         topic: text("topic"),
+        manage_url: text("_manage_url"),
     })
 }
 
@@ -176,6 +181,12 @@ pub fn event_text(booking: &DrainedBooking) -> (String, String) {
     }
     if let Some(topic) = &booking.topic {
         description.push_str(&format!("\nTheir notes:\n{topic}\n"));
+    }
+    // In the description on purpose: both Gmail and Outlook render the
+    // description in the invite mail, so the cancel capability reaches the
+    // visitor inside the one message the provider already sends.
+    if let Some(url) = &booking.manage_url {
+        description.push_str(&format!("\nNeed to change or cancel? {url}\n"));
     }
     (title, description)
 }
@@ -269,9 +280,15 @@ mod tests {
 
     #[test]
     fn event_text_carries_the_stranger_inertly() {
-        let (title, description) = event_text(&parse_record(&record()).unwrap());
+        let mut with_url = record();
+        with_url["values"]["_manage_url"] = json!("https://gate.example.org/s/alice/book/m/tok");
+        let (title, description) = event_text(&parse_record(&with_url).unwrap());
         assert_eq!(title, "Priya — advising");
         assert!(description.contains("request #21"));
         assert!(description.contains("Reading before we meet"));
+        assert!(
+            description.contains("cancel? https://gate.example.org/s/alice/book/m/tok"),
+            "the cancel capability rides the invite: {description}"
+        );
     }
 }

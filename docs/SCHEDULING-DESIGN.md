@@ -239,68 +239,61 @@ double-selling meanwhile.
 
 ---
 
-## 4. Mail — templated, box-sent, lifecycle-complete
+## 4. Mail — the invite is the provider's, the plumbing is SES's
 
-The box already sends magic links over SES; every message here is the same
-shape — **templated in the manifest, interpolated from typed values, never
-composed live**. The model never writes to a stranger from this path, so
-none of it routes through the outbox; what *does* go through the outbox is
-anything the model composes about a booking afterward (a personal note, a
-reschedule proposal), unchanged.
+*Redesigned 2026-08-08, at the user's direction: booking mail comes from the
+user's own account; SES is account plumbing only.*
 
-### 4.1 The set
+The split follows who the mail is from. A magic link or a signup invite is
+the **box** talking — SES, templated, part of serving strangers alone
+(§14.4). But a booking confirmation is **the user** talking: the visitor
+booked a meeting with a person, and mail from that person's own mailbox is
+what they expect, what threads their replies correctly, and what delivers
+best.
 
-| Message | When | Carries |
-|---|---|---|
-| Confirmation | at claim | ICS invite, manage link, add-to-calendar links |
-| Reminder | 24h and 1h before start | manage link |
-| Cancellation notice | at cancel, to booker and user | rebook link |
-| Host-cancel notice | drained host cancellation | apology template + rebook link |
+And once the sender is the user's account, the confirmation should not be a
+hand-rolled ICS at all — it is the **provider's native invite**. Home
+creates the calendar event *with the requester as attendee*
+(`sendUpdates=all`; Graph mails attendees on create unconditionally, which
+was the reason to avoid attendees before and is the feature now). What that
+buys, all at once: the most deliverable invite that can exist, working
+Accept/Decline whose RSVP flows back to the user's event, UID and SEQUENCE
+as the provider's bookkeeping, and cancellation as `delete` with
+notifications on — a native retraction from the visitor's calendar. The
+entire hand-assembled METHOD:REQUEST module, the SES raw-MIME work, and the
+deliverability test matrix are deleted, not deferred.
 
-Reminder jobs are rows (`mail_job`: booking, kind, due_at, sent_at) written
-at claim and swept every minute; a booking made inside a reminder window
-suppresses that reminder rather than firing it instantly and weirdly; cancel
-deletes pending jobs in the same transaction. Sending marks the row in the
-same transaction as the SES call's success — at-least-once with visible
-evidence, the queue's own rule.
+### 4.1 The manage link
 
-### 4.2 ICS, the part that must be exactly right
+Cancellation must work without an account, so the capability URL survives:
+`GET /s/<handle>/<id>/m/<token>` renders state, POST cancels — GET-safe
+because scanners prefetch, token hashed at rest on the box, all states
+answered honestly (active / inside the cutoff / already cancelled / past /
+dead link). The token is minted at confirm, box-side — so the box writes
+the full manage URL into the queue payload (`_manage_url`) in the same
+transaction, and it drains home like the rest of the machinery keys. Home
+puts it in the event description, which both Gmail and Outlook render in
+the invite. Plaintext transits the queue briefly; acceptable for a
+capability whose job is to travel in email.
 
-- `METHOD:REQUEST`, sent both as a `text/calendar` MIME part and an `.ics`
-  attachment — mail clients key native rendering off the part.
-- `UID` is minted at claim and never changes; `SEQUENCE` starts at 0 and the
-  booking row stores it. Any future mutation bumps it.
-- Cancellation is `METHOD:CANCEL` + `STATUS:CANCELLED`, same UID,
-  `SEQUENCE` strictly greater — Outlook ignores a stale-sequence CANCEL.
-- `ORGANIZER` is an address on the box's own verified sending domain
-  (`bookings@…`), reply-to the user — an organizer off the sending domain
-  trips Gmail/Outlook spoof detection and the invite arrives mangled.
-- `VTIMEZONE`/TZID or UTC throughout; the confirmation page also offers
-  `METHOD:PUBLISH` as the "download .ics" button, which is the only
-  legitimate use of PUBLISH here.
+A visitor's cancel queues a cancellation record; home's `bookings` verb
+deletes the event through the ledger's `booking_id → event_id` join, and
+the provider mails the retraction.
 
-### 4.3 The manage link
+### 4.2 What rides home's timer, and what §14.4 still guarantees
 
-In every message. `≥128-bit` CSPRNG token, stored as SHA-256, expires at
-`end + grace`, **rotated on every state change** so old emails go stale.
-Two rules that fight each other resolved by verb: corporate mail scanners
-prefetch every URL, so **GET renders and never mutates**; the destructive
-action is a POST from an explicit button. Never single-use — a scanner
-would burn it before the human clicks.
+Everything a stranger sees **synchronously** still comes from the box alone:
+the page, the hold, the confirmation screen. What moved to home's drain
+cadence is the *email* leg — the invite arrives minutes later, not
+instantly, and queues while home is down. The deployment this serves runs
+home on an always-on machine; the degradation is latency, stated plainly on
+the confirmation page ("a calendar invite is on its way").
 
-The page answers every state honestly rather than 404ing: active (summary +
-cancel button + reason field), inside the cutoff (state the policy, show a
-contact), already cancelled (say so, offer the booking page), past ("this
-meeting has already happened"), unknown token (branded "this link is no
-longer valid" + booking-page link). The incumbents' support forums are full
-of exactly these dead ends; each costs one template.
-
-Not in v1, designed for: **reschedule**. The token model (scoped, rotated)
-and `SEQUENCE` already support it; the flow is the booking page with the old
-details pre-filled and an atomic slot swap. Cancel + the rebook link covers
-the need until then.
-
----
+Reminders (24h/1h) become a later, optional increment: deterministic
+templated sends from the user's own account on the same timer family as the
+slot refresh — no model, no outbox, the same class of machinery as the
+provider invite. The attendee's own calendar reminders cover much of the
+need natively.
 
 ## 5. The group poll
 

@@ -181,12 +181,13 @@ async fn bookings(
     for booking in &waiting {
         let (title, description) = bk::event_text(booking);
         let (account_name, event_id) = tools
-            .create_event_quiet(
+            .create_event_invite(
                 account.as_deref(),
                 &title,
                 &description,
                 &booking.start,
                 &booking.end,
+                booking.email.as_deref(),
             )
             .await
             .map_err(|e| anyhow::anyhow!(e))
