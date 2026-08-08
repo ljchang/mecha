@@ -461,9 +461,21 @@ behaviour came from the reflector model declining. If the design was always
     Tests in `tests/operator.rs` (browser-panel section). Remaining: deploy
     the box binary, and reinstall `factory-publish` at home for the
     `signin` verb.
-  - **One design pass still queued, auth-first:** capability URLs for
-    private bundles (which likely also carries display identity to artifact
-    origins — the viewer inversion covered the gate side).
+  - **Private sharing is built and tested — not yet deployed** (2026-08-08,
+    factory commit `0573bb1`), resolving the last queued design pass
+    (capability URLs). The grant names an *email*: a `shares` row per
+    (owner, bundle, address), managed from the viewer's Manage menu; the
+    box mails the bare viewer URL; the reader proves the inbox through the
+    magic-link machinery and becomes the third session surface
+    (`__Host-factory-viewer`, joins on an email — never a user or key).
+    Bytes still never carry identity to artifact origins: the gate mints a
+    short-lived capability and frames `/g/<cap>/`, whose lookup re-proves
+    the grant at every fetch, so revocation is immediate. Readers see the
+    live version only; owners' private previews now frame real bytes
+    instead of the world's 404. Oracle-free throughout: one sign-in page
+    for every private-or-absent viewer URL, one answer from the sign-in
+    form whoever asks. Tests in `tests/sharing.rs`. Deploys with the admin
+    panel — same box binary.
 
   The mecha-side half of step 7 is **built**: `mecha-factory-publish drain`
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
