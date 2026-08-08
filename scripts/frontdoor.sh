@@ -23,6 +23,7 @@ set -uo pipefail
 
 MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
 FACTORY="${FACTORY_PUBLISH_BIN:-$HOME/.cargo/bin/factory-publish}"
+MAIL="${MECHA_MAIL_BIN:-$HOME/.cargo/bin/mecha-mail}"
 PROVIDER="${MECHA_FRONTDOOR_PROVIDER:-local}"
 HEALTH="${MECHA_FRONTDOOR_HEALTH:-http://127.0.0.1:8080/health}"
 
@@ -44,6 +45,12 @@ fi
 
 echo "· drain (zero tokens; the common case is nothing new)"
 "$FACTORY" drain || echo "drain failed; extracting and triaging what is already home"
+
+echo "· bookings (zero tokens; drained bookings become calendar events)"
+# Deterministic like drain, and deliberately before the model health check:
+# a booked meeting must reach the calendar whether or not a model is up.
+# Idempotent against its ledger, so a failed tick retries next hour.
+"$MAIL" bookings || echo "bookings deferred; the ledger resumes next tick"
 
 if ! curl -sf -m 5 "$HEALTH" >/dev/null; then
     echo "model server not answering at $HEALTH; drained only, deferring the rest"

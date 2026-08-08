@@ -12,6 +12,7 @@
 //! a deployment can wire either or both.
 
 pub mod accounts;
+pub mod bookings;
 pub mod freebusy;
 pub mod google;
 pub mod http;
