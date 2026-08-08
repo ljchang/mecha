@@ -421,21 +421,58 @@ pub fn diff_args(before: &Value, after: &Value) -> String {
     out
 }
 
-/// One line for the list view: the tool plus as much of the compact argument
-/// JSON as fits.
+/// One line for the list view: who and what when the arguments say, the
+/// compact JSON when they do not.
+///
+/// Keyed on well-known argument *names*, never on the tool — the store stays
+/// tool-agnostic, but a queue of mail drafts whose rows all lead with
+/// `{"body_markdown":…` made every review surface start with the least
+/// informative bytes of each item. Anything without the conventional fields
+/// falls back to what it always was.
 fn summarize(tool: &str, args: &Value) -> String {
-    let compact = serde_json::to_string(args).unwrap_or_default();
-    let mut text = compact;
-    if text.len() > 80 {
-        // Truncate on a char boundary; arguments can be any UTF-8.
-        let cut = (0..=80)
+    let text = headline(args).unwrap_or_else(|| serde_json::to_string(args).unwrap_or_default());
+    format!("{tool} {}", clip(text, 80))
+}
+
+/// "to a@x — \"subject\"", when the arguments carry the conventional names.
+fn headline(args: &Value) -> Option<String> {
+    let map = args.as_object()?;
+    let field = |key: &str| {
+        map.get(key)
+            .and_then(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                // `to` is a list on some surfaces and a string on others.
+                Value::Array(a) => Some(
+                    a.iter()
+                        .filter_map(|x| x.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+                _ => None,
+            })
+            .filter(|s| !s.trim().is_empty())
+    };
+    let to = field("to");
+    let subject = field("subject").or_else(|| field("title"));
+    match (to, subject) {
+        (Some(to), Some(subject)) => Some(format!("to {to} — \"{subject}\"")),
+        (Some(to), None) => Some(format!("to {to}")),
+        (None, Some(subject)) => Some(format!("\"{subject}\"")),
+        (None, None) => None,
+    }
+}
+
+/// Truncate on a char boundary; the text can be any UTF-8.
+fn clip(mut text: String, max: usize) -> String {
+    if text.len() > max {
+        let cut = (0..=max)
             .rev()
             .find(|&i| text.is_char_boundary(i))
             .unwrap_or(0);
         text.truncate(cut);
         text.push('…');
     }
-    format!("{tool} {text}")
+    text
 }
 
 #[cfg(test)]
@@ -448,6 +485,45 @@ mod tests {
             std::env::temp_dir().join(format!("mecha-outbox-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn a_summary_leads_with_who_and_what_when_the_arguments_say() {
+        // The conventional fields, in every combination they arrive in.
+        assert_eq!(
+            summarize(
+                "mail__send",
+                &json!({"to": "a@x.org", "subject": "Tuesday?", "body_markdown": "long…"})
+            ),
+            "mail__send to a@x.org — \"Tuesday?\""
+        );
+        assert_eq!(
+            summarize(
+                "mail__send",
+                &json!({"to": ["a@x.org", "b@x.org"], "body": "hi"})
+            ),
+            "mail__send to a@x.org, b@x.org"
+        );
+        assert_eq!(
+            summarize(
+                "cal__event_create",
+                &json!({"title": "Standup", "start": "…"})
+            ),
+            "cal__event_create \"Standup\""
+        );
+
+        // Without them, the compact JSON it always was — and still bounded.
+        let plain = summarize("factory__bundle_publish", &json!({"bundle": "/tmp/x"}));
+        assert!(plain.contains("bundle"), "{plain}");
+        let long = summarize("t", &json!({"to": "x".repeat(200)}));
+        assert!(long.len() < 120, "{}", long.len());
+        assert!(long.ends_with('…'), "{long}");
+
+        // An empty `to` is absence, not an addressee.
+        assert_eq!(
+            summarize("t", &json!({"to": "", "body": "x"})),
+            r#"t {"body":"x","to":""}"#
+        );
     }
 
     #[test]
