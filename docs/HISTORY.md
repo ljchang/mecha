@@ -592,6 +592,42 @@ session (two sessions shared a tree that afternoon, and production code
 spent an hour existing only in a stash), PR-gated landings, rebase merges,
 and no attribution trailers.
 
+**2026-08-08, night — review moves into the TUI, and a run's drafts meet
+you at the door.** `/outbox` and `/frontdoor` landed as modals on the
+`/triggers` pattern — the store read directly for display, every mutation a
+`mecha …` child process, long work (a send's MCP startup, an extraction, a
+triage run) spawned detached with the store as the record. The decisions
+that differ from `/triggers`: **every send confirms**, because it is the
+one keystroke that cannot be taken back, and a tainted draft confirms in
+red with its full arguments on screen; a publish's `edit` is refused with
+the real action named, as on the CLI; the frontdoor detail prints the
+stranger's prose under its framing, because a person reading a terminal is
+the safe context; `close` refuses an empty reason. On top of that, the
+status line grew an ` outbox N ` badge, and `/review now|later|auto` now
+decides what happens when a run *this session started* finishes having
+staged drafts: open a modal scoped to exactly those items, just notice, or
+release them — where the mode is set only by slash command (a
+model-interpreted "preapproved" is a directive an injected page could also
+write), scope is an id-diff between submit and completion so the overnight
+backlog is never touched, tainted drafts never auto-release (the approval
+predates whatever armed the taint), and an errored or early-stopped run
+releases nothing. Detached work reports back instead of asking for a
+reopen: a watch list polls the *stores* (never the child — the store is the
+record) on a one-second tick while anything is live, and a landed release
+or a moved request becomes a transcript notice plus a badge and modal
+refresh; a watch that outlives its cap is dropped with a still-working
+notice so a wedged child cannot pin the fast tick. And staged summaries
+learned to lead with who and what: `summarize` in core now prefers the
+conventional argument names (`to`, `subject`, `title`) over raw compact
+JSON — keyed on argument names, never on the tool, so the store stays
+tool-agnostic. Along the way a latent bug: the TUI's trigger edit ran
+`$EDITOR` through `.output()` — a pipe for a screen, a closed stdin for a
+keyboard — found only when a second editor shell-out forced the question;
+the suspend dance is now one helper and interactive children inherit the
+real terminal, with only stderr captured. `mecha-cli` went from 83 to 100
+tests, including the tainted confirmation rendered through the real draw
+path.
+
 ---
 
 ## The measurement record

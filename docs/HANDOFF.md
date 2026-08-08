@@ -54,15 +54,17 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **529 tests**, no failures — verified 2026-08-08, after the
-scheduling arc landed (the free-busy, bookings and reminder suites in
-`mecha-mail` account for the growth since 512).
+Expect **550 tests**, no failures — verified 2026-08-08 night, after the
+TUI review-surfaces arc landed (`mecha-cli` grew from 83 with the /outbox
+and /frontdoor modals; `mecha-mail` from 83 with the bookings-sweep
+hardening). One flake was seen once in `mecha-core` that day and never
+reproduced across five re-runs — unidentified, worth an eye.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 349 |
-| `mecha-cli` unit | 83 |
-| `mecha-mail` unit | 83 |
+| `mecha-core` unit | 350 |
+| `mecha-cli` unit | 100 |
+| `mecha-mail` unit | 86 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
 | doctest | 1 |
 
@@ -97,7 +99,7 @@ A working agent harness, used and measured rather than just compiled.
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
 | Context | Two-pass compaction: thin tool results, then summarise. Taint preserved, and a tool's own state (the todo list) crosses verbatim |
 | Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep |
-| TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning |
+| TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/outbox` and `/frontdoor` modals drive the CLI like `/triggers` does, the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
@@ -114,8 +116,9 @@ A working agent harness, used and measured rather than just compiled.
 ## Environment as left
 
 Running on the DGX Spark (GB10, aarch64, 128GB unified). **Re-verified
-2026-08-08 afternoon** (8080 answering with `total_slots=1`; 8081 and 8082
-both down; the units and binary dates below checked):
+2026-08-08 night** (8080 answering with `total_slots=1`; 8082 down; the mecha
+units enabled as listed below — 8081 and the binary dates carried forward
+from the afternoon pass, not re-checked):
 
 | Port | Model | State |
 |---|---|---|
@@ -447,8 +450,8 @@ behaviour came from the reflector model declining. If the design was always
 
 - **Steering and queuing are the same key.** Enter starts a run when idle and
   steers one already going; there is no way to queue a follow-up instead.
-- **No `/export` or copy.** `NAMES` lists eleven commands and none of them get
-  the transcript out.
+- **No `/export` or copy.** `NAMES` lists fourteen commands and none of them
+  get the transcript out.
 - **`NO_COLOR` is honoured only by the plain CLI renderer.** The TUI hardcodes
   colours inline; there is no semantic colour table.
 - **No keymap configuration.**

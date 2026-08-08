@@ -531,6 +531,22 @@ knowledge of the outbox to be covered by it. Decisions that carry it:
   staging takes no lock at all, so the agent never blocks on a review).
   `send` holds the lock across execution so two sends cannot double-fire.
 
+**Review lives in the TUI too.** `/outbox` and `/frontdoor` are modals on the
+`/triggers` pattern — store read for display, every mutation a `mecha …`
+child process, slow work (a release's MCP startup, an extraction, a triage
+run) spawned detached and *watched*: a poll against the store, never the
+child, reports the outcome as a notice and refreshes the badge and modal.
+Every send confirms, tainted ones in red with the full arguments on screen.
+`/review now|later|auto` decides what happens when a run stages drafts — set
+only by slash command, never inferred from the prompt, because release policy
+must not be decidable by anything sharing a context window with third-party
+text. Scope is an id-diff between submit and completion, so no mode touches
+items another session staged; tainted drafts never auto-release (the approval
+predates whatever armed the taint); an errored or early-stopped run releases
+nothing. Editor shell-outs from the TUI go through `self_cli_interactive`,
+which inherits the real terminal — `.output()` hands `$EDITOR` a pipe for a
+screen and a closed stdin for a keyboard, which was a real bug.
+
 **Staging is sink-agnostic; reviewing is not.** The outbox generalised to a
 second kind of outbound action — publishing a bundle to the public surface —
 with no change to `outbox.rs` at all, which was the design goal. Every one of
