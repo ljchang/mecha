@@ -1112,7 +1112,8 @@ impl Agent {
             // — the same rule steering follows, because two user messages in a
             // row are invalid and there is no legal slot between a `tool_use`
             // and its result.
-            let produced_nothing = text.trim().is_empty() && response.message.tool_uses().is_empty();
+            let produced_nothing =
+                text.trim().is_empty() && response.message.tool_uses().is_empty();
             if produced_nothing && empty_turns < EMPTY_TURN_RETRIES {
                 empty_turns += 1;
                 tracing::warn!(
@@ -4946,7 +4947,9 @@ mod tests {
         let roles: Vec<_> = convo.messages.iter().map(|m| m.role).collect();
         assert_eq!(roles, vec![Role::User, Role::Assistant], "{roles:?}");
         assert!(convo.messages[0].text().contains("do the hard thing"));
-        assert!(convo.messages[0].text().contains("budget went entirely to reasoning"));
+        assert!(convo.messages[0]
+            .text()
+            .contains("budget went entirely to reasoning"));
 
         // And the retry actually carried the nudge to the provider.
         let seen = provider.seen.lock().unwrap();

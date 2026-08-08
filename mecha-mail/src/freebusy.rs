@@ -127,7 +127,10 @@ mod tests {
             iv("2026-08-10T09:00:00Z", "2026-08-10T17:00:00Z"),
             iv("2026-08-10T10:00:00Z", "2026-08-10T11:00:00Z"),
         ]);
-        assert_eq!(merged, vec![iv("2026-08-10T09:00:00Z", "2026-08-10T17:00:00Z")]);
+        assert_eq!(
+            merged,
+            vec![iv("2026-08-10T09:00:00Z", "2026-08-10T17:00:00Z")]
+        );
     }
 
     #[test]
@@ -141,7 +144,8 @@ mod tests {
 
     #[test]
     fn intervals_serialise_as_rfc3339_utc() {
-        let json = serde_json::to_value(iv("2026-08-10T09:00:00Z", "2026-08-10T10:30:00Z")).unwrap();
+        let json =
+            serde_json::to_value(iv("2026-08-10T09:00:00Z", "2026-08-10T10:30:00Z")).unwrap();
         assert_eq!(json["start"], "2026-08-10T09:00:00Z");
         assert_eq!(json["end"], "2026-08-10T10:30:00Z");
     }

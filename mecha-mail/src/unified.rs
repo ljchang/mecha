@@ -423,7 +423,11 @@ async fn freebusy_one(
 ) -> Result<Vec<crate::freebusy::Interval>, MailError> {
     let pairs = with_token(&a.manager, |t| async move {
         match a.provider {
-            Provider::Google => gcal::CalendarProvider::new(t).freebusy(time_min, time_max).await,
+            Provider::Google => {
+                gcal::CalendarProvider::new(t)
+                    .freebusy(time_min, time_max)
+                    .await
+            }
             Provider::Outlook => {
                 let Some(address) = a.address.as_deref() else {
                     return Err(MailError::InvalidInput(format!(
@@ -444,9 +448,8 @@ async fn freebusy_one(
         .into_iter()
         .map(|(start, end)| {
             let parse = |raw: &str| {
-                crate::freebusy::parse_stamp(raw).ok_or_else(|| {
-                    MailError::ParseError(format!("unparseable busy stamp `{raw}`"))
-                })
+                crate::freebusy::parse_stamp(raw)
+                    .ok_or_else(|| MailError::ParseError(format!("unparseable busy stamp `{raw}`")))
             };
             Ok(crate::freebusy::Interval {
                 start: parse(&start)?,
@@ -699,9 +702,7 @@ impl MailTools {
         if all_failed {
             return Err(failures.join("\n"));
         }
-        let intervals = crate::freebusy::merge(
-            ok.into_iter().flat_map(|(_, _, iv)| iv).collect(),
-        );
+        let intervals = crate::freebusy::merge(ok.into_iter().flat_map(|(_, _, iv)| iv).collect());
         Ok((intervals, failures))
     }
 
@@ -775,11 +776,7 @@ impl MailTools {
     /// Delete one event — the cancellation half of the bookings handler.
     /// The account is named exactly (it came off the ledger), and both
     /// providers mail the attendees their native retraction.
-    pub async fn delete_event_quiet(
-        &self,
-        account: &str,
-        event_id: &str,
-    ) -> Result<(), String> {
+    pub async fn delete_event_quiet(&self, account: &str, event_id: &str) -> Result<(), String> {
         let account = self.pick(Some(account), Mode::Item)?[0];
         let event_id = event_id.to_string();
         with_token(&account.manager, |t| {
@@ -1129,11 +1126,8 @@ impl MailTools {
                             let render = |t: &chrono::DateTime<chrono::Utc>| {
                                 crate::time::in_zone(&t.to_rfc3339(), tz)
                             };
-                            row["local"] = json!(format!(
-                                "{} — {}",
-                                render(&iv.start),
-                                render(&iv.end)
-                            ));
+                            row["local"] =
+                                json!(format!("{} — {}", render(&iv.start), render(&iv.end)));
                         }
                         row
                     })

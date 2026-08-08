@@ -976,7 +976,10 @@ mod tests {
 
         assert_eq!(handed["attachments"][0]["field"], json!("cv"));
         assert_eq!(handed["attachments"][0]["size"], json!(20_000));
-        assert_eq!(handed["attachments"][0]["content_type"], json!("application/pdf"));
+        assert_eq!(
+            handed["attachments"][0]["content_type"],
+            json!("application/pdf")
+        );
         assert!(handed["attachments"][0]["sha256"].is_string());
 
         assert!(

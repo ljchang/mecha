@@ -225,8 +225,7 @@ pub fn append(path: &Path, entry: &LedgerEntry) -> Result<()> {
 /// A reminder tier: how long before the meeting it fires, and the ledger
 /// action that remembers it fired. Two tiers, the industry's converged
 /// default; the manifest's `[policy] reminders` can drive this later.
-pub const REMINDER_TIERS: [(i64, &str); 2] =
-    [(24 * 60, "reminded_24h"), (60, "reminded_1h")];
+pub const REMINDER_TIERS: [(i64, &str); 2] = [(24 * 60, "reminded_24h"), (60, "reminded_1h")];
 
 /// Which reminders are owed right now. Pure, so every rule is testable
 /// without a clock or a mailbox:
@@ -279,8 +278,7 @@ pub fn reminders_due(
             let window = chrono::Duration::minutes(minutes);
             let fires = start.with_timezone(&chrono::Utc) - now;
             let existed_before_window =
-                start.with_timezone(&chrono::Utc) - booked_at.with_timezone(&chrono::Utc)
-                    > window;
+                start.with_timezone(&chrono::Utc) - booked_at.with_timezone(&chrono::Utc) > window;
             if fires > chrono::Duration::zero()
                 && fires <= window
                 && existed_before_window
@@ -355,11 +353,17 @@ mod tests {
 
         // Not mine: a plain request, an invalid record, invented times.
         let mut plain = record();
-        plain["values"].as_object_mut().unwrap().remove("_booking_id");
+        plain["values"]
+            .as_object_mut()
+            .unwrap()
+            .remove("_booking_id");
         assert!(parse_record(&plain).is_none());
         let mut invalid = record();
         invalid["valid"] = json!(false);
-        assert!(parse_record(&invalid).is_none(), "an invalid record is nobody's booking");
+        assert!(
+            parse_record(&invalid).is_none(),
+            "an invalid record is nobody's booking"
+        );
         let mut torn = record();
         torn["values"]["_slot_start"] = json!("tuesdayish");
         assert!(parse_record(&torn).is_none(), "never invent a meeting time");
@@ -402,8 +406,11 @@ mod tests {
             record().to_string(),
         )
         .unwrap();
-        std::fs::write(dir.path().join("0000000002-meeting.json"), "{\"valid\": true, \"values\": {}}")
-            .unwrap();
+        std::fs::write(
+            dir.path().join("0000000002-meeting.json"),
+            "{\"valid\": true, \"values\": {}}",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("notes.txt"), "not json").unwrap();
         let found = scan(dir.path()).unwrap();
         assert_eq!(found.len(), 1);
@@ -436,8 +443,14 @@ mod tests {
                         "_slot_start": "2026-08-25T18:00:00Z"}
         });
         assert_eq!(parse_cancellation(&cancel), Some((30, "abc123".into())));
-        assert!(parse_record(&cancel).is_none(), "a cancellation is not a booking");
-        assert!(parse_cancellation(&record()).is_none(), "a booking is not a cancellation");
+        assert!(
+            parse_record(&cancel).is_none(),
+            "a cancellation is not a booking"
+        );
+        assert!(
+            parse_cancellation(&record()).is_none(),
+            "a booking is not a cancellation"
+        );
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bookings.jsonl");
@@ -460,7 +473,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(handled(&path).contains("old1"), "pre-action lines are creations");
+        assert!(
+            handled(&path).contains("old1"),
+            "pre-action lines are creations"
+        );
         assert!(cancelled(&path).contains("old1"));
     }
 
@@ -470,9 +486,11 @@ mod tests {
     /// tier — the invite in hand IS that reminder.
     #[test]
     fn reminders_fire_once_per_tier_and_never_absurdly() {
-        let t = |s: &str| chrono::DateTime::parse_from_rfc3339(s)
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let t = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
         let booking = |id: &str, start: &str| DrainedBooking {
             seq: 1,
             type_id: "book".into(),

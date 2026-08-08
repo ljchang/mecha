@@ -173,9 +173,15 @@ async fn bookings(
             .into_iter()
             .filter(|(_, id)| !bk::cancelled(&ledger).contains(id))
             .count();
-        let reminders =
-            bk::reminders_due(&bk::scan(&requests)?, &bk::entries(&ledger), chrono::Utc::now());
-        println!("{cancels} cancellation(s) pending, {} reminder(s) due", reminders.len());
+        let reminders = bk::reminders_due(
+            &bk::scan(&requests)?,
+            &bk::entries(&ledger),
+            chrono::Utc::now(),
+        );
+        println!(
+            "{cancels} cancellation(s) pending, {} reminder(s) due",
+            reminders.len()
+        );
         return Ok(());
     }
 
@@ -199,7 +205,9 @@ async fn bookings(
             .map_err(|e| anyhow::anyhow!(e))
             // Named, because the fix differs per booking: the ledger holds
             // what already succeeded, and a re-run resumes here.
-            .with_context(|| format!("booking {} (request #{})", booking.booking_id, booking.seq))?;
+            .with_context(|| {
+                format!("booking {} (request #{})", booking.booking_id, booking.seq)
+            })?;
         bk::append(
             &ledger,
             &bk::LedgerEntry {
@@ -207,8 +215,7 @@ async fn bookings(
                 event_id: event_id.clone(),
                 account: account_name.clone(),
                 seq: booking.seq,
-                created_at: chrono::Utc::now()
-                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 action: "created".into(),
             },
         )?;
@@ -275,8 +282,7 @@ async fn cancel_drained(
                 event_id: entry.map(|e| e.event_id.clone()).unwrap_or_default(),
                 account: entry.map(|e| e.account.clone()).unwrap_or_default(),
                 seq: *seq,
-                created_at: chrono::Utc::now()
-                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 action: "cancelled".into(),
             },
         )?;
@@ -328,9 +334,7 @@ async fn remind_due(
                 &entry.account,
                 to,
                 &format!("Reminder: your meeting on {when}"),
-                &format!(
-                    "A reminder that your meeting is coming up: **{when}**.{manage}"
-                ),
+                &format!("A reminder that your meeting is coming up: **{when}**.{manage}"),
             )
             .await
             .map_err(|e| anyhow::anyhow!(e))
@@ -342,8 +346,7 @@ async fn remind_due(
                 event_id: entry.event_id.clone(),
                 account: entry.account.clone(),
                 seq: booking.seq,
-                created_at: chrono::Utc::now()
-                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 action: (*action).to_string(),
             },
         )?;
@@ -364,7 +367,10 @@ async fn freebusy(
         |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let (time_min, time_max) = match (from, to) {
         (Some(from), Some(to)) => (from, to),
-        _ => (stamp(now), stamp(now + chrono::Duration::days(i64::from(days)))),
+        _ => (
+            stamp(now),
+            stamp(now + chrono::Duration::days(i64::from(days))),
+        ),
     };
 
     let tools = MailTools::load()?;
@@ -396,9 +402,8 @@ async fn freebusy(
         let tz = mecha_mail::time::configured_zone();
         println!("busy {time_min} → {time_max} ({} intervals)", busy.len());
         for iv in &busy {
-            let render = |t: &chrono::DateTime<chrono::Utc>| {
-                mecha_mail::time::in_zone(&t.to_rfc3339(), tz)
-            };
+            let render =
+                |t: &chrono::DateTime<chrono::Utc>| mecha_mail::time::in_zone(&t.to_rfc3339(), tz);
             println!("  {} — {}", render(&iv.start), render(&iv.end));
         }
     }
