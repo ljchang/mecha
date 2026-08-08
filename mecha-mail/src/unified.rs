@@ -772,6 +772,37 @@ impl MailTools {
             .map_err(|e| format!("account `{}`: {e}", account.name))
     }
 
+    /// Delete one event — the cancellation half of the bookings handler.
+    /// The account is named exactly (it came off the ledger), and both
+    /// providers mail the attendees their native retraction.
+    pub async fn delete_event_quiet(
+        &self,
+        account: &str,
+        event_id: &str,
+    ) -> Result<(), String> {
+        let account = self.pick(Some(account), Mode::Item)?[0];
+        let event_id = event_id.to_string();
+        with_token(&account.manager, |t| {
+            let event_id = event_id.clone();
+            async move {
+                match account.provider {
+                    Provider::Google => {
+                        gcal::CalendarProvider::new(t)
+                            .delete_event("primary", &event_id)
+                            .await
+                    }
+                    Provider::Outlook => {
+                        mcal::OutlookCalendarProvider::new(t)
+                            .delete_event(&event_id)
+                            .await
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|e| format!("account `{}`: {e}", account.name))
+    }
+
     fn pick(&self, arg: Option<&str>, mode: Mode) -> Result<Vec<&Account>, String> {
         let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
         resolve(&names, self.default.as_deref(), arg, mode)

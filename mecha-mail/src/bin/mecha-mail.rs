@@ -203,6 +203,7 @@ async fn bookings(
                 seq: booking.seq,
                 created_at: chrono::Utc::now()
                     .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                action: "created".into(),
             },
         )?;
         created += 1;
@@ -212,6 +213,68 @@ async fn bookings(
         );
     }
     println!("{created} event(s) created");
+    cancel_drained(&tools, &requests, &ledger).await
+}
+
+/// The other direction: cancellation records become event deletions,
+/// through the ledger's booking→event join, with the provider mailing the
+/// retraction. A cancellation whose event was never created (the create
+/// failed and was never retried, or predates the ledger) is closed with an
+/// empty event id rather than retried forever — the calendar holds nothing
+/// to remove, and the record said so.
+async fn cancel_drained(
+    tools: &MailTools,
+    requests: &std::path::Path,
+    ledger: &std::path::Path,
+) -> Result<()> {
+    use mecha_mail::bookings as bk;
+
+    let done = bk::cancelled(ledger);
+    let created: std::collections::HashMap<String, bk::LedgerEntry> = bk::entries(ledger)
+        .into_iter()
+        .filter(|e| e.action == "created")
+        .map(|e| (e.booking_id.clone(), e))
+        .collect();
+    let waiting: Vec<(i64, String)> = bk::scan_cancellations(requests)?
+        .into_iter()
+        .filter(|(_, id)| !done.contains(id))
+        .collect();
+    if waiting.is_empty() {
+        return Ok(());
+    }
+    let mut removed = 0usize;
+    for (seq, booking_id) in &waiting {
+        let entry = created.get(booking_id);
+        if let Some(entry) = entry {
+            tools
+                .delete_event_quiet(&entry.account, &entry.event_id)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
+                .with_context(|| format!("cancelling booking {booking_id}"))?;
+            removed += 1;
+            println!(
+                "✗ #{seq} booking {booking_id} → event {} withdrawn from `{}`",
+                entry.event_id, entry.account
+            );
+        } else {
+            println!("· #{seq} booking {booking_id} cancelled, but no event was ever created");
+        }
+        bk::append(
+            ledger,
+            &bk::LedgerEntry {
+                booking_id: booking_id.clone(),
+                event_id: entry.map(|e| e.event_id.clone()).unwrap_or_default(),
+                account: entry.map(|e| e.account.clone()).unwrap_or_default(),
+                seq: *seq,
+                created_at: chrono::Utc::now()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                action: "cancelled".into(),
+            },
+        )?;
+    }
+    if removed > 0 {
+        println!("{removed} event(s) withdrawn");
+    }
     Ok(())
 }
 
