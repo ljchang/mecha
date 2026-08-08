@@ -66,7 +66,7 @@ jobs:
               echo "$out"
             else
               echo "$out"
-              echo "$out" | grep -q "already uploaded" || exit 1
+              echo "$out" | grep -Eq "already uploaded|already exists" || exit 1
               echo "== $crate: this version is already on crates.io; fine"
             fi
           done
