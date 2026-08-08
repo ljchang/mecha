@@ -568,6 +568,30 @@ true and makes revoking that row the door's kill switch. Links are budgeted
 per day; sessions from both doors last 30 days and roll on use. The detail
 in that repo's `DEPLOY.md`.
 
+**2026-08-08, late evening — a release becomes a tag, and the deploy becomes
+a command.** The email door's deploy was the last hand-deploy, and it earned
+the pipeline that ended the era: the locally built binary crash-looped the
+service (`status=203/EXEC` — the workstation is aarch64, the droplet x86_64),
+and the config line appended over SSH landed inside `[mail]`, where TOML
+swallowed it silently. Both repos now release by tag: a `v*` tag re-runs the
+suite, refuses a tag that disagrees with the workspace version, and publishes
+the crates in dependency order through crates.io Trusted Publishing — all six
+live at 0.1.0 (`mecha` itself is taken; the CLI ships as `mecha-cli`). The
+factory tag also builds a static musl binary whose workflow *refuses to ship
+it dynamically linked* — a guard that paid for itself on its first verified
+run, catching a crt-static toolchain-default drift that would have replayed
+the morning's outage; `RUSTFLAGS` now states the contract instead of
+inheriting it. `scripts/deploy.sh`, installed on the box as `factory-deploy`,
+makes a deploy one command — download by tag, checksum, prove the binary and
+`factory check` the config while the site is still up, swap keeping
+`factory.prev`, health-check, roll back unaided on failure — and `v0.1.0`
+went out through it, verified live by the queue holding an empty `?wait=4`
+long-poll the full four seconds. The workflow the day taught is
+`CONTRIBUTING.md`'s in both repos now: branch per arc, one worktree per
+session (two sessions shared a tree that afternoon, and production code
+spent an hour existing only in a stash), PR-gated landings, rebase merges,
+and no attribution trailers.
+
 ---
 
 ## The measurement record
@@ -1002,6 +1026,23 @@ All found by pre-push review or by running it.
   looking exactly like a regression in that day's work. **Compile-time paths
   live in the artifact, not the fingerprint: give a throwaway worktree its own
   target dir.** (2026-08-07, in the factory repo; the lesson is generic.)
+- **A binary built here crash-looped the box with `status=203/EXEC` — this
+  workstation is aarch64, the droplet is x86_64.** glibc versions matched,
+  which was the check that got made; architecture was the one that mattered,
+  and a wrong-arch ELF fails `exec()` itself, so systemd logs no reason at
+  all — the restart loop was the only symptom. **`file` the artifact before
+  it ships, and make the pipeline state its target as a contract** — the
+  factory release workflow now refuses a non-static binary for the same
+  reason. (2026-08-08; the box kept serving because the swap kept
+  `factory.prev`.)
+- **A config key appended to the end of a TOML file was silently swallowed:**
+  the file ended in a `[mail]` table, so the new top-level key parsed as
+  `[mail]`'s, serde ignored the unknown field, and the feature simply did not
+  exist — no error anywhere, just a button that never rendered. **Appending
+  to TOML is position-sensitive** (top-level keys go above the first table
+  header), and a deploy should validate the config it is about to serve
+  (`factory-deploy` now runs `factory check` before the swap) rather than
+  trust that an edit landed where it reads like it landed. (2026-08-08.)
 - **A one-shot HTTP stub that answers after one `read()` races the client's
   body write.** The connect tests' stub gate read once, replied, and closed;
   under a loaded parallel run the request arrived in two segments and the
