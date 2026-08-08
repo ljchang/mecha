@@ -74,6 +74,31 @@ struct Running {
     outbox_before: Option<std::collections::HashSet<String>>,
 }
 
+/// One piece of detached work being watched for its outcome.
+///
+/// The polling is against the *stores*, never the child process: the store is
+/// the record, a child that died without writing is indistinguishable from
+/// one still working, and the `since` cap is what keeps a wedged child from
+/// pinning the fast tick forever.
+enum Watch {
+    /// An outbox item whose release was spawned. `error_before` is the item's
+    /// error at spawn time, because a failed release leaves the item pending
+    /// with the error written on it — only an error that *changed* belongs to
+    /// this attempt.
+    Send {
+        id: String,
+        error_before: Option<String>,
+        since: std::time::Instant,
+    },
+    /// A frontdoor record whose detached verb (extract, triage) should move
+    /// its state.
+    Request {
+        seq: i64,
+        state_before: String,
+        since: std::time::Instant,
+    },
+}
+
 /// Everything a provider or MCP change replaces at once.
 ///
 /// Bundled because they have to move together: a new agent comes with a new
@@ -209,6 +234,12 @@ struct App {
     /// on modal actions, and on the idle tick — never per frame, because the
     /// count is a directory read.
     outbox_pending: usize,
+    /// Detached work whose outcome should be reported without a reopen: a
+    /// release, an extraction, a triage run. Polled from the tick — while any
+    /// are live the idle tick tightens to a second — and a resolved watch
+    /// becomes a transcript notice, a badge refresh, and a reload of whatever
+    /// modal is showing the thing that changed.
+    watches: Vec<Watch>,
     /// What happens when a run stages drafts. Set by `/review`, and only by
     /// `/review`: release policy must not be decidable from the prompt, which
     /// shares a context window with whatever third-party text a tool fetched.
@@ -437,6 +468,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         pending_outbox_edit: None,
         outbox_pending: outbox_pending_count(),
         review: command::ReviewMode::default(),
+        watches: Vec::new(),
         shell_tx,
         providers: prepared
             .config
@@ -572,9 +604,14 @@ async fn run_loop(
         }
 
         // A run in flight redraws on a timer so the elapsed clock ticks even
-        // when nothing else is happening.
+        // when nothing else is happening. A live watch tightens the idle tick
+        // to a second — that is the whole polling loop behind "the result
+        // lands here" — and the `since` cap in `poll_watches` is what
+        // guarantees the fast tick ends.
         let tick = tokio::time::sleep(std::time::Duration::from_millis(if app.running.is_some() {
             200
+        } else if !app.watches.is_empty() {
+            1_000
         } else {
             60_000
         }));
@@ -612,10 +649,11 @@ async fn run_loop(
             }
 
             _ = tick => {
+                poll_watches(app);
                 // The idle tick doubles as the badge's clock: a trigger in
                 // another process can stage drafts while this session sits
                 // idle. Not while running — run end refreshes it anyway.
-                if app.running.is_none() {
+                if app.running.is_none() && app.watches.is_empty() {
                     app.outbox_pending = outbox_pending_count();
                 }
             }
@@ -742,17 +780,25 @@ fn settle_staged_drafts(
                 args.extend(clean.iter().map(|i| i.id.clone()));
                 args.push("--yes".to_string());
                 let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-                app.transcript
-                    .push(Entry::Notice(match spawn_detached(&argv) {
-                        Ok(_) => format!(
-                            "review auto: releasing {} draft(s) — /outbox has the record",
-                            clean.len()
-                        ),
-                        Err(e) => format!(
-                            "review auto: could not release {} draft(s): {e} — they stay pending",
-                            clean.len()
-                        ),
+                let spawned = spawn_detached(&argv);
+                app.transcript.push(Entry::Notice(match &spawned {
+                    Ok(_) => format!(
+                        "review auto: releasing {} draft(s) — results will be reported here",
+                        clean.len()
+                    ),
+                    Err(e) => format!(
+                        "review auto: could not release {} draft(s): {e} — they stay pending",
+                        clean.len()
+                    ),
+                }));
+                if spawned.is_ok() {
+                    let now = std::time::Instant::now();
+                    app.watches.extend(clean.iter().map(|i| Watch::Send {
+                        id: i.id.clone(),
+                        error_before: i.error.clone(),
+                        since: now,
                     }));
+                }
             }
             if !tainted.is_empty() {
                 app.transcript.push(Entry::Notice(format!(
@@ -770,6 +816,116 @@ fn notice_staged(app: &mut App, n: usize) {
     app.transcript.push(Entry::Notice(format!(
         "{n} draft(s) staged — /outbox to review"
     )));
+}
+
+/// Check every live watch against its store, and report the ones that landed.
+///
+/// A resolved watch is a transcript notice; any resolution also refreshes the
+/// badge and reloads whichever modal is showing the thing that changed, so
+/// "reopen to see the result" stops being an instruction and becomes what the
+/// screen already did. Watches that outlive their cap are dropped with a
+/// still-working notice rather than kept — a wedged child must not pin the
+/// one-second tick forever, and the store keeps the truth either way.
+fn poll_watches(app: &mut App) {
+    if app.watches.is_empty() {
+        return;
+    }
+    let watches = std::mem::take(&mut app.watches);
+    let (mut outbox_moved, mut requests_moved) = (false, false);
+
+    for watch in watches {
+        match watch {
+            Watch::Send {
+                id,
+                error_before,
+                since,
+            } => {
+                let item = crate::commands::outbox::open_store()
+                    .and_then(|s| s.item(&id))
+                    .ok();
+                match item {
+                    Some(item) if item.status != "pending" => {
+                        app.transcript
+                            .push(Entry::Notice(match item.status.as_str() {
+                                "sent" => format!("sent `{id}` via `{}`", item.tool),
+                                other => format!("`{id}` is now {other}"),
+                            }));
+                        outbox_moved = true;
+                    }
+                    // Still pending with a *changed* error: this attempt
+                    // failed. The old error staying put says nothing.
+                    Some(item) if item.error != error_before && item.error.is_some() => {
+                        app.transcript.push(Entry::Notice(format!(
+                            "release of `{id}` failed: {} — it stays pending",
+                            item.error.as_deref().unwrap_or("unknown")
+                        )));
+                        outbox_moved = true;
+                    }
+                    Some(_) if since.elapsed() > std::time::Duration::from_secs(300) => {
+                        app.transcript.push(Entry::Notice(format!(
+                            "`{id}` is still releasing after 5m — /outbox has the record"
+                        )));
+                        outbox_moved = true;
+                    }
+                    Some(_) => app.watches.push(Watch::Send {
+                        id,
+                        error_before,
+                        since,
+                    }),
+                    // Unreadable store or vanished item: the watch has nothing
+                    // to stand on, and a guess would be worse than silence.
+                    None => {}
+                }
+            }
+            Watch::Request {
+                seq,
+                state_before,
+                since,
+            } => {
+                let record = mecha_core::frontdoor::Frontdoor::open_default()
+                    .and_then(|s| s.record(seq))
+                    .ok();
+                match record {
+                    Some(record) if record.state != state_before => {
+                        let drafts = if record.state == mecha_core::frontdoor::AWAITING_ME {
+                            format!(" — {} draft(s) in /outbox", record.outbox.len())
+                        } else {
+                            String::new()
+                        };
+                        app.transcript.push(Entry::Notice(format!(
+                            "request {seq}: {state_before} → {}{drafts}",
+                            record.state
+                        )));
+                        requests_moved = true;
+                        // Triage stages drafts, so the outbox side moved too.
+                        outbox_moved = outbox_moved || !record.outbox.is_empty();
+                    }
+                    // Triage is a whole agent run; give it its twenty minutes
+                    // plus slack before giving up on the fast tick.
+                    Some(_) if since.elapsed() > std::time::Duration::from_secs(1800) => {
+                        app.transcript.push(Entry::Notice(format!(
+                            "request {seq} is still {state_before} after 30m — /frontdoor has the record"
+                        )));
+                        requests_moved = true;
+                    }
+                    Some(_) => app.watches.push(Watch::Request {
+                        seq,
+                        state_before,
+                        since,
+                    }),
+                    None => {}
+                }
+            }
+        }
+    }
+
+    if outbox_moved {
+        app.outbox_pending = outbox_pending_count();
+        reload_outbox(app);
+    }
+    if requests_moved {
+        reload_frontdoor(app);
+    }
 }
 
 /// Open /outbox scoped to `ids` — unless something already owns the keyboard,
@@ -1769,12 +1925,23 @@ fn handle_outbox_key(app: &mut App, key: KeyEvent) -> Result<()> {
             // surface (MCP servers included), which has no place on the event
             // loop. `--yes` is safe *because* the confirmation just happened
             // here — the item's status and error field are where the result
-            // lands, and reopening the modal reads them back.
+            // lands, and the watch below reports it when it does.
             let outcome = spawn_detached(&["outbox", "send", &confirm.id, "--yes"]);
+            let watch = outcome.is_ok();
             modal.status = Some(match outcome {
-                Ok(_) => format!("sending `{}` — reopen /outbox for the result", confirm.id),
+                Ok(_) => format!(
+                    "releasing `{}` — the result will be reported here",
+                    confirm.id
+                ),
                 Err(e) => format!("could not start the send: {e}"),
             });
+            if watch {
+                app.watches.push(Watch::Send {
+                    id: confirm.id,
+                    error_before: confirm.error_before,
+                    since: std::time::Instant::now(),
+                });
+            }
             reload_outbox(app);
         }
         return Ok(());
@@ -1851,6 +2018,7 @@ fn handle_outbox_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         summary: row.summary.clone(),
                         tainted: row.tainted,
                         args_text: row.args_text.clone(),
+                        error_before: row.error.clone(),
                     });
                 } else {
                     modal.status = Some(format!("`{}` is {}, not pending", row.id, row.status));
@@ -2026,15 +2194,21 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         row.seq
                     ));
                 } else {
-                    let seq = row.seq.to_string();
-                    modal.status = Some(
-                        match spawn_detached(&["frontdoor", "extract", "--seq", &seq]) {
-                            Ok(_) => {
-                                format!("extracting {seq} — reopen /frontdoor for the result")
-                            }
-                            Err(e) => format!("could not start the extraction: {e}"),
-                        },
-                    );
+                    let (seq, state_before) = (row.seq, row.state.clone());
+                    let spawned =
+                        spawn_detached(&["frontdoor", "extract", "--seq", &seq.to_string()]);
+                    let watch = spawned.is_ok();
+                    modal.status = Some(match spawned {
+                        Ok(_) => format!("extracting {seq} — the result will be reported here"),
+                        Err(e) => format!("could not start the extraction: {e}"),
+                    });
+                    if watch {
+                        app.watches.push(Watch::Request {
+                            seq,
+                            state_before,
+                            since: std::time::Instant::now(),
+                        });
+                    }
                     reload_frontdoor(app);
                 }
             }
@@ -2049,13 +2223,23 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         row.seq, row.state
                     ));
                 } else {
-                    let seq = row.seq.to_string();
-                    modal.status = Some(
-                        match spawn_detached(&["frontdoor", "triage", "--seq", &seq]) {
-                            Ok(_) => format!("triaging {seq} — drafts land in /outbox"),
-                            Err(e) => format!("could not start the triage: {e}"),
-                        },
-                    );
+                    let (seq, state_before) = (row.seq, row.state.clone());
+                    let spawned =
+                        spawn_detached(&["frontdoor", "triage", "--seq", &seq.to_string()]);
+                    let watch = spawned.is_ok();
+                    modal.status = Some(match spawned {
+                        Ok(_) => {
+                            format!("triaging {seq} — its drafts will be reported when it finishes")
+                        }
+                        Err(e) => format!("could not start the triage: {e}"),
+                    });
+                    if watch {
+                        app.watches.push(Watch::Request {
+                            seq,
+                            state_before,
+                            since: std::time::Instant::now(),
+                        });
+                    }
                     reload_frontdoor(app);
                 }
             }
@@ -2974,6 +3158,7 @@ mod tests {
             pending_outbox_edit: None,
             outbox_pending: 0,
             review: command::ReviewMode::default(),
+            watches: Vec::new(),
             shell_tx,
             providers: Vec::new(),
             kitty_keyboard: false,
@@ -3087,6 +3272,7 @@ mod tests {
                 summary: "mail to a@example.com".into(),
                 tainted: true,
                 args_text: "{\n  \"to\": \"a@example.com\"\n}".into(),
+                error_before: None,
             }),
             ..outbox::OutboxModal::new(Vec::new())
         });
@@ -3102,6 +3288,7 @@ mod tests {
             summary: "mail to a@example.com".into(),
             tainted: false,
             args_text: String::new(),
+            error_before: None,
         });
         let frame = frame_text(&mut app, 110, 35, None);
         assert!(!frame.contains("attacker"), "{frame}");

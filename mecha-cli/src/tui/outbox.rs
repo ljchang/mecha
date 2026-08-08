@@ -40,6 +40,9 @@ pub struct OutboxRow {
     /// The exact arguments a release would execute, pretty-printed. Shown in
     /// the detail and in a tainted send's confirmation.
     pub args_text: String,
+    /// The last release attempt's failure, if any — carried so a watch on a
+    /// new release can tell a fresh failure from this old one.
+    pub error: Option<String>,
     /// The full detail view, prebuilt so drawing is a scroll and nothing else.
     pub detail: Vec<Line<'static>>,
 }
@@ -67,6 +70,9 @@ pub struct SendConfirm {
     pub summary: String,
     pub tainted: bool,
     pub args_text: String,
+    /// The item's error at confirm time, handed to the watch that reports the
+    /// release's outcome: only an error that *changed* is the new attempt's.
+    pub error_before: Option<String>,
 }
 
 /// A rejection's reason being typed. Optional, as on the CLI — but the input
@@ -331,6 +337,7 @@ fn row(item: &OutboxItem) -> OutboxRow {
         tainted: item.taint.trifecta_armed(),
         edited: item.edited(),
         args_text: pretty(&item.args),
+        error: item.error.clone(),
         detail: detail_lines(item),
     }
 }
