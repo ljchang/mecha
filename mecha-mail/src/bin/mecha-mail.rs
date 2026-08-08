@@ -83,6 +83,23 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Turn drained booking records into calendar events. The inbound
+    /// sibling of `freebusy`: deterministic, no model, run by the drain
+    /// timer. Idempotent against `~/.mecha/mail/bookings.jsonl` — a record
+    /// already ledgered is skipped, so re-running after a partial failure
+    /// picks up exactly where it stopped.
+    Bookings {
+        /// The drained-request store. Defaults to `~/.mecha/requests`.
+        #[arg(long)]
+        requests: Option<std::path::PathBuf>,
+        /// The account whose calendar gets the events. Defaults to the
+        /// configured default account.
+        #[arg(long)]
+        account: Option<String>,
+        /// Report what would be created, creating nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Serve MCP over stdio (the default when no subcommand is given).
     Serve,
 }
@@ -110,8 +127,91 @@ async fn main() -> Result<()> {
             account,
             json,
         }) => freebusy(days, from, to, account, json).await,
+        Some(Command::Bookings {
+            requests,
+            account,
+            dry_run,
+        }) => bookings(requests, account, dry_run).await,
         Some(Command::Serve) | None => mcp::serve(MailTools::load()?).await,
     }
+}
+
+async fn bookings(
+    requests: Option<std::path::PathBuf>,
+    account: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
+    use mecha_mail::bookings as bk;
+
+    let requests = match requests {
+        Some(dir) => dir,
+        None => dirs::home_dir()
+            .context("cannot determine home directory")?
+            .join(".mecha")
+            .join("requests"),
+    };
+    if !requests.is_dir() {
+        // An absent store is "nothing drained yet", not a broken setup —
+        // this runs on a timer that must not cry wolf.
+        println!("no request store at {}; nothing to do", requests.display());
+        return Ok(());
+    }
+    let ledger = bk::ledger_path()?;
+    let done = bk::handled(&ledger);
+    let waiting: Vec<_> = bk::scan(&requests)?
+        .into_iter()
+        .filter(|b| !done.contains(&b.booking_id))
+        .collect();
+    if waiting.is_empty() {
+        println!("no new bookings");
+        return Ok(());
+    }
+
+    if dry_run {
+        println!("{} booking(s) would get events:", waiting.len());
+        for booking in &waiting {
+            let (title, _) = bk::event_text(booking);
+            println!("  #{:<4} {}  {}", booking.seq, booking.start, title);
+        }
+        return Ok(());
+    }
+
+    let tools = MailTools::load()?;
+    let mut created = 0usize;
+    for booking in &waiting {
+        let (title, description) = bk::event_text(booking);
+        let (account_name, event_id) = tools
+            .create_event_quiet(
+                account.as_deref(),
+                &title,
+                &description,
+                &booking.start,
+                &booking.end,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
+            // Named, because the fix differs per booking: the ledger holds
+            // what already succeeded, and a re-run resumes here.
+            .with_context(|| format!("booking {} (request #{})", booking.booking_id, booking.seq))?;
+        bk::append(
+            &ledger,
+            &bk::LedgerEntry {
+                booking_id: booking.booking_id.clone(),
+                event_id: event_id.clone(),
+                account: account_name.clone(),
+                seq: booking.seq,
+                created_at: chrono::Utc::now()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            },
+        )?;
+        created += 1;
+        println!(
+            "✓ #{} {} → event {event_id} on `{account_name}`",
+            booking.seq, title
+        );
+    }
+    println!("{created} event(s) created");
+    Ok(())
 }
 
 async fn freebusy(

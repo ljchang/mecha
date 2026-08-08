@@ -705,6 +705,67 @@ impl MailTools {
         Ok((intervals, failures))
     }
 
+    /// Create one event with typed arguments — the bookings handler's
+    /// path, beside the tool's. Same account resolution (the default, or
+    /// instructions to ask), same token machinery, and **no attendees on
+    /// purpose**: Graph mails every attendee on create with no way to
+    /// decline to, and the visitor's calendar copy is the ICS mail's job.
+    /// Returns `(account, event_id)`.
+    pub async fn create_event_quiet(
+        &self,
+        account: Option<&str>,
+        title: &str,
+        description: &str,
+        start: &str,
+        end: &str,
+    ) -> Result<(String, String), String> {
+        let account = self.pick(account, Mode::Create)?[0];
+        let result = with_token(&account.manager, |t| {
+            let (title, description) = (title.to_string(), description.to_string());
+            let (start, end) = (start.to_string(), end.to_string());
+            async move {
+                match account.provider {
+                    Provider::Google => {
+                        let request = gcal::CreateEventRequest {
+                            title,
+                            description: Some(description),
+                            start_time: start,
+                            end_time: end,
+                            location: None,
+                            attendees: Vec::new(),
+                            all_day: false,
+                            timezone: None,
+                        };
+                        gcal::CalendarProvider::new(t)
+                            .create_event("primary", &request)
+                            .await
+                            .map(|e| e.event_id)
+                    }
+                    Provider::Outlook => {
+                        let request = mcal::CreateEventRequest {
+                            title,
+                            description: Some(description),
+                            start_time: start,
+                            end_time: end,
+                            location: None,
+                            attendees: Vec::new(),
+                            all_day: false,
+                            timezone: None,
+                        };
+                        mcal::OutlookCalendarProvider::new(t)
+                            .create_event("primary", &request)
+                            .await
+                            .map(|e| e.event_id)
+                    }
+                }
+            }
+        })
+        .await;
+        result
+            .map(|event_id| (account.name.clone(), event_id))
+            .map_err(|e| format!("account `{}`: {e}", account.name))
+    }
+
     fn pick(&self, arg: Option<&str>, mode: Mode) -> Result<Vec<&Account>, String> {
         let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
         resolve(&names, self.default.as_deref(), arg, mode)
