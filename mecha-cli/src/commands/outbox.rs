@@ -118,7 +118,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
 /// The store the *agent* stages into is configured in `[outbox] dir`; the
 /// review must open the same one, so this resolves through config too.
-fn open_store() -> Result<OutboxStore> {
+///
+/// `pub(crate)` because the TUI's /outbox modal is a second review surface
+/// over the same store, and two resolutions of "which store" would eventually
+/// disagree.
+pub(crate) fn open_store() -> Result<OutboxStore> {
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
     let cfg = mecha_core::config::Config::load(&cwd)?;
     let root = match cfg.outbox.dir {
@@ -385,7 +389,7 @@ fn show(store: &OutboxStore, id: &str) -> Result<()> {
 /// a subject line that happens to start with `/` is not a directory, and
 /// guessing would put a wrong "open this" line in front of a human whose whole
 /// job here is to check what goes out.
-fn local_paths(args: &Value) -> Vec<(&'static str, std::path::PathBuf)> {
+pub(crate) fn local_paths(args: &Value) -> Vec<(&'static str, std::path::PathBuf)> {
     // `bundle` is what the factory's MCP tool actually names its argument —
     // found by wiring the two together, which is the only way a mismatch like
     // this surfaces. The others are kept because a different publishing tool
@@ -410,7 +414,7 @@ fn local_paths(args: &Value) -> Vec<(&'static str, std::path::PathBuf)> {
 
 /// The file a reviewer should actually open, when the argument named a
 /// directory.
-fn entry_point(path: &std::path::Path) -> Option<std::path::PathBuf> {
+pub(crate) fn entry_point(path: &std::path::Path) -> Option<std::path::PathBuf> {
     if path.is_file() {
         return Some(path.to_path_buf());
     }
