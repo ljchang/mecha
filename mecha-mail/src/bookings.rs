@@ -189,15 +189,56 @@ pub fn ledger_path() -> Result<PathBuf> {
     Ok(crate::accounts::dir()?.join("bookings.jsonl"))
 }
 
-/// The booking ids that already have events. A torn trailing line is
-/// skipped; every complete line counts — under-reading the ledger recreates
-/// an event (visible, deletable), over-reading it silently drops a meeting.
+/// The booking ids that already have events — or that were parked as
+/// conflicts. A torn trailing line is skipped; every complete line counts —
+/// under-reading the ledger recreates an event (visible, deletable),
+/// over-reading it silently drops a meeting. A `conflict` counts as
+/// handled on purpose: retrying it every sweep would re-announce the same
+/// collision forever, and the announcement already happened loudly once.
+/// A human resolves it; nothing here will.
 pub fn handled(path: &Path) -> BTreeSet<String> {
     entries(path)
         .into_iter()
-        .filter(|e| e.action == "created")
+        .filter(|e| e.action == "created" || e.action == "conflict")
         .map(|e| e.booking_id)
         .collect()
+}
+
+/// Whether any busy interval covers part of `[start, end)` — the drain-time
+/// re-verification. Pure, so the boundary cases are testable: touching
+/// endpoints are not a collision, any real overlap is.
+pub fn busy_overlaps(
+    busy: &[crate::freebusy::Interval],
+    start: chrono::DateTime<chrono::Utc>,
+    end: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    busy.iter().any(|iv| iv.start < end && start < iv.end)
+}
+
+/// One sweep at a time: a blocking advisory flock beside the ledger, taken
+/// *before reading the state acted on* (the outbox's rule, for the same
+/// reason). The drain loop and the timer's sweep can fire together, and
+/// the ledger-then-create sequence is only idempotent single-file — two
+/// readers of the same ledger both conclude "not handled" and both create
+/// the event. The kernel releases the lock if the process dies.
+pub fn lock_sweep(ledger: &Path) -> Result<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let path = ledger.with_extension("jsonl.lock");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    // SAFETY: flock on an fd we own, held open by the returned guard.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("locking {}", path.display()));
+    }
+    Ok(file)
 }
 
 /// The booking ids whose cancellation is already processed.
@@ -324,6 +365,100 @@ pub fn event_text(booking: &DrainedBooking) -> (String, String) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The drain-time re-verification's core: touching endpoints are the
+    /// ordinary back-to-back calendar and never a collision; any real
+    /// overlap — engulfing, straddling either edge, or interior — is one.
+    #[test]
+    fn busy_overlap_counts_real_overlap_and_ignores_touching_endpoints() {
+        let t = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        let iv = |a: &str, b: &str| crate::freebusy::Interval {
+            start: t(a),
+            end: t(b),
+        };
+        let (start, end) = (t("2026-08-25T18:00:00Z"), t("2026-08-25T18:30:00Z"));
+
+        // Back-to-back on both sides: free.
+        let busy = [
+            iv("2026-08-25T17:00:00Z", "2026-08-25T18:00:00Z"),
+            iv("2026-08-25T18:30:00Z", "2026-08-25T19:00:00Z"),
+        ];
+        assert!(!busy_overlaps(&busy, start, end));
+        // A minute over either edge, engulfing, interior: all collisions.
+        assert!(busy_overlaps(
+            &[iv("2026-08-25T17:00:00Z", "2026-08-25T18:01:00Z")],
+            start,
+            end
+        ));
+        assert!(busy_overlaps(
+            &[iv("2026-08-25T18:29:00Z", "2026-08-25T19:00:00Z")],
+            start,
+            end
+        ));
+        assert!(busy_overlaps(
+            &[iv("2026-08-25T17:00:00Z", "2026-08-25T19:00:00Z")],
+            start,
+            end
+        ));
+        assert!(busy_overlaps(
+            &[iv("2026-08-25T18:10:00Z", "2026-08-25T18:20:00Z")],
+            start,
+            end
+        ));
+        assert!(!busy_overlaps(&[], start, end));
+    }
+
+    /// A conflict is handled — parked for a human, never retried into the
+    /// same loud announcement every sweep — while a cancellation is not a
+    /// creation, exactly as before.
+    #[test]
+    fn a_conflict_parks_a_booking_as_handled() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = dir.path().join("bookings.jsonl");
+        let entry = |id: &str, action: &str| LedgerEntry {
+            booking_id: id.into(),
+            event_id: String::new(),
+            account: String::new(),
+            seq: 1,
+            created_at: "2026-08-08T00:00:00Z".into(),
+            action: action.into(),
+        };
+        append(&ledger, &entry("made", "created")).unwrap();
+        append(&ledger, &entry("parked", "conflict")).unwrap();
+        append(&ledger, &entry("gone", "cancelled")).unwrap();
+        let handled = handled(&ledger);
+        assert!(handled.contains("made"));
+        assert!(handled.contains("parked"), "a conflict does not retry");
+        assert!(!handled.contains("gone"));
+    }
+
+    /// Two sweeps cannot hold the lock at once, and dropping the guard
+    /// releases it — the whole of what the drain loop and the timer need.
+    #[test]
+    fn the_sweep_lock_excludes_a_second_sweep() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = dir.path().join("bookings.jsonl");
+        let guard = lock_sweep(&ledger).unwrap();
+        // A second lock attempt from another process would block; from this
+        // one, flock is recursive per-fd, so prove exclusion the direct
+        // way: LOCK_NB on a *separate* fd fails while the guard lives.
+        use std::os::fd::AsRawFd;
+        let probe = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(ledger.with_extension("jsonl.lock"))
+            .unwrap();
+        let refused = unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0;
+        assert!(refused, "the sweep lock must exclude a second holder");
+        drop(guard);
+        let granted = unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+        assert!(granted, "dropping the guard releases the lock");
+    }
 
     fn record() -> Value {
         json!({

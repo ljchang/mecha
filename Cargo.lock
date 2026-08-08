@@ -1174,6 +1174,7 @@ dependencies = [
  "dirs",
  "futures",
  "htmd",
+ "libc",
  "pulldown-cmark",
  "rand 0.8.7",
  "reqwest",

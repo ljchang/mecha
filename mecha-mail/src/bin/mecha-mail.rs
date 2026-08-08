@@ -157,6 +157,12 @@ async fn bookings(
         return Ok(());
     }
     let ledger = bk::ledger_path()?;
+    // One sweep at a time, and the lock comes before the ledger read it
+    // protects: the drain loop and the fifteen-minute timer both run this,
+    // and two readers who each saw "not handled" would each create the
+    // event. Blocking, not try: the other sweep finishes in seconds and
+    // whoever waited picks up whatever it did not.
+    let _sweep = bk::lock_sweep(&ledger)?;
     let done = bk::handled(&ledger);
     let waiting: Vec<_> = bk::scan(&requests)?
         .into_iter()
@@ -191,6 +197,53 @@ async fn bookings(
     }
     let mut created = 0usize;
     for booking in &waiting {
+        // Re-verify against *live* freebusy before creating anything: the
+        // box sold this slot from a cache up to minutes old, and home
+        // always holds fresher truth. An event that landed directly on a
+        // calendar meanwhile makes this a collision — parked loudly for a
+        // human, never silently double-booked. Fail-closed like the slot
+        // pipeline: an unreadable calendar is never a free one.
+        let (start, end) = (
+            chrono::DateTime::parse_from_rfc3339(&booking.start)
+                .with_context(|| format!("booking {} start", booking.booking_id))?
+                .with_timezone(&chrono::Utc),
+            chrono::DateTime::parse_from_rfc3339(&booking.end)
+                .with_context(|| format!("booking {} end", booking.booking_id))?
+                .with_timezone(&chrono::Utc),
+        );
+        let (busy, failures) = tools
+            .freebusy(&booking.start, &booking.end, None)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
+            .with_context(|| format!("re-verifying booking {}", booking.booking_id))?;
+        if !failures.is_empty() {
+            anyhow::bail!(
+                "refusing to create an event for booking {} without full freebusy:\n{}",
+                booking.booking_id,
+                failures.join("\n")
+            );
+        }
+        if bk::busy_overlaps(&busy, start, end) {
+            bk::append(
+                &ledger,
+                &bk::LedgerEntry {
+                    booking_id: booking.booking_id.clone(),
+                    event_id: String::new(),
+                    account: String::new(),
+                    seq: booking.seq,
+                    created_at: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    action: "conflict".into(),
+                },
+            )?;
+            eprintln!(
+                "CONFLICT: booking #{} ({}, {} – {}) overlaps something now on the \
+                 calendar — no event created, no invite sent. Resolve by hand: \
+                 the visitor has a confirmation page but no invite.",
+                booking.seq, booking.name, booking.start, booking.end
+            );
+            continue;
+        }
         let (title, description) = bk::event_text(booking);
         let (account_name, event_id) = tools
             .create_event_invite(
