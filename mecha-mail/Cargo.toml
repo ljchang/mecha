@@ -33,6 +33,9 @@ clap = { version = "4", features = ["derive", "env"] }
 dirs.workspace = true
 futures.workspace = true
 htmd = "0.1"
+# The bookings sweep's advisory flock — same mechanism as mecha-core's
+# outbox, for the same reason: two sweeps must not both create an event.
+libc = "0.2"
 pulldown-cmark = "0.13"
 rand = "0.8"
 reqwest.workspace = true
