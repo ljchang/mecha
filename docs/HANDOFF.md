@@ -22,6 +22,14 @@ maps which document holds what.
 ## Where the work is
 
 Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.0**.
+The three crates are on **crates.io at 0.1.0** as of 2026-08-08 (`mecha-core`,
+`mecha-mail`, `mecha-cli` — the bare name `mecha` was taken, so the CLI crate
+installs the `mecha` binary), published through the tag-driven `release`
+workflow with Trusted Publishing, so no registry token exists anywhere. The
+next repo release is **v0.1.1**: the v0.1.0 GitHub release predates the
+crates, and tags converge with crate versions from 0.1.1 on. How work lands —
+branch per arc, one worktree per session, PR-gated, release by tag — is
+`CONTRIBUTING.md`'s to state.
 CI runs build, test, clippy and rustfmt on every push and pull request; the
 documentation site builds from `website/` and deploys to
 <https://docs.mecha-factory.ai/> — GitHub Pages still hosts it; the custom
@@ -157,8 +165,9 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
   booking-drain sweep riding the same tick as backstop. The fast path is
   **`mecha-drain.service`**, an always-on loop long-polling the box's queue
   (`drain --wait 25`) so a confirmed booking becomes a calendar event and
-  its invite seconds after the click — paced down to a 5s poll while the
-  deployed box binary predates `?wait=`. The sweep takes a flock (both
+  its invite seconds after the click; live end to end since the box's
+  v0.1.0 deploy (2026-08-08, late evening — an empty `?wait=4` poll against
+  the gate held the full four seconds). The sweep takes a flock (both
   runners share it) and re-verifies each booking against live freebusy
   before creating the event; a conflict parks loudly in the ledger. The
   account is named in the units because a timer cannot ask; the loop script
@@ -192,7 +201,12 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
 A single small VPS runs `mecha-factory`. Its deployment posture — host, sizing,
 the dedicated deploy key, the firewall policy — is inventory rather than
 engineering, so it lives in `docs/OPERATIONS.md`, which is gitignored. The
-deploy procedure and its traps are in that repository's `docs/DEPLOY.md`.
+deploy procedure and its traps are in that repository's `docs/DEPLOY.md` —
+and as of 2026-08-08 a deploy is one command: `factory-deploy <tag>` on the
+box installs a tagged, CI-built, checksum-verified static binary, proves the
+binary and the config while the site is still up, and rolls itself back on a
+failed health check. Hand-copied binaries are over; the outage that ended
+them is in [`HISTORY.md`](HISTORY.md).
 
 What is worth stating publicly is the invariant the posture exists to protect:
 **the box holds no credential that reaches home.** Two Argon2id key hashes, the
