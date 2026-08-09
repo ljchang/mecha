@@ -394,11 +394,18 @@ pub(crate) fn local_paths(args: &Value) -> Vec<(&'static str, std::path::PathBuf
     // found by wiring the two together, which is the only way a mismatch like
     // this surfaces. The others are kept because a different publishing tool
     // is free to use them, and the cost of an extra key is nothing.
-    const KEYS: [(&str, &str); 4] = [
+    // `bundle` and `spec` are what the factory's MCP tools actually name their
+    // arguments — both found by wiring the two together, which is the only way
+    // a mismatch like this surfaces. A poll and a request type have no rendered
+    // directory to open; what a reviewer needs to read is the file that defines
+    // what is about to become public, which is exactly these.
+    const KEYS: [(&str, &str); 6] = [
         ("bundle", "rendered bundle"),
         ("bundle_path", "rendered bundle"),
         ("path", "rendered bundle"),
         ("source", "source"),
+        ("spec", "poll spec"),
+        ("manifest", "form manifest"),
     ];
     let Some(map) = args.as_object() else {
         return Vec::new();
@@ -1089,5 +1096,37 @@ mod tests {
 
         let same = mecha_core::outbox::diff_args(&before, &before);
         assert!(same.contains("no textual change"), "{same}");
+    }
+    /// A publish's reviewable object is whatever file says what is about to
+    /// become public. For a bundle that is a rendered directory; for a poll it
+    /// is the spec, and for a request type the manifest — both of which arrived
+    /// with the factory's wider tool surface and neither of which has a bundle
+    /// directory at all. Without a row here `show` prints a JSON blob and the
+    /// reviewer has nothing to open.
+    #[test]
+    fn a_publish_points_at_the_file_that_defines_it() {
+        let poll = serde_json::json!({
+            "instrument": "book",
+            "poll_id": "lab-feb",
+            "spec": "/tmp/lab-feb.toml",
+        });
+        assert_eq!(
+            local_paths(&poll),
+            vec![("poll spec", std::path::PathBuf::from("/tmp/lab-feb.toml"))]
+        );
+
+        let form = serde_json::json!({"manifest": "/tmp/office-hours.toml"});
+        assert_eq!(
+            local_paths(&form),
+            vec![(
+                "form manifest",
+                std::path::PathBuf::from("/tmp/office-hours.toml")
+            )]
+        );
+
+        // A subject line that happens to look like a path is still not one:
+        // the key is what decides, never the value's shape.
+        let message = serde_json::json!({"to": "a@b.c", "subject": "/etc/passwd"});
+        assert!(local_paths(&message).is_empty());
     }
 }
