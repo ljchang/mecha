@@ -15,7 +15,7 @@ knows it exists.
 ```toml
 [[mcp]]
 name = "factory"
-command = "mecha-factory-publish"
+command = "factory-publish"
 args = ["mcp"]
 
 [outbox]
@@ -116,3 +116,5 @@ because "regenerate last week's report" must not silently lose its input.
 - [The outbox](/docs/features/outbox) — the staging machinery this rides on.
 - [The work directory](/docs/features/work) — where a bundle is rendered from.
 - [The front door](/docs/features/frontdoor) — the inbound half of the same boundary.
+- [Polls](/docs/factory/polls) — the other thing the same box serves, and the
+  one place a typed answer replaces a stranger's prose.
