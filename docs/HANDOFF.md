@@ -54,11 +54,11 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **550 tests**, no failures — verified 2026-08-08 night, after the
-TUI review-surfaces arc landed (`mecha-cli` grew from 83 with the /outbox
-and /frontdoor modals; `mecha-mail` from 83 with the bookings-sweep
-hardening). One flake was seen once in `mecha-core` that day and never
-reproduced across five re-runs — unidentified, worth an eye.
+Expect **569 tests**, no failures — verified 2026-08-09, after the
+inter-agent messaging arc landed (`mecha-core` grew with the mailbox
+store, taint-forwarding, and the review's fix tests). One flake was seen
+once in `mecha-core` on 2026-08-08 and never reproduced across five
+re-runs — unidentified, worth an eye.
 
 | Suite | Count |
 |---|---:|
