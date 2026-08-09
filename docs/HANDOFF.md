@@ -657,9 +657,24 @@ behaviour came from the reflector model declining. If the design was always
   `fs_read` — the path that already exists — instead of a parallel one. The
   filename is sanitised, because the connector writes it before any tool and
   therefore before the path jail; there is a test on `../../` and friends.
-  **What remains: step 6** (outbox review in-thread — the piece that closes
-  `PUBLIC-SURFACE-DESIGN.md` §11's deferred phone UI) and **step 7's outbound
-  half** (posting a rendered file or a published bundle's link). **Two things are owed rather than done**, both
+  **Step 6 is in**: a run that stages drafts posts one review card per draft
+  into its thread — tool, summary in a fence, Send / Reject — scoped by an
+  **id-diff** of pending outbox ids taken before and after the run, because
+  nothing else reliably says which drafts *this* run staged and releasing
+  another session's from a phone is the worst surprise available. A draft
+  written with the trifecta armed is marked. Both buttons drive `mecha outbox`
+  as a **child process**, like the TUI, spawned into a task so the event loop
+  keeps answering while MCP servers start. **That closes
+  `PUBLIC-SURFACE-DESIGN.md` §11's deferred phone UI, and it needed no
+  home-side server.** Two things surfaced writing it: the store root is
+  resolved from the global config rather than `open_existing_default`, which
+  always uses the default root (a configured `[outbox] dir` would have made
+  every card silently go missing), and a draft summary is cut to fit a section
+  block with its fence, since Slack drops an oversized block with a warning
+  nobody reads. **`[slack] tools`** narrows what a Slack run carries — worth
+  setting, given the ~7–8k input tokens a turn of schemas measured live.
+  **What remains: step 7's outbound half** (posting a rendered file or a
+  published bundle's link). **Two things are owed rather than done**, both
   recorded where they live: a **connector-wide lock** (two `mecha slack
   connect` processes would both answer and both write; nothing stops that
   today but there being one operator, which is the shape this project
