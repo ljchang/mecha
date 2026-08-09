@@ -20,6 +20,8 @@ pub enum Command {
     Outbox,
     /// Inbound requests: read (prose included), extract, triage, park, close.
     Frontdoor,
+    /// Open polls on the gate: tallies, close with an outcome, export.
+    Polls,
     /// `None` shows the current model; `Some` switches to it.
     Model(Option<String>),
     Provider(Option<String>),
@@ -129,6 +131,7 @@ pub fn parse(line: &str) -> Option<Command> {
         // "requests" because that is what the store holds; `frontdoor` is the
         // component's name and the CLI's.
         "frontdoor" | "requests" => Command::Frontdoor,
+        "polls" | "poll" => Command::Polls,
         "model" | "m" => Command::Model(arg.map(str::to_string)),
         "provider" | "p" => Command::Provider(arg.map(str::to_string)),
         "usage" => Command::Usage,
@@ -274,12 +277,13 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 14] = [
+pub const NAMES: [&str; 15] = [
     "help",
     "tools",
     "triggers",
     "outbox",
     "frontdoor",
+    "polls",
     "review",
     "model",
     "provider",
@@ -349,6 +353,7 @@ pub const HELP: &str = "\
   /triggers              scheduled prompts: see, edit, run, cancel
   /outbox                staged outbound drafts: read, edit, send, reject
   /frontdoor             inbound requests: read, extract, triage, close
+  /polls                 open polls on the gate: tallies, close, export
   /review [now|later|auto]      what happens when a run stages drafts
   /model [id]            show or switch the model
   /provider [name]       show or switch the provider

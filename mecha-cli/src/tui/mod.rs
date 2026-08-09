@@ -16,6 +16,7 @@ mod ask;
 mod command;
 mod frontdoor;
 mod outbox;
+mod polls;
 mod tools;
 mod transcript;
 mod triggers;
@@ -226,6 +227,8 @@ struct App {
     staged: Option<outbox::OutboxModal>,
     /// The /frontdoor modal, when open. Takes every key while it is up.
     requests: Option<frontdoor::FrontdoorModal>,
+    /// The /polls modal, when open. Takes every key while it is up.
+    poll_monitor: Option<polls::PollsModal>,
     /// A trigger file to open in $EDITOR, deferred to the event loop for the
     /// same reason `pending_editor` is: suspending the TUI needs the terminal.
     pending_trigger_edit: Option<String>,
@@ -470,6 +473,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         scheduled: None,
         staged: None,
         requests: None,
+        poll_monitor: None,
         pending_trigger_edit: None,
         pending_outbox_edit: None,
         outbox_pending: outbox_pending_count(),
@@ -1149,6 +1153,9 @@ fn on_key(
     if app.requests.is_some() {
         return handle_frontdoor_key(app, key);
     }
+    if app.poll_monitor.is_some() {
+        return handle_polls_key(app, key);
+    }
 
     // A modal list owns the keyboard while it is up, for the same reason the
     // approval modal does: a keystroke meant for the list must not also reach
@@ -1535,6 +1542,11 @@ fn run_command(
         Command::Frontdoor => match frontdoor::load() {
             Ok(rows) => app.requests = Some(frontdoor::FrontdoorModal::new(rows)),
             Err(e) => say(format!("frontdoor: {e:#}")),
+        },
+
+        Command::Polls => match polls::load() {
+            Ok(rows) => app.poll_monitor = Some(polls::PollsModal::new(rows)),
+            Err(e) => say(format!("polls: {e:#}")),
         },
 
         Command::Usage => say(format!(
@@ -2299,6 +2311,165 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 /// Rebuild the /frontdoor modal's rows, keeping the cursor where it was.
+/// Keys for the /polls modal. Every mutation drives `factory-publish
+/// polls …` — the polls' own CLI, one implementation per verb, and no way
+/// for the TUI to do something the command line cannot. Fetches block for
+/// one HTTP round-trip on purpose: the honest alternative is a watcher
+/// nobody needs for a sub-second call, and the row records the moment it
+/// was true.
+fn handle_polls_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let Some(modal) = &mut app.poll_monitor else {
+        return Ok(());
+    };
+
+    // A resolution being typed owns the keyboard. Empty is allowed: an
+    // outcome is Loomio's statement for the page, not an accountability
+    // requirement like the frontdoor's close reason.
+    if modal.input.is_some() {
+        match key.code {
+            KeyCode::Esc => modal.input = None,
+            KeyCode::Enter => {
+                let input = modal.input.take().expect("checked above");
+                let note = input.buffer.trim().to_string();
+                let Some(row) = modal.selected_row() else {
+                    return Ok(());
+                };
+                let instrument = row.instrument.clone();
+                let poll_id = input.poll_id;
+                let mut args = vec!["polls", "close", instrument.as_str(), poll_id.as_str()];
+                if !note.is_empty() {
+                    args.extend(["--resolution", note.as_str()]);
+                }
+                modal.status = Some(match factory_cli(&args) {
+                    Ok(_) => format!("closed {poll_id}"),
+                    Err(e) => format!("could not close {poll_id}: {e}"),
+                });
+                fetch_selected_poll(modal);
+            }
+            KeyCode::Backspace => {
+                if let Some(input) = &mut modal.input {
+                    input.buffer.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(input) = &mut modal.input {
+                    input.buffer.push(c);
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    modal.status = None;
+
+    match key.code {
+        KeyCode::Up => {
+            if modal.detail {
+                modal.scroll_detail(-1)
+            } else {
+                modal.move_by(-1)
+            }
+        }
+        KeyCode::Down => {
+            if modal.detail {
+                modal.scroll_detail(1)
+            } else {
+                modal.move_by(1)
+            }
+        }
+        KeyCode::PageUp if modal.detail => modal.scroll_detail(-10),
+        KeyCode::PageDown if modal.detail => modal.scroll_detail(10),
+        KeyCode::Enter => {
+            if !modal.detail {
+                // Entering the detail is asking the gate: the tallies are
+                // the point, and a stale pane would answer with silence.
+                fetch_selected_poll(modal);
+            }
+            modal.detail = !modal.detail;
+            modal.detail_scroll = 0;
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            if modal.detail {
+                modal.detail = false;
+            } else {
+                app.poll_monitor = None;
+            }
+        }
+        KeyCode::Char('r') => fetch_selected_poll(modal),
+        KeyCode::Char('c') => {
+            if let Some(row) = modal.selected_row() {
+                modal.input = Some(polls::ResolutionInput {
+                    poll_id: row.poll_id.clone(),
+                    buffer: String::new(),
+                });
+            }
+        }
+        KeyCode::Char('e') => {
+            if let Some(row) = modal.selected_row() {
+                let instrument = row.instrument.clone();
+                let poll_id = row.poll_id.clone();
+                let out = mecha_core::work::mecha_home()
+                    .map(|home| home.join("factory").join("polls").join(format!("{poll_id}.csv")));
+                modal.status = Some(match out {
+                    Ok(out) => {
+                        let path = out.display().to_string();
+                        match factory_cli(&["polls", "export", &instrument, &poll_id, "--out", &path])
+                        {
+                            Ok(_) => format!("exported → {path}"),
+                            Err(e) => format!("export failed: {e}"),
+                        }
+                    }
+                    Err(e) => format!("export failed: {e}"),
+                });
+            }
+        }
+        KeyCode::Char('s') => {
+            if let Some(row) = modal.selected_row() {
+                modal.status = Some(match &row.screen_url {
+                    Some(url) => format!("projector: {url}"),
+                    None => "no projector url on record — older poll, or a times poll".into(),
+                });
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Ask the gate about the selected poll — the CLI's own words, stamped
+/// with the moment they were true.
+fn fetch_selected_poll(modal: &mut polls::PollsModal) {
+    let selected = modal.selected;
+    let Some(row) = modal.rows.get_mut(selected) else {
+        return;
+    };
+    let as_of = chrono::Local::now().format("%H:%M:%S").to_string();
+    let instrument = row.instrument.clone();
+    let poll_id = row.poll_id.clone();
+    let result = factory_cli(&["polls", "status", &instrument, &poll_id]);
+    row.install_fetch(as_of, result);
+}
+
+/// Run `factory-publish <args...>` and return its output. The polls'
+/// verbs live in that binary (it holds the gate address and the slots
+/// key); the TUI drives it exactly as it drives `mecha` itself. Found on
+/// PATH, because it is another crate's binary — and its absence is named,
+/// not mumbled.
+fn factory_cli(args: &[&str]) -> Result<String> {
+    let out = std::process::Command::new("factory-publish")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("running factory-publish — is it installed and on PATH?")?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("{}", err.trim().lines().next().unwrap_or("failed"))
+    }
+}
+
 fn reload_frontdoor(app: &mut App) {
     let (selected, detail, status) = match &app.requests {
         Some(m) => (m.selected, m.detail, m.status.clone()),
@@ -2797,6 +2968,9 @@ fn draw(
     if let Some(modal) = &app.requests {
         modal.draw(frame);
     }
+    if let Some(modal) = &app.poll_monitor {
+        modal.draw(frame);
+    }
     if let Some(question) = &app.asking {
         draw_question(frame, question);
     }
@@ -3185,6 +3359,7 @@ mod tests {
             scheduled: None,
             staged: None,
             requests: None,
+            poll_monitor: None,
             pending_trigger_edit: None,
             pending_outbox_edit: None,
             outbox_pending: 0,
