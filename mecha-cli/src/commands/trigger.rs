@@ -899,7 +899,7 @@ async fn run_agent(
     let user = Message::user(&t.prompt);
     convo.push(user.clone());
     session.append(&Record::Message(user))?;
-    let history_len = convo.len();
+    let recorded = convo.messages.clone();
 
     // The timeout cancels rather than aborts: the run stops at the next safe
     // point and keeps its partial answer, exactly as Ctrl-C does. Killing the
@@ -956,7 +956,7 @@ async fn run_agent(
     let _ = timer.await;
     let _ = canceller.await;
 
-    session.append_messages(&convo.messages[history_len..])?;
+    session.record_run(&recorded, &convo.messages)?;
     session.append(&Record::Taint(convo.taint))?;
     if let Some(mb) = &prepared.mailbox {
         mb.detach(&session.meta.id);

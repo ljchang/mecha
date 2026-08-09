@@ -154,7 +154,7 @@ a year. An unparseable name logs a warning and falls back to the machine's zone.
 | `workspace` | path | unset | Filesystem tools refuse to touch anything outside this root. Defaults to the working directory. |
 | `permission_mode` | string | `"ask"` | `ask`, `allow`, or `read-only`. |
 | `shell_timeout_secs` | integer | `120` | Wall-clock ceiling on one `shell` call. |
-| `output_budget_bytes` | integer | `24000` | Byte budget one turn's tool results share, divided across the batch. |
+| `output_budget_bytes` | integer | derived | Byte budget one turn's tool results share, divided across the batch. Unset, it derives from the provider's `context_window` — an eighth of the window in tokens at ~3 bytes each, clamped to [6000, 24000] (so 12288 at a 32k window, 24000 when the window is wide or unknown). Set it to pin a value. |
 
 The built-in tools are `fs_read`, `fs_write`, `fs_edit`, `fs_list`, `shell` and
 `http_fetch`. `web_search` is registered when `[[search]]` names at least one backend.
@@ -444,7 +444,8 @@ disabled = []                      # applied after `enabled`
 # workspace = "/srv/project"       # defaults to the working directory
 permission_mode = "ask"            # ask | allow | read-only
 shell_timeout_secs = 120
-output_budget_bytes = 24000        # oversized results spill to a file
+# output_budget_bytes = 24000     # unset: derived from context_window;
+                                   # oversized results spill to a file
 
 # ----------------------------------------------------------------- security --
 

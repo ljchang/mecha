@@ -91,7 +91,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     if let Some(s) = &session {
         s.append(&Record::Message(user))?;
     }
-    let history_len = convo.len();
+    // Exactly what the file holds now, for the post-run reconcile: a run
+    // that only appended gets its tail appended, one that rewrote history
+    // (compaction) gets a rewrite record.
+    let recorded = convo.messages.clone();
 
     let quiet = args.quiet || args.json;
     let events = if args.no_stream || args.json {
@@ -108,13 +111,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         Some((tx, handle))
     };
 
-    let outcome = crate::interrupt::run_interruptible(
+    let result = crate::interrupt::run_interruptible(
         &prepared.agent,
         prepared.agent.context(),
         &mut convo,
         events.as_ref().map(|(tx, _)| tx.clone()),
     )
-    .await?;
+    .await;
 
     // Closing the sender ends the render task; wait so its output lands before
     // anything we print below.
@@ -124,7 +127,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     if let Some(s) = &session {
-        s.append_messages(&convo.messages[history_len..])?;
+        // Before the result is inspected, so a run that died mid-flight still
+        // leaves its turns on disk. `?` first is how a fatal 400 used to leave
+        // a three-line transcript of a three-minute benchmark trial — and the
+        // failed runs are precisely the transcripts that get read.
+        s.record_run(&recorded, &convo.messages)?;
         // Taint too, and for the same reason `chat` and `tui` record it: it
         // cannot be recovered by reading the transcript back, because it keys
         // off *provenance* and the transcript stores only content. `run`
@@ -133,6 +140,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // disarmed — the exact hole that was closed for the other two
         // front-ends and left open here.
         s.append(&Record::Taint(convo.taint))?;
+    }
+
+    let outcome = result?;
+    if let Some(s) = &session {
         s.append(&Record::Summary {
             usage: outcome.usage.clone(),
             turns: outcome.turns,
@@ -175,11 +186,19 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             .await;
     }
 
-    // Distinct codes so a script can tell "the model refused" from "it ran out
-    // of turns" from "everything worked".
+    // Distinct codes so a script can tell "the model refused" from "it
+    // produced nothing" from "everything worked". Exhaustion alone is *not*
+    // a failure code: a run that hit its turn or token ceiling still answered
+    // and still left its work on disk, and callers that grade the artifact
+    // treat non-zero as "the agent crashed" — on the 2026-08-07
+    // Terminal-Bench subset, a MaxTurns trial was recorded as an agent error
+    // while its verifier scored the work 1.0. A script that cares which
+    // ceiling stopped the run has `--json`'s `stop_cause`; the exit code
+    // answers the only question a caller can't get elsewhere: is there an
+    // answer at all.
     match outcome.stop_reason {
         StopReason::Refusal => std::process::exit(2),
-        _ if outcome.exhausted => std::process::exit(3),
+        _ if outcome.stop_cause == mecha_core::agent::StopCause::NoOutput => std::process::exit(3),
         _ => Ok(()),
     }
 }
