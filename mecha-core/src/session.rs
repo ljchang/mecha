@@ -39,6 +39,19 @@ pub enum Record {
     /// resuming a session that had read a hostile page would hand the model
     /// that page again with the interlock disarmed.
     Taint(Taint),
+    /// The conversation's messages were rewritten in place — compaction
+    /// summarised the head, eviction replaced a stale result, thinning
+    /// shortened an old one. An append-only file cannot express an in-place
+    /// rewrite as more `Message` records: slicing "what the run added" off
+    /// the end of a rewritten list skips the rebuilt head, which is exactly
+    /// where the compaction summary lives, and every trace of the rewrite
+    /// with it — a 2026-08-07 benchmark transcript recorded 8 assistant turns
+    /// of a 28-turn run that way, starting mid-conversation with no sign a
+    /// compaction had ever happened. So the record carries the whole current
+    /// list, and [`Session::load`] replaces what it has accumulated so far.
+    Rewrite {
+        messages: Vec<Message>,
+    },
 }
 
 /// What a run was configured with, recorded so it can be replayed.
@@ -235,6 +248,32 @@ impl Session {
         Ok(())
     }
 
+    /// Record what a run did to the conversation, given the messages it
+    /// started from.
+    ///
+    /// `before` must be what the file already holds — every front-end has
+    /// appended the opening user message (and, resumed, the loaded history)
+    /// before the run starts. When the run only appended, the new tail is
+    /// appended here too. When it rewrote what was already recorded —
+    /// compaction, eviction, thinning, all of which edit earlier messages in
+    /// place — a [`Record::Rewrite`] carries the whole current list instead,
+    /// because slicing a rewritten transcript records a lie: the old head
+    /// stays in the file, the rebuilt one (summary included) never lands.
+    ///
+    /// Comparison, not a flag from the loop: any mutation the loop grows
+    /// later is caught by construction, and the clone this costs is one more
+    /// beside the one the loop already pays per request.
+    pub fn record_run(&self, before: &[Message], after: &[Message]) -> Result<()> {
+        let appended_only = after.len() >= before.len() && after[..before.len()] == *before;
+        if appended_only {
+            self.append_messages(&after[before.len()..])
+        } else {
+            self.append(&Record::Rewrite {
+                messages: after.to_vec(),
+            })
+        }
+    }
+
     /// Read a transcript back, taint included.
     ///
     /// Unparseable lines are skipped rather than failing the load — a truncated
@@ -250,6 +289,10 @@ impl Session {
             match serde_json::from_str::<Record>(line) {
                 Ok(Record::Meta(m)) => meta = Some(m),
                 Ok(Record::Message(m)) => messages.push(m),
+                // The conversation state as of the rewrite, wholesale. Taint
+                // is deliberately not touched: summarising away the text of a
+                // hostile page does not un-read it.
+                Ok(Record::Rewrite { messages: m }) => messages = m,
                 // Merged rather than replaced: taint only ever grows, and a
                 // transcript written by an older build has none at all.
                 Ok(Record::Taint(t)) => taint.merge(t),
@@ -395,12 +438,30 @@ pub struct TaintTimeline {
 
 impl TaintTimeline {
     pub fn from_records(records: impl IntoIterator<Item = Record>) -> Self {
-        let mut checkpoints = Vec::new();
+        let mut checkpoints: Vec<(usize, Taint)> = Vec::new();
         let mut messages = 0usize;
         let mut merged = Taint::default();
         for record in records {
             match record {
                 Record::Message(_) => messages += 1,
+                // The list was replaced, so every position recorded before it
+                // is a claim about a list that no longer exists — drop them.
+                // Not clamp: clamping several stale checkpoints onto the new
+                // length leaves `covering` resolving to the *first* of them,
+                // which is the oldest and smallest taint, and in the record
+                // order the front-ends actually write (`Rewrite` then
+                // `Taint`, no message between) that under-taints every
+                // rewritten message — a compacting run that read a hostile
+                // page would classify clean. Dropping fails the right way
+                // twice over: `merged` is cumulative, so the checkpoint the
+                // run writes after the rewrite carries everything the dropped
+                // ones knew and covers the rewritten head with it; and a file
+                // torn before that checkpoint leaves the head covered by
+                // nothing, which `covering` reports as unknown — never clean.
+                Record::Rewrite { messages: m } => {
+                    messages = m.len();
+                    checkpoints.clear();
+                }
                 Record::Taint(t) => {
                     merged.merge(t);
                     checkpoints.push((messages, merged));
@@ -474,6 +535,122 @@ mod tests {
         assert!(convo.taint.trifecta_armed());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn record_run_appends_the_tail_when_the_run_only_appended() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-tail")).unwrap();
+        let before = vec![Message::user("go")];
+        session.append_messages(&before).unwrap();
+
+        let mut after = before.clone();
+        after.push(Message::assistant(vec![Block::text("done")]));
+        session.record_run(&before, &after).unwrap();
+
+        let (_, convo) = Session::load(&session.path).unwrap();
+        assert_eq!(convo.messages.len(), 2);
+        assert_eq!(convo.messages[1].text(), "done");
+        // And no rewrite record for the ordinary case: the file stays a plain
+        // append log unless the run actually rewrote history.
+        let text = std::fs::read_to_string(&session.path).unwrap();
+        assert!(!text.contains("\"record\":\"rewrite\""), "{text}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn record_run_records_a_rewrite_when_compaction_touched_the_head() {
+        // The regression this pins, from a 2026-08-07 benchmark transcript:
+        // a compacted run recorded via the append-only slice kept the stale
+        // head and skipped the rebuilt one, so the file held 8 assistant
+        // turns of a 28-turn run, beginning mid-conversation, with no sign a
+        // compaction had happened. Resuming that transcript resumes a
+        // conversation the run never had.
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-rw")).unwrap();
+        let before = vec![Message::user("go")];
+        session.append_messages(&before).unwrap();
+
+        // What compaction leaves behind: the head rewritten in place
+        // (instruction plus summary), then the surviving tail.
+        let mut head = before[0].clone();
+        head.content
+            .push(Block::text("[Earlier turns were compacted]"));
+        let after = vec![head, Message::assistant(vec![Block::text("done")])];
+        session.record_run(&before, &after).unwrap();
+
+        let (_, convo) = Session::load(&session.path).unwrap();
+        assert_eq!(convo.messages.len(), 2);
+        assert!(
+            convo.messages[0].text().contains("compacted"),
+            "the rebuilt head must be what loads: {:?}",
+            convo.messages[0].text()
+        );
+        assert_eq!(convo.messages[1].text(), "done");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_rewrite_drops_stale_taint_positions_instead_of_shadowing_later_ones() {
+        // The record order the front-ends actually write, across two runs of
+        // one chat session: run 1's messages and its clean checkpoint, then
+        // run 2 compacts (a rewrite, shrinking the list) after reading a
+        // hostile page, and checkpoints — `Rewrite` then `Taint`, with no
+        // message record between. A stale checkpoint kept in any form sits
+        // at-or-before the new length, and `covering` takes the *first*
+        // checkpoint past an index, so keeping it hands every rewritten
+        // message the older, clean taint — under-tainting, the one direction
+        // the timeline must never be wrong in.
+        let msg = || Message::user("m");
+        let mut records: Vec<Record> = (0..10).map(|_| Record::Message(msg())).collect();
+        records.push(Record::Taint(Taint {
+            private: true,
+            untrusted: false,
+        }));
+        records.push(Record::Rewrite {
+            messages: vec![msg(), msg()],
+        });
+        records.push(Record::Taint(Taint {
+            private: true,
+            untrusted: true,
+        }));
+
+        let timeline = TaintTimeline::from_records(records);
+        // Every position in the rewritten list is covered by the post-rewrite
+        // checkpoint, which merged the dropped one's taint — over-taint,
+        // never under.
+        for index in 0..2 {
+            let covering = timeline.covering(index).expect("a checkpoint covers it");
+            assert!(
+                covering.untrusted,
+                "message {index} classified by a stale pre-rewrite checkpoint"
+            );
+            assert!(covering.private, "the dropped checkpoint's taint was lost");
+        }
+    }
+
+    #[test]
+    fn a_transcript_torn_after_a_rewrite_reports_unknown_not_clean() {
+        // The process died between writing the rewrite and its taint
+        // checkpoint. Nothing covers the rewritten messages, and `covering`
+        // must say so — the learning classifier treats unknown as untrusted,
+        // and a clean answer here would be the laundering path.
+        let msg = || Message::user("m");
+        let records = vec![
+            Record::Message(msg()),
+            Record::Taint(Taint {
+                private: true,
+                untrusted: true,
+            }),
+            Record::Rewrite {
+                messages: vec![msg(), msg()],
+            },
+        ];
+        let timeline = TaintTimeline::from_records(records);
+        assert_eq!(timeline.covering(0), None);
+        assert_eq!(timeline.covering(1), None);
     }
 
     #[test]

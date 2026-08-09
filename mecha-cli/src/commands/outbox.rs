@@ -533,7 +533,9 @@ impl Surface {
             workspace: tools.workspace.clone(),
             shell_timeout: std::time::Duration::from_secs(tools.config.tools.shell_timeout_secs),
             security: tools.config.security.clone(),
-            output_budget_bytes: tools.config.tools.output_budget_bytes,
+            // No model reads a release's output, so the window-derived
+            // budget doesn't apply; the ceiling is fine.
+            output_budget_bytes: tools.config.tools.resolved_output_budget(None),
             ..mecha_core::tool::ToolCtx::default()
         };
         Ok(Surface { tools, ctx })

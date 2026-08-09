@@ -442,7 +442,7 @@ async fn triage(
         let user = Message::user(triage_prompt(&brief));
         convo.push(user.clone());
         session.append(&mecha_core::session::Record::Message(user))?;
-        let history_len = convo.len();
+        let recorded = convo.messages.clone();
 
         let outcome = crate::interrupt::run_interruptible(
             &prepared.agent,
@@ -451,7 +451,7 @@ async fn triage(
             None,
         )
         .await;
-        session.append_messages(&convo.messages[history_len..])?;
+        session.record_run(&recorded, &convo.messages)?;
         // Taint too, like every other front-end that writes a session. It
         // cannot be recovered by reading the transcript back, because it keys
         // off *provenance* and the transcript stores only content — so without

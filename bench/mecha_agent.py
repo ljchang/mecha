@@ -161,10 +161,19 @@ shell_timeout_secs = 600
         flags = f"{flags} " if flags else ""
 
         try:
+            # stderr goes to a file beside the transcript, not to Harbor's
+            # capture: Harbor recorded `stderr: None` for every 2026-08-07
+            # trial, which silently discarded the one channel carrying
+            # mecha's compaction notices and tracing — the exact evidence
+            # needed to diagnose the trials that died. MECHA_LOG=debug is
+            # cheap here (one run per container) and the log downloads with
+            # the sessions below.
             await self.exec_as_agent(
                 environment,
-                f"/installed-agent/mecha run --yes {model}{flags}{shlex.quote(instruction)}",
-                env={"MECHA_SESSION_DIR": SESSION_DIR},
+                f"mkdir -p {SESSION_DIR} && "
+                f"/installed-agent/mecha run --yes {model}{flags}{shlex.quote(instruction)} "
+                f"2> {SESSION_DIR}/stderr.log",
+                env={"MECHA_SESSION_DIR": SESSION_DIR, "MECHA_LOG": "debug"},
             )
         finally:
             # The transcript is the trajectory; pull it out even when the run

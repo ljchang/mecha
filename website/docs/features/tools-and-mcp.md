@@ -211,7 +211,12 @@ cases sharing one could read each other's output through it.
 share, divided across the calls in the batch so one runaway tool cannot starve
 its siblings — mecha executes a turn's calls concurrently, so they land
 together. The old per-tool cap was 200 KB, roughly 50k tokens: not a cap so
-much as a promise to overflow.
+much as a promise to overflow. Left unset in `[tools]`, the budget derives
+from the provider's `context_window` — an eighth of the window in tokens,
+~3 bytes each — because one turn's results must not leap the gap between the
+compaction threshold and the window: a flat 24 KB of numeric data is bigger
+than that gap at a 32k window, and a benchmark trial died on exactly that
+jump.
 
 An oversized result is written whole to the spill directory and its transcript
 copy is cut, with a marker that **names the recovery**:

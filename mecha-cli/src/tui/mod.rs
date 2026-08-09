@@ -58,13 +58,14 @@ struct Running {
     /// Set once Ctrl-C has been pressed, so the status line can say so and a
     /// second press can mean something stronger.
     cancelling: bool,
-    /// How many messages were already on disk when the run began.
+    /// The messages already on disk when the run began — the whole list, not
+    /// a count, because a mid-run compaction rewrites earlier messages and a
+    /// count cannot tell "the run appended" from "the run rewrote history".
     ///
     /// Carried here because the run *owns* the conversation while it is in
     /// flight — `App::messages` is empty — so there is nothing to measure
-    /// against when it comes back. Getting this wrong rewrites the whole
-    /// history into the transcript on every turn.
-    persisted: usize,
+    /// against when it comes back.
+    persisted: Vec<Message>,
     /// Every outbox id that existed when the run started. What the run staged
     /// is the diff against this at completion — which is what scopes the
     /// review-now flow to *this run's* drafts and keeps `/review auto` from
@@ -667,7 +668,7 @@ async fn run_loop(
 
             // A finished run: collect the outcome and take the conversation back.
             outcome = wait_for_run(&mut app.running), if app.running.is_some() => {
-                let persisted = app.running.as_ref().map_or(0, |r| r.persisted);
+                let persisted = app.running.as_mut().map(|r| std::mem::take(&mut r.persisted)).unwrap_or_default();
                 let baseline = app.running.as_mut().and_then(|r| r.outbox_before.take());
                 finish_run(app, outcome, persisted, baseline, session)?;
             }
@@ -710,7 +711,7 @@ async fn wait_for_run(running: &mut Option<Running>) -> RunResult {
 fn finish_run(
     app: &mut App,
     outcome: RunResult,
-    persisted: usize,
+    persisted: Vec<Message>,
     baseline: Option<std::collections::HashSet<String>>,
     session: Option<&Session>,
 ) -> Result<()> {
@@ -736,16 +737,22 @@ fn finish_run(
                 )));
             }
             if let Some(s) = session {
-                // Everything the run added; the opening user message was
-                // written when it was submitted.
-                s.append_messages(&app.convo.messages[persisted.min(app.convo.len())..])?;
+                // Everything the run added — or, when a compaction rewrote
+                // history mid-run, a rewrite record of the whole current
+                // state. The opening user message was written when it was
+                // submitted.
+                s.record_run(&persisted, &app.convo.messages)?;
                 s.append(&Record::Taint(app.convo.taint))?;
             }
         }
         Err(e) => {
             app.transcript.push(Entry::Error(format!("error: {e:#}")));
-            // Drop the dangling user turn so the next request doesn't resend it.
-            app.convo.messages.truncate(persisted.saturating_sub(1));
+            // Drop the dangling user turn so the next request doesn't resend
+            // it. Restored from the snapshot rather than truncated: a mid-run
+            // compaction leaves the list shorter than it started, and
+            // truncating that keeps the very message this exists to drop.
+            app.convo.messages = persisted;
+            app.convo.messages.pop();
         }
     }
 
@@ -1744,7 +1751,7 @@ fn submit(
 
     let agent = Arc::clone(agent);
     // Everything up to and including the message just submitted is on disk.
-    let persisted = app.convo.len();
+    let persisted = app.convo.messages.clone();
     let mut convo = std::mem::take(&mut app.convo);
     let handle = tokio::spawn(async move {
         let result = agent.run_in(&cx, &mut convo, Some(tx)).await;
@@ -3245,7 +3252,7 @@ mod tests {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             started: std::time::Instant::now(),
             cancelling: false,
-            persisted: 0,
+            persisted: Vec::new(),
             outbox_before: None,
         });
         let text = frame_text(&mut app, 80, 12, None);

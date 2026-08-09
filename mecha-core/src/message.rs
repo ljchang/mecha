@@ -15,7 +15,11 @@ pub enum Role {
 
 /// One piece of a message. A single assistant turn is often several blocks:
 /// thinking, then text, then one or more tool calls.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `PartialEq` because session recording decides between "append the new
+/// tail" and "the transcript was rewritten in place" by comparing the
+/// messages a run started from with what it left behind.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Block {
     Text {
@@ -47,7 +51,7 @@ impl Block {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: Vec<Block>,

@@ -73,7 +73,7 @@ read-only.
 ## What it can do
 
 **Interfaces.** `mecha run` answers one task and exits, with distinct exit codes
-so a script can tell success from a refusal from running out of turns.
+so a script can tell success from a refusal from a run that produced nothing.
 `mecha chat` is a terminal REPL. `mecha tui` is full-screen, and is the only
 interface that can *steer* a run: the input line stays live while the agent
 works, so text typed mid-run is folded into the next tool-result message rather

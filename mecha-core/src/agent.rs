@@ -857,10 +857,16 @@ impl Agent {
         let mut compactions = 0u32;
         let mut loop_guard = LoopGuard::new(self.cfg.loop_guard);
         let mut loop_detected = false;
-        // Counts across the whole run, not per turn: a model that answers once
-        // and then goes quiet again has the same problem, and resetting on
-        // success would let a run alternate empty/answer forever inside its
-        // turn budget.
+        // Consecutive empty turns, reset by any turn that produces something.
+        // This used to count across the whole run on the theory that a model
+        // that answers once and goes quiet again has the same problem — but
+        // measured on the 2026-08-07 Terminal-Bench subset, local reasoning
+        // models go quiet *routinely* and the nudge genuinely recovers them
+        // (two passing trials each came back from a nudge), so a cumulative
+        // cap spent early left long runs one silence from death mid-task, and
+        // two trials died exactly that way with work in progress. The
+        // alternate-forever worry is already answered by `max_turns`: every
+        // retry spends a turn against the same ceiling as real work.
         let mut empty_turns = 0u32;
 
         // Carried in from the transcript, not started fresh. Everything the
@@ -1083,11 +1089,20 @@ impl Agent {
             // parallel tool results land all at once, so the size checked
             // between turns can sit well under the limit while the *next*
             // request is well over. Recover instead of dying — compact and
-            // retry the same turn. Once only: a second overflow means
-            // compaction did not free enough, and the provider's own error is
-            // clearer than looping on it.
+            // retry the same turn. Once per overflow: a retry that overflows
+            // again means the recovery did not free enough, and the
+            // provider's own error is clearer than looping on it.
+            //
+            // Note the arm is NOT gated on `compaction_gave_up`. That flag
+            // means "stop paying for summary requests", and eviction and
+            // thinning cost no request — skipping them because a *summary*
+            // failed once is how a 2026-08-07 benchmark trial died: an early
+            // recovery set the flag on `Ok(None)` (a short transcript with
+            // nothing worth summarising, freed by thinning alone), and the
+            // next overflow propagated as a raw 400 with no recovery
+            // attempted at all.
             let completion = match self.complete(cx, &request, &events).await {
-                Err(e) if is_context_overflow(&e) && !compaction_gave_up => {
+                Err(e) if is_context_overflow(&e) => {
                     tracing::warn!("prompt overflowed the context window; compacting to recover");
                     crate::compact::evict_superseded_results(messages);
                     // keep_recent 0, unlike the between-turns pass: the
@@ -1105,16 +1120,24 @@ impl Agent {
                         0,
                         crate::compact::THINNED_RESULT_CHARS,
                     );
-                    match self.compact(cx, messages, &events).await {
-                        Ok(Some(spent)) => {
-                            usage.add(&spent);
-                            compactions += 1;
-                            loop_guard.arm();
-                        }
-                        Ok(None) => compaction_gave_up = true,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "recovery compaction failed");
-                            compaction_gave_up = true;
+                    if !compaction_gave_up {
+                        match self.compact(cx, messages, &events).await {
+                            Ok(Some(spent)) => {
+                                usage.add(&spent);
+                                compactions += 1;
+                                loop_guard.arm();
+                            }
+                            // Nothing safe or worthwhile to summarise. That is
+                            // a fact about this transcript at this moment, not
+                            // a failure — it cost no request, and the eviction
+                            // and thinning above may already have freed
+                            // enough. Deciding never to try again here is what
+                            // turned one tight squeeze into a fatal 400 later.
+                            Ok(None) => {}
+                            Err(e) => {
+                                tracing::warn!(error = %e, "recovery compaction failed");
+                                compaction_gave_up = true;
+                            }
                         }
                     }
                     request.messages = messages.clone();
@@ -1192,6 +1215,9 @@ impl Agent {
                 );
                 append_user_text(messages, EMPTY_TURN_NUDGE.to_string());
                 continue;
+            }
+            if !produced_nothing {
+                empty_turns = 0;
             }
 
             messages.push(response.message.clone());
@@ -3200,6 +3226,166 @@ mod tests {
         assert_eq!(
             provider.seen.lock().unwrap().len() as u32,
             EMPTY_TURN_RETRIES + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_productive_turn_resets_the_empty_turn_allowance() {
+        // The counter used to be cumulative across the run, so a long run
+        // that had recovered from silence early was left one empty turn from
+        // death for the rest of its life — and on the 2026-08-07
+        // Terminal-Bench subset two trials died exactly there, mid-task,
+        // while two others recovered from a nudge and passed. Empty turns
+        // after a real turn are a fresh stall, with a fresh allowance;
+        // `max_turns` is what bounds the total.
+        let empty = || assistant(vec![], StopReason::EndTurn);
+        let (agent, provider) = agent_with(
+            vec![
+                empty(), // spends one retry
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "echo".into(),
+                        input: json!({"value": "pong"}),
+                    }],
+                    StopReason::ToolUse,
+                ), // productive: the allowance resets
+                empty(),
+                empty(),
+                empty(), // a full fresh allowance, all nudged
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        // Under the cumulative counter the fifth response exhausted the run
+        // as NoOutput and the sixth was never requested.
+        assert_eq!(outcome.text, "done");
+        assert_ne!(outcome.stop_cause, StopCause::NoOutput);
+        assert!(!outcome.exhausted);
+        assert_eq!(provider.seen.lock().unwrap().len(), 6);
+    }
+
+    /// Scripts errors as well as turns, which [`ScriptedProvider`] cannot:
+    /// `None` answers the call with a context-overflow error.
+    struct OverflowScript {
+        turns: Mutex<Vec<Option<CompletionResponse>>>,
+        seen: Mutex<Vec<CompletionRequest>>,
+    }
+
+    #[async_trait]
+    impl Provider for OverflowScript {
+        fn id(&self) -> &str {
+            "overflow-script"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-1"
+        }
+        async fn complete(
+            &self,
+            req: &CompletionRequest,
+            _sink: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            self.seen.lock().unwrap().push(req.clone());
+            let mut turns = self.turns.lock().unwrap();
+            anyhow::ensure!(!turns.is_empty(), "provider ran out of scripted turns");
+            match turns.remove(0) {
+                Some(turn) => Ok(turn),
+                // The wording llama-server uses, so `is_context_overflow`
+                // recognises it by text exactly as it does in production.
+                None => Err(anyhow::anyhow!(
+                    "request (45325 tokens) exceeds the available context size (32768 tokens)"
+                )),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn overflow_recovery_still_thins_after_a_summary_was_not_worthwhile() {
+        // The regression this pins: the first recovery finds nothing worth
+        // *summarising* (a short transcript), which used to set the run-global
+        // give-up flag — and the flag used to gate the whole recovery arm, so
+        // the next overflow propagated as a raw fatal 400 with eviction and
+        // thinning never attempted. That is how a 2026-08-07 benchmark trial
+        // died. "No summary today" costs no request and must not disable the
+        // free half of the recovery tomorrow.
+        let big = "x".repeat(50_000);
+        let provider = Arc::new(OverflowScript {
+            turns: Mutex::new(vec![
+                None, // first request: overflow → recovery finds nothing to cut
+                Some(assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "echo".into(),
+                        input: json!({"value": big}),
+                    }],
+                    StopReason::ToolUse,
+                )),
+                None, // the huge result overflows again → recovery must thin it
+                Some(assistant(vec![Block::text("done")], StopReason::EndTurn)),
+            ]),
+            seen: Mutex::new(Vec::new()),
+        });
+
+        struct Shared(Arc<OverflowScript>);
+        #[async_trait]
+        impl Provider for Shared {
+            fn id(&self) -> &str {
+                self.0.id()
+            }
+            fn default_model(&self) -> &str {
+                self.0.default_model()
+            }
+            async fn complete(
+                &self,
+                req: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                self.0.complete(req, sink).await
+            }
+        }
+
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(EchoTool));
+        let agent = Agent::new(
+            Box::new(Shared(Arc::clone(&provider))),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+            AgentConfig::default(),
+            None,
+        )
+        .unwrap();
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.text, "done");
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 4, "both overflows must be retried");
+        // The retry after the second overflow carried the thinned result, not
+        // the 50 KB original.
+        let retried = &seen[3].messages;
+        let result_len = retried
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content.len()),
+                _ => None,
+            })
+            .expect("the retried request still carries the tool result");
+        assert!(
+            result_len < 1_000,
+            "the result was not thinned: {result_len} bytes"
         );
     }
 

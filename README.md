@@ -82,8 +82,9 @@ everything that isn't a read.
 | `mecha sessions list\|show\|path\|stats` | Inspect saved transcripts. `stats` totals tokens and cost by provider and model. |
 | `mecha config show\|path\|init` | See what settings are in effect. |
 
-Exit codes for `run`: `0` success, `1` error, `2` the model refused, `3` it ran
-out of turns.
+Exit codes for `run`: `0` success (including a run stopped by a turn or token
+ceiling that still produced an answer — `--json`'s `stop_cause` says which),
+`1` error, `2` the model refused, `3` it produced no answer at all.
 
 ## Configuration
 
