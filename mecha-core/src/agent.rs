@@ -53,6 +53,12 @@ pub enum AgentEvent {
     TurnUsage(Usage),
     /// Text the user queued mid-run has just entered the conversation.
     QueuedInput(String),
+    /// Another agent's message has just entered the conversation, sender
+    /// taint merged first. See [`crate::mailbox`].
+    MessageDelivered {
+        id: String,
+        from: String,
+    },
     /// The transcript was summarised to fit the context window.
     Compacted {
         messages_before: usize,
@@ -226,6 +232,13 @@ pub struct RunContext {
     /// instead of executed. `None` (the default) routes nothing. See
     /// [`crate::outbox`].
     pub outbox: Option<Arc<crate::outbox::OutboxRoute>>,
+    /// This run's inter-agent messaging context: attached whenever messaging
+    /// is enabled, so every dispatch can stamp the turn's taint for
+    /// `message_send`. Whether inbound mail is *delivered* is the route's
+    /// own `deliver` flag — the receiving side's `accept` decision, made
+    /// where the route is built and never inside the loop. See
+    /// [`crate::mailbox`].
+    pub mailbox: Option<Arc<crate::mailbox::MailboxRoute>>,
 }
 
 /// Per-run ceilings. Every `None` falls through to the agent's own config, so a
@@ -258,6 +271,7 @@ impl RunContext {
             queued_input: None,
             hooks: Arc::new(crate::hooks::HookSet::default()),
             outbox: None,
+            mailbox: None,
         }
     }
 
@@ -306,6 +320,12 @@ impl RunContext {
 
     pub fn with_outbox(mut self, route: Arc<crate::outbox::OutboxRoute>) -> Self {
         self.outbox = Some(route);
+        self
+    }
+
+    /// Deliver this run's inter-agent mail at turn boundaries.
+    pub fn with_mailbox(mut self, route: Arc<crate::mailbox::MailboxRoute>) -> Self {
+        self.mailbox = Some(route);
         self
     }
 
@@ -756,6 +776,13 @@ impl Agent {
         Arc::make_mut(&mut self.cx).outbox = Some(route);
     }
 
+    /// Deliver inter-agent mail to runs on the agent's own context. Attaching
+    /// this *is* the inbound `accept` decision — see [`crate::mailbox`].
+    /// Copy-on-write, like [`Agent::set_hooks`].
+    pub fn set_mailbox(&mut self, route: Arc<crate::mailbox::MailboxRoute>) {
+        Arc::make_mut(&mut self.cx).mailbox = Some(route);
+    }
+
     /// Swap the approver the agent's own context uses.
     ///
     /// Copy-on-write, like [`Agent::ctx_mut`]: a run already holding a clone of
@@ -872,6 +899,34 @@ impl Agent {
             for queued in cx.take_queued_input() {
                 emit(&events, AgentEvent::QueuedInput(queued.clone()));
                 append_user_text(messages, queued);
+            }
+
+            // Messages other agents left for this run's producer — the same
+            // fold point as steering, because it is the same constraint. The
+            // sender's recorded taint merges into this conversation *before*
+            // its text lands: the message is a laundering point otherwise,
+            // and the receiver's interlock must treat what the sender read
+            // as read here. Written back to `convo` immediately, like the
+            // post-tool site, so no early exit can drop it.
+            if let Some(mailbox) = cx.mailbox.as_ref().filter(|mb| mb.delivers()) {
+                for msg in mailbox.claim_pending() {
+                    emit(
+                        &events,
+                        AgentEvent::MessageDelivered {
+                            id: msg.id.clone(),
+                            from: msg.from.clone(),
+                        },
+                    );
+                    taint.merge(msg.effective_taint());
+                    convo.taint = taint;
+                    append_user_text(
+                        messages,
+                        crate::mailbox::render_delivery(
+                            &msg,
+                            cx.tools.security.mark_untrusted_output,
+                        ),
+                    );
+                }
             }
 
             // Summarise the middle if the last prompt came back too big. Done
@@ -1152,10 +1207,10 @@ impl Agent {
                         )
                         .await;
 
-                    // The only place taint changes, so the only place it has to
-                    // be written back. Doing it here rather than at each of the
-                    // five exits means a new early return cannot silently drop
-                    // what this turn learned.
+                    // Written back the moment it changes — here and at the
+                    // mailbox delivery above, the only two places it does —
+                    // so a new early return cannot silently drop what this
+                    // turn learned.
                     convo.taint = taint;
                     // The API rejects the next request unless every tool_use id
                     // has a matching tool_result, so this must never be empty
@@ -2037,9 +2092,14 @@ impl Agent {
                 // a tool that contains a run — a subagent — can tag the
                 // events it forwards. Only when somebody is watching: the
                 // clone buys nothing on a run without an event channel.
-                let tool_ctx = if cx.tools.events.is_some() {
+                // With a mailbox attached, the turn's conservative taint is
+                // stamped too, so `message_send` labels its messages with
+                // what this conversation (and this turn's batch) has read —
+                // the harness's snapshot, never the model's claim.
+                let tool_ctx = if cx.tools.events.is_some() || cx.mailbox.is_some() {
                     Arc::new(ToolCtx {
                         call_id: Some(id.clone()),
+                        taint: Some(turn_taint),
                         ..(*cx.tools).clone()
                     })
                 } else {
@@ -4595,6 +4655,160 @@ mod tests {
         async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
             panic!("an outbox-routed tool was executed instead of staged");
         }
+    }
+
+    fn mailbox_route(
+        name: &str,
+        deliver: bool,
+    ) -> (Arc<crate::mailbox::MailboxRoute>, std::path::PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("mecha-agent-mail-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = crate::mailbox::MailboxStore::open(&root).unwrap();
+        (
+            Arc::new(crate::mailbox::MailboxRoute::new(store, deliver)),
+            root,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_pending_message_is_delivered_taint_first() {
+        let (mut agent, _) = agent_with(
+            vec![assistant(vec![Block::text("noted")], StopReason::EndTurn)],
+            PermissionMode::ReadOnly,
+        );
+        let (route, _root) = mailbox_route("deliver", true);
+        route.set_identity("chat", "sess-1");
+        route
+            .store
+            .send(
+                "chat",
+                "morning",
+                Some("sess-0".into()),
+                "triage done, 3 drafts staged",
+                None,
+                Taint {
+                    private: false,
+                    untrusted: true,
+                },
+            )
+            .unwrap();
+        agent.set_mailbox(Arc::clone(&route));
+
+        let mut convo = Conversation::from(vec![Message::user("hello")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        // The message was folded into the user turn, provenance labelled and —
+        // because the sender's conversation held third-party content — wrapped
+        // as untrusted.
+        let opening = convo.messages[0].text();
+        assert!(opening.contains("triage done, 3 drafts staged"), "{opening}");
+        assert!(opening.contains("not the user"), "{opening}");
+        assert!(opening.contains("<untrusted-content"), "{opening}");
+
+        // The sender's taint merged into this conversation *before* the text:
+        // its interlock now treats what the sender read as read here.
+        assert!(convo.taint.untrusted);
+        assert!(!convo.taint.private);
+
+        // And the store shows exactly one delivery, to this session.
+        assert!(route.store.pending_for("chat").unwrap().is_empty());
+        let all = route.store.messages_for("chat").unwrap();
+        assert_eq!(all[0].status, "delivered");
+        assert_eq!(all[0].delivered_to.as_deref(), Some("sess-1"));
+    }
+
+    #[tokio::test]
+    async fn a_hold_route_delivers_nothing() {
+        let (mut agent, _) = agent_with(
+            vec![assistant(vec![Block::text("noted")], StopReason::EndTurn)],
+            PermissionMode::ReadOnly,
+        );
+        let (route, _root) = mailbox_route("hold", false);
+        route.set_identity("chat", "sess-1");
+        route
+            .store
+            .send("chat", "morning", None, "waits for a person", None, Taint::default())
+            .unwrap();
+        agent.set_mailbox(Arc::clone(&route));
+
+        let mut convo = Conversation::from(vec![Message::user("hello")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        assert!(!convo.messages[0].text().contains("waits for a person"));
+        assert_eq!(convo.taint, Taint::default());
+        assert_eq!(route.store.pending_for("chat").unwrap().len(), 1);
+    }
+
+    /// A read that returns third-party content and a `message_send` in the
+    /// same conversation: the stored message must carry the untrusted stamp,
+    /// because the label is the harness's snapshot, never the model's claim.
+    #[tokio::test]
+    async fn message_send_carries_the_conversations_taint() {
+        struct HostilePage;
+        #[async_trait]
+        impl Tool for HostilePage {
+            fn name(&self) -> &str {
+                "fetch_page"
+            }
+            fn description(&self) -> &str {
+                "Fetch a page."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                crate::tool::Capabilities::default().untrusted()
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("<h1>totally normal page</h1>").from_outside())
+            }
+        }
+
+        let (route, _root) = mailbox_route("stamp", true);
+        route.set_identity("scout", "sess-9");
+        let send_tool = Arc::new(crate::mailbox::MessageSendTool::new(Arc::clone(&route)));
+
+        let (mut agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "fetch_page".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t2".into(),
+                        name: "message_send".into(),
+                        input: json!({"to": "chat", "body": "the page says X"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("sent")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(HostilePage), send_tool],
+            PermissionMode::ReadOnly,
+        );
+        agent.set_mailbox(Arc::clone(&route));
+
+        let mut convo = Conversation::from(vec![Message::user("scout the page, report to chat")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let stored = route.store.pending_for("chat").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(stored[0].taint_recorded);
+        assert!(
+            stored[0].taint.untrusted,
+            "a message sent after an external read must carry the untrusted stamp"
+        );
+        assert_eq!(stored[0].from, "scout");
+        assert_eq!(stored[0].from_session.as_deref(), Some("sess-9"));
     }
 
     fn outbox_route(name: &str) -> (Arc<crate::outbox::OutboxRoute>, std::path::PathBuf) {

@@ -56,6 +56,7 @@ pub mod eval;
 pub mod frontdoor;
 pub mod hooks;
 pub mod learning;
+pub mod mailbox;
 pub mod mcp;
 pub mod message;
 pub mod outbox;

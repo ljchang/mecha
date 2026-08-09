@@ -76,6 +76,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if let Some(route) = &prepared.agent.context().outbox {
             route.set_session_id(&s.meta.id);
         }
+        // One-shots are their own producer, `run` — addressable, though
+        // rarely addressed. `run` counts as interactive (someone is watching
+        // the terminal), so the resolved default holds inbound mail rather
+        // than folding it into a task it has nothing to do with.
+        if let Some(mb) = &prepared.mailbox {
+            mb.set_identity("run", &s.meta.id);
+            if let Err(e) = mb.store.announce("run", &s.meta.id) {
+                tracing::warn!("could not announce run session: {e:#}");
+            }
+        }
     }
 
     let user = Message::user(&prompt);
@@ -129,6 +139,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             usage: outcome.usage.clone(),
             turns: outcome.turns,
         })?;
+        if let Some(mb) = &prepared.mailbox {
+            mb.store.depart(&s.meta.id);
+        }
     }
 
     if args.json {

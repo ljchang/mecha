@@ -885,6 +885,16 @@ async fn run_agent(
     if let Some(route) = &prepared.agent.context().outbox {
         route.set_session_id(&session.meta.id);
     }
+    // The trigger's name is its producer, so `message_send` to this name
+    // reaches tomorrow's run of it — and this run claims whatever was left
+    // for it since last time. Unattended, so the resolved inbound default is
+    // accept; the marker is what `mecha msg agents` answers with.
+    if let Some(mb) = &prepared.mailbox {
+        mb.set_identity(&t.name, &session.meta.id);
+        if let Err(e) = mb.store.announce(&t.name, &session.meta.id) {
+            tracing::warn!("could not announce trigger run: {e:#}");
+        }
+    }
 
     // A fresh conversation, so nothing — including taint — carries over from
     // yesterday's run of the same trigger.
@@ -951,6 +961,9 @@ async fn run_agent(
 
     session.append_messages(&convo.messages[history_len..])?;
     session.append(&Record::Taint(convo.taint))?;
+    if let Some(mb) = &prepared.mailbox {
+        mb.store.depart(&session.meta.id);
+    }
 
     let outcome = match outcome {
         Ok(o) => o,

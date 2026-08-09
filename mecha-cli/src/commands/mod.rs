@@ -5,6 +5,7 @@ pub mod distill;
 pub mod eval;
 pub mod frontdoor;
 pub mod learn;
+pub mod msg;
 pub mod outbox;
 pub mod proposals;
 pub mod reflect;
