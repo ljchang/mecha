@@ -13,19 +13,15 @@
 //! "working…" forever is exactly the confusion above. [`ThreadStore::sweep`]
 //! is what turns that into an honest state on startup.
 //!
-//! **One writer.** The connector owns every thread it drives, so this store
+//! **One writer, and it is currently a convention rather than an enforcement.**
+//! The connector's event loop is the only thing that writes here, so the store
 //! takes no per-record lock — writes are temp-sibling-and-rename, so a reader
 //! (`mecha slack status`) sees either the old record or the new one and never
-//! half of either. What makes single-writer true rather than hoped-for is a
-//! connector-wide lock, which arrives with the connector itself; until then the
-//! only writers are one-shot CLI verbs.
-
-// The connector is this module's real consumer and it does not exist yet
-// (step 4). Rather than invent CLI verbs to launder a lint — which would leave
-// the codebase carrying surface nobody asked for — the unused half is marked
-// here. **This attribute comes off when the connector lands**, and if anything
-// is still dead after that, it was built and never needed.
-#![allow(dead_code)]
+//! half of either. What is *owed* is a connector-wide lock: two `mecha slack
+//! connect` processes would both hold the socket, both answer, and both write.
+//! Nothing stops that today except there being one operator, which is exactly
+//! the shape this project distrusts elsewhere — see the trigger store's flock,
+//! which exists for the same reason.
 
 use std::path::{Path, PathBuf};
 

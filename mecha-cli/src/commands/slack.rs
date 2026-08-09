@@ -27,6 +27,7 @@ use mecha_slack::envelope::Inbound;
 use mecha_slack::{chat, Slack, SocketMode, SocketOptions};
 
 use crate::slack::threads::{ThreadState, ThreadStore};
+use crate::GlobalOpts;
 use serde_json::{json, Value};
 
 const BOT_TOKEN_ENV: &str = "MECHA_SLACK_BOT_TOKEN";
@@ -63,6 +64,9 @@ pub enum Cmd {
         #[arg(long)]
         state: Option<String>,
     },
+    /// Run the connector: hold the Slack socket open and drive runs from
+    /// threads. This is what the systemd unit runs.
+    Connect,
     /// Mark threads whose run did not survive a restart, so none is left
     /// showing "working…" forever. The connector does this on startup; this is
     /// the same pass, by hand.
@@ -71,7 +75,7 @@ pub enum Cmd {
     Unlink,
 }
 
-pub async fn run(args: Args) -> Result<()> {
+pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     let store = open_store()?;
     match args.cmd.unwrap_or(Cmd::Status) {
         Cmd::Status => status(&store).await,
@@ -79,6 +83,7 @@ pub async fn run(args: Args) -> Result<()> {
         Cmd::Link { timeout, force } => link(&store, timeout, force).await,
         Cmd::Threads { state } => threads(state.as_deref()),
         Cmd::Sweep => sweep(),
+        Cmd::Connect => crate::slack::connector::run(global).await,
         Cmd::Unlink => {
             store.clear_binding()?;
             store.clear_pending_link()?;

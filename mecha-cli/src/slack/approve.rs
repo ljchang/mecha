@@ -19,10 +19,6 @@
 //! months, and "allow this tool forever" made once on a phone is a much larger
 //! blast radius than it looks.
 
-// Like `threads.rs`: the connector is the consumer and lands next. The
-// attribute comes off with it.
-#![allow(dead_code)]
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

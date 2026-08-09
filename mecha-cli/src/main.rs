@@ -266,7 +266,7 @@ async fn dispatch() -> Result<()> {
         Command::Msg(args) => commands::msg::execute(args).await,
         Command::Work(args) => commands::work::execute(args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
-        Command::Slack(args) => commands::slack::run(args).await,
+        Command::Slack(args) => commands::slack::run(&cli.global, args).await,
         Command::Trigger(args) => commands::trigger::execute(&cli.global, args).await,
         Command::Proposals(args) => commands::proposals::execute(args).await,
         Command::Rules(args) => commands::rules::execute(args).await,

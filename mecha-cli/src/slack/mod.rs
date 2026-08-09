@@ -6,4 +6,6 @@
 //! lives here beside `tui/` rather than in that crate.
 
 pub mod approve;
+pub mod connector;
+pub mod pump;
 pub mod threads;
