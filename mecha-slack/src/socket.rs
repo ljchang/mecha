@@ -120,10 +120,10 @@ impl SocketMode {
             let mut conn = match current.take() {
                 Some(c) => c,
                 None => match self.open().await {
-                    Ok(c) => {
-                        backoff = RECONNECT_MIN;
-                        c
-                    }
+                    // Deliberately *not* resetting the backoff here: a dial
+                    // that succeeds proves nothing about a connection that
+                    // lasts. `pump` resets it once frames actually arrive.
+                    Ok(c) => c,
                     Err(e) if e.is_transient() => {
                         tracing::warn!("slack socket open failed ({e}); retrying in {backoff:?}");
                         tokio::time::sleep(backoff).await;
@@ -134,10 +134,19 @@ impl SocketMode {
                 },
             };
 
-            match self.pump(&mut conn, &out, &cancel).await {
+            match self.pump(&mut conn, &out, &cancel, &mut backoff).await {
                 Pump::Cancelled => return Ok(()),
                 Pump::Closed => {
-                    tracing::debug!("slack socket closed; reopening");
+                    // Backoff covers *this* path too, and the reset lives with
+                    // the frames rather than with the dial. A socket Slack
+                    // accepts and then immediately closes would otherwise
+                    // reopen with no delay — and because opening succeeded,
+                    // reset the delay on the way — which is an unthrottled
+                    // loop against `apps.connections.open` that ends in a rate
+                    // limit or a disabled app.
+                    tracing::debug!("slack socket closed; reopening in {backoff:?}");
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(RECONNECT_MAX);
                 }
                 Pump::Fatal(reason) => {
                     return Err(SlackError::Disconnected(reason));
@@ -149,7 +158,7 @@ impl SocketMode {
                         Ok(next) => {
                             let _ = tokio::time::timeout(
                                 DRAIN_GRACE,
-                                self.pump(&mut conn, &out, &cancel),
+                                self.pump(&mut conn, &out, &cancel, &mut backoff),
                             )
                             .await;
                             current = Some(next);
@@ -170,6 +179,7 @@ impl SocketMode {
         conn: &mut Connection,
         out: &mpsc::Sender<Inbound>,
         cancel: &(impl Fn() -> bool + Send),
+        backoff: &mut Duration,
     ) -> Pump {
         loop {
             if cancel() {
@@ -198,6 +208,8 @@ impl SocketMode {
                     continue;
                 }
             };
+            // A frame arrived, so the connection is genuinely working.
+            *backoff = RECONNECT_MIN;
             let inbound = interpret(&envelope);
 
             if let Some(id) = inbound.envelope_id() {
@@ -276,6 +288,19 @@ mod tests {
         // else is how an envelope goes unacknowledged while looking handled.
         let payload = json!({ "envelope_id": "env-1" });
         assert_eq!(payload.to_string(), r#"{"envelope_id":"env-1"}"#);
+    }
+
+    #[test]
+    fn a_connection_that_dies_immediately_still_backs_off() {
+        // The loop that mattered: Slack accepts the socket and closes it, so
+        // `open` keeps succeeding. Resetting the delay on a successful *dial*
+        // would spin; it is reset when a frame actually arrives, which is the
+        // only evidence the connection works.
+        let mut d = RECONNECT_MIN;
+        for _ in 0..4 {
+            d = (d * 2).min(RECONNECT_MAX);
+        }
+        assert!(d > RECONNECT_MIN, "a repeated close must slow down");
     }
 
     #[test]

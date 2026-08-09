@@ -19,6 +19,8 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use mecha_core::agent::{Agent, AgentEvent, Budget, Conversation, RunOutcome};
 use mecha_core::message::Message;
+use mecha_core::outbox::OutboxRoute;
+use mecha_core::session::{Record, Session, SessionMeta};
 use mecha_core::tool::ToolCtx;
 use mecha_slack::binding::{self, Binding, Credentials, Gate, SlackStore};
 use mecha_slack::envelope::{FileRef, Inbound, Interaction, SlackEvent};
@@ -56,6 +58,11 @@ struct PendingApproval {
     channel: String,
     message_ts: String,
     tool: String,
+    thread_key: String,
+    /// When the approver stops waiting. The card is retired at this point:
+    /// one that outlives the call it describes is worse than no card, because
+    /// pressing it records an approval of something already refused.
+    expires_at: std::time::Instant,
 }
 
 /// One connector at a time, enforced rather than assumed.
@@ -157,7 +164,11 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         let _ = threads.apply(&orphan.key, Event::OrphanAnnounced);
     }
 
-    let agent = Arc::new(build_agent(global, &cfg).await?);
+    let prepared = build_agent(global, &cfg).await?;
+    let provider = prepared.provider_name.clone();
+    let model = prepared.model.clone();
+    let prepared_config = prepared.config.clone();
+    let agent = Arc::new(prepared.agent);
 
     let (inbound_tx, mut inbound_rx) = mpsc::channel(64);
     let (approval_tx, mut approval_rx) = mpsc::channel::<approve::Request>(32);
@@ -183,10 +194,13 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         conversations: HashMap::new(),
         pending: HashMap::new(),
         seen: VecDeque::new(),
+        approval_seq: 0,
         staged_before: HashMap::new(),
-        drafts: HashMap::new(),
         files_before: HashMap::new(),
         outbox_root,
+        provider,
+        model,
+        config: prepared_config,
         approval_tx,
         completion_tx,
     };
@@ -208,8 +222,19 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
             done = completion_rx.recv() => if let Some(c) = done {
                 state.on_completion(c).await;
             },
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("stopping; in-flight runs are cancelled at their next safe point");
+            // **Both signals.** The shipped unit stops this with SIGTERM and
+            // its comment claims in-flight runs stop at a safe point keeping
+            // their partial turn; handling only SIGINT made that false, and an
+            // ordinary `systemctl restart` killed runs outright.
+            // Retire approval cards whose call has already been refused. Without
+            // this a card raised at 2am stayed clickable, and pressing it in
+            // the morning rewrote the message to say the owner approved
+            // something that was refused hours earlier.
+            _ = tokio::time::sleep(Duration::from_secs(15)) => {
+                state.retire_expired_approvals().await;
+            }
+            _ = shutdown_signal() => {
+                println!("Stopping; in-flight runs cancel at their next safe point.");
                 for live in state.live.values() {
                     live.cancel.cancel();
                 }
@@ -218,13 +243,55 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         }
     }
 
-    socket_task.abort();
+    // **The socket's failure is this process's exit code.** Returning `Ok`
+    // here meant a `link_disabled` — or any terminal Slack error — exited 0,
+    // which `Restart=on-failure` reads as a clean stop: the unit sits
+    // "successfully exited" and Slack goes unanswered forever with nothing in
+    // the journal saying why.
+    if socket_task.is_finished() {
+        match socket_task.await {
+            Ok(Err(e)) => return Err(anyhow::anyhow!("slack socket stopped: {e}")),
+            Ok(Ok(())) => {}
+            Err(e) if !e.is_cancelled() => {
+                return Err(anyhow::anyhow!("slack socket task failed: {e}"))
+            }
+            Err(_) => {}
+        }
+    } else {
+        socket_task.abort();
+    }
     Ok(())
+}
+
+/// SIGINT or SIGTERM, whichever arrives first.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// The agent every thread shares. One provider connection and one cached
 /// prefix; the per-thread parts ride on `RunContext`.
-async fn build_agent(global: &GlobalOpts, cfg: &mecha_core::config::SlackConfig) -> Result<Agent> {
+async fn build_agent(
+    global: &GlobalOpts,
+    cfg: &mecha_core::config::SlackConfig,
+) -> Result<setup::Prepared> {
     let opts = GlobalOpts {
         // Global config only, like a trigger run: a project's `mecha.toml`
         // arrives with a cloned repository and must not shape a run someone
@@ -256,8 +323,7 @@ async fn build_agent(global: &GlobalOpts, cfg: &mecha_core::config::SlackConfig)
     // Not interactive: no terminal approver, and no `ask_user` — the registry
     // belongs to the agent and one agent serves every thread, so a shared
     // `ask_user` could not know which thread asked. See SLACK-DESIGN.md §4.
-    let prepared = setup::prepare(&opts, false).await?;
-    Ok(prepared.agent)
+    setup::prepare(&opts, false).await
 }
 
 struct State {
@@ -271,13 +337,15 @@ struct State {
     conversations: HashMap<String, Conversation>,
     pending: HashMap<String, PendingApproval>,
     seen: VecDeque<String>,
+    approval_seq: u64,
     /// Pending outbox ids as they were when each thread's run began.
     staged_before: HashMap<String, std::collections::HashSet<String>>,
-    /// Draft id → where its review card lives, so a decision can rewrite it.
-    drafts: HashMap<String, (String, String)>,
     /// The workspace as it stood when each run began.
     files_before: HashMap<String, HashMap<PathBuf, (u64, std::time::SystemTime)>>,
     outbox_root: std::path::PathBuf,
+    provider: String,
+    model: String,
+    config: mecha_core::config::Config,
     approval_tx: mpsc::Sender<approve::Request>,
     completion_tx: mpsc::Sender<Completion>,
 }
@@ -401,6 +469,16 @@ impl State {
         // The per-thread half of the run. The approver rides here rather than
         // on the agent because one agent serves every thread, and widening it
         // on the agent would widen all of them at once.
+        // **A session per thread.** Every other front-end records one, and
+        // without it a Slack run left no transcript at all: invisible to
+        // `mecha sessions`, unmineable by `reflect`, never distilled, and —
+        // the load-bearing one — staging drafts that carry no session id, so
+        // nothing downstream can say which run produced them.
+        let session = match self.session_for(&record).await {
+            Some(s) => s,
+            None => return,
+        };
+
         let mut cx = (**self.agent.context()).clone();
         cx.tools = Arc::new(ToolCtx {
             workspace,
@@ -419,6 +497,22 @@ impl State {
         };
         cx.cancel = Some(cancel.clone());
         cx.queued_input = Some(Arc::clone(&queue));
+        // **Its own outbox route, carrying its own session id.** The agent's
+        // route is one `Arc` shared by every thread, so stamping a session id
+        // on it would race between concurrent runs — and it is the stamp that
+        // lets a draft be attributed to the run that wrote it.
+        if let Some(shared) = &self.agent.context().outbox {
+            let Ok(store) = mecha_core::outbox::OutboxStore::open(&self.outbox_root) else {
+                return;
+            };
+            let mine = OutboxRoute::new(
+                store,
+                shared.routed().map(String::from).collect::<Vec<_>>(),
+                shared.publishes().map(String::from).collect::<Vec<_>>(),
+            );
+            mine.set_session_id(&session.meta.id);
+            cx.outbox = Some(Arc::new(mine));
+        }
 
         // The system prompt belongs to the agent and one agent serves every
         // thread, so "where am I" cannot live there. It rides on the turn
@@ -470,6 +564,7 @@ impl State {
             flush_ms: self.cfg.stream_flush_ms,
         };
         let key_for_task = key.clone();
+        let session_for_task = session;
         self.staged_before.insert(key.clone(), staged_before);
         self.files_before.insert(key.clone(), files_before);
 
@@ -483,12 +578,16 @@ impl State {
                 })
             };
 
+            let before = conversation.messages.clone();
             let outcome = agent
                 .run_in(&cx, &mut conversation, Some(events_tx))
                 .await
                 .map(Box::new)
                 .map_err(|e| e.to_string());
             let _ = renderer.await;
+            // Recorded whether it succeeded or not: a failed run is exactly
+            // the transcript someone wants afterwards.
+            let _ = session_for_task.record_run(&before, &conversation.messages);
 
             let _ = completion_tx
                 .send(Completion {
@@ -668,6 +767,39 @@ impl State {
         }
     }
 
+    /// A session for this run.
+    ///
+    /// One per *run* rather than per thread, which is what a trigger does: the
+    /// store has no re-attach constructor, and inventing one to make a
+    /// thread's runs share a transcript would be a change to `session.rs` in
+    /// service of a nicety. The thread record keeps the most recent id, so
+    /// "what did that thread last do" is still answerable.
+    async fn session_for(&mut self, record: &ThreadRecord) -> Option<Session> {
+        let dir = Session::default_dir().ok()?;
+        let session = Session::create(
+            &dir,
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: self.provider.clone(),
+                model: self.model.clone(),
+                workspace: record.workspace.clone().unwrap_or_default(),
+                title: Some(format!("slack: {}", record.key)),
+            },
+        )
+        .ok()?;
+        let _ = session.append(&Record::Config(mecha_core::session::RunConfig::of(
+            &self.agent,
+            &self.config,
+            &self.provider,
+        )));
+        if let Ok(Some(mut r)) = self.threads.get(&record.key) {
+            r.session_id = Some(session.meta.id.clone());
+            let _ = self.threads.put(&r);
+        }
+        Some(session)
+    }
+
     /// Send back what the run actually made.
     ///
     /// An answer that says "I wrote the chart to output.png" is useless on a
@@ -776,18 +908,33 @@ impl State {
         let Ok(Some(record)) = self.threads.get(key) else {
             return;
         };
+        // **Scoped by session id, not by an outbox-wide diff.** The diff was
+        // borrowed from the TUI, where it is safe because the TUI has one
+        // conversation; here up to `max_concurrent` runs share the outbox with
+        // every other mecha process, so a nightly trigger staging nine replies
+        // mid-run would have had them carded in this thread and released from
+        // it. The session id says which run actually wrote a draft.
+        let Some(session_id) = record.session_id.clone() else {
+            return;
+        };
         let before = self.staged_before.remove(key).unwrap_or_default();
-        let after = pending_outbox_ids(&self.outbox_root);
-        let fresh: Vec<String> = after.difference(&before).cloned().collect();
+        let Ok(store) = mecha_core::outbox::OutboxStore::open(&self.outbox_root) else {
+            return;
+        };
+        let Ok(items) = store.items() else { return };
+        let fresh: Vec<_> = items
+            .into_iter()
+            .filter(|i| {
+                i.status == "pending"
+                    && i.session_id.as_deref() == Some(session_id.as_str())
+                    && !before.contains(&i.id)
+            })
+            .collect();
         if fresh.is_empty() {
             return;
         }
 
-        let Ok(store) = mecha_core::outbox::OutboxStore::open(&self.outbox_root) else {
-            return;
-        };
-        for id in fresh {
-            let Ok(item) = store.item(&id) else { continue };
+        for item in fresh {
             // The taint snapshot rides on the item, and a draft written while
             // the trifecta was armed is the one a person must look at hardest.
             let armed = item.taint.private && item.taint.untrusted;
@@ -808,19 +955,66 @@ impl State {
                     blocks::button("slack_outbox_reject", "Reject", &item.id, Some("danger")),
                 ]),
             ];
-            if let Ok(ts) = chat::post_message(
+            // No map of where the card went: a button press carries its own
+            // channel and message ts, which is what makes a card still work
+            // after the connector restarts.
+            let _ = chat::post_message(
                 &self.slack,
                 &record.channel_id,
                 Some(&record.thread_ts),
                 "A draft is waiting for review.",
                 Some(blocks),
             )
-            .await
-            {
-                self.drafts
-                    .insert(item.id.clone(), (record.channel_id.clone(), ts));
-            }
+            .await;
         }
+    }
+
+    /// Whether a draft was written with both taint legs armed.
+    fn is_tainted(&self, id: &str) -> bool {
+        mecha_core::outbox::OutboxStore::open(&self.outbox_root)
+            .ok()
+            .and_then(|s| s.item(id).ok())
+            .is_some_and(|i| i.taint.private && i.taint.untrusted)
+    }
+
+    /// The second step for a tainted draft: the full arguments, and a button
+    /// that means what it says.
+    ///
+    /// The TUI shows the whole call in red and confirms before releasing one
+    /// of these, and refuses to auto-release them at all. A single
+    /// primary-styled Send that ran `outbox send -y` gave a phone less care
+    /// than a terminal, on the drafts that deserve the most.
+    async fn ask_to_confirm_tainted(&mut self, id: &str, channel: &str, ts: &str) {
+        let args = mecha_core::outbox::OutboxStore::open(&self.outbox_root)
+            .ok()
+            .and_then(|s| s.item(id).ok())
+            .map(|i| serde_json::to_string_pretty(&i.args).unwrap_or_default())
+            .unwrap_or_default();
+        let card = vec![
+            blocks::section(
+                "*⚠️ This draft was written while the trifecta was armed.*\nPrivate data and \
+                 untrusted content were both in the conversation that produced it. The full \
+                 arguments are below — read them before sending.",
+            ),
+            blocks::section(&format!("```\n{}\n```", truncate_for_slack(&args))),
+            blocks::actions(vec![
+                blocks::button(
+                    "slack_outbox_send_confirm",
+                    "Send anyway",
+                    id,
+                    Some("danger"),
+                ),
+                blocks::button("slack_outbox_reject", "Reject", id, None),
+            ]),
+        ];
+        let _ = chat::update(
+            &self.slack,
+            channel,
+            ts,
+            "This draft needs a second look before it is sent.",
+            Some(card),
+        )
+        .await;
     }
 
     /// Release or reject a draft by driving the CLI, exactly as the TUI does.
@@ -830,10 +1024,7 @@ impl State {
     /// `mecha outbox` cannot, and a release can take a while because it may
     /// start MCP servers. It is spawned into a task so the event loop keeps
     /// answering while it runs.
-    fn resolve_draft(&mut self, id: &str, send: bool, who: &str) {
-        let Some((channel, ts)) = self.drafts.remove(id) else {
-            return;
-        };
+    fn resolve_draft(&mut self, id: &str, send: bool, who: &str, channel: String, ts: String) {
         let slack = self.slack.clone();
         let id = id.to_string();
         let who = who.to_string();
@@ -876,13 +1067,78 @@ impl State {
         });
     }
 
+    /// Rewrite any card whose approver has stopped waiting, and forget it.
+    async fn retire_expired_approvals(&mut self) {
+        let now = std::time::Instant::now();
+        let expired: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| p.expires_at <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in expired {
+            if let Some(p) = self.pending.remove(&id) {
+                let line = format!(
+                    "`{}` was not approved — nobody answered in time, and the call was \
+                     refused.",
+                    p.tool
+                );
+                let _ = chat::update(
+                    &self.slack,
+                    &p.channel,
+                    &p.message_ts,
+                    &line,
+                    Some(vec![blocks::context(&line)]),
+                )
+                .await;
+                let _ = self.threads.apply(&p.thread_key, Event::InputSettled);
+            }
+        }
+    }
+
+    /// Refuse every approval a thread is waiting on, so a stopped run actually
+    /// stops.
+    ///
+    /// `RunContext::cancel` is checked at turn boundaries and against the
+    /// provider stream — never around `approve()`. A run parked in the
+    /// approver therefore ignored Stop entirely and sat there for the whole
+    /// timeout with its card still clickable, while the thread reported
+    /// `cancelled`. Dropping the reply channels makes the approver return
+    /// `Blocked` at once, which is what makes the state truthful.
+    async fn refuse_pending_for(&mut self, thread_key: &str) {
+        let theirs: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| p.thread_key == thread_key)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in theirs {
+            if let Some(p) = self.pending.remove(&id) {
+                drop(p.reply);
+                let line = format!("`{}` was not approved — the run was stopped.", p.tool);
+                let _ = chat::update(
+                    &self.slack,
+                    &p.channel,
+                    &p.message_ts,
+                    &line,
+                    Some(vec![blocks::context(&line)]),
+                )
+                .await;
+            }
+        }
+    }
+
     /// An approver wants to ask. Post a durable card — never an ephemeral,
     /// which does not survive a reload and cannot be updated.
     async fn on_approval_request(&mut self, request: approve::Request) {
         let Ok(Some(record)) = self.threads.get(&request.thread_key) else {
             return;
         };
-        let id = format!("{}-{}", request.thread_key, self.pending.len());
+        // **Monotonic, never `pending.len()`** — that shrinks when an entry is
+        // removed, so ids were reused while older cards kept live buttons and
+        // a stale card could resolve a later, unread call.
+        self.approval_seq += 1;
+        let id = format!("{}-{}", request.thread_key, self.approval_seq);
         let card = vec![
             blocks::section(&format!("*Approve this call?*\n`{}`", request.summary)),
             blocks::context(&format!("thread {} · {}", record.thread_ts, request.tool)),
@@ -912,6 +1168,9 @@ impl State {
                         channel: record.channel_id,
                         message_ts: ts,
                         tool: request.tool,
+                        thread_key: request.thread_key.clone(),
+                        expires_at: std::time::Instant::now()
+                            + Duration::from_secs(self.cfg.approval_timeout_secs),
                     },
                 );
             }
@@ -942,13 +1201,39 @@ impl State {
                 "slack_stop" => {
                     if let Some(live) = self.live.get(&value) {
                         live.cancel.cancel();
+                        // Cancelling alone does not reach a run parked in the
+                        // approver; refusing its pending asks does.
+                        self.refuse_pending_for(&value).await;
                         let _ = self.threads.apply(&value, Event::StopPressed);
                     }
                 }
                 "slack_mode" => self.cycle_mode(&value).await,
-                "slack_outbox_send" | "slack_outbox_reject" => {
-                    let who = interaction.user_id.as_deref().unwrap_or("someone");
-                    self.resolve_draft(&value, action.action_id == "slack_outbox_send", who);
+                "slack_outbox_send" | "slack_outbox_send_confirm" | "slack_outbox_reject" => {
+                    let who = interaction
+                        .user_id
+                        .as_deref()
+                        .unwrap_or("someone")
+                        .to_string();
+                    // **Where the card is comes from the payload**, not from an
+                    // in-memory map: a connector restart used to make Send do
+                    // nothing at all, silently, on a card still sitting in the
+                    // thread.
+                    let (Some(channel), Some(ts)) = (
+                        interaction.channel_id.clone(),
+                        interaction.message_ts.clone(),
+                    ) else {
+                        continue;
+                    };
+                    // A draft written with the trifecta armed gets a second
+                    // step showing the full arguments, because every other
+                    // release surface confirms and shows them — `-y` on one tap
+                    // did neither.
+                    if action.action_id == "slack_outbox_send" && self.is_tainted(&value) {
+                        self.ask_to_confirm_tainted(&value, &channel, &ts).await;
+                        continue;
+                    }
+                    let send = action.action_id != "slack_outbox_reject";
+                    self.resolve_draft(&value, send, &who, channel, ts);
                 }
                 "slack_approve" | "slack_approve_run" | "slack_reject" => {
                     if let Some(pending) = self.pending.remove(&value) {
@@ -962,7 +1247,25 @@ impl State {
                             "slack_approve_run" => "allowed for this run",
                             _ => "rejected",
                         };
-                        let _ = pending.reply.send(answer);
+                        // The approver may have stopped waiting between the
+                        // card being posted and this press. Saying "approved"
+                        // then would be a lie the thread keeps forever.
+                        let landed = pending.reply.send(answer).is_ok();
+                        if !landed {
+                            let line = format!(
+                                "`{}` was already refused before this was pressed — nothing ran.",
+                                pending.tool
+                            );
+                            let _ = chat::update(
+                                &self.slack,
+                                &pending.channel,
+                                &pending.message_ts,
+                                &line,
+                                Some(vec![blocks::context(&line)]),
+                            )
+                            .await;
+                            continue;
+                        }
                         // Rewrite the card into a terminal record, so it says
                         // what happened and cannot be clicked again.
                         let who = interaction.user_id.as_deref().unwrap_or("someone");
@@ -1120,6 +1423,32 @@ fn thread_workspace(key: &str) -> Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::safe_filename;
+
+    #[test]
+    fn approval_ids_never_repeat_even_as_entries_are_removed() {
+        // The bug: ids were minted from `pending.len()`, which *shrinks* when
+        // an approval resolves, so a later call could reuse the id of a card
+        // still sitting in the thread with live buttons — and pressing that
+        // stale card would approve a call the reader never saw.
+        let mut seq = 0u64;
+        let mut pending: std::collections::HashSet<String> = Default::default();
+        let mut minted = Vec::new();
+        for round in 0..50 {
+            seq += 1;
+            let id = format!("D1-1.0-{seq}");
+            assert!(pending.insert(id.clone()), "id {id} was reused");
+            minted.push(id.clone());
+            // Resolve an older one every other round, shrinking the map.
+            if round % 2 == 1 {
+                if let Some(old) = minted.first().cloned() {
+                    pending.remove(&old);
+                    minted.remove(0);
+                }
+            }
+        }
+        // The counter, unlike a length, only ever goes up.
+        assert_eq!(seq, 50);
+    }
 
     #[test]
     fn a_snapshot_ignores_what_the_user_sent_and_what_is_hidden() {
