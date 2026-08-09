@@ -155,6 +155,16 @@ pub struct SlackConfig {
     /// Largest attachment fetched into a run's workspace. Slack allows 1 GB;
     /// a remote control does not need to.
     pub max_upload_mb: u64,
+    /// Narrow the tool surface for Slack-driven runs.
+    ///
+    /// Empty means "everything configured", which is the default and is
+    /// usually too much: measured on the first live run, the schemas of every
+    /// wired MCP server cost ~7–8k input tokens *per turn* before any work
+    /// happened — against a 32k window whose compaction threshold is 21,845,
+    /// a run starts a third of the way there. A phone rarely needs the mail
+    /// and the calendar and the factory at once, and naming what it does need
+    /// is the cheapest context this system has to give.
+    pub tools: Vec<String>,
 }
 
 impl Default for SlackConfig {
@@ -168,6 +178,7 @@ impl Default for SlackConfig {
             stream_flush_chars: 800,
             stream_flush_ms: 1000,
             max_upload_mb: 25,
+            tools: Vec::new(),
         }
     }
 }
@@ -880,6 +891,7 @@ struct SlackLayer {
     stream_flush_chars: Option<usize>,
     stream_flush_ms: Option<u64>,
     max_upload_mb: Option<u64>,
+    tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1133,6 +1145,9 @@ impl ConfigLayer {
             }
             if let Some(v) = x.max_upload_mb {
                 t.max_upload_mb = v;
+            }
+            if let Some(v) = x.tools {
+                t.tools = v;
             }
         }
         // Only ever reached from the global layer: `merge_file` strips this

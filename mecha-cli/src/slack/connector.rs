@@ -66,7 +66,15 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         .binding()?
         .context("nothing is bound — run `mecha slack link` first")?;
 
-    let cfg = mecha_core::config::Config::load_global()?.slack;
+    let global_cfg = mecha_core::config::Config::load_global()?;
+    // Resolved here rather than by `open_existing_default`, which always uses
+    // the default root: a configured `[outbox] dir` would otherwise be
+    // silently ignored and every review card would go missing with no error.
+    let outbox_root = match global_cfg.outbox.dir.clone() {
+        Some(dir) => dir,
+        None => mecha_core::outbox::OutboxStore::default_root()?,
+    };
+    let cfg = global_cfg.slack;
     let threads = ThreadStore::open(
         mecha_core::work::mecha_home()?
             .join("slack")
@@ -109,7 +117,7 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         let _ = threads.apply(&orphan.key, Event::OrphanAnnounced);
     }
 
-    let agent = Arc::new(build_agent(global).await?);
+    let agent = Arc::new(build_agent(global, &cfg).await?);
 
     let (inbound_tx, mut inbound_rx) = mpsc::channel(64);
     let (approval_tx, mut approval_rx) = mpsc::channel::<approve::Request>(32);
@@ -135,6 +143,9 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         conversations: HashMap::new(),
         pending: HashMap::new(),
         seen: VecDeque::new(),
+        staged_before: HashMap::new(),
+        drafts: HashMap::new(),
+        outbox_root,
         approval_tx,
         completion_tx,
     };
@@ -172,7 +183,7 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
 
 /// The agent every thread shares. One provider connection and one cached
 /// prefix; the per-thread parts ride on `RunContext`.
-async fn build_agent(global: &GlobalOpts) -> Result<Agent> {
+async fn build_agent(global: &GlobalOpts, cfg: &mecha_core::config::SlackConfig) -> Result<Agent> {
     let opts = GlobalOpts {
         // Global config only, like a trigger run: a project's `mecha.toml`
         // arrives with a cloned repository and must not shape a run someone
@@ -180,6 +191,9 @@ async fn build_agent(global: &GlobalOpts) -> Result<Agent> {
         global_config_only: true,
         provider: global.provider.clone(),
         model: global.model.clone(),
+        // Narrowed if config says so. The cost of not narrowing is paid every
+        // turn of every thread, in the window the model has left to think in.
+        tools: cfg.tools.clone(),
         ..GlobalOpts::default()
     };
     // Not interactive: no terminal approver, and no `ask_user` — the registry
@@ -200,6 +214,11 @@ struct State {
     conversations: HashMap<String, Conversation>,
     pending: HashMap<String, PendingApproval>,
     seen: VecDeque<String>,
+    /// Pending outbox ids as they were when each thread's run began.
+    staged_before: HashMap<String, std::collections::HashSet<String>>,
+    /// Draft id → where its review card lives, so a decision can rewrite it.
+    drafts: HashMap<String, (String, String)>,
+    outbox_root: std::path::PathBuf,
     approval_tx: mpsc::Sender<approve::Request>,
     completion_tx: mpsc::Sender<Completion>,
 }
@@ -358,6 +377,12 @@ impl State {
             }
         }
 
+        // Snapshot the outbox before the run. Scoping by id-diff is what the
+        // TUI does and for the same reason: nothing else reliably says which
+        // drafts *this* run staged, and releasing another session's drafts
+        // from a phone would be the worst possible surprise.
+        let staged_before = pending_outbox_ids(&self.outbox_root);
+
         let mut conversation = self.conversations.remove(&key).unwrap_or_default();
         conversation.messages.push(Message::user(&prompt));
 
@@ -375,6 +400,7 @@ impl State {
             flush_ms: self.cfg.stream_flush_ms,
         };
         let key_for_task = key.clone();
+        self.staged_before.insert(key.clone(), staged_before);
 
         tokio::spawn(async move {
             let renderer = {
@@ -514,17 +540,7 @@ impl State {
                 let staged = outcome.tool_calls.iter().any(|c| c.staged);
                 let _ = self.threads.apply(&done.key, Event::Finished { staged });
                 if staged {
-                    if let Ok(Some(r)) = self.threads.get(&done.key) {
-                        let _ = chat::post_message(
-                            &self.slack,
-                            &r.channel_id,
-                            Some(&r.thread_ts),
-                            "This run staged drafts in the outbox. Nothing has been sent — \
-                             review them with `mecha outbox`.",
-                            None,
-                        )
-                        .await;
-                    }
+                    self.offer_drafts(&done.key).await;
                 }
             }
             Err(error) => {
@@ -578,6 +594,116 @@ impl State {
             )
             .await;
         }
+    }
+
+    /// Post one card per draft this run staged, so releasing it never means
+    /// finding a terminal.
+    ///
+    /// This is the phone UI `PUBLIC-SURFACE-DESIGN.md` §11 deferred as needing
+    /// a home-side server. It needs none: the outbox is already the review
+    /// surface, and Slack is already a screen the owner is holding.
+    async fn offer_drafts(&mut self, key: &str) {
+        let Ok(Some(record)) = self.threads.get(key) else {
+            return;
+        };
+        let before = self.staged_before.remove(key).unwrap_or_default();
+        let after = pending_outbox_ids(&self.outbox_root);
+        let fresh: Vec<String> = after.difference(&before).cloned().collect();
+        if fresh.is_empty() {
+            return;
+        }
+
+        let Ok(store) = mecha_core::outbox::OutboxStore::open(&self.outbox_root) else {
+            return;
+        };
+        for id in fresh {
+            let Ok(item) = store.item(&id) else { continue };
+            // The taint snapshot rides on the item, and a draft written while
+            // the trifecta was armed is the one a person must look at hardest.
+            let armed = item.taint.private && item.taint.untrusted;
+            let heading = if armed {
+                format!(
+                    "*⚠️ Draft — written with the trifecta armed*\n`{}`",
+                    item.tool
+                )
+            } else {
+                format!("*Draft*\n`{}`", item.tool)
+            };
+            let blocks = vec![
+                blocks::section(&heading),
+                blocks::section(&format!("```\n{}\n```", truncate_for_slack(&item.summary))),
+                blocks::context(&format!("id `{}` · nothing has been sent", item.id)),
+                blocks::actions(vec![
+                    blocks::button("slack_outbox_send", "Send", &item.id, Some("primary")),
+                    blocks::button("slack_outbox_reject", "Reject", &item.id, Some("danger")),
+                ]),
+            ];
+            if let Ok(ts) = chat::post_message(
+                &self.slack,
+                &record.channel_id,
+                Some(&record.thread_ts),
+                "A draft is waiting for review.",
+                Some(blocks),
+            )
+            .await
+            {
+                self.drafts
+                    .insert(item.id.clone(), (record.channel_id.clone(), ts));
+            }
+        }
+    }
+
+    /// Release or reject a draft by driving the CLI, exactly as the TUI does.
+    ///
+    /// A child process rather than a library call, for the TUI's reasons: one
+    /// implementation of releasing, no way for this surface to do something
+    /// `mecha outbox` cannot, and a release can take a while because it may
+    /// start MCP servers. It is spawned into a task so the event loop keeps
+    /// answering while it runs.
+    fn resolve_draft(&mut self, id: &str, send: bool, who: &str) {
+        let Some((channel, ts)) = self.drafts.remove(id) else {
+            return;
+        };
+        let slack = self.slack.clone();
+        let id = id.to_string();
+        let who = who.to_string();
+        tokio::spawn(async move {
+            let exe = std::env::current_exe().unwrap_or_else(|_| "mecha".into());
+            let mut cmd = tokio::process::Command::new(exe);
+            if send {
+                cmd.args(["outbox", "send", &id, "-y"]);
+            } else {
+                cmd.args(["outbox", "reject", &id, "--reason", "rejected from Slack"]);
+            }
+            let outcome = cmd.output().await;
+            let (verb, detail) = match outcome {
+                Ok(o) if o.status.success() => {
+                    (if send { "sent" } else { "rejected" }, String::new())
+                }
+                Ok(o) => (
+                    "failed",
+                    String::from_utf8_lossy(&o.stderr)
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+                Err(e) => ("failed", e.to_string()),
+            };
+            let line = if detail.is_empty() {
+                format!("Draft `{id}` {verb} by <@{who}>")
+            } else {
+                format!("Draft `{id}` {verb} by <@{who}> — {detail}")
+            };
+            let _ = chat::update(
+                &slack,
+                &channel,
+                &ts,
+                &line,
+                Some(vec![blocks::context(&line)]),
+            )
+            .await;
+        });
     }
 
     /// An approver wants to ask. Post a durable card — never an ephemeral,
@@ -649,6 +775,10 @@ impl State {
                     }
                 }
                 "slack_mode" => self.cycle_mode(&value).await,
+                "slack_outbox_send" | "slack_outbox_reject" => {
+                    let who = interaction.user_id.as_deref().unwrap_or("someone");
+                    self.resolve_draft(&value, action.action_id == "slack_outbox_send", who);
+                }
                 "slack_approve" | "slack_reject" => {
                     let approved = action.action_id == "slack_approve";
                     if let Some(pending) = self.pending.remove(&value) {
@@ -717,6 +847,33 @@ fn safe_filename(raw: &str) -> String {
     cleaned.chars().take(120).collect()
 }
 
+/// Every pending draft's id, or an empty set if the outbox does not exist.
+///
+/// An empty set on failure is deliberate: it makes the id-diff find nothing
+/// new rather than offering the whole outbox for release, which is the
+/// direction a failure here has to fall.
+fn pending_outbox_ids(root: &std::path::Path) -> std::collections::HashSet<String> {
+    let Ok(store) = mecha_core::outbox::OutboxStore::open(root) else {
+        return Default::default();
+    };
+    store
+        .items()
+        .map(|items| {
+            items
+                .into_iter()
+                .filter(|i| i.status == "pending")
+                .map(|i| i.id)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Slack section blocks cap at 3,000 characters and a code fence costs some of
+/// that; a draft longer than this is read in the outbox proper.
+fn truncate_for_slack(text: &str) -> String {
+    mecha_slack::blocks::truncate(text, 2_600)
+}
+
 /// Stop and Mode, carrying the thread key as their correlation value. The
 /// value authorises nothing: every press is gated on `payload.user.id`.
 fn controls_blocks(key: &str, mode: &str) -> Vec<serde_json::Value> {
@@ -745,6 +902,22 @@ fn thread_workspace(key: &str) -> Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::safe_filename;
+
+    #[test]
+    fn a_draft_summary_fits_inside_a_section_block_with_its_fence() {
+        // A section block caps at 3,000 characters and the code fence spends
+        // some of them. Slack drops an oversized block with a warning nobody
+        // reads, which would make a long draft's card arrive empty — the one
+        // card where the reader most needs to see what they are releasing.
+        let long = super::truncate_for_slack(&"x".repeat(10_000));
+        let fenced = format!("```\n{long}\n```");
+        assert!(
+            fenced.chars().count() < mecha_slack::blocks::limits::SECTION_TEXT,
+            "{} chars",
+            fenced.chars().count()
+        );
+        assert!(long.contains("truncated"), "and the cut says so");
+    }
 
     #[test]
     fn an_attachment_name_cannot_climb_out_of_the_inbox() {
