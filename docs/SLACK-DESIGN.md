@@ -1,6 +1,14 @@
 # Slack as a remote control — design
 
-**2026-08-09. Unbuilt.** How mecha is driven from Slack: one always-on
+> **Built 2026-08-09** and verified against a real workspace, on branch
+> `slack/transport` (PR #25). What shipped, and what was learned doing it, is
+> in [`HISTORY.md`](HISTORY.md) under that date; what is still open is in
+> [`HANDOFF.md`](HANDOFF.md). The body below is left as it was written, since
+> the design as *proposed* is evidence about how the built thing came to be
+> shaped that way — including the two places implementation contradicted it,
+> which are marked inline (§4 on `ask_user`, §5.2 on the timeout string).
+
+**2026-08-09.** How mecha is driven from Slack: one always-on
 connector at home, a Slack thread as the unit of work, and the outbox as the
 place a run's outbound actions wait for a human who is somewhere else.
 

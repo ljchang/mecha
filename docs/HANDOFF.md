@@ -54,8 +54,8 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **679 tests**, no failures — verified 2026-08-09, after the day's three
-arcs: inter-agent messaging (`mecha-core` grew with the mailbox store,
+Expect **686 tests**, no failures — verified 2026-08-09, after the day's three
+arcs (counts re-measured at the end of the session): inter-agent messaging (`mecha-core` grew with the mailbox store,
 taint-forwarding, and the review's fix tests), the benchmark-diagnosis fixes
 (overflow-recovery, empty-turn, and session-rewrite regression tests, including
 the review-caught rewrite-drops-stale-taint-positions one), and the Slack
@@ -66,9 +66,9 @@ unidentified, worth an eye.
 | Suite | Count |
 |---|---:|
 | `mecha-core` unit | 379 |
-| `mecha-cli` unit | 135 |
+| `mecha-cli` unit | 140 |
 | `mecha-mail` unit | 86 |
-| `mecha-slack` unit | 65 |
+| `mecha-slack` unit | 67 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
 | doctest | 1 |
 
@@ -102,8 +102,9 @@ A working agent harness, used and measured rather than just compiled.
 | Budgets | `max_turns`, `max_output_tokens`, `max_cost_usd`, cost accounting |
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
 | Context | Two-pass compaction: thin tool results, then summarise. Taint preserved, and a tool's own state (the todo list) crosses verbatim |
-| Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep |
+| Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep ; `slack` on a branch (PR #25) |
 | TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/outbox` and `/frontdoor` modals drive the CLI like `/triggers` does, the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
+| Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`. **On `slack/transport`, not merged** |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
@@ -565,176 +566,33 @@ behaviour came from the reflector model declining. If the design was always
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
   record and a triage run. See `CLAUDE.md`.
 
-- **Slack as a remote control — steps 1–5 and 8 are built, 7 in half, and the foundation is VERIFIED LIVE (2026-08-09).** `mecha-slack` (the
-  fourth crate, 61 tests) is the transport: Socket Mode with make-before-break
-  reconnect and automatic acks, the `chat.*` family including the streaming
-  trio, Block Kit builders that truncate visibly rather than letting Slack drop
-  content silently, and files both ways with the four download guards. It has
-  **no `mecha-core` dependency and must never gain one** — that is what keeps
-  it unable to learn what a run or a tool is. Verified against local fixtures:
-  a real WebSocket server proves the ack wire format and that a
-  `link_disabled` disconnect stops rather than looping, and a scripted HTTP
-  server proves the retry policy. Step 2 adds the **security boundary**:
-  `binding.rs` (the owner allowlist, the gate, and the owner-only store under
-  `~/.mecha/slack/` at 0700/0600) and `mecha slack auth|link|status|unlink`.
-  The gate fails closed in both directions — a missing user id *and* a missing
-  team id are refusals — returns a *reason* rather than a boolean so "ignored
-  because not an owner" and "ignored because wrong workspace" stay
-  distinguishable, and `binding::check` makes "nothing is bound" a named
-  refusal instead of an early return in someone's event loop. Tokens come from
-  `MECHA_SLACK_BOT_TOKEN`/`MECHA_SLACK_APP_TOKEN` rather than flags, so neither
-  reaches shell history or `ps`, and `auth` proves them against `auth.test`
-  before storing.
-  [`SLACK-RESEARCH.md`](SLACK-RESEARCH.md) is the evidence and
-  [`SLACK-DESIGN.md`](SLACK-DESIGN.md) is what gets built, both 2026-08-09;
-  §11 there records the three decisions taken (personal workspace first, `ask`
-  as the per-thread default with buttons to widen, non-owners ignored).
-  Step 3 is the **thread state machine** (`mecha-cli/src/slack/threads.rs`):
-  eight states, each carrying *both* what it means and what resolves it, with a
-  test that walks the enum so nobody can add a state a thread cannot be
-  rescued from — the failure `SLACK-RESEARCH.md` §9 found in a shipped API,
-  where `waiting_for_user` and `idle` are enumerated and neither is defined.
-  `sweep` turns a run whose process died into an announced `orphaned` rather
-  than a thread showing "working…" forever, and `mecha slack threads|sweep`
-  expose it. `process_alive` moved to `mecha_core` so the pid range check — the
-  whole correctness of that, since `kill(-1, 0)` succeeds — has one
-  implementation instead of two.
-  **`auth` and `link` were run against a real workspace** (`cosanlab`,
-  T03NYDVCR) and worked: `apps.connections.open`, the WebSocket handshake, the
-  envelope ack, `message.im` parsing, the nonce match, the owner binding and
-  the reply all went through in one exchange. The credential store came out
-  0700/0600. **`connect` is verified live**, including approvals and orphan recovery: a DM produced a streamed
-  answer, `task_update` chunks per tool call, the footer, and the controls
-  message rewritten to its terminal state. **`chat.startStream` works on a
-  workspace of this kind** — the paid-plan question `SLACK-RESEARCH.md` §12
-  left UNVERIFIED is answered for this case, so no `post`+`update` fallback
-  was needed. **Two schema bugs were found by running it, and neither could have been
-  caught by a fixture** — the tests asserted the shape this code believed in,
-  which is the blindness `CLAUDE.md` names about `ScriptedProvider`. A
-  `task_update` chunk is **flat, not nested**, and carries an **`id`** that
-  Slack keys the card on, so without it every update renders as a new line
-  instead of one card transitioning (the call and its result share the
-  `tool_use` id, which is exactly that key). And a stream has **one mode**:
-  mixing a `chunks` array with the top-level `markdown_text` argument is
-  `streaming_mode_mismatch`, so everything now rides in `chunks`. The second
-  bug was hidden by the first — while task chunks were being rejected the
-  stream stayed in markdown mode and the prose worked. Both have tests
-  asserting the documented shape *and* the negative. A trivial
-  prompt cost ~7–8k input tokens per turn — the floor is the full default tool
-  surface, and against the local model's `-c 32768` the compaction threshold
-  is 21,845, so a Slack run starts a third of the way there. `GlobalOpts.tools`
-  already exists for narrowing; a `[slack] tools = [...]` is the fix and is
-  **open**. Also open: the connector-wide lock, `ask_user`, step 6 (outbox
-  review in-thread), and step 7's outbound half.
-  Note the workspace is a shared lab one rather than the personal one §11.1
-  chose; non-owners are ignored by construction so nothing is unsafe, but the
-  app is visible to its members.
-  Steps 4–5 are the connector (`mecha slack connect`): one process, one
-  `Agent`, one task per thread, three channels meeting in one `select!` (what
-  Slack sends, what an approver waits to ask, what a finished run hands back).
-  Owner gating on every event, `event_id` dedupe, steering into
-  `queued_input`, a per-thread jail under the single `slack` producer so
-  `work clean` reaches it, the `AgentEvent`→stream pump with size/time
-  flushing, a controls message carrying Stop and Mode, approval cards rewritten
-  into terminal records, and a startup sweep that **announces** orphans rather
-  than resetting them quietly. `[slack]` is on `Config` *and* `ConfigLayer`,
-  and is stripped from a project file like `[messages]` — a `mecha.toml`
-  arrives with a cloned repository and Slack is the remote control.
-  **The approver forced a `mecha-core` change the design had not
-  anticipated.** `agent.rs` prefixes whatever reason an approver returns with
-  `"Denied by the user: "`, so the timeout wording could not be fixed in the
-  Slack front-end at all. `Decision` gained `Blocked(String)`, rendered
-  `"Blocked by policy: "` — and that surfaced a **live bug**: `ModeApprover`'s
-  own refusals already read as user denials, so every read-only or unattended
-  run has been feeding the learning miner corrections from a human who never
-  spoke. Both now return `Blocked`, with a test in `learning.rs` naming it.
-  Step 8 is in — `mecha slack notify` reads stdin and DMs the owner, so a
-  trigger's existing `notify = "mecha slack notify"` puts the morning briefing
-  on a phone with no new trigger concept, and `scripts/mecha-slack.service` is
-  the third always-on unit. Step 7's inbound half is in: an owner's attachment
-  is fetched into `<jail>/inbox/` and **named as a path in the prompt** rather
-  than injected as content, which is what makes the taint legs arm through
-  `fs_read` — the path that already exists — instead of a parallel one. The
-  filename is sanitised, because the connector writes it before any tool and
-  therefore before the path jail; there is a test on `../../` and friends.
-  **Step 6 is in**: a run that stages drafts posts one review card per draft
-  into its thread — tool, summary in a fence, Send / Reject — scoped by an
-  **id-diff** of pending outbox ids taken before and after the run, because
-  nothing else reliably says which drafts *this* run staged and releasing
-  another session's from a phone is the worst surprise available. A draft
-  written with the trifecta armed is marked. Both buttons drive `mecha outbox`
-  as a **child process**, like the TUI, spawned into a task so the event loop
-  keeps answering while MCP servers start. **That closes
-  `PUBLIC-SURFACE-DESIGN.md` §11's deferred phone UI, and it needed no
-  home-side server.** Two things surfaced writing it: the store root is
-  resolved from the global config rather than `open_existing_default`, which
-  always uses the default root (a configured `[outbox] dir` would have made
-  every card silently go missing), and a draft summary is cut to fit a section
-  block with its fence, since Slack drops an oversized block with a warning
-  nobody reads. **`[slack] tools`** narrows what a Slack run carries — worth
-  setting, given the ~7–8k input tokens a turn of schemas measured live.
-  **Three findings from the first real task** (render a poll bundle and
-  publish it), which is the sort of thing only use produces. Seven approval
-  cards for one job — so a card now carries **"Allow for this run"**, scoped
-  to the run and destroyed with the approver, deliberately narrower than the
-  TUI's process-local `Always`. The model reported that *"the workspace and
-  render tool have different root paths"* and worked around it with `shell`:
-  **MCP servers are spawned once with the agent and cannot follow a
-  per-thread jail**, so they inherited the connector's working directory.
-  They are now rooted at the `slack` producer directory, of which every
-  thread's jail is a subdirectory, and the run's prompt names its workspace
-  because the system prompt belongs to the agent and cannot vary per thread.
-  **The residual limitation is real and deliberate: MCP tools do not honour
-  the per-thread jail** — only the built-in tools do. Closing that means an
-  agent per thread, and an MCP startup per thread with it.
-  **Step 7's outbound half is in**: files a run created or changed are
-  uploaded into its thread, so "I wrote the chart to output.png" stops being
-  useless on a phone. Scoped by a workspace snapshot diffed before and after —
-  the outbox id-diff reasoning applied to files — skipping `inbox/` (those are
-  the user's own attachments) and hidden entries, capped at five, with
-  anything skipped or oversized **named rather than silently dropped**.
-  Uploads name no channel until the completion call attaches them to the
-  thread. **This needs the `files:write` scope, which means reinstalling the
-  app**; `scripts/slack-app-manifest.yaml` now carries it.
-  **The connector-wide lock is in too** — an flock taken before anything opens
-  a socket, verified by racing two connectors — which is what makes the thread
-  store's single-writer rule true rather than assumed.
-  **Both were verified live** (2026-08-09): a run asked to write `lunch.md`
-  raised one card, took "Allow for this run", and the file came back into the
-  thread as an attachment Slack previewed. **What remains: `ask_user`**, and
-  it is the structural one described above — everything else in the arc has
-  now been exercised against a real workspace rather than a fixture. **Two things are owed rather than done**, both
-  recorded where they live: a **connector-wide lock** (two `mecha slack
-  connect` processes would both answer and both write; nothing stops that
-  today but there being one operator, which is the shape this project
-  distrusts elsewhere — see the trigger store's flock), and **`ask_user`**,
-  deferred for a structural reason — the approver rides on `RunContext` and is
-  per-thread for free, but `ask_user` is a tool and the registry belongs to
-  the `Agent`, one of which serves every thread, so routing a question needs
-  an agent per thread or a registry per run. `threads.rs` carries a module-level
-  `#![allow(dead_code)]` that **must come off when the connector lands** — if
-  anything is still dead after step 4, it was built and never needed. **Nothing has been run against a real Slack
-  workspace yet, and no app has been created** — `link` is the first verb that
-  needs one, and it is the natural first live check: it opens a real socket,
-  waits for a DM carrying the printed code, and answers in Slack.
-  The design's short version — Socket Mode, so
-  home dials out and there is no inbound port, no certificate and no signature
-  verification; **two tiers only**, an allowlist of Slack user IDs bound by a
-  nonce the local CLI prints, with everyone else routed through `frontdoor.rs`
-  rather than given a middle tier; a thread is a `Conversation`, which hands the
-  interlock the right granularity for free; `chat.startStream` with
-  `task_update` chunks per tool call for progress; and the **outbox as the
-  primary approval surface**, because a remote human is away by definition —
-  which also closes `PUBLIC-SURFACE-DESIGN.md` §11's deferred "phone UI for
-  releasing outbox drafts" without the home-side server it assumed. Two things
-  there are design work rather than plumbing: the identity binding, and the
-  approval timeout — which must **not** return `"Denied by the user:"`, the
-  string the learning miner keys on, or every unanswered 2am prompt becomes
-  training data from a human who was not there. `mecha-core` has no WebSocket
-  client and `tokio`'s `net` feature is off, so the transport adds one
-  dependency. Inbound images need no core change in phase 1 (download into the
-  thread's workspace, name the path in the prompt); `Block::Image` is phase 2
-  and is the one genuinely large piece.
+- **Slack as a remote control — built and verified live; two things left.**
+  The arc is on branch `slack/transport` (**PR #25**) and is described in
+  [`HISTORY.md`](HISTORY.md) under 2026-08-09; the design authority is
+  [`SLACK-DESIGN.md`](SLACK-DESIGN.md) and the evidence
+  [`SLACK-RESEARCH.md`](SLACK-RESEARCH.md). What is genuinely unbuilt:
+
+  - **`ask_user` is absent, and the reason is structural.** The approver rides
+    on `RunContext`, so it is per-thread for free; `ask_user` is a *tool* and
+    the registry belongs to the `Agent`, one of which serves every thread, so
+    a shared `AskUserTool` cannot know which thread asked. Routing it needs an
+    agent per thread (an MCP startup each) or a registry per run. The second
+    is the smaller change and would also close the item below.
+  - **MCP tools do not honour the per-thread jail** — only the built-in tools
+    do, because servers are spawned once with the agent. They are rooted at
+    the `slack` producer directory so paths at least agree; isolation between
+    threads is not there, and closing it is the same fix as above.
+  - **The outbox review cards have not been exercised live.** Built and unit
+    tested; no run has yet staged a draft while the connector was watching.
+  - **`[slack] tools` is unset**, so a Slack run carries every wired MCP
+    server's schemas — measured at ~7–8k input tokens a turn before any work,
+    against a local window whose compaction threshold is 21,845.
+  - **Nothing is installed.** `scripts/mecha-slack.service` exists and has
+    never been enabled; the binary under test is the worktree's, not
+    `~/.cargo/bin/mecha`. Installing it is a decision, not a step: the
+    connector answers a shared lab workspace (`cosanlab`), and §11.1 of the
+    design chose a personal one.
+
 - **The factory must never become an owner channel.** Recorded here because the
   reuse is tempting and wrong: `GET /v1/queue?wait=` plus `mecha-drain.service`
   is exactly the right-shaped channel, but hosting the Slack app on the box puts

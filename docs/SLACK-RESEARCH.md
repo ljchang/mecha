@@ -14,6 +14,16 @@ and should be re-checked before it is built against. The Slack AI surface moved
 substantially in the first half of 2026, so treat this document as perishable in
 a way most of the others here are not.
 
+> **Addendum, same day: this was built.** The recommendation in §0 was
+> implemented and run against a real workspace — see [`HISTORY.md`](HISTORY.md)
+> under 2026-08-09. Two findings from §12's UNVERIFIED list are now answered:
+> **`chat.startStream` works** on an ordinary workspace, so the `post`+`update`
+> fallback held in reserve was never needed; and the `task_update` chunk shape
+> documented here was **wrong in the code that consumed it** — the fields are
+> flat and carry an `id`, and a stream has one mode, which is
+> `streaming_mode_mismatch` if you mix `chunks` with the top-level
+> `markdown_text`. Both were caught only by running it.
+
 [`HANDOFF.md`](HANDOFF.md) has carried "Slack as a transport — zero lines exist;
 **the blocking decision is the identity model, not the socket**" for some time.
 §3 answers that decision. The rest is what follows from it.

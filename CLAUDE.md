@@ -499,6 +499,26 @@ Four things in it that cost something to get right, or would have:
   leaves a human reading a complete-looking message that is missing the part
   that mattered. Where something is cut, the cut says so.
 
+**The front-end lives in `mecha-cli/src/slack/`**, beside `tui/`, and is the
+only part that knows about both sides. Three decisions there:
+
+- **A Slack thread is a `Conversation`**, which hands the trifecta interlock
+  the right granularity for free: a new thread is an honest clean slate, and a
+  thread that fetched a hostile page on Monday still remembers on Tuesday. Any
+  other mapping re-answers a question that is already answered correctly.
+- **Everything per-thread rides on `RunContext`** — jail, budget, cancel token,
+  steering queue, approver — because one `Agent` serves every thread. The TUI
+  changes modes with `Agent::set_approver`, which is right for a front-end with
+  one conversation and would widen *every* thread here.
+- **MCP tools do not honour the per-thread jail; only the built-in tools do.**
+  Servers are spawned once with the agent, so they cannot follow a per-thread
+  workspace. They are rooted at the `slack` producer directory, of which every
+  thread's jail is a subdirectory, so at least the two agree about where a
+  relative path points — that mismatch cost a real run five turns and a `shell`
+  workaround. Closing the isolation gap means an agent per thread, and an MCP
+  startup per thread with it. `ask_user` is absent for the same reason: it is a
+  tool, and the registry belongs to the agent.
+
 Reconnect is **make-before-break**: Slack rotates connections every few hours
 with about ten seconds' warning, and the replacement opens before the old one
 drains so no frame has nowhere to land. `link_disabled` is the exception —
@@ -527,6 +547,20 @@ event as JSON on stdin. The point is that policy, redaction and logging attach
   learning miner keys on the second string. Machine policy is not a user
   correction, and learning from it would teach mecha rules it was already
   obeying. Both strings now have tests naming that.
+
+  **There are three refusals, not two, and the split lives in the type.**
+  `Decision` is `Allow | Deny(String) | Blocked(String)`: `Deny` is a human
+  saying no and is mined as a correction; `Blocked` is the machine's no —
+  rendered `"Blocked by policy:"` — and is never mined. The prefix is chosen
+  by the loop from the variant, never by the approver, because an approver
+  that could pick its own label could label policy as a correction. This
+  arrived when a Slack approver needed to express "nobody answered" and found
+  there was no way to: `agent.rs` prefixes whatever reason it returns with
+  `"Denied by the user: "`, so no wording a front-end chooses can escape the
+  label. It also exposed a live bug — `ModeApprover`'s own refusals (a
+  read-only run's, an unattended run's "nothing is watching to answer") were
+  already arriving as user denials, so every such run had been feeding the
+  miner corrections from a person who never spoke.
 - **Subagents inherit the parent's hooks** (`setup::build_subagent`), or
   delegating is the way around a `pre_tool` policy. `mecha eval` forces hooks
   off, like MCP and learned rules: a scorecard shaped by local scripts grades
