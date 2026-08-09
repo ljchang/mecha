@@ -54,7 +54,7 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **661 tests**, no failures — verified 2026-08-09, after the day's three
+Expect **670 tests**, no failures — verified 2026-08-09, after the day's three
 arcs: inter-agent messaging (`mecha-core` grew with the mailbox store,
 taint-forwarding, and the review's fix tests), the benchmark-diagnosis fixes
 (overflow-recovery, empty-turn, and session-rewrite regression tests, including
@@ -65,8 +65,8 @@ unidentified, worth an eye.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 377 |
-| `mecha-cli` unit | 119 |
+| `mecha-core` unit | 378 |
+| `mecha-cli` unit | 127 |
 | `mecha-mail` unit | 86 |
 | `mecha-slack` unit | 65 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
@@ -565,7 +565,7 @@ behaviour came from the reflector model declining. If the design was always
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
   record and a triage run. See `CLAUDE.md`.
 
-- **Slack as a transport — steps 1–3 of 8 are built.** `mecha-slack` (the
+- **Slack as a transport — steps 1–3 built, and step 4 half-landed.** `mecha-slack` (the
   fourth crate, 61 tests) is the transport: Socket Mode with make-before-break
   reconnect and automatic acks, the `chat.*` family including the streaming
   trio, Block Kit builders that truncate visibly rather than letting Slack drop
@@ -599,9 +599,24 @@ behaviour came from the reflector model declining. If the design was always
   expose it. `process_alive` moved to `mecha_core` so the pid range check — the
   whole correctness of that, since `kill(-1, 0)` succeeds — has one
   implementation instead of two.
-  **Steps 4–8 remain**: one run end to
-  end with `SlackApprover`, mode buttons, outbox review in-thread, files, and
-  `notify` plus the systemd unit. `threads.rs` carries a module-level
+  Step 4's approver half is in: `SlackApprover` (three modes, shared per-thread
+  cell so a button takes effect on the next call, no `Always`) — **and it
+  forced a `mecha-core` change the design had not anticipated.** `agent.rs`
+  prefixes whatever reason an approver returns with `"Denied by the user: "`,
+  so the timeout wording could not be fixed in the Slack front-end at all.
+  `Decision` gained a third variant, `Blocked(String)`, rendered `"Blocked by
+  policy: "` — and that surfaced a **live bug**: `ModeApprover`'s own
+  refusals already read as user denials, so every read-only or unattended run
+  has been feeding the learning miner corrections from a human who never
+  spoke. Both now return `Blocked`, with a test in `learning.rs` naming it.
+  **What remains of step 4** is the connector itself (`mecha slack connect`):
+  the event loop, run spawning, the `AgentEvent`→stream pump, the controls
+  message and Stop. `ask_user` is **deferred with a structural reason** — the
+  approver rides on `RunContext` and is per-thread by construction, but
+  `ask_user` is a tool and the registry belongs to the `Agent`, one of which
+  serves every thread, so routing a question to the right thread needs an agent
+  per thread or a registry per run. **Steps 5–8 remain**: mode buttons, outbox
+  review in-thread, files, and `notify` plus the systemd unit. `threads.rs` carries a module-level
   `#![allow(dead_code)]` that **must come off when the connector lands** — if
   anything is still dead after step 4, it was built and never needed. **Nothing has been run against a real Slack
   workspace yet, and no app has been created** — `link` is the first verb that

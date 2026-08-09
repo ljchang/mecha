@@ -166,8 +166,16 @@ Like the trigger runner: `GlobalOpts` constructed programmatically with
 `global_config_only: true`, never parsed from argv. Unlike the trigger runner,
 `interactive` cannot be `false`, because that is what withholds `ask_user` and
 installs `ModeApprover`. So the connector follows the TUI:
-`setup::prepare_with_approver(&opts, Arc::new(SlackApprover::new(tx)))`, then
-inserts `AskUserTool::new(Arc::new(SlackAsker::new(tx)))` into the registry.
+`setup::prepare_with_approver(&opts, Arc::new(SlackApprover::new(tx)))`.
+
+**`ask_user` is deferred, and the reason is structural rather than an
+omission.** The approver rides on `RunContext`, so it is per-thread by
+construction. `ask_user` is a *tool*, and the registry belongs to the `Agent` —
+one `Agent` serves every thread — so a shared `AskUserTool` cannot know which
+thread its question belongs to. Routing it needs either an agent per thread
+(an MCP startup per thread) or a registry per run, both of which are real
+changes rather than wiring. Until then the connector registers no `ask_user`,
+exactly as a trigger does not, and approvals are unaffected.
 
 **Known touch point:** `setup::prepare_with_approver` swaps the approver *only*
 when `permission_mode == Ask` (`mecha-cli/src/setup.rs:68`). A Slack run in
@@ -297,14 +305,23 @@ because that exact string is what the learning miner keys on, and an unanswered
 It is the `"Blocked by a hook:"` distinction in a new costume: machine state read
 as a human correction.
 
-So the timeout returns:
+**Implementation corrected this, and the correction is the interesting part.**
+The approver cannot choose its own wording: `agent.rs` prefixes *whatever
+reason it returns* with `"Denied by the user: "`, so a `Decision::Deny` is
+labelled a user correction no matter what it says. The fix therefore had to be
+in the core, not in the Slack front-end — a third `Decision::Blocked(String)`
+variant, rendered `"Blocked by policy: …"`, joining `"Blocked by a hook:"` in
+the family of refusals the miner ignores.
 
-```
-No answer from Slack within 10m: the call was not approved because nobody answered.
-```
+That also exposed a **live bug this design did not go looking for**:
+`ModeApprover`'s own refusals — a read-only run's, and an unattended run's
+"nothing is watching to answer" — were already arriving as `"Denied by the
+user:"`. Every read-only run has been feeding the miner corrections from a
+human who never spoke. Both now return `Blocked`.
 
-and it ships with **a test asserting that string is not mined**, named on the
-reason, exactly as the hook string has one. `ask_user`'s timeout returns `None`
+So the timeout returns `Decision::Blocked("nobody answered in Slack within
+10m")`, and it ships with a test asserting the machine strings are not mined,
+named on the reason, exactly as the hook string has one. `ask_user`'s timeout returns `None`
 (declined) using the existing decline wording **verbatim** — it was A/B measured
 on this machine, and "proceed with your best interpretation" made the model
 invent.
