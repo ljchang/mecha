@@ -37,8 +37,10 @@ Two details worth knowing:
   no — there is nobody to say yes, and the safe reading of a question nobody
   hears is a refusal.
 - **Exit codes carry the outcome.** `0` success, `1` error, `2` the model
-  refused, `3` it ran out of turns. A script can tell the three apart without
-  parsing prose.
+  refused, `3` it produced no answer at all. A script can tell the three
+  apart without parsing prose. A run stopped by a turn or token ceiling that
+  still answered exits `0` — the work it left behind is graded on its own
+  terms, and `--json`'s `stop_cause` names the ceiling for callers that care.
 
 `--resume <id>` continues a saved transcript, and the taint recorded in it
 comes back with it — see [Sessions and replay](/docs/features/sessions-and-replay).

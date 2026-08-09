@@ -54,17 +54,18 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **575 tests**, no failures — verified 2026-08-09, after both of the
+Expect **576 tests**, no failures — verified 2026-08-09, after both of the
 day's arcs landed: inter-agent messaging (`mecha-core` grew with the mailbox
 store, taint-forwarding, and the review's fix tests) and the
 benchmark-diagnosis fixes (the overflow-recovery, empty-turn, and
-session-rewrite regression tests). One flake was seen once in `mecha-core`
-on 2026-08-08 and never reproduced across five re-runs — unidentified,
-worth an eye.
+session-rewrite regression tests, including the review-caught
+rewrite-drops-stale-taint-positions one). One flake was seen once in
+`mecha-core` on 2026-08-08 and never reproduced across five re-runs —
+unidentified, worth an eye.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 375 |
+| `mecha-core` unit | 376 |
 | `mecha-cli` unit | 100 |
 | `mecha-mail` unit | 86 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |

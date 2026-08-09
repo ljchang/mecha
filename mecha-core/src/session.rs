@@ -444,19 +444,23 @@ impl TaintTimeline {
         for record in records {
             match record {
                 Record::Message(_) => messages += 1,
-                // The list was replaced, so positions count against the new
-                // list from here on — and checkpoints recorded against the
-                // old, longer list are clamped down to it. Clamping moves a
-                // checkpoint *earlier*, which can only over-taint (a message
-                // past the clamp is covered by a later, larger checkpoint),
-                // never under-taint — without it, a stale position from
-                // before the rewrite shadows later checkpoints and hands a
-                // post-rewrite message the smaller, older taint.
+                // The list was replaced, so every position recorded before it
+                // is a claim about a list that no longer exists — drop them.
+                // Not clamp: clamping several stale checkpoints onto the new
+                // length leaves `covering` resolving to the *first* of them,
+                // which is the oldest and smallest taint, and in the record
+                // order the front-ends actually write (`Rewrite` then
+                // `Taint`, no message between) that under-taints every
+                // rewritten message — a compacting run that read a hostile
+                // page would classify clean. Dropping fails the right way
+                // twice over: `merged` is cumulative, so the checkpoint the
+                // run writes after the rewrite carries everything the dropped
+                // ones knew and covers the rewritten head with it; and a file
+                // torn before that checkpoint leaves the head covered by
+                // nothing, which `covering` reports as unknown — never clean.
                 Record::Rewrite { messages: m } => {
                     messages = m.len();
-                    for (n, _) in &mut checkpoints {
-                        *n = (*n).min(messages);
-                    }
+                    checkpoints.clear();
                 }
                 Record::Taint(t) => {
                     merged.merge(t);
@@ -589,13 +593,16 @@ mod tests {
     }
 
     #[test]
-    fn a_rewrite_clamps_stale_taint_positions_instead_of_shadowing_later_ones() {
-        // Run 1 writes ten messages and a clean checkpoint. A rewrite shrinks
-        // the list to two, then run 2 adds a message and checkpoints with
-        // taint. Without clamping, run 1's checkpoint still says "covers the
-        // first ten", shadows run 2's, and hands run 2's message the older,
-        // smaller taint — under-tainting, the one direction the timeline
-        // must never be wrong in.
+    fn a_rewrite_drops_stale_taint_positions_instead_of_shadowing_later_ones() {
+        // The record order the front-ends actually write, across two runs of
+        // one chat session: run 1's messages and its clean checkpoint, then
+        // run 2 compacts (a rewrite, shrinking the list) after reading a
+        // hostile page, and checkpoints — `Rewrite` then `Taint`, with no
+        // message record between. A stale checkpoint kept in any form sits
+        // at-or-before the new length, and `covering` takes the *first*
+        // checkpoint past an index, so keeping it hands every rewritten
+        // message the older, clean taint — under-tainting, the one direction
+        // the timeline must never be wrong in.
         let msg = || Message::user("m");
         let mut records: Vec<Record> = (0..10).map(|_| Record::Message(msg())).collect();
         records.push(Record::Taint(Taint {
@@ -605,23 +612,45 @@ mod tests {
         records.push(Record::Rewrite {
             messages: vec![msg(), msg()],
         });
-        records.push(Record::Message(msg()));
         records.push(Record::Taint(Taint {
             private: true,
             untrusted: true,
         }));
 
         let timeline = TaintTimeline::from_records(records);
-        // Message index 2 is run 2's message; only the second checkpoint
-        // covers it.
-        let covering = timeline.covering(2).expect("a checkpoint covers it");
-        assert!(
-            covering.untrusted,
-            "shadowed by a stale pre-rewrite position"
-        );
-        // The rewritten head is still covered by the first checkpoint.
-        let head = timeline.covering(0).expect("a checkpoint covers the head");
-        assert!(head.private);
+        // Every position in the rewritten list is covered by the post-rewrite
+        // checkpoint, which merged the dropped one's taint — over-taint,
+        // never under.
+        for index in 0..2 {
+            let covering = timeline.covering(index).expect("a checkpoint covers it");
+            assert!(
+                covering.untrusted,
+                "message {index} classified by a stale pre-rewrite checkpoint"
+            );
+            assert!(covering.private, "the dropped checkpoint's taint was lost");
+        }
+    }
+
+    #[test]
+    fn a_transcript_torn_after_a_rewrite_reports_unknown_not_clean() {
+        // The process died between writing the rewrite and its taint
+        // checkpoint. Nothing covers the rewritten messages, and `covering`
+        // must say so — the learning classifier treats unknown as untrusted,
+        // and a clean answer here would be the laundering path.
+        let msg = || Message::user("m");
+        let records = vec![
+            Record::Message(msg()),
+            Record::Taint(Taint {
+                private: true,
+                untrusted: true,
+            }),
+            Record::Rewrite {
+                messages: vec![msg(), msg()],
+            },
+        ];
+        let timeline = TaintTimeline::from_records(records);
+        assert_eq!(timeline.covering(0), None);
+        assert_eq!(timeline.covering(1), None);
     }
 
     #[test]

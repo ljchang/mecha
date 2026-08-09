@@ -37,7 +37,11 @@ the trial class that motivated it.
 - **A crashed run keeps its transcript.** `mecha run` recorded messages only
   after a successful return, so the trials that died mid-flight — the ones
   whose transcripts get read — left three-line session files. Messages and
-  taint are now recorded before the error propagates, in every front-end.
+  taint are now recorded before the error propagates in the unattended
+  front-ends (`run`, triggers, frontdoor triage); `chat` and the TUI keep
+  their deliberate interactive semantics — a failed turn is dropped so the
+  prompt can be retried — but now restore from a snapshot instead of
+  truncating a list whose length a mid-run compaction may have changed.
 - **A compacted run's transcript records what actually happened.** Recording
   sliced "what the run added" off the end of the message list, but compaction
   rewrites the list in place — the file kept the stale head, skipped the
