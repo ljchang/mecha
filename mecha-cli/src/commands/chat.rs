@@ -137,7 +137,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if let Some(s) = &session {
             s.append(&Record::Message(user))?;
         }
-        let history_len = convo.len();
+        let recorded = convo.messages.clone();
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let renderer = render::spawn(
@@ -163,7 +163,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             Ok(outcome) => {
                 total.add(&outcome.usage);
                 if let Some(s) = &session {
-                    s.append_messages(&convo.messages[history_len..])?;
+                    s.record_run(&recorded, &convo.messages)?;
                     // Persist what the conversation now knows, or resuming it
                     // launders the taint exactly as a turn boundary used to.
                     s.append(&Record::Taint(convo.taint))?;
@@ -172,8 +172,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             Err(e) => {
                 eprintln!("error: {e:#}");
                 // Drop the turn so a failed request doesn't leave a dangling
-                // user message that the next request would resend.
-                convo.messages.truncate(history_len - 1);
+                // user message that the next request would resend. Restored
+                // from the snapshot rather than truncated: a mid-run
+                // compaction leaves the list shorter than it started, and
+                // truncating *that* keeps the dangling message this exists
+                // to drop.
+                convo.messages = recorded;
+                convo.messages.pop();
             }
         }
     }

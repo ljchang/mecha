@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+#### The agent loop, after the 2026-08-07 Terminal-Bench diagnosis
+
+Twenty-one trials of the arm64 subset broke down as 8 passes, 5 genuine model
+failures, and 8 deaths the harness owned some share of. Each fix below names
+the trial class that motivated it.
+
+- **Overflow recovery is no longer disabled by a summary that wasn't
+  worthwhile.** The recovery arm's give-up flag was set when `compact()` found
+  nothing worth summarising — a normal answer for a short transcript already
+  saved by thinning — and the flag gated the whole arm, so the next overflow
+  propagated as a raw fatal 400 with eviction and thinning never attempted
+  (`path-tracing`, dead at 45k tokens in a 32k window). Eviction and thinning
+  now run on every overflow; only a summary *request* that failed stops
+  further summary attempts.
+- **The empty-turn retry allowance resets on any productive turn.** It was
+  cumulative across the run, so a long run that recovered from silence early
+  was left one empty turn from death for the rest of its life — two trials
+  died `NoOutput` mid-task that way, while two others recovered from a nudge
+  and passed. `max_turns` is what bounds the total; consecutive silence is
+  still bounded by the same retry count.
+- **`mecha run` exits non-zero only when the run produced nothing.** Every
+  exhausted stop used to exit 3, which benchmark harnesses read as an agent
+  crash: a MaxTurns trial was recorded as an agent error while its verifier
+  scored the work 1.0. MaxTurns and budget stops with an answer now exit 0;
+  `--json`'s `stop_cause` still says which ceiling stopped the run.
+- **A crashed run keeps its transcript.** `mecha run` recorded messages only
+  after a successful return, so the trials that died mid-flight — the ones
+  whose transcripts get read — left three-line session files. Messages and
+  taint are now recorded before the error propagates, in every front-end.
+- **A compacted run's transcript records what actually happened.** Recording
+  sliced "what the run added" off the end of the message list, but compaction
+  rewrites the list in place — the file kept the stale head, skipped the
+  rebuilt one (summary included), and a 28-turn trial recorded as 8 assistant
+  turns starting mid-conversation. A run that rewrote history now writes a
+  `rewrite` record carrying the current state; `load` replaces, the taint
+  timeline clamps stale positions (over-taint, never under), and the
+  interactive fronts restore from a snapshot on error instead of truncating
+  a list whose length compaction may have changed.
+- **The per-turn tool-output budget derives from the context window** when
+  `[tools] output_budget_bytes` is unset: an eighth of the window in tokens at
+  ~3 bytes each, clamped to [6,000, 24,000] — 12,288 bytes at a 32k window,
+  the old 24,000 at wide ones. The flat 24 KB was ~8–12k tokens of numeric
+  data, larger than the gap between the compaction threshold and a 32k
+  window, so one turn's results could leap from under the threshold straight
+  past the window.
+- **Benchmark trials capture mecha's stderr and tracing.** Harbor recorded
+  `stderr: None`, discarding compaction notices and the loop's own account of
+  every death; the bench adapter now redirects stderr to a file beside the
+  session transcript and runs with `MECHA_LOG=debug`.
+
 ### Added
 
 #### The work directory

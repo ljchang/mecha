@@ -114,7 +114,9 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         workspace: tools.workspace.clone(),
         shell_timeout: std::time::Duration::from_secs(cfg.tools.shell_timeout_secs),
         security: cfg.security.clone(),
-        output_budget_bytes: cfg.tools.output_budget_bytes,
+        output_budget_bytes: cfg
+            .tools
+            .resolved_output_budget(provider_cfg.context_window),
         ..ToolCtx::default()
     };
 

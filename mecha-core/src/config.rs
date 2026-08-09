@@ -428,8 +428,43 @@ pub struct ToolsConfig {
     /// The byte budget one turn's tool results share, divided across the
     /// batch. Oversized results are spilled to a file in full and cut in the
     /// transcript, with the marker naming the path and the line to resume
-    /// from.
-    pub output_budget_bytes: usize,
+    /// from. Unset means derive it from the provider's context window — see
+    /// [`ToolsConfig::resolved_output_budget`].
+    pub output_budget_bytes: Option<usize>,
+}
+
+impl ToolsConfig {
+    /// Ceiling when nothing pins the budget: right for the wide-window
+    /// frontier models the number was originally chosen against.
+    const OUTPUT_BUDGET_MAX: usize = 24_000;
+    /// Floor: below this, a single `cargo build` error listing stops fitting
+    /// and every result arrives pre-truncated — a budget that starves the
+    /// model of its own results is worse than a tight window.
+    const OUTPUT_BUDGET_MIN: usize = 6_000;
+
+    /// The per-turn tool-output budget, window-proportional when unpinned.
+    ///
+    /// An eighth of the window in tokens, ~3 bytes per token. The constraint
+    /// it serves: the between-turns compaction check reads the *previous*
+    /// turn's prompt size, so one turn's results must not leap the gap
+    /// between the threshold (two thirds of the window) and the window
+    /// itself — a third of the window, shared with the model's own output.
+    /// The old flat 24 KB is ~8–12k tokens of numeric data, *larger* than
+    /// that gap at a 32k window: on the 2026-08-07 Terminal-Bench subset a
+    /// trial jumped from under the threshold to 45k tokens in one turn and
+    /// died on the overflow. An eighth of the window (12,288 bytes at 32k)
+    /// keeps even token-dense results inside the gap with room for output.
+    pub fn resolved_output_budget(&self, context_window: Option<u64>) -> usize {
+        if let Some(pinned) = self.output_budget_bytes {
+            return pinned;
+        }
+        match context_window {
+            Some(window) => {
+                ((window as usize / 8) * 3).clamp(Self::OUTPUT_BUDGET_MIN, Self::OUTPUT_BUDGET_MAX)
+            }
+            None => Self::OUTPUT_BUDGET_MAX,
+        }
+    }
 }
 
 impl Default for ToolsConfig {
@@ -440,7 +475,7 @@ impl Default for ToolsConfig {
             workspace: None,
             permission_mode: PermissionMode::Ask,
             shell_timeout_secs: 120,
-            output_budget_bytes: 24_000,
+            output_budget_bytes: None,
         }
     }
 }
@@ -914,7 +949,7 @@ impl ConfigLayer {
                 t.shell_timeout_secs = v;
             }
             if let Some(v) = x.output_budget_bytes {
-                t.output_budget_bytes = v;
+                t.output_budget_bytes = Some(v);
             }
         }
         if let Some(x) = self.security {
@@ -1100,6 +1135,35 @@ mod tests {
 
         cfg.compact_at_tokens = Some(9000);
         assert_eq!(cfg.compact_at(Some(32768)), Some(9000), "explicit wins");
+    }
+
+    /// One turn's tool results must not leap the gap between the compaction
+    /// threshold and the window — the flat 24 KB budget was ~8–12k tokens of
+    /// numeric data against a 10.9k-token gap at 32k, and a 2026-08-07
+    /// Terminal-Bench trial died on exactly that jump.
+    #[test]
+    fn the_output_budget_derives_from_a_known_context_window() {
+        let mut cfg = ToolsConfig::default();
+
+        // Unknowable window: the ceiling, which is the old flat default.
+        assert_eq!(cfg.resolved_output_budget(None), 24_000);
+
+        // The DGX's llama-server runs -c 32768: an eighth of the window in
+        // tokens, ~3 bytes each — and comfortably inside the threshold gap
+        // even at one byte per token.
+        let derived = cfg.resolved_output_budget(Some(32768));
+        assert_eq!(derived, 12_288);
+
+        // Wide windows keep the old number; tiny ones keep results usable.
+        assert_eq!(cfg.resolved_output_budget(Some(200_000)), 24_000);
+        assert_eq!(cfg.resolved_output_budget(Some(8_192)), 6_000);
+
+        cfg.output_budget_bytes = Some(1_000);
+        assert_eq!(
+            cfg.resolved_output_budget(Some(32768)),
+            1_000,
+            "explicit wins"
+        );
     }
 
     /// A `mecha.toml` arrives with a cloned repository, and it can name MCP
