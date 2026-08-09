@@ -1109,6 +1109,15 @@ All found by pre-push review or by running it.
 
 ### Unattended runs
 
+- **An edit that silently matches nothing ships a false claim.** The fix for
+  the startup banner below was written three times before it existed: rustfmt
+  had wrapped the `tracing::info!` across lines, a single-line string replace
+  found nothing, the build passed, the tests passed, and it was reported as
+  done. Nobody noticed until the unit was installed and the journal showed a
+  started service with no evidence it was working. **A build that succeeds is
+  not evidence an edit applied** — assert on the match, or grep for the new
+  text afterwards. The same silent no-op hit twice more the same day.
+
 - **A daemon that prints nothing at startup is indistinguishable from a wedged
   one.** The Slack connector logged "connector up" through `tracing`, which is
   invisible without `MECHA_LOG`, so the first run of it looked like a hang.
