@@ -43,7 +43,7 @@ frontdoor.rs inbound requests from strangers, and the quarantine over them
 learning.rs  the reflection/rule store behind reflect, learn, validate
 counterfactual.rs  did the rules change the answer at the recorded moment?
 distill.rs   session → episode, staged to the knowledge graph over MCP
-session.rs   append-only JSONL transcripts
+session.rs   append-only JSONL transcripts; a rewrite record when compaction edits history
 replay.rs    re-run a transcript against its recorded tool results
 replay_run.rs  the driver behind that, shared with the validation probes
 work.rs      ~/.mecha/work/<producer>/ — a run's workspace, and its retention
@@ -182,7 +182,11 @@ prefix — a longer-half-life injection path than anything the interlock
 guards. So every reflection carries an `Origin` (`clean` / `untrusted` /
 `derived`), classified by deterministic code from the transcript's *recorded*
 taint (`Session::taint_timeline` — checkpoints are written after the run they
-describe, so coverage can over-taint, never under-taint), and `mecha learn`
+describe, so coverage can over-taint, never under-taint; a `rewrite` record
+*drops* every earlier checkpoint rather than remapping it, because a stale
+position kept in any form shadows later checkpoints and under-taints, where
+dropping leaves the rewritten head covered by the next checkpoint's merged
+taint or by nothing — and nothing reads as unknown), and `mecha learn`
 excludes non-clean reflections structurally, before any prompt is built.
 Fail-closed throughout: unknown position, torn transcript, or a reflection
 recorded before the field existed all classify `untrusted`, and there is
@@ -727,8 +731,8 @@ default through the layer to catch it.
 
 `[providers.X] context_window` is what the model's context holds — for a
 local server, the `-c` it was started with. Nothing can discover it: a
-provider reports what a prompt *cost*, never what is left. Three things
-depend on it, and without it all three degrade silently:
+provider reports what a prompt *cost*, never what is left. Four things
+depend on it, and without it all four degrade silently:
 
 - **`AgentConfig::compact_at`** derives a compaction threshold (two thirds of
   the window) when `compact_at_tokens` is unset, which turns compaction from
@@ -736,14 +740,29 @@ depend on it, and without it all three degrade silently:
   fraction leaves a third free because the check happens *between* turns:
   the next request still has to fit a reply and whatever a burst of parallel
   tool results adds.
+- **The per-turn tool-output budget**
+  (`ToolsConfig::resolved_output_budget`) derives from the window when
+  `[tools] output_budget_bytes` is unset — an eighth of the window in
+  tokens, ~3 bytes each, clamped to [6,000, 24,000]. The constraint it
+  serves is the same gap the compaction fraction leaves: one turn's results
+  must not leap from under the threshold straight past the window, and the
+  old flat 24 KB was ~8–12k tokens of numeric data — larger than that gap
+  at 32k, which is how a benchmark trial jumped to 45k tokens in one turn
+  and died.
 - **The TUI status line** becomes a fuel gauge — `context 29.3k/32.8k (89%)`,
   yellow at 75%, red at 90% — instead of a number with nothing to compare to.
 - **Overflow recovery.** A prompt that does not fit is refused outright, and
   the reactive threshold cannot always prevent it. `is_context_overflow`
   recognises the refusal across backends by message text (no backend gives it
-  a usable code), and the loop compacts and retries the same turn *once*. A
-  false positive costs one summary; a false negative loses the whole run,
-  which is what used to happen.
+  a usable code), and the loop evicts, thins, compacts and retries the same
+  turn. Eviction and thinning run on *every* overflow — they cost no
+  request — and only a summary request that *failed* stops further summary
+  attempts. The distinction is load-bearing: "nothing worth summarising" is
+  a normal answer for a short transcript already saved by thinning, and
+  treating it as give-up once disabled the whole recovery for the rest of
+  the run — the next overflow then died as a raw 400, which is how a
+  2026-08-07 benchmark trial was lost. A false positive costs one summary;
+  a false negative loses the whole run, which is what used to happen.
 
 If you change the server's `-c`, change `context_window` to match — a stale
 value is worse than none, because the derived threshold trusts it.
@@ -767,7 +786,7 @@ not estimated, so it counts cached tokens too. Off by default: compaction is
 lossy, and paraphrasing someone's conversation because it got long is their
 decision.
 
-Four things that decide the design:
+The things that decide the design:
 
 - **Stale results are evicted before anything is summarised.**
   `evict_superseded_results` runs first at both compaction sites (threshold
@@ -818,6 +837,15 @@ Four things that decide the design:
 - **Taint survives compaction.** Summarising away the text of a hostile page
   does not un-read it. Taint lives on `Conversation`, which the compaction code
   never touches — the type does the work, and there is a test.
+- **The session record survives compaction too.** Compaction rewrites the
+  message list in place, and a recorder that slices "what the run added" off
+  the end of a rewritten list records a lie — the stale head stays in the
+  file, the rebuilt one (summary included) never lands; a 28-turn benchmark
+  trial recorded as 8 assistant turns starting mid-conversation, with no
+  sign a compaction had happened. `Session::record_run` compares what was
+  recorded against what came back and writes a `rewrite` record carrying the
+  whole current state when they diverge. Comparison rather than a flag from
+  the loop, so any future in-place mutation is caught by construction.
 - **A tool's own state crosses a compaction, verbatim.** The measured failure
   mode is that a summariser preserves *what is true* and drops *how far you
   got*, and some of "how far you got" does not live in the messages at all. The
