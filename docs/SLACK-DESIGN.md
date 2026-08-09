@@ -66,7 +66,7 @@ a bug in this table, not in the code.
 | State | Meaning | Resolved by |
 |---|---|---|
 | `unbound` | A thread exists in Slack; mecha has no session for it | The first owner message → `idle` |
-| `quarantined` | The thread was started by a non-owner | A front-door record is written; the thread never gets a session. Resolved by `mecha frontdoor`, not here |
+| ~~`quarantined`~~ | *Removed.* It existed for the front-door path §11.3 decided against: a non-owner's message is **ignored**, and an ignored message creates no record and therefore no state | — |
 | `idle` | Bound to a session and a workspace; nothing running | An owner message → `running` |
 | `running` | A run is in flight | The run ends → `staged` / `done` / `failed`; or the owner presses **Stop** → `cancelled` |
 | `awaiting_input` | The run is blocked on an approval or an `ask_user` | The owner answers → back to `running`; or the timeout fires → back to `running` carrying a deny/decline (§5) |

@@ -39,6 +39,7 @@ pub mod error;
 pub mod files;
 pub mod http;
 pub mod socket;
+pub mod store;
 
 #[cfg(test)]
 mod testutil;

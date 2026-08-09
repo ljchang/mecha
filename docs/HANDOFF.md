@@ -54,19 +54,20 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **611 tests**, no failures — verified 2026-08-09, after the
-`mecha-slack` transport and its binding store landed (61 new; nothing else
-moved). The 550 before
+Expect **629 tests**, no failures — verified 2026-08-09, after the
+`mecha-slack` transport, its binding store and the Slack thread state machine
+landed (79 new; `mecha-core` gained one when `process_alive` became a shared
+helper). The 550 before
 it dated from 2026-08-08 night and the TUI review-surfaces arc. One flake was
 seen once in `mecha-core` on 2026-08-08 and never reproduced across five
 re-runs — unidentified, worth an eye.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 350 |
-| `mecha-cli` unit | 100 |
+| `mecha-core` unit | 351 |
+| `mecha-cli` unit | 113 |
 | `mecha-mail` unit | 86 |
-| `mecha-slack` unit | 61 |
+| `mecha-slack` unit | 65 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
 | doctest | 1 |
 
@@ -549,7 +550,7 @@ behaviour came from the reflector model declining. If the design was always
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
   record and a triage run. See `CLAUDE.md`.
 
-- **Slack as a transport — steps 1 and 2 of 8 are built.** `mecha-slack` (the
+- **Slack as a transport — steps 1–3 of 8 are built.** `mecha-slack` (the
   fourth crate, 61 tests) is the transport: Socket Mode with make-before-break
   reconnect and automatic acks, the `chat.*` family including the streaming
   trio, Block Kit builders that truncate visibly rather than letting Slack drop
@@ -573,9 +574,21 @@ behaviour came from the reflector model declining. If the design was always
   [`SLACK-DESIGN.md`](SLACK-DESIGN.md) is what gets built, both 2026-08-09;
   §11 there records the three decisions taken (personal workspace first, `ask`
   as the per-thread default with buttons to widen, non-owners ignored).
-  **Steps 3–8 remain**: the thread state machine and its store, one run end to
+  Step 3 is the **thread state machine** (`mecha-cli/src/slack/threads.rs`):
+  eight states, each carrying *both* what it means and what resolves it, with a
+  test that walks the enum so nobody can add a state a thread cannot be
+  rescued from — the failure `SLACK-RESEARCH.md` §9 found in a shipped API,
+  where `waiting_for_user` and `idle` are enumerated and neither is defined.
+  `sweep` turns a run whose process died into an announced `orphaned` rather
+  than a thread showing "working…" forever, and `mecha slack threads|sweep`
+  expose it. `process_alive` moved to `mecha_core` so the pid range check — the
+  whole correctness of that, since `kill(-1, 0)` succeeds — has one
+  implementation instead of two.
+  **Steps 4–8 remain**: one run end to
   end with `SlackApprover`, mode buttons, outbox review in-thread, files, and
-  `notify` plus the systemd unit. **Nothing has been run against a real Slack
+  `notify` plus the systemd unit. `threads.rs` carries a module-level
+  `#![allow(dead_code)]` that **must come off when the connector lands** — if
+  anything is still dead after step 4, it was built and never needed. **Nothing has been run against a real Slack
   workspace yet, and no app has been created** — `link` is the first verb that
   needs one, and it is the natural first live check: it opens a real socket,
   waits for a DM carrying the printed code, and answers in Slack.

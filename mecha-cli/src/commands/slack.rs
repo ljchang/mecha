@@ -25,6 +25,8 @@ use chrono::{Duration, Utc};
 use mecha_slack::binding::{Binding, Credentials, PendingLink, SlackStore};
 use mecha_slack::envelope::Inbound;
 use mecha_slack::{chat, Slack, SocketMode, SocketOptions};
+
+use crate::slack::threads::{ThreadState, ThreadStore};
 use serde_json::{json, Value};
 
 const BOT_TOKEN_ENV: &str = "MECHA_SLACK_BOT_TOKEN";
@@ -54,6 +56,17 @@ pub enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// What state each Slack thread is in, and what would resolve it.
+    Threads {
+        /// Only threads in this state: `idle`, `running`, `awaiting_input`,
+        /// `cancelled`, `staged`, `done`, `failed`, `orphaned`.
+        #[arg(long)]
+        state: Option<String>,
+    },
+    /// Mark threads whose run did not survive a restart, so none is left
+    /// showing "working…" forever. The connector does this on startup; this is
+    /// the same pass, by hand.
+    Sweep,
     /// Forget the binding. The tokens stay, so `link` can be run again.
     Unlink,
 }
@@ -64,6 +77,8 @@ pub async fn run(args: Args) -> Result<()> {
         Cmd::Status => status(&store).await,
         Cmd::Auth => auth(&store).await,
         Cmd::Link { timeout, force } => link(&store, timeout, force).await,
+        Cmd::Threads { state } => threads(state.as_deref()),
+        Cmd::Sweep => sweep(),
         Cmd::Unlink => {
             store.clear_binding()?;
             store.clear_pending_link()?;
@@ -124,6 +139,79 @@ async fn auth(store: &SlackStore) -> Result<()> {
     );
     println!("Next: `mecha slack link` to say who may drive this agent.");
     Ok(())
+}
+
+/// Every thread and where it stands.
+///
+/// Prints what resolves each state beside it, because the reason the state
+/// machine carries that string is so a person looking at a stuck thread can see
+/// the way out without reading the source.
+fn threads(filter: Option<&str>) -> Result<()> {
+    // A filter naming no state matches nothing and looks identical to "there
+    // are none", so it is refused rather than applied.
+    if let Some(f) = filter {
+        if !ThreadState::ALL.iter().any(|s| s.as_str() == f) {
+            let valid: Vec<_> = ThreadState::ALL.iter().map(|s| s.as_str()).collect();
+            bail!("no such state `{f}`. Valid: {}", valid.join(", "));
+        }
+    }
+
+    let store = ThreadStore::open(thread_root()?)?;
+    let all = store.all()?;
+    let shown: Vec<_> = all
+        .iter()
+        .filter(|r| filter.is_none_or(|f| r.state.as_str() == f))
+        .collect();
+
+    if shown.is_empty() {
+        println!(
+            "No threads{}.",
+            filter.map(|f| format!(" in {f}")).unwrap_or_default()
+        );
+        println!("store    {}", store.root().display());
+        return Ok(());
+    }
+
+    for record in shown {
+        println!(
+            "{}  {}  mode={}  {}",
+            record.key,
+            record.state.as_str(),
+            record.mode,
+            record.updated_at.format("%Y-%m-%d %H:%M UTC")
+        );
+        println!("    {}", record.state.describe());
+        println!("    resolved by: {}", record.state.resolved_by());
+        if let Some(session) = &record.session_id {
+            println!("    session {session}");
+        }
+    }
+    Ok(())
+}
+
+/// Orphan whatever was mid-flight when the process holding it died.
+fn sweep() -> Result<()> {
+    let store = ThreadStore::open(thread_root()?)?;
+    let orphaned = store.sweep()?;
+    if orphaned.is_empty() {
+        println!("Nothing to sweep — no thread is mid-flight without a live run.");
+        return Ok(());
+    }
+    for record in &orphaned {
+        println!("{}  orphaned  ({})", record.key, record.state.describe());
+    }
+    println!(
+        "\n{} thread(s) marked. The connector announces these in Slack; \
+         until it runs, they are visible here.",
+        orphaned.len()
+    );
+    Ok(())
+}
+
+fn thread_root() -> Result<std::path::PathBuf> {
+    Ok(mecha_core::work::mecha_home()?
+        .join("slack")
+        .join("threads"))
 }
 
 async fn status(store: &SlackStore) -> Result<()> {

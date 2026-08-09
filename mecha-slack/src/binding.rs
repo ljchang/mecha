@@ -204,7 +204,8 @@ pub struct SlackStore {
 impl SlackStore {
     pub fn open(root: impl Into<PathBuf>) -> SlackResult<Self> {
         let root = root.into();
-        create_private_dir(&root).map_err(|e| store_error("creating the slack directory", e))?;
+        crate::store::create_private_dir(&root)
+            .map_err(|e| store_error("creating the slack directory", e))?;
         Ok(Self { root })
     }
 
@@ -245,62 +246,23 @@ impl SlackStore {
     }
 
     fn read<T: for<'de> Deserialize<'de>>(&self, name: &str) -> SlackResult<Option<T>> {
-        let path = self.root.join(name);
-        match std::fs::read_to_string(&path) {
-            Ok(raw) => serde_json::from_str(&raw)
-                .map(Some)
-                .map_err(|e| store_error(&format!("reading {name}"), e)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(store_error(&format!("reading {name}"), e)),
-        }
+        crate::store::read_json(&self.root.join(name))
+            .map_err(|e| store_error(&format!("reading {name}"), e))
     }
 
-    /// Temp sibling then rename, like every other store under `~/.mecha`: a
-    /// crash halfway through a write must not leave a half-parsed binding,
-    /// because a binding that fails to load is a remote control that silently
-    /// stops answering.
     fn write<T: Serialize>(&self, name: &str, value: &T) -> SlackResult<()> {
-        let body = serde_json::to_string_pretty(value)
-            .map_err(|e| store_error(&format!("encoding {name}"), e))?;
-        let tmp = self.root.join(format!(".{name}.tmp"));
-        std::fs::write(&tmp, body.as_bytes())
-            .map_err(|e| store_error(&format!("writing {name}"), e))?;
-        set_owner_only(&tmp).map_err(|e| store_error(&format!("securing {name}"), e))?;
-        std::fs::rename(&tmp, self.root.join(name))
-            .map_err(|e| store_error(&format!("installing {name}"), e))
+        crate::store::write_private_json(&self.root.join(name), value)
+            .map_err(|e| store_error(&format!("writing {name}"), e))
     }
 
     fn remove(&self, name: &str) -> SlackResult<()> {
-        match std::fs::remove_file(self.root.join(name)) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(store_error(&format!("removing {name}"), e)),
-        }
+        crate::store::remove_if_present(&self.root.join(name))
+            .map_err(|e| store_error(&format!("removing {name}"), e))
     }
 }
 
 fn store_error(doing: &str, e: impl std::fmt::Display) -> SlackError {
     SlackError::Store(format!("{doing}: {e}"))
-}
-
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
-}
-
-fn set_owner_only(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    let _ = path;
-    Ok(())
 }
 
 #[cfg(test)]

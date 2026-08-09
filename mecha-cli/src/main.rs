@@ -7,6 +7,7 @@ mod interrupt;
 mod probe;
 mod render;
 mod setup;
+mod slack;
 mod tui;
 
 use anyhow::Result;
