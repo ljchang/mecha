@@ -852,7 +852,9 @@ mod tests {
     }
 
     fn send(store: &MailboxStore, to: &str, from: &str, body: &str) -> SendOutcome {
-        store.send(to, from, None, body, None, Taint::default()).unwrap()
+        store
+            .send(to, from, None, body, None, Taint::default())
+            .unwrap()
     }
 
     #[test]
@@ -902,8 +904,14 @@ mod tests {
     fn full_mailbox_refuses_rather_than_dropping() {
         let (_dir, store) = store();
         let store = store.with_limits(2, DEFAULT_MAX_BODY_BYTES);
-        assert!(matches!(send(&store, "chat", "a", "one"), SendOutcome::Sent(_)));
-        assert!(matches!(send(&store, "chat", "b", "two"), SendOutcome::Sent(_)));
+        assert!(matches!(
+            send(&store, "chat", "a", "one"),
+            SendOutcome::Sent(_)
+        ));
+        assert!(matches!(
+            send(&store, "chat", "b", "two"),
+            SendOutcome::Sent(_)
+        ));
         let err = store
             .send("chat", "c", None, "three", None, Taint::default())
             .unwrap_err();
@@ -1021,16 +1029,40 @@ mod tests {
         // sender, same body, distinct reply_to — two real messages, not an
         // echo. The brake must not coalesce them.
         let a = store
-            .send("chat", "peer", None, "done", Some("req-A".into()), Taint::default())
+            .send(
+                "chat",
+                "peer",
+                None,
+                "done",
+                Some("req-A".into()),
+                Taint::default(),
+            )
             .unwrap();
         let b = store
-            .send("chat", "peer", None, "done", Some("req-B".into()), Taint::default())
+            .send(
+                "chat",
+                "peer",
+                None,
+                "done",
+                Some("req-B".into()),
+                Taint::default(),
+            )
             .unwrap();
         assert!(matches!(a, SendOutcome::Sent(_)));
-        assert!(matches!(b, SendOutcome::Sent(_)), "distinct thread, not a dup");
+        assert!(
+            matches!(b, SendOutcome::Sent(_)),
+            "distinct thread, not a dup"
+        );
         // Same thread and body *is* the echo the brake is for.
         let c = store
-            .send("chat", "peer", None, "done", Some("req-A".into()), Taint::default())
+            .send(
+                "chat",
+                "peer",
+                None,
+                "done",
+                Some("req-A".into()),
+                Taint::default(),
+            )
             .unwrap();
         assert!(matches!(c, SendOutcome::Duplicate(_)));
         assert_eq!(store.pending_for("chat").unwrap().len(), 2);

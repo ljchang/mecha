@@ -1144,16 +1144,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mecha-msg-scope-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("layer.toml");
-        std::fs::write(
-            &path,
-            "[messages]\nenabled = true\ninbound = \"accept\"\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "[messages]\nenabled = true\ninbound = \"accept\"\n").unwrap();
 
         let mut from_project = Config::default();
-        from_project
-            .merge_file(&path, LayerTrust::Project)
-            .unwrap();
+        from_project.merge_file(&path, LayerTrust::Project).unwrap();
         assert!(
             !from_project.messages.enabled,
             "a project file must not enable messaging"
@@ -1165,7 +1159,10 @@ mod tests {
 
         let mut from_global = Config::default();
         from_global.merge_file(&path, LayerTrust::Global).unwrap();
-        assert!(from_global.messages.enabled, "the global file is authoritative");
+        assert!(
+            from_global.messages.enabled,
+            "the global file is authoritative"
+        );
         assert_eq!(
             from_global.messages.inbound,
             Some(crate::mailbox::InboundPolicy::Accept)

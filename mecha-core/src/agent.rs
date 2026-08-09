@@ -922,11 +922,7 @@ impl Agent {
             // and the receiver's interlock must treat what the sender read
             // as read here. Written back to `convo` immediately, like the
             // post-tool site, so no early exit can drop it.
-            if let Some(mailbox) = cx
-                .mailbox
-                .as_ref()
-                .filter(|mb| mb.delivers() && !stopping)
-            {
+            if let Some(mailbox) = cx.mailbox.as_ref().filter(|mb| mb.delivers() && !stopping) {
                 for msg in mailbox.claim_pending() {
                     emit(
                         &events,
@@ -4720,7 +4716,10 @@ mod tests {
         // because the sender's conversation held third-party content — wrapped
         // as untrusted.
         let opening = convo.messages[0].text();
-        assert!(opening.contains("triage done, 3 drafts staged"), "{opening}");
+        assert!(
+            opening.contains("triage done, 3 drafts staged"),
+            "{opening}"
+        );
         assert!(opening.contains("not the user"), "{opening}");
         assert!(opening.contains("<untrusted-content"), "{opening}");
 
@@ -4746,7 +4745,14 @@ mod tests {
         route.set_identity("chat", "sess-1");
         route
             .store
-            .send("chat", "morning", None, "waits for a person", None, Taint::default())
+            .send(
+                "chat",
+                "morning",
+                None,
+                "waits for a person",
+                None,
+                Taint::default(),
+            )
             .unwrap();
         agent.set_mailbox(Arc::clone(&route));
 
