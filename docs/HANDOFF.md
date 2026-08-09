@@ -426,11 +426,6 @@ The arc is complete and running nightly. What is missing is refinement:
 - **A `/learning` TUI view.** The store is files by design so it can be read
   without tooling, but nothing surfaces it in the interface.
 
-One item needs a human who remembers the intent: the **edit-distance gate** is
-described as observed working live, but no threshold exists in code — the
-behaviour came from the reflector model declining. If the design was always
-"the model declines", the item is obsolete rather than open.
-
 ### Triggers
 
 - **A durable task and deadline store, and a `/tasks` TUI modal.** Nothing
@@ -469,7 +464,7 @@ behaviour came from the reflector model declining. If the design was always
 
 - **Steering and queuing are the same key.** Enter starts a run when idle and
   steers one already going; there is no way to queue a follow-up instead.
-- **No `/export` or copy.** `NAMES` lists fourteen commands and none of them
+- **No `/export` or copy.** `NAMES` lists fifteen commands and none of them
   get the transcript out.
 - **`NO_COLOR` is honoured only by the plain CLI renderer.** The TUI hardcodes
   colours inline; there is no semantic colour table.

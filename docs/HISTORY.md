@@ -1007,6 +1007,15 @@ matters is the general shape.
 
 All found by pre-push review or by running it.
 
+- **The "edit-distance gate" was never code, and the handoff carried it as an
+  open item for weeks.** It was described as observed working live; a
+  verification sweep on 2026-08-09 found no threshold, no `levenshtein`, and
+  nowhere one could have been removed from — the behaviour was always the
+  reflector model declining to mine a trivial edit. Closed as obsolete rather
+  than deleted, because the next person would otherwise re-propose it.
+  **An item whose evidence is "I saw it work" and not `file:line` is a
+  hypothesis**, and it should be written as one.
+
 - **A refusal nobody made must not be labelled as one.** `agent.rs` prefixes
   whatever reason an approver returns with `"Denied by the user: "`, which is
   the exact string the miner keys on — so a remote approval nobody answered,
