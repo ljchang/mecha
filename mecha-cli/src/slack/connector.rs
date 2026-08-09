@@ -12,6 +12,7 @@
 //! the thread store's no-lock rule true rather than hoped-for.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -57,8 +58,47 @@ struct PendingApproval {
     tool: String,
 }
 
+/// One connector at a time, enforced rather than assumed.
+///
+/// Two `mecha slack connect` processes would both hold a socket, both answer
+/// the same message, and both write the thread store — which is what the
+/// store's no-per-record-lock rule quietly depended on not happening. The
+/// kernel releases this if the process dies, so a hard kill leaves nothing to
+/// clean up; that is the same reason the trigger store uses one.
+struct ConnectorLock {
+    _file: std::fs::File,
+}
+
+impl ConnectorLock {
+    fn take(path: &std::path::Path) -> Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        // SAFETY: flock on a descriptor we own, held open by the returned guard.
+        let rc = unsafe {
+            libc::flock(
+                std::os::unix::io::AsRawFd::as_raw_fd(&file),
+                libc::LOCK_EX | libc::LOCK_NB,
+            )
+        };
+        if rc != 0 {
+            bail!(
+                "another `mecha slack connect` is already running (lock held on {}). \
+                 Two connectors would both answer the same message.",
+                path.display()
+            );
+        }
+        Ok(Self { _file: file })
+    }
+}
+
 pub async fn run(global: &GlobalOpts) -> Result<()> {
     let store = SlackStore::open(mecha_core::work::mecha_home()?.join("slack"))?;
+    // Taken before anything else opens a socket or touches the store.
+    let _lock = ConnectorLock::take(&store.root().join("connector.lock"))?;
     let creds: Credentials = store
         .credentials()?
         .context("no Slack tokens stored — run `mecha slack auth` first")?;
@@ -145,6 +185,7 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         seen: VecDeque::new(),
         staged_before: HashMap::new(),
         drafts: HashMap::new(),
+        files_before: HashMap::new(),
         outbox_root,
         approval_tx,
         completion_tx,
@@ -234,6 +275,8 @@ struct State {
     staged_before: HashMap<String, std::collections::HashSet<String>>,
     /// Draft id → where its review card lives, so a decision can rewrite it.
     drafts: HashMap<String, (String, String)>,
+    /// The workspace as it stood when each run began.
+    files_before: HashMap<String, HashMap<PathBuf, (u64, std::time::SystemTime)>>,
     outbox_root: std::path::PathBuf,
     approval_tx: mpsc::Sender<approve::Request>,
     completion_tx: mpsc::Sender<Completion>,
@@ -405,6 +448,10 @@ impl State {
         // drafts *this* run staged, and releasing another session's drafts
         // from a phone would be the worst possible surprise.
         let staged_before = pending_outbox_ids(&self.outbox_root);
+        // What the workspace held before the run, so what it *made* can be
+        // told from what was already there — the same id-diff reasoning the
+        // outbox scoping uses, applied to files.
+        let files_before = workspace_snapshot(&cx.tools.workspace);
 
         let mut conversation = self.conversations.remove(&key).unwrap_or_default();
         conversation.messages.push(Message::user(&prompt));
@@ -424,6 +471,7 @@ impl State {
         };
         let key_for_task = key.clone();
         self.staged_before.insert(key.clone(), staged_before);
+        self.files_before.insert(key.clone(), files_before);
 
         tokio::spawn(async move {
             let renderer = {
@@ -562,6 +610,7 @@ impl State {
                 // side, and the state says so.
                 let staged = outcome.tool_calls.iter().any(|c| c.staged);
                 let _ = self.threads.apply(&done.key, Event::Finished { staged });
+                self.post_artifacts(&done.key).await;
                 if staged {
                     self.offer_drafts(&done.key).await;
                 }
@@ -616,6 +665,104 @@ impl State {
                 Some(controls_blocks(key, next.as_str())),
             )
             .await;
+        }
+    }
+
+    /// Send back what the run actually made.
+    ///
+    /// An answer that says "I wrote the chart to output.png" is useless on a
+    /// phone, where there is no filesystem to go and look at. Files the run
+    /// created or changed are uploaded into the thread — **privately, naming
+    /// no channel at the upload step**, so nothing is shared until the
+    /// completion call attaches it here.
+    ///
+    /// Bounded on purpose: a run that rewrites forty files should not post
+    /// forty attachments, and anything past the cap is named rather than sent.
+    /// Silence about what was skipped would be the same failure as a dropped
+    /// Block Kit block.
+    async fn post_artifacts(&mut self, key: &str) {
+        const MAX_FILES: usize = 5;
+
+        let Ok(Some(record)) = self.threads.get(key) else {
+            return;
+        };
+        let before = self.files_before.remove(key).unwrap_or_default();
+        let Some(workspace) = record
+            .workspace
+            .clone()
+            .or_else(|| thread_workspace(key).ok())
+        else {
+            return;
+        };
+        let after = workspace_snapshot(&workspace);
+        let mut changed: Vec<PathBuf> = after
+            .iter()
+            .filter(|(path, stamp)| before.get(*path).is_none_or(|old| old != *stamp))
+            .map(|(path, _)| path.clone())
+            .collect();
+        if changed.is_empty() {
+            return;
+        }
+        changed.sort();
+
+        let limit = self.cfg.max_upload_mb.saturating_mul(1024 * 1024);
+        let (send, skipped): (Vec<_>, Vec<_>) = changed.iter().partition(|p| {
+            std::fs::metadata(p)
+                .map(|m| m.len() <= limit)
+                .unwrap_or(false)
+        });
+
+        let mut named = Vec::new();
+        for path in send.iter().take(MAX_FILES) {
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "artifact".into());
+            let share = mecha_slack::files::Share {
+                channel_id: Some(&record.channel_id),
+                thread_ts: Some(&record.thread_ts),
+                title: Some(&name),
+                ..Default::default()
+            };
+            if let Err(e) = mecha_slack::files::upload(&self.slack, &name, &bytes, &share).await {
+                tracing::warn!("could not upload {name}: {e}");
+            } else {
+                named.push(name);
+            }
+        }
+
+        let over = send.len().saturating_sub(MAX_FILES);
+        if over > 0 || !skipped.is_empty() {
+            let mut note = String::new();
+            if over > 0 {
+                note.push_str(&format!("{over} more file(s) changed and were not sent. "));
+            }
+            if !skipped.is_empty() {
+                note.push_str(&format!(
+                    "{} file(s) are over the {} MB limit: {}.",
+                    skipped.len(),
+                    self.cfg.max_upload_mb,
+                    skipped
+                        .iter()
+                        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            let _ = chat::post_message(
+                &self.slack,
+                &record.channel_id,
+                Some(&record.thread_ts),
+                note.trim(),
+                None,
+            )
+            .await;
+        }
+        if !named.is_empty() {
+            println!("[{key}] posted {} artifact(s)", named.len());
         }
     }
 
@@ -870,6 +1017,46 @@ fn safe_filename(raw: &str) -> String {
     cleaned.chars().take(120).collect()
 }
 
+/// Every file in a run's workspace, with size and mtime, so a later pass can
+/// tell what the run made.
+///
+/// `inbox/` is skipped: those are the files the *user* attached, and sending
+/// them back is noise. Hidden entries are skipped for the same reason a person
+/// would skip them. Bounded depth, because a workspace that has acquired a
+/// `node_modules` should not turn every run into a directory walk.
+fn workspace_snapshot(root: &std::path::Path) -> HashMap<PathBuf, (u64, std::time::SystemTime)> {
+    fn walk(
+        dir: &std::path::Path,
+        depth: usize,
+        out: &mut HashMap<PathBuf, (u64, std::time::SystemTime)>,
+    ) {
+        if depth == 0 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.filter_map(std::result::Result::ok) {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || name == "inbox" {
+                continue;
+            }
+            match entry.metadata() {
+                Ok(meta) if meta.is_dir() => walk(&path, depth - 1, out),
+                Ok(meta) => {
+                    let stamp = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                    out.insert(path, (meta.len(), stamp));
+                }
+                Err(_) => {}
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    walk(root, 6, &mut out);
+    out
+}
+
 /// Every pending draft's id, or an empty set if the outbox does not exist.
 ///
 /// An empty set on failure is deliberate: it makes the id-diff find nothing
@@ -933,6 +1120,45 @@ fn thread_workspace(key: &str) -> Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::safe_filename;
+
+    #[test]
+    fn a_snapshot_ignores_what_the_user_sent_and_what_is_hidden() {
+        // `inbox/` holds the files the *user* attached; posting them back is
+        // noise, and it would look like the agent produced them.
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-slack-snap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("made.txt"), "x").unwrap();
+        std::fs::write(dir.join("sub/also.txt"), "y").unwrap();
+        std::fs::write(dir.join("inbox/sent-by-user.png"), "z").unwrap();
+        std::fs::write(dir.join(".hidden"), "h").unwrap();
+
+        let snap = super::workspace_snapshot(&dir);
+        let names: Vec<String> = snap
+            .keys()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+
+        assert!(names.contains(&"made.txt".to_string()), "{names:?}");
+        assert!(
+            names.contains(&"also.txt".to_string()),
+            "recurses: {names:?}"
+        );
+        assert!(
+            !names.contains(&"sent-by-user.png".to_string()),
+            "{names:?}"
+        );
+        assert!(!names.contains(&".hidden".to_string()), "{names:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn a_draft_summary_fits_inside_a_section_block_with_its_fence() {

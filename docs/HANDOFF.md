@@ -687,8 +687,19 @@ behaviour came from the reflector model declining. If the design was always
   **The residual limitation is real and deliberate: MCP tools do not honour
   the per-thread jail** — only the built-in tools do. Closing that means an
   agent per thread, and an MCP startup per thread with it.
-  **What remains: step 7's outbound half** (posting a rendered file or a
-  published bundle's link). **Two things are owed rather than done**, both
+  **Step 7's outbound half is in**: files a run created or changed are
+  uploaded into its thread, so "I wrote the chart to output.png" stops being
+  useless on a phone. Scoped by a workspace snapshot diffed before and after —
+  the outbox id-diff reasoning applied to files — skipping `inbox/` (those are
+  the user's own attachments) and hidden entries, capped at five, with
+  anything skipped or oversized **named rather than silently dropped**.
+  Uploads name no channel until the completion call attaches them to the
+  thread. **This needs the `files:write` scope, which means reinstalling the
+  app**; `scripts/slack-app-manifest.yaml` now carries it.
+  **The connector-wide lock is in too** — an flock taken before anything opens
+  a socket, verified by racing two connectors — which is what makes the thread
+  store's single-writer rule true rather than assumed.
+  **What remains: `ask_user`**, and it is the structural one described above. **Two things are owed rather than done**, both
   recorded where they live: a **connector-wide lock** (two `mecha slack
   connect` processes would both answer and both write; nothing stops that
   today but there being one operator, which is the shape this project

@@ -45,8 +45,9 @@ oauth_config:
       # mecha-slack exist because the failure without this scope is an HTML
       # sign-in page served with HTTP 200.
       - files:read
-      # Upload a rendered file back. Step 7's outbound half — add when it lands.
-      # - files:write
+      # Upload back what a run made. Adding this to an installed app needs a
+      # reinstall — Slack does not widen a token in place.
+      - files:write
       # Required by `assistant.threads.setStatus` and the agent surface, which
       # need a paid plan. See the note in the setup instructions.
       # - assistant:write
