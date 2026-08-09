@@ -628,6 +628,108 @@ real terminal, with only stderr captured. `mecha-cli` went from 83 to 100
 tests, including the tainted confirmation rendered through the real draw
 path.
 
+**2026-08-09 — agents can leave each other messages, and taint rides
+along.** Researched (Claude Code's cross-session messaging over per-session
+sockets; A2A/ACP/MCP-Tasks; Morris-II and Prompt Infection on cross-agent
+injection — `docs/MESSAGING-RESEARCH.md` holds the survey, the design, and
+six decided questions) and then built the same day: `mecha-core/src/mailbox.rs`
+is a file-based mailbox under `~/.mecha/messages/<recipient>/` on the
+outbox's store conventions, addressed by producer name, claimed under a
+per-recipient flock at the top of a turn and folded in at the steering fold
+point. The piece no deployed system had: the harness stamps the sender's
+conversation taint on every message (the conservative per-turn snapshot,
+via `ToolCtx::taint`, `Option` so unstamped fails closed to fully tainted)
+and delivery merges it into the receiving conversation before the body
+lands — a hop between agents launders nothing. Provenance header says it is
+another agent, not the user; untrusted senders get the standard wrapper;
+unknown taint reads as armed. `[messages]` in config is global-only (the
+section is stripped from a project `mecha.toml`, loudly); attended surfaces
+default to `hold` with a waiting-mail notice, unattended runs to `accept`;
+eval forces `--no-messages`. Full mailboxes refuse rather than drop-oldest
+— against Claude Code's choice, because the sender is an agent that can be
+told "full" — with `mecha msg dismiss` as the human's way to clear a
+backlog no run will claim; identical pending sends deduplicate as the loop
+brake; malformed files quarantine as `.bad` instead of wedging the mailbox
+(Claude Code shipped that bug). `mecha msg send/list/show/dismiss/agents`
+is the CLI, with `agents` reading a per-session liveness registry that
+generalises the trigger `RunMarker`. Phase 2 (TUI badge and `/messages`
+modal, live delivery into an in-flight run) is scoped in the research doc,
+whose §5 also records what the machinery unlocks beyond messaging: inbound
+webhooks and file watchers were both blocked on exactly this labeled
+taint-carrying prompt path, and headless steering of a trigger run is now
+`mecha msg send` away.
+**2026-08-09 — the benchmark run is read, and the loop stops dying of
+recoverable things.** The salvaged 21-trial fragment of the 2026-08-07
+Terminal-Bench run was diagnosed trial by trial — 8 passes, 5 genuine model
+failures, and 8 deaths the harness owned some share of — and the diagnosis
+answered a standing four-way question: the trifecta interlock costs the
+benchmark *nothing* (no trial ever armed the untrusted leg — the surface has
+no web tools and `shell` is not an untrusted source); the 32k context is
+genuinely overloaded, with the flat 24 KB per-turn output budget as the named
+mechanism (8–12k tokens of numeric data, larger than the
+threshold-to-window gap, so `path-tracing` leapt from under the threshold to
+45k tokens in one turn and died); the loop had real structural gaps; and
+compaction itself was mostly exonerated — the two heaviest trials compacted
+repeatedly and both passed. Five fixes landed on one branch (PR #21), each
+with a regression test that fails on the old behaviour: overflow recovery no
+longer disables itself when a summary was not worthwhile (the give-up flag
+gated the whole arm, so the *next* overflow died raw); the empty-turn
+allowance resets on productive turns instead of accumulating (two trials died
+`NoOutput` mid-task with retries spent hours earlier, while two others
+recovered from a nudge and passed — and the empties persisted with
+`--reasoning-budget 4096` active, so the server-side fix reduced the problem
+rather than ending it); `mecha run` exits non-zero only for produced-nothing
+runs (every exhausted stop exited 3, which Harbor records as an agent crash —
+`headless-terminal` hit MaxTurns, was counted an error, and its verifier
+scored the work 1.0); transcripts survive crashes and record rewrites (a
+`rewrite` session record carries the compacted state, `load` replaces, the
+taint timeline clamps stale positions toward over-taint); and the tool-output
+budget derives from the context window when unpinned — 12,288 bytes at 32k,
+the old 24,000 at wide windows. The bench adapter now captures stderr and
+`MECHA_LOG=debug` beside the transcript. The full write-up is
+`docs/BENCHMARK-RESEARCH.md`, "The 2026-08-07 subset run, diagnosed".
+
+**2026-08-09 — mecha grows a remote control, and it is a Slack thread.**
+Researched, designed and built in one session, then run against a real
+workspace: `docs/SLACK-RESEARCH.md` is the evidence and `docs/SLACK-DESIGN.md`
+the decisions. **Socket Mode**, so home dials out — no inbound port, no
+certificate, no tunnel, and no request signature to verify, which is the same
+argument `mecha-drain.service` already made about the factory queue. A fourth
+crate, `mecha-slack`, holds the transport and **cannot depend on
+`mecha-core`**, so the invariant is checkable by reading a manifest rather
+than by reviewing diffs; the front-end that knows both sides lives in
+`mecha-cli/src/slack/`, beside `tui/`. **Two trust tiers and no third** — an
+allowlist of Slack user ids bound by a nonce the local CLI prints, which
+proves shell access to the machine where an email address proves only what
+the workspace claims; everyone else is ignored. A thread is a `Conversation`,
+so the interlock gets the right granularity for free; a thread's jail is a
+subdirectory of one `slack` work producer, so retention reaches it. The
+answer streams with a `task_update` card per tool call, keyed on the
+`tool_use` id so a call's lifecycle is one card changing state. Approvals are
+durable cards rewritten into terminal records, with **"Allow for this run"**
+after the first real task raised seven of them. Drafts a run stages come back
+as review cards with Send and Reject, scoped by an id-diff of pending outbox
+ids — **which closes `PUBLIC-SURFACE-DESIGN.md` §11's deferred "phone UI for
+releasing outbox drafts", and it needed no home-side server at all.** Files
+go both ways: an attachment lands in the jail and is named to the model as a
+path (so taint arms through `fs_read`, the route that already exists), and
+what a run creates is uploaded back. `mecha slack notify` puts a trigger's
+briefing on a phone for the price of a config line, and
+`scripts/mecha-slack.service` is the third always-on unit. One flock means one
+connector. Verified live on `cosanlab`: binding, streaming, approvals, mode,
+orphan recovery, attachments in, artifacts out.
+
+Two things were left undone deliberately and are named in the handoff:
+`ask_user`, because it is a tool and the registry belongs to the agent that
+serves every thread; and per-thread isolation for MCP tools, because servers
+are spawned once with the agent. Both want an agent per thread, and an MCP
+startup per thread with it.
+
+The arc also changed `mecha-core`. `Decision` gained a third variant,
+`Blocked(String)`, rendered `"Blocked by policy:"` — see the trap below —
+and `process_alive` moved to `mecha_core` when a second and third subsystem
+turned out to want the pid range check that is its whole correctness.
+
 ---
 
 ## The measurement record
@@ -813,6 +915,23 @@ matters is the general shape.
   hand-listed negation phrasings. The negation phrasing space has no bottom —
   that case is judge-only now. Reach for `expect.judge` when you catch yourself
   enumerating synonyms.
+- **The transcript you are reading may not be the run that happened.** A
+  28-turn benchmark trial's session file held 8 assistant messages starting
+  mid-conversation — recording sliced "what the run added" off a list
+  compaction had rewritten in place, so the rebuilt head (and the summary in
+  it) never landed, and crashed runs recorded nothing because messages were
+  written only after a successful return. Half a day of the diagnosis went to
+  reconstructing what the recorder had dropped. A recorder that assumes an
+  invariant (append-only) the recorded system deliberately breaks (compaction)
+  is silently wrong exactly when the record matters; reconcile against what
+  was actually recorded, don't index into what you assume was.
+- **Check where every output stream lands before a long run.** Harbor captured
+  `stderr: None` on all 21 trials, and stderr is where mecha's compaction
+  notices and tracing go — the one channel that would have said which trials
+  compacted, recovered, or gave up. The evidence for a day of forensics was
+  discarded by a default nobody had looked at. Before any multi-hour run,
+  confirm each stream's destination the way `-np 1` gets confirmed: by
+  checking, not assuming.
 - **A judge needs room to think before it answers.** At `max_tokens: 512` the
   judge spent the entire budget on reasoning and returned empty content with
   `finish_reason: length`. It is 4096 now, and an unparseable verdict reports
@@ -888,6 +1007,24 @@ matters is the general shape.
 
 All found by pre-push review or by running it.
 
+- **The "edit-distance gate" was never code, and the handoff carried it as an
+  open item for weeks.** It was described as observed working live; a
+  verification sweep on 2026-08-09 found no threshold, no `levenshtein`, and
+  nowhere one could have been removed from — the behaviour was always the
+  reflector model declining to mine a trivial edit. Closed as obsolete rather
+  than deleted, because the next person would otherwise re-propose it.
+  **An item whose evidence is "I saw it work" and not `file:line` is a
+  hypothesis**, and it should be written as one.
+
+- **A refusal nobody made must not be labelled as one.** `agent.rs` prefixes
+  whatever reason an approver returns with `"Denied by the user: "`, which is
+  the exact string the miner keys on — so a remote approval nobody answered,
+  and every read-only run's mode refusal, arrived as corrections from a person
+  who never spoke. The fix had to be a third `Decision` variant in the core,
+  not a wording choice in the front-end. **When a string carries meaning
+  downstream, the type has to carry it instead** — and check who else is
+  already producing that string before adding a producer.
+
 - **A timeout that starts after the blocking part is not a timeout.** The hook
   runner wrote the JSON payload to the child's stdin *before* entering the timed
   wait — so a hook that never read stdin blocked `write_all` forever once the
@@ -908,6 +1045,20 @@ All found by pre-push review or by running it.
 
 ### Providers
 
+- **A guessed wire format has tests that agree with it.** Slack's
+  `task_update` chunk was implemented from a plausible shape — nested under a
+  `task_update` key, no id — and every unit test asserted that shape and
+  passed. Live, Slack answered `invalid_arguments`, and said nothing at all
+  about the missing `id` that keys a task card, so without it a call's
+  lifecycle would have rendered as three unrelated lines. Fixing it exposed a
+  second: a stream has one mode, and mixing a `chunks` array with the
+  top-level `markdown_text` argument is `streaming_mode_mismatch` — invisible
+  until the first bug stopped hiding it. **Tests written from a belief about a
+  third party confirm the belief, not the behaviour.** Read the reference for
+  the exact field names, assert the documented shape *and* the negative, and
+  treat the first live call as the real test. This is the `ScriptedProvider`
+  blindness `CLAUDE.md` names, in a new costume.
+
 - The unified `calendar_create_event` schema said "attendees receive
   invitations", and on Google nobody ever had: `events.insert` defaults to
   `sendUpdates=none`, while Graph mails attendees unconditionally. A unified
@@ -923,6 +1074,16 @@ All found by pre-push review or by running it.
   Assume the same class of bug exists for other local servers.
 
 ### Containment and state
+
+- **Per-run jails and shared subprocesses do not mix, and the model finds out
+  first.** MCP servers are spawned once with the agent, so a Slack connector
+  giving each thread its own `RunContext` workspace left the servers rooted
+  wherever it was launched: `bundle_render` resolved against the repo while
+  `fs_write` wrote into the thread's jail. The model reported "the workspace
+  and render tool have different root paths" and burned five turns working
+  around it with `shell`. **Anything spawned once cannot follow a per-run
+  value** — either root it somewhere both agree on, or accept that the
+  isolation only covers what the loop itself resolves. Say which, in writing.
 
 - **`Path::starts_with` is lexical, so it is not a containment check.**
   `<staging>/../escape.html` starts with `<staging>` by that test and lands one
@@ -947,6 +1108,23 @@ All found by pre-push review or by running it.
   runs its pre-flight as the service user.
 
 ### Unattended runs
+
+- **An edit that silently matches nothing ships a false claim.** The fix for
+  the startup banner below was written three times before it existed: rustfmt
+  had wrapped the `tracing::info!` across lines, a single-line string replace
+  found nothing, the build passed, the tests passed, and it was reported as
+  done. Nobody noticed until the unit was installed and the journal showed a
+  started service with no evidence it was working. **A build that succeeds is
+  not evidence an edit applied** — assert on the match, or grep for the new
+  text afterwards. The same silent no-op hit twice more the same day.
+
+- **A daemon that prints nothing at startup is indistinguishable from a wedged
+  one.** The Slack connector logged "connector up" through `tracing`, which is
+  invisible without `MECHA_LOG`, so the first run of it looked like a hang.
+  The same session had spent a day citing that exact confusion in other
+  people's software. **Anything that waits should say so on the way in, and on
+  stdout rather than through a log filter** — and a refusal it makes should be
+  visible too, because silence is what makes a working gate look broken.
 
 - `mecha-mail freebusy --days 60 | slots push` could *never* satisfy a 60-day
   horizon: the freebusy window was stamped from one process's clock and the

@@ -144,6 +144,21 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                     println!("{}", style.dim(&format!("  {}", format_usage(&usage))));
                 }
 
+                AgentEvent::MessageDelivered { id, from } if !opts.quiet => {
+                    if mid_line {
+                        println!();
+                        mid_line = false;
+                    }
+                    // Out loud even when not verbose, like a compaction: what
+                    // the conversation contains just changed, and a turn that
+                    // suddenly discusses something nobody typed has its
+                    // explanation here.
+                    eprintln!(
+                        "{}",
+                        style.dim(&format!("✉ message {id} from `{from}` delivered"))
+                    );
+                }
+
                 AgentEvent::Done(outcome) => {
                     if mid_line {
                         println!();

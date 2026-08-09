@@ -1677,6 +1677,30 @@ mod tests {
     }
 
     #[test]
+    fn a_policy_refusal_is_not_a_user_correction_either() {
+        // The sibling of the hook case, and the one that was live as a bug:
+        // `ModeApprover`'s refusals used to arrive as "Denied by the user",
+        // so a read-only run taught rules from a human who never spoke. A
+        // remote approver makes it sharper still — an approval nobody was
+        // awake to answer is not a correction, and there was no way to say so
+        // until `Decision::Blocked` existed.
+        for content in [
+            "Blocked by policy: `fs_write` modifies state and this run is read-only",
+            "Blocked by policy: nobody answered in Slack within 10m",
+        ] {
+            let messages = vec![
+                Message::user("clean up"),
+                Message::assistant(vec![tool_use("t1")]),
+                Message::tool_results(vec![result("t1", content, true)]),
+            ];
+            assert!(
+                extract_interventions(&messages).is_empty(),
+                "{content} was mined as a correction"
+            );
+        }
+    }
+
+    #[test]
     fn an_ordinary_tool_error_is_not_an_intervention() {
         let messages = vec![
             Message::user("read it"),

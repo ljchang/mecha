@@ -226,6 +226,14 @@ pub struct ToolCtx {
     /// subagents running in parallel are otherwise indistinguishable to a
     /// renderer.
     pub call_id: Option<String>,
+    /// The conversation's taint as of this turn, stamped per dispatch when a
+    /// mailbox is attached. The conservative pre-gate value — it includes
+    /// what the *batch* can return, so a read and a `message_send` in one
+    /// turn cannot stamp a clean label on the outgoing message. `None` means
+    /// nobody stamped it, and a consumer must fail closed (treat it as fully
+    /// tainted): a subagent's context, or any run wired outside the loop,
+    /// must never pass as a clean sender by omission.
+    pub taint: Option<crate::agent::Taint>,
 }
 
 impl Default for ToolCtx {
@@ -240,6 +248,7 @@ impl Default for ToolCtx {
             cancel: None,
             phase: crate::agent::Phase::default(),
             call_id: None,
+            taint: None,
         }
     }
 }
@@ -404,11 +413,28 @@ fn safe_name(s: &str) -> String {
 }
 
 /// The decision an approver hands back for one pending call.
+///
+/// Two ways to say no, and the difference is load-bearing rather than
+/// cosmetic. The learning miner keys on the exact string `"Denied by the
+/// user:"` to find corrections worth learning from, so **a refusal that no
+/// human made must not wear that label**. `Blocked` is the machine's no — a
+/// permission mode, a policy, a remote prompt nobody answered — and the loop
+/// renders it as `"Blocked by policy:"`, joining `"Blocked by a hook:"` in
+/// the family of refusals the miner ignores.
+///
+/// Without the split, a read-only run's refusals and a 2am approval nobody was
+/// awake to answer both become training data attributed to a user who never
+/// spoke. It is the same mistake as mining a publish's changed path as a voice
+/// correction, and it was live in `ModeApprover` until a Slack approver needed
+/// to express "nobody answered" and found there was no way to.
 #[derive(Debug, Clone)]
 pub enum Decision {
     Allow,
-    /// The reason is passed to the model so it can pick another approach.
+    /// A human said no. The reason is passed to the model so it can pick
+    /// another approach — and it is mined as a correction.
     Deny(String),
+    /// Machine policy said no, and no human was consulted. Never mined.
+    Blocked(String),
 }
 
 /// Gates tool calls that aren't read-only. The CLI implements this with a
@@ -429,12 +455,14 @@ impl Approver for ModeApprover {
         match self.mode {
             PermissionMode::Allow => Decision::Allow,
             PermissionMode::ReadOnly if tool.read_only() => Decision::Allow,
-            PermissionMode::ReadOnly => Decision::Deny(format!(
+            // `Blocked`, not `Deny`: a permission mode is policy this run was
+            // started with, not a correction anybody made.
+            PermissionMode::ReadOnly => Decision::Blocked(format!(
                 "`{}` modifies state and this run is read-only",
                 tool.name()
             )),
             // Nothing is watching to answer, so the safe reading of "ask" is no.
-            PermissionMode::Ask => Decision::Deny(format!(
+            PermissionMode::Ask => Decision::Blocked(format!(
                 "`{}` needs approval and this run is non-interactive (use --yes to allow)",
                 tool.name()
             )),

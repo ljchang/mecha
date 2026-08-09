@@ -73,7 +73,7 @@ read-only.
 ## What it can do
 
 **Interfaces.** `mecha run` answers one task and exits, with distinct exit codes
-so a script can tell success from a refusal from running out of turns.
+so a script can tell success from a refusal from a run that produced nothing.
 `mecha chat` is a terminal REPL. `mecha tui` is full-screen, and is the only
 interface that can *steer* a run: the input line stays live while the agent
 works, so text typed mid-run is folded into the next tool-result message rather
@@ -125,7 +125,10 @@ durable versioned URL — [publishing](/docs/features/publishing) rides on the
 outbox, so a bundle is staged and reviewed before anything is served. Requests
 coming the other way pass through [the front door](/docs/features/frontdoor),
 whose whole job is one sentence: the privileged run sees the extraction, never
-the prose a stranger wrote.
+the prose a stranger wrote. The same box also asks a group a question —
+[polls](/docs/factory/polls) are typed questions and typed ballots, which is
+what keeps them out of that quarantine, and their results project onto [a
+lecture slide](/docs/factory/slides).
 
 **Memory, in two different senses.** [Learning](/docs/features/learning) mines
 transcripts for the moments you stepped in — a steer, a denied call, a

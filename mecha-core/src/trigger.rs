@@ -771,7 +771,7 @@ impl TriggerStore {
     pub fn running(&self, name: &str) -> Option<RunMarker> {
         let text = std::fs::read_to_string(self.marker_path(name)).ok()?;
         let marker: RunMarker = serde_json::from_str(&text).ok()?;
-        if process_alive(marker.pid) {
+        if crate::process_alive(marker.pid) {
             Some(marker)
         } else {
             self.clear_running(name);
@@ -809,29 +809,6 @@ pub struct RunMarker {
     pub started_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<DateTime<Utc>>,
-}
-
-/// Is this pid still around? `kill(pid, 0)` checks without delivering
-/// anything; `EPERM` means it exists and is not ours, which still counts.
-///
-/// The range check is not defensive padding — it is the whole correctness of
-/// the function. `kill(2)` gives non-positive pids entirely different
-/// meanings: `0` is "every process in my group", `-1` is "every process I may
-/// signal" (which succeeds, always), and any other negative is a process
-/// group. A corrupt marker holding one of those would report a long-dead run
-/// as alive and leave the trigger looking permanently busy in every UI that
-/// asks. Found by a test using `u32::MAX`, which sign-flips to exactly the
-/// `-1` case.
-fn process_alive(pid: u32) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
-        return false;
-    };
-    if pid <= 0 {
-        return false;
-    }
-    // SAFETY: signal 0 delivers nothing and only probes for the process.
-    let rc = unsafe { libc::kill(pid, 0) };
-    rc == 0 || std::io::Error::last_os_error().kind() == std::io::ErrorKind::PermissionDenied
 }
 
 #[cfg(test)]

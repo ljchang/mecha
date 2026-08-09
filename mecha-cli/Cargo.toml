@@ -13,10 +13,13 @@ path = "src/main.rs"
 
 [dependencies]
 mecha-core = { path = "../mecha-core", version = "0.1.0" }
+mecha-slack = { path = "../mecha-slack", version = "0.1.0" }
 
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+# One flock, for the connector lock. See slack/connector.rs.
+libc.workspace = true
 chrono-tz.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 futures.workspace = true

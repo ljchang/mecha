@@ -128,6 +128,10 @@ Slash commands:
 | `/help` | The list. |
 | `/tools` | Tools this agent can call. |
 | `/triggers` | Scheduled prompts: see, edit, run, cancel. |
+| `/outbox` | Staged sends and publishes: show, edit, send, reject. |
+| `/frontdoor` | Inbound requests: extract, triage, close. |
+| `/polls` | Open polls, their tallies, and the lecture controls. |
+| `/review [now\|later\|auto]` | What happens to drafts a run stages. |
 | `/model [id]` | Show or switch the model. |
 | `/provider [name]` | Show or switch the provider. |
 | `/mode [ask\|allow\|read-only]` | Show or switch the permission mode. |

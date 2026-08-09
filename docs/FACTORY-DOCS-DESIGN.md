@@ -7,8 +7,17 @@ type can say, and what it renders as.*
 
 **Partly built.** The gallery generator and `gallery.mdx` shipped 2026-08-07/08
 (see [`HISTORY.md`](HISTORY.md)), so every page below that says "embeds the
-gallery" has real bytes to embed at `/factory/gallery/…`. The other nine pages
-are prose that has not been written. `HANDOFF.md` carries the open item.
+gallery" has real bytes to embed at `/factory/gallery/…`. `polls.md` [6] and
+`slides.md` [7] were written 2026-08-09 when the general poll and the PowerPoint
+add-in landed, and `gallery.mdx` grew its survey section in the same pass. The
+other nine pages are prose that has not been written. `HANDOFF.md` carries the
+open item.
+
+Note the renumbering: polls and slides took 6 and 7, and the pages that were
+planned at those numbers moved down by two (`bundles.md` 6→8, `publishing.md`
+7→9, `self-serve.md` 8→10, `deploying.md` 9→11, `second-client.md` 10→12).
+Renumbering a plan is free; renumbering shipped pages is not, which is why the
+two built pages took the low numbers.
 
 ## Where things live, and why
 
@@ -185,7 +194,45 @@ for what they mean.
   server-rendered in the host's zone and re-rendered client-side in the
   visitor's.
 
-### `bundles.md` [6] — Publishing what an agent made
+### `polls.md` [6] — Asking a group — **written 2026-08-09**
+
+The general poll, once `times` became one kind of six. What had to land:
+
+- **Three rules**: only declared vocabulary (which is what keeps poll pages out
+  of the frontdoor's quarantine, `text` excepted), ballots and never counters
+  (IRV and Borda are two reads of one ballot), and absent is absent — down to
+  the untouched VAS slider that does not submit.
+- **The six kinds as a table**, each with what its tally *leads* with, because
+  the honest summary of a Likert item is the distribution and the median and
+  most tools show a mean.
+- **Audience and visibility as two separate questions**, with the resolution
+  rule stated: an absent `identity` resolves from the audience rather than
+  defaulting blindly, and a `link` poll that asks for `named` is refused rather
+  than silently rewritten.
+- **The suppression floor**, named as a number and as the reason for it.
+- The four CLI verbs, the `/polls` TUI keymap, and the one honest difference
+  from `/outbox` and `/frontdoor`: the store of record is the gate, so the
+  modal states its staleness.
+
+### `slides.md` [7] — Live polls on a slide — **written 2026-08-09**
+
+The projector page and the PowerPoint content add-in. The frame: **one URL,
+four consumers** — browser window, iframe in a web deck, OBS pipe, add-in
+webview — so nothing in the poll pipeline knows which app is running.
+
+- The browser window is stated as the *fallback that cannot break*, not as the
+  compromise. Everything else is an optimisation on top of it.
+- Install, sideload, insert, and advance — four numbered steps, because this is
+  the one part of the system that happens outside our machinery.
+- **The deck carries a URL, never content**, and the GUID is derived from the
+  gate so regenerating is an upgrade.
+- **A table of what breaks and what you get**, each row degrading toward the
+  chart. The point of the page is that a blank object mid-lecture is the one
+  outcome designed against.
+- The CSP exception is documented rather than left to be discovered, and the
+  known costs are listed as accepted rather than hedged.
+
+### `bundles.md` [8] — Publishing what an agent made
 
 `bundle_render` → `bundle_publish` → `bundle_alias`, and the two directories
 that mean opposite things (`~/.mecha/work/<producer>/` mutable and cleanable
@@ -199,27 +246,27 @@ grep cannot tell a link a reader clicks from a resource the page fetches. Note
 that the gallery itself passes this gate in CI — the docs are evidence for the
 rule they describe.
 
-### `publishing.md` [7] — Staging a publish
+### `publishing.md` [9] — Staging a publish
 
 The existing `features/publishing.md`, linked from here rather than moved:
 it is about the outbox, which is a harness feature. This page is the factory
 half — what a publish *is* — and it should hand off at the sentence where the
 outbox takes over.
 
-### `self-serve.md` [8] — Getting an account
+### `self-serve.md` [10] — Getting an account
 
 From `mecha-factory/docs/SELF-SERVE.md`: invites, handle claims, pairing,
 per-user certificates, the tenant page. Reader-facing only; the arc stays in
 the design doc.
 
-### `deploying.md` [9] — Running a box
+### `deploying.md` [11] — Running a box
 
 From `mecha-factory/docs/DEPLOY.md`: three origins, three policies, SQLite,
 ACME. Plus the one sentence that governs the whole design — **the box holds no
 credential that reaches home** — restated here because this is the page
 somebody reads while pointing DNS at a VPS.
 
-### `second-client.md` [10] — Not mecha
+### `second-client.md` [12] — Not mecha
 
 From `mecha-factory/docs/SECOND-CLIENT.md`. Depends on `field-kinds.md` being
 complete, since the four-column table is the contract this page assumes. Last

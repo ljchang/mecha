@@ -54,17 +54,21 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **550 tests**, no failures — verified 2026-08-08 night, after the
-TUI review-surfaces arc landed (`mecha-cli` grew from 83 with the /outbox
-and /frontdoor modals; `mecha-mail` from 83 with the bookings-sweep
-hardening). One flake was seen once in `mecha-core` that day and never
-reproduced across five re-runs — unidentified, worth an eye.
+Expect **688 tests**, no failures — verified 2026-08-09, after the day's three
+arcs (counts re-measured at the end of the session): inter-agent messaging (`mecha-core` grew with the mailbox store,
+taint-forwarding, and the review's fix tests), the benchmark-diagnosis fixes
+(overflow-recovery, empty-turn, and session-rewrite regression tests, including
+the review-caught rewrite-drops-stale-taint-positions one), and the Slack
+transport with its binding store and thread state machine. One flake was seen
+once in `mecha-core` on 2026-08-08 and never reproduced across five re-runs —
+unidentified, worth an eye.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 350 |
-| `mecha-cli` unit | 100 |
+| `mecha-core` unit | 379 |
+| `mecha-cli` unit | 141 |
 | `mecha-mail` unit | 86 |
+| `mecha-slack` unit | 68 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
 | doctest | 1 |
 
@@ -98,12 +102,14 @@ A working agent harness, used and measured rather than just compiled.
 | Budgets | `max_turns`, `max_output_tokens`, `max_cost_usd`, cost accounting |
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
 | Context | Two-pass compaction: thin tool results, then summarise. Taint preserved, and a tool's own state (the todo list) crosses verbatim |
-| Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep |
+| Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep ; `slack` on a branch (PR #25) |
 | TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/outbox` and `/frontdoor` modals drive the CLI like `/triggers` does, the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
+| Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`. **On `slack/transport`, not merged** |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
 | Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/**review**/send/reject, several ids or `--all` narrowed by `--kind`/`--via`; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner — and the jail they were drafted under, so a release resolves paths against the agent's workspace rather than the reviewer's |
+| Messaging | `[messages]` + `mecha msg send/list/show/dismiss/agents` — a file mailbox between this machine's sessions (`~/.mecha/messages/<recipient>/`, producer-name addressing, per-session liveness registry). Delivery folds in at the steering point with the sender's harness-stamped taint merged first, so a hop launders nothing; attended surfaces hold with a notice, unattended accept; global config only; full mailboxes refuse, identical pending sends dedup. `docs/MESSAGING-RESEARCH.md` is the design record; phase 2 (TUI modal/badge) is scoped there |
 | Workspaces | `~/.mecha/work/<producer>/` is a run's workspace and its output directory; `mecha work list/path/clean`, retention nightly. A workspace containing the mecha home is refused |
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed |
 | Front door | `mecha frontdoor` list/show/extract/next/**triage**/**needs-info**/**close** over `~/.mecha/requests/` — the quarantine between a stranger's request and a run with tools, and the state machine that lets one reach an answer. The extractor is issued no tools and no history; `Record::for_privileged_run` has no argument that returns the prose; an extraction failure routes to a human. `triage` drafts into the outbox and refuses to run unrouted; `reconcile` closes the loop from released items on its own, with no verb to remember. `mecha-factory-publish drain` fills the directory |
@@ -122,7 +128,7 @@ from the afternoon pass, not re-checked):
 
 | Port | Model | State |
 |---|---|---|
-| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, `-c 32768`, **`--reasoning-budget 4096`** (new 2026-08-07 — it is what stops this model reasoning without terminating and returning empty content). `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` (= `-c`) and `max_tokens` (**above** the budget; 8192) — four numbers that move together. **Do not raise `-c`**: 131072 was tried and cost a 50x generation slowdown with no error anywhere. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **Now a transient unit** (`systemctl --user status llama-qwen`), not a tmux pane — see below |
+| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, `-c 32768`, **`--reasoning-budget 4096`** (new 2026-08-07 — it *reduces* this model reasoning without terminating and returning empty content, but the 08-07 benchmark run proved it does not end it: empty turns persisted with the budget active, which is why the loop's nudge-retry allowance now resets on productive turns). `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` (= `-c`) and `max_tokens` (**above** the budget; 8192) — four numbers that move together. **Do not raise `-c`**: 131072 was tried and cost a 50x generation slowdown with no error anywhere. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **Now a transient unit** (`systemctl --user status llama-qwen`), not a tmux pane — see below |
 | 8081 | gemma-4-E4B | down; nothing currently depends on it |
 | 8082 | gemma-4-26B-A4B | **down — restart it before any judged run.** The eval judge and nightly validate's judge both point here, so `mecha eval` with a `judge` rubric and the nightly validate will fail without it. `scripts/start-gemma26.sh` |
 | 8888 | SearXNG | up (docker, JSON format enabled) |
@@ -348,6 +354,13 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
 - **Re-baseline `ambiguity` and `long-horizon` at k=5.** No scorecard in
   `results/` records `runs: 5` outside the compaction arc, and these are the two
   tags whose single-run numbers move.
+- **`decode_usage` reads only `prompt_tokens`/`completion_tokens`**
+  (`mecha-core/src/provider/openai.rs`), so cached input reports as zero on
+  every local run — the benchmark diagnosis had to reason around
+  `cache_read: 0` in all 21 transcripts, and the TUI fuel gauge cannot show
+  cache health. llama-server's OpenAI-shape usage carries
+  `prompt_tokens_details.cached_tokens` in current builds; parse it when
+  present, leave zero when absent. One function, one test.
 
 ### Structural gaps
 
@@ -413,11 +426,6 @@ The arc is complete and running nightly. What is missing is refinement:
 - **A `/learning` TUI view.** The store is files by design so it can be read
   without tooling, but nothing surfaces it in the interface.
 
-One item needs a human who remembers the intent: the **edit-distance gate** is
-described as observed working live, but no threshold exists in code — the
-behaviour came from the reflector model declining. If the design was always
-"the model declines", the item is obsolete rather than open.
-
 ### Triggers
 
 - **A durable task and deadline store, and a `/tasks` TUI modal.** Nothing
@@ -441,16 +449,22 @@ behaviour came from the reflector model declining. If the design was always
   **not** called an inbox: ambiguous with the user's real one, and this queue is
   capped by design where an inbox is unbounded by definition. §3.1.
 - **File watchers.** `Trigger` has no watcher kind. Needs debounce and a
-  "what changed" payload injected into the prompt.
-- **Inbound webhooks.** Nothing listens. The interesting part is that the payload
-  must arrive marked untrusted — it would be the first time the interlock's rules
-  applied to a *prompt* rather than to a tool result.
+  "what changed" payload injected into the prompt — the injection half got
+  cheap on 2026-08-09: the mailbox delivery path (`mailbox.rs`) is exactly a
+  labeled, taint-carrying prompt fold, so a watcher's payload can arrive as
+  a message instead of needing new loop machinery.
+- **Inbound webhooks.** Nothing listens, still. What *was* the interesting
+  part — a payload arriving marked untrusted, the interlock applying to a
+  prompt rather than a tool result — shipped with messaging on 2026-08-09:
+  a webhook receiver is now just another writer into a mailbox with taint
+  pre-set untrusted. What remains is only the listener itself and its
+  authentication.
 
 ### TUI polish
 
 - **Steering and queuing are the same key.** Enter starts a run when idle and
   steers one already going; there is no way to queue a follow-up instead.
-- **No `/export` or copy.** `NAMES` lists fourteen commands and none of them
+- **No `/export` or copy.** `NAMES` lists fifteen commands and none of them
   get the transcript out.
 - **`NO_COLOR` is honoured only by the plain CLI renderer.** The TUI hardcodes
   colours inline; there is no semantic colour table.
@@ -547,8 +561,41 @@ behaviour came from the reflector model declining. If the design was always
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
   record and a triage run. See `CLAUDE.md`.
 
-- **Slack as a transport.** Zero lines exist. The blocking decision is the
-  identity model, not the socket.
+- **Slack as a remote control — built and verified live; two things left.**
+  The arc is on branch `slack/transport` (**PR #25**) and is described in
+  [`HISTORY.md`](HISTORY.md) under 2026-08-09; the design authority is
+  [`SLACK-DESIGN.md`](SLACK-DESIGN.md) and the evidence
+  [`SLACK-RESEARCH.md`](SLACK-RESEARCH.md). What is genuinely unbuilt:
+
+  - **`ask_user` is absent, and the reason is structural.** The approver rides
+    on `RunContext`, so it is per-thread for free; `ask_user` is a *tool* and
+    the registry belongs to the `Agent`, one of which serves every thread, so
+    a shared `AskUserTool` cannot know which thread asked. Routing it needs an
+    agent per thread (an MCP startup each) or a registry per run. The second
+    is the smaller change and would also close the item below.
+  - **MCP tools do not honour the per-thread jail** — only the built-in tools
+    do, because servers are spawned once with the agent. They are rooted at
+    the `slack` producer directory so paths at least agree; isolation between
+    threads is not there, and closing it is the same fix as above.
+  - **The outbox review cards have not been exercised live.** Built and unit
+    tested; no run has yet staged a draft while the connector was watching.
+  - **`[slack] tools` is unset**, so a Slack run carries every wired MCP
+    server's schemas — measured at ~7–8k input tokens a turn before any work,
+    against a local window whose compaction threshold is 21,845.
+  - **Nothing is installed.** `scripts/mecha-slack.service` exists and has
+    never been enabled; the binary under test is the worktree's, not
+    `~/.cargo/bin/mecha`. Installing it is a decision, not a step: the
+    connector answers a shared lab workspace (`cosanlab`), and §11.1 of the
+    design chose a personal one.
+
+- **The factory must never become an owner channel.** Recorded here because the
+  reuse is tempting and wrong: `GET /v1/queue?wait=` plus `mecha-drain.service`
+  is exactly the right-shaped channel, but hosting the Slack app on the box puts
+  a workspace credential on a machine the design assumes is lost, and a command
+  queue inverts the direction of *authority* even while preserving the direction
+  of packets. Anything arriving from the box stays a request, not a command.
+  What the factory should carry is artifacts too large for Slack — the split is
+  "Slack carries control, the factory carries bytes."
 - **Public benchmarks.** The Terminal-Bench adapter (`bench/`) is written, and
   the **oracle arm64 sweep is complete** (2026-08-05, 14.4h): 75 of 89 tasks
   have a reference solution that passes on aarch64, and those 75 are the only
@@ -557,12 +604,25 @@ behaviour came from the reflector model declining. If the design was always
   exists yet**: the 2026-08-07 05:22 launch was voided by the glibc trap, and
   the 11:18 relaunch (portable binary, verified to be exactly the 75) was
   stopped by hand ~4h in to free the box — the salvaged fragment is 21 trials,
-  8 solved, in `jobs/mecha-arm64-subset/`, with the caveats in HISTORY.
-  Relaunching the full 75 at k=1 (~15h) is an open decision. Read any job with
+  8 solved, in `jobs/mecha-arm64-subset/`. That fragment has now been
+  **diagnosed trial by trial** (2026-08-09 — the write-up is in
+  `docs/BENCHMARK-RESEARCH.md`, "The 2026-08-07 subset run, diagnosed"): of
+  13 failures, 5 were the model and 8 involved harness defects, all five of
+  which are fixed with regression tests (PR #21 — overflow-recovery
+  poisoning, cumulative empty-turn allowance, exit-3-on-exhausted read as an
+  agent crash, transcripts lost on crash or corrupted by compaction, and a
+  flat output budget bigger than the threshold-to-window gap). Relaunching
+  the full 75 at k=1 (~15h) is still the open decision, and it is now worth
+  doing: the fixed binary should recover most of the 8. Rebuild the portable
+  binary (`bench/build-portable.sh`) from the merged branch first — the
+  installed one predates every fix, and `bench/run.sh` resolves
+  `$(pwd)/target-musl/release/mecha`, so the binary scored is whichever
+  checkout you launch from. Consider `--agent-timeout-multiplier` too: the
+  two timeout deaths were 12.5- and 15-minute per-task caps against local
+  inference, tight even with the empty-turn waste fixed. Read any job with
   `bench/check-subset.py <job>` first — a harbor `-x` that matches nothing is
-  silent, and two earlier runs scored all 89 while claiming to be a subset
-  (see `docs/BENCHMARK-RESEARCH.md`, "Running it on this box"). k=5 for a
-  leaderboard-comparable number is the follow-up, ~74h.
+  silent, and two earlier runs scored all 89 while claiming to be a subset.
+  k=5 for a leaderboard-comparable number is the follow-up, ~74h.
   AgentDojo (for the interlock) and a SWE-bench Bash Only control are named in
   the research and unstarted.
 - **`mecha replay --json` is not wired into CI.** `scripts/replay-regression.sh`

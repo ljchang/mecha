@@ -37,8 +37,10 @@ Two details worth knowing:
   no — there is nobody to say yes, and the safe reading of a question nobody
   hears is a refusal.
 - **Exit codes carry the outcome.** `0` success, `1` error, `2` the model
-  refused, `3` it ran out of turns. A script can tell the three apart without
-  parsing prose.
+  refused, `3` it produced no answer at all. A script can tell the three
+  apart without parsing prose. A run stopped by a turn or token ceiling that
+  still answered exits `0` — the work it left behind is graded on its own
+  terms, and `--json`'s `stop_cause` names the ceiling for callers that care.
 
 `--resume <id>` continues a saved transcript, and the taint recorded in it
 comes back with it — see [Sessions and replay](/docs/features/sessions-and-replay).
@@ -94,9 +96,15 @@ Keys, from the `?` overlay:
 Slash commands go further than `chat`'s, because the TUI is the only front end
 that can change anything mid-session: `/model`, `/provider` and `/mode` switch
 what is answering, `/mcp` turns servers on and off individually or wholesale,
-`/todo` shows the live task list, and `/triggers` opens the scheduled-prompt
-modal (see [Triggers](/docs/features/triggers)). A typo'd command is reported
-as unknown rather than sent to the model as a prompt.
+`/todo` shows the live task list, and four modals open onto the review surfaces:
+`/triggers` (see [Triggers](/docs/features/triggers)), `/outbox` (see [the
+outbox](/docs/features/outbox)), `/frontdoor` (see [the front
+door](/docs/features/frontdoor)) and `/polls` (see
+[Polls](/docs/factory/polls#watching-one-without-leaving-the-session)). Each
+drives the matching `mecha …` or `factory-publish …` child process rather than
+reimplementing it, so nothing the modal can do is missing from the command line.
+A typo'd command is reported as unknown rather than sent to the model as a
+prompt.
 
 The status line becomes a fuel gauge when `[providers.X] context_window` is
 set — `context 29.3k/32.8k (89%)`, grey below 75%, yellow to 89%, red above.

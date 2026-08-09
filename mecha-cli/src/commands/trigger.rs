@@ -885,6 +885,13 @@ async fn run_agent(
     if let Some(route) = &prepared.agent.context().outbox {
         route.set_session_id(&session.meta.id);
     }
+    // The trigger's name is its producer, so `message_send` to this name
+    // reaches tomorrow's run of it — and this run claims whatever was left
+    // for it since last time. Unattended, so the resolved inbound default is
+    // accept; the marker is what `mecha msg agents` answers with.
+    if let Some(mb) = &prepared.mailbox {
+        mb.attach(&t.name, &session.meta.id);
+    }
 
     // A fresh conversation, so nothing — including taint — carries over from
     // yesterday's run of the same trigger.
@@ -892,7 +899,7 @@ async fn run_agent(
     let user = Message::user(&t.prompt);
     convo.push(user.clone());
     session.append(&Record::Message(user))?;
-    let history_len = convo.len();
+    let recorded = convo.messages.clone();
 
     // The timeout cancels rather than aborts: the run stops at the next safe
     // point and keeps its partial answer, exactly as Ctrl-C does. Killing the
@@ -949,8 +956,11 @@ async fn run_agent(
     let _ = timer.await;
     let _ = canceller.await;
 
-    session.append_messages(&convo.messages[history_len..])?;
+    session.record_run(&recorded, &convo.messages)?;
     session.append(&Record::Taint(convo.taint))?;
+    if let Some(mb) = &prepared.mailbox {
+        mb.detach(&session.meta.id);
+    }
 
     let outcome = match outcome {
         Ok(o) => o,
