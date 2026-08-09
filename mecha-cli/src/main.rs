@@ -107,6 +107,11 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_outbox: bool,
 
+    /// No inter-agent messaging: no `message_send` tool, and nothing from
+    /// the mailbox is delivered into this run.
+    #[arg(long, global = true)]
+    pub no_messages: bool,
+
     /// Never fall back to another provider — a configured `fallbacks` list is
     /// ignored, and a transient failure that survives its retries fails the
     /// run instead of being answered by a different model.
@@ -179,6 +184,10 @@ pub enum Command {
 
     /// Review, edit, release, or reject staged outbound actions.
     Outbox(commands::outbox::Args),
+
+    /// Messages between this machine's agents: send one, read the backlog,
+    /// see who is running. Delivery happens at the recipient's next turn.
+    Msg(commands::msg::Args),
 
     /// What runs have generated, and removing what is past. Every producer —
     /// a trigger, a chat — writes into its own directory, which is also the
@@ -254,6 +263,7 @@ async fn dispatch() -> Result<()> {
         Command::Distill(args) => commands::distill::execute(&cli.global, args).await,
         Command::Validate(args) => commands::validate::execute(&cli.global, args).await,
         Command::Outbox(args) => commands::outbox::execute(&cli.global, args).await,
+        Command::Msg(args) => commands::msg::execute(args).await,
         Command::Work(args) => commands::work::execute(args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
         Command::Slack(args) => commands::slack::run(args).await,

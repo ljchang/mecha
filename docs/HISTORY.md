@@ -628,6 +628,67 @@ real terminal, with only stderr captured. `mecha-cli` went from 83 to 100
 tests, including the tainted confirmation rendered through the real draw
 path.
 
+**2026-08-09 — agents can leave each other messages, and taint rides
+along.** Researched (Claude Code's cross-session messaging over per-session
+sockets; A2A/ACP/MCP-Tasks; Morris-II and Prompt Infection on cross-agent
+injection — `docs/MESSAGING-RESEARCH.md` holds the survey, the design, and
+six decided questions) and then built the same day: `mecha-core/src/mailbox.rs`
+is a file-based mailbox under `~/.mecha/messages/<recipient>/` on the
+outbox's store conventions, addressed by producer name, claimed under a
+per-recipient flock at the top of a turn and folded in at the steering fold
+point. The piece no deployed system had: the harness stamps the sender's
+conversation taint on every message (the conservative per-turn snapshot,
+via `ToolCtx::taint`, `Option` so unstamped fails closed to fully tainted)
+and delivery merges it into the receiving conversation before the body
+lands — a hop between agents launders nothing. Provenance header says it is
+another agent, not the user; untrusted senders get the standard wrapper;
+unknown taint reads as armed. `[messages]` in config is global-only (the
+section is stripped from a project `mecha.toml`, loudly); attended surfaces
+default to `hold` with a waiting-mail notice, unattended runs to `accept`;
+eval forces `--no-messages`. Full mailboxes refuse rather than drop-oldest
+— against Claude Code's choice, because the sender is an agent that can be
+told "full" — with `mecha msg dismiss` as the human's way to clear a
+backlog no run will claim; identical pending sends deduplicate as the loop
+brake; malformed files quarantine as `.bad` instead of wedging the mailbox
+(Claude Code shipped that bug). `mecha msg send/list/show/dismiss/agents`
+is the CLI, with `agents` reading a per-session liveness registry that
+generalises the trigger `RunMarker`. Phase 2 (TUI badge and `/messages`
+modal, live delivery into an in-flight run) is scoped in the research doc,
+whose §5 also records what the machinery unlocks beyond messaging: inbound
+webhooks and file watchers were both blocked on exactly this labeled
+taint-carrying prompt path, and headless steering of a trigger run is now
+`mecha msg send` away.
+**2026-08-09 — the benchmark run is read, and the loop stops dying of
+recoverable things.** The salvaged 21-trial fragment of the 2026-08-07
+Terminal-Bench run was diagnosed trial by trial — 8 passes, 5 genuine model
+failures, and 8 deaths the harness owned some share of — and the diagnosis
+answered a standing four-way question: the trifecta interlock costs the
+benchmark *nothing* (no trial ever armed the untrusted leg — the surface has
+no web tools and `shell` is not an untrusted source); the 32k context is
+genuinely overloaded, with the flat 24 KB per-turn output budget as the named
+mechanism (8–12k tokens of numeric data, larger than the
+threshold-to-window gap, so `path-tracing` leapt from under the threshold to
+45k tokens in one turn and died); the loop had real structural gaps; and
+compaction itself was mostly exonerated — the two heaviest trials compacted
+repeatedly and both passed. Five fixes landed on one branch (PR #21), each
+with a regression test that fails on the old behaviour: overflow recovery no
+longer disables itself when a summary was not worthwhile (the give-up flag
+gated the whole arm, so the *next* overflow died raw); the empty-turn
+allowance resets on productive turns instead of accumulating (two trials died
+`NoOutput` mid-task with retries spent hours earlier, while two others
+recovered from a nudge and passed — and the empties persisted with
+`--reasoning-budget 4096` active, so the server-side fix reduced the problem
+rather than ending it); `mecha run` exits non-zero only for produced-nothing
+runs (every exhausted stop exited 3, which Harbor records as an agent crash —
+`headless-terminal` hit MaxTurns, was counted an error, and its verifier
+scored the work 1.0); transcripts survive crashes and record rewrites (a
+`rewrite` session record carries the compacted state, `load` replaces, the
+taint timeline clamps stale positions toward over-taint); and the tool-output
+budget derives from the context window when unpinned — 12,288 bytes at 32k,
+the old 24,000 at wide windows. The bench adapter now captures stderr and
+`MECHA_LOG=debug` beside the transcript. The full write-up is
+`docs/BENCHMARK-RESEARCH.md`, "The 2026-08-07 subset run, diagnosed".
+
 ---
 
 ## The measurement record
@@ -813,6 +874,23 @@ matters is the general shape.
   hand-listed negation phrasings. The negation phrasing space has no bottom —
   that case is judge-only now. Reach for `expect.judge` when you catch yourself
   enumerating synonyms.
+- **The transcript you are reading may not be the run that happened.** A
+  28-turn benchmark trial's session file held 8 assistant messages starting
+  mid-conversation — recording sliced "what the run added" off a list
+  compaction had rewritten in place, so the rebuilt head (and the summary in
+  it) never landed, and crashed runs recorded nothing because messages were
+  written only after a successful return. Half a day of the diagnosis went to
+  reconstructing what the recorder had dropped. A recorder that assumes an
+  invariant (append-only) the recorded system deliberately breaks (compaction)
+  is silently wrong exactly when the record matters; reconcile against what
+  was actually recorded, don't index into what you assume was.
+- **Check where every output stream lands before a long run.** Harbor captured
+  `stderr: None` on all 21 trials, and stderr is where mecha's compaction
+  notices and tracing go — the one channel that would have said which trials
+  compacted, recovered, or gave up. The evidence for a day of forensics was
+  discarded by a default nobody had looked at. Before any multi-hour run,
+  confirm each stream's destination the way `-np 1` gets confirmed: by
+  checking, not assuming.
 - **A judge needs room to think before it answers.** At `max_tokens: 512` the
   judge spent the entire budget on reasoning and returned empty content with
   `finish_reason: length`. It is 4096 now, and an unparseable verdict reports

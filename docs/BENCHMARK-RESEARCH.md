@@ -322,6 +322,66 @@ scorecard would show. Read a trial's session transcript before believing any
 number, and check `turns` against the budget: a run that stops at 2 of 40 did
 not lose, it died.
 
+### The 2026-08-07 subset run, diagnosed (2026-08-09)
+
+The interrupted 75-task run (21 completed before it was stopped: **8 passed,
+13 at 0.0**) was read trial by trial. The 13 failures, by cause:
+
+| Cause | Trials |
+|---|---|
+| Empty turns → `NoOutput` death | `break-filter-js-from-html`, `dna-assembly` |
+| Context-overflow 400, fatal | `path-tracing` |
+| Harness agent-timeout, no transcript survived | `overfull-hbox`, `polyglot-rust-c` |
+| `MaxTurns` at 40 | `video-processing`, `compile-compcert`, `db-wal-recovery` |
+| Model concluded and was wrong | `distribution-search`, `circuit-fibsqrt`, `log-summary-date-ranges`, `cancel-async-tasks`, `dna-insert` |
+
+Four hypotheses were on the table, and the evidence sorted them cleanly:
+
+- **The trifecta interlock costs the benchmark nothing.** Every session's
+  taint record reads `untrusted: false` — the bench surface has no web tools,
+  and `shell` is not an untrusted source — so the interlock structurally
+  cannot fire, and no transcript shows a blocked send or a denial.
+- **The 32k context is genuinely overloaded, with a named mechanism.** The
+  per-turn output budget (24 KB flat) is ~8–12k tokens of numeric data,
+  larger than the 10.9k-token gap between the compaction threshold and the
+  window, so one turn's results leapt the gap (`path-tracing`: `fs_read` of a
+  2004-line PPM, dead at 45,325 tokens). The budget now derives from the
+  window: 12,288 bytes at 32k.
+- **The loop had real structural gaps.** The overflow-recovery give-up flag
+  was set by "nothing worth summarising" and then gated the whole recovery,
+  so the next overflow died raw; the empty-turn allowance was cumulative
+  across the run, so long runs died `NoOutput` mid-task after early
+  recoveries; and every exhausted stop exited 3, which Harbor records as
+  `NonZeroAgentExitCodeError` — `headless-terminal` hit MaxTurns, was
+  counted an agent *error*, and passed verification at 1.0 anyway. All three
+  fixed (see the changelog).
+- **Compaction itself was mostly exonerated** — the two heaviest trials (525k
+  and 409k input) compacted repeatedly and both passed. Its harms were the
+  give-up flag above and a recording bug: session files sliced "what the run
+  added" off a list compaction had rewritten, so a 28-turn trial recorded 8
+  assistant turns starting mid-conversation, and crashed runs recorded
+  nothing at all. Transcripts now record rewrites explicitly and survive
+  crashes; the bench adapter also captures stderr and `MECHA_LOG=debug`,
+  because Harbor's `stderr: None` had discarded the compaction notices that
+  would have made this diagnosis a day shorter.
+
+Empty turns deserve their own line: they persisted **with
+`--reasoning-budget 4096` active** (server restarted 11:16, run launched
+11:18), which the 4-of-4 raw-prompt probe had said was the fix. In real agent
+conversations the model still goes quiet routinely — `circuit-fibsqrt` billed
+28 turns for 8 recorded assistant messages, and `cache_read: 0` in every
+summary means each retry re-paid the full prefill (partly a reporting gap:
+`decode_usage` reads only `prompt_tokens`/`completion_tokens`, and
+llama-server's server-side prefix cache is invisible to it). The nudge
+demonstrably works — `crack-7z-hash` and `headless-terminal` each recovered
+from one and passed — which is what justified resetting the allowance instead
+of raising it.
+
+Scale check before the next run: 8/21 is 38% of *completed* trials against
+little-coder's 24.6% on the full set — not comparable, since the 50 pending
+tasks are not a random sample. The recoverable third is the harness deaths;
+the five model failures are the model.
+
 ### SWE-bench Bash Only — the baseline to beat
 
 The interesting split is not the main leaderboard. It is **Bash Only**, which

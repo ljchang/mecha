@@ -60,6 +60,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if let Some(route) = &prepared.agent.context().outbox {
             route.set_session_id(&s.meta.id);
         }
+        // The interactive surface is one producer, `chat`, whichever session
+        // is live — that is what lets an overnight trigger address it without
+        // knowing which session tomorrow brings. A `--no-session` chat stays
+        // anonymous: no identity, no mailbox, no return address.
+        if let Some(mb) = &prepared.mailbox {
+            mb.attach("chat", &s.meta.id);
+            // Attended surfaces default to `hold`: say what is waiting
+            // rather than folding it in unasked.
+            if !mb.delivers() {
+                match mb.store.pending_for("chat") {
+                    Ok(pending) if !pending.is_empty() => println!(
+                        "{} message(s) waiting — `mecha msg list` to read them",
+                        pending.len()
+                    ),
+                    _ => {}
+                }
+            }
+        }
     }
 
     println!(
@@ -119,7 +137,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if let Some(s) = &session {
             s.append(&Record::Message(user))?;
         }
-        let history_len = convo.len();
+        let recorded = convo.messages.clone();
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let renderer = render::spawn(
@@ -145,7 +163,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             Ok(outcome) => {
                 total.add(&outcome.usage);
                 if let Some(s) = &session {
-                    s.append_messages(&convo.messages[history_len..])?;
+                    s.record_run(&recorded, &convo.messages)?;
                     // Persist what the conversation now knows, or resuming it
                     // launders the taint exactly as a turn boundary used to.
                     s.append(&Record::Taint(convo.taint))?;
@@ -154,14 +172,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             Err(e) => {
                 eprintln!("error: {e:#}");
                 // Drop the turn so a failed request doesn't leave a dangling
-                // user message that the next request would resend.
-                convo.messages.truncate(history_len - 1);
+                // user message that the next request would resend. Restored
+                // from the snapshot rather than truncated: a mid-run
+                // compaction leaves the list shorter than it started, and
+                // truncating *that* keeps the dangling message this exists
+                // to drop.
+                convo.messages = recorded;
+                convo.messages.pop();
             }
         }
     }
 
     if let Some(s) = &session {
         println!("\nsession {} · {}", s.meta.id, render::format_usage(&total));
+        if let Some(mb) = &prepared.mailbox {
+            mb.detach(&s.meta.id);
+        }
         let cx = prepared.agent.context();
         cx.hooks
             .session_end(&s.meta.id, &s.path, &cx.tools.workspace)

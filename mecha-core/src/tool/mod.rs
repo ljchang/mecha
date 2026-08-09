@@ -226,6 +226,14 @@ pub struct ToolCtx {
     /// subagents running in parallel are otherwise indistinguishable to a
     /// renderer.
     pub call_id: Option<String>,
+    /// The conversation's taint as of this turn, stamped per dispatch when a
+    /// mailbox is attached. The conservative pre-gate value — it includes
+    /// what the *batch* can return, so a read and a `message_send` in one
+    /// turn cannot stamp a clean label on the outgoing message. `None` means
+    /// nobody stamped it, and a consumer must fail closed (treat it as fully
+    /// tainted): a subagent's context, or any run wired outside the loop,
+    /// must never pass as a clean sender by omission.
+    pub taint: Option<crate::agent::Taint>,
 }
 
 impl Default for ToolCtx {
@@ -240,6 +248,7 @@ impl Default for ToolCtx {
             cancel: None,
             phase: crate::agent::Phase::default(),
             call_id: None,
+            taint: None,
         }
     }
 }

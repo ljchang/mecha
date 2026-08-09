@@ -54,18 +54,19 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **629 tests**, no failures — verified 2026-08-09, after the
-`mecha-slack` transport, its binding store and the Slack thread state machine
-landed (79 new; `mecha-core` gained one when `process_alive` became a shared
-helper). The 550 before
-it dated from 2026-08-08 night and the TUI review-surfaces arc. One flake was
-seen once in `mecha-core` on 2026-08-08 and never reproduced across five
-re-runs — unidentified, worth an eye.
+Expect **661 tests**, no failures — verified 2026-08-09, after the day's three
+arcs: inter-agent messaging (`mecha-core` grew with the mailbox store,
+taint-forwarding, and the review's fix tests), the benchmark-diagnosis fixes
+(overflow-recovery, empty-turn, and session-rewrite regression tests, including
+the review-caught rewrite-drops-stale-taint-positions one), and the Slack
+transport with its binding store and thread state machine. One flake was seen
+once in `mecha-core` on 2026-08-08 and never reproduced across five re-runs —
+unidentified, worth an eye.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 351 |
-| `mecha-cli` unit | 113 |
+| `mecha-core` unit | 377 |
+| `mecha-cli` unit | 119 |
 | `mecha-mail` unit | 86 |
 | `mecha-slack` unit | 65 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
@@ -107,6 +108,7 @@ A working agent harness, used and measured rather than just compiled.
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
 | Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/**review**/send/reject, several ids or `--all` narrowed by `--kind`/`--via`; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner — and the jail they were drafted under, so a release resolves paths against the agent's workspace rather than the reviewer's |
+| Messaging | `[messages]` + `mecha msg send/list/show/dismiss/agents` — a file mailbox between this machine's sessions (`~/.mecha/messages/<recipient>/`, producer-name addressing, per-session liveness registry). Delivery folds in at the steering point with the sender's harness-stamped taint merged first, so a hop launders nothing; attended surfaces hold with a notice, unattended accept; global config only; full mailboxes refuse, identical pending sends dedup. `docs/MESSAGING-RESEARCH.md` is the design record; phase 2 (TUI modal/badge) is scoped there |
 | Workspaces | `~/.mecha/work/<producer>/` is a run's workspace and its output directory; `mecha work list/path/clean`, retention nightly. A workspace containing the mecha home is refused |
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed |
 | Front door | `mecha frontdoor` list/show/extract/next/**triage**/**needs-info**/**close** over `~/.mecha/requests/` — the quarantine between a stranger's request and a run with tools, and the state machine that lets one reach an answer. The extractor is issued no tools and no history; `Record::for_privileged_run` has no argument that returns the prose; an extraction failure routes to a human. `triage` drafts into the outbox and refuses to run unrouted; `reconcile` closes the loop from released items on its own, with no verb to remember. `mecha-factory-publish drain` fills the directory |
@@ -125,7 +127,7 @@ from the afternoon pass, not re-checked):
 
 | Port | Model | State |
 |---|---|---|
-| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, `-c 32768`, **`--reasoning-budget 4096`** (new 2026-08-07 — it is what stops this model reasoning without terminating and returning empty content). `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` (= `-c`) and `max_tokens` (**above** the budget; 8192) — four numbers that move together. **Do not raise `-c`**: 131072 was tried and cost a 50x generation slowdown with no error anywhere. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **Now a transient unit** (`systemctl --user status llama-qwen`), not a tmux pane — see below |
+| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, `-c 32768`, **`--reasoning-budget 4096`** (new 2026-08-07 — it *reduces* this model reasoning without terminating and returning empty content, but the 08-07 benchmark run proved it does not end it: empty turns persisted with the budget active, which is why the loop's nudge-retry allowance now resets on productive turns). `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` (= `-c`) and `max_tokens` (**above** the budget; 8192) — four numbers that move together. **Do not raise `-c`**: 131072 was tried and cost a 50x generation slowdown with no error anywhere. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **Now a transient unit** (`systemctl --user status llama-qwen`), not a tmux pane — see below |
 | 8081 | gemma-4-E4B | down; nothing currently depends on it |
 | 8082 | gemma-4-26B-A4B | **down — restart it before any judged run.** The eval judge and nightly validate's judge both point here, so `mecha eval` with a `judge` rubric and the nightly validate will fail without it. `scripts/start-gemma26.sh` |
 | 8888 | SearXNG | up (docker, JSON format enabled) |
@@ -351,6 +353,13 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
 - **Re-baseline `ambiguity` and `long-horizon` at k=5.** No scorecard in
   `results/` records `runs: 5` outside the compaction arc, and these are the two
   tags whose single-run numbers move.
+- **`decode_usage` reads only `prompt_tokens`/`completion_tokens`**
+  (`mecha-core/src/provider/openai.rs`), so cached input reports as zero on
+  every local run — the benchmark diagnosis had to reason around
+  `cache_read: 0` in all 21 transcripts, and the TUI fuel gauge cannot show
+  cache health. llama-server's OpenAI-shape usage carries
+  `prompt_tokens_details.cached_tokens` in current builds; parse it when
+  present, leave zero when absent. One function, one test.
 
 ### Structural gaps
 
@@ -444,10 +453,16 @@ behaviour came from the reflector model declining. If the design was always
   **not** called an inbox: ambiguous with the user's real one, and this queue is
   capped by design where an inbox is unbounded by definition. §3.1.
 - **File watchers.** `Trigger` has no watcher kind. Needs debounce and a
-  "what changed" payload injected into the prompt.
-- **Inbound webhooks.** Nothing listens. The interesting part is that the payload
-  must arrive marked untrusted — it would be the first time the interlock's rules
-  applied to a *prompt* rather than to a tool result.
+  "what changed" payload injected into the prompt — the injection half got
+  cheap on 2026-08-09: the mailbox delivery path (`mailbox.rs`) is exactly a
+  labeled, taint-carrying prompt fold, so a watcher's payload can arrive as
+  a message instead of needing new loop machinery.
+- **Inbound webhooks.** Nothing listens, still. What *was* the interesting
+  part — a payload arriving marked untrusted, the interlock applying to a
+  prompt rather than a tool result — shipped with messaging on 2026-08-09:
+  a webhook receiver is now just another writer into a mailbox with taint
+  pre-set untrusted. What remains is only the listener itself and its
+  authentication.
 
 ### TUI polish
 
@@ -626,12 +641,25 @@ behaviour came from the reflector model declining. If the design was always
   exists yet**: the 2026-08-07 05:22 launch was voided by the glibc trap, and
   the 11:18 relaunch (portable binary, verified to be exactly the 75) was
   stopped by hand ~4h in to free the box — the salvaged fragment is 21 trials,
-  8 solved, in `jobs/mecha-arm64-subset/`, with the caveats in HISTORY.
-  Relaunching the full 75 at k=1 (~15h) is an open decision. Read any job with
+  8 solved, in `jobs/mecha-arm64-subset/`. That fragment has now been
+  **diagnosed trial by trial** (2026-08-09 — the write-up is in
+  `docs/BENCHMARK-RESEARCH.md`, "The 2026-08-07 subset run, diagnosed"): of
+  13 failures, 5 were the model and 8 involved harness defects, all five of
+  which are fixed with regression tests (PR #21 — overflow-recovery
+  poisoning, cumulative empty-turn allowance, exit-3-on-exhausted read as an
+  agent crash, transcripts lost on crash or corrupted by compaction, and a
+  flat output budget bigger than the threshold-to-window gap). Relaunching
+  the full 75 at k=1 (~15h) is still the open decision, and it is now worth
+  doing: the fixed binary should recover most of the 8. Rebuild the portable
+  binary (`bench/build-portable.sh`) from the merged branch first — the
+  installed one predates every fix, and `bench/run.sh` resolves
+  `$(pwd)/target-musl/release/mecha`, so the binary scored is whichever
+  checkout you launch from. Consider `--agent-timeout-multiplier` too: the
+  two timeout deaths were 12.5- and 15-minute per-task caps against local
+  inference, tight even with the empty-turn waste fixed. Read any job with
   `bench/check-subset.py <job>` first — a harbor `-x` that matches nothing is
-  silent, and two earlier runs scored all 89 while claiming to be a subset
-  (see `docs/BENCHMARK-RESEARCH.md`, "Running it on this box"). k=5 for a
-  leaderboard-comparable number is the follow-up, ~74h.
+  silent, and two earlier runs scored all 89 while claiming to be a subset.
+  k=5 for a leaderboard-comparable number is the follow-up, ~74h.
   AgentDojo (for the interlock) and a SWE-bench Bash Only control are named in
   the research and unstarted.
 - **`mecha replay --json` is not wired into CI.** `scripts/replay-regression.sh`
