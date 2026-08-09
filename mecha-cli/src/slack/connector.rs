@@ -468,10 +468,15 @@ impl State {
         // button for a run that already ended is a lie the reader has to test.
         if let Ok(Some(r)) = self.threads.get(&done.key) {
             if let Some(ts) = &r.controls_ts {
+                // Worded as a header, because it sits above the answer: the
+                // controls must be posted before the stream exists so Stop is
+                // pressable from the first moment, which puts them first in
+                // the thread. "Finished." there read like a footer that had
+                // wandered up the page.
                 let ended = if done.outcome.is_ok() {
-                    "Finished."
+                    "✓ Run complete"
                 } else {
-                    "Failed."
+                    "✗ Run failed"
                 };
                 let _ = chat::update(
                     &self.slack,
@@ -479,7 +484,7 @@ impl State {
                     ts,
                     ended,
                     Some(vec![blocks::context(&format!(
-                        "{ended} mode was `{}`",
+                        "{ended} · mode `{}`",
                         r.mode
                     ))]),
                 )
