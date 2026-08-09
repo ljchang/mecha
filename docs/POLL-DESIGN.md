@@ -269,13 +269,18 @@ response count climb, close the poll — every action a
 
 Two boundaries stated up front:
 
-- **Text answers do not auto-project.** Anonymous prose on a lecture
-  screen is an incident with a countdown; every live-response product
-  ships moderation for exactly this. The screen renders typed tallies
-  freely; text answers reach the presenter in the TUI monitor, and a
-  projected-text mode waits for a moderation queue worth building
-  (approve-to-screen, the presenter tapping each through). Deferred with
-  its shape named, like write-ins.
+- **Text sentences do not auto-project; recurring words do.** Anonymous
+  prose on a lecture screen is an incident with a countdown; every
+  live-response product ships moderation for exactly this. The screen
+  renders typed tallies freely, and text questions project as a **word
+  cloud with a structural guard** (the user's call, reversing the
+  original word-cloud exclusion): words are counted once per ballot and
+  reach the wall only when **two or more ballots** chose them — a lone
+  troll's word never renders, with no profanity list to maintain.
+  Stopwords drop, sizes are five discrete buckets with the count in
+  text (the heat-cell rule), and the full sentences stay on the
+  presenter's own screen and in `status`. A projected-sentence mode
+  still waits for a moderation queue worth building.
 - **Participation credit needs no new machinery.** If responding counts
   toward a grade, that is the roster CSV (§3): completion visible,
   answers still `anonymous` — "we can see that you responded, never
@@ -779,6 +784,10 @@ has run a real lecture. Keynote stays no-build (no add-in model
 exists; browser window or the OBS pipe). The open-link audience went from open question to designed
 the day the course case arrived (§3); Likert batteries went from open
 question to core when the poll became a list of questions (§1).
+**Word clouds are in** (2026-08-09, reversing the research's leave-out):
+text answers visualise as a per-ballot-counted, two-ballot-minimum,
+stopword-filtered weighted list — on the results page above the listed
+answers, and on the projector *instead of* them (§3.1).
 
 ## 12. Open questions
 
