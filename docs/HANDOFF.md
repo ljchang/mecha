@@ -513,6 +513,58 @@ The arc is complete and running nightly. What is missing is refinement:
 
   **Open there, in the order they bite:**
 
+  - **The MCP surface has drifted behind the CLI, and nothing fails when it
+    does.** `factory-publish` has twenty commands; the MCP server exposes
+    eight, all `bundle_*`. Notebooks, request types (the public forms),
+    availability slots and **polls** are unreachable by any agent — which is
+    why mecha answered "I don't have a tool that can create polls" and was
+    right. The dates make it drift rather than a decision: `mcp.rs` was last
+    touched 2026-08-07, `request.rs` 2026-08-08, `poll.rs` 2026-08-09, and the
+    module's long doc comment reasons only about bundles. The one *documented*
+    exclusion is `drain` ("a CLI and deliberately not a tool"), and `operator`
+    / `connect` / `disconnect` / `serve` belong on that list for the same
+    reason — they are the operator's, not the model's.
+
+    **Why it stayed drifted, which is the part that decides the work:** the
+    capabilities were written as command bodies inside `main.rs` (the bin),
+    while `mcp.rs` lives in the lib. `polls_command` alone is ~470 lines at
+    `mecha-factory-publish/src/main.rs:1587`. So exposing a verb is not
+    wiring — it is extracting the body into the library first, and the same is
+    true of `notebook` and `type`.
+
+    **There is no safe shortcut**, and this is worth stating because it looks
+    like there is one: letting the model reach `factory-publish` through
+    `shell` bypasses the outbox entirely. The outbox routes by *tool name* in
+    the dispatch path — that is the stated reason the factory is an MCP server
+    at all — so a shell-out has no name to route, and a poll created that way
+    mints a public page and participant URLs with no review card. The prompt
+    already forbids the shape ("do not try to accomplish the send some other
+    way").
+
+    Order of work: extract `polls` into the lib; expose **two** poll tools,
+    because `polls create` has two mutually exclusive modes and a single tool
+    with a mode flag is what a model gets wrong — `poll_create` (a general
+    poll from a `--spec` TOML: choice, ranking, likert, vas, text) and
+    `poll_meeting_create` (policy plus the user's real busy time, seeded from
+    `mecha-mail freebusy`). The meeting one needs its freebusy as a **file
+    path**, since MCP cannot pipe stdin the way the CLI does. Then
+    `poll_status` / `poll_close`, then `notebook` and `type`. Creation verbs
+    that mint public URLs take `openWorldHint` so they route through
+    `[outbox] publish_tools`, like `bundle_publish` already does.
+
+    **The durable fix is a coverage test**: enumerate the CLI's subcommands
+    and assert each is either exposed or on an explicit exclusion list with a
+    reason, so adding a command fails the build until someone decides in
+    writing whether an agent should reach it. mecha already warns on every
+    start when `[outbox] tools` names a tool that does not exist, for exactly
+    this reason; the factory has no equivalent and that is why five
+    capabilities went unnoticed.
+
+    Costs to weigh rather than discover: every exposed tool is schema tokens
+    in every run — measured at ~7–8k a turn already — which argues for
+    exposing them *and* narrowing per surface (`[slack] tools`,
+    `[tools] enabled`), not for leaving them out.
+
   - **Verify the release workflow** (`release.yml`, authored 2026-08-07:
     static musl `factory` with an asserted-static gate and a checksum). Push a
     `v*` tag and watch it; `DEPLOY.md` already leads with the
@@ -579,14 +631,16 @@ The arc is complete and running nightly. What is missing is refinement:
     threads is not there, and closing it is the same fix as above.
   - **The outbox review cards have not been exercised live.** Built and unit
     tested; no run has yet staged a draft while the connector was watching.
-  - **`[slack] tools` is unset**, so a Slack run carries every wired MCP
-    server's schemas — measured at ~7–8k input tokens a turn before any work,
-    against a local window whose compaction threshold is 21,845.
-  - **Nothing is installed.** `scripts/mecha-slack.service` exists and has
-    never been enabled; the binary under test is the worktree's, not
-    `~/.cargo/bin/mecha`. Installing it is a decision, not a step: the
-    connector answers a shared lab workspace (`cosanlab`), and §11.1 of the
-    design chose a personal one.
+  - **It is installed and running** (2026-08-09). `mecha-slack.service` is
+    enabled with linger, `~/.cargo/bin/mecha` carries the merged binary, and
+    `[slack] tools` is set — workspace tools, `web_search` + `http_fetch`
+    (which the `research` subagent needs, and whose absence silently
+    unregisters it), and the factory bundle tools. `mail__*` and `pkg` are
+    deliberately out: largest schemas, most private surface, one line to add
+    when inbox work from a phone is actually wanted. The connector answers a
+    **shared lab workspace** (`cosanlab`) rather than the personal one §11.1
+    of the design chose — safe, since non-owners are ignored by construction,
+    but the app is visible to its members.
 
 - **The factory must never become an owner channel.** Recorded here because the
   reuse is tempting and wrong: `GET /v1/queue?wait=` plus `mecha-drain.service`
