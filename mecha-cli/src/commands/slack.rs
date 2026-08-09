@@ -137,10 +137,10 @@ async fn auth(store: &SlackStore) -> Result<()> {
     // Prove the credential before storing it. Writing an unverified token means
     // discovering it is wrong at the first real run, hours later.
     let slack = Slack::new(bot_token.trim());
-    let who: Value = slack
-        .call("auth.test", json!({}))
-        .await
-        .context("the bot token was refused by Slack")?;
+    let who: Value = match slack.call::<Value>("auth.test", json!({})).await {
+        Ok(who) => who,
+        Err(e) => bail!("{}", explain(&e)),
+    };
 
     store.save_credentials(&Credentials {
         bot_token: bot_token.trim().to_string(),
@@ -155,6 +155,39 @@ async fn auth(store: &SlackStore) -> Result<()> {
     );
     println!("Next: `mecha slack link` to say who may drive this agent.");
     Ok(())
+}
+
+/// Turn a Slack error code into something a person can act on.
+///
+/// Written the first time one was hit for real: `account_inactive` is
+/// correctly classified, correctly terminal, and tells the reader nothing
+/// about what to do — which makes the classification worth exactly as much as
+/// the message beside it.
+fn explain(e: &mecha_slack::SlackError) -> String {
+    let hint = match e {
+        mecha_slack::SlackError::Auth { code, .. } => match code.as_str() {
+            "account_inactive" => Some(
+                "the app no longer exists in that workspace — it was deleted, or its \
+                 installation was removed. Check https://api.slack.com/apps, reinstall, \
+                 and copy the fresh Bot User OAuth Token",
+            ),
+            "invalid_auth" | "not_authed" => Some(
+                "the token was not accepted at all. Check it was copied whole, and that \
+                 it is the Bot User OAuth Token (`xoxb-`) rather than an app-level token",
+            ),
+            "token_revoked" => Some("the token was revoked — generate a new one and reinstall"),
+            "missing_scope" => Some(
+                "the app is installed but lacks a scope this call needs. Add it under \
+                 OAuth & Permissions, then reinstall — scope changes need a reinstall",
+            ),
+            _ => None,
+        },
+        _ => None,
+    };
+    match hint {
+        Some(hint) => format!("{e}\n\n  {hint}."),
+        None => e.to_string(),
+    }
 }
 
 /// Every thread and where it stands.
@@ -429,4 +462,49 @@ async fn link(store: &SlackStore, timeout_minutes: i64, force: bool) -> Result<(
         .await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::explain;
+    use mecha_slack::SlackError;
+
+    fn auth(code: &str) -> SlackError {
+        SlackError::Auth {
+            method: "auth.test".into(),
+            code: code.into(),
+        }
+    }
+
+    #[test]
+    fn the_codes_a_person_actually_hits_say_what_to_do() {
+        // `account_inactive` is the one that was hit for real, and the one a
+        // reader cannot possibly act on from its name alone.
+        let text = explain(&auth("account_inactive"));
+        assert!(
+            text.contains("account_inactive"),
+            "keep Slack's own code: {text}"
+        );
+        assert!(text.contains("reinstall"), "and say what to do: {text}");
+
+        for code in [
+            "invalid_auth",
+            "not_authed",
+            "token_revoked",
+            "missing_scope",
+        ] {
+            assert!(
+                explain(&auth(code)).lines().count() > 1,
+                "{code} has no hint"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_code_is_passed_through_rather_than_guessed_at() {
+        // Inventing advice for a code we have not seen is worse than none.
+        let text = explain(&auth("some_future_code"));
+        assert!(text.contains("some_future_code"));
+        assert_eq!(text.lines().count(), 1, "no invented hint: {text}");
+    }
 }
