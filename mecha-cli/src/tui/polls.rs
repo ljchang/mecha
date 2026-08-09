@@ -141,10 +141,12 @@ impl PollsModal {
                     };
                     let text = format!(
                         "{marker} {:<18} {:<10} {:<22} {}",
-                        row.poll_id, row.audience, row.title_short(), live,
+                        row.poll_id,
+                        row.audience,
+                        row.title_short(),
+                        live,
                     );
-                    let unreachable =
-                        row.live.as_ref().is_some_and(|l| !l.ok);
+                    let unreachable = row.live.as_ref().is_some_and(|l| !l.ok);
                     if selected {
                         Line::styled(text, Style::new().fg(Color::Black).bg(Color::Cyan))
                     } else if unreachable {
@@ -231,10 +233,7 @@ impl PollRow {
         match &self.live {
             Some(live) => {
                 body.push(Line::styled(
-                    format!(
-                        "the gate's answer, as of {} — r refreshes",
-                        live.as_of
-                    ),
+                    format!("the gate's answer, as of {} — r refreshes", live.as_of),
                     header,
                 ));
                 body.extend(live.lines.iter().cloned());
@@ -255,10 +254,12 @@ impl PollRow {
                 let summary = text
                     .lines()
                     .next()
-                    .and_then(|first| first.split_once("): ").map(|(state, rest)| {
-                        let state = state.rsplit_once('(').map(|(_, s)| s).unwrap_or("?");
-                        format!("{state} · {rest}")
-                    }))
+                    .and_then(|first| {
+                        first.split_once("): ").map(|(state, rest)| {
+                            let state = state.rsplit_once('(').map(|(_, s)| s).unwrap_or("?");
+                            format!("{state} · {rest}")
+                        })
+                    })
                     .unwrap_or_else(|| "fetched".into());
                 Live {
                     as_of,
@@ -286,7 +287,9 @@ impl PollRow {
 /// The creation records, newest first. The directory not existing is not an
 /// error — it is a machine that has never created a poll.
 pub fn load() -> anyhow::Result<Vec<PollRow>> {
-    let dir = mecha_core::work::mecha_home()?.join("factory").join("polls");
+    let dir = mecha_core::work::mecha_home()?
+        .join("factory")
+        .join("polls");
     let mut rows = Vec::new();
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -356,7 +359,12 @@ mod tests {
     fn text(lines: &[Line]) -> String {
         lines
             .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -365,7 +373,14 @@ mod tests {
     fn the_title_names_the_keys_or_answers_the_last_action() {
         let modal = PollsModal::new(vec![row(&record()).unwrap()]);
         let title = modal.title();
-        for key in ["enter", "r refresh", "c close", "e export", "s screen", "esc"] {
+        for key in [
+            "enter",
+            "r refresh",
+            "c close",
+            "e export",
+            "s screen",
+            "esc",
+        ] {
             assert!(title.contains(key), "{key} missing from {title}");
         }
         let done = PollsModal {
@@ -391,8 +406,10 @@ mod tests {
         let mut poll = row(&record()).unwrap();
         poll.install_fetch(
             "14:03:22".into(),
-            Ok("poll `psyc60-mid` (open): 2 of 5 answered\n\nPick one.\n    2  World models"
-                .into()),
+            Ok(
+                "poll `psyc60-mid` (open): 2 of 5 answered\n\nPick one.\n    2  World models"
+                    .into(),
+            ),
         );
         let live = poll.live.as_ref().unwrap();
         assert_eq!(live.summary, "open · 2 of 5 answered");
