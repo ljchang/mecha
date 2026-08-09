@@ -565,7 +565,7 @@ behaviour came from the reflector model declining. If the design was always
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
   record and a triage run. See `CLAUDE.md`.
 
-- **Slack as a remote control — steps 1–5 and 8 are built, 7 in half.** `mecha-slack` (the
+- **Slack as a remote control — steps 1–5 and 8 are built, 7 in half, and the foundation is VERIFIED LIVE (2026-08-09).** `mecha-slack` (the
   fourth crate, 61 tests) is the transport: Socket Mode with make-before-break
   reconnect and automatic acks, the `chat.*` family including the streaming
   trio, Block Kit builders that truncate visibly rather than letting Slack drop
@@ -599,6 +599,16 @@ behaviour came from the reflector model declining. If the design was always
   expose it. `process_alive` moved to `mecha_core` so the pid range check — the
   whole correctness of that, since `kill(-1, 0)` succeeds — has one
   implementation instead of two.
+  **`auth` and `link` were run against a real workspace** (`cosanlab`,
+  T03NYDVCR) and worked: `apps.connections.open`, the WebSocket handshake, the
+  envelope ack, `message.im` parsing, the nonce match, the owner binding and
+  the reply all went through in one exchange. The credential store came out
+  0700/0600. **Still unexercised live: `connect`** — and with it the whole
+  streaming path, which is where the plan question bites (Slack's AI features
+  need a paid plan, and `chat.startStream`'s dependence on that is UNVERIFIED).
+  Note the workspace is a shared lab one rather than the personal one §11.1
+  chose; non-owners are ignored by construction so nothing is unsafe, but the
+  app is visible to its members.
   Steps 4–5 are the connector (`mecha slack connect`): one process, one
   `Agent`, one task per thread, three channels meeting in one `select!` (what
   Slack sends, what an approver waits to ask, what a finished run hands back).
