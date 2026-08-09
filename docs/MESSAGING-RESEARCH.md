@@ -352,6 +352,50 @@ is what several backlog items were already blocked on:
 reviewed and accepted on 2026-08-09. They are decisions now — don't re-ask
 them, re-argue them in a PR if the code proves one wrong.*
 
+*A high-effort multi-agent code review the same day found ten confirmed
+defects in the first cut, all fixed before merge. The ones that changed a
+decision here or added an invariant:*
+
+- ***Subagents cannot send.*** *The taint stamp is a per-turn snapshot of
+  the sending run's own conversation, so a subagent's `message_send` would
+  label the message with the child's fresh (clean) taint or a frozen parent
+  snapshot — either way a laundering path around the whole point of §"taint
+  travels". `message_send` is now refused to subagent registries outright
+  (a profile asking for it is a hard startup error). The parent sends, based
+  on the child's returned prose.*
+- ***The CLI fails closed.*** *`mecha msg send` stamps clean taint only when
+  stdin is a real terminal (a person typing — the one trusted sender); a
+  pipe, a script, or an agent's `shell` shelling out to it gets untrusted,
+  closing the "one tool over from the guard" hole `shell` + `sandbox="none"`
+  opened.*
+- ***`message_send` is refused during `Phase::Plan`.*** *It is `read_only`
+  for the approver but side-effecting for the phase gate, which keys on
+  `read_only`; the refusal is explicit in `call` rather than flipping the
+  flag (which would drag the approver back in and break the unattended
+  shape).*
+- ***Delivery is skipped when the run is about to stop.*** *Claiming marks a
+  message delivered irreversibly; a run at its turn/budget ceiling or loop
+  guard would consume mail it never acts on. The mailbox fold is now gated
+  on the same stop condition the loop already computes.*
+- ***`claim_pending` returns what it committed.*** *A write failure partway
+  through hands back the messages already marked delivered (so the caller
+  folds them) and leaves the rest pending, instead of erroring the whole
+  batch to nothing — the earlier version could strand a delivered-on-disk
+  message that reached no conversation.*
+- ***Inbound default keys on `global_config_only`, not `interactive`.***
+  *Only the trigger runner (the sole setter of `global_config_only`)
+  defaults to `accept`; everything a person drives — including a piped
+  `run --json`, which is unattended for *approvals* but must still hold mail
+  — defaults to `hold`. `interactive` was conflating two different
+  questions.*
+
+*Smaller review fixes, no decision change: a transient IO error skips a
+message this scan rather than quarantining it as corrupt (only a parse
+failure is `.bad`); the duplicate brake keys on `reply_to` too, so the same
+body answering two different threads is two messages; `inbound = "refuse"`
+warns at startup that it behaves as hold; and the project-layer strip has a
+test.*
+
 1. **Producer collisions.** `chat` is one producer but the workflow runs
    several concurrent sessions (worktree per session). If the mailbox is
    keyed by producer, which live `chat` drains it? Proposed: a mailbox

@@ -77,9 +77,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             route.set_session_id(&s.meta.id);
         }
         // One-shots are their own producer, `run` — addressable, though
-        // rarely addressed. `run` counts as interactive (someone is watching
-        // the terminal), so the resolved default holds inbound mail rather
-        // than folding it into a task it has nothing to do with.
+        // rarely addressed. `run` does not set `global_config_only`, so its
+        // resolved inbound default is Hold whether stdin is a terminal or a
+        // pipe: a scripted `run --json` must not fold a stray message into a
+        // task it has nothing to do with. Only the trigger runner accepts.
         if let Some(mb) = &prepared.mailbox {
             mb.set_identity("run", &s.meta.id);
             if let Err(e) = mb.store.announce("run", &s.meta.id) {

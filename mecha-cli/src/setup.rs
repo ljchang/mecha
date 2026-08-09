@@ -488,18 +488,32 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         };
         let store = mecha_core::mailbox::MailboxStore::open(root)?
             .with_limits(cfg.messages.pending_cap, cfg.messages.max_body_bytes);
-        // The inbound decision: config's word wins; otherwise an attended
-        // surface holds (a human is there to read the backlog) and an
-        // unattended one accepts (nobody is coming to release a hold, and
-        // the unattended defaults — read-only mode, outbox staging, the
-        // interlock plus merged sender taint — govern what a message can
-        // provoke).
-        let inbound = cfg.messages.inbound.unwrap_or(if interactive {
-            mecha_core::mailbox::InboundPolicy::Hold
+        // The inbound decision: config's word wins; otherwise a *scheduled*
+        // run (the trigger runner is the only caller that sets
+        // `global_config_only`) accepts — nobody is coming to release a hold,
+        // and its own defaults (read-only mode, outbox staging, the interlock
+        // plus merged sender taint) govern what a message can provoke — while
+        // everything a person drives (chat, tui, and a one-shot `run`,
+        // whether or not its stdin is a pipe) holds and reports the backlog.
+        // Keyed on `global_config_only`, deliberately not on `interactive`:
+        // the latter is the approval-mode signal, and a piped `run --json` is
+        // unattended for approvals but must still *hold* mail rather than fold
+        // a stray message into a scripted task.
+        use mecha_core::mailbox::InboundPolicy;
+        let inbound = cfg.messages.inbound.unwrap_or(if opts.global_config_only {
+            InboundPolicy::Accept
         } else {
-            mecha_core::mailbox::InboundPolicy::Accept
+            InboundPolicy::Hold
         });
-        let deliver = inbound == mecha_core::mailbox::InboundPolicy::Accept;
+        // `refuse` is reserved and behaves as `hold` today; say so rather than
+        // letting a config author believe sends are being turned away.
+        if inbound == InboundPolicy::Refuse {
+            eprintln!(
+                "mecha: [messages] inbound = \"refuse\" is not yet implemented and \
+                 behaves as \"hold\" — messages accumulate pending until the cap"
+            );
+        }
+        let deliver = inbound == InboundPolicy::Accept;
         let route = Arc::new(mecha_core::mailbox::MailboxRoute::new(store, deliver));
         // `--tool` filters this like it filters MCP tools: an active
         // allowlist that does not name it has said no.
@@ -613,6 +627,23 @@ fn build_subagent(
 ) -> Result<Subagent> {
     let mut child_registry = Registry::new();
     for wanted in &profile.tools {
+        // A subagent cannot safely send inter-agent mail: its message_send
+        // would stamp the taint of its *own* fresh conversation (or, unwatched,
+        // a frozen snapshot of the parent's) rather than what actually entered
+        // the context that asked for the send — either way a laundering path
+        // around the taint forwarding the whole feature rests on. So it is not
+        // offered to children at all, and a profile that asks for it is a hard
+        // error rather than a silent strip. The parent sends, based on the
+        // prose the subagent returns.
+        if wanted == "message_send" {
+            anyhow::bail!(
+                "subagent `{}` asks for `message_send`, which is not available to \
+                 subagents: a child cannot stamp inter-agent messages with the \
+                 taint of the context that requested them. Have the parent send \
+                 based on the child's returned answer.",
+                profile.name
+            );
+        }
         match pool.get(wanted) {
             Some(tool) => child_registry.insert(Arc::clone(tool)),
             // A typo here silently produces a child that cannot do its job, so

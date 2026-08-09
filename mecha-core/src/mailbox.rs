@@ -236,7 +236,16 @@ impl MailboxStore {
         let _lock = self.lock(to)?;
 
         let pending = self.pending_for(to)?;
-        if let Some(dup) = pending.iter().find(|m| m.from == from && m.body == body) {
+        // The dedup key includes `reply_to`: two answers with the same body to
+        // *different* messages (a peer sending "done" for request A and again
+        // for request B) are distinct messages, and coalescing the second
+        // would drop the thread B requester was waiting on. Only a genuine
+        // repeat — same sender, same body, same thread — is the loop echo the
+        // brake is for.
+        if let Some(dup) = pending
+            .iter()
+            .find(|m| m.from == from && m.body == body && m.reply_to == reply_to)
+        {
             return Ok(SendOutcome::Duplicate(dup.id.clone()));
         }
         anyhow::ensure!(
@@ -278,19 +287,28 @@ impl MailboxStore {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            match std::fs::read_to_string(&path)
-                .map_err(anyhow::Error::from)
-                .and_then(|t| serde_json::from_str::<MailboxMessage>(&t).map_err(Into::into))
-            {
+            // An IO error and a parse error are not the same failure and must
+            // not share a fate. A parse error is *corruption* — the file fails
+            // today and every future poll, so it is quarantined (renamed
+            // `.bad`) rather than left to cost a scan per turn forever or be
+            // the entry someone deletes the whole mailbox to get past. An IO
+            // error is *transient* — a busy run's EMFILE, a momentary EACCES,
+            // an NFS hiccup — and quarantining a valid pending message on one
+            // would sideline it permanently; skip it this scan and read it
+            // next poll instead.
+            let text = match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!("skipping message {} this scan: {e}", path.display());
+                    continue;
+                }
+            };
+            match serde_json::from_str::<MailboxMessage>(&text) {
                 Ok(msg) => out.push(msg),
-                // Quarantine, don't skip: a file that fails today fails on
-                // every future poll too, and one bad entry must not cost a
-                // directory scan per turn forever — or worse, be the entry
-                // someone eventually deletes the whole mailbox to get past.
                 Err(e) => {
                     let bad = path.with_extension("bad");
                     tracing::warn!(
-                        "quarantining unreadable message {} as {}: {e:#}",
+                        "quarantining corrupt message {} as {}: {e}",
                         path.display(),
                         bad.display()
                     );
@@ -321,18 +339,37 @@ impl MailboxStore {
     /// is microseconds wide — and even then the full body sits here in the
     /// store, delivered_to naming the run that died. Nothing is ever only
     /// in a transcript.
+    ///
+    /// A write failure partway through returns the messages *already* marked
+    /// delivered rather than an error, and stops there. Those are on disk as
+    /// delivered, so the caller must fold them or they are lost; the ones
+    /// after the failure stay pending and are re-claimed next poll. Returning
+    /// an error (and an empty batch from the route) would strand the
+    /// already-marked ones — delivered in the store, folded into nothing.
     pub fn claim_pending(&self, recipient: &str, session_id: &str) -> Result<Vec<MailboxMessage>> {
         let dir = self.recipient_dir(recipient)?;
         if !dir.is_dir() {
             return Ok(Vec::new());
         }
         let _lock = self.lock(recipient)?;
-        let mut claimed = self.pending_for(recipient)?;
-        for msg in &mut claimed {
+        let pending = self.pending_for(recipient)?;
+        let mut claimed = Vec::with_capacity(pending.len());
+        for mut msg in pending {
             msg.status = "delivered".into();
             msg.delivered_at = Some(chrono::Utc::now().to_rfc3339());
             msg.delivered_to = Some(session_id.to_string());
-            self.write_message(msg)?;
+            if let Err(e) = self.write_message(&msg) {
+                // Whatever was marked before this is delivered on disk and
+                // must reach the conversation; hand those back and leave the
+                // rest pending rather than losing what was already committed.
+                tracing::warn!(
+                    "claim for `{recipient}` stopped after {} of {}: {e:#}",
+                    claimed.len(),
+                    claimed.len() + 1
+                );
+                break;
+            }
+            claimed.push(msg);
         }
         Ok(claimed)
     }
@@ -655,6 +692,13 @@ impl Tool for MessageSendTool {
     /// that lets outbox staging skip the approver. The guardrails are the
     /// pending cap, the duplicate brake, and the taint stamped on every
     /// message by the harness.
+    ///
+    /// Read-only for the *approver and permission gate* — but not, despite
+    /// this flag, for the **planning phase**: sending is a side effect on
+    /// another agent, and `Phase::allows` would otherwise admit it because
+    /// it keys on `read_only`. `call` refuses in `Phase::Plan` explicitly
+    /// rather than turning the flag off, because turning it off would drag
+    /// the approver back in and break the unattended shape above.
     fn read_only(&self) -> bool {
         true
     }
@@ -668,6 +712,16 @@ impl Tool for MessageSendTool {
     }
 
     async fn call(&self, input: serde_json::Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+        // Planning is read-only exploration; sending sets another agent in
+        // motion. The phase gate admits this tool on its `read_only` flag, so
+        // the refusal has to be here.
+        if ctx.phase == crate::agent::Phase::Plan {
+            return Ok(ToolOutput::err(
+                "message_send is not available while planning — sending sets \
+                 another agent in motion, which is not a planning action. \
+                 Nothing was sent.",
+            ));
+        }
         let Some(to) = input.get("to").and_then(|v| v.as_str()) else {
             return Ok(ToolOutput::err("message_send needs `to`"));
         };
@@ -819,6 +873,80 @@ mod tests {
         let claimed = store.claim_pending("chat", "s").unwrap();
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].body, "second");
+    }
+
+    #[tokio::test]
+    async fn message_send_refuses_while_planning() {
+        let dir = std::env::temp_dir().join(format!("mecha-mailbox-{}", uuid::Uuid::new_v4()));
+        let store = MailboxStore::open(&dir).unwrap();
+        let route = Arc::new(MailboxRoute::new(store, true));
+        route.set_identity("scout", "s1");
+        let tool = MessageSendTool::new(Arc::clone(&route));
+
+        let ctx = ToolCtx {
+            phase: crate::agent::Phase::Plan,
+            taint: Some(Taint::default()),
+            ..ToolCtx::default()
+        };
+        let out = tool
+            .call(serde_json::json!({"to": "chat", "body": "go"}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(out.content.contains("planning"), "{}", out.content);
+        // Nothing was written — a plan pass caused no cross-agent effect.
+        assert!(route.store.pending_for("chat").unwrap().is_empty());
+
+        // The same call in Execute phase goes through.
+        let exec = ToolCtx {
+            phase: crate::agent::Phase::Execute,
+            taint: Some(Taint::default()),
+            ..ToolCtx::default()
+        };
+        let out = tool
+            .call(serde_json::json!({"to": "chat", "body": "go"}), &exec)
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(route.store.pending_for("chat").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn same_body_to_different_threads_is_not_a_duplicate() {
+        let (_dir, store) = store();
+        // "done" answering request A, then "done" answering request B: same
+        // sender, same body, distinct reply_to — two real messages, not an
+        // echo. The brake must not coalesce them.
+        let a = store
+            .send("chat", "peer", None, "done", Some("req-A".into()), Taint::default())
+            .unwrap();
+        let b = store
+            .send("chat", "peer", None, "done", Some("req-B".into()), Taint::default())
+            .unwrap();
+        assert!(matches!(a, SendOutcome::Sent(_)));
+        assert!(matches!(b, SendOutcome::Sent(_)), "distinct thread, not a dup");
+        // Same thread and body *is* the echo the brake is for.
+        let c = store
+            .send("chat", "peer", None, "done", Some("req-A".into()), Taint::default())
+            .unwrap();
+        assert!(matches!(c, SendOutcome::Duplicate(_)));
+        assert_eq!(store.pending_for("chat").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn transient_io_error_does_not_quarantine() {
+        // A file that exists but cannot be *parsed* is quarantined; a valid
+        // one is not. (A true IO error mid-read is hard to force portably, so
+        // this pins the parse-vs-valid split the fix turns on — a valid file
+        // must survive the scan, and the `.bad` rename must be parse-only.)
+        let (_dir, store) = store();
+        send(&store, "chat", "a", "keep me");
+        let dir = store.root().join("chat");
+        std::fs::write(dir.join("99999999-corrupt.json"), "not json").unwrap();
+        let msgs = store.messages_for("chat").unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].body, "keep me");
+        assert!(dir.join("99999999-corrupt.bad").exists());
     }
 
     #[test]

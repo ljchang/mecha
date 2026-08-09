@@ -901,6 +901,20 @@ impl Agent {
                 append_user_text(messages, queued);
             }
 
+            // Is this iteration going to stop before it does any more work?
+            // Computed here, ahead of the mailbox, because claiming a message
+            // is irreversible: it marks the message delivered in the store,
+            // and a run that stops this turn would consume it without ever
+            // acting on it — the silent loss the refuse-not-drop cap exists
+            // to prevent. The authoritative stop is still recomputed below,
+            // after compaction may have added usage; this is only the guard
+            // on consuming mail. (Compaction is deliberately *not* guarded by
+            // it: a final-answer turn on an oversized transcript needs the
+            // summary or it overflows.)
+            let stopping = loop_detected
+                || turns >= cx.budget.max_turns.unwrap_or(self.cfg.max_turns)
+                || self.over_budget(&cx.budget, &usage).is_some();
+
             // Messages other agents left for this run's producer — the same
             // fold point as steering, because it is the same constraint. The
             // sender's recorded taint merges into this conversation *before*
@@ -908,7 +922,11 @@ impl Agent {
             // and the receiver's interlock must treat what the sender read
             // as read here. Written back to `convo` immediately, like the
             // post-tool site, so no early exit can drop it.
-            if let Some(mailbox) = cx.mailbox.as_ref().filter(|mb| mb.delivers()) {
+            if let Some(mailbox) = cx
+                .mailbox
+                .as_ref()
+                .filter(|mb| mb.delivers() && !stopping)
+            {
                 for msg in mailbox.claim_pending() {
                     emit(
                         &events,

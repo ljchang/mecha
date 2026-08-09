@@ -1127,6 +1127,46 @@ mod tests {
     }
 
     #[test]
+    fn a_project_layer_messages_section_is_stripped_but_a_global_one_is_kept() {
+        // The security boundary: a cloned repo's mecha.toml must not be able to
+        // set `inbound = "accept"` (or enable messaging at all) on someone's
+        // session. `merge_file` strips the section on a project layer and keeps
+        // it on a global one — this pins both halves, and that the strip is a
+        // strip rather than a broken apply.
+        let dir = std::env::temp_dir().join(format!("mecha-msg-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(
+            &path,
+            "[messages]\nenabled = true\ninbound = \"accept\"\n",
+        )
+        .unwrap();
+
+        let mut from_project = Config::default();
+        from_project
+            .merge_file(&path, LayerTrust::Project)
+            .unwrap();
+        assert!(
+            !from_project.messages.enabled,
+            "a project file must not enable messaging"
+        );
+        assert!(
+            from_project.messages.inbound.is_none(),
+            "a project file must not set inbound policy"
+        );
+
+        let mut from_global = Config::default();
+        from_global.merge_file(&path, LayerTrust::Global).unwrap();
+        assert!(from_global.messages.enabled, "the global file is authoritative");
+        assert_eq!(
+            from_global.messages.inbound,
+            Some(crate::mailbox::InboundPolicy::Accept)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn every_field_of_config_is_reachable_from_a_file() {
         // The bug this exists for: `hooks` was added to `Config` and not to
         // `ConfigLayer`, so `[[hook]]` in any config file was a hard parse

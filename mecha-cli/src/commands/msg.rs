@@ -10,6 +10,7 @@
 use anyhow::Result;
 use mecha_core::agent::Taint;
 use mecha_core::mailbox::{MailboxStore, SendOutcome};
+use std::io::IsTerminal;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -123,15 +124,31 @@ fn send(
     from: &str,
     reply_to: Option<String>,
 ) -> Result<()> {
-    match store.send(to, from, None, body, reply_to, Taint::default())? {
+    // The one place a message's taint is *not* stamped by the loop, so it
+    // fails closed instead. A person typing at a terminal is the one sender
+    // whose words are trusted input — clean. Anything else (a pipe, a script,
+    // or an agent's `shell` calling `mecha msg send` to route around the
+    // harness stamp with `sandbox = "none"`) is untrusted: the receiver gets
+    // the wrapper and the taint merge, exactly as message_send would give it.
+    let taint = if std::io::stdin().is_terminal() {
+        Taint::default()
+    } else {
+        Taint {
+            private: true,
+            untrusted: true,
+        }
+    };
+    match store.send(to, from, None, body, reply_to, taint)? {
         SendOutcome::Sent(id) => {
             println!("sent {id} to `{to}`");
-            let live = store
-                .agents()?
-                .into_iter()
-                .any(|a| a.producer == to);
+            // A live marker means a session exists, not that it will fold the
+            // message — the recipient's inbound policy decides that, and this
+            // side cannot read it. So report presence without claiming
+            // delivery: a session that accepts folds it at its next turn, one
+            // that holds surfaces it via `mecha msg list`.
+            let live = store.agents()?.into_iter().any(|a| a.producer == to);
             if live {
-                println!("`{to}` is running — delivered at its next turn");
+                println!("`{to}` is running — it will see this at its next turn if it accepts inbound mail, otherwise on `mecha msg list`");
             } else {
                 println!("`{to}` is not running — it waits for the next run");
             }
