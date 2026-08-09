@@ -271,6 +271,9 @@ impl Transcript {
                 indent(depth)
             ))),
             AgentEvent::QueuedInput(text) => self.push(Entry::Steer(text.clone())),
+            AgentEvent::MessageDelivered { id, from } => self.push(Entry::Notice(format!(
+                "message {id} from `{from}` delivered into the conversation"
+            ))),
             _ => {}
         }
     }

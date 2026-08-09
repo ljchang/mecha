@@ -104,6 +104,7 @@ A working agent harness, used and measured rather than just compiled.
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
 | Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/**review**/send/reject, several ids or `--all` narrowed by `--kind`/`--via`; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner — and the jail they were drafted under, so a release resolves paths against the agent's workspace rather than the reviewer's |
+| Messaging | `[messages]` + `mecha msg send/list/show/dismiss/agents` — a file mailbox between this machine's sessions (`~/.mecha/messages/<recipient>/`, producer-name addressing, per-session liveness registry). Delivery folds in at the steering point with the sender's harness-stamped taint merged first, so a hop launders nothing; attended surfaces hold with a notice, unattended accept; global config only; full mailboxes refuse, identical pending sends dedup. `docs/MESSAGING-RESEARCH.md` is the design record; phase 2 (TUI modal/badge) is scoped there |
 | Workspaces | `~/.mecha/work/<producer>/` is a run's workspace and its output directory; `mecha work list/path/clean`, retention nightly. A workspace containing the mecha home is refused |
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed |
 | Front door | `mecha frontdoor` list/show/extract/next/**triage**/**needs-info**/**close** over `~/.mecha/requests/` — the quarantine between a stranger's request and a run with tools, and the state machine that lets one reach an answer. The extractor is issued no tools and no history; `Record::for_privileged_run` has no argument that returns the prose; an extraction failure routes to a human. `triage` drafts into the outbox and refuses to run unrouted; `reconcile` closes the loop from released items on its own, with no verb to remember. `mecha-factory-publish drain` fills the directory |
@@ -441,10 +442,16 @@ behaviour came from the reflector model declining. If the design was always
   **not** called an inbox: ambiguous with the user's real one, and this queue is
   capped by design where an inbox is unbounded by definition. §3.1.
 - **File watchers.** `Trigger` has no watcher kind. Needs debounce and a
-  "what changed" payload injected into the prompt.
-- **Inbound webhooks.** Nothing listens. The interesting part is that the payload
-  must arrive marked untrusted — it would be the first time the interlock's rules
-  applied to a *prompt* rather than to a tool result.
+  "what changed" payload injected into the prompt — the injection half got
+  cheap on 2026-08-09: the mailbox delivery path (`mailbox.rs`) is exactly a
+  labeled, taint-carrying prompt fold, so a watcher's payload can arrive as
+  a message instead of needing new loop machinery.
+- **Inbound webhooks.** Nothing listens, still. What *was* the interesting
+  part — a payload arriving marked untrusted, the interlock applying to a
+  prompt rather than a tool result — shipped with messaging on 2026-08-09:
+  a webhook receiver is now just another writer into a mailbox with taint
+  pre-set untrusted. What remains is only the listener itself and its
+  authentication.
 
 ### TUI polish
 

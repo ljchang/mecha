@@ -223,6 +223,10 @@ async fn run_arm(
     // case silently answered by a fallback model would be a measurement of
     // nothing — worse, an incomparable one mixed invisibly into the set.
     opts.no_fallback = true;
+    // And for messaging: a case must not read this machine's real mailbox —
+    // or worse, have a stray message from last night's trigger folded into
+    // its conversation mid-case.
+    opts.no_messages = true;
     let mut prepared = setup::prepare(&opts, false).await?;
     if !args.no_ask_user {
         prepared

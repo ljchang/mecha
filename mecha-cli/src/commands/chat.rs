@@ -60,6 +60,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if let Some(route) = &prepared.agent.context().outbox {
             route.set_session_id(&s.meta.id);
         }
+        // The interactive surface is one producer, `chat`, whichever session
+        // is live — that is what lets an overnight trigger address it without
+        // knowing which session tomorrow brings. A `--no-session` chat stays
+        // anonymous: no identity, no mailbox, no return address.
+        if let Some(mb) = &prepared.mailbox {
+            mb.attach("chat", &s.meta.id);
+            // Attended surfaces default to `hold`: say what is waiting
+            // rather than folding it in unasked.
+            if !mb.delivers() {
+                match mb.store.pending_for("chat") {
+                    Ok(pending) if !pending.is_empty() => println!(
+                        "{} message(s) waiting — `mecha msg list` to read them",
+                        pending.len()
+                    ),
+                    _ => {}
+                }
+            }
+        }
     }
 
     println!(
@@ -162,6 +180,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     if let Some(s) = &session {
         println!("\nsession {} · {}", s.meta.id, render::format_usage(&total));
+        if let Some(mb) = &prepared.mailbox {
+            mb.detach(&s.meta.id);
+        }
         let cx = prepared.agent.context();
         cx.hooks
             .session_end(&s.meta.id, &s.path, &cx.tools.workspace)

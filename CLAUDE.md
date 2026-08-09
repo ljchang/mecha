@@ -34,6 +34,7 @@ agent.rs     the loop: ask → run tools → feed results back → repeat
 subagent.rs  a profile-narrowed child agent, exposed to the parent as a tool
 hooks.rs     user commands at lifecycle points; pre_tool can deny a call
 outbox.rs    the store behind staged sends and publishes
+mailbox.rs   inter-agent messages between sessions; taint travels with them
 sandbox.rs   bwrap/docker confinement for shell and MCP servers
 compact.rs   the cut, the rebuild, and the state carried across one
 cron.rs      five-field cron, resolved in an IANA zone (both DST directions)

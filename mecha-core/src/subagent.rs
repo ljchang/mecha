@@ -195,6 +195,13 @@ impl Tool for Subagent {
             // Same rule as hooks: setup installs the parent's outbox route on
             // each child, or delegating becomes the way to send unstaged.
             outbox: self.agent.context().outbox.clone(),
+            // No mailbox: inbound mail is addressed to the parent's producer,
+            // and delivering it into a child's task would both starve the
+            // parent of it and hand a stranger's text to a run nobody
+            // watches. A child that has `message_send` in its profile still
+            // sends — with an unstamped context, which the tool labels fully
+            // tainted rather than clean. Fail closed, not fail silent.
+            mailbox: None,
         };
 
         // If somebody is watching the parent run, forward the child's events

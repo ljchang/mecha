@@ -42,6 +42,50 @@ pub struct Config {
     pub outbox: OutboxConfig,
     /// Retention for `~/.mecha/work/`. See [`crate::work`].
     pub work: WorkConfig,
+    /// Inter-agent messages between mecha sessions on this machine. See
+    /// [`crate::mailbox`].
+    pub messages: MessagesConfig,
+}
+
+/// Messaging between this machine's own mecha sessions.
+///
+/// Receiver-side policy, so it loads from the global file only, never a
+/// project's `mecha.toml`: a cloned repository must not be able to set
+/// `inbound = "accept"` on someone's session. Enforced structurally:
+/// `merge_file` strips the section from project layers, loudly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MessagesConfig {
+    /// Off by default, like outbox routing: a mailbox is a policy decision.
+    pub enabled: bool,
+    /// Where messages live. Defaults to `~/.mecha/messages`
+    /// (or `$MECHA_MESSAGES_DIR`).
+    pub dir: Option<PathBuf>,
+    /// What a run does with inbound messages: `accept` folds them in at turn
+    /// boundaries, `hold` leaves them for `mecha msg`. Unset — the default —
+    /// resolves per surface: attended front-ends hold, unattended runs
+    /// accept. See [`crate::mailbox::InboundPolicy`].
+    pub inbound: Option<crate::mailbox::InboundPolicy>,
+    /// Pending messages one recipient may hold before senders are refused.
+    pub pending_cap: usize,
+    /// Largest message body, in bytes.
+    pub max_body_bytes: usize,
+    /// Resolved (delivered/dismissed) messages kept per recipient before the
+    /// oldest are pruned. Retention, so the per-turn claim scan stays bounded.
+    pub keep: usize,
+}
+
+impl Default for MessagesConfig {
+    fn default() -> Self {
+        MessagesConfig {
+            enabled: false,
+            dir: None,
+            inbound: None,
+            pending_cap: crate::mailbox::DEFAULT_PENDING_CAP,
+            max_body_bytes: crate::mailbox::DEFAULT_MAX_BODY_BYTES,
+            keep: crate::mailbox::DEFAULT_KEEP_RESOLVED,
+        }
+    }
 }
 
 /// Which tools are outbox-routed, and where staged items live.
@@ -140,6 +184,7 @@ impl Default for Config {
             hooks: Vec::new(),
             outbox: OutboxConfig::default(),
             work: WorkConfig::default(),
+            messages: MessagesConfig::default(),
         }
     }
 }
@@ -588,12 +633,12 @@ impl Config {
         let mut cfg = Config::default();
         if let Some(path) = Self::global_path() {
             if path.exists() {
-                cfg.merge_file(&path)?;
+                cfg.merge_file(&path, LayerTrust::Global)?;
             }
         }
         let project = project_dir.join(Self::PROJECT_FILE);
         if project.exists() {
-            cfg.merge_file(&project)?;
+            cfg.merge_file(&project, LayerTrust::Project)?;
         }
         cfg.merge_env();
         Ok(cfg)
@@ -611,18 +656,30 @@ impl Config {
         let mut cfg = Config::default();
         if let Some(path) = Self::global_path() {
             if path.exists() {
-                cfg.merge_file(&path)?;
+                cfg.merge_file(&path, LayerTrust::Global)?;
             }
         }
         cfg.merge_env();
         Ok(cfg)
     }
 
-    fn merge_file(&mut self, path: &Path) -> Result<()> {
+    fn merge_file(&mut self, path: &Path, trust: LayerTrust) -> Result<()> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let layer: ConfigLayer =
+        let mut layer: ConfigLayer =
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        // `[messages]` is receiver-side admission policy, and a project file
+        // arrives with a cloned repository — it must not be able to switch a
+        // session's inbound handling to `accept`. Dropped loudly rather than
+        // silently: an ignored section that looks applied is the
+        // silently-degrading-sandbox shape.
+        if trust == LayerTrust::Project && layer.messages.take().is_some() {
+            tracing::warn!(
+                "[messages] in {} is ignored — messaging policy loads from the \
+                 global config only",
+                path.display()
+            );
+        }
         layer.apply(self);
         Ok(())
     }
@@ -670,6 +727,13 @@ impl Config {
     }
 }
 
+/// Which file a layer came from, deciding what it may set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LayerTrust {
+    Global,
+    Project,
+}
+
 /// A partially-specified config file. Every field is optional so a project file
 /// can override one setting without restating the rest.
 #[derive(Debug, Default, Deserialize)]
@@ -691,6 +755,18 @@ struct ConfigLayer {
     sandbox: Option<SandboxLayer>,
     outbox: Option<OutboxLayer>,
     work: Option<WorkLayer>,
+    messages: Option<MessagesLayer>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MessagesLayer {
+    enabled: Option<bool>,
+    dir: Option<PathBuf>,
+    inbound: Option<crate::mailbox::InboundPolicy>,
+    pending_cap: Option<usize>,
+    max_body_bytes: Option<usize>,
+    keep: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -924,6 +1000,29 @@ impl ConfigLayer {
                 cfg.work.keep = v;
             }
         }
+        // Only ever reached from the global layer: `merge_file` strips this
+        // section from a project file before applying, with a warning.
+        if let Some(x) = self.messages {
+            let t = &mut cfg.messages;
+            if let Some(v) = x.enabled {
+                t.enabled = v;
+            }
+            if x.dir.is_some() {
+                t.dir = x.dir;
+            }
+            if x.inbound.is_some() {
+                t.inbound = x.inbound;
+            }
+            if let Some(v) = x.pending_cap {
+                t.pending_cap = v;
+            }
+            if let Some(v) = x.max_body_bytes {
+                t.max_body_bytes = v;
+            }
+            if let Some(v) = x.keep {
+                t.keep = v;
+            }
+        }
     }
 }
 
@@ -1030,6 +1129,43 @@ mod tests {
             global_only.default_provider, "contributed-by-the-repository",
             "a scheduled unattended run must not take its configuration from \
              whatever directory it happens to start in"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_layer_messages_section_is_stripped_but_a_global_one_is_kept() {
+        // The security boundary: a cloned repo's mecha.toml must not be able to
+        // set `inbound = "accept"` (or enable messaging at all) on someone's
+        // session. `merge_file` strips the section on a project layer and keeps
+        // it on a global one — this pins both halves, and that the strip is a
+        // strip rather than a broken apply.
+        let dir = std::env::temp_dir().join(format!("mecha-msg-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(&path, "[messages]\nenabled = true\ninbound = \"accept\"\n").unwrap();
+
+        let mut from_project = Config::default();
+        from_project.merge_file(&path, LayerTrust::Project).unwrap();
+        assert!(
+            !from_project.messages.enabled,
+            "a project file must not enable messaging"
+        );
+        assert!(
+            from_project.messages.inbound.is_none(),
+            "a project file must not set inbound policy"
+        );
+
+        let mut from_global = Config::default();
+        from_global.merge_file(&path, LayerTrust::Global).unwrap();
+        assert!(
+            from_global.messages.enabled,
+            "the global file is authoritative"
+        );
+        assert_eq!(
+            from_global.messages.inbound,
+            Some(crate::mailbox::InboundPolicy::Accept)
         );
 
         let _ = std::fs::remove_dir_all(&dir);
