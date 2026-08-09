@@ -54,7 +54,7 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **686 tests**, no failures — verified 2026-08-09, after the day's three
+Expect **688 tests**, no failures — verified 2026-08-09, after the day's three
 arcs (counts re-measured at the end of the session): inter-agent messaging (`mecha-core` grew with the mailbox store,
 taint-forwarding, and the review's fix tests), the benchmark-diagnosis fixes
 (overflow-recovery, empty-turn, and session-rewrite regression tests, including
@@ -66,9 +66,9 @@ unidentified, worth an eye.
 | Suite | Count |
 |---|---:|
 | `mecha-core` unit | 379 |
-| `mecha-cli` unit | 140 |
+| `mecha-cli` unit | 141 |
 | `mecha-mail` unit | 86 |
-| `mecha-slack` unit | 67 |
+| `mecha-slack` unit | 68 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
 | doctest | 1 |
 
