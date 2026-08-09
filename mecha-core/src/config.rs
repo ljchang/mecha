@@ -152,6 +152,9 @@ pub struct SlackConfig {
     /// guidance; the timer is so a slow model still shows progress.
     pub stream_flush_chars: usize,
     pub stream_flush_ms: u64,
+    /// Largest attachment fetched into a run's workspace. Slack allows 1 GB;
+    /// a remote control does not need to.
+    pub max_upload_mb: u64,
 }
 
 impl Default for SlackConfig {
@@ -164,6 +167,7 @@ impl Default for SlackConfig {
             max_cost_usd: None,
             stream_flush_chars: 800,
             stream_flush_ms: 1000,
+            max_upload_mb: 25,
         }
     }
 }
@@ -875,6 +879,7 @@ struct SlackLayer {
     max_cost_usd: Option<f64>,
     stream_flush_chars: Option<usize>,
     stream_flush_ms: Option<u64>,
+    max_upload_mb: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1125,6 +1130,9 @@ impl ConfigLayer {
             }
             if let Some(v) = x.stream_flush_ms {
                 t.stream_flush_ms = v;
+            }
+            if let Some(v) = x.max_upload_mb {
+                t.max_upload_mb = v;
             }
         }
         // Only ever reached from the global layer: `merge_file` strips this

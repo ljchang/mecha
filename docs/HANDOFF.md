@@ -54,7 +54,7 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **676 tests**, no failures — verified 2026-08-09, after the day's three
+Expect **679 tests**, no failures — verified 2026-08-09, after the day's three
 arcs: inter-agent messaging (`mecha-core` grew with the mailbox store,
 taint-forwarding, and the review's fix tests), the benchmark-diagnosis fixes
 (overflow-recovery, empty-turn, and session-rewrite regression tests, including
@@ -66,7 +66,7 @@ unidentified, worth an eye.
 | Suite | Count |
 |---|---:|
 | `mecha-core` unit | 379 |
-| `mecha-cli` unit | 132 |
+| `mecha-cli` unit | 135 |
 | `mecha-mail` unit | 86 |
 | `mecha-slack` unit | 65 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
@@ -565,7 +565,7 @@ behaviour came from the reflector model declining. If the design was always
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
   record and a triage run. See `CLAUDE.md`.
 
-- **Slack as a remote control — steps 1–5 of 8 are built.** `mecha-slack` (the
+- **Slack as a remote control — steps 1–5 and 8 are built, 7 in half.** `mecha-slack` (the
   fourth crate, 61 tests) is the transport: Socket Mode with make-before-break
   reconnect and automatic acks, the `chat.*` family including the streaming
   trio, Block Kit builders that truncate visibly rather than letting Slack drop
@@ -618,8 +618,18 @@ behaviour came from the reflector model declining. If the design was always
   own refusals already read as user denials, so every read-only or unattended
   run has been feeding the learning miner corrections from a human who never
   spoke. Both now return `Blocked`, with a test in `learning.rs` naming it.
-  **Steps 6–8 remain**: outbox review in-thread, files both ways, and `notify`
-  plus the systemd unit. **Two things are owed rather than done**, both
+  Step 8 is in — `mecha slack notify` reads stdin and DMs the owner, so a
+  trigger's existing `notify = "mecha slack notify"` puts the morning briefing
+  on a phone with no new trigger concept, and `scripts/mecha-slack.service` is
+  the third always-on unit. Step 7's inbound half is in: an owner's attachment
+  is fetched into `<jail>/inbox/` and **named as a path in the prompt** rather
+  than injected as content, which is what makes the taint legs arm through
+  `fs_read` — the path that already exists — instead of a parallel one. The
+  filename is sanitised, because the connector writes it before any tool and
+  therefore before the path jail; there is a test on `../../` and friends.
+  **What remains: step 6** (outbox review in-thread — the piece that closes
+  `PUBLIC-SURFACE-DESIGN.md` §11's deferred phone UI) and **step 7's outbound
+  half** (posting a rendered file or a published bundle's link). **Two things are owed rather than done**, both
   recorded where they live: a **connector-wide lock** (two `mecha slack
   connect` processes would both answer and both write; nothing stops that
   today but there being one operator, which is the shape this project

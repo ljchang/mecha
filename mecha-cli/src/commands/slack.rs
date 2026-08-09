@@ -71,6 +71,16 @@ pub enum Cmd {
     /// showing "working…" forever. The connector does this on startup; this is
     /// the same pass, by hand.
     Sweep,
+    /// Read stdin and send it to the owner as a DM.
+    ///
+    /// What a trigger's `notify` calls: it already runs `sh -c` with the run's
+    /// answer on stdin, so `notify = "mecha slack notify"` puts the morning
+    /// briefing on a phone with no new trigger concept at all.
+    Notify {
+        /// A line above the message, for saying which trigger sent it.
+        #[arg(long)]
+        title: Option<String>,
+    },
     /// Forget the binding. The tokens stay, so `link` can be run again.
     Unlink,
 }
@@ -83,6 +93,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         Cmd::Link { timeout, force } => link(&store, timeout, force).await,
         Cmd::Threads { state } => threads(state.as_deref()),
         Cmd::Sweep => sweep(),
+        Cmd::Notify { title } => notify(&store, title.as_deref()).await,
         Cmd::Connect => crate::slack::connector::run(global).await,
         Cmd::Unlink => {
             store.clear_binding()?;
@@ -191,6 +202,50 @@ fn threads(filter: Option<&str>) -> Result<()> {
             println!("    session {session}");
         }
     }
+    Ok(())
+}
+
+/// Send whatever arrives on stdin to the first bound owner.
+///
+/// Deliberately a DM and never a channel: this is mecha talking to its owner,
+/// and a DM's recipient is the principal, so it is not a send sink in the way
+/// a channel post would be.
+async fn notify(store: &SlackStore, title: Option<&str>) -> Result<()> {
+    let creds = credentials(store)?;
+    let binding = store
+        .binding()?
+        .context("nothing is bound — run `mecha slack link` first")?;
+    let owner = binding
+        .owners
+        .first()
+        .context("the binding names no owners")?;
+
+    let mut body = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut body)
+        .context("reading the message from stdin")?;
+    let body = body.trim();
+    if body.is_empty() {
+        // Nothing to say is not a failure; a trigger that produced no answer
+        // should not look like one that broke.
+        return Ok(());
+    }
+
+    let slack = Slack::new(&creds.bot_token);
+    // A DM channel has to be opened before it can be posted to, and doing so
+    // is idempotent — Slack returns the existing one.
+    let opened: Value = slack
+        .call("conversations.open", json!({ "users": owner }))
+        .await
+        .context("opening a DM with the owner")?;
+    let channel = opened["channel"]["id"]
+        .as_str()
+        .context("conversations.open returned no channel")?;
+
+    let text = match title {
+        Some(t) => format!("*{t}*\n{body}"),
+        None => body.to_string(),
+    };
+    chat::post_message(&slack, channel, None, &text, None).await?;
     Ok(())
 }
 

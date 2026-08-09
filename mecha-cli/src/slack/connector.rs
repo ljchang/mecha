@@ -20,7 +20,7 @@ use mecha_core::agent::{Agent, AgentEvent, Budget, Conversation, RunOutcome};
 use mecha_core::message::Message;
 use mecha_core::tool::ToolCtx;
 use mecha_slack::binding::{self, Binding, Credentials, Gate, SlackStore};
-use mecha_slack::envelope::{Inbound, Interaction, SlackEvent};
+use mecha_slack::envelope::{FileRef, Inbound, Interaction, SlackEvent};
 use mecha_slack::{blocks, chat, Slack, SocketMode, SocketOptions};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -271,7 +271,7 @@ impl State {
             return;
         }
 
-        self.start_run(record, text).await;
+        self.start_run(record, text, event.files).await;
     }
 
     fn first_time(&mut self, event_id: &str) -> bool {
@@ -288,7 +288,7 @@ impl State {
         true
     }
 
-    async fn start_run(&mut self, record: ThreadRecord, prompt: String) {
+    async fn start_run(&mut self, record: ThreadRecord, prompt: String, files: Vec<FileRef>) {
         let key = record.key.clone();
         let channel = record.channel_id.clone();
         let thread_ts = record.thread_ts.clone();
@@ -326,6 +326,22 @@ impl State {
         };
         cx.cancel = Some(cancel.clone());
         cx.queued_input = Some(Arc::clone(&queue));
+
+        let mut prompt = prompt;
+        if !files.is_empty() {
+            let landed = self.fetch_attachments(&files, &cx.tools.workspace).await;
+            if !landed.is_empty() {
+                // Named as paths rather than injected as content: the agent
+                // reaches the bytes with `fs_read`, which already declares
+                // `private_data`, so the taint legs arm through the path that
+                // already exists instead of a parallel one. It is also what
+                // Claude Code's mobile app does with an attachment.
+                prompt.push_str("\n\nThe user attached:\n");
+                for path in &landed {
+                    prompt.push_str(&format!("- {path}\n"));
+                }
+            }
+        }
 
         let mut conversation = self.conversations.remove(&key).unwrap_or_default();
         conversation.messages.push(Message::user(&prompt));
@@ -395,6 +411,47 @@ impl State {
             r.controls_ts = controls.ok();
             let _ = self.threads.put(&r);
         }
+    }
+
+    /// Download what the owner attached into the run's own jail.
+    ///
+    /// Every guard that matters lives in `mecha_slack::files::download` — the
+    /// bearer header, no redirects, `text/html` refused even at HTTP 200, the
+    /// byte count checked — because a Slack sign-in page reaching the model
+    /// labelled as the user's screenshot is a silent failure. What is added
+    /// here is the filename: Slack supplies it, and a name that reaches the
+    /// filesystem is a path.
+    async fn fetch_attachments(
+        &self,
+        files: &[FileRef],
+        workspace: &std::path::Path,
+    ) -> Vec<String> {
+        let inbox = workspace.join("inbox");
+        if let Err(e) = std::fs::create_dir_all(&inbox) {
+            tracing::warn!("could not make an inbox directory: {e}");
+            return Vec::new();
+        }
+        let mut landed = Vec::new();
+        for file in files {
+            let name = safe_filename(file.name.as_deref().unwrap_or(&file.id));
+            match mecha_slack::files::download(
+                &self.slack,
+                file,
+                self.cfg.max_upload_mb.saturating_mul(1024 * 1024),
+            )
+            .await
+            {
+                Ok(bytes) => {
+                    let path = inbox.join(&name);
+                    match std::fs::write(&path, &bytes) {
+                        Ok(()) => landed.push(format!("./inbox/{name}")),
+                        Err(e) => tracing::warn!("could not save {name}: {e}"),
+                    }
+                }
+                Err(e) => tracing::warn!("could not fetch {}: {e}", file.id),
+            }
+        }
+        landed
     }
 
     async fn on_completion(&mut self, done: Completion) {
@@ -606,6 +663,35 @@ impl State {
     }
 }
 
+/// A filename safe to join onto a directory.
+///
+/// Slack supplies the name and the owner chose it, but a name that reaches the
+/// filesystem is a path: `../../.mecha/slack/credentials.json` is a perfectly
+/// ordinary string until it is joined onto something. The path jail would catch
+/// a model asking for that; nothing catches it here, because this write happens
+/// in the connector before any tool is involved.
+fn safe_filename(raw: &str) -> String {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
+    let cleaned: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim_matches(['.', '-']).to_string();
+    // A name of nothing but separators is legal on disk and meaningless to a
+    // reader, which is its own small failure: the model is about to be told
+    // this path exists.
+    if !cleaned.chars().any(|c| c.is_ascii_alphanumeric()) {
+        return "attachment".into();
+    }
+    cleaned.chars().take(120).collect()
+}
+
 /// Stop and Mode, carrying the thread key as their correlation value. The
 /// value authorises nothing: every press is gated on `payload.user.id`.
 fn controls_blocks(key: &str, mode: &str) -> Vec<serde_json::Value> {
@@ -633,6 +719,40 @@ fn thread_workspace(key: &str) -> Result<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use super::safe_filename;
+
+    #[test]
+    fn an_attachment_name_cannot_climb_out_of_the_inbox() {
+        // The write happens in the connector, before any tool and therefore
+        // before the path jail. This is the only thing between a Slack
+        // filename and the filesystem.
+        for hostile in [
+            "../../.mecha/slack/credentials.json",
+            "..\\..\\windows",
+            "/etc/passwd",
+            "..",
+            "...",
+        ] {
+            let safe = safe_filename(hostile);
+            assert!(!safe.contains('/'), "{hostile} -> {safe}");
+            assert!(!safe.contains('\\'), "{hostile} -> {safe}");
+            assert!(!safe.starts_with('.'), "{hostile} -> {safe}");
+            assert!(!safe.is_empty(), "{hostile} -> {safe}");
+        }
+    }
+
+    #[test]
+    fn an_ordinary_name_survives_intact() {
+        // Not vacuous: the sanitiser must not mangle the common case.
+        assert_eq!(safe_filename("screenshot.png"), "screenshot.png");
+        assert_eq!(safe_filename("notes-2026_08.md"), "notes-2026_08.md");
+    }
+
+    #[test]
+    fn a_nameless_attachment_still_lands_somewhere() {
+        assert_eq!(safe_filename(""), "attachment");
+        assert_eq!(safe_filename("???"), "attachment");
+    }
 
     #[test]
     fn a_threads_jail_sits_under_one_producer_so_retention_reaches_it() {
