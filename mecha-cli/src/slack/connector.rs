@@ -194,6 +194,22 @@ async fn build_agent(global: &GlobalOpts, cfg: &mecha_core::config::SlackConfig)
         // Narrowed if config says so. The cost of not narrowing is paid every
         // turn of every thread, in the window the model has left to think in.
         tools: cfg.tools.clone(),
+        // **Where the MCP servers are rooted**, which is not the same question
+        // as where a run is jailed, and the difference bit on the first real
+        // task. Servers are spawned once when this agent is built, so they
+        // cannot follow a per-thread jail; without this they inherit the
+        // connector's working directory, and a `bundle_render` then resolved
+        // paths against the repo while `fs_write` wrote into the thread's
+        // workspace. The model spent five turns discovering that and worked
+        // around it with `shell`.
+        //
+        // Rooting them at the producer directory makes the two agree: every
+        // thread's jail is a subdirectory of it. What it does **not** do is
+        // give MCP tools per-thread isolation — they can reach any thread's
+        // files, and only the built-in tools honour the jail. That is a real
+        // limitation, written down rather than papered over; closing it means
+        // an agent per thread, which means an MCP startup per thread.
+        workspace: Some(producer_root()?),
         ..GlobalOpts::default()
     };
     // Not interactive: no terminal approver, and no `ask_user` — the registry
@@ -361,7 +377,14 @@ impl State {
         cx.cancel = Some(cancel.clone());
         cx.queued_input = Some(Arc::clone(&queue));
 
-        let mut prompt = prompt;
+        // The system prompt belongs to the agent and one agent serves every
+        // thread, so "where am I" cannot live there. It rides on the turn
+        // instead — and it earns its tokens: without it the first real task
+        // spent five turns working out that its tools disagreed about paths.
+        let mut prompt = format!(
+            "[This thread's workspace is {}. Relative paths resolve there.]\n\n{prompt}",
+            cx.tools.workspace.display()
+        );
         if !files.is_empty() {
             let landed = self.fetch_attachments(&files, &cx.tools.workspace).await;
             if !landed.is_empty() {
@@ -718,6 +741,7 @@ impl State {
             blocks::context(&format!("thread {} · {}", record.thread_ts, request.tool)),
             blocks::actions(vec![
                 blocks::button("slack_approve", "Approve", &id, Some("primary")),
+                blocks::button("slack_approve_run", "Allow for this run", &id, None),
                 blocks::button("slack_reject", "Reject", &id, Some("danger")),
             ]),
         ];
@@ -779,13 +803,17 @@ impl State {
                     let who = interaction.user_id.as_deref().unwrap_or("someone");
                     self.resolve_draft(&value, action.action_id == "slack_outbox_send", who);
                 }
-                "slack_approve" | "slack_reject" => {
-                    let approved = action.action_id == "slack_approve";
+                "slack_approve" | "slack_approve_run" | "slack_reject" => {
                     if let Some(pending) = self.pending.remove(&value) {
-                        let answer = if approved {
-                            Answer::Approve
-                        } else {
-                            Answer::Reject("rejected from Slack".into())
+                        let answer = match action.action_id.as_str() {
+                            "slack_approve" => Answer::Approve,
+                            "slack_approve_run" => Answer::ApproveForRun,
+                            _ => Answer::Reject("rejected from Slack".into()),
+                        };
+                        let verb = match action.action_id.as_str() {
+                            "slack_approve" => "approved",
+                            "slack_approve_run" => "allowed for this run",
+                            _ => "rejected",
                         };
                         let _ = pending.reply.send(answer);
                         // Rewrite the card into a terminal record, so it says
@@ -795,15 +823,10 @@ impl State {
                             &self.slack,
                             &pending.channel,
                             &pending.message_ts,
-                            &format!(
-                                "`{}` {} by <@{who}>",
-                                pending.tool,
-                                if approved { "approved" } else { "rejected" }
-                            ),
+                            &format!("`{}` {verb} by <@{who}>", pending.tool),
                             Some(vec![blocks::context(&format!(
-                                "`{}` {} by <@{who}>",
-                                pending.tool,
-                                if approved { "approved" } else { "rejected" }
+                                "`{}` {verb} by <@{who}>",
+                                pending.tool
                             ))]),
                         )
                         .await;
@@ -884,6 +907,14 @@ fn controls_blocks(key: &str, mode: &str) -> Vec<serde_json::Value> {
             blocks::button("slack_mode", "Mode", key, None),
         ]),
     ]
+}
+
+/// Where every Slack thread's workspace lives, and where the shared MCP
+/// servers are rooted so their paths and the runs' paths mean the same thing.
+fn producer_root() -> Result<std::path::PathBuf> {
+    let root = mecha_core::work::producer_dir("slack")?;
+    std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
+    Ok(root)
 }
 
 /// One thread, one jail — under a single `slack` producer so `work clean`'s

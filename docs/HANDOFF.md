@@ -673,6 +673,20 @@ behaviour came from the reflector model declining. If the design was always
   block with its fence, since Slack drops an oversized block with a warning
   nobody reads. **`[slack] tools`** narrows what a Slack run carries — worth
   setting, given the ~7–8k input tokens a turn of schemas measured live.
+  **Three findings from the first real task** (render a poll bundle and
+  publish it), which is the sort of thing only use produces. Seven approval
+  cards for one job — so a card now carries **"Allow for this run"**, scoped
+  to the run and destroyed with the approver, deliberately narrower than the
+  TUI's process-local `Always`. The model reported that *"the workspace and
+  render tool have different root paths"* and worked around it with `shell`:
+  **MCP servers are spawned once with the agent and cannot follow a
+  per-thread jail**, so they inherited the connector's working directory.
+  They are now rooted at the `slack` producer directory, of which every
+  thread's jail is a subdirectory, and the run's prompt names its workspace
+  because the system prompt belongs to the agent and cannot vary per thread.
+  **The residual limitation is real and deliberate: MCP tools do not honour
+  the per-thread jail** — only the built-in tools do. Closing that means an
+  agent per thread, and an MCP startup per thread with it.
   **What remains: step 7's outbound half** (posting a rendered file or a
   published bundle's link). **Two things are owed rather than done**, both
   recorded where they live: a **connector-wide lock** (two `mecha slack

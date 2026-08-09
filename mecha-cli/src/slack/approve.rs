@@ -72,6 +72,14 @@ pub struct Request {
 #[derive(Debug, Clone)]
 pub enum Answer {
     Approve,
+    /// Approve, and stop asking about *this tool* for the rest of *this run*.
+    ///
+    /// Deliberately narrower than the TUI's `Always`, which is process-local
+    /// and therefore months long in a connector. This dies when the run does
+    /// and never crosses a thread. It exists because the first real task —
+    /// render a poll and publish it — raised seven cards, and approval fatigue
+    /// is how a review surface becomes a reflex.
+    ApproveForRun,
     /// A human really said no, and said why. This one is a correction and is
     /// mined as such.
     Reject(String),
@@ -89,6 +97,9 @@ pub struct SlackApprover {
     mode: Arc<Mutex<Mode>>,
     tx: mpsc::Sender<Request>,
     timeout: Duration,
+    /// Tools waved through for the rest of this run. Owned by the approver, so
+    /// it is destroyed with the `RunContext` that held it.
+    blanket: Mutex<std::collections::HashSet<String>>,
 }
 
 impl SlackApprover {
@@ -103,6 +114,7 @@ impl SlackApprover {
             mode,
             tx,
             timeout,
+            blanket: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -138,6 +150,10 @@ impl Approver for SlackApprover {
             _ => {}
         }
 
+        if self.blanket.lock().is_ok_and(|b| b.contains(tool.name())) {
+            return Decision::Allow;
+        }
+
         let (reply, answer) = oneshot::channel();
         let request = Request {
             thread_key: self.thread_key.clone(),
@@ -156,6 +172,12 @@ impl Approver for SlackApprover {
 
         match tokio::time::timeout(self.timeout, answer).await {
             Ok(Ok(Answer::Approve)) => Decision::Allow,
+            Ok(Ok(Answer::ApproveForRun)) => {
+                if let Ok(mut b) = self.blanket.lock() {
+                    b.insert(tool.name().to_string());
+                }
+                Decision::Allow
+            }
             Ok(Ok(Answer::Reject(reason))) => Decision::Deny(reason),
             Ok(Err(_)) => {
                 Decision::Blocked("the approval was dropped before anyone answered it".into())
@@ -331,6 +353,47 @@ mod tests {
         assert!(
             task.await.unwrap().is_none(),
             "the second call asked nobody"
+        );
+    }
+
+    #[tokio::test]
+    async fn approving_for_the_run_stops_asking_about_that_tool_only() {
+        // Seven cards for one task is what argued for this. The scope is the
+        // run: a second tool still asks, and nothing survives the approver.
+        let (a, mut rx) = approver(Mode::Ask, Duration::from_secs(5));
+        let task = tokio::spawn(async move {
+            let first = rx.recv().await.expect("the first ask");
+            first.reply.send(Answer::ApproveForRun).ok();
+            // Whatever arrives next must be a *different* tool.
+            rx.recv().await.map(|r| {
+                let name = r.tool.clone();
+                r.reply.send(Answer::Approve).ok();
+                name
+            })
+        });
+
+        assert!(matches!(
+            a.approve(&writer(), &json!({})).await,
+            Decision::Allow
+        ));
+        // Same tool again: no card.
+        assert!(matches!(
+            a.approve(&writer(), &json!({})).await,
+            Decision::Allow
+        ));
+
+        let other = Fake {
+            name: "shell",
+            read_only: false,
+        };
+        assert!(matches!(
+            a.approve(&other, &json!({})).await,
+            Decision::Allow
+        ));
+        assert_eq!(
+            task.await.unwrap().as_deref(),
+            Some("shell"),
+            "a blanket on one tool must not cover another"
         );
     }
 
