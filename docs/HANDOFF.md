@@ -54,8 +54,9 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **598 tests**, no failures — verified 2026-08-09, after the
-`mecha-slack` transport landed (48 new; nothing else moved). The 550 before
+Expect **611 tests**, no failures — verified 2026-08-09, after the
+`mecha-slack` transport and its binding store landed (61 new; nothing else
+moved). The 550 before
 it dated from 2026-08-08 night and the TUI review-surfaces arc. One flake was
 seen once in `mecha-core` on 2026-08-08 and never reproduced across five
 re-runs — unidentified, worth an eye.
@@ -65,7 +66,7 @@ re-runs — unidentified, worth an eye.
 | `mecha-core` unit | 350 |
 | `mecha-cli` unit | 100 |
 | `mecha-mail` unit | 86 |
-| `mecha-slack` unit | 48 |
+| `mecha-slack` unit | 61 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
 | doctest | 1 |
 
@@ -548,8 +549,8 @@ behaviour came from the reflector model declining. If the design was always
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
   record and a triage run. See `CLAUDE.md`.
 
-- **Slack as a transport — step 1 of 8 is built.** `mecha-slack` (the fourth
-  crate, 48 tests) is the transport: Socket Mode with make-before-break
+- **Slack as a transport — steps 1 and 2 of 8 are built.** `mecha-slack` (the
+  fourth crate, 61 tests) is the transport: Socket Mode with make-before-break
   reconnect and automatic acks, the `chat.*` family including the streaming
   trio, Block Kit builders that truncate visibly rather than letting Slack drop
   content silently, and files both ways with the four download guards. It has
@@ -557,15 +558,27 @@ behaviour came from the reflector model declining. If the design was always
   it unable to learn what a run or a tool is. Verified against local fixtures:
   a real WebSocket server proves the ack wire format and that a
   `link_disabled` disconnect stops rather than looping, and a scripted HTTP
-  server proves the retry policy.
+  server proves the retry policy. Step 2 adds the **security boundary**:
+  `binding.rs` (the owner allowlist, the gate, and the owner-only store under
+  `~/.mecha/slack/` at 0700/0600) and `mecha slack auth|link|status|unlink`.
+  The gate fails closed in both directions — a missing user id *and* a missing
+  team id are refusals — returns a *reason* rather than a boolean so "ignored
+  because not an owner" and "ignored because wrong workspace" stay
+  distinguishable, and `binding::check` makes "nothing is bound" a named
+  refusal instead of an early return in someone's event loop. Tokens come from
+  `MECHA_SLACK_BOT_TOKEN`/`MECHA_SLACK_APP_TOKEN` rather than flags, so neither
+  reaches shell history or `ps`, and `auth` proves them against `auth.test`
+  before storing.
   [`SLACK-RESEARCH.md`](SLACK-RESEARCH.md) is the evidence and
   [`SLACK-DESIGN.md`](SLACK-DESIGN.md) is what gets built, both 2026-08-09;
   §11 there records the three decisions taken (personal workspace first, `ask`
   as the per-thread default with buttons to widen, non-owners ignored).
-  **Steps 2–8 remain**: the binding and owner gating, the thread state machine
-  and its store, one run end to end with `SlackApprover`, mode buttons, outbox
-  review in-thread, files, and `notify` plus the systemd unit. Nothing has been
-  run against a real Slack workspace yet, and no app has been created.
+  **Steps 3–8 remain**: the thread state machine and its store, one run end to
+  end with `SlackApprover`, mode buttons, outbox review in-thread, files, and
+  `notify` plus the systemd unit. **Nothing has been run against a real Slack
+  workspace yet, and no app has been created** — `link` is the first verb that
+  needs one, and it is the natural first live check: it opens a real socket,
+  waits for a DM carrying the printed code, and answers in Slack.
   The design's short version — Socket Mode, so
   home dials out and there is no inbound port, no certificate and no signature
   verification; **two tiers only**, an allowlist of Slack user IDs bound by a

@@ -1146,6 +1146,7 @@ dependencies = [
  "crossterm",
  "futures",
  "mecha-core",
+ "mecha-slack",
  "ratatui",
  "rustyline",
  "serde",
@@ -1213,6 +1214,7 @@ name = "mecha-slack"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "futures",
  "reqwest",
  "serde",
@@ -1221,6 +1223,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

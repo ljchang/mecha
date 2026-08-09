@@ -12,6 +12,7 @@ pub mod replay;
 pub mod rules;
 pub mod run;
 pub mod sessions;
+pub mod slack;
 pub mod tools;
 pub mod trigger;
 pub mod validate;

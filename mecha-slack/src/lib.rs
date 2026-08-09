@@ -31,6 +31,7 @@
 //! `Retry-After` and it is obeyed, up to a cap, above which it is reported as a
 //! failure instead of becoming an invisible multi-minute nap.
 
+pub mod binding;
 pub mod blocks;
 pub mod chat;
 pub mod envelope;
@@ -42,6 +43,7 @@ pub mod socket;
 #[cfg(test)]
 mod testutil;
 
+pub use binding::{Binding, Credentials, Gate, PendingLink, SlackStore};
 pub use error::{SlackError, SlackResult};
 pub use http::Slack;
 pub use socket::{SocketMode, SocketOptions};

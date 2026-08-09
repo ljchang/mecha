@@ -63,6 +63,10 @@ pub enum SlackError {
     #[error("slack served a page instead of the file `{file_id}`: {detail}")]
     NotAFile { file_id: String, detail: String },
 
+    /// Reading or writing the owner-only store under `~/.mecha/slack/`.
+    #[error("slack store: {0}")]
+    Store(String),
+
     /// The Socket Mode connection ended. Reconnecting is the caller's job.
     #[error("socket mode disconnected: {0}")]
     Disconnected(String),
