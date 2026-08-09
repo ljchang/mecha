@@ -43,6 +43,19 @@ pub enum Cmd {
     },
     /// One message in full.
     Show { id: String },
+    /// Set pending messages aside unread. A full mailbox refuses new sends,
+    /// so a backlog nobody is coming to claim needs this, not `rm`.
+    Dismiss {
+        /// Message ids (or unique prefixes).
+        #[arg(required_unless_present = "all")]
+        ids: Vec<String>,
+        /// Every pending message instead.
+        #[arg(long, conflicts_with = "ids")]
+        all: bool,
+        /// With --all: only this recipient's mailbox.
+        #[arg(long, requires = "all")]
+        to: Option<String>,
+    },
     /// Which agents are live right now, per the session markers.
     Agents,
 }
@@ -58,8 +71,37 @@ pub async fn execute(args: Args) -> Result<()> {
         } => send(&store, &to, &body, &from, reply_to),
         Cmd::List { to, all } => list(&store, to.as_deref(), all),
         Cmd::Show { id } => show(&store, &id),
+        Cmd::Dismiss { ids, all, to } => dismiss(&store, &ids, all, to.as_deref()),
         Cmd::Agents => agents(&store),
     }
+}
+
+fn dismiss(store: &MailboxStore, ids: &[String], all: bool, to: Option<&str>) -> Result<()> {
+    let ids: Vec<String> = if all {
+        let recipients = match to {
+            Some(r) => vec![r.to_string()],
+            None => store.recipients()?,
+        };
+        recipients
+            .iter()
+            .map(|r| store.pending_for(r))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .map(|m| m.id)
+            .collect()
+    } else {
+        ids.to_vec()
+    };
+    if ids.is_empty() {
+        println!("nothing pending to dismiss");
+        return Ok(());
+    }
+    for id in &ids {
+        let m = store.dismiss(id)?;
+        println!("dismissed {} ({} → {})", m.id, m.from, m.to);
+    }
+    Ok(())
 }
 
 /// The agents' store is configured in `[messages] dir`; this surface must
@@ -152,6 +194,9 @@ fn show(store: &MailboxStore, id: &str) -> Result<()> {
     println!("created   {}", m.created_at);
     if let Some(r) = &m.reply_to {
         println!("reply_to  {r}");
+    }
+    if let Some(d) = &m.dismissed_at {
+        println!("dismissed {d}");
     }
     if let Some(d) = &m.delivered_at {
         println!(

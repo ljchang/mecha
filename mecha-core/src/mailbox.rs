@@ -69,7 +69,7 @@ pub enum InboundPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MailboxMessage {
     pub id: String,
-    /// `pending` | `delivered`.
+    /// `pending` | `delivered` | `dismissed`.
     pub status: String,
     /// Sender's producer name (`chat`, a trigger's name, `user` for the CLI).
     /// Stamped by the harness from the run's identity — the model composes
@@ -105,6 +105,9 @@ pub struct MailboxMessage {
     /// The session that claimed it.
     #[serde(default)]
     pub delivered_to: Option<String>,
+    /// When a person set it aside unread (`mecha msg dismiss`).
+    #[serde(default)]
+    pub dismissed_at: Option<String>,
 }
 
 impl MailboxMessage {
@@ -256,6 +259,7 @@ impl MailboxStore {
             created_at: chrono::Utc::now().to_rfc3339(),
             delivered_at: None,
             delivered_to: None,
+            dismissed_at: None,
         };
         self.write_message(&msg)?;
         Ok(SendOutcome::Sent(msg.id.clone()))
@@ -331,6 +335,29 @@ impl MailboxStore {
             self.write_message(msg)?;
         }
         Ok(claimed)
+    }
+
+    /// Set a pending message aside unread. This is the human's verb — a full
+    /// mailbox refuses new sends, so there has to be a way to clear a backlog
+    /// no run is coming to claim that is not deleting files by hand. The file
+    /// stays as its own record, like a rejected outbox item.
+    pub fn dismiss(&self, id: &str) -> Result<MailboxMessage> {
+        // Lock before re-reading the state acted on, so a dismiss cannot race
+        // a run's claim of the same message: whoever takes the lock second
+        // sees the other's write and refuses.
+        let recipient = self.message(id)?.to;
+        let _lock = self.lock(&recipient)?;
+        let mut msg = self.message(id)?;
+        anyhow::ensure!(
+            msg.status == "pending",
+            "message {} is {}, not pending",
+            msg.id,
+            msg.status
+        );
+        msg.status = "dismissed".into();
+        msg.dismissed_at = Some(chrono::Utc::now().to_rfc3339());
+        self.write_message(&msg)?;
+        Ok(msg)
     }
 
     /// Find one message by id or unique prefix, across all recipients.
@@ -769,6 +796,32 @@ mod tests {
     }
 
     #[test]
+    fn dismiss_frees_the_cap_and_cannot_double_fire() {
+        let (_dir, store) = store();
+        let store = store.with_limits(1, DEFAULT_MAX_BODY_BYTES);
+        let SendOutcome::Sent(id) = send(&store, "chat", "a", "first") else {
+            panic!()
+        };
+        assert!(store
+            .send("chat", "b", None, "second", None, Taint::default())
+            .is_err());
+
+        let dismissed = store.dismiss(&id).unwrap();
+        assert_eq!(dismissed.status, "dismissed");
+        assert!(dismissed.dismissed_at.is_some());
+        // The slot is free again, and the dismissed message is out of reach
+        // of both a second dismiss and a run's claim.
+        assert!(matches!(
+            send(&store, "chat", "b", "second"),
+            SendOutcome::Sent(_)
+        ));
+        assert!(store.dismiss(&id).is_err());
+        let claimed = store.claim_pending("chat", "s").unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].body, "second");
+    }
+
+    #[test]
     fn invalid_names_are_refused() {
         let (_dir, store) = store();
         assert!(store
@@ -811,6 +864,7 @@ mod tests {
             created_at: String::new(),
             delivered_at: None,
             delivered_to: None,
+            dismissed_at: None,
         };
         assert!(msg.effective_taint().untrusted && msg.effective_taint().private);
         // A JSON file with no taint fields at all — an older writer — lands
@@ -838,6 +892,7 @@ mod tests {
             created_at: String::new(),
             delivered_at: None,
             delivered_to: None,
+            dismissed_at: None,
         };
         let clean = render_delivery(&msg, true);
         assert!(clean.contains("not the user"));
