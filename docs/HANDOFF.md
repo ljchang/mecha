@@ -699,7 +699,11 @@ behaviour came from the reflector model declining. If the design was always
   **The connector-wide lock is in too** — an flock taken before anything opens
   a socket, verified by racing two connectors — which is what makes the thread
   store's single-writer rule true rather than assumed.
-  **What remains: `ask_user`**, and it is the structural one described above. **Two things are owed rather than done**, both
+  **Both were verified live** (2026-08-09): a run asked to write `lunch.md`
+  raised one card, took "Allow for this run", and the file came back into the
+  thread as an attachment Slack previewed. **What remains: `ask_user`**, and
+  it is the structural one described above — everything else in the arc has
+  now been exercised against a real workspace rather than a fixture. **Two things are owed rather than done**, both
   recorded where they live: a **connector-wide lock** (two `mecha slack
   connect` processes would both answer and both write; nothing stops that
   today but there being one operator, which is the shape this project
