@@ -164,9 +164,9 @@ comes back selected — so a visitor who mistypes their address would lose the
 time they picked.
 :::
 
-## Asking a group
+## Asking a group about times
 
-A poll is the same weekly frame over seeded candidates, each a tri-state
+A `times` poll is the same weekly frame over seeded candidates, each a tri-state
 answer. Seeded, never a blank 7×24 grid: what a participant is shown is only
 what the organizer could actually offer.
 
@@ -178,9 +178,90 @@ is unavailability. It is worth knowing that the default is a real answer rather
 than an absence, because it means a participant who opens the page and closes
 it has said something.
 
-The yes-counts beside each time are server-rendered. A poll is names,
+The yes-counts beside each time are server-rendered. A times poll is names,
 capabilities and three words — never an address and never prose — which is what
 lets the page be shown to strangers at all.
+
+## The survey
+
+Times are one question kind out of six. [A general
+poll](/docs/factory/polls) is a **list** of typed questions, and the two frames
+below are the same specimen survey at the two moments that matter: before your
+vote, and after the poll closed.
+
+<GalleryFrame page="survey.html" caption="survey.html — choice, ranking, likert, vas and text, one of each, mid-answer." minHeight={640} />
+
+Two of six people have answered, Priya's own two answers are already on the
+form, and the page says what it owes her: this poll is `show = "after_vote"`, so
+*"Results appear after you answer."* It also states the anonymity it can
+actually deliver — "your name is not shown with results… **(Written answers
+still read like their author.)**" — which is the sentence a course-eval tool
+usually leaves out.
+
+**What you are looking at is the JavaScript-off baseline**, deliberately: the
+specimen is rendered with the enhancement script left out, which is the version
+worth putting in a gallery because it is the one the server actually accepts.
+Ranking is a `<select>` per option — `—`, 1, 2, 3 — the VAS is a number field
+between its anchors, and the Likert is a plain radio group. Served live,
+`survey.js` swaps the selects for a reorderable list with `↑`/`↓` buttons and a
+drag grip, and lays a slider track over the number field. The buttons stay the
+keyboard's path and the grip is `aria-hidden`, so the enhancement adds a way to
+answer without becoming the only one.
+
+Four things here are the design rather than the styling:
+
+- **Nothing is preselected but Priya's own two answers.** The VAS field is
+  empty, and an untouched one submits nothing — because a slider parked at 50
+  that nobody moved would enter the data as a real opinion. Absent is absent,
+  all the way into the widget.
+- **"Ranking only some is fine"** is on the page, and it is true: a partial
+  ranking is a legal ballot rather than an error, and the tally counts it as
+  far as it goes.
+- **The `likert` item labels every point**, which is what makes it a Likert item
+  rather than a numbered row. The alternative shape, anchors at the ends only,
+  is the *other* legal spelling and never both at once.
+- **The promise line is rendered from the policy**, not written by hand. Who
+  sees the results and whose name rides them are decided before the vote and
+  fixed at creation, so the sentence on the page is the same object the server
+  enforces.
+
+<GalleryFrame page="survey.closed.html" caption="survey.closed.html — closed, named, with the resolution, the IRV rounds and the prose answers." minHeight={720} />
+
+The closed page is what the link in someone's mail is still good for a month
+later. It carries the organizer's **resolution** at the top — "Replication it
+is" — because a poll whose links answer "so what happened?" is the difference
+between a decision and a form.
+
+The numbers below it are not invented. The gallery runs five specimen ballots
+through the same pure tally functions the box and `factory-publish` run, so the
+`ranking` question shows **real instant-runoff rounds** — *"Round 1: Replication
+study 2 · Reanalysis 2 · Novel study proposal 1 — Novel study proposal
+eliminated"*, all the way to a winner — and the `likert` question leads with the
+distribution and the **median**, which is the honest summary for ordinal data.
+Scroll to the text question and both readings of prose are there at once: the
+word cloud that would go on a projector (`coding 3 · walkthroughs 2`) and, below
+it, the sentences themselves.
+
+Those sentences are here because this poll is `identity = "named"` — so the
+voters are disclosed, and each answer carries its author. Switch that one word
+to `anonymous` and three things change at once: names never render, the CSV
+export goes nameless, and under three respondents the breakdown is withheld
+entirely — [the suppression floor](/docs/factory/polls#who-sees-what), asked as
+the same question of the same number by every emitter.
+
+:::note[A sixth kind cannot ship unseen]
+The generator matches `QuestionKind` **exhaustively** and then asserts the
+specimen actually contains one question of each general kind. Adding a seventh
+kind stops the gallery compiling, and then fails it until a real question of
+that kind is on this page. A gallery missing a kind is worse than no gallery,
+because it reads as a complete list.
+
+Two gaps this page does not yet close: the survey's manifest is not exported
+beside the other [`source/`](pathname:///factory/gallery/source/book.toml) files,
+and there is no rendering of the **projector page** — the big-type results view
+behind [live polls on a slide](/docs/factory/slides). Both are prose here and
+pixels nowhere, which is exactly the condition this gallery exists to remove.
+:::
 
 ## The shipped starters
 

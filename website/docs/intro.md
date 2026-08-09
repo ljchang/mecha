@@ -125,7 +125,10 @@ durable versioned URL — [publishing](/docs/features/publishing) rides on the
 outbox, so a bundle is staged and reviewed before anything is served. Requests
 coming the other way pass through [the front door](/docs/features/frontdoor),
 whose whole job is one sentence: the privileged run sees the extraction, never
-the prose a stranger wrote.
+the prose a stranger wrote. The same box also asks a group a question —
+[polls](/docs/factory/polls) are typed questions and typed ballots, which is
+what keeps them out of that quarantine, and their results project onto [a
+lecture slide](/docs/factory/slides).
 
 **Memory, in two different senses.** [Learning](/docs/features/learning) mines
 transcripts for the moments you stepped in — a steer, a denied call, a
