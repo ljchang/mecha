@@ -628,6 +628,37 @@ real terminal, with only stderr captured. `mecha-cli` went from 83 to 100
 tests, including the tainted confirmation rendered through the real draw
 path.
 
+**2026-08-09 — agents can leave each other messages, and taint rides
+along.** Researched (Claude Code's cross-session messaging over per-session
+sockets; A2A/ACP/MCP-Tasks; Morris-II and Prompt Infection on cross-agent
+injection — `docs/MESSAGING-RESEARCH.md` holds the survey, the design, and
+six decided questions) and then built the same day: `mecha-core/src/mailbox.rs`
+is a file-based mailbox under `~/.mecha/messages/<recipient>/` on the
+outbox's store conventions, addressed by producer name, claimed under a
+per-recipient flock at the top of a turn and folded in at the steering fold
+point. The piece no deployed system had: the harness stamps the sender's
+conversation taint on every message (the conservative per-turn snapshot,
+via `ToolCtx::taint`, `Option` so unstamped fails closed to fully tainted)
+and delivery merges it into the receiving conversation before the body
+lands — a hop between agents launders nothing. Provenance header says it is
+another agent, not the user; untrusted senders get the standard wrapper;
+unknown taint reads as armed. `[messages]` in config is global-only (the
+section is stripped from a project `mecha.toml`, loudly); attended surfaces
+default to `hold` with a waiting-mail notice, unattended runs to `accept`;
+eval forces `--no-messages`. Full mailboxes refuse rather than drop-oldest
+— against Claude Code's choice, because the sender is an agent that can be
+told "full" — with `mecha msg dismiss` as the human's way to clear a
+backlog no run will claim; identical pending sends deduplicate as the loop
+brake; malformed files quarantine as `.bad` instead of wedging the mailbox
+(Claude Code shipped that bug). `mecha msg send/list/show/dismiss/agents`
+is the CLI, with `agents` reading a per-session liveness registry that
+generalises the trigger `RunMarker`. Phase 2 (TUI badge and `/messages`
+modal, live delivery into an in-flight run) is scoped in the research doc,
+whose §5 also records what the machinery unlocks beyond messaging: inbound
+webhooks and file watchers were both blocked on exactly this labeled
+taint-carrying prompt path, and headless steering of a trigger run is now
+`mecha msg send` away.
+
 ---
 
 ## The measurement record

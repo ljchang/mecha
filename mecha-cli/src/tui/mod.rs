@@ -421,6 +421,11 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         if let Some(route) = &prepared.agent.context().outbox {
             route.set_session_id(&s.meta.id);
         }
+        // The TUI is the same producer as `chat` — one interactive surface,
+        // whichever front-end happens to be running it.
+        if let Some(mb) = &prepared.mailbox {
+            mb.attach("chat", &s.meta.id);
+        }
     }
 
     let (shell_tx, mut shell_rx) = mpsc::unbounded_channel::<Entry>();
@@ -496,6 +501,22 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         )));
     }
 
+    // Kept out of `Live` so the exit path below can still reach it after the
+    // event loop is done with everything else.
+    let mailbox = prepared.mailbox.clone();
+    if let Some(mb) = &mailbox {
+        if !mb.delivers() {
+            if let Ok(pending) = mb.store.pending_for("chat") {
+                if !pending.is_empty() {
+                    app.transcript.push(Entry::Notice(format!(
+                        "{} message(s) waiting — `mecha msg list` to read them",
+                        pending.len()
+                    )));
+                }
+            }
+        }
+    }
+
     let mut live = Live::new(prepared, global.clone());
     let (mut terminal, kitty) = enter()?;
     app.kitty_keyboard = kitty;
@@ -519,6 +540,9 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
             s.meta.id,
             crate::render::format_usage(&app.usage)
         );
+        if let Some(mb) = &mailbox {
+            mb.detach(&s.meta.id);
+        }
         let cx = live.agent.context();
         cx.hooks
             .session_end(&s.meta.id, &s.path, &cx.tools.workspace)

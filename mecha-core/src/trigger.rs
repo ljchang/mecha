@@ -822,7 +822,7 @@ pub struct RunMarker {
 /// as alive and leave the trigger looking permanently busy in every UI that
 /// asks. Found by a test using `u32::MAX`, which sign-flips to exactly the
 /// `-1` case.
-fn process_alive(pid: u32) -> bool {
+pub(crate) fn process_alive(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
     };

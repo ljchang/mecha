@@ -76,6 +76,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if let Some(route) = &prepared.agent.context().outbox {
             route.set_session_id(&s.meta.id);
         }
+        // One-shots are their own producer, `run` — addressable, though
+        // rarely addressed. `run` does not set `global_config_only`, so its
+        // resolved inbound default is Hold whether stdin is a terminal or a
+        // pipe: a scripted `run --json` must not fold a stray message into a
+        // task it has nothing to do with. Only the trigger runner accepts.
+        if let Some(mb) = &prepared.mailbox {
+            mb.attach("run", &s.meta.id);
+        }
     }
 
     let user = Message::user(&prompt);
@@ -129,6 +137,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             usage: outcome.usage.clone(),
             turns: outcome.turns,
         })?;
+        if let Some(mb) = &prepared.mailbox {
+            mb.detach(&s.meta.id);
+        }
     }
 
     if args.json {

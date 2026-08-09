@@ -29,6 +29,10 @@ pub struct Prepared {
     pub sandbox: Arc<mecha_core::sandbox::Sandbox>,
     /// The todo tool the agent is actually using, for the TUI's live pane.
     pub todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
+    /// The messaging route, when `[messages]` is enabled — the front-end
+    /// sets this run's identity on it once the session exists, and reads
+    /// the store for waiting-mail notices.
+    pub mailbox: Option<Arc<mecha_core::mailbox::MailboxRoute>>,
     /// Held for the lifetime of the run: dropping a client kills its server.
     pub _mcp: Vec<Arc<McpClient>>,
 }
@@ -45,6 +49,10 @@ pub struct PreparedTools {
     /// `items()` live. `None` when the tool is disabled or an MCP server
     /// shadowed it.
     pub todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
+    /// The messaging route, when `[messages]` is enabled — `message_send`
+    /// holds a clone, the agent's context gets it attached in `build`, and
+    /// the front-end sets the run's identity on it once a session exists.
+    pub mailbox: Option<Arc<mecha_core::mailbox::MailboxRoute>>,
     pub _mcp: Vec<Arc<McpClient>>,
 }
 
@@ -222,6 +230,9 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         }
         agent.set_outbox(outbox);
     }
+    if let Some(mb) = &tools.mailbox {
+        agent.set_mailbox(Arc::clone(mb));
+    }
 
     Ok(Prepared {
         agent,
@@ -231,6 +242,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         config: cfg,
         sandbox: tools.sandbox,
         todo: tools.todo,
+        mailbox: tools.mailbox,
         _mcp: tools._mcp,
     })
 }
@@ -465,6 +477,51 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         clients = connected;
     }
 
+    // The messaging route. Opened here like the outbox — an unwritable store
+    // fails at startup, not on the one send that mattered. Built whenever
+    // `[messages]` is enabled, delivery or not: the route is also what stamps
+    // outgoing taint, and a surface that can send must never send unstamped.
+    let mailbox = if !opts.no_messages && cfg.messages.enabled {
+        let store = mecha_core::mailbox::MailboxStore::from_config(&cfg.messages)?;
+        // The inbound decision: config's word wins; otherwise a *scheduled*
+        // run (the trigger runner is the only caller that sets
+        // `global_config_only`) accepts — nobody is coming to release a hold,
+        // and its own defaults (read-only mode, outbox staging, the interlock
+        // plus merged sender taint) govern what a message can provoke — while
+        // everything a person drives (chat, tui, and a one-shot `run`,
+        // whether or not its stdin is a pipe) holds and reports the backlog.
+        // Keyed on `global_config_only`, deliberately not on `interactive`:
+        // the latter is the approval-mode signal, and a piped `run --json` is
+        // unattended for approvals but must still *hold* mail rather than fold
+        // a stray message into a scripted task.
+        use mecha_core::mailbox::InboundPolicy;
+        let inbound = cfg.messages.inbound.unwrap_or(if opts.global_config_only {
+            InboundPolicy::Accept
+        } else {
+            InboundPolicy::Hold
+        });
+        // `refuse` is reserved and behaves as `hold` today; say so rather than
+        // letting a config author believe sends are being turned away.
+        if inbound == InboundPolicy::Refuse {
+            eprintln!(
+                "mecha: [messages] inbound = \"refuse\" is not yet implemented and \
+                 behaves as \"hold\" — messages accumulate pending until the cap"
+            );
+        }
+        let deliver = inbound == InboundPolicy::Accept;
+        let route = Arc::new(mecha_core::mailbox::MailboxRoute::new(store, deliver));
+        // `--tool` filters this like it filters MCP tools: an active
+        // allowlist that does not name it has said no.
+        if opts.tools.is_empty() || opts.tools.iter().any(|t| t == "message_send") {
+            registry.insert(Arc::new(mecha_core::mailbox::MessageSendTool::new(
+                Arc::clone(&route),
+            )));
+        }
+        Some(route)
+    } else {
+        None
+    };
+
     let approver: Arc<dyn Approver> =
         if interactive && cfg.tools.permission_mode == PermissionMode::Ask {
             Arc::new(TerminalApprover::default())
@@ -508,6 +565,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         config: cfg,
         approver,
         todo,
+        mailbox,
         _mcp: clients,
     })
 }
@@ -564,6 +622,23 @@ fn build_subagent(
 ) -> Result<Subagent> {
     let mut child_registry = Registry::new();
     for wanted in &profile.tools {
+        // A subagent cannot safely send inter-agent mail: its message_send
+        // would stamp the taint of its *own* fresh conversation (or, unwatched,
+        // a frozen snapshot of the parent's) rather than what actually entered
+        // the context that asked for the send — either way a laundering path
+        // around the taint forwarding the whole feature rests on. So it is not
+        // offered to children at all, and a profile that asks for it is a hard
+        // error rather than a silent strip. The parent sends, based on the
+        // prose the subagent returns.
+        if wanted == "message_send" {
+            anyhow::bail!(
+                "subagent `{}` asks for `message_send`, which is not available to \
+                 subagents: a child cannot stamp inter-agent messages with the \
+                 taint of the context that requested them. Have the parent send \
+                 based on the child's returned answer.",
+                profile.name
+            );
+        }
         match pool.get(wanted) {
             Some(tool) => child_registry.insert(Arc::clone(tool)),
             // A typo here silently produces a child that cannot do its job, so
