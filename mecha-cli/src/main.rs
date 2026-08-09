@@ -7,6 +7,7 @@ mod interrupt;
 mod probe;
 mod render;
 mod setup;
+mod slack;
 mod tui;
 
 use anyhow::Result;
@@ -202,6 +203,12 @@ pub enum Command {
     /// triage, calendar prep. `tick` fires what is due; `daemon` loops it.
     Trigger(commands::trigger::Args),
 
+    /// Driving mecha from Slack: the tokens, and who is allowed to drive.
+    /// `auth` stores the credential, `link` binds an owner by a one-time code
+    /// printed here — which proves shell access to this machine, where an
+    /// email address proves only what the workspace claims about it.
+    Slack(commands::slack::Args),
+
     /// Review, accept, or reject rule changes staged by `mecha learn --propose`.
     Proposals(commands::proposals::Args),
 
@@ -259,6 +266,7 @@ async fn dispatch() -> Result<()> {
         Command::Msg(args) => commands::msg::execute(args).await,
         Command::Work(args) => commands::work::execute(args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
+        Command::Slack(args) => commands::slack::run(&cli.global, args).await,
         Command::Trigger(args) => commands::trigger::execute(&cli.global, args).await,
         Command::Proposals(args) => commands::proposals::execute(args).await,
         Command::Rules(args) => commands::rules::execute(args).await,

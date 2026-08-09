@@ -1,0 +1,26 @@
+[package]
+name = "mecha-slack"
+description = "A Slack client: Socket Mode, the Web API methods a remote control needs, and files both ways. Knows nothing about agents."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The dependency list is the invariant, and it is meant to be read: there is no
+# `mecha-core` here and there never should be. A crate that cannot depend on the
+# agent cannot learn what a run, a tool or a conversation is, which is what
+# keeps the front-end wiring in `mecha-cli/src/slack/` where it belongs. See
+# docs/SLACK-DESIGN.md §1.
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+uuid.workspace = true

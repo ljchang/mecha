@@ -1,5 +1,5 @@
 [workspace]
-members = ["mecha-core", "mecha-cli", "mecha-mail"]
+members = ["mecha-core", "mecha-cli", "mecha-mail", "mecha-slack"]
 resolver = "2"
 
 [workspace.package]
@@ -24,7 +24,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio-util = { version = "0.7", default-features = false }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "fs", "sync", "time", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "fs", "sync", "time", "signal", "net"] }
+# Socket Mode is a WebSocket, and it is the whole reason mecha dials Slack
+# rather than Slack dialling a port on this machine. `rustls` rather than
+# native-tls to match reqwest above — two TLS stacks in one binary is two
+# certificate stores to reason about.
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

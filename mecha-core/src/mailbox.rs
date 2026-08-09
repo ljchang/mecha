@@ -579,7 +579,7 @@ impl MailboxStore {
                 let _ = std::fs::remove_file(&path);
                 continue;
             };
-            if crate::trigger::process_alive(marker.pid) {
+            if crate::process_alive(marker.pid) {
                 out.push(marker);
             } else {
                 let _ = std::fs::remove_file(&path);

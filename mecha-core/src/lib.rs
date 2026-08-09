@@ -86,6 +86,29 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// like `~/.mecha` also hold things the user may deliberately share, and the
 /// sensitive data lives below the leaf. Idempotent, and tightens a
 /// pre-existing directory too.
+/// Is this pid still around? `kill(pid, 0)` checks without delivering
+/// anything; `EPERM` means it exists and is not ours, which still counts.
+///
+/// The range check is not defensive padding — it is the whole correctness of
+/// the function. `kill(2)` gives non-positive pids entirely different
+/// meanings: `0` is "every process in my group", `-1` is "every process I may
+/// signal" (which succeeds, always), and any other negative is a process
+/// group. A corrupt marker holding one of those would report a long-dead run
+/// as alive and leave whatever owns the marker looking permanently busy in
+/// every UI that asks. Found by a test using `u32::MAX`, which sign-flips to exactly the
+/// `-1` case.
+pub fn process_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
+    // SAFETY: signal 0 delivers nothing and only probes for the process.
+    let rc = unsafe { libc::kill(pid, 0) };
+    rc == 0 || std::io::Error::last_os_error().kind() == std::io::ErrorKind::PermissionDenied
+}
+
 pub fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     #[cfg(unix)]
@@ -94,4 +117,24 @@ pub fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod process_alive_tests {
+    /// The case that found the bug, kept beside the function now that more
+    /// than one subsystem depends on it: `u32::MAX` sign-flips to `-1`, which
+    /// `kill(2)` reads as "every process I may signal" and answers yes to.
+    #[test]
+    fn a_pid_that_is_not_a_pid_is_never_alive() {
+        assert!(!super::process_alive(u32::MAX));
+        assert!(!super::process_alive(0), "0 means my whole process group");
+        assert!(
+            !super::process_alive(i32::MAX as u32),
+            "real-looking and far above any pid_max"
+        );
+        assert!(
+            super::process_alive(std::process::id()),
+            "and the negative is not vacuous: we are alive"
+        );
+    }
 }

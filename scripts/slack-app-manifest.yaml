@@ -1,0 +1,71 @@
+# The Slack app mecha's connector expects. Paste this into
+# https://api.slack.com/apps → "Create New App" → "From a manifest".
+#
+# It is here rather than in a screenshot because every field below is a
+# decision: which events reach the connector, which scopes the bot holds, and
+# — the load-bearing one — that this is a Socket Mode app, so Slack is never
+# given a URL that points at this machine.
+#
+# Scopes are the minimum for what is *built*. Two are commented out because
+# nothing calls them yet; adding a scope later means reinstalling the app, so
+# they are named here rather than discovered.
+#
+# Not in this file, because Slack does not put them in a manifest:
+#   - the app-level token (Basic Information → App-Level Tokens), which needs
+#     the `connections:write` scope and is what opens the socket;
+#   - the App Home "Messages Tab" checkbox, which must be on *and* must allow
+#     users to send messages, or a DM to the app is silently impossible.
+
+display_information:
+  name: mecha
+  description: A remote control for a mecha agent running on my own machine.
+  background_color: "#1f2937"
+
+features:
+  bot_user:
+    display_name: mecha
+    always_online: false
+  app_home:
+    home_tab_enabled: false
+    # Both of these are required for a DM to reach the connector at all.
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+
+oauth_config:
+  scopes:
+    bot:
+      # Post, update, and stream — the whole rendering surface.
+      - chat:write
+      # Receive direct messages. This is how a prompt arrives.
+      - im:history
+      # Open a DM channel, which `mecha slack notify` needs before it can post
+      # a briefing into one.
+      - im:write
+      # Download an attachment the owner sent. The four download guards in
+      # mecha-slack exist because the failure without this scope is an HTML
+      # sign-in page served with HTTP 200.
+      - files:read
+      # Upload back what a run made. Adding this to an installed app needs a
+      # reinstall — Slack does not widen a token in place.
+      - files:write
+      # Required by `assistant.threads.setStatus` and the agent surface, which
+      # need a paid plan. See the note in the setup instructions.
+      # - assistant:write
+
+settings:
+  # The whole point: mecha dials Slack. No inbound port, no certificate, no
+  # tunnel, and no request signature to verify — the socket is authenticated by
+  # the app-level token that opened it.
+  socket_mode_enabled: true
+  event_subscriptions:
+    bot_events:
+      # A direct message. The connector handles this one today.
+      - message.im
+  interactivity:
+    # Buttons: Stop, Mode, Approve, Reject. Under Socket Mode this needs no
+    # request URL — interaction payloads arrive over the same socket.
+    is_enabled: true
+  org_deploy_enabled: false
+  # Deliberately off. Rotation is irreversible once enabled, expires access
+  # tokens every 12 hours, and buys a single-user internal tool nothing.
+  token_rotation_enabled: false

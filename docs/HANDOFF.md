@@ -54,20 +54,21 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **576 tests**, no failures — verified 2026-08-09, after both of the
-day's arcs landed: inter-agent messaging (`mecha-core` grew with the mailbox
-store, taint-forwarding, and the review's fix tests) and the
-benchmark-diagnosis fixes (the overflow-recovery, empty-turn, and
-session-rewrite regression tests, including the review-caught
-rewrite-drops-stale-taint-positions one). One flake was seen once in
-`mecha-core` on 2026-08-08 and never reproduced across five re-runs —
+Expect **688 tests**, no failures — verified 2026-08-09, after the day's three
+arcs (counts re-measured at the end of the session): inter-agent messaging (`mecha-core` grew with the mailbox store,
+taint-forwarding, and the review's fix tests), the benchmark-diagnosis fixes
+(overflow-recovery, empty-turn, and session-rewrite regression tests, including
+the review-caught rewrite-drops-stale-taint-positions one), and the Slack
+transport with its binding store and thread state machine. One flake was seen
+once in `mecha-core` on 2026-08-08 and never reproduced across five re-runs —
 unidentified, worth an eye.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 376 |
-| `mecha-cli` unit | 100 |
+| `mecha-core` unit | 379 |
+| `mecha-cli` unit | 141 |
 | `mecha-mail` unit | 86 |
+| `mecha-slack` unit | 68 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
 | doctest | 1 |
 
@@ -101,8 +102,9 @@ A working agent harness, used and measured rather than just compiled.
 | Budgets | `max_turns`, `max_output_tokens`, `max_cost_usd`, cost accounting |
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
 | Context | Two-pass compaction: thin tool results, then summarise. Taint preserved, and a tool's own state (the todo list) crosses verbatim |
-| Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep |
+| Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep ; `slack` on a branch (PR #25) |
 | TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/outbox` and `/frontdoor` modals drive the CLI like `/triggers` does, the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
+| Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`. **On `slack/transport`, not merged** |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
@@ -424,11 +426,6 @@ The arc is complete and running nightly. What is missing is refinement:
 - **A `/learning` TUI view.** The store is files by design so it can be read
   without tooling, but nothing surfaces it in the interface.
 
-One item needs a human who remembers the intent: the **edit-distance gate** is
-described as observed working live, but no threshold exists in code — the
-behaviour came from the reflector model declining. If the design was always
-"the model declines", the item is obsolete rather than open.
-
 ### Triggers
 
 - **A durable task and deadline store, and a `/tasks` TUI modal.** Nothing
@@ -467,7 +464,7 @@ behaviour came from the reflector model declining. If the design was always
 
 - **Steering and queuing are the same key.** Enter starts a run when idle and
   steers one already going; there is no way to queue a follow-up instead.
-- **No `/export` or copy.** `NAMES` lists fourteen commands and none of them
+- **No `/export` or copy.** `NAMES` lists fifteen commands and none of them
   get the transcript out.
 - **`NO_COLOR` is honoured only by the plain CLI renderer.** The TUI hardcodes
   colours inline; there is no semantic colour table.
@@ -564,8 +561,41 @@ behaviour came from the reflector model declining. If the design was always
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
   record and a triage run. See `CLAUDE.md`.
 
-- **Slack as a transport.** Zero lines exist. The blocking decision is the
-  identity model, not the socket.
+- **Slack as a remote control — built and verified live; two things left.**
+  The arc is on branch `slack/transport` (**PR #25**) and is described in
+  [`HISTORY.md`](HISTORY.md) under 2026-08-09; the design authority is
+  [`SLACK-DESIGN.md`](SLACK-DESIGN.md) and the evidence
+  [`SLACK-RESEARCH.md`](SLACK-RESEARCH.md). What is genuinely unbuilt:
+
+  - **`ask_user` is absent, and the reason is structural.** The approver rides
+    on `RunContext`, so it is per-thread for free; `ask_user` is a *tool* and
+    the registry belongs to the `Agent`, one of which serves every thread, so
+    a shared `AskUserTool` cannot know which thread asked. Routing it needs an
+    agent per thread (an MCP startup each) or a registry per run. The second
+    is the smaller change and would also close the item below.
+  - **MCP tools do not honour the per-thread jail** — only the built-in tools
+    do, because servers are spawned once with the agent. They are rooted at
+    the `slack` producer directory so paths at least agree; isolation between
+    threads is not there, and closing it is the same fix as above.
+  - **The outbox review cards have not been exercised live.** Built and unit
+    tested; no run has yet staged a draft while the connector was watching.
+  - **`[slack] tools` is unset**, so a Slack run carries every wired MCP
+    server's schemas — measured at ~7–8k input tokens a turn before any work,
+    against a local window whose compaction threshold is 21,845.
+  - **Nothing is installed.** `scripts/mecha-slack.service` exists and has
+    never been enabled; the binary under test is the worktree's, not
+    `~/.cargo/bin/mecha`. Installing it is a decision, not a step: the
+    connector answers a shared lab workspace (`cosanlab`), and §11.1 of the
+    design chose a personal one.
+
+- **The factory must never become an owner channel.** Recorded here because the
+  reuse is tempting and wrong: `GET /v1/queue?wait=` plus `mecha-drain.service`
+  is exactly the right-shaped channel, but hosting the Slack app on the box puts
+  a workspace credential on a machine the design assumes is lost, and a command
+  queue inverts the direction of *authority* even while preserving the direction
+  of packets. Anything arriving from the box stays a request, not a command.
+  What the factory should carry is artifacts too large for Slack — the split is
+  "Slack carries control, the factory carries bytes."
 - **Public benchmarks.** The Terminal-Bench adapter (`bench/`) is written, and
   the **oracle arm64 sweep is complete** (2026-08-05, 14.4h): 75 of 89 tasks
   have a reference solution that passes on aarch64, and those 75 are the only

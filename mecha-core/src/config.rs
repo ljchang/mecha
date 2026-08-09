@@ -42,6 +42,8 @@ pub struct Config {
     pub outbox: OutboxConfig,
     /// Retention for `~/.mecha/work/`. See [`crate::work`].
     pub work: WorkConfig,
+    /// Tunables for `mecha slack`. Global-file only; see [`SlackConfig`].
+    pub slack: SlackConfig,
     /// Inter-agent messages between mecha sessions on this machine. See
     /// [`crate::mailbox`].
     pub messages: MessagesConfig,
@@ -124,6 +126,63 @@ pub struct WorkConfig {
     pub keep: usize,
 }
 
+/// `[slack]` — tunables for the Slack remote control. **Nothing here grants
+/// anything.** Who may drive the agent lives in `~/.mecha/slack/binding.json`,
+/// a store rather than config, for the reason `[messages]` is global-only and
+/// then some: a project file arrives with a cloned repository, and a repo that
+/// could name a Slack owner would have been handed the remote control.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct SlackConfig {
+    /// Threads that may have a run in flight at once. At the cap the connector
+    /// refuses and says so, rather than queueing: a run that starts twenty
+    /// minutes later against a workspace that has moved is worse than an
+    /// honest refusal.
+    pub max_concurrent: usize,
+    /// How long an approval card waits before the call is refused as
+    /// unanswered. Never a denial by the user — see `Decision::Blocked`.
+    pub approval_timeout_secs: u64,
+    /// `ask` (the default), `allow`, or `read-only`, for a thread nobody has
+    /// set a mode on.
+    pub default_mode: String,
+    pub max_turns: u32,
+    pub max_cost_usd: Option<f64>,
+    /// Flush a streamed chunk once this much text has accumulated, or this
+    /// long has passed — whichever comes first. Size first is Slack's own
+    /// guidance; the timer is so a slow model still shows progress.
+    pub stream_flush_chars: usize,
+    pub stream_flush_ms: u64,
+    /// Largest attachment fetched into a run's workspace. Slack allows 1 GB;
+    /// a remote control does not need to.
+    pub max_upload_mb: u64,
+    /// Narrow the tool surface for Slack-driven runs.
+    ///
+    /// Empty means "everything configured", which is the default and is
+    /// usually too much: measured on the first live run, the schemas of every
+    /// wired MCP server cost ~7–8k input tokens *per turn* before any work
+    /// happened — against a 32k window whose compaction threshold is 21,845,
+    /// a run starts a third of the way there. A phone rarely needs the mail
+    /// and the calendar and the factory at once, and naming what it does need
+    /// is the cheapest context this system has to give.
+    pub tools: Vec<String>,
+}
+
+impl Default for SlackConfig {
+    fn default() -> Self {
+        SlackConfig {
+            max_concurrent: 3,
+            approval_timeout_secs: 600,
+            default_mode: "ask".into(),
+            max_turns: 40,
+            max_cost_usd: None,
+            stream_flush_chars: 800,
+            stream_flush_ms: 1000,
+            max_upload_mb: 25,
+            tools: Vec::new(),
+        }
+    }
+}
+
 impl Default for WorkConfig {
     fn default() -> Self {
         WorkConfig {
@@ -184,6 +243,7 @@ impl Default for Config {
             hooks: Vec::new(),
             outbox: OutboxConfig::default(),
             work: WorkConfig::default(),
+            slack: SlackConfig::default(),
             messages: MessagesConfig::default(),
         }
     }
@@ -715,6 +775,15 @@ impl Config {
                 path.display()
             );
         }
+        // `[slack]` for the same reason, and a stronger one: a project file
+        // arrives with a cloned repository, and Slack is the remote control.
+        if trust == LayerTrust::Project && layer.slack.take().is_some() {
+            tracing::warn!(
+                "[slack] in {} is ignored — the Slack surface loads from the \
+                 global config only",
+                path.display()
+            );
+        }
         layer.apply(self);
         Ok(())
     }
@@ -790,6 +859,7 @@ struct ConfigLayer {
     sandbox: Option<SandboxLayer>,
     outbox: Option<OutboxLayer>,
     work: Option<WorkLayer>,
+    slack: Option<SlackLayer>,
     messages: Option<MessagesLayer>,
 }
 
@@ -808,6 +878,20 @@ struct MessagesLayer {
 #[serde(deny_unknown_fields)]
 struct WorkLayer {
     keep: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SlackLayer {
+    max_concurrent: Option<usize>,
+    approval_timeout_secs: Option<u64>,
+    default_mode: Option<String>,
+    max_turns: Option<u32>,
+    max_cost_usd: Option<f64>,
+    stream_flush_chars: Option<usize>,
+    stream_flush_ms: Option<u64>,
+    max_upload_mb: Option<u64>,
+    tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1035,6 +1119,37 @@ impl ConfigLayer {
                 cfg.work.keep = v;
             }
         }
+        // Only ever reached from the global layer, like `[messages]`.
+        if let Some(x) = self.slack {
+            let t = &mut cfg.slack;
+            if let Some(v) = x.max_concurrent {
+                t.max_concurrent = v;
+            }
+            if let Some(v) = x.approval_timeout_secs {
+                t.approval_timeout_secs = v;
+            }
+            if let Some(v) = x.default_mode {
+                t.default_mode = v;
+            }
+            if let Some(v) = x.max_turns {
+                t.max_turns = v;
+            }
+            if let Some(v) = x.max_cost_usd {
+                t.max_cost_usd = Some(v);
+            }
+            if let Some(v) = x.stream_flush_chars {
+                t.stream_flush_chars = v;
+            }
+            if let Some(v) = x.stream_flush_ms {
+                t.stream_flush_ms = v;
+            }
+            if let Some(v) = x.max_upload_mb {
+                t.max_upload_mb = v;
+            }
+            if let Some(v) = x.tools {
+                t.tools = v;
+            }
+        }
         // Only ever reached from the global layer: `merge_file` strips this
         // section from a project file before applying, with a warning.
         if let Some(x) = self.messages {
@@ -1196,6 +1311,41 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_layer_slack_section_is_stripped_but_a_global_one_is_kept() {
+        // The same boundary as `[messages]`, and a sharper one: Slack is the
+        // remote control, and a mecha.toml arrives with a cloned repository.
+        // Nothing in `[slack]` grants access — who may drive lives in the
+        // binding store — but a repo must not get to widen the default mode or
+        // the budget of runs someone drives from their phone.
+        let dir = std::env::temp_dir().join(format!("mecha-slack-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(
+            &path,
+            "[slack]\ndefault_mode = \"allow\"\nmax_turns = 999\n",
+        )
+        .unwrap();
+
+        let mut from_project = Config::default();
+        from_project.merge_file(&path, LayerTrust::Project).unwrap();
+        assert_eq!(
+            from_project.slack.default_mode, "ask",
+            "a project file must not widen the default mode"
+        );
+        assert_eq!(from_project.slack.max_turns, 40);
+
+        let mut from_global = Config::default();
+        from_global.merge_file(&path, LayerTrust::Global).unwrap();
+        assert_eq!(
+            from_global.slack.default_mode, "allow",
+            "the global file is authoritative"
+        );
+        assert_eq!(from_global.slack.max_turns, 999);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

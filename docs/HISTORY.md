@@ -689,6 +689,47 @@ the old 24,000 at wide windows. The bench adapter now captures stderr and
 `MECHA_LOG=debug` beside the transcript. The full write-up is
 `docs/BENCHMARK-RESEARCH.md`, "The 2026-08-07 subset run, diagnosed".
 
+**2026-08-09 — mecha grows a remote control, and it is a Slack thread.**
+Researched, designed and built in one session, then run against a real
+workspace: `docs/SLACK-RESEARCH.md` is the evidence and `docs/SLACK-DESIGN.md`
+the decisions. **Socket Mode**, so home dials out — no inbound port, no
+certificate, no tunnel, and no request signature to verify, which is the same
+argument `mecha-drain.service` already made about the factory queue. A fourth
+crate, `mecha-slack`, holds the transport and **cannot depend on
+`mecha-core`**, so the invariant is checkable by reading a manifest rather
+than by reviewing diffs; the front-end that knows both sides lives in
+`mecha-cli/src/slack/`, beside `tui/`. **Two trust tiers and no third** — an
+allowlist of Slack user ids bound by a nonce the local CLI prints, which
+proves shell access to the machine where an email address proves only what
+the workspace claims; everyone else is ignored. A thread is a `Conversation`,
+so the interlock gets the right granularity for free; a thread's jail is a
+subdirectory of one `slack` work producer, so retention reaches it. The
+answer streams with a `task_update` card per tool call, keyed on the
+`tool_use` id so a call's lifecycle is one card changing state. Approvals are
+durable cards rewritten into terminal records, with **"Allow for this run"**
+after the first real task raised seven of them. Drafts a run stages come back
+as review cards with Send and Reject, scoped by an id-diff of pending outbox
+ids — **which closes `PUBLIC-SURFACE-DESIGN.md` §11's deferred "phone UI for
+releasing outbox drafts", and it needed no home-side server at all.** Files
+go both ways: an attachment lands in the jail and is named to the model as a
+path (so taint arms through `fs_read`, the route that already exists), and
+what a run creates is uploaded back. `mecha slack notify` puts a trigger's
+briefing on a phone for the price of a config line, and
+`scripts/mecha-slack.service` is the third always-on unit. One flock means one
+connector. Verified live on `cosanlab`: binding, streaming, approvals, mode,
+orphan recovery, attachments in, artifacts out.
+
+Two things were left undone deliberately and are named in the handoff:
+`ask_user`, because it is a tool and the registry belongs to the agent that
+serves every thread; and per-thread isolation for MCP tools, because servers
+are spawned once with the agent. Both want an agent per thread, and an MCP
+startup per thread with it.
+
+The arc also changed `mecha-core`. `Decision` gained a third variant,
+`Blocked(String)`, rendered `"Blocked by policy:"` — see the trap below —
+and `process_alive` moved to `mecha_core` when a second and third subsystem
+turned out to want the pid range check that is its whole correctness.
+
 ---
 
 ## The measurement record
@@ -966,6 +1007,24 @@ matters is the general shape.
 
 All found by pre-push review or by running it.
 
+- **The "edit-distance gate" was never code, and the handoff carried it as an
+  open item for weeks.** It was described as observed working live; a
+  verification sweep on 2026-08-09 found no threshold, no `levenshtein`, and
+  nowhere one could have been removed from — the behaviour was always the
+  reflector model declining to mine a trivial edit. Closed as obsolete rather
+  than deleted, because the next person would otherwise re-propose it.
+  **An item whose evidence is "I saw it work" and not `file:line` is a
+  hypothesis**, and it should be written as one.
+
+- **A refusal nobody made must not be labelled as one.** `agent.rs` prefixes
+  whatever reason an approver returns with `"Denied by the user: "`, which is
+  the exact string the miner keys on — so a remote approval nobody answered,
+  and every read-only run's mode refusal, arrived as corrections from a person
+  who never spoke. The fix had to be a third `Decision` variant in the core,
+  not a wording choice in the front-end. **When a string carries meaning
+  downstream, the type has to carry it instead** — and check who else is
+  already producing that string before adding a producer.
+
 - **A timeout that starts after the blocking part is not a timeout.** The hook
   runner wrote the JSON payload to the child's stdin *before* entering the timed
   wait — so a hook that never read stdin blocked `write_all` forever once the
@@ -986,6 +1045,20 @@ All found by pre-push review or by running it.
 
 ### Providers
 
+- **A guessed wire format has tests that agree with it.** Slack's
+  `task_update` chunk was implemented from a plausible shape — nested under a
+  `task_update` key, no id — and every unit test asserted that shape and
+  passed. Live, Slack answered `invalid_arguments`, and said nothing at all
+  about the missing `id` that keys a task card, so without it a call's
+  lifecycle would have rendered as three unrelated lines. Fixing it exposed a
+  second: a stream has one mode, and mixing a `chunks` array with the
+  top-level `markdown_text` argument is `streaming_mode_mismatch` — invisible
+  until the first bug stopped hiding it. **Tests written from a belief about a
+  third party confirm the belief, not the behaviour.** Read the reference for
+  the exact field names, assert the documented shape *and* the negative, and
+  treat the first live call as the real test. This is the `ScriptedProvider`
+  blindness `CLAUDE.md` names, in a new costume.
+
 - The unified `calendar_create_event` schema said "attendees receive
   invitations", and on Google nobody ever had: `events.insert` defaults to
   `sendUpdates=none`, while Graph mails attendees unconditionally. A unified
@@ -1001,6 +1074,16 @@ All found by pre-push review or by running it.
   Assume the same class of bug exists for other local servers.
 
 ### Containment and state
+
+- **Per-run jails and shared subprocesses do not mix, and the model finds out
+  first.** MCP servers are spawned once with the agent, so a Slack connector
+  giving each thread its own `RunContext` workspace left the servers rooted
+  wherever it was launched: `bundle_render` resolved against the repo while
+  `fs_write` wrote into the thread's jail. The model reported "the workspace
+  and render tool have different root paths" and burned five turns working
+  around it with `shell`. **Anything spawned once cannot follow a per-run
+  value** — either root it somewhere both agree on, or accept that the
+  isolation only covers what the loop itself resolves. Say which, in writing.
 
 - **`Path::starts_with` is lexical, so it is not a containment check.**
   `<staging>/../escape.html` starts with `<staging>` by that test and lands one
@@ -1025,6 +1108,14 @@ All found by pre-push review or by running it.
   runs its pre-flight as the service user.
 
 ### Unattended runs
+
+- **A daemon that prints nothing at startup is indistinguishable from a wedged
+  one.** The Slack connector logged "connector up" through `tracing`, which is
+  invisible without `MECHA_LOG`, so the first run of it looked like a hang.
+  The same session had spent a day citing that exact confusion in other
+  people's software. **Anything that waits should say so on the way in, and on
+  stdout rather than through a log filter** — and a refusal it makes should be
+  visible too, because silence is what makes a working gate look broken.
 
 - `mecha-mail freebusy --days 60 | slots push` could *never* satisfy a 60-day
   horizon: the freebusy window was stamped from one process's clock and the
