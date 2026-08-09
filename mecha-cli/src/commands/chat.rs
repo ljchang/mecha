@@ -65,10 +65,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // knowing which session tomorrow brings. A `--no-session` chat stays
         // anonymous: no identity, no mailbox, no return address.
         if let Some(mb) = &prepared.mailbox {
-            mb.set_identity("chat", &s.meta.id);
-            if let Err(e) = mb.store.announce("chat", &s.meta.id) {
-                tracing::warn!("could not announce chat session: {e:#}");
-            }
+            mb.attach("chat", &s.meta.id);
             // Attended surfaces default to `hold`: say what is waiting
             // rather than folding it in unasked.
             if !mb.delivers() {
@@ -184,7 +181,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     if let Some(s) = &session {
         println!("\nsession {} · {}", s.meta.id, render::format_usage(&total));
         if let Some(mb) = &prepared.mailbox {
-            mb.store.depart(&s.meta.id);
+            mb.detach(&s.meta.id);
         }
         let cx = prepared.agent.context();
         cx.hooks

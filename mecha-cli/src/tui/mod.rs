@@ -424,10 +424,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         // The TUI is the same producer as `chat` — one interactive surface,
         // whichever front-end happens to be running it.
         if let Some(mb) = &prepared.mailbox {
-            mb.set_identity("chat", &s.meta.id);
-            if let Err(e) = mb.store.announce("chat", &s.meta.id) {
-                tracing::warn!("could not announce session: {e:#}");
-            }
+            mb.attach("chat", &s.meta.id);
         }
     }
 
@@ -544,7 +541,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
             crate::render::format_usage(&app.usage)
         );
         if let Some(mb) = &mailbox {
-            mb.store.depart(&s.meta.id);
+            mb.detach(&s.meta.id);
         }
         let cx = live.agent.context();
         cx.hooks

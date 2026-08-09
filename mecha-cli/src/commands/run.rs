@@ -82,10 +82,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // pipe: a scripted `run --json` must not fold a stray message into a
         // task it has nothing to do with. Only the trigger runner accepts.
         if let Some(mb) = &prepared.mailbox {
-            mb.set_identity("run", &s.meta.id);
-            if let Err(e) = mb.store.announce("run", &s.meta.id) {
-                tracing::warn!("could not announce run session: {e:#}");
-            }
+            mb.attach("run", &s.meta.id);
         }
     }
 
@@ -141,7 +138,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             turns: outcome.turns,
         })?;
         if let Some(mb) = &prepared.mailbox {
-            mb.store.depart(&s.meta.id);
+            mb.detach(&s.meta.id);
         }
     }
 

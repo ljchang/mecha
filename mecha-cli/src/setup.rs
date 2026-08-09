@@ -482,12 +482,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     // `[messages]` is enabled, delivery or not: the route is also what stamps
     // outgoing taint, and a surface that can send must never send unstamped.
     let mailbox = if !opts.no_messages && cfg.messages.enabled {
-        let root = match &cfg.messages.dir {
-            Some(dir) => dir.clone(),
-            None => mecha_core::mailbox::MailboxStore::default_root()?,
-        };
-        let store = mecha_core::mailbox::MailboxStore::open(root)?
-            .with_limits(cfg.messages.pending_cap, cfg.messages.max_body_bytes);
+        let store = mecha_core::mailbox::MailboxStore::from_config(&cfg.messages)?;
         // The inbound decision: config's word wins; otherwise a *scheduled*
         // run (the trigger runner is the only caller that sets
         // `global_config_only`) accepts — nobody is coming to release a hold,

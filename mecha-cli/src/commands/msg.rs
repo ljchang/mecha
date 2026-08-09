@@ -109,12 +109,7 @@ fn dismiss(store: &MailboxStore, ids: &[String], all: bool, to: Option<&str>) ->
 /// open the same one. Global config only, like the section itself.
 pub(crate) fn open_store() -> Result<MailboxStore> {
     let cfg = mecha_core::config::Config::load_global()?;
-    let root = match cfg.messages.dir {
-        Some(dir) => dir,
-        None => MailboxStore::default_root()?,
-    };
-    Ok(MailboxStore::open(root)?
-        .with_limits(cfg.messages.pending_cap, cfg.messages.max_body_bytes))
+    MailboxStore::from_config(&cfg.messages)
 }
 
 fn send(

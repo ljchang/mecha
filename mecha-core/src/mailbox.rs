@@ -147,10 +147,18 @@ pub const DEFAULT_PENDING_CAP: usize = 50;
 /// anything bigger belongs in a file whose *path* is the message.
 pub const DEFAULT_MAX_BODY_BYTES: usize = 65_536;
 
+/// Resolved (delivered or dismissed) messages kept per recipient before the
+/// oldest are pruned. Retention is a policy, not an intention (the same rule
+/// the work store follows): without it, resolved messages accumulate forever
+/// and every turn's claim pays an ever-growing directory scan. Pending
+/// messages are never pruned — they are capped instead, and the cap refuses.
+pub const DEFAULT_KEEP_RESOLVED: usize = 100;
+
 pub struct MailboxStore {
     root: PathBuf,
     pending_cap: usize,
     max_body_bytes: usize,
+    keep_resolved: usize,
 }
 
 /// Holds a recipient's writer lock for as long as it lives.
@@ -175,18 +183,26 @@ impl MailboxStore {
             root,
             pending_cap: DEFAULT_PENDING_CAP,
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            keep_resolved: DEFAULT_KEEP_RESOLVED,
         })
     }
 
-    /// Open at the default location only if it already exists — for read
-    /// paths that must not create state as a side effect.
-    pub fn open_existing_default() -> Option<Self> {
-        let root = Self::default_root().ok()?;
-        root.is_dir().then_some(MailboxStore {
-            root,
-            pending_cap: DEFAULT_PENDING_CAP,
-            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
-        })
+    /// Open from the messaging config — the single place that resolves the
+    /// directory override and the limits, so the CLI (`mecha msg`) and the
+    /// agents it talks to can never drift on which store or which caps.
+    pub fn from_config(cfg: &crate::config::MessagesConfig) -> Result<Self> {
+        let root = match &cfg.dir {
+            Some(dir) => dir.clone(),
+            None => Self::default_root()?,
+        };
+        Ok(Self::open(root)?
+            .with_limits(cfg.pending_cap, cfg.max_body_bytes)
+            .with_keep(cfg.keep))
+    }
+
+    pub fn with_keep(mut self, keep_resolved: usize) -> Self {
+        self.keep_resolved = keep_resolved.max(1);
+        self
     }
 
     pub fn with_limits(mut self, pending_cap: usize, max_body_bytes: usize) -> Self {
@@ -371,7 +387,42 @@ impl MailboxStore {
             }
             claimed.push(msg);
         }
+        // Claiming is where resolved messages accumulate, so it is where they
+        // are pruned — under the lock we already hold, best-effort so a prune
+        // failure never sinks the claim.
+        if !claimed.is_empty() {
+            if let Err(e) = self.prune_resolved(recipient) {
+                tracing::warn!("pruning `{recipient}` after claim failed: {e:#}");
+            }
+        }
         Ok(claimed)
+    }
+
+    /// Delete resolved (delivered or dismissed) messages beyond `keep_resolved`,
+    /// oldest first. The caller must hold the recipient's lock. Pending
+    /// messages are never touched — they are the cap's business, not
+    /// retention's — so a recipient nobody claims cannot lose an un-read
+    /// message to this.
+    fn prune_resolved(&self, recipient: &str) -> Result<()> {
+        let mut resolved: Vec<MailboxMessage> = self
+            .messages_for(recipient)?
+            .into_iter()
+            .filter(|m| m.status == "delivered" || m.status == "dismissed")
+            .collect();
+        if resolved.len() <= self.keep_resolved {
+            return Ok(());
+        }
+        // Sort by `created_at`, not by id: the id's timestamp is only
+        // second-resolution, so a burst of messages in one second sorts by
+        // their random uuid suffix and prune would drop an arbitrary subset
+        // rather than the oldest. `created_at` is an rfc3339 stamp with
+        // nanoseconds, all in UTC, so a lexical sort is true creation order.
+        resolved.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        let dir = self.recipient_dir(recipient)?;
+        for m in &resolved[..resolved.len() - self.keep_resolved] {
+            let _ = std::fs::remove_file(dir.join(format!("{}.json", m.id)));
+        }
+        Ok(())
     }
 
     /// Set a pending message aside unread. This is the human's verb — a full
@@ -394,6 +445,10 @@ impl MailboxStore {
         msg.status = "dismissed".into();
         msg.dismissed_at = Some(chrono::Utc::now().to_rfc3339());
         self.write_message(&msg)?;
+        // Dismissing also grows the resolved set; prune under the lock we hold.
+        if let Err(e) = self.prune_resolved(&recipient) {
+            tracing::warn!("pruning `{recipient}` after dismiss failed: {e:#}");
+        }
         Ok(msg)
     }
 
@@ -583,6 +638,24 @@ impl MailboxRoute {
 
     pub fn identity(&self) -> Option<(String, String)> {
         self.identity.lock().ok().and_then(|s| s.clone())
+    }
+
+    /// Give this run its identity and announce it live, in one call — what
+    /// every front-end does at session start. The announce is best-effort:
+    /// a missing liveness marker only costs `mecha msg agents` a row, never
+    /// correctness, so it warns rather than failing the run.
+    pub fn attach(&self, producer: &str, session_id: &str) {
+        self.set_identity(producer, session_id);
+        if let Err(e) = self.store.announce(producer, session_id) {
+            tracing::warn!("could not announce `{producer}` session {session_id}: {e:#}");
+        }
+    }
+
+    /// Drop this run's liveness marker at session end. Best-effort: a marker
+    /// whose pid is gone already reads as absent, so a missed detach is
+    /// cosmetic.
+    pub fn detach(&self, session_id: &str) {
+        self.store.depart(session_id);
     }
 
     /// Claim this run's pending messages. Empty when the run has no
@@ -909,6 +982,36 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert_eq!(route.store.pending_for("chat").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn resolved_messages_are_pruned_but_pending_are_never_touched() {
+        let (_dir, store) = store();
+        let store = store.with_keep(2);
+        // Five messages, claimed (delivered) in three rounds so their ids are
+        // time-ordered; then two more left pending.
+        for body in ["m1", "m2", "m3", "m4", "m5"] {
+            send(&store, "chat", "a", body);
+            store.claim_pending("chat", "s").unwrap();
+        }
+        send(&store, "chat", "a", "pending-1");
+        send(&store, "chat", "a", "pending-2");
+
+        // Only the newest 2 delivered survive; both pending remain regardless.
+        let all = store.messages_for("chat").unwrap();
+        let mut delivered: Vec<_> = all
+            .iter()
+            .filter(|m| m.status == "delivered")
+            .map(|m| m.body.as_str())
+            .collect();
+        delivered.sort();
+        let pending = all.iter().filter(|m| m.status == "pending").count();
+        assert_eq!(
+            delivered,
+            vec!["m4", "m5"],
+            "the oldest delivered were pruned, the two newest kept"
+        );
+        assert_eq!(pending, 2, "pending is never pruned");
     }
 
     #[test]

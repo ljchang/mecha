@@ -70,6 +70,9 @@ pub struct MessagesConfig {
     pub pending_cap: usize,
     /// Largest message body, in bytes.
     pub max_body_bytes: usize,
+    /// Resolved (delivered/dismissed) messages kept per recipient before the
+    /// oldest are pruned. Retention, so the per-turn claim scan stays bounded.
+    pub keep: usize,
 }
 
 impl Default for MessagesConfig {
@@ -80,6 +83,7 @@ impl Default for MessagesConfig {
             inbound: None,
             pending_cap: crate::mailbox::DEFAULT_PENDING_CAP,
             max_body_bytes: crate::mailbox::DEFAULT_MAX_BODY_BYTES,
+            keep: crate::mailbox::DEFAULT_KEEP_RESOLVED,
         }
     }
 }
@@ -762,6 +766,7 @@ struct MessagesLayer {
     inbound: Option<crate::mailbox::InboundPolicy>,
     pending_cap: Option<usize>,
     max_body_bytes: Option<usize>,
+    keep: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1013,6 +1018,9 @@ impl ConfigLayer {
             }
             if let Some(v) = x.max_body_bytes {
                 t.max_body_bytes = v;
+            }
+            if let Some(v) = x.keep {
+                t.keep = v;
             }
         }
     }
