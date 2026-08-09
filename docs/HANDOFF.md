@@ -547,8 +547,39 @@ behaviour came from the reflector model declining. If the design was always
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
   record and a triage run. See `CLAUDE.md`.
 
-- **Slack as a transport.** Zero lines exist. The blocking decision is the
-  identity model, not the socket.
+- **Slack as a transport.** Zero lines exist, but it is designed and no longer
+  blocked: [`SLACK-RESEARCH.md`](SLACK-RESEARCH.md) is the evidence and
+  [`SLACK-DESIGN.md`](SLACK-DESIGN.md) is what gets built, both 2026-08-09.
+  The design carries a nine-step build order, a thread state machine where
+  every state names what resolves it, and three open questions that need a
+  human (§11 there: which workspace, whether read-only is the right default,
+  and whether a stranger's Slack message should reach the front door at all).
+  The short version — Socket Mode, so
+  home dials out and there is no inbound port, no certificate and no signature
+  verification; **two tiers only**, an allowlist of Slack user IDs bound by a
+  nonce the local CLI prints, with everyone else routed through `frontdoor.rs`
+  rather than given a middle tier; a thread is a `Conversation`, which hands the
+  interlock the right granularity for free; `chat.startStream` with
+  `task_update` chunks per tool call for progress; and the **outbox as the
+  primary approval surface**, because a remote human is away by definition —
+  which also closes `PUBLIC-SURFACE-DESIGN.md` §11's deferred "phone UI for
+  releasing outbox drafts" without the home-side server it assumed. Two things
+  there are design work rather than plumbing: the identity binding, and the
+  approval timeout — which must **not** return `"Denied by the user:"`, the
+  string the learning miner keys on, or every unanswered 2am prompt becomes
+  training data from a human who was not there. `mecha-core` has no WebSocket
+  client and `tokio`'s `net` feature is off, so the transport adds one
+  dependency. Inbound images need no core change in phase 1 (download into the
+  thread's workspace, name the path in the prompt); `Block::Image` is phase 2
+  and is the one genuinely large piece.
+- **The factory must never become an owner channel.** Recorded here because the
+  reuse is tempting and wrong: `GET /v1/queue?wait=` plus `mecha-drain.service`
+  is exactly the right-shaped channel, but hosting the Slack app on the box puts
+  a workspace credential on a machine the design assumes is lost, and a command
+  queue inverts the direction of *authority* even while preserving the direction
+  of packets. Anything arriving from the box stays a request, not a command.
+  What the factory should carry is artifacts too large for Slack — the split is
+  "Slack carries control, the factory carries bytes."
 - **Public benchmarks.** The Terminal-Bench adapter (`bench/`) is written, and
   the **oracle arm64 sweep is complete** (2026-08-05, 14.4h): 75 of 89 tasks
   have a reference solution that passes on aarch64, and those 75 are the only
