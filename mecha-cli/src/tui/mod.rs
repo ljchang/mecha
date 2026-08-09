@@ -2378,13 +2378,22 @@ fn handle_polls_key(app: &mut App, key: KeyEvent) -> Result<()> {
             if let Some(row) = modal.selected_row() {
                 let instrument = row.instrument.clone();
                 let poll_id = row.poll_id.clone();
-                let out = mecha_core::work::mecha_home()
-                    .map(|home| home.join("factory").join("polls").join(format!("{poll_id}.csv")));
+                let out = mecha_core::work::mecha_home().map(|home| {
+                    home.join("factory")
+                        .join("polls")
+                        .join(format!("{poll_id}.csv"))
+                });
                 modal.status = Some(match out {
                     Ok(out) => {
                         let path = out.display().to_string();
-                        match factory_cli(&["polls", "export", &instrument, &poll_id, "--out", &path])
-                        {
+                        match factory_cli(&[
+                            "polls",
+                            "export",
+                            &instrument,
+                            &poll_id,
+                            "--out",
+                            &path,
+                        ]) {
                             Ok(_) => format!("exported → {path}"),
                             Err(e) => format!("export failed: {e}"),
                         }
