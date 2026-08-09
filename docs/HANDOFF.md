@@ -352,6 +352,13 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
 - **Re-baseline `ambiguity` and `long-horizon` at k=5.** No scorecard in
   `results/` records `runs: 5` outside the compaction arc, and these are the two
   tags whose single-run numbers move.
+- **`decode_usage` reads only `prompt_tokens`/`completion_tokens`**
+  (`mecha-core/src/provider/openai.rs`), so cached input reports as zero on
+  every local run — the benchmark diagnosis had to reason around
+  `cache_read: 0` in all 21 transcripts, and the TUI fuel gauge cannot show
+  cache health. llama-server's OpenAI-shape usage carries
+  `prompt_tokens_details.cached_tokens` in current builds; parse it when
+  present, leave zero when absent. One function, one test.
 
 ### Structural gaps
 
@@ -578,7 +585,11 @@ behaviour came from the reflector model declining. If the design was always
   the full 75 at k=1 (~15h) is still the open decision, and it is now worth
   doing: the fixed binary should recover most of the 8. Rebuild the portable
   binary (`bench/build-portable.sh`) from the merged branch first — the
-  installed one predates every fix. Read any job with
+  installed one predates every fix, and `bench/run.sh` resolves
+  `$(pwd)/target-musl/release/mecha`, so the binary scored is whichever
+  checkout you launch from. Consider `--agent-timeout-multiplier` too: the
+  two timeout deaths were 12.5- and 15-minute per-task caps against local
+  inference, tight even with the empty-turn waste fixed. Read any job with
   `bench/check-subset.py <job>` first — a harbor `-x` that matches nothing is
   silent, and two earlier runs scored all 89 while claiming to be a subset.
   k=5 for a leaderboard-comparable number is the follow-up, ~74h.
