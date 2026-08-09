@@ -603,9 +603,18 @@ behaviour came from the reflector model declining. If the design was always
   T03NYDVCR) and worked: `apps.connections.open`, the WebSocket handshake, the
   envelope ack, `message.im` parsing, the nonce match, the owner binding and
   the reply all went through in one exchange. The credential store came out
-  0700/0600. **Still unexercised live: `connect`** — and with it the whole
-  streaming path, which is where the plan question bites (Slack's AI features
-  need a paid plan, and `chat.startStream`'s dependence on that is UNVERIFIED).
+  0700/0600. **`connect` is verified live too**, first try: a DM produced a streamed
+  answer, `task_update` chunks per tool call, the footer, and the controls
+  message rewritten to its terminal state. **`chat.startStream` works on a
+  workspace of this kind** — the paid-plan question `SLACK-RESEARCH.md` §12
+  left UNVERIFIED is answered for this case, so no `post`+`update` fallback
+  was needed. Two things the first run showed and neither is broken: the
+  controls message posts *before* the stream so "Finished" reads above the
+  answer it describes (post it after `start_stream` instead), and a trivial
+  prompt cost ~7–8k input tokens per turn — the floor is the full default tool
+  surface, and against the local model's `-c 32768` the compaction threshold
+  is 21,845, so a Slack run starts a third of the way there. `GlobalOpts.tools`
+  already exists for narrowing; a `[slack] tools = [...]` is the fix.
   Note the workspace is a shared lab one rather than the personal one §11.1
   chose; non-owners are ignored by construction so nothing is unsafe, but the
   app is visible to its members.

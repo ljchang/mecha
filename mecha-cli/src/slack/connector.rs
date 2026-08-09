@@ -222,7 +222,7 @@ impl State {
         if !gate.is_allowed() {
             // A log line, never a reply: telling a stranger why they were
             // ignored tells them an agent is listening.
-            tracing::debug!("ignored a message: {}", gate.reason());
+            println!("ignored a message: {}", gate.reason());
             return;
         }
 
@@ -397,6 +397,7 @@ impl State {
         )
         .await;
 
+        println!("[{key}] run started");
         self.live.insert(
             key.clone(),
             Live {
@@ -455,6 +456,10 @@ impl State {
     }
 
     async fn on_completion(&mut self, done: Completion) {
+        match &done.outcome {
+            Ok(o) => println!("[{}] run finished — {} turns", done.key, o.turns),
+            Err(e) => println!("[{}] run failed — {e}", done.key),
+        }
         self.live.remove(&done.key);
         self.conversations
             .insert(done.key.clone(), done.conversation);
