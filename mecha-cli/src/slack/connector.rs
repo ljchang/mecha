@@ -205,10 +205,20 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         completion_tx,
     };
 
-    tracing::info!(
-        "slack connector up; {} owner(s)",
-        state.binding.owners.len()
+    // **Printed, not logged.** A daemon that says nothing at startup is
+    // indistinguishable from one that has wedged — the confusion this design
+    // keeps citing in other people's software. It has to be `println!` rather
+    // than `tracing::info!` because tracing is filtered off by default, so
+    // under systemd the journal showed a started unit and no evidence it was
+    // working, and in a terminal it looked like a hang.
+    println!(
+        "Connected to {} as {}. {} owner(s), {} thread(s) known.",
+        me["team"].as_str().unwrap_or("slack"),
+        me["user"].as_str().unwrap_or("mecha"),
+        state.binding.owners.len(),
+        state.threads.all().map(|t| t.len()).unwrap_or(0),
     );
+    println!("Waiting for a direct message. Ctrl-C or SIGTERM to stop.");
 
     loop {
         tokio::select! {
