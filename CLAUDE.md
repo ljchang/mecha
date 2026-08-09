@@ -453,6 +453,55 @@ annotations ride on the unified tools (there is a shared
 `assert_tool_surface` test per surface), and one send name in the outbox
 list now covers every account it could send from.
 
+## mecha-slack
+
+A fourth crate, and the smallest: `mecha-slack/` is the transport half of the
+Slack remote control designed in `docs/SLACK-DESIGN.md`. Socket Mode, the
+`chat.*` family including the streaming trio, Block Kit builders, and files
+both ways.
+
+**It has no `mecha-core` dependency and must never gain one.** That is the
+whole reason it is a crate rather than a module: a crate that cannot depend on
+the agent cannot learn what a run, a tool, a conversation or an approval is, so
+the invariant is checkable by reading `Cargo.toml` instead of by reviewing
+diffs. The front-end that knows both sides belongs in `mecha-cli/src/slack/`,
+which is where `tui/` lives, for the same reason.
+
+Four things in it that cost something to get right, or would have:
+
+- **A Slack refusal arrives as HTTP 200.** `{"ok": false, "error": "..."}` with
+  a success status, so a client that checks the status and then reads the body
+  deserialises a failure into whatever it expected. Every call goes through one
+  `interpret` that checks `ok` first — the same shape as the Anthropic
+  backend's `stop_reason: "refusal"` at 200, and the same rule: check the
+  envelope before reading the content.
+- **A private file download can return a login page with a 200.** Not a 401,
+  not JSON — an HTML sign-in page, because `files.slack.com` redirects to
+  `<team>.slack.com` and HTTP clients strip `Authorization` across hosts. Four
+  guards, all needed: send the header explicitly, **follow no redirects** (the
+  shared client is built with `Policy::none()` for this), reject `text/html`
+  even at 200, and cross-check the byte count against the size Slack reported.
+  Without them a sign-in page reaches the model labelled as the user's
+  screenshot.
+- **Unfurling is off on everything the model authors, and there is no parameter
+  to turn it on.** A model-emitted URL that unfurls becomes an outbound GET
+  that no tool call made and no interlock saw — the same reasoning that makes
+  `http_fetch` a send sink despite being read-only. Making it a property of the
+  transport rather than an argument is what stops it being forgotten at one
+  call site.
+- **Every builder truncates visibly rather than dropping.** Slack silently
+  discards blocks past its cap and silently removes oversized images, which
+  leaves a human reading a complete-looking message that is missing the part
+  that mattered. Where something is cut, the cut says so.
+
+Reconnect is **make-before-break**: Slack rotates connections every few hours
+with about ten seconds' warning, and the replacement opens before the old one
+drains so no frame has nowhere to land. `link_disabled` is the exception —
+reconnecting into an app whose socket mode was turned off is a retry loop
+against a configuration error, so the run ends instead. Acks happen *before*
+the handler runs, because the three-second ack budget is Slack's and a handler's
+time belongs to an agent turn that may take twenty minutes.
+
 ## Hooks
 
 `[[hook]]` commands run at `pre_tool`, `post_tool` and `session_end`, with the

@@ -54,17 +54,18 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **550 tests**, no failures — verified 2026-08-08 night, after the
-TUI review-surfaces arc landed (`mecha-cli` grew from 83 with the /outbox
-and /frontdoor modals; `mecha-mail` from 83 with the bookings-sweep
-hardening). One flake was seen once in `mecha-core` that day and never
-reproduced across five re-runs — unidentified, worth an eye.
+Expect **598 tests**, no failures — verified 2026-08-09, after the
+`mecha-slack` transport landed (48 new; nothing else moved). The 550 before
+it dated from 2026-08-08 night and the TUI review-surfaces arc. One flake was
+seen once in `mecha-core` on 2026-08-08 and never reproduced across five
+re-runs — unidentified, worth an eye.
 
 | Suite | Count |
 |---|---:|
 | `mecha-core` unit | 350 |
 | `mecha-cli` unit | 100 |
 | `mecha-mail` unit | 86 |
+| `mecha-slack` unit | 48 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
 | doctest | 1 |
 
@@ -547,14 +548,25 @@ behaviour came from the reflector model declining. If the design was always
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
   record and a triage run. See `CLAUDE.md`.
 
-- **Slack as a transport.** Zero lines exist, but it is designed and no longer
-  blocked: [`SLACK-RESEARCH.md`](SLACK-RESEARCH.md) is the evidence and
-  [`SLACK-DESIGN.md`](SLACK-DESIGN.md) is what gets built, both 2026-08-09.
-  The design carries a nine-step build order, a thread state machine where
-  every state names what resolves it, and three open questions that need a
-  human (§11 there: which workspace, whether read-only is the right default,
-  and whether a stranger's Slack message should reach the front door at all).
-  The short version — Socket Mode, so
+- **Slack as a transport — step 1 of 8 is built.** `mecha-slack` (the fourth
+  crate, 48 tests) is the transport: Socket Mode with make-before-break
+  reconnect and automatic acks, the `chat.*` family including the streaming
+  trio, Block Kit builders that truncate visibly rather than letting Slack drop
+  content silently, and files both ways with the four download guards. It has
+  **no `mecha-core` dependency and must never gain one** — that is what keeps
+  it unable to learn what a run or a tool is. Verified against local fixtures:
+  a real WebSocket server proves the ack wire format and that a
+  `link_disabled` disconnect stops rather than looping, and a scripted HTTP
+  server proves the retry policy.
+  [`SLACK-RESEARCH.md`](SLACK-RESEARCH.md) is the evidence and
+  [`SLACK-DESIGN.md`](SLACK-DESIGN.md) is what gets built, both 2026-08-09;
+  §11 there records the three decisions taken (personal workspace first, `ask`
+  as the per-thread default with buttons to widen, non-owners ignored).
+  **Steps 2–8 remain**: the binding and owner gating, the thread state machine
+  and its store, one run end to end with `SlackApprover`, mode buttons, outbox
+  review in-thread, files, and `notify` plus the systemd unit. Nothing has been
+  run against a real Slack workspace yet, and no app has been created.
+  The design's short version — Socket Mode, so
   home dials out and there is no inbound port, no certificate and no signature
   verification; **two tiers only**, an allowlist of Slack user IDs bound by a
   nonce the local CLI prints, with everyone else routed through `frontdoor.rs`
