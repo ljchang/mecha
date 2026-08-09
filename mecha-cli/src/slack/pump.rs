@@ -48,6 +48,11 @@ pub async fn pump(
 
     let mut buffer = String::new();
     let mut last_flush = Instant::now();
+    // Task titles by tool_use id, so a result renders under the same wording
+    // the call did. Notices have no natural id, so they get a counter — every
+    // task card needs a distinct one or they overwrite each other.
+    let mut titles: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut notice = 0u32;
     let mut outcome: Option<Box<RunOutcome>> = None;
 
     while let Some(event) = events.recv().await {
@@ -63,51 +68,67 @@ pub async fn pump(
                 }
             }
             AgentEvent::ThinkingDelta(_) | AgentEvent::AssistantText(_) => {}
-            AgentEvent::ToolCall { name, input, .. } => {
+            // The call and its result share the tool_use id, which is what
+            // makes Slack update one task card rather than append a second
+            // line. `titles` keeps the wording stable across the transition: a
+            // card that renames itself mid-flight reads as a different task.
+            AgentEvent::ToolCall { id, name, input } => {
                 flush(slack, channel, &stream_ts, &mut buffer, &mut last_flush).await;
+                let title = describe(&name, &input);
+                titles.insert(id.clone(), title.clone());
                 task(
                     slack,
                     channel,
                     &stream_ts,
-                    &describe(&name, &input),
+                    &id,
+                    &title,
                     TaskStatus::InProgress,
                 )
                 .await;
             }
-            AgentEvent::ToolResult { name, is_error, .. } => {
+            AgentEvent::ToolResult {
+                id, name, is_error, ..
+            } => {
                 let status = if is_error {
                     TaskStatus::Error
                 } else {
                     TaskStatus::Complete
                 };
-                task(slack, channel, &stream_ts, &name, status).await;
+                let title = titles.remove(&id).unwrap_or(name);
+                task(slack, channel, &stream_ts, &id, &title, status).await;
             }
             AgentEvent::ToolDenied { name, reason } => {
                 flush(slack, channel, &stream_ts, &mut buffer, &mut last_flush).await;
+                notice += 1;
                 task(
                     slack,
                     channel,
                     &stream_ts,
+                    &format!("notice-{notice}"),
                     &format!("{name} refused — {reason}"),
                     TaskStatus::Error,
                 )
                 .await;
             }
             AgentEvent::Compacted { .. } => {
+                notice += 1;
                 task(
                     slack,
                     channel,
                     &stream_ts,
+                    &format!("notice-{notice}"),
                     "the transcript was summarised to fit the context window",
                     TaskStatus::Complete,
                 )
                 .await;
             }
             AgentEvent::QueuedInput(text) => {
+                notice += 1;
                 task(
                     slack,
                     channel,
                     &stream_ts,
+                    &format!("notice-{notice}"),
                     &format!("steering: {text}"),
                     TaskStatus::Complete,
                 )
@@ -144,8 +165,9 @@ async fn flush(
     *last_flush = Instant::now();
 }
 
-async fn task(slack: &Slack, channel: &str, ts: &str, title: &str, status: TaskStatus) {
+async fn task(slack: &Slack, channel: &str, ts: &str, id: &str, title: &str, status: TaskStatus) {
     let chunk = Chunk::Task {
+        id: id.to_string(),
         title: title.to_string(),
         status,
     };

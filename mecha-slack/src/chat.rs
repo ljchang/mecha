@@ -30,7 +30,16 @@ pub enum Chunk {
     /// Model prose.
     Markdown(String),
     /// One step of the run's progress — a tool call, a compaction, a denial.
-    Task { title: String, status: TaskStatus },
+    ///
+    /// `id` is what makes this a *transition* rather than a new line: Slack
+    /// keys the task card on it, so the same id sent again with a new status
+    /// updates the card in place. A fresh id per update would render a call's
+    /// lifecycle as three unrelated entries.
+    Task {
+        id: String,
+        title: String,
+        status: TaskStatus,
+    },
     /// Terminal blocks, sent with `chat.stopStream`.
     Blocks(Vec<Value>),
 }
@@ -58,16 +67,22 @@ impl Chunk {
     /// The wire form, with each field held to its own documented cap.
     pub fn to_json(&self) -> Value {
         match self {
+            // Inside a `chunks` array the text field is `text`; the
+            // `markdown_text` spelling is the *top-level* argument. They are
+            // not interchangeable.
             Chunk::Markdown(text) => json!({
                 "type": "markdown_text",
-                "markdown_text": blocks::truncate(text, blocks::limits::STREAM_MARKDOWN),
+                "text": blocks::truncate(text, blocks::limits::STREAM_MARKDOWN),
             }),
-            Chunk::Task { title, status } => json!({
+            // Flat, not nested under a `task_update` key. Nesting it is
+            // `invalid_arguments`, which is what shipping a guessed shape
+            // bought — the prose streamed fine and every task update was
+            // refused, so fixtures had nothing to disagree with.
+            Chunk::Task { id, title, status } => json!({
                 "type": "task_update",
-                "task_update": {
-                    "title": blocks::truncate(title, blocks::limits::TASK_TEXT),
-                    "status": status.as_str(),
-                }
+                "id": id,
+                "title": blocks::truncate(title, blocks::limits::TASK_TEXT),
+                "status": status.as_str(),
             }),
             Chunk::Blocks(b) => json!({
                 "type": "blocks",
@@ -142,17 +157,13 @@ pub async fn append_stream(
     ts: &str,
     chunk: &Chunk,
 ) -> SlackResult<()> {
-    // The single-chunk form is what the buffered caller wants; batching several
-    // into one call is possible and would save nothing, since the flush policy
-    // already decides how much text one call carries.
-    let body = match chunk {
-        Chunk::Markdown(text) => json!({
-            "channel": channel,
-            "ts": ts,
-            "markdown_text": blocks::truncate(text, blocks::limits::STREAM_MARKDOWN),
-        }),
-        other => json!({ "channel": channel, "ts": ts, "chunks": [other.to_json()] }),
-    };
+    // **Everything goes through `chunks`, including prose.** A stream has one
+    // mode: send a `task_update` chunk and then a top-level `markdown_text`
+    // and Slack answers `streaming_mode_mismatch`. That was live here, and it
+    // hid until the task chunks started working — while they were being
+    // rejected the stream stayed in markdown mode and the prose was fine, so
+    // fixing one bug is what exposed the other.
+    let body = json!({ "channel": channel, "ts": ts, "chunks": [chunk.to_json()] });
     let _: Value = slack.call("chat.appendStream", body).await?;
     Ok(())
 }
@@ -211,33 +222,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_task_chunk_carries_slacks_own_status_names() {
+    fn a_task_chunk_is_flat_and_carries_its_id() {
+        // Both halves were wrong when this was guessed rather than read, and
+        // Slack answered `invalid_arguments` for the nesting while saying
+        // nothing about the missing id — which would have rendered every call
+        // as three unrelated lines instead of one card changing state.
         let c = Chunk::Task {
+            id: "toolu_01".into(),
             title: "shell: cargo test".into(),
             status: TaskStatus::InProgress,
         };
         let v = c.to_json();
         assert_eq!(v["type"], "task_update");
-        assert_eq!(v["task_update"]["status"], "in_progress");
+        assert_eq!(v["status"], "in_progress", "status is flat on the chunk");
+        assert_eq!(v["id"], "toolu_01", "the id is what makes it a transition");
+        assert!(
+            v.get("task_update").is_none(),
+            "no nested object: that spelling is invalid_arguments"
+        );
+    }
+
+    #[test]
+    fn a_markdown_chunk_uses_the_chunk_spelling_of_its_text_field() {
+        let v = Chunk::Markdown("hi".into()).to_json();
+        assert_eq!(v["text"], "hi");
+        assert!(
+            v.get("markdown_text").is_none(),
+            "`markdown_text` is the top-level argument, not the chunk field"
+        );
     }
 
     #[test]
     fn a_long_task_title_is_cut_to_slacks_limit() {
         let c = Chunk::Task {
+            id: "t".into(),
             title: "x".repeat(500),
             status: TaskStatus::Complete,
         };
-        let title = c.to_json()["task_update"]["title"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let title = c.to_json()["title"].as_str().unwrap().to_string();
         assert!(title.chars().count() <= blocks::limits::TASK_TEXT);
     }
 
     #[test]
     fn a_markdown_chunk_is_held_to_the_per_call_cap() {
         let c = Chunk::Markdown("y".repeat(20_000));
-        let text = c.to_json()["markdown_text"].as_str().unwrap().to_string();
+        let text = c.to_json()["text"].as_str().unwrap().to_string();
         assert!(text.chars().count() <= blocks::limits::STREAM_MARKDOWN);
     }
 
@@ -249,6 +278,30 @@ mod tests {
             v["blocks"].as_array().unwrap().len(),
             blocks::limits::BLOCKS_PER_MESSAGE
         );
+    }
+
+    #[test]
+    fn every_chunk_kind_serialises_into_the_same_mode() {
+        // The mode is a property of the stream, not of the call: mixing a
+        // `chunks` array with a top-level `markdown_text` is
+        // `streaming_mode_mismatch`. Nothing in this crate may send the
+        // top-level form.
+        for chunk in [
+            Chunk::Markdown("hi".into()),
+            Chunk::Task {
+                id: "t".into(),
+                title: "x".into(),
+                status: TaskStatus::Complete,
+            },
+            Chunk::Blocks(vec![blocks::section("b")]),
+        ] {
+            let body = json!({ "channel": "C", "ts": "1", "chunks": [chunk.to_json()] });
+            assert!(
+                body.get("markdown_text").is_none(),
+                "prose must ride in a chunk like everything else"
+            );
+            assert!(body["chunks"].as_array().is_some_and(|c| c.len() == 1));
+        }
     }
 
     #[test]

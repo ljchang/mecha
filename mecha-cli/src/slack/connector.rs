@@ -392,7 +392,7 @@ impl State {
             &self.slack,
             &controls_channel,
             Some(&controls_thread_ts),
-            "Running.",
+            "Working…",
             Some(controls_blocks(&key, mode_label)),
         )
         .await;
@@ -553,7 +553,7 @@ impl State {
                 &self.slack,
                 &record.channel_id,
                 ts,
-                "Running.",
+                "Working…",
                 Some(controls_blocks(key, next.as_str())),
             )
             .await;

@@ -608,13 +608,24 @@ behaviour came from the reflector model declining. If the design was always
   message rewritten to its terminal state. **`chat.startStream` works on a
   workspace of this kind** — the paid-plan question `SLACK-RESEARCH.md` §12
   left UNVERIFIED is answered for this case, so no `post`+`update` fallback
-  was needed. Two things the first run showed and neither is broken: the
-  controls message posts *before* the stream so "Finished" reads above the
-  answer it describes (post it after `start_stream` instead), and a trivial
+  was needed. **Two schema bugs were found by running it, and neither could have been
+  caught by a fixture** — the tests asserted the shape this code believed in,
+  which is the blindness `CLAUDE.md` names about `ScriptedProvider`. A
+  `task_update` chunk is **flat, not nested**, and carries an **`id`** that
+  Slack keys the card on, so without it every update renders as a new line
+  instead of one card transitioning (the call and its result share the
+  `tool_use` id, which is exactly that key). And a stream has **one mode**:
+  mixing a `chunks` array with the top-level `markdown_text` argument is
+  `streaming_mode_mismatch`, so everything now rides in `chunks`. The second
+  bug was hidden by the first — while task chunks were being rejected the
+  stream stayed in markdown mode and the prose worked. Both have tests
+  asserting the documented shape *and* the negative. A trivial
   prompt cost ~7–8k input tokens per turn — the floor is the full default tool
   surface, and against the local model's `-c 32768` the compaction threshold
   is 21,845, so a Slack run starts a third of the way there. `GlobalOpts.tools`
-  already exists for narrowing; a `[slack] tools = [...]` is the fix.
+  already exists for narrowing; a `[slack] tools = [...]` is the fix and is
+  **open**. Also open: the connector-wide lock, `ask_user`, step 6 (outbox
+  review in-thread), and step 7's outbound half.
   Note the workspace is a shared lab one rather than the personal one §11.1
   chose; non-owners are ignored by construction so nothing is unsafe, but the
   app is visible to its members.
