@@ -603,7 +603,7 @@ behaviour came from the reflector model declining. If the design was always
   T03NYDVCR) and worked: `apps.connections.open`, the WebSocket handshake, the
   envelope ack, `message.im` parsing, the nonce match, the owner binding and
   the reply all went through in one exchange. The credential store came out
-  0700/0600. **`connect` is verified live too**, first try: a DM produced a streamed
+  0700/0600. **`connect` is verified live**, including approvals and orphan recovery: a DM produced a streamed
   answer, `task_update` chunks per tool call, the footer, and the controls
   message rewritten to its terminal state. **`chat.startStream` works on a
   workspace of this kind** — the paid-plan question `SLACK-RESEARCH.md` §12

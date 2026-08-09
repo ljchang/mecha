@@ -82,6 +82,21 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
     // died, its threads are still showing "working…" and the person watching
     // has no way to know. Announced, not quietly reset.
     for orphan in threads.sweep()? {
+        // Retire the controls *first*. An orphaned thread kept a live Stop
+        // button for a run that no longer exists — pressing it would find
+        // nothing and do nothing, which is the same lie the completion path
+        // already fixed and worse here, because this is the one moment a
+        // reader most needs to trust what the thread shows.
+        if let Some(ts) = &orphan.controls_ts {
+            let _ = chat::update(
+                &slack,
+                &orphan.channel_id,
+                ts,
+                "✗ Run lost to a restart",
+                Some(vec![blocks::context("✗ Run lost to a restart")]),
+            )
+            .await;
+        }
         let _ = chat::post_message(
             &slack,
             &orphan.channel_id,
