@@ -2098,7 +2098,20 @@ impl Agent {
             }
 
             if !tool.read_only() || force_approval {
-                if let Decision::Deny(reason) = cx.approver.approve(tool.as_ref(), input).await {
+                let decision = cx.approver.approve(tool.as_ref(), input).await;
+                // The prefix is chosen by *who* refused, never by the approver:
+                // an approver that could pick its own label could label machine
+                // policy as a user correction and teach a rule from silence.
+                let refusal = match &decision {
+                    Decision::Allow => None,
+                    Decision::Deny(reason) => {
+                        Some((format!("Denied by the user: {reason}"), reason.clone()))
+                    }
+                    Decision::Blocked(reason) => {
+                        Some((format!("Blocked by policy: {reason}"), reason.clone()))
+                    }
+                };
+                if let Some((content, reason)) = refusal {
                     emit(
                         events,
                         AgentEvent::ToolDenied {
@@ -2108,7 +2121,7 @@ impl Agent {
                     );
                     results[i] = Some(Block::ToolResult {
                         tool_use_id: id.clone(),
-                        content: format!("Denied by the user: {reason}"),
+                        content,
                         is_error: true,
                     });
                     trace.push(ToolCallTrace {
@@ -4774,9 +4787,10 @@ mod tests {
                 is_error, content, ..
             } => {
                 assert!(is_error);
-                assert!(content.contains("Denied"), "{content}");
+                assert!(content.starts_with("Blocked by policy:"), "{content}");
+                assert!(!content.starts_with("Denied by the user:"), "{content}");
             }
-            other => panic!("expected a denial, got {other:?}"),
+            other => panic!("expected a refusal, got {other:?}"),
         }
     }
 
@@ -4824,9 +4838,14 @@ mod tests {
                 is_error, content, ..
             } => {
                 assert!(is_error);
-                assert!(content.contains("Denied"));
+                // "Blocked by policy", never "Denied by the user": a
+                // permission mode is what this run was started with, not a
+                // correction anybody made, and the learning miner keys on the
+                // second string.
+                assert!(content.starts_with("Blocked by policy:"), "{content}");
+                assert!(!content.starts_with("Denied by the user:"), "{content}");
             }
-            other => panic!("expected a denial, got {other:?}"),
+            other => panic!("expected a refusal, got {other:?}"),
         }
     }
 

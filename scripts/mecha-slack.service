@@ -1,0 +1,49 @@
+# The Slack connector: hold the socket open and drive runs from threads.
+# Install:
+#   cp scripts/mecha-slack.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now mecha-slack
+#   loginctl enable-linger "$USER"     # so it runs while logged out
+#
+# It dials Slack rather than being dialled: no inbound port, no certificate, no
+# tunnel. That is the same argument mecha-drain.service makes for the factory
+# queue — home holds the connection open so nothing ever has to dial home — and
+# it is why this is a Socket Mode app rather than a webhook.
+#
+# Before enabling: `mecha slack auth` (tokens from the environment, proved
+# against Slack) and `mecha slack link` (a one-time code printed on this
+# machine, typed into a DM). The unit refuses to start without both, loudly.
+#
+# WorkingDirectory is the home directory and not a project, for the reason
+# mecha-triggers.service gives: a Slack-driven run loads ~/.mecha/config.toml
+# only, never a mecha.toml that arrived with a cloned repository. Each thread's
+# runs are jailed to ~/.mecha/work/slack/<thread>/ regardless of this line.
+
+[Unit]
+Description=mecha slack connector (Socket Mode)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStart=%h/.cargo/bin/mecha slack connect
+# systemd gives a unit a minimal environment, and the connector spawns child
+# processes for the verbs that already have a CLI. Without this, anything
+# installed by cargo exits 127 under the unit while working perfectly by hand —
+# the trap this project has hit four times, measured first on the trigger
+# daemon's own notify.
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# The socket reconnects on its own; this covers the process dying. A tight
+# restart loop against a revoked token is why `Auth` errors are terminal in the
+# client rather than retried.
+Restart=on-failure
+RestartSec=15
+# SIGTERM reaches in-flight runs: they stop at their next safe point and keep
+# the partial turn, exactly as Ctrl-C does. The window has to outlast a tool
+# call in progress, because tools are never interrupted mid-call.
+KillSignal=SIGTERM
+TimeoutStopSec=180
+
+[Install]
+WantedBy=default.target
