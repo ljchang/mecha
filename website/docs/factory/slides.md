@@ -15,7 +15,8 @@ https://<gate>/p/<handle>/<poll>/screen/<token>
 
 It renders results only — big type, no form, the join URL printed large across
 the top — and refreshes every two seconds. One projector is one client, so the
-interval can afford lecture speed.
+interval can afford lecture speed. [See one](/docs/factory/gallery#the-projector),
+rendered by the code that serves it.
 
 Nothing about the poll pipeline knows which presentation app is running. A
 browser window on the second display, an `<iframe>` in a reveal.js or Quarto

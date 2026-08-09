@@ -198,15 +198,27 @@ actually deliver — "your name is not shown with results… **(Written answers
 still read like their author.)**" — which is the sentence a course-eval tool
 usually leaves out.
 
-**What you are looking at is the JavaScript-off baseline**, deliberately: the
-specimen is rendered with the enhancement script left out, which is the version
-worth putting in a gallery because it is the one the server actually accepts.
-Ranking is a `<select>` per option — `—`, 1, 2, 3 — the VAS is a number field
-between its anchors, and the Likert is a plain radio group. Served live,
-`survey.js` swaps the selects for a reorderable list with `↑`/`↓` buttons and a
-drag grip, and lays a slider track over the number field. The buttons stay the
-keyboard's path and the grip is `aria-hidden`, so the enhancement adds a way to
-answer without becoming the only one.
+**Grab the ranking and drag it.** The row has a grip, and pointer capture keeps
+the stroke alive when you leave the row; `touch-action: none` sits on the grip
+alone, so the page still scrolls under a thumb everywhere else. Then tab into
+the same list: `↑`/`↓` buttons are the keyboard's path, and the grip is
+`aria-hidden`, so the drag adds a way to answer rather than becoming the only
+one. The VAS behaves the same way — a slider laid over a number field, holding
+back its thumb until you touch it.
+
+Underneath both is a form that works with the script blocked: ranking degrades
+to a `<select>` per option (`—`, 1, 2, 3) and the VAS to the number field
+itself. That is the version the server accepts either way; the widgets are the
+layer on top.
+
+:::note[This frame is wired for touching, not for saving]
+The specimen renders in a third state the real page never uses — script on,
+network off. A served page autosaves as you answer and polls its results; a
+golden file that did either would answer *"Couldn't save — use the button
+below"* the moment you dragged a row, and poll a 404 every ten seconds. So the
+form carries `data-demo="1"` and everything that reaches the server is switched
+off. Everything you can *feel* is the real code.
+:::
 
 Four things here are the design rather than the styling:
 
@@ -249,6 +261,44 @@ export goes nameless, and under three respondents the breakdown is withheld
 entirely — [the suppression floor](/docs/factory/polls#who-sees-what), asked as
 the same question of the same number by every emitter.
 
+The ranking here has no grip and the VAS no slider, which is not an oversight:
+a closed poll is read-only, and the script returns early the moment it finds no
+submit button. Nothing is draggable because nothing is answerable.
+
+## The projector
+
+The same five ballots, read the way a wall has to read them. This is the page
+behind [live polls on a slide](/docs/factory/slides) — a browser window on the
+second display, an `<iframe>` in a web deck, or the PowerPoint add-in's frame
+all load exactly this.
+
+<GalleryFrame page="survey.screen.html" caption="survey.screen.html — the projector view, mid-poll: join URL up top, aggregates only, prose as a cloud." minHeight={640} />
+
+Three differences from the participant's page, and all three are one decision —
+*a projector is an audience, mid-poll*:
+
+- **Nobody's name is anywhere**, even though the ballots carry them. "Who
+  answered what" is a participant's disclosure, never the room's.
+- **The ranking shows first preferences alone.** No runoff rounds, because
+  rounds computed on a partial electorate imply a winner that one more ballot
+  can flip — and the wall is the worst place to publish a result that moves.
+- **The text question projects as a cloud**, then says so in words: *"3 written
+  answers — the full text stays on the presenter's screen, not the wall."*
+  `coding` and `walkthroughs` reach the wall because **two different ballots**
+  each chose them; a word one person used cannot render, which is the guard
+  that replaces a profanity list. The sentences live in `polls status` and the
+  TUI's [`/polls`](/docs/factory/polls#watching-one-without-leaving-the-session)
+  instead.
+
+The join URL is printed large across the top because this specimen is a `link`
+poll. A roster poll's screen shows the counts without one — its doors are
+personal, so there is no address to put on a wall.
+
+This frame does not move, and the served one does: `screen.js` refreshes every
+two seconds, and a golden file can't. The page is built to answer identically
+without it, one reload behind, which is the same enhancement contract as the
+form above.
+
 :::note[A sixth kind cannot ship unseen]
 The generator matches `QuestionKind` **exhaustively** and then asserts the
 specimen actually contains one question of each general kind. Adding a seventh
@@ -256,11 +306,11 @@ kind stops the gallery compiling, and then fails it until a real question of
 that kind is on this page. A gallery missing a kind is worse than no gallery,
 because it reads as a complete list.
 
-Two gaps this page does not yet close: the survey's manifest is not exported
-beside the other [`source/`](pathname:///factory/gallery/source/book.toml) files,
-and there is no rendering of the **projector page** — the big-type results view
-behind [live polls on a slide](/docs/factory/slides). Both are prose here and
-pixels nowhere, which is exactly the condition this gallery exists to remove.
+One gap this page does not close yet: the survey's manifest is not exported
+beside the other [`source/`](pathname:///factory/gallery/source/book.toml)
+files, so the spec above is quoted [on the polls
+page](/docs/factory/polls#writing-a-spec) rather than linked as bytes. That is
+the same condition — prose here, no artifact — this gallery exists to remove.
 :::
 
 ## The shipped starters
