@@ -118,7 +118,7 @@ impl SlackApprover {
 /// A short, human-readable duration for a message a person reads on a phone.
 fn humanise(d: Duration) -> String {
     let secs = d.as_secs();
-    if secs % 60 == 0 && secs >= 60 {
+    if secs >= 60 && secs.is_multiple_of(60) {
         format!("{}m", secs / 60)
     } else {
         format!("{secs}s")
