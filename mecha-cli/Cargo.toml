@@ -33,5 +33,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 # `unstable-rendered-line-info` gives Paragraph::line_count, which is how the
 # transcript knows its own wrapped height and therefore how far it can scroll.
-ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
