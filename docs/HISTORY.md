@@ -1273,6 +1273,25 @@ matters is the general shape.
   rather than silently passing if that premise ever changes. **When a library
   accepts more than you mean, encode the narrower rule and pin the premise in
   the test.**
+- **Writing an invariant in a doc comment is not enforcing it.** A
+  high-effort review of the switchboard branch returned ten defects, and
+  **four violated rules asserted in the module docs sitting beside them** —
+  `inventory.rs` said an off-origin host is shown always while `host_of`
+  returned the URL's *userinfo* as the host and `masthead` omitted the host
+  entirely for labelled links; `editor.rs` said a slug must never be burned
+  "as a side effect of typing one" while `save` upserted one for any slug in
+  the form. Each doc was written honestly and each described the intent
+  rather than the code. **Prose beside a rule is evidence the author meant
+  it, never evidence the code does it — and a reviewer reading the code
+  against the comment finds precisely these.**
+- **A static path segment beside a parameter shadows it, for whichever value
+  matches.** The shared assets sat at `/@a/{name}` next to
+  `/@{handle}/{slug}`; `a` is a legal handle, matchit prefers the static
+  segment, and that user's every switchboard answered 404 at a URL their own
+  account page printed. Reserving the handle fixes one case and leaves the
+  trap for the next static segment. **Keep static segments out of a
+  parameter's namespace entirely rather than reserving the values that
+  collide.**
 
 ### Learning
 
