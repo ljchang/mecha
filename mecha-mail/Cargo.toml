@@ -32,7 +32,7 @@ chrono-tz.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 dirs.workspace = true
 futures.workspace = true
-htmd = "0.1"
+htmd = "0.5"
 # The bookings sweep's advisory flock — same mechanism as mecha-core's
 # outbox, for the same reason: two sweeps must not both create an event.
 libc = "0.2"
