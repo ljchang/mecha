@@ -197,17 +197,43 @@ fn encode_message(m: &Message, out: &mut Vec<Value>) {
     match m.role {
         Role::Assistant => {
             let mut text = String::new();
+            let mut reasoning = String::new();
             let mut tool_calls = Vec::new();
             for b in &m.content {
                 match b {
                     Block::Text { text: t } => text.push_str(t),
+                    // Sent back, because the model's own history is what
+                    // teaches it the shape of a turn. Measured 2026-08-10
+                    // against llama-server on the prefix that had gone quiet
+                    // seven times out of seven: with reasoning stripped from
+                    // the history — which is what this backend did — the model
+                    // produced a bare `<tool_call>` with no think block, 6 of
+                    // 6, and the server misfiled the whole thing as reasoning
+                    // so the turn arrived empty. With reasoning restored to
+                    // the history and nothing else changed, 0 of 6. The
+                    // parser bug upstream is real, but this is the half that
+                    // was ours: we showed the model turn after turn of itself
+                    // calling tools without thinking, and it obliged.
+                    //
+                    // Self-gating, which is what keeps it honest: on this path
+                    // a Thinking block exists only because a server sent
+                    // `reasoning_content` in the first place. So this rides
+                    // back only to servers that speak the field — llama.cpp,
+                    // vLLM, DeepSeek — and never to an endpoint that would
+                    // reject an unknown one. No provider sniffing, no flag.
+                    //
+                    // `signature` is dropped: it is Anthropic's echo-back
+                    // token and has no counterpart here. That asymmetry is
+                    // why `anthropic.rs` refuses to replay an unsigned block
+                    // while this backend replays every one it has.
+                    Block::Thinking { text: t, .. } => reasoning.push_str(t),
                     Block::ToolUse { id, name, input } => tool_calls.push(json!({
                         "id": id,
                         "type": "function",
                         "function": {"name": name, "arguments": input.to_string()},
                     })),
-                    // No wire representation for these on this API.
-                    Block::Thinking { .. } | Block::ToolResult { .. } => {}
+                    // A result is its own message, never part of the turn.
+                    Block::ToolResult { .. } => {}
                 }
             }
             let mut msg = json!({"role": "assistant"});
@@ -222,6 +248,12 @@ fn encode_message(m: &Message, out: &mut Vec<Value>) {
             );
             if !tool_calls.is_empty() {
                 obj.insert("tool_calls".into(), json!(tool_calls));
+            }
+            // Absent rather than empty when there was no thinking: a server
+            // that renders the field conditionally must see it missing, not
+            // see an empty think block.
+            if !reasoning.is_empty() {
+                obj.insert("reasoning_content".into(), json!(reasoning));
             }
             out.push(msg);
         }
@@ -692,6 +724,60 @@ mod tests {
         assert!(
             d.looks_like_tool_call,
             "a <tool_call> in the think block is the lost-call signature"
+        );
+    }
+
+    #[test]
+    fn reasoning_survives_the_round_trip_and_rides_back_with_the_turn() {
+        // The whole fix, end to end: what the server sends as
+        // `reasoning_content` must come back as `reasoning_content`, beside
+        // the call it belongs to. Stripping it is what produced a history of
+        // bare tool calls with no thinking, and with it the model reproduced
+        // that shape 6 times in 6 — see `encode_message`.
+        let v = json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "I should list the directory first.",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "shell", "arguments": "{\"command\": \"ls\"}"},
+                    }],
+                },
+            }],
+            "model": "qwen3.6-35b-a3b",
+        });
+        let decoded = decode_response(&v).unwrap();
+
+        let mut out = Vec::new();
+        encode_message(&decoded.message, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0]["reasoning_content"], "I should list the directory first.",
+            "the reasoning was dropped on the way back out"
+        );
+        assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "shell");
+        assert_eq!(
+            out[0]["content"],
+            Value::Null,
+            "reasoning must not leak into content"
+        );
+    }
+
+    #[test]
+    fn a_turn_with_no_thinking_sends_no_reasoning_field() {
+        // Absent, not empty. A server rendering the field conditionally must
+        // see it missing rather than see an empty think block — and this is
+        // also what keeps the round trip self-gating: an endpoint that never
+        // sends `reasoning_content` never receives one.
+        let mut out = Vec::new();
+        encode_message(&Message::assistant(vec![Block::text("done")]), &mut out);
+        assert!(
+            out[0].get("reasoning_content").is_none(),
+            "an unrelated endpoint must not be sent a field it never spoke"
         );
     }
 
