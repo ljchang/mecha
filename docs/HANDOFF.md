@@ -481,6 +481,7 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
 - **Re-baseline `ambiguity` and `long-horizon` at k=5.** No scorecard in
   `results/` records `runs: 5` outside the compaction arc, and these are the two
   tags whose single-run numbers move.
+
 ### Structural gaps
 
 - **MCP resources are not implemented.** `mecha-core/src/mcp.rs` advertises
