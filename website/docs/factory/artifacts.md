@@ -7,10 +7,46 @@ description: Versions that never move, an alias that does, who may read a bundle
 # Artifacts
 
 An artifact — a *bundle* — is what an agent made, turned into a URL you can send
-someone: a report, a dashboard, a briefing, a notebook. This page is the four
+someone: a report, a dashboard, a briefing, a notebook. This page is the
 questions people actually ask about one after it exists. How it gets *staged for
 review* before it goes anywhere is [Publishing](/docs/features/publishing);
 this is about what happens to it afterwards.
+
+## Two URLs, and which one to send
+
+A published bundle is addressed twice, and handing over the wrong one is the
+commonest way a link disappoints somebody.
+
+```
+https://gate.mecha-factory.ai/view/<handle>/<id>    the page  — send this to a person
+https://<handle>.art.mecha-factory.ai/b/<id>/       the bytes — for everything else
+```
+
+**The page is for people.** It carries the version menu, the owner's release and
+share controls, and the account corner, with the bundle framed inside it from its
+own origin. It opens signed out for a public bundle, and it is the *only* address
+that opens a private one — for its owner, and for an address a share names.
+
+**The bare URL is the bytes and nothing else.** No chrome, no session; a version
+URL (`/b/<id>/v/3/`) is immutable and cached for a year. Reach for it when the
+reader is not a person at a browser:
+
+- another tool fetching the artifact — the page would hand it a header and an
+  empty frame
+- a deep link to a file *inside* the bundle, `…/b/<id>/v/3/data.csv`
+- a citation or an archive, where the point is a URL that can never move
+- a projector, a wall display, print-to-PDF — anywhere the header band is in the
+  way
+- anything polled on a timer: a version URL is a file read behind a long cache,
+  where the page resolves through the database on every load
+
+`factory-publish publish` and `factory-publish alias` print both, and the agent
+tools answer with both, so whoever is holding the result has the right one to
+pass on.
+
+One thing neither URL does: embed in somebody else's page. The viewer refuses to
+be framed at all, and a bundle admits only the gate. An artifact is something you
+link to, not something you drop into a third-party site with an `<iframe>`.
 
 ## Versions never move; one alias does
 
