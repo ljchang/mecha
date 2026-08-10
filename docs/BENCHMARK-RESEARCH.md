@@ -382,6 +382,63 @@ little-coder's 24.6% on the full set — not comparable, since the 50 pending
 tasks are not a random sample. The recoverable third is the harness deaths;
 the five model failures are the model.
 
+### The empty turns, explained (2026-08-10) — and the 08-09 reading corrected
+
+The section above ends by noting that empty turns persisted **with
+`--reasoning-budget 4096` active**, and treats that as the model going quiet
+"routinely". That reading was wrong, and the mitigation built on it — nudge,
+retry, reset the allowance — was treating a symptom.
+
+The 2026-08-10 relaunch was read the same way, and this time the prefixes were
+replayed against a second server rather than reasoned about. Method: take the
+transcript up to each nudge point, strip the nudge back off (it did not exist
+when the model went quiet), re-send with the real 7-tool bench surface at the
+same unpinned temperature. Empty turns reproduce at ~15%, and one prefix
+reproduces deterministically.
+
+What an empty turn actually contains:
+
+```
+finish_reason: "stop"   content: 0   tool_calls: []   reasoning_content: 3681
+  ...What about `<SCRIPT>` in uppercase?
+  <tool_call><function=shell><parameter=command>python3 -c "..."
+```
+
+and in the deterministic case, **120 characters that are only a tool call**,
+with no deliberation at all. The model emits its call before closing
+`</think>`; llama.cpp files the whole turn as `reasoning_content` and reports a
+clean stop. Upstream: ggml-org/llama.cpp #20837, #22684, #20809 — all unfixed,
+with the same failure reported against ollama, so it is not purely a Qwen
+property even though every public report names Qwen.
+
+**This retires the budget explanation.** 120 characters is ~30 tokens of an
+8,192 `max_tokens` with a 4,096 reasoning budget. No token limit was ever
+involved, which is why raising `max_tokens`, capping reasoning, and enlarging
+the window all failed to end it.
+
+And half of it was mecha's. The harness stripped every `<think>` block from the
+history it sent back, so the model saw turn after turn of itself calling tools
+without thinking — the exact malformation being chased. Same server, same
+template, same prompt, varying only the history:
+
+| history | empty turns |
+|---|---|
+| without reasoning (mecha ≤0.1.1) | **6 / 6** |
+| with reasoning (mecha 0.1.2) | **0 / 6** |
+
+Fisher exact p ≈ 0.001 on a reproducer that fails byte-identically. A
+third-party replacement chat template
+([froggeric/Qwen-Fixed-Chat-Templates](https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates))
+fixes it equally well (6/6 → 0/6) by instructing the model to close `</think>`
+first — but it is prompt-level, therefore probabilistic, and Qwen-only. The
+history fix addresses the cause and names no vendor.
+
+Two numbers worth carrying into the next run. Empty-turn waste was **2.5% of
+wall clock** on the 08-10 run, so this is not what the timeouts were made of —
+23% of trials died on the clock and most of them were the model grinding.
+And prefix-cache reuse is **better than 95%** (5,000-token prompts prefilling
+16–211 tokens), which is what makes replaying reasoning affordable at all.
+
 ### SWE-bench Bash Only — the baseline to beat
 
 The interesting split is not the main leaderboard. It is **Bash Only**, which
