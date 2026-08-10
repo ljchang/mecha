@@ -782,6 +782,70 @@ end reported its spec — a file sitting right there — as "⚠ gone", because
 `show` resolved a relative argument against wherever the reviewer was standing
 while `send` had always used the recorded jail. See the trap below.
 
+**2026-08-10 — the poll page is looked at, and two beliefs do not survive it.**
+The session began as "expose the factory's tools" and turned into a review of
+what those tools actually produce, which is the only reason any of the following
+was found: every defect here was visible on a rendered page and invisible in the
+source.
+
+**The gallery's survey page had no survey CSS at all.** Every page in that family
+links one asset named `booking.css`, and two builders produced it — the booking
+pages omitted `SURVEY_STRUCTURE`, the survey pages included it, and the gallery
+writes the first one it meets and marks the job done. So the page a reader learns
+the component from shipped with none of its rules: list markers where
+`list-style:none` was meant to be, rank buttons wearing the full-size accent pill
+that `button` is. The live box built its assets down a third path that happened
+to be correct, which is exactly what kept it hidden. `page_style` is the single
+definition now, with a test that holds a really-rendered page against it and
+names the rules that must be present.
+
+**Ranking's drag moved exactly one row.** Pointer capture was taken on the grip;
+the first reorder moves the row's `li`; `insertBefore` on an attached node is a
+remove and an insert; removing the capturing element releases the capture. Every
+`pointermove` after the first went nowhere. Capture moved to the list, the one
+node in the widget that never moves, and the row now follows the pointer and
+swaps on midpoints rather than on whatever is under the cursor — which returns
+the dragged row itself once it moves, a stall of its own.
+
+Likert and VAS were laid out by `flex-wrap`, which is not a layout: the fifth
+point of a five-point scale wrapped to a second line, where it stops reading as a
+scale, and the VAS anchors flowed inline so "100 — …" landed below the slider
+describing nothing. The scale became a grid of equal columns; the anchors got
+half the width each. A choice became **a card you press** rather than a dot you
+aim at — the radio stays in the markup and the tab order, since it is what posts,
+what a screen reader announces, and what works with the script blocked, but
+`:has(:checked)` moves the selected state onto the whole card.
+
+**Two features, both presentation kept out of meaning.** `layout = "horizontal" |
+"vertical"` lives on `PollQuestion` rather than in `QuestionKind`, because the
+kind is what a question means and a tally must never move because somebody
+rearranged a page. `media = { src, alt }` puts a picture on a question or an
+option — and *where the bytes may come from was decided by the
+Content-Security-Policy, not by taste*. Every class sends `img-src 'self' data:`,
+so the obvious design (publish a bundle of figures, point at it) does not
+survive: the artifact host is a different origin and the browser blocks it. An
+off-origin `src` is refused when the spec is parsed. What remains is inline
+images capped at 512 KB, which is a generous figure and a hopeless photograph —
+recorded in the handoff as needing an asset endpoint on the box rather than
+quietly shipped as though it were finished.
+
+**Two reversals, both of things this project had written down as true.** The
+notebook export does **not** execute the notebook: measured on marimo 0.23.16,
+where a cell body that writes a file does not write it, a statement at module top
+level does not run, and a notebook importing a nonexistent package and raising
+`SystemExit` exports cleanly with exit 0. `export html-wasm` parses the file
+without importing it. That claim had been load-bearing — it was the stated reason
+the notebook template stayed off unattended paths. And `poll_status` went back to
+returning free text, after a first version withheld it on the front door's
+reasoning; in a poll the prose *is* the data, and `openWorldHint` already marks
+it untrusted and arms the interlock exactly as a mail body does, so withholding
+was stricter than mecha's treatment of the user's own inbox.
+
+The documentation caught up in the same pass: `factory/onboarding.md`,
+`factory/artifacts.md`, `factory/notebooks.md` and `features/slack.md`, plus the
+layout and picture sections in `polls.md` — four of the gaps a reader hits in
+their first hour and could previously close only by reading source.
+
 ---
 
 ## The measurement record
@@ -1136,6 +1200,36 @@ All found by pre-push review or by running it.
   around it with `shell`. **Anything spawned once cannot follow a per-run
   value** — either root it somewhere both agree on, or accept that the
   isolation only covers what the loop itself resolves. Say which, in writing.
+
+- **A comment describing someone else's tool is a hypothesis, and this one was
+  wrong for months.** Three places in two repos said `marimo export html-wasm`
+  executes the notebook; it does not, and the two-minute experiment that settles
+  it — a cell that writes a file, a notebook that would crash if run — had never
+  been performed. The cost was not a bug but a *constraint*: the false claim was
+  the stated reason the notebook template stayed off unattended paths, so a
+  capability was withheld for a danger that did not exist. **Before a belief
+  about a third-party tool becomes an architectural constraint, run the
+  experiment that would falsify it.** The belief is cheap to test and expensive
+  to inherit.
+
+- **Adding the replacement is not removing the replaced.** A drag rewrite added
+  list-level pointer handlers and left the old grip handlers attached, so the new
+  state was never assigned and every new line was dead. The diff read correctly;
+  the diff was not the thing running. It shipped, was reported unchanged by the
+  person testing it, and cost a round trip. **When replacing a handler, delete
+  the old one in the same edit, and verify against the built artifact rather than
+  the source** — for generated assets, grep the output for the string that should
+  no longer be there.
+
+- **One asset name with two builders is one asset name with two answers.** Every
+  page in the booking family links `booking.css`; two code paths built it and
+  disagreed about whether the survey rules were in it; whichever page rendered
+  first won. The live server took the correct path and the documentation gallery
+  took the wrong one, so the only broken surface was *the one people learn from*
+  — and nothing failed anywhere. **A shared output name needs a single
+  definition, and a test that a real render agrees with it.** Asserting the
+  presence of specific rules matters as much as asserting equality: two paths
+  agreeing on the wrong thing is the other way to fail.
 
 - **A capability that lives in the binary is a capability no agent will ever
   have, and nothing reports it.** The factory's MCP server sat at seven tools

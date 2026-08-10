@@ -270,6 +270,74 @@ cloud with a structural guard**:
 
 The full sentences stay on the presenter's screen and in `status`.
 
+An agent reading a poll through `poll_status` **does** get the text answers, in a
+`text_answers` field kept separate from the typed tallies. An earlier version
+withheld them and returned counts, on the front door's reasoning; that was wrong
+here, because in a poll the prose is the data — "what did people say" is most of
+why anyone runs one. What makes returning it safe is the mechanism mecha already
+has for other people's words, which is not silence: the tool carries
+`openWorldHint`, so the answers arrive marked `untrusted_input` and arm the
+interlock exactly as a mail body does. The typed and the written stay in separate
+fields, which is what lets an answer summarise the prose without treating any of
+it as an instruction.
+
+## Layout, and questions about pictures
+
+Two things are presentation and are deliberately not part of what a question
+*means* — a tally must never change because somebody rearranged a page.
+
+**Which way the controls run** is `layout` on the question:
+
+```toml
+[[questions]]
+id = "format"
+layout = "horizontal"     # or "vertical"; omit for each kind's own default
+kind = "choice"
+```
+
+The default is `auto`, which reproduces what each kind always rendered: a scale
+runs across the page, a list of options runs down it. A scale becomes a grid of
+equal columns with each label under its control, and collapses to one point per
+line on a narrow screen.
+
+**A question can be about a picture**, and so can each option:
+
+```toml
+[[questions]]
+id = "figure"
+prompt = "Which version of Figure 2 should go in the paper?"
+media = { src = "/f/fig-all.png", alt = "All three panels side by side" }
+kind = "choice"
+
+[[questions.options]]
+id = "scatter"
+label = "Scatter with a fitted line"
+media = { src = "data:image/png;base64,…", alt = "A scatter plot with a fitted line" }
+```
+
+Options render as cards you press rather than dots you aim at, with the picture
+inside the card and picture options side by side — comparing two figures means
+seeing both at once. The radio is still in the markup and in the tab order,
+because it is what the form posts, what a screen reader announces, and what works
+with the script blocked.
+
+Two rules, both enforced at authoring time:
+
+- **`alt` is required.** A question that asks people to choose between pictures
+  is unanswerable without it for anyone using a screen reader, and a poll is a
+  thing you send to a group whose eyesight you do not know.
+- **`src` is a `data:` URI or a path this origin serves — nothing else.** Every
+  page here sends `img-src 'self' data:`, so an image from anywhere else is
+  blocked by the browser. That includes your own artifact subdomain, which is a
+  different origin. An off-origin `src` is refused when the spec is parsed,
+  because the alternative is discovering it from sixty people looking at a page
+  with a hole in it that cannot be recalled.
+
+Inline images are capped at 512 KB before base64: a spec travels as one request
+body and is stored whole. **There is no upload channel for poll assets yet**, so
+today "poll a set of images" means figures small enough to embed. Photographs
+from a phone are not, and closing that gap needs an asset endpoint on the box.
+
 ## The times poll is still its own flow
 
 `kind = "times"` is the scheduling poll, unchanged. Its candidates are the
