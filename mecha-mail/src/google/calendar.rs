@@ -1,10 +1,9 @@
-//! The Google Calendar v3 client, extracted from flowmail's
-//! `calendar/gmail.rs` and trimmed to on-demand use: the syncToken/showDeleted
-//! incremental machinery stayed behind (that serves a local cache, which we
-//! deliberately do not keep). One behavioral change from the source:
+//! The Google Calendar v3 client, scoped to on-demand use: there is no
+//! syncToken/showDeleted incremental machinery, because that serves a local
+//! cache and we deliberately do not keep one. Reads ask for
 //! `singleEvents=true`, so recurring events arrive as expanded instances —
-//! an agent answering "what's on Thursday" wants occurrences, not RRULEs.
-//! flowmail asked for `false` because it re-expanded locally.
+//! an agent answering "what's on Thursday" wants occurrences, not RRULEs,
+//! and `false` would mean re-expanding them here.
 
 use serde_json::{json, Value};
 
@@ -74,9 +73,10 @@ impl CalendarProvider {
         }
     }
 
-    /// Calendars the account can at least see. flowmail filtered to
-    /// writer/owner because it pushes; we list everything readable and report
-    /// the role, so the model knows which calendars a write could target.
+    /// Calendars the account can at least see. Filtering to writer/owner
+    /// would suit a client that only pushes; we list everything readable and
+    /// report the role, so the model knows which calendars a write could
+    /// target.
     pub async fn list_calendars(&self) -> Result<Vec<Calendar>, MailError> {
         let resp = send_with_retry(
             self.client
@@ -384,7 +384,7 @@ fn parse_google_freebusy(body: &Value) -> Result<Vec<(String, String)>, MailErro
 }
 
 /// The first 10 chars of an RFC 3339 stamp — its `YYYY-MM-DD`. Safe on short
-/// input, unlike flowmail's slice.
+/// input, where a fixed `[..10]` slice would panic.
 fn date_part(stamp: &str) -> &str {
     &stamp[..stamp.len().min(10)]
 }

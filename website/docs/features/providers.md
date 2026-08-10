@@ -163,10 +163,45 @@ Ollama's compatibility endpoint, and anything else speaking the dialect. Point
 `base_url` at whichever you are running; the API key is optional, because local
 servers usually do not check it.
 
-The shape is lossier than Anthropic's: no thinking blocks, no cache
-breakpoints, no effort. Those fields are accepted and ignored. `temperature`
-and `seed` *are* sent here when configured, which is what makes a pinned local
-replay possible at all.
+The shape is lossier than Anthropic's in places — no cache breakpoints, no
+effort; those fields are accepted and ignored. `temperature` and `seed` *are*
+sent here when configured, which is what makes a pinned local replay possible
+at all.
+
+**Reasoning is carried, in both directions.** A reasoning model puts its
+thinking on its own channel, and this backend decodes `reasoning_content` into
+a thinking block and streams it as a thinking delta — so reasoning is visible
+live in the TUI and kept in the transcript, exactly as on the Anthropic path.
+It then rides back to the provider on the next request. That is self-gating by
+construction: a thinking block exists on this path only because a server sent
+the field, so it returns only to servers that speak it and never to an endpoint
+that would reject an unknown one. No provider name is tested anywhere.
+
+It is never treated as *output*. A turn that only reasoned is nudged and
+continued, not accepted as an answer.
+
+**This was the cause of the empty turns.** Because the history sent back used
+to strip the reasoning, the model was shown turn after turn of itself
+apparently calling tools without thinking, and it obliged. Same server, same
+template, same prompt, varying only whether the history carried reasoning:
+**6 of 6 empty turns without it, 0 of 6 with it.** Replaying the prefixes that
+went quiet showed what the silence actually was — in one case 120 characters of
+"reasoning" that were nothing but an unparsed tool call, emitted before the
+model closed its thinking tag, so the server filed the entire turn as
+reasoning. 120 characters is nowhere near any limit, which rules out every
+mitigation aimed at "the model reasons too long".
+
+**An empty turn now leaves a record.** When a response produces no output but
+carried reasoning, the backend logs a warn-level marker: how many characters
+of reasoning there were, whether they contain anything that looks like a tool
+call, the finish reason, and the tail — with the whole trace at
+`MECHA_LOG=debug`. Such a turn appears in no transcript at all (the loop nudges
+and continues before pushing the message, and holds no session to record it
+into), so this log is the only durable evidence that it happened.
+
+**And a run that ends having only reasoned hands that reasoning back**,
+labelled as deliberation rather than a committed answer, instead of reporting
+that the model said nothing.
 
 Message encoding differs structurally: an assistant turn carries its tool calls
 inline as `tool_calls`, but every tool result becomes its own `role: "tool"`

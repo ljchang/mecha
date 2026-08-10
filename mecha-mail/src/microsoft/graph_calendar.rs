@@ -1,17 +1,16 @@
-//! Outlook calendar over Microsoft Graph, extracted from flowmail's
-//! `calendar/outlook.rs` with the one fix that matters most:
+//! Outlook calendar over Microsoft Graph. The rule that matters most:
 //!
-//! **`calendarView`, not `/events` with a `start/dateTime` filter.** flowmail
-//! queries `/events` and filters on start time, which returns recurring
-//! *series masters* only — so a weekly standup created in 2020 falls outside
-//! any 2026 window and **vanishes from the results entirely**, while an event
-//! whose master starts inside the window appears once instead of N times.
-//! `calendarView` expands occurrences server-side over the window, which is
-//! what "what's on my calendar this week" actually means, and it makes
-//! flowmail's hand-rolled RRULE converter unnecessary.
+//! **`calendarView`, not `/events` with a `start/dateTime` filter.** Querying
+//! `/events` and filtering on start time returns recurring *series masters*
+//! only — so a weekly standup created in 2020 falls outside any 2026 window
+//! and **vanishes from the results entirely**, while an event whose master
+//! starts inside the window appears once instead of N times. `calendarView`
+//! expands occurrences server-side over the window, which is what "what's on
+//! my calendar this week" actually means, and it removes any need to convert
+//! RRULEs by hand.
 //!
-//! Also dropped: the delta/sync-token branch (`/events` never returns a
-//! deltaLink, so it was dead code), and `account_id` from the constructor.
+//! Deliberately absent: a delta/sync-token branch (`/events` never returns a
+//! deltaLink, so it would be dead code), and `account_id` on the constructor.
 
 use serde_json::{json, Value};
 
@@ -95,8 +94,8 @@ impl OutlookCalendarProvider {
         resp.json::<Value>().await.map_err(MailError::from)
     }
 
-    /// Every calendar, including read-only ones. flowmail filtered out
-    /// `canEdit == false`, which hid subscribed calendars entirely; the role
+    /// Every calendar, including read-only ones. Filtering out
+    /// `canEdit == false` would hide subscribed calendars entirely; the role
     /// is reported instead so the model knows where a write could go.
     pub async fn list_calendars(&self) -> Result<Vec<Calendar>, MailError> {
         let json = self.get_json(&format!("{GRAPH}/me/calendars")).await?;
@@ -387,7 +386,7 @@ fn parse_event(item: &Value, calendar_id: &str) -> CalendarEvent {
         .unwrap_or_default();
 
     // Each end carries its own zone; using the start's for both is wrong
-    // across a DST boundary, which is what flowmail did.
+    // across a DST boundary.
     let stamp = |side: &str| -> String {
         let dt = item[side]["dateTime"].as_str().unwrap_or_default();
         match item[side]["timeZone"].as_str() {
@@ -516,7 +515,7 @@ mod tests {
         assert_eq!(t["dateTime"], "2026-08-10T00:00:00");
         let timed = graph_time("2026-08-10T09:30:00", false, "America/New_York");
         assert_eq!(timed["dateTime"], "2026-08-10T09:30:00");
-        // Safe on short input, unlike flowmail's fixed slice.
+        // Safe on short input, where a fixed slice would panic.
         assert_eq!(graph_time("2026", true, "UTC")["dateTime"], "2026T00:00:00");
     }
 }

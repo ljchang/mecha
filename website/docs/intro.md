@@ -1,157 +1,187 @@
 ---
 title: What mecha is
 sidebar_position: 1
-description: A standalone agent harness — one loop, any model, native and MCP tools — and a tour of what it does.
+description: A harness that turns a local open-weight model into a personal assistant with your context, your permissions, and a way to reach the world — safely.
 ---
 
 # What mecha is
 
-mecha is an agent harness: the loop that sits between a language model and the
-things it can do. You give it a task, it asks the model, the model asks for
-tools, the harness runs them, feeds the results back, and repeats until there is
-an answer.
+In mecha anime the pilot is an ordinary person. What makes them formidable is
+the suit: it gives them reach, senses, armour, and a way to act on the world.
+The suit does not think for the pilot. It is built, maintained, and answerable
+to the person inside it, and it is the difference between someone who could help
+and someone who can.
 
-Every project that wants an agent ends up writing that loop, and then writing it
-again slightly differently for the next project. mecha exists so it can be
-written once and reused. The loop, the tool registry, the MCP client, the
-transcripts, and the security controls are a library; the command-line program
-is a thin layer on top of it.
+mecha is that suit for a language model.
 
-## Two crates, plus a third for mail
+The model it is built for is a **local open-weight model** — one running on
+hardware you own, reading data that never leaves it. Such a model is entirely
+capable of being an excellent personal assistant, and is nowhere near being one
+out of the box. It has no memory of you. It cannot see your mail or your
+calendar. It can produce text and nothing else. And it has no defence at all
+against the first web page that tells it to forward your inbox to a stranger.
 
-**`mecha-core`** is the library. It knows nothing about any CLI or any
-application. It holds the agent loop, provider-agnostic message types, the tool
-trait and registry, an MCP stdio client, session transcripts, batch fan-out, the
-eval rig, and the layered config. If you are embedding an agent in your own Rust
-program, this is the dependency.
+Everything in mecha closes one of those four gaps without opening a fifth.
 
-**`mecha-cli`** builds the `mecha` binary. It is deliberately thin — front-end
-concerns only: rendering, readline, the full-screen interface, approval prompts.
-Anything that would be useful without a terminal belongs in core.
+## The problem it is pointed at
 
-**`mecha-mail`** is a separate crate: a library for Gmail, Google Calendar, and
-Outlook mail and calendar over Microsoft Graph, plus three small MCP binaries
-that expose it. It is not wired into the loop — mecha talks to it the same way
-it talks to any other MCP server, which is the point. No code in `mecha-core` or
-`mecha-cli` knows that Google or Microsoft exists, and neither does the model:
-it names an *account* (`dartmouth`, `personal`), never a provider. See
-[Mail and calendar](/docs/features/mail).
+Academic work carries a long tail of small administrative tasks that are
+tedious rather than difficult: answering the fourth email this week asking for a
+meeting, working out whether you can actually take on a review, writing the
+letter you promised in March, finding the slot that works for five people,
+chasing the form somebody needs back by Friday. None of it is hard. All of it is
+constant, and it arrives faster than it leaves.
 
-The split is enforced by the direction of the dependency. `mecha-core` cannot
-reach up into the CLI, so a feature that only works when someone is watching a
-terminal cannot quietly become load-bearing for a scheduled run.
+What stops a language model from absorbing that work is not intelligence. It is
+that every one of those tasks needs **your** context — who this person is, what
+you already promised them, what is actually on your calendar, how you write when
+you say no. A model with no context can only produce something generic that you
+then have to rewrite, which is slower than doing it yourself.
 
-## The shape of the loop
+So the assistant that would actually help is one that can see a great deal about
+you. And that is precisely the assistant it is most dangerous to build.
+
+## Why the security model is the centre of the design
+
+An agent that holds three things at once can be turned against you:
+
+1. **Private data** — your mail, your calendar, your notes, your knowledge graph.
+2. **Untrusted content** — anything written by someone else. An email body. A
+   web page. A calendar invite's title. A PDF a stranger sent.
+3. **A way to send** — replying, posting, publishing, or merely fetching a URL,
+   since a payload fits in a query string.
+
+This is Simon Willison's **lethal trifecta**, and the uncomfortable part is that
+a personal assistant has all three *by definition*. Reading your mail is what it
+is for; the mail was written by other people; answering it is the point. You
+cannot design the trifecta out of the job. You can only decide what happens when
+all three are present.
+
+Most harnesses handle this by telling the model to be careful. That does not
+work, because the injected instruction arrives through exactly the same channel
+as the legitimate data, and the model has no way to tell them apart. mecha
+treats it as a property of the system rather than a matter of the model's
+judgement: **every tool declares what it can do, the conversation tracks what
+has entered it, and an outbound call is refused once both private data and
+third-party content are present.** The refusal happens before the human is asked,
+because a person clicking "yes" is what an injection is trying to engineer.
+
+That single decision shapes most of the rest of this documentation — the path
+jail, the sandbox, the outbox, the front door, subagent isolation and the
+provenance rules on learning are all consequences of taking it seriously. See
+[Security model](/docs/features/security) for how it is enforced.
+
+## The anatomy of the suit
 
 ```
-prompt ──▶ provider ──▶ does the reply ask for tools?
-              ▲                │
-              │                ├── no  ──▶ answer, stop
-              │                │
-              │                └── yes ──▶ interlock ──▶ hook ──▶ approver
-              │                                                     │
-              └────────── results folded into one user turn ◀───────┘
+                    ┌─────────────────────────────────────────┐
+   PERSONAL         │              mecha-core                 │      THE WORLD
+   CONTEXT          │                                         │
+ ┌────────────┐     │   the loop · tools · MCP client          │   ┌──────────────┐
+ │ knowledge  │     │   taint tracking · path jail             │   │ mecha-factory│
+ │ graph (pkg)│────▶│   sandbox · budgets · compaction         │──▶│ published    │
+ │ mail       │     │   sessions · learning · triggers         │   │ artifacts    │
+ │ calendar   │     │                                          │   │              │
+ │ files      │     │            ▲              │              │◀──│ typed        │
+ └────────────┘     │            │   outbox     ▼              │   │ requests in  │
+                    │        ┌───┴──────────────────┐          │   └──────────────┘
+                    │        │  you, reviewing      │          │
+                    │        └──────────────────────┘          │
+                    └─────────────────────────────────────────┘
 ```
 
-Two invariants carry the design, and both are worth stating plainly because
-most of the rest follows from them.
+**The frame — [`mecha-core`](/docs/features/interfaces).** The loop that sits
+between a model and the things it can do: ask the model, run the tools it asks
+for, feed the results back, repeat until there is an answer. Around it sit the
+things a loop needs to survive contact with real work — a tool registry, an MCP
+client, transcripts, budgets, retry classification, and compaction so a long
+conversation does not simply stop being sendable. It is a plain Rust library
+that knows nothing about any application; the `mecha` binary is a thin layer on
+top of it.
 
-**The loop never learns where a tool came from, or which provider is behind
-it.** Both are trait objects. A built-in `fs_read` and a tool exposed by a
-third-party MCP server are the same type to the loop; Anthropic and an
-OpenAI-compatible local server are the same type to the loop. If code in the
-agent loop ever matches on a provider name, the abstraction has leaked.
+**The senses — personal context.** An assistant is only as good as what it
+knows about you, so mecha is built to be wired into a lot of it. Mail and
+calendar arrive through [`mecha-mail`](/docs/features/mail), which puts every
+account behind one surface so the model names an *account* (`dartmouth`,
+`personal`) and never a provider. A [personalized knowledge
+graph](/docs/features/distillation) supplies who people are, what happened
+when, and what was said — and mecha feeds it back, distilling each closed
+session into an episode. Everything else comes over MCP, which is the seam that
+keeps this open-ended: connecting a new source of personal context is
+configuration, not a code change.
 
-**A run is described by a `RunContext`**, not by global state: the path jail it
-is confined to, the approver that answers permission questions, its budgets, and
-optionally a cancellation token and a steering queue. That is what lets one
-agent — one provider connection, one cached prompt prefix — serve concurrent
-runs jailed to different directories under different permissions. An eval case
-that mutates files gets a private workspace while the case beside it stays
-read-only.
+**The hands — [`mecha-factory`](/docs/factory/overview).** An assistant that can
+only talk to you in a terminal is not much of an assistant. The factory is the
+public surface in both directions: what the agent makes becomes a durable,
+versioned, permissioned URL you can read on a phone or send to a collaborator,
+and what other people need from you comes back as a **typed request** rather than
+free-form prose. One request type emits the web form, the JSON Schema, and the
+MCP tool at once, so a human with a browser and another agent with a tool call
+both arrive at the same typed object.
 
-## What it can do
+**The pilot — you.** Anything the agent would send passes through
+[the outbox](/docs/features/outbox) first: tools you name are *staged as drafts*
+rather than executed, so overnight inbox triage leaves you a review queue
+instead of sent mail. This is a property of the harness, not of the email tool,
+which means a third-party MCP server is covered by it without knowing it exists.
 
-**Interfaces.** `mecha run` answers one task and exits, with distinct exit codes
-so a script can tell success from a refusal from a run that produced nothing.
-`mecha chat` is a terminal REPL. `mecha tui` is full-screen, and is the only
-interface that can *steer* a run: the input line stays live while the agent
-works, so text typed mid-run is folded into the next tool-result message rather
-than waiting for the run to finish. `mecha batch` fans the same agent out over a
-JSONL file of prompts with bounded concurrency. See
-[Interfaces](/docs/features/interfaces).
+## What makes mecha different
 
-**Providers.** Anthropic over raw HTTP (there is no official Anthropic SDK for
-Rust), and anything speaking OpenAI's `/v1/chat/completions` — llama-server,
-vLLM, Ollama, or a hosted API. Transient failures are classified and retried;
-terminal ones are not, because the same payload fails the same way.
-See [Providers](/docs/features/providers).
+Plenty of agent harnesses exist. These are the choices that are actually
+unusual, rather than the ones everybody makes.
 
-**Tools.** Built in: `fs_read`, `fs_write`, `fs_edit`, `fs_list`, `shell`,
-`http_fetch`, and `todo`. `web_search` appears when a search backend is
-configured — an agent holding a search tool that always errors is worse off than
-one with no search tool. Everything else comes from MCP servers, namespaced
-`<server>__<tool>` so two servers can both expose a `search`. See
-[Tools and MCP](/docs/features/tools-and-mcp).
+**It is built for local open-weight models first.** Not as a fallback for when
+the API budget runs out — as the target. That changes what the engineering is
+about: the binding constraint on a small model in a loop is not intelligence but
+**tool-call reliability**, so [the eval rig](/docs/features/evaluation) grades
+the tool-call trace before it grades the prose. A model that is five percent
+smarter but malforms its arguments one call in twenty is worse in a loop,
+because every bad call costs a recovery turn. It is also why context accounting
+is explicit: nothing in any provider's API reports how much context is *left*,
+so mecha is told the window and derives its compaction threshold, its per-turn
+tool-output budget, and its gauge from it.
 
-**Security, enforced structurally rather than by prompting.** Every
-model-supplied path is canonicalized and proven to sit inside the workspace
-before anything touches disk. Tools declare capabilities — private data,
-untrusted input, external send, destructive — and the loop refuses any sending
-tool once a conversation holds both private data and untrusted content. That
-interlock sits *ahead* of the human approver on purpose: a person clicking "yes"
-is exactly what a prompt injection is trying to engineer. Taint lives on the
-conversation, not the run, so a turn boundary does not launder it. See
-[Security](/docs/features/security) and [Sandbox](/docs/features/sandbox).
+**Security is structural, not prompted.** The trifecta interlock lives in the
+type system and the loop, not in the system prompt. Taint is a property of the
+**conversation**, so a new turn does not launder it — fetch a hostile page on
+turn one and read a secret on turn two, and the interlock still sees both. Path
+containment is a function every tool must call, not a rule tools are asked to
+follow. A configured sandbox that cannot actually confine anything **stops the
+run** rather than falling back to running unconfined, because a security control
+that degrades quietly is worse than one that was never there.
 
-**Policy attachment points.** [Hooks](/docs/features/hooks) run commands at
-`pre_tool`, `post_tool` and `session_end`, so logging, redaction and policy
-attach without editing the loop; `pre_tool` fails closed. The
-[outbox](/docs/features/outbox) names tools whose calls are *staged as drafts*
-rather than executed, which makes "draft-only, never send" a property of the
-harness instead of something each email tool has to implement.
+**Sending is staged by default, and reviewed by a person.** The interesting
+consequence is that the *useful* configuration and the *safe* configuration are
+the same one. An unattended overnight run that drafts nine replies needs no
+write permission at all, because staging executes nothing.
 
-**Unattended operation.** [Triggers](/docs/features/triggers) run a prompt on a
-cron schedule — a morning briefing, overnight inbox triage that stages replies
-for review. It is a small feature because everything a scheduled run needs
-already existed: the outbox stages sends, the interlock refuses exfiltration,
-the sandbox confines `shell`, budgets bound the spend. What such a run generates
-goes to [its work directory](/docs/features/work), which is also its path jail —
-so an unattended run writes somewhere durable, reads back what it wrote
-yesterday, and is confined to a directory holding nothing sensitive.
+**It expects to run unattended.** [Triggers](/docs/features/triggers) put a
+prompt on a cron schedule; a missed week owes one briefing rather than seven;
+each run is jailed to [its own work directory](/docs/features/work), which is
+also where its output durably lands, so yesterday's briefing is an ordinary file
+in today's run. A scheduled run gets no additional trust — the same interlock,
+jail, sandbox and budgets apply, and it deliberately cannot read a project's
+`mecha.toml`, because a cloned repository must not be able to shape a job on
+your machine.
 
-**A public surface, in both directions.** An agent can turn what it made into a
-durable versioned URL — [publishing](/docs/features/publishing) rides on the
-outbox, so a bundle is staged and reviewed before anything is served. Requests
-coming the other way pass through [the front door](/docs/features/frontdoor),
-whose whole job is one sentence: the privileged run sees the extraction, never
-the prose a stranger wrote. The same box also asks a group a question —
-[polls](/docs/factory/polls) are typed questions and typed ballots, which is
-what keeps them out of that quarantine, and their results project onto [a
-lecture slide](/docs/factory/slides).
+**What it learns has to keep earning its place.** mecha mines the moments you
+stepped in — a mid-run steer, a denied tool call, a corrective follow-up — and
+consolidates them into [rules](/docs/features/learning) that ride in the system
+prompt. Two guards make that safe rather than merely clever. Rules are gated on
+**provenance**: a lesson drawn from a conversation that had read untrusted
+content is excluded structurally, because a learned rule is a longer-lived
+injection path than anything the interlock guards. And rules are gated on
+**measurement**: a validation ledger records whether each rule actually changed
+an answer, and one that accumulates attributed regressions is proposed for
+retirement. Measured harm, not a model's confidence in itself.
 
-**Memory, in two different senses.** [Learning](/docs/features/learning) mines
-transcripts for the moments you stepped in — a steer, a denied call, a
-corrective follow-up — and consolidates them into rules that ride in the system
-prompt. Rules have to keep earning their place: a validation ledger measures
-them, and rules the ledger convicts are staged for retirement.
-[Distillation](/docs/features/distillation) is the other sense — what happened,
-rather than how to work — summarising closed sessions into episodes staged to a
-knowledge graph.
-
-**Keeping a long conversation alive.** Every turn sends the whole history, so a
-long enough session stops being able to send anything.
-[Compaction](/docs/features/compaction) evicts superseded tool results first,
-then summarises the middle of the transcript, and validates the summary against
-the transcript it replaces before installing it.
-
-**Measurement.** [Sessions and replay](/docs/features/sessions-and-replay)
-record every run as an append-only transcript and can re-drive one against
-today's code. [Evaluation](/docs/features/evaluation) grades a model on the
-*tool-call trace* first and the text second, because the hard part of running a
-model in a loop is not intelligence but tool-call reliability: a model that is
-5% smarter but malforms arguments one call in twenty is worse in a loop, since
-every bad call costs a recovery turn.
+**Everything a model says about its own work is treated as hearsay.** Runs are
+recorded as append-only transcripts and can be [replayed against today's
+code](/docs/features/sessions-and-replay). Eval cases can end in a `verify`
+command whose exit status is the grade — not whether the model reported the
+tests passing, but whether they pass. Repeated runs report **pass^k** beside
+pass@k, because reliability decays much faster than mean success and a
+single-run scorecard cannot tell a flaky case from a solid one.
 
 ## Where to go next
 
@@ -159,8 +189,10 @@ every bad call costs a recovery turn.
 - [First run](/docs/getting-started/first-run) — point it at a provider and get
   an answer.
 - [Configuration](/docs/getting-started/configuration) — the layered TOML, and
-  the four settings that matter early.
-- [Security](/docs/features/security) — read this before giving an agent
+  the settings that matter early.
+- [Design principles](/docs/principles) — the rules the code keeps, and what
+  each one cost to learn.
+- [Security model](/docs/features/security) — read this before giving an agent
   anything private.
+- [The factory](/docs/factory/overview) — publishing out, and typed requests in.
 - [CLI reference](/docs/reference/cli) — every command and flag.
-- [Source on GitHub](https://github.com/ljchang/mecha).

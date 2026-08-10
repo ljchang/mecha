@@ -1,8 +1,7 @@
-//! One process-wide HTTP client (flowmail's pattern — the connection pool is
-//! shared instead of a fresh TLS handshake per operation), plus the
-//! retry-with-backoff flowmail never had: a 429 or a 5xx from Google is
-//! usually a moment's congestion, and surfacing it as a hard tool error made
-//! the model give up on transient weather.
+//! One process-wide HTTP client, so the connection pool is shared instead of
+//! a fresh TLS handshake per operation, plus retry with backoff: a 429 or a
+//! 5xx from Google is usually a moment's congestion, and surfacing it as a
+//! hard tool error made the model give up on transient weather.
 
 use std::sync::OnceLock;
 use std::time::Duration;

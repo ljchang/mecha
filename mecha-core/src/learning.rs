@@ -1,8 +1,7 @@
 //! The self-learning store: reflections, learned rules, and the miner.
 //!
 //! Reflexion-style (Shinn et al. 2023) with LEAP consolidation (Zhang et al.
-//! 2024) to come; the reference implementation is flowmail's
-//! (`dev_docs/CORRECTION_SYSTEM.md` and `db/learning.rs` there). Three stages:
+//! 2024) to come. Three stages:
 //! **reflection** (one contextual note per user intervention — this module),
 //! **abstraction** (reflections → candidate rules, batched), and
 //! **consolidation** (a fixed token budget per domain, so learning never grows
@@ -426,9 +425,9 @@ impl LearningStore {
         Ok(file.rules)
     }
 
-    /// The user's own rules. This file is never written by any pass — the
-    /// immutability constraint from flowmail's consolidation prompt, made
-    /// structural.
+    /// The user's own rules. This file is never written by any pass: the
+    /// consolidation prompt is told these rules are immutable, and this is
+    /// that constraint made structural rather than left to the model.
     pub fn user_rules(&self, domain: &str) -> Result<Vec<Rule>> {
         self.load_rules(&self.rules_path(domain, "user"))
     }
@@ -1023,9 +1022,8 @@ or {\"skip\": true} when there is no lesson.";
 
 /// The writing-domain reflector. Same contract as [`REFLECTOR_SYSTEM`], but
 /// the intervention is an *edit to a draft*, and the lesson wanted is about
-/// the user's voice and preferences — not about tool use. Ported from
-/// flowmail's edit-analysis pass: the underlying preference, not the edit
-/// restated.
+/// the user's voice and preferences — not about tool use. What the pass must
+/// produce is the underlying preference, not the edit restated.
 const WRITING_REFLECTOR_SYSTEM: &str = "\
 You analyze one edit a user made to a draft an AI assistant staged for them — \
 the assistant wrote it, the user changed it before letting it go out. Your \
@@ -1279,8 +1277,8 @@ An empty list is a valid answer when no reflection deserves a rule yet.";
 /// The writing-domain learner. Same reply contract as [`LEARNER_SYSTEM`] —
 /// `parse_learner_reply` serves both — but the frame is voice, not conduct:
 /// the reflections were inferred from the user's edits to drafts, and the
-/// rules being maintained describe how this user writes. The constraints are
-/// flowmail's consolidation constraints, each here for a reason.
+/// rules being maintained describe how this user writes. Every constraint in
+/// the prompt below is there for a reason.
 const WRITING_LEARNER_SYSTEM: &str = "\
 You maintain the learned writing rules for an AI assistant that drafts \
 messages on its user's behalf. Reflections — preferences inferred from edits \
@@ -1360,9 +1358,9 @@ pub(crate) fn parse_learner_reply(text: &str) -> Option<Vec<Rule>> {
 /// Runs one abstraction/consolidation pass for a domain: current learned
 /// rules + unprocessed reflections in, a rewritten learned rule set out.
 ///
-/// One combined pass rather than flowmail's separate incremental stage: their
-/// consolidation prompt already absorbs unprocessed reflexions, and at one
-/// user's volume the incremental stage buys nothing but a second prompt to
+/// One combined pass rather than a separate incremental abstraction stage:
+/// the consolidation prompt already absorbs unprocessed reflexions, and at
+/// one user's volume an incremental stage buys nothing but a second prompt to
 /// maintain. The three-stage design survives conceptually — reflections are
 /// still the evidence, this is still abstraction, and the budget it enforces
 /// is still consolidation.

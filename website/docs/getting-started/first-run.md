@@ -138,7 +138,12 @@ Exit codes are distinct so a script can tell the cases apart:
 | `0` | Completed |
 | `1` | Error |
 | `2` | The model refused |
-| `3` | It ran out of turns (or another budget stopped it) |
+| `3` | It produced no answer at all |
+
+Exhaustion is deliberately not a failure code. A run stopped by a turn, token or
+cost ceiling that still answered exits `0` — the work it left behind is graded
+on its own terms, and `--json`'s `stop_cause` names the ceiling for callers that
+care which one it was.
 
 Note that `--json` implies non-interactive: nothing can answer an approval
 prompt when output is being piped or parsed, so those runs use the configured
@@ -148,7 +153,7 @@ permission mode instead of asking.
 
 ```bash
 mecha chat
-mecha chat --resume 4f2a      # continue a saved session by id or unique prefix
+mecha chat --resume 20260805T091500   # continue a saved session by id or unique prefix
 ```
 
 Readline history, and slash commands:
@@ -193,13 +198,18 @@ The TUI has a longer command list than `chat`, because it is the only interface
 that can change things mid-session:
 
 ```
-/help  /tools  /triggers  /model  /provider  /mode  /mcp
-/usage  /todo  /session  /clear  /quit
+/help  /tools  /triggers  /outbox  /frontdoor  /polls  /review
+/model  /provider  /mode  /mcp  /usage  /clear  /session  /todo
+/exit
 ```
 
 `/mode ask|allow|read-only` changes the permission mode without restarting.
-`/mcp <server> on|off` toggles one server. `/triggers` opens the scheduled-prompt
-manager. When `context_window` is configured, the status line becomes a fuel
+`/mcp <server> on|off` toggles one server. `/triggers`, `/outbox` and
+`/frontdoor` open the scheduled-prompt, staged-send and inbound-request
+managers. `/review now|later|auto` decides what happens to drafts a run stages —
+set only by slash command, never inferred from the prompt, because release
+policy must not be decidable by anything sharing a context window with
+third-party text. When `context_window` is configured, the status line becomes a fuel
 gauge — `context 29.3k/32.8k (89%)` — instead of a token count with nothing to
 compare it against.
 

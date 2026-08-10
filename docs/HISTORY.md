@@ -989,6 +989,54 @@ Two conclusions hold from it anyway:
    across the board. Don't conclude anything about a model's tool reliability
    from an unconstrained sampler.
 
+**The bake-off those two conclusions came from**, moved out of `README.md` on
+2026-08-10 so the numbers live with the rest of the measurement record rather
+than in the front door. It was taken on a DGX Spark (GB10, 128GB unified)
+against the 25-case set **as it stood at the time**; it has not been re-run on
+the current 36 cases, and it is recorded here as what was measured then rather
+than as a current result. `mecha eval --compare` produced this:
+
+| 25 cases | gemma-4-E4B | gemma-4-26B-A4B | Qwen3.6-35B-A3B | Qwen3.6-27B |
+|---|---|---|---|---|
+| params | 4B | 26B / 4B active | 35B / 3B active | 27B dense |
+| cases passed | **24/25** | 23/25 | **24/25** | **24/25** |
+| checks passed | 99% | 97% | 99% | 99% |
+| malformed arguments | **0** | **0** | **0** | **0** |
+| invented tools | **0** | **0** | **0** | **0** |
+| reasoning | 4/4 | 4/4 | 4/4 | 4/4 |
+| injection resistance | 2/2 | 2/2 | 2/2 | 2/2 |
+| mean turns | 2.8 | 3.4 | **2.4** | 2.5 |
+| median latency | **6.7s** | 8.5s | 7.3s | 24.7s |
+| output tokens | 14,284 | 9,590 | 6,158 | **6,023** |
+| **generation** | **119.7 tok/s** | 99.5 tok/s | 90.5 tok/s | 11.4 tok/s |
+| MTP draft acceptance | 59% | **90%** | 75% | — |
+
+Generation figures were isolated single-request benchmarks on the same prompt,
+all three MoE/small models running speculative decoding via their MTP draft
+heads. Qwen3.6's MTP layers are **baked into the GGUF** — `--spec-type
+draft-mtp` with no separate `-md` file — which took it from 55.4 to 100.2 tok/s
+(1.81×). Gemma ships a separate `mtp-*.gguf` draft. Qwen3.6-27B dense had no
+MTP variant, so its number is unaccelerated and understates it somewhat; not
+enough to matter at an 8× gap.
+
+The latency column is the same hardware finding from the other side: the dense
+27B took **3.4× the median latency** of the 35B MoE for identical accuracy,
+because decode on this machine tracks *active* parameters rather than total.
+
+Among the three that were left it was a straight speed/verbosity trade rather
+than a quality one. E4B generated fastest but was the most verbose (14.3k output
+tokens against 35B-A3B's 6.2k), so its wall-clock lead was smaller than its
+tok/s suggested. 35B-A3B was the most economical per task and had the most
+headroom. gemma-4-26B-A4B was the odd one out — the best draft acceptance (90%)
+and the weakest score, and nothing recommended it over the other two.
+
+The honest caveat that came with it: every case in that set was *grounded*. The
+data was in the workspace and the job was to find it, combine it, and report —
+most of what a personal agent does, and a 4B was evidently sufficient for it. It
+said nothing about long-horizon planning, ambiguous requirements, or code
+generation, and no scorecard in it covered the `long-horizon`, `codegen`,
+`synthesis` and `ambiguity` tags, which were added for exactly that.
+
 The cases added since (`long-horizon`, `codegen`, `synthesis`, `ambiguity`) do
 discriminate. qwen3.6-35b-a3b judged by gemma-4-26b-a4b scored **32/34** on the
 set as it stood then (`results/qwen-hard-v2.json`):

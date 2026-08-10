@@ -14,7 +14,7 @@ arguments that will be used.
 
 ```toml
 [outbox]
-tools = ["mail__mail_send", "mail__mail_reply", "mail__calendar_create"]
+tools = ["mail__mail_send", "mail__mail_reply", "mail__calendar_create_event"]
 dir = "~/.mecha/outbox"     # optional; $MECHA_OUTBOX_DIR also works
 publish_tools = []          # of the above, which are publications — see below
 ```

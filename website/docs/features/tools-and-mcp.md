@@ -145,16 +145,21 @@ a rate-limited provider degrades to the next one rather than to nothing. It
 carries the same pair of labels as `http_fetch` and for the same reasons — what
 comes back is whatever a stranger published, and a query string is a way out.
 
-Two more tools are registered conditionally. `ask_user` exists only where a
-human is actually present — a batch worker or an eval case has nobody to
-answer, and a tool that blocks forever is worse than one that does not exist.
-`todo` is planning as a tool rather than as a mode: a list the model rewrites
-as it goes stays honest where a plan produced up front goes stale on the first
-surprise, and the current state is echoed back in every tool result so the
-model re-reads its own plan without anyone re-prompting it.
+`todo` is planning as a tool rather than as a mode: a list the model rewrites as
+it goes stays honest where a plan produced up front goes stale on the first
+surprise, and the current state is echoed back in every tool result so the model
+re-reads its own plan without anyone re-prompting it.
 
-Which built-ins are registered is config, via `[tools] enabled` / `disabled`,
-or `--tool` on the command line.
+Two more are registered by the front-end rather than from that list. `ask_user`
+exists only where a human is actually present — the TUI adds it, and a batch
+worker or a trigger has nobody to answer, so a tool that would block forever
+simply does not exist there. `message_send` exists only when `[messages]
+enabled` is on and `--no-messages` was not passed, and it writes to another of
+this machine's agents rather than to the outside world.
+
+Which of the built-ins are registered is config, via `[tools] enabled` /
+`disabled`. `--tool` on the command line narrows further, and reaches
+`web_search` and `message_send` as well.
 
 ## A tool's own state can cross a compaction
 
@@ -293,7 +298,7 @@ implementations.
 ```toml
 [[mcp]]
 name = "pkg"
-command = "~/Github/personalized_knowledge_graph/target/release/pkg-mcp"
+command = "pkg-mcp"                    # or an absolute path to the binary
 env_passthrough = ["PKG_DB"]
 env = { MECHA_TZ = "America/New_York" }
 sandbox = true

@@ -58,6 +58,12 @@ Thumbs.db
 /docs/OPERATIONS.md
 # Scratch output from runs. Nothing generated belongs in the repository.
 /artifacts/
+# A rendered bundle written beside the source it was rendered from. Twice now a
+# `git add -A` in a directory that was not clean has swept one in; the immutable
+# copy of any published bundle lives in ~/.mecha/bundles, where the publish put
+# it.
+*-render/
+*_bundle/
 
 # Anything mined from real correspondence stays out of a public repository.
 # The analysis lives in ~/.mecha/analysis/, outside every checkout, which is

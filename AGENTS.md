@@ -17,11 +17,17 @@ and pull request expectations.
 mecha-core/     the library; knows nothing about any CLI or application
 mecha-cli/      the `mecha` binary; thin, all logic belongs in core
 mecha-mail/     library plus three MCP binaries for mail and calendar
+mecha-slack/    the Slack transport; has no mecha-core dependency, and must
+                never gain one — that is why it is a crate and not a module
 eval/           the case set and its fixtures
 website/        the Docusaurus documentation site
 docs/           design and research notes, not user documentation
 results/        recorded scorecards; the baselines comparisons are made against
 ```
+
+Four workspace members, all published to crates.io. A new one that anything
+published depends on must be added to the release workflow's publish list in
+the same change that introduces it.
 
 ## Before you start
 

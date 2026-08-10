@@ -37,6 +37,7 @@ never build an agent (where they are simply ignored).
 | `--no-learned-rules` | Do not inject learned rules from `~/.mecha/learning` into the system prompt. |
 | `--no-hooks` | Do not run configured `[[hook]]` commands. Config is still validated. |
 | `--no-outbox` | Do not route any tools through the outbox; configured `[outbox]` tools execute directly. |
+| `--no-messages` | No inter-agent messaging: no `message_send` tool, and nothing from the mailbox is delivered into this run. |
 | `--no-fallback` | Never fall back to another provider. A transient failure that survives its retries fails the run. |
 | `--compact-at <N>` | Summarise older turns once the prompt passes this many tokens. |
 | `-v`, `--verbose` | Print tool calls, results, and token usage as they happen. |
@@ -70,7 +71,11 @@ mecha run [OPTIONS] [PROMPT]
 | `--resume <ID>` | Continue a saved session by id or unique prefix. |
 | `--no-session` | Do not write a transcript. |
 
-Exit codes: `0` success, `1` error, `2` the model refused, `3` it ran out of turns.
+Exit codes: `0` success, `1` error, `2` the model refused, `3` it produced no
+answer at all. Exhaustion is deliberately not a failure code — a run stopped by
+a turn, token or cost ceiling that still answered exits `0`, because the work it
+left behind is graded on its own terms. `--json`'s `stop_cause` names the
+ceiling for callers that care which one it was.
 
 Approval prompts are only offered when stdin is a terminal and `--json` was not
 passed; otherwise the configured `permission_mode` decides.
@@ -83,7 +88,7 @@ mecha run --json --yes --max-cost 0.25 \
   -w /srv/reports "regenerate the weekly summary in reports/weekly.md"
 
 # Piped in, continuing an earlier session.
-git log --oneline -20 | mecha run - --resume 01hq9
+git log --oneline -20 | mecha run - --resume 20260805T091500
 ```
 
 ## `chat`
@@ -149,7 +154,7 @@ front-end: it needs one owner of stdin, which a readline REPL cannot be while a 
 is streaming.
 
 ```bash
-mecha tui -w ~/Github/mecha
+mecha tui -w ~/code/my-project
 ```
 
 ## `batch`
@@ -274,9 +279,9 @@ provider and model. Transcripts live in `~/.mecha/sessions` unless
 
 ```bash
 mecha sessions list -n 50
-mecha sessions show 01hq9 --json | jq -r 'select(.role == "user") | .content'
+mecha sessions show 20260805T091500 --json | jq -r 'select(.role == "user") | .content'
 mecha sessions stats --days 30
-cat "$(mecha sessions path 01hq9)"
+cat "$(mecha sessions path 20260805T091500)"
 ```
 
 ## `replay`
@@ -300,9 +305,9 @@ divergence, argument spellings included — use it in CI. `live` abandons the re
 and keeps going against the real tools.
 
 ```bash
-mecha replay 01hq9
-mecha replay 01hq9 --on-divergence error --json > replay.json   # CI gate
-mecha replay ~/.mecha/sessions/01hq9....jsonl -m qwen3-14b -p local
+mecha replay 20260805T091500
+mecha replay 20260805T091500 --on-divergence error --json > replay.json   # CI gate
+mecha replay ~/.mecha/sessions/20260805T091500-3f2a1b7c.jsonl -m qwen3-14b -p local
 ```
 
 ## `outbox`
@@ -345,6 +350,53 @@ mecha outbox review --all --kind message
 mecha outbox reject 3f2a --reason "wrong recipient"
 ```
 
+## `msg`
+
+Messages between this machine's own agents — a chat session, a trigger, a
+one-shot `run` — addressed by **producer** name rather than by session, so an
+overnight trigger can write to `chat` without knowing which chat will read it.
+Delivery happens at the recipient's next turn boundary. Requires a subcommand.
+
+```
+mecha msg <send|list|show|dismiss|agents> [ARGS]
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `send` | `<TO> <BODY>` | Leave a message for a producer: `chat`, a trigger's name, `run`. |
+| `send` | `--from <NAME>` | Sender recorded on the message. Default `user`. |
+| `send` | `--reply-to <ID>` | Id of the message this answers. |
+| `list` | | Messages, pending first, across every mailbox. |
+| `list` | `--to <NAME>` | Only this recipient's mailbox. |
+| `list` | `--all` | Include delivered messages, not just pending. |
+| `show` | `<ID>` | One message in full. Id or unique prefix. |
+| `dismiss` | `[IDS]...` | Set pending messages aside unread. Ids, or unique prefixes. |
+| `dismiss` | `--all` | Every pending message instead. |
+| `dismiss` | `--to <NAME>` | With `--all`: only this recipient's mailbox. |
+| `agents` | | Which agents are live right now, per the session markers. |
+
+The agents are wired up by `[messages] enabled`, which is off by default, but
+this surface is not gated on it: the store is yours, and "what did the overnight
+run tell me" must not depend on a feature flag.
+
+`dismiss` rather than `rm` is the shape that matters — a full mailbox refuses
+new sends, so a backlog nobody is coming to claim needs setting aside, and the
+message stays on file either way.
+
+A send from a terminal is stamped clean, because a person typing is the one
+sender whose words are trusted input. A send whose stdin is *not* a terminal — a
+pipe, a script, or an agent's `shell` reaching for `mecha msg send` to route
+around the harness — is stamped private and untrusted, so the receiver's
+interlock sees it exactly as `message_send` would have presented it.
+
+```bash
+mecha msg send chat "the briefing is in ~/.mecha/work/briefing"
+mecha msg list --all
+mecha msg show 9c1e
+mecha msg dismiss --all --to chat
+mecha msg agents
+```
+
 ## `work`
 
 What runs have generated, and removing what is past. Every producer — a
@@ -383,7 +435,7 @@ through before any run with tools is told about them. `list` is the default
 subcommand.
 
 ```
-mecha frontdoor [list|show|extract|next] [ARGS]
+mecha frontdoor [list|show|extract|next|triage|needs-info|close] [ARGS]
 ```
 
 | Subcommand | Flag | Description |
@@ -394,14 +446,37 @@ mecha frontdoor [list|show|extract|next] [ARGS]
 | `extract` | | Run the quarantined extraction over everything not yet extracted. |
 | `extract` | `--seq <SEQ>` | Just this one. |
 | `extract` | `--force` | Re-extract records that already have an extraction. |
-| `next` | `--limit <N>` | What a triage run may be told, as JSON — extractions only, never prose. Default 5. |
+| `next` | `--limit <N>` | What a triage run may be told, as JSON — extractions only, never prose. Default `5`. |
+| `triage` | | Draft a reply to each extracted request, into the outbox. |
+| `triage` | `--seq <SEQ>` | Just this one. |
+| `triage` | `--limit <N>` | At most this many. Default `5`. |
+| `needs-info` | `<SEQ>` | Park a request until the requester answers something. |
+| `needs-info` | `--note <TEXT>` | What is missing. |
+| `close` | `<SEQ>` | End a request. |
+| `close` | `--reason <REASON>` | Why. **Required** — `any → closed` is the one transition that must never be silent. |
 
-`show` is the one place the original text is printed, and a terminal is where
-that is safe. `next` is what a triage trigger pipes into a prompt; it is
-structurally incapable of including the words a stranger typed.
+The verbs split along the quarantine. `list` and `show` are **for you**: `show`
+is the one place the original text is printed, and a terminal is where that is
+safe, because you cannot be prompt-injected into sending your own calendar
+somewhere. `extract` is the quarantined pass — a tool-less model call per
+record, turning prose into typed fields. `next` is what a triage trigger pipes
+into a prompt, and it is structurally incapable of including the words a
+stranger typed.
+
+`triage` is the privileged half: a full agent with mail and calendar, told only
+what `next` would print, drafting into the outbox. It refuses to run without
+`[outbox] tools` naming the send, rather than running unrouted — a stranger's
+inbox is not where you want to discover the route was unset. Each request gets
+a fresh conversation, so one request's flagged prose cannot arm the interlock
+for the request behind it.
+
+`needs-info` and `close` are how a request stops growing the queue. A rejected
+draft returns its request to `extracted` rather than to `closed`: "not this
+reply" is not "not this request".
 
 Draining is deliberately not here — `mecha-factory-publish drain` holds the key
-and speaks the protocol.
+and speaks the protocol, and the common case, nothing new, must cost zero tokens
+and no model at all.
 
 ```bash
 mecha frontdoor
@@ -409,9 +484,63 @@ mecha frontdoor list --state extraction_failed
 mecha frontdoor show 42
 mecha frontdoor extract
 mecha frontdoor next --limit 3
+mecha frontdoor triage --limit 3
+mecha frontdoor needs-info 42 --note "no date given"
+mecha frontdoor close 42 --reason "answered by the sent draft"
 ```
 
 See [The front door](/docs/features/frontdoor).
+
+## `slack`
+
+Driving mecha from Slack: the credential, the binding, and who may drive.
+`status` is the default subcommand.
+
+```
+mecha slack [status|auth|link|threads|connect|sweep|notify|unlink] [ARGS]
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `status` | | What is bound, and whether the credential still works. |
+| `auth` | | Store the bot and app-level tokens, after proving them against Slack. |
+| `link` | `--timeout <MINUTES>` | Give up on an unclaimed code after this long. Default `10`. |
+| `link` | `--force` | Bind even though this install is already bound to another workspace. |
+| `threads` | `--state <STATE>` | What state each thread is in: `idle`, `running`, `awaiting_input`, `cancelled`, `staged`, `done`, `failed`, `orphaned`. |
+| `connect` | | Run the connector: hold the Slack socket open and drive runs from threads. |
+| `sweep` | | Mark threads whose run did not survive a restart, so none is left showing "working…" forever. |
+| `notify` | `--title <TEXT>` | Read stdin and send it to the owner as a DM. |
+| `unlink` | | Forget the binding. The tokens stay, so `link` can be run again. |
+
+`auth` reads the tokens from `MECHA_SLACK_BOT_TOKEN` (`xoxb-`) and
+`MECHA_SLACK_APP_TOKEN` (`xapp-`) rather than from flags, because a flag lands
+in shell history and in `ps` output, and a Slack bot token reaches the whole
+workspace. It proves both against Slack before storing either.
+
+`link` prints a one-time code **here** and binds whoever types it into Slack.
+Typing a code printed on this machine proves shell access to the machine the
+agent runs on; an email address proves only what the workspace claims about it.
+
+`connect` is what the systemd unit runs (`scripts/mecha-slack.service`); it does
+a `sweep` on startup. `notify` is what a trigger's `notify` calls — that command
+already runs with the run's answer on stdin, so
+`--notify 'mecha slack notify --title briefing'` puts the morning briefing on a
+phone with no new trigger concept at all.
+
+Nothing in `[slack]` config grants access. Who may drive lives in
+`~/.mecha/slack/binding.json`, a store rather than config.
+
+```bash
+export MECHA_SLACK_BOT_TOKEN=xoxb-…
+export MECHA_SLACK_APP_TOKEN=xapp-…
+mecha slack auth
+mecha slack link                  # then type the printed code at the app in Slack
+mecha slack status
+mecha slack threads --state awaiting_input
+echo "deploy finished" | mecha slack notify --title deploy
+```
+
+See [Slack](/docs/features/slack).
 
 ## `trigger`
 

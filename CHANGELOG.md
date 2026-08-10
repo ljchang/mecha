@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Five dependency majors** — `rand` 0.8 → 0.10, `sha2` 0.10 → 0.11,
+  `rustyline` 15 → 17 (the line editor behind `mecha chat`), and `ratatui`
+  0.29 → 0.30 with `crossterm` 0.28 → 0.29, which cannot move separately
+  because ratatui pins it. The ratatui major was a migration rather than a
+  bump: 0.30 makes `Backend::Error` an associated type, so `terminal.draw(..)?`
+  inside a function returning `anyhow::Result` stops compiling — anyhow needs
+  the error to be `Send + Sync + 'static` and an opaque associated type
+  promises none of it. Fixed with a bound,
+  `Terminal<impl Backend<Error: Send + Sync + 'static>>`, rather than pinning
+  the concrete `io::Error`: ratatui's own `TestBackend` uses `Infallible`, and
+  the concrete type would have locked every rendering test out of the
+  functions it tests.
+- **Google's PKCE verifier is filled in one call** from `rand::rng()`, the
+  thread-local CSPRNG, rather than a byte at a time — the one code change the
+  `rand` major required. The function had no test at all, which is how a
+  security-relevant generator gets its random source swapped with nothing
+  watching; it has two now, the load-bearing one recomputing the challenge from
+  the verifier exactly as the authorisation server does, because a wrong
+  transform fails every sign-in with an error naming neither end.
+
 ## [0.1.2] - 2026-08-10
 
 ### Fixed
@@ -81,6 +103,169 @@ reproducer that fails byte-identically).
   CLI, which would let a mistyped flag be swallowed as the prompt and run
   anyway.
 
+## [0.1.1] - 2026-08-09
+
+### Added
+
+#### Slack as a remote control
+
+- **`mecha slack`** — `auth` (tokens read from the environment rather than from
+  flags, so neither reaches shell history or `ps`), `link` (a one-time code
+  binds this install to a workspace), `connect` (holds the socket open and
+  drives runs from threads; this is what the systemd unit runs), `threads`,
+  `sweep` and `status`. The transport is a fourth crate, `mecha-slack`, which
+  joins the crates published to crates.io.
+- **A Slack thread is a `Conversation`**, which hands the trifecta interlock the
+  right granularity for free: a new thread is an honest clean slate, and a
+  thread that fetched a hostile page on Monday still remembers on Tuesday.
+  Everything per-thread — jail, budget, cancel token, steering queue, approver —
+  rides on `RunContext`, because one agent serves every thread.
+- **Unfurling is off on everything the model authors, and there is no parameter
+  to turn it on.** A model-emitted URL that unfurls becomes an outbound GET that
+  no tool call made and no interlock saw, so it is a property of the transport
+  rather than an argument some call site can forget.
+- **A private file download that comes back as a sign-in page is refused.**
+  `files.slack.com` redirects to the workspace host, HTTP clients strip
+  `Authorization` across hosts, and Slack answers with an HTML login page at
+  status 200 — so the header is sent explicitly, no redirect is followed,
+  `text/html` is rejected even at 200, and the byte count is cross-checked
+  against the size Slack reported. Without them a sign-in page reaches the model
+  labelled as the user's screenshot.
+- **`[slack]` config** — `max_concurrent` (threads with a run in flight at once;
+  at the cap the connector refuses and says so rather than queueing),
+  `approval_timeout_secs`, `default_mode`, `max_turns`, `max_cost_usd`,
+  `stream_flush_chars` / `stream_flush_ms`, `max_upload_mb`, and `tools` to
+  narrow the surface a Slack-driven run gets — measured on the first live run,
+  the schemas of every wired MCP server cost ~7–8k input tokens *per turn*
+  before any work happened.
+
+#### Inter-agent messaging
+
+- **`mecha msg`** — `send`, `list`, `show`, `dismiss` and `agents` over a
+  file-based mailbox between sessions (`~/.mecha/messages/<recipient>/`). One
+  agent, or a person, leaves a short text for another by producer name; the
+  recipient's run claims it at the top of a turn and folds it into the same user
+  message that carries the tool results — the identical fold point as steering,
+  because it is the identical problem. A recipient with no live run loses
+  nothing: the message waits in the store until its producer next runs.
+- **Taint travels with the message.** A message is otherwise a laundering point,
+  since the receiving conversation's interlock never saw what the sender read.
+  The harness — never the model — stamps the sender's conversation taint onto
+  every message, and delivery merges it into the receiver's before the text
+  lands. A tainted overnight run can still report to `chat`; the morning session
+  then treats external sends exactly as if it had read the hostile page itself.
+- **A message is structurally not the user.** It cannot answer an approval
+  prompt, cannot change config, and arrives labelled as another agent's words;
+  the receiver's own permissions, hooks, outbox route and interlock govern
+  everything it provokes. A full mailbox refuses new sends, which is what
+  `dismiss` is for.
+
+#### Review, in the TUI
+
+- **`/outbox` and `/frontdoor`** are modals on the `/triggers` pattern: the
+  store read for display, every mutation a `mecha …` child process, and slow
+  work — a release's MCP startup, an extraction, a triage run — spawned detached
+  and watched, with the outcome reported as a notice when the store shows it.
+  Every send confirms, and a draft staged with the trifecta armed is shown in
+  red with its full arguments on screen.
+- **`/review now|later|auto`** decides what happens when a run stages drafts.
+  It is set only by slash command and never inferred from the prompt, because
+  release policy must not be decidable by anything sharing a context window with
+  third-party text. Scope is an id-diff between submit and completion, so no
+  mode touches items another session staged; tainted drafts never auto-release,
+  and an errored or early-stopped run releases nothing.
+- **`/polls`** — the polls open on the public gate: tallies, close and export.
+
+#### mecha-mail: availability and bookings
+
+- **`calendar_freebusy`** merges busy intervals across every configured account.
+  `mecha-mail freebusy --json` is the same answer as data, for a scheduled
+  pipeline with no model in it — and unlike the MCP surface, which reports a
+  failed account beside the others' results, it fails when *any* account is
+  unreadable: a mailbox that could not be read is not a mailbox with free time,
+  and a booking page built from a partial answer offers strangers slots the user
+  does not have.
+- **`mecha-mail bookings`** turns drained booking records into calendar events —
+  the inbound sibling of `freebusy`, deterministic and with no model in it. The
+  invite is the provider's own, from the user's real mailbox; a cancellation
+  withdraws the event and the ledger remembers both directions; reminders fire
+  once per tier. Idempotent against `~/.mecha/mail/bookings.jsonl` under a lock,
+  so re-running after a partial failure picks up exactly where it stopped and
+  two sweeps cannot both create an event.
+
+#### The work directory
+
+- **`~/.mecha/work/<producer>/` is a run's workspace as well as its output
+  directory**, where a producer is a trigger's name, or `chat`, or a session id.
+  It is stable across runs of the same producer, so yesterday's output is an
+  ordinary file in today's run rather than something that has to be plumbed.
+- **`mecha work`** — `list` (what each producer has generated, with counts,
+  size, and the newest entry), `path <producer>` (for `cd $(mecha work path x)`),
+  and `clean` with `--keep`, `--producer` and `--dry-run`. Retention is a policy
+  rather than an intention: the last `[work] keep` entries per producer survive,
+  the nightly job runs it, and it says exactly what it removed.
+- `clean` **never removes anything a published bundle names as a source**, and
+  names the entries it kept for that reason instead of skipping them silently.
+- `[work] keep` in config (default 10).
+
+#### The public surface, outbound
+
+- **Publishing rides on the outbox.** The factory's MCP tools render a bundle
+  locally and stage the publish for review, so nothing reaches a public URL
+  without a human releasing it.
+- **`[outbox] publish_tools`** names which routed tools are publications. An
+  item now carries a kind (`message` or `publish`) that decides how it is
+  *reviewed*: `show` leads with the rendered page rather than the arguments,
+  `edit` is refused with the real action named (edit the source, re-render,
+  publish again), and the writing-reflection miner excludes publishes so a
+  changed directory path can never be mined into a voice rule.
+- **The kind is config's to declare, never the tool's.** Anything unnamed is a
+  `message`, and a name in `publish_tools` that is not in `tools` warns on every
+  start.
+- **An item records the workspace it was drafted under**, and a release rebuilds
+  its tool surface rooted there. A batch release builds one surface per distinct
+  workspace, lazily.
+
+#### The public surface, inbound
+
+- **`mecha frontdoor`** — `list`, `show`, `extract` and `next` over the requests
+  drained from the public surface into `~/.mecha/requests/`. The whole layer
+  serves one sentence: the privileged run sees the extraction, never the prose a
+  stranger wrote.
+- The extractor is issued a request with an **empty tool list and no
+  conversation**, so there is nothing for an injected instruction to reach; an
+  extraction failure routes to a human rather than passing the prose through.
+- `Record::for_privileged_run` is a function with no argument that returns the
+  original text, so the boundary is structural rather than a rule to remember.
+
+- **`triage`, `needs-info` and `close` are how a request reaches an answer**,
+  and the queue stops being somewhere requests only accumulate. `triage` drafts
+  a reply per extracted request into the outbox and **refuses to run without the
+  outbox route** — unrouted, a `mail_send` the model makes actually sends, and a
+  stranger's inbox is not where you want to discover `[outbox] tools` was unset.
+  Each request gets a fresh `Conversation`, so flagged prose cannot arm the
+  interlock for the request behind it. `close` requires a reason. A **rejected
+  draft returns the request to `extracted`, never to `closed`** — "not this
+  reply" is not "not this request". `reconcile` reads the outbox and updates the
+  request store on its own rather than on a verb someone has to remember, and
+  leaves a partly-resolved set alone, because some sent and some pending is a
+  person mid-review.
+
+#### Elsewhere
+
+- **`mecha outbox review`** walks pending items one at a time, deciding each —
+  the overnight-triage case, where nine drafts used to mean nine invocations and
+  nine startups of every MCP server. Batching saves the invocations and never
+  the reading. Ids may be given several at a time; `--all` is narrowed by
+  `--kind` and `--via`; `list` is grouped by kind. A selection naming nothing,
+  or a filter matching nothing, is an error rather than "everything".
+- **`Tool::carried_state`** lets a tool hand state to a compaction to be carried
+  verbatim. The `todo` list reached the model only through the echo in its last
+  result — a message, and therefore exactly what a compaction summarises away.
+  Exactly one copy survives a second compaction.
+
+### Fixed
+
 #### The agent loop, after the 2026-08-07 Terminal-Bench diagnosis
 
 Twenty-one trials of the arm64 subset broke down as 8 passes, 5 genuine model
@@ -135,67 +320,7 @@ the trial class that motivated it.
   every death; the bench adapter now redirects stderr to a file beside the
   session transcript and runs with `MECHA_LOG=debug`.
 
-### Added
-
-#### The work directory
-
-- **`~/.mecha/work/<producer>/` is a run's workspace as well as its output
-  directory**, where a producer is a trigger's name, or `chat`, or a session id.
-  It is stable across runs of the same producer, so yesterday's output is an
-  ordinary file in today's run rather than something that has to be plumbed.
-- **`mecha work`** — `list` (what each producer has generated, with counts,
-  size, and the newest entry), `path <producer>` (for `cd $(mecha work path x)`),
-  and `clean` with `--keep`, `--producer` and `--dry-run`. Retention is a policy
-  rather than an intention: the last `[work] keep` entries per producer survive,
-  the nightly job runs it, and it says exactly what it removed.
-- `clean` **never removes anything a published bundle names as a source**, and
-  names the entries it kept for that reason instead of skipping them silently.
-- `[work] keep` in config (default 10).
-
-#### The public surface, outbound
-
-- **Publishing rides on the outbox.** The factory's MCP tools render a bundle
-  locally and stage the publish for review, so nothing reaches a public URL
-  without a human releasing it.
-- **`[outbox] publish_tools`** names which routed tools are publications. An
-  item now carries a kind (`message` or `publish`) that decides how it is
-  *reviewed*: `show` leads with the rendered page rather than the arguments,
-  `edit` is refused with the real action named (edit the source, re-render,
-  publish again), and the writing-reflection miner excludes publishes so a
-  changed directory path can never be mined into a voice rule.
-- **The kind is config's to declare, never the tool's.** Anything unnamed is a
-  `message`, and a name in `publish_tools` that is not in `tools` warns on every
-  start.
-- **An item records the workspace it was drafted under**, and a release rebuilds
-  its tool surface rooted there. A batch release builds one surface per distinct
-  workspace, lazily.
-
-#### The public surface, inbound
-
-- **`mecha frontdoor`** — `list`, `show`, `extract` and `next` over the requests
-  drained from the public surface into `~/.mecha/requests/`. The whole layer
-  serves one sentence: the privileged run sees the extraction, never the prose a
-  stranger wrote.
-- The extractor is issued a request with an **empty tool list and no
-  conversation**, so there is nothing for an injected instruction to reach; an
-  extraction failure routes to a human rather than passing the prose through.
-- `Record::for_privileged_run` is a function with no argument that returns the
-  original text, so the boundary is structural rather than a rule to remember.
-
-#### Elsewhere
-
-- **`mecha outbox review`** walks pending items one at a time, deciding each —
-  the overnight-triage case, where nine drafts used to mean nine invocations and
-  nine startups of every MCP server. Batching saves the invocations and never
-  the reading. Ids may be given several at a time; `--all` is narrowed by
-  `--kind` and `--via`; `list` is grouped by kind. A selection naming nothing,
-  or a filter matching nothing, is an error rather than "everything".
-- **`Tool::carried_state`** lets a tool hand state to a compaction to be carried
-  verbatim. The `todo` list reached the model only through the echo in its last
-  result — a message, and therefore exactly what a compaction summarises away.
-  Exactly one copy survives a second compaction.
-
-### Fixed
+#### Jails, workspaces, and who is refusing
 
 - **A path jail rooted where the secrets live.** `setup` now refuses any
   workspace that *contains* the mecha home, because `$HOME` contains
@@ -211,6 +336,14 @@ the trial class that motivated it.
   confined one always did. It used to inherit mecha's own working directory, so
   a server resolving a relative path resolved it against wherever the user
   launched mecha.
+- **A refusal by the machine is no longer recorded as a correction by the
+  user.** `Decision` is now `Allow | Deny | Blocked`: `Deny` is a human saying
+  no and is mined as a correction, `Blocked` is policy and never is. The prefix
+  is chosen by the loop from the variant, never by the approver, so no wording a
+  front-end picks can mislabel itself. This exposed a live bug —
+  `ModeApprover`'s own refusals (a read-only run's, an unattended run's "nothing
+  is watching to answer") had been arriving as user denials, so every such run
+  was feeding the learning miner corrections from a person who never spoke.
 - **A trigger's `notify` command runs in the run's workspace**, as a hook
   already did. It inherited the daemon's directory, so the only way to put the
   answer somewhere was to spell out an absolute path — which is how the morning
@@ -640,5 +773,7 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/ljchang/mecha/releases/tag/v0.1.2
+[0.1.1]: https://github.com/ljchang/mecha/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ljchang/mecha/releases/tag/v0.1.0

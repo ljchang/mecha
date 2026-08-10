@@ -1,12 +1,12 @@
-//! `mecha-mail` — Gmail, Outlook, and their calendars, extracted from
-//! flowmail.
+//! `mecha-mail` — Gmail, Outlook, and their calendars.
 //!
 //! The library layer is a plain client per provider: [`google`] and
 //! [`microsoft`] each hold API clients constructible from an access token
-//! plus their OAuth flow. [`token`] owns the credential lifecycle flowmail
-//! kept in its JS frontend; [`http`] (retry), [`text`] (HTML→text and prompt
-//! sanitizing), and [`mcp`] (the stdio transport) are shared. A GUI — a
-//! future flowmail — would depend on this crate directly.
+//! plus their OAuth flow. [`token`] owns the credential lifecycle — storage,
+//! refresh, and retry-on-401 — in Rust rather than in a caller's UI layer;
+//! [`http`] (retry), [`text`] (HTML→text and prompt sanitizing), and [`mcp`]
+//! (the stdio transport) are shared. A GUI would depend on this crate
+//! directly.
 //!
 //! Each binary is one provider's MCP face, with its own credential store, so
 //! a deployment can wire either or both.

@@ -61,22 +61,31 @@ provider = "outlook"
 ```bash
 mecha-mail auth dartmouth --provider outlook --tenant <tenant-id>
 mecha-mail auth personal  --provider google
-mecha-mail import personal --provider google    # adopt a legacy per-provider login
+mecha-mail import personal --provider google    # copy a mecha-google / mecha-outlook login in
 mecha-mail accounts                              # names, providers, addresses, the default
 mecha-mail default dartmouth                     # set the standing default
 mecha-mail serve                                 # the MCP server (also the no-subcommand default)
 ```
+
+`auth` takes the OAuth client configuration where it needs it: `--client-id`
+(the Google Desktop app id or the Entra application id, also read from
+`GMAIL_CLIENT_ID` / `OUTLOOK_CLIENT_ID`), `--client-secret` for Google's
+desktop pseudo-secret, `--tenant` for the Entra directory, and `--port` for the
+Google loopback redirect. **A second mailbox on the same app registration needs
+none of them**: with no `--client-id`, the client configuration is taken from
+this account's own stored login, or failing that from a configured sibling of
+the same provider. Adding your second Gmail account is one command with two
+arguments.
 
 Credentials live at `~/.mecha/mail/<name>/oauth.json`, one store per account.
 Names are lowercase letters, digits, `-` and `_`; duplicates and a default that
 names no configured account are refused at load.
 
 **The account names are baked into every tool schema as an enum at startup.**
-`MailTools::load` reads `accounts.toml` once and calls `tool_definitions(&names,
-default)`, which emits `{"type": "string", "enum": ["dartmouth", "personal"]}`
-for the `account` property of all ten tools, plus a sentence naming the default
-where one exists. The model picks from real names instead of guessing at them,
-and the schemas are built once rather than per request.
+`accounts.toml` is read once, and every tool's `account` property is emitted as
+`{"type": "string", "enum": ["dartmouth", "personal"]}`, plus a sentence naming
+the default where one exists. The model picks from real names instead of
+guessing at them, and the schemas are built once rather than per request.
 
 A configured account whose credentials will not load **fails startup** with the
 command that fixes it, rather than being quietly skipped:
@@ -87,9 +96,15 @@ account `dartmouth`: run `mecha-mail auth dartmouth --provider outlook`
 
 ## Resolution: the rule that shapes the surface
 
-Ten tools — `mail_search`, `mail_recent`, `mail_get_thread`, `mail_send`,
-`mail_reply`, `calendar_list`, `calendar_list_events`, `calendar_create_event`,
-`calendar_update_event`, `calendar_delete_event` — and three resolution modes.
+Eleven tools — `mail_search`, `mail_recent`, `mail_get_thread`, `mail_send`,
+`mail_reply`, `calendar_list`, `calendar_list_events`, `calendar_freebusy`,
+`calendar_create_event`, `calendar_update_event`, `calendar_delete_event` — and
+three resolution modes.
+
+`calendar_freebusy` is the scheduling one: busy intervals merged across every
+account, with no event details in them. "When am I free on Thursday?" is
+answered from it; `calendar_list_events` is for when the events themselves
+matter.
 
 ### Reads fan out
 
@@ -153,6 +168,33 @@ account `personal`: request timed out
 The call reports an error **only when every account failed**. One expired
 refresh token does not cost you the other mailbox.
 
+## Two commands with no model in them
+
+`mecha-mail` also serves the scheduling pipeline directly, as data, on a timer:
+
+```bash
+mecha-mail freebusy --days 60 --json     # merged busy intervals across every account
+mecha-mail bookings --dry-run            # what drained bookings would become events
+```
+
+**`freebusy` deliberately inverts the rule above: it fails when *any* account
+is unreadable.** The MCP surface answers a person who can see the note about
+which mailbox was skipped; this one feeds a public booking page. A mailbox that
+could not be read is not a mailbox with free time, and a slot list built from a
+partial answer offers strangers hours the user does not have. `--from`/`--to`
+name an explicit window instead of `--days`, and `--account` narrows to one.
+
+**`bookings` is the inbound sibling**: it turns drained booking records into
+calendar events, deterministically, with no model anywhere. It is idempotent
+against `~/.mecha/mail/bookings.jsonl` — a record already ledgered is skipped,
+so re-running after a partial failure picks up exactly where it stopped — and
+each event is re-verified against live free/busy before it is created, because
+the slot was sold from a cache and home holds the fresher truth. A collision is
+parked loudly for a human rather than double-booked. `--account` names the
+calendar that receives the events, defaulting to the default account; an absent
+request store is "nothing drained yet" rather than an error, because this runs
+on a timer that must not cry wolf.
+
 ## Capability labeling: reads are untrusted sources, not send sinks
 
 This is the part worth not re-litigating.
@@ -174,14 +216,14 @@ they carry `openWorldHint`, and `calendar_update_event` / `calendar_delete_event
 add `destructiveHint`. Those names go in `[outbox] tools`, so they **stage
 rather than deliver**. See [the outbox](/docs/features/outbox).
 
-A shared test helper, `assert_tool_surface`, is run against each provider's tool
-list and asserts all of it: every read is `readOnlyHint` and is *not*
-`openWorldHint` ("reaches only the provider that already custodies this data —
-not a send sink"), every write is `openWorldHint` and is *not* `readOnlyHint`,
-and every tool has an object schema and a description worth reading. A new
-provider cannot ship a mislabelled surface. Unification did not weaken this: the
-same annotations ride on the unified tools, and one send name in the outbox list
-now covers every account it could send from.
+A shared test runs against each provider's tool list and asserts all of it:
+every read is `readOnlyHint` and is *not* `openWorldHint` ("reaches only the
+provider that already custodies this data — not a send sink"), every write is
+`openWorldHint` and is *not* `readOnlyHint`, and every tool has an object schema
+and a description worth reading. A new provider cannot ship a mislabelled
+surface. Unification did not weaken this: the same annotations ride on the
+unified tools, and one send name in the outbox list now covers every account it
+could send from.
 
 ## Microsoft signs in with device code
 
@@ -217,8 +259,8 @@ offline_access
 `Mail.ReadWrite` is excluded because nothing here modifies a message in place.
 `User.Read` is excluded because `GET /me` is not worth a consent prompt — so the
 account's own address is read from **Sent Items** instead (`/me/mailFolders/
-sentitems/messages?$top=1&$select=from`), which is the conclusion flowmail
-reached independently.
+sentitems/messages?$top=1&$select=from`), using a scope the account already
+needs.
 
 **An account lookup must never be fatal to `auth`.** If the address cannot be
 determined, the flow prints a note and saves the tokens anyway. Losing a
@@ -237,8 +279,8 @@ timeout on the redirect.
 
 ## The token lifecycle
 
-flowmail kept storage, refresh, and retry-on-401 in its JS frontend. Here it is
-in Rust, in the library, so every caller gets it:
+Storage, refresh, and retry-on-401 live in Rust, in the library, so every caller
+gets them:
 
 - **`oauth.json` at mode 0600**, written to a temp sibling that is *created* with
   that mode before any bytes land, then renamed. The directory is 0700.
@@ -255,21 +297,23 @@ in Rust, in the library, so every caller gets it:
   1000 ms. Transport errors retry; other 4xx never do. A streaming request that
   cannot be cloned gets one try.
 
-## Four flowmail behaviours fixed rather than ported
+## Provider quirks handled for you
 
-Each was filed upstream (`ljchang/flowmail` issues 3–6):
+Four places where the obvious call is the wrong one, each settled in the
+library so no caller has to know:
 
-- Graph replies go through `POST /messages/{id}/reply` so they **thread**.
-- The calendar reads `calendarView`, so recurring events do not vanish from a
-  window.
-- Search uses `$search` instead of a `$filter` that 400s beside `$orderby`.
-- `to` splits on commas, like `cc` and `bcc` already did.
+- **Graph replies go through `POST /messages/{id}/reply`**, so they thread
+  rather than arriving as a new conversation.
+- **The calendar reads `calendarView`**, so recurring events do not vanish from
+  a window.
+- **Search uses `$search`**, not a `$filter` that 400s beside `$orderby`.
+- **`to` splits on commas**, exactly as `cc` and `bcc` do.
 
 ## Two unification wrinkles
 
 **`mail_reply` takes a `thread_id`** and answers the newest message in it (or
-`message_id` when one is named). Graph does that natively; Gmail cannot, so
-`gmail_reply_fields` synthesizes the addressing: answer the sender, or the
+`message_id` when one is named). Graph does that natively; Gmail cannot, so the
+library synthesizes the addressing: answer the sender, or the
 recipients when you are replying to your own message; keep everyone on
 reply-all; drop the user's own address, which is known from the credential
 store; and add `Re:` only if the subject does not already carry it.
@@ -283,9 +327,9 @@ Monday retreat gets announced as Sunday at 8pm. See
 
 ## HTML-only mail
 
-flowmail took only the `text/plain` part, so an HTML-only email reached the model
-as an empty body. Here the body falls back through `body_text` → HTML converted
-to markdown → the snippet, and everything on that path is then sanitized: HTML
+Taking only the `text/plain` part is how an HTML-only email reaches the model as
+an empty body. So the body falls back through `body_text` → HTML converted to
+markdown → the snippet, and everything on that path is then sanitized: HTML
 comments stripped, long base64 runs replaced with a placeholder, and
 `<system` / `<tool` / `<function` escaped. Outbound header values containing a
 line break are refused outright, so a model-supplied subject cannot inject a

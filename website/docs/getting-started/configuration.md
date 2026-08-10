@@ -41,17 +41,28 @@ Scalars merge field by field. Tables of things do not:
   server or hook *off*, and a project that cannot disable an inherited hook
   cannot be trusted to run anything.
 
-### One thing that never comes from a project file
+### What never comes from a project file
 
-Triggers — scheduled unattended prompts — are not declarable in config at all.
-They live as individual files in `~/.mecha/triggers/`, and a trigger run loads
-the global file only, with no project layer.
+The reason is one sentence: `mecha.toml` arrives with a cloned repository, and
+it can name MCP servers to spawn, hooks to execute, and tools to enable. That is
+a reasonable bargain for someone who has just decided to work in that repository
+and is sitting there watching. It is no bargain at all otherwise. So three
+things sit outside that bargain:
 
-The reason is that `mecha.toml` arrives with a cloned repository, and it can
-name MCP servers to spawn, hooks to execute, and tools to enable. That is a
-reasonable bargain for someone who has just decided to work in that repository
-and is sitting there watching. It is no bargain at all for a run firing at 03:00
-with nobody present. See [Triggers](/docs/features/triggers).
+- **Triggers** — scheduled unattended prompts — are not declarable in config at
+  all. They live as individual files in `~/.mecha/triggers/`, and a trigger run
+  loads the global file only, with no project layer. A repository that could
+  declare one would have been handed a cron slot on your machine. See
+  [Triggers](/docs/features/triggers).
+- **`[messages]`** is receiver-side admission policy for messages between your
+  own agents, so a cloned repository must not get to set `inbound = "accept"` on
+  your sessions.
+- **`[slack]`** is the remote control, which is the sharpest version of the same
+  point.
+
+The last two are *stripped* from a project layer rather than merged, and loudly:
+naming either in a `mecha.toml` logs a warning saying the section is ignored,
+because an ignored section that looks applied is worse than one that fails.
 
 ## The settings that matter early
 

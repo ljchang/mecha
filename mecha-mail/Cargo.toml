@@ -1,13 +1,13 @@
 [package]
 name = "mecha-mail"
-description = "Gmail, Outlook, and their calendars — extracted from flowmail — with stdio MCP servers on top."
+description = "Gmail, Outlook, and their calendars behind one provider-neutral surface, with stdio MCP servers on top."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# The library is the piece a future flowmail depends on directly. The
+# The library is the piece a GUI would depend on directly. The
 # per-provider binaries serve one provider each with its own credential
 # store; `mecha-mail` serves every account in ~/.mecha/mail behind one
 # provider-neutral surface, which is the one deployments should wire.

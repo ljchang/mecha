@@ -1,13 +1,13 @@
 //! Rendering an email for a model: HTML→text fallback and prompt-injection
-//! hygiene. The sanitizer is flowmail's (`ai/context.rs`) — which defined it
-//! and then never called it from the drafting path; here it is on the only
-//! path there is.
+//! hygiene. The sanitizer sits on the only path a body can take to a prompt —
+//! a sanitizer that some paths bypass is one an attacker picks the path
+//! around.
 
 use crate::types::Email;
 
 /// The model-facing body of an email: prefer the text part, fall back to
-/// converting the HTML part (flowmail's known weakness: an HTML-only email
-/// reached the model as an empty body), sanitize either way.
+/// converting the HTML part (without the fallback, an HTML-only email reaches
+/// the model as an empty body), sanitize either way.
 pub fn clean_body(email: &Email) -> String {
     let raw = if !email.body_text.trim().is_empty() {
         email.body_text.clone()
@@ -21,7 +21,7 @@ pub fn clean_body(email: &Email) -> String {
 
 /// Strip what an attacker or an encoder can hide in a body before it reaches
 /// a prompt: HTML comments, long base64 runs, and system-level tag look-alikes.
-/// Ported from flowmail's `sanitize_email_for_prompt`, regex-free.
+/// Regex-free.
 pub fn sanitize_for_prompt(body: &str) -> String {
     let s = strip_html_comments(body);
     let s = truncate_base64_runs(&s, 200);
@@ -102,8 +102,8 @@ mod tests {
         }
     }
 
-    /// The flowmail weakness this module exists to fix: an HTML-only email
-    /// must not reach the model as an empty body.
+    /// The failure this module exists to prevent: an HTML-only email must not
+    /// reach the model as an empty body.
     ///
     /// The assertions are about *content surviving*, never about the exact
     /// markdown `htmd` emits — a golden-output test here would break on every

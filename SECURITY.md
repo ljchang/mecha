@@ -28,7 +28,7 @@ The project is pre-1.0. Only the latest release on `main` receives fixes.
 mecha runs a language model in a loop with tools that read files, execute
 commands and reach the network. That is inherently a large amount of authority,
 and the design assumes the model may be adversarially steered by content it
-reads. Two mitigations are enforced structurally rather than by prompting.
+reads. Three mitigations are enforced structurally rather than by prompting.
 
 **The path jail.** Every model-supplied path is canonicalized and proven to be
 inside the workspace before any filesystem call. A path escape is a
@@ -43,6 +43,16 @@ vulnerability.
 
 The interlock deliberately sits *ahead* of the human approver, because a person
 clicking "yes" is precisely what a prompt injection is trying to engineer.
+
+**The front-door quarantine.** Requests that arrive from strangers carry free
+text, which is the one place someone outside controls the bytes. That text is
+typed by an extractor issued a request with an empty tool list and a single user
+message — not one instructed to avoid tools — and the privileged run receives
+only the typed extraction, through a function with no argument that returns the
+prose. The extractor's own paraphrase stays behind too, because a paraphrase of
+an injection is the injection rearranged. An extraction failure parks the record
+for a human; it never falls back to passing the prose through. A way to get a
+stranger's free text in front of a privileged run is a vulnerability.
 
 ## Known limitations
 
@@ -66,6 +76,16 @@ cleared environment plus a named allowlist, never your inherited environment, so
 a server cannot read your provider keys unless you pass them deliberately. A
 server that cannot be confined while `sandbox = true` is a startup error rather
 than a warning.
+
+**The Slack remote control is a network ingress path.** When the connector is
+running, messages from a linked workspace start agent runs. It dials out over
+Socket Mode rather than accepting inbound connections, an owner is bound by a
+one-time code, and `[slack]` is stripped from project config layers so a cloned
+repository cannot name an owner. Each thread is its own conversation, so taint
+does not cross between threads — but anything a workspace member can say to the
+bot reaches a run. Treat workspace membership as the trust boundary it is. Note
+also that MCP tools do not honour the per-thread jail; only the built-in tools
+do, because servers are spawned once with the agent.
 
 **Learned rules ride in every future prompt.** That is a longer-half-life
 injection path than anything the interlock guards, so reflections carry a
