@@ -37,11 +37,11 @@ htmd = "0.1"
 # outbox, for the same reason: two sweeps must not both create an event.
 libc = "0.2"
 pulldown-cmark = "0.13"
-rand = "0.8"
+rand = "0.10"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror.workspace = true
 tiny_http = "0.12"
 toml.workspace = true
