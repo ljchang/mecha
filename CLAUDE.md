@@ -614,6 +614,13 @@ knowledge of the outbox to be covered by it. Decisions that carry it:
   nine-replies-from-one-run case still starts the MCP servers exactly once.
   Defaulted on load, like `kind`: an item staged before the field releases
   against the reviewer's workspace, which is what it always did.
+  **And `show` resolves through it too, not only `send`.** The display forgot
+  the jail long after the executor learned it, which reported a spec sitting in
+  the drafting run's work directory as gone — and, in the symmetric case, would
+  have printed and offered to open a same-named file beside the reviewer as
+  though it were the draft's source. A reviewer reading one file while
+  approving another is the failure this whole surface exists to prevent, so
+  every surface that touches a staged path resolves it the same way.
 - The store follows the learning store's rules: one pretty JSON per item,
   temp-sibling-and-rename, advisory flock (never held across `$EDITOR`;
   staging takes no lock at all, so the agent never blocks on a review).

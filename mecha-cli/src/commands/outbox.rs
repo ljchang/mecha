@@ -349,7 +349,7 @@ fn show(store: &OutboxStore, id: &str) -> Result<()> {
         // opening the page, so lead with where it is; the arguments follow as
         // the smaller half rather than as the thing under review.
         OutboxKind::Publish => {
-            for (label, path) in local_paths(&item.args) {
+            for (label, path) in local_paths(&item.args, item.workspace.as_deref()) {
                 println!("\n{label}: {}", path.display());
                 if let Some(entry) = entry_point(&path) {
                     println!("open  {}", entry.display());
@@ -389,16 +389,37 @@ fn show(store: &OutboxStore, id: &str) -> Result<()> {
 /// a subject line that happens to start with `/` is not a directory, and
 /// guessing would put a wrong "open this" line in front of a human whose whole
 /// job here is to check what goes out.
-pub(crate) fn local_paths(args: &Value) -> Vec<(&'static str, std::path::PathBuf)> {
+///
+/// **Relative paths resolve against the jail the item was drafted under**, for
+/// the same reason a release does (see [`OutboxItem::workspace`]) — and it is
+/// the display that gets this wrong most visibly. The agent said
+/// `{"spec": "retro-spec.toml"}` inside its work directory; the reviewer is
+/// standing somewhere else entirely. Without the jail, `show` reports a file
+/// that is right there as "⚠ gone", and the symmetric case is worse: a
+/// same-named file beside the reviewer gets displayed, and offered to open, as
+/// though it were the draft's source. `None` — an item staged before the field
+/// existed — falls back to the reviewer's directory, which is what those items
+/// always did.
+pub(crate) fn local_paths(
+    args: &Value,
+    workspace: Option<&Path>,
+) -> Vec<(&'static str, std::path::PathBuf)> {
     // `bundle` is what the factory's MCP tool actually names its argument —
     // found by wiring the two together, which is the only way a mismatch like
     // this surfaces. The others are kept because a different publishing tool
     // is free to use them, and the cost of an extra key is nothing.
-    const KEYS: [(&str, &str); 4] = [
+    // `bundle` and `spec` are what the factory's MCP tools actually name their
+    // arguments — both found by wiring the two together, which is the only way
+    // a mismatch like this surfaces. A poll and a request type have no rendered
+    // directory to open; what a reviewer needs to read is the file that defines
+    // what is about to become public, which is exactly these.
+    const KEYS: [(&str, &str); 6] = [
         ("bundle", "rendered bundle"),
         ("bundle_path", "rendered bundle"),
         ("path", "rendered bundle"),
         ("source", "source"),
+        ("spec", "poll spec"),
+        ("manifest", "form manifest"),
     ];
     let Some(map) = args.as_object() else {
         return Vec::new();
@@ -406,7 +427,12 @@ pub(crate) fn local_paths(args: &Value) -> Vec<(&'static str, std::path::PathBuf
     let mut out = Vec::new();
     for (key, label) in KEYS {
         if let Some(value) = map.get(key).and_then(|v| v.as_str()) {
-            out.push((label, std::path::PathBuf::from(value)));
+            let path = std::path::PathBuf::from(value);
+            let resolved = match (path.is_absolute(), workspace) {
+                (false, Some(jail)) => jail.join(&path),
+                _ => path,
+            };
+            out.push((label, resolved));
         }
     }
     out
@@ -1089,5 +1115,68 @@ mod tests {
 
         let same = mecha_core::outbox::diff_args(&before, &before);
         assert!(same.contains("no textual change"), "{same}");
+    }
+    /// A publish's reviewable object is whatever file says what is about to
+    /// become public. For a bundle that is a rendered directory; for a poll it
+    /// is the spec, and for a request type the manifest — both of which arrived
+    /// with the factory's wider tool surface and neither of which has a bundle
+    /// directory at all. Without a row here `show` prints a JSON blob and the
+    /// reviewer has nothing to open.
+    #[test]
+    fn a_publish_points_at_the_file_that_defines_it() {
+        let poll = serde_json::json!({
+            "instrument": "book",
+            "poll_id": "lab-feb",
+            "spec": "/tmp/lab-feb.toml",
+        });
+        assert_eq!(
+            local_paths(&poll, None),
+            vec![("poll spec", std::path::PathBuf::from("/tmp/lab-feb.toml"))]
+        );
+
+        let form = serde_json::json!({"manifest": "/tmp/office-hours.toml"});
+        assert_eq!(
+            local_paths(&form, None),
+            vec![(
+                "form manifest",
+                std::path::PathBuf::from("/tmp/office-hours.toml")
+            )]
+        );
+
+        // A subject line that happens to look like a path is still not one:
+        // the key is what decides, never the value's shape.
+        let message = serde_json::json!({"to": "a@b.c", "subject": "/etc/passwd"});
+        assert!(local_paths(&message, None).is_empty());
+    }
+
+    /// A relative argument means nothing apart from the jail it was written
+    /// in. `send` has always known that; `show` did not, and the first real
+    /// staged poll reported a spec sitting right there as "⚠ gone" because the
+    /// reviewer was standing in a different directory. The symmetric case is
+    /// the dangerous one — a same-named file beside the reviewer would be
+    /// displayed, and offered to open, as though it were the draft's source.
+    #[test]
+    fn a_relative_path_resolves_against_the_jail_it_was_drafted_in() {
+        let args = serde_json::json!({"spec": "retro-spec.toml"});
+        let jail = std::path::Path::new("/home/someone/.mecha/work/chat");
+        assert_eq!(
+            local_paths(&args, Some(jail)),
+            vec![("poll spec", jail.join("retro-spec.toml"))]
+        );
+
+        // An absolute path is already an answer; the jail must not be prepended
+        // to it.
+        let absolute = serde_json::json!({"spec": "/tmp/elsewhere.toml"});
+        assert_eq!(
+            local_paths(&absolute, Some(jail)),
+            vec![("poll spec", std::path::PathBuf::from("/tmp/elsewhere.toml"))]
+        );
+
+        // Staged before the field existed: resolve as it always did, against
+        // wherever the reviewer is.
+        assert_eq!(
+            local_paths(&args, None),
+            vec![("poll spec", std::path::PathBuf::from("retro-spec.toml"))]
+        );
     }
 }

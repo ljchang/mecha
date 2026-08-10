@@ -730,6 +730,58 @@ The arc also changed `mecha-core`. `Decision` gained a third variant,
 and `process_alive` moved to `mecha_core` when a second and third subsystem
 turned out to want the pid range check that is its whole correctness.
 
+**2026-08-09 (night) — the agent gets the factory's other four capabilities,
+and drift becomes a build failure.** `factory-publish` had grown to twenty
+commands while its MCP server stayed at seven, all `bundle_*`: notebooks,
+request types, availability slots and **polls** were unreachable by any agent,
+and nothing anywhere failed while that was true. The way anyone found out was
+asking mecha to make a poll and being told, correctly, that it had no such
+tool.
+
+Why it stayed drifted decided the work. The capabilities were command bodies
+inside the *binary*, where `mcp.rs` in the library could not reach them —
+`polls_command` alone was 470 lines. So `polls.rs` is the extraction, and the
+rule it encodes is the transferable part: **a capability is a function, and a
+front end is a printer.** The CLI's output and its `--json` shapes are
+unchanged, which is why the printers still compute from the same pure tally
+functions rather than re-reading a serialised tally — a "refactor" that
+quietly reformats a number an agent workflow parses is not one.
+
+Eight tools joined: `poll_create` and `poll_meeting_create` (two tools rather
+than one with a mode flag — the modes take entirely different inputs, and a
+mode flag is what a model gets wrong), `poll_status`, `poll_close`,
+`notebook_render`, `type_check`, `type_push`, `type_list`. Everything that
+mints a public URL carries `openWorldHint` and is named in `[outbox] tools`, so
+it stages instead of reaching the world. The meeting poll takes freebusy as a
+**file path**, since MCP cannot pipe stdin the way the CLI does; the
+under-an-hour freshness and horizon refusals sit untouched behind it.
+
+**A poll collects other people's words, so the front door's rule was borrowed
+whole.** `poll_status` returns typed tallies and the *counts* of free-text
+answers, never the answers: `Status::for_privileged_run` is the function, and
+there is deliberately no argument that hands the prose over. `polls export` is
+excluded from the tool surface for the same reason — it would write those words
+into a file `fs_read` cannot tell from bytes we wrote ourselves, which is the
+boundary with an extra step rather than a boundary. A residual is recorded
+rather than papered over: question prompts still come back from the box, so a
+compromised origin could rewrite the user's own question text.
+
+The durable half is `surface::REACH`: every CLI command is either exposed as
+named tools or excluded with a written reason, and three tests fail the build
+when a command is neither, when a row names a tool the server does not serve,
+or when a served tool no row accounts for. `drain` had been the one
+*documented* exclusion; `slots push`, `operator`, `connect`, `serve` and the
+rest now say in writing why they are not an agent's. The test was verified
+non-vacuous by deleting a row and watching it name the gap — which is the only
+thing that distinguishes a coverage test from a comment.
+
+The mecha side took two fixes, the second found by the first. `local_paths`
+learned `spec` and `manifest`, so a staged poll or form has a file to open
+rather than a JSON blob to squint at. Then staging the first real poll end to
+end reported its spec — a file sitting right there — as "⚠ gone", because
+`show` resolved a relative argument against wherever the reviewer was standing
+while `send` had always used the recorded jail. See the trap below.
+
 ---
 
 ## The measurement record
@@ -1084,6 +1136,31 @@ All found by pre-push review or by running it.
   around it with `shell`. **Anything spawned once cannot follow a per-run
   value** — either root it somewhere both agree on, or accept that the
   isolation only covers what the loop itself resolves. Say which, in writing.
+
+- **A capability that lives in the binary is a capability no agent will ever
+  have, and nothing reports it.** The factory's MCP server sat at seven tools
+  while its CLI grew to twenty, for six weeks, because the verbs were command
+  bodies in `main.rs` and the server lives in the lib. Every test passed the
+  whole time; the surface was discovered only by asking the agent to do
+  something and being told it could not. **An integration whose coverage is
+  implicit will drift, and the drift is silent by construction** — the only
+  fix that holds is a test that enumerates one side against the other and
+  demands a written decision for each gap. mecha already warned when
+  `[outbox] tools` named a tool that did not exist, for exactly this reason;
+  the factory had no equivalent, and that is the whole story.
+
+- **A relative path in a deferred call means nothing without the jail it was
+  written in — and the *display* forgets that before the executor does.**
+  `outbox send` had always resolved a staged argument against the workspace
+  recorded on the item; `outbox show` resolved it against wherever the reviewer
+  was standing, so the first real staged poll reported a spec that was right
+  there as "⚠ gone". The visible symptom is a false alarm; the dangerous one is
+  symmetric, because a same-named file beside the reviewer would have been
+  printed, and offered to open, as the draft's source — a human reading one
+  file while approving another. **When a value is only meaningful in a recorded
+  context, every surface that touches it needs that context, not just the one
+  that executes.** A review surface that shows the wrong bytes is worse than
+  one that shows none.
 
 - **`Path::starts_with` is lexical, so it is not a containment check.**
   `<staging>/../escape.html` starts with `<staging>` by that test and lands one
