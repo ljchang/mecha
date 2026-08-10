@@ -1603,13 +1603,42 @@ impl Agent {
         // words, or it gets told why it didn't. An empty string is
         // indistinguishable from a successful run with nothing to say, and a
         // grader reading it marks the model down for the harness's silence.
+        //
+        // And where the model reasoned but never wrote an answer, its
+        // reasoning is handed back rather than thrown away. A reasoning model
+        // routinely concludes inside the think block and then emits nothing;
+        // returning an apology while holding the working — which on a local
+        // server can be four thousand tokens of it — loses a real answer to a
+        // formatting failure.
+        //
+        // Two rules keep this honest. It happens **only here**, at the end of
+        // a run that would otherwise return nothing: mid-run the nudge is
+        // better, because it gets a committed answer rather than deliberation,
+        // and salvaged reasoning must never enter the message history as
+        // though the model had said it. And it is **labelled**, because
+        // deliberation presented as a conclusion is its own kind of wrong —
+        // "I could try X, though maybe Y" is not an answer, and the reader has
+        // to be able to see that is what they are holding.
         let text = if text.trim().is_empty() {
-            format!(
-                "No answer was produced: the model ended its turn after {} \
-                 without saying anything (stop reason: {:?}).",
-                turns_phrase(turns),
-                response.stop_reason
-            )
+            let reasoning = response.message.thinking();
+            let reasoning = reasoning.trim();
+            if reasoning.is_empty() {
+                format!(
+                    "No answer was produced: the model ended its turn after {} \
+                     without saying anything (stop reason: {:?}).",
+                    turns_phrase(turns),
+                    response.stop_reason
+                )
+            } else {
+                format!(
+                    "No answer was written: the model ended its turn after {} \
+                     having only reasoned (stop reason: {:?}). Its reasoning \
+                     follows — it is deliberation, not a committed answer:\n\n{}",
+                    turns_phrase(turns),
+                    response.stop_reason,
+                    reasoning
+                )
+            }
         } else {
             text
         };
@@ -3239,6 +3268,70 @@ mod tests {
         assert_eq!(
             provider.seen.lock().unwrap().len() as u32,
             EMPTY_TURN_RETRIES + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_that_only_reasoned_hands_back_the_reasoning_not_an_apology() {
+        // A reasoning model routinely concludes inside the think block and
+        // emits nothing after it. Before `reasoning_content` was decoded there
+        // was nothing here to hand back; now there is, and returning "the
+        // model said nothing" while holding four thousand tokens of its
+        // working loses a real answer to a formatting failure.
+        //
+        // Labelled, though: what is handed back is deliberation, and a reader
+        // has to be able to tell that from a committed answer.
+        let thinking = || {
+            assistant(
+                vec![Block::Thinking {
+                    text: "17 * 23 = 17*20 + 17*3 = 340 + 51 = 391.".into(),
+                    signature: None,
+                }],
+                StopReason::EndTurn,
+            )
+        };
+        let (agent, _provider) = agent_with(
+            (0..EMPTY_TURN_RETRIES + 1).map(|_| thinking()).collect(),
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::from(vec![Message::user("what is 17*23?")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        // The answer the model actually reached survives.
+        assert!(
+            outcome.text.contains("391"),
+            "the reasoning was thrown away: {}",
+            outcome.text
+        );
+        assert!(
+            outcome
+                .text
+                .contains("deliberation, not a committed answer"),
+            "salvaged reasoning must say what it is: {}",
+            outcome.text
+        );
+        // Thinking is still not an answer: the run is still a no-output stop,
+        // and it still spent its whole allowance being nudged first.
+        assert_eq!(outcome.stop_cause, StopCause::NoOutput);
+        assert!(outcome.exhausted);
+    }
+
+    #[tokio::test]
+    async fn a_run_that_said_nothing_at_all_still_says_so() {
+        // The other half: with no reasoning either, there is nothing to
+        // salvage and the caller must still be told rather than handed "".
+        let (agent, _provider) = agent_with(
+            (0..EMPTY_TURN_RETRIES + 1)
+                .map(|_| assistant(vec![], StopReason::EndTurn))
+                .collect(),
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert!(
+            outcome.text.contains("without saying anything"),
+            "{}",
+            outcome.text
         );
     }
 
