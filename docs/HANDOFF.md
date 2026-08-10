@@ -346,6 +346,32 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
   layer shipped with the front-end pass; the axis-locked touch gesture and
   a separate Group heatmap tab from `SCHEDULING-DESIGN.md` §5.3 were left
   out on purpose — inline heat carries most of the value.)
+- **A poll cannot hold a real picture, because there is no asset endpoint on
+  the box.** Questions and options take `media = { src, alt }` as of
+  2026-08-10, and the two sources that render are the only two the policy
+  allows: a `data:` URI, or a path this origin already serves. Every class
+  sends `img-src 'self' data:`, so the obvious idea — publish a bundle of
+  figures and point the poll at it — is refused, and correctly: the artifact
+  host is a *different origin* and the browser would block it. An off-origin
+  `src` fails when the spec is parsed rather than becoming a hole in a page
+  sixty people are looking at.
+
+  What that leaves is inline images capped at 512 KB before base64, which is a
+  generous diagram and a hopeless photograph. So "poll a set of images" works
+  today only for figures somebody exported small on purpose, and the cap
+  cannot simply be raised: a spec travels as one request body through
+  `poll_create` and is stored whole, so the ceiling is protecting the store
+  and the request, not the page.
+
+  The fix is an **asset endpoint on the box**, scoped to a poll and served
+  same-origin, with the questions worth deciding before any code: who may
+  upload (the `slots` key, presumably, since that is what creates polls),
+  what the per-poll and per-file caps are, which content types are allowed
+  and whether the box re-derives the type rather than believing the
+  `Content-Type`, and what removes the bytes when a poll is deleted — a poll
+  is the one object here with no retention story of its own. Until then
+  `polls.md` says the limitation out loud rather than letting a reader
+  discover it at the worst moment.
 - **Cosmetic:** `factory-publish type push` prints a `/f/<handle>/<id>` URL
   for booking manifests; a booking's page is `/s/…`.
 
