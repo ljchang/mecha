@@ -8,15 +8,43 @@ M=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--Qwen3.6-35B-A3B-
 # 2026-08-05 after the empty-EndTurn deaths in the k=5 compaction runs.
 # Concurrent eval requests serialize instead; the MoE is fast enough.
 #
-# -c 32768 is also load-bearing, and it is a *performance* ceiling rather than
-# a capability one. Raising it to 131072 on 2026-08-07 — to give a thinking
-# turn more room — took generation from 64 tokens in 1.06s to 64 tokens in
-# 52.6s, a 50x collapse, with the process pinned at ~97% of one core: the KV
-# cache no longer fits alongside the model and the offload falls apart. The
-# failure is silent. Nothing errors, the server answers every request, and the
-# only symptom is that a benchmark trial sits on its first turn for forty
-# minutes and then trips the harness's agent timeout. Measure tokens/sec after
-# touching this, not just that the server came back up.
+# -c 131072 since 2026-08-10, and the story of that number is worth keeping,
+# because for three days this script said "do not raise it" on the strength of
+# one bad afternoon.
+#
+# Raising it to 131072 on 2026-08-07 took generation from 64 tokens in 1.06s to
+# 64 tokens in 52.6s — a 50x collapse, the process pinned at ~97% of one core,
+# nothing logged. That measurement was real. The conclusion drawn from it, that
+# a large `-c` cannot work here, was not: 2026-08-07 is the day a runaway test
+# OOMed this machine and systemd tore down both llama-servers, so the KV cache
+# was competing for memory that was not there and the offload fell apart.
+#
+# Re-measured 2026-08-10 on a quiet machine, one server at a time, median of
+# three runs per point, identical prompts across arms (tok/s generated):
+#
+#   prompt tokens |  -c 32768 |  -c 65536 | -c 131072
+#          1,075  |     92.44 |     92.23 |     92.99
+#          4,309  |     88.96 |     89.09 |     89.87
+#         30,153  |     80.74 |     81.44 |     81.79
+#         55,675  |         — |     74.59 |         —
+#         64,621  |         — |         — |     72.17
+#        107,699  |         — |         — |     63.35
+#
+# **`-c` costs nothing.** Generation speed is a function of how much context is
+# actually *used*, not of how much was allocated — and RSS is 21.5 GB at both
+# 32768 and 131072, so the allocation is not even visible in memory. What does
+# cost is real context: 92 tok/s at 1k against 63 tok/s at 108k, which is
+# attention doing what attention does.
+#
+# One trap found while measuring, and it is the likely shape of the 08-07
+# result: **a server that loads while memory is contended stays slow for its
+# whole life.** A 64k instance started alongside another resident model held
+# ~82 tok/s at a 1k prompt and did not recover when the other was stopped; a
+# fresh 64k instance on a quiet machine gave 92.23. Whatever placement decision
+# is made at load is never revisited. So the standing advice survives its own
+# reversal: **measure tokens/sec after restarting this, not just that the
+# server came back up** — and if it is slow, restart it on a quiet machine
+# before believing anything about the flags.
 #
 # --reasoning-budget 4096 is what actually fixes the empty completions this
 # model produces on hard tasks. Unbounded, it reasons without terminating:
@@ -35,6 +63,6 @@ M=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--Qwen3.6-35B-A3B-
 # has to equal the `-c` here. Four numbers, and a mismatch in any of them is
 # silent.
 exec ${LLAMA_SERVER:-llama-server} -m "$M" \
-  --host 127.0.0.1 --port 8080 -ngl 999 -c 32768 -np 1 --alias qwen3.6-35b-a3b --jinja \
+  --host 127.0.0.1 --port 8080 -ngl 999 -c 131072 -np 1 --alias qwen3.6-35b-a3b --jinja \
   --reasoning-budget 4096 \
   --spec-type draft-mtp
