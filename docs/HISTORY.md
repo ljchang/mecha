@@ -1201,6 +1201,31 @@ All found by pre-push review or by running it.
   value** — either root it somewhere both agree on, or accept that the
   isolation only covers what the loop itself resolves. Say which, in writing.
 
+- **A measurement is not a conclusion, and a bad afternoon can masquerade as a
+  law.** `-c 32768` was pinned for three days by one data point: raising it to
+  131072 on 2026-08-07 took generation from 64 tokens in 1.06s to 64 in 52.6s,
+  a 50x collapse. That measurement was real, and the rule written from it —
+  *do not raise `-c`* — was not. 2026-08-07 is the day a runaway test OOMed the
+  machine and systemd tore down both llama-servers; the KV cache was competing
+  for memory that was not there. Re-measured 2026-08-10 on a quiet machine, one
+  server at a time, medians of three at matched prompt lengths: 32k, 64k and
+  128k are **within noise of each other** (92-93 tok/s at a 1k prompt, 81-82 at
+  30k), and RSS is 21.5 GB either way. What costs is context actually *used* —
+  63 tok/s at 108k — which is attention, not allocation. **When a single
+  observation becomes a rule, write down the conditions with it; the next
+  reader cannot tell an environment from a law.** The cost of not doing so was
+  a 32k window on a 121 GB machine, and every compaction that came with it.
+
+- **A server that loads while memory is contended stays slow for its whole
+  life.** Found while measuring the above: a 64k instance started alongside
+  another resident model held ~82 tok/s at a 1k prompt and did **not** recover
+  when the other model was stopped, while a fresh 64k instance on the same
+  quiet machine gave 92.23. Whatever placement decision llama.cpp makes at load
+  is never revisited. It is also the likely shape of the 08-07 result. So the
+  advice that outlived its own reversal: **measure tokens/sec after restarting
+  a model server, not just that it answered** — and if it is slow, restart it
+  on a quiet machine before believing anything about the flags.
+
 - **A comment describing someone else's tool is a hypothesis, and this one was
   wrong for months.** Three places in two repos said `marimo export html-wasm`
   executes the notebook; it does not, and the two-minute experiment that settles

@@ -127,7 +127,7 @@ default_provider = "local"
 kind = "local"
 base_url = "http://{gateway}:{FORWARD_PORT}"
 model = "qwen3.6-35b-a3b"
-context_window = 32768
+context_window = 131072
 
 [agent]
 max_tokens = 8192
