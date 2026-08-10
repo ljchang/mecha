@@ -54,19 +54,21 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **688 tests**, no failures — verified 2026-08-09, after the day's three
-arcs (counts re-measured at the end of the session): inter-agent messaging (`mecha-core` grew with the mailbox store,
+Expect **690 tests**, no failures — verified 2026-08-09 night, after the day's
+four arcs (counts re-measured at the end of the session): inter-agent messaging
+(`mecha-core` grew with the mailbox store,
 taint-forwarding, and the review's fix tests), the benchmark-diagnosis fixes
 (overflow-recovery, empty-turn, and session-rewrite regression tests, including
-the review-caught rewrite-drops-stale-taint-positions one), and the Slack
-transport with its binding store and thread state machine. One flake was seen
+the review-caught rewrite-drops-stale-taint-positions one), the Slack
+transport with its binding store and thread state machine, and the outbox
+review fixes that came with the factory's wider tool surface. One flake was seen
 once in `mecha-core` on 2026-08-08 and never reproduced across five re-runs —
 unidentified, worth an eye.
 
 | Suite | Count |
 |---|---:|
 | `mecha-core` unit | 379 |
-| `mecha-cli` unit | 141 |
+| `mecha-cli` unit | 143 |
 | `mecha-mail` unit | 86 |
 | `mecha-slack` unit | 68 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
@@ -102,9 +104,9 @@ A working agent harness, used and measured rather than just compiled.
 | Budgets | `max_turns`, `max_output_tokens`, `max_cost_usd`, cost accounting |
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
 | Context | Two-pass compaction: thin tool results, then summarise. Taint preserved, and a tool's own state (the todo list) crosses verbatim |
-| Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep ; `slack` on a branch (PR #25) |
+| Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep, and `slack` for the remote control |
 | TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/outbox` and `/frontdoor` modals drive the CLI like `/triggers` does, the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
-| Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`. **On `slack/transport`, not merged** |
+| Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`. **Merged 2026-08-09 (PR #25) and running as `mecha-slack.service`** |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
@@ -198,9 +200,23 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
   nine hours, and a third time the same evening when the daemon's own `notify`
   could not see `~/.cargo/bin` at all. A fourth near-miss on 2026-08-07: the
   installed `mecha` predated the frontdoor triage verbs, caught only because
-  the timer's script was checked against it before enabling. **`mecha`
-  reinstalled 2026-08-07 evening** (frontdoor verbs, `StopCause::NoOutput`);
-  `factory-publish` unchanged since 2026-08-06.
+  the timer's script was checked against it before enabling. **Both were
+  reinstalled 2026-08-09 night** — `factory-publish` for the wider MCP surface,
+  `mecha` for the outbox review fixes — each with the previous build kept
+  beside it as `factory-publish.prev` / `mecha.prev`, the same rollback shape
+  the factory box uses.
+
+  Two things learned doing that install, neither specific to this change.
+  **`cp` over a running binary fails with `Text file busy`**, and two live
+  consumers hold `factory-publish` at all times: `mecha-drain.service`'s
+  long-poll loop and the MCP server the Slack connector spawned. Rename the old
+  one and copy the new one in — running processes keep their inode, and the
+  rename is also how the rollback copy gets made. And **a long-lived MCP server
+  keeps the tool surface it started with**: `mecha-slack.service` will serve
+  the old seven-tool factory surface until it is restarted, where a fresh
+  `mecha chat` / `tui` / `run` spawns a new server and sees all fifteen
+  immediately. It is not currently restarted, and `[slack] tools` does not
+  list the poll tools anyway.
 - The learning store (`~/.mecha/learning`) holds **zero live rules** — the one
   early rule was reverted with its poisoned reflection — so everything from here
   accumulates from real usage through the gate.
@@ -513,57 +529,31 @@ The arc is complete and running nightly. What is missing is refinement:
 
   **Open there, in the order they bite:**
 
-  - **The MCP surface has drifted behind the CLI, and nothing fails when it
-    does.** `factory-publish` has twenty commands; the MCP server exposes
-    eight, all `bundle_*`. Notebooks, request types (the public forms),
-    availability slots and **polls** are unreachable by any agent — which is
-    why mecha answered "I don't have a tool that can create polls" and was
-    right. The dates make it drift rather than a decision: `mcp.rs` was last
-    touched 2026-08-07, `request.rs` 2026-08-08, `poll.rs` 2026-08-09, and the
-    module's long doc comment reasons only about bundles. The one *documented*
-    exclusion is `drain` ("a CLI and deliberately not a tool"), and `operator`
-    / `connect` / `disconnect` / `serve` belong on that list for the same
-    reason — they are the operator's, not the model's.
+  - **The MCP surface tracks the CLI again, and two small things are left.**
+    The drift is closed — fifteen tools, `surface::REACH` making every command
+    exposed-or-excluded in writing, and the arc is in
+    [`HISTORY.md`](HISTORY.md). What was deliberately left:
 
-    **Why it stayed drifted, which is the part that decides the work:** the
-    capabilities were written as command bodies inside `main.rs` (the bin),
-    while `mcp.rs` lives in the lib. `polls_command` alone is ~470 lines at
-    `mecha-factory-publish/src/main.rs:1587`. So exposing a verb is not
-    wiring — it is extracting the body into the library first, and the same is
-    true of `notebook` and `type`.
+    - **`notebook_render` executes the notebook to export it.** On a box with
+      `[sandbox]` configured, mecha's `shell` would be confined while the
+      factory server deliberately is not, so it is an unconfined execution
+      path around a configured sandbox. No new capability on *this* box, whose
+      `[sandbox] kind` is the default `none` — but it becomes one the day that
+      changes, and the fix then is one row of `surface::REACH` flipped to
+      `NotATool`. The real answer is that repository confining
+      `marimo export html-wasm`, which is the same open item the `[[mcp]]`
+      config comment already names.
+    - **`poll_status` still reads its question prompts back from the box.**
+      Free-text answers are withheld from a privileged run by construction,
+      so what remains is the user's *own* question text round-tripped through
+      an origin the design assumes is lost — a much smaller channel, and
+      recorded rather than fixed. Closing it means caching the spec in the
+      local record at create time and rendering prompts from home.
 
-    **There is no safe shortcut**, and this is worth stating because it looks
-    like there is one: letting the model reach `factory-publish` through
-    `shell` bypasses the outbox entirely. The outbox routes by *tool name* in
-    the dispatch path — that is the stated reason the factory is an MCP server
-    at all — so a shell-out has no name to route, and a poll created that way
-    mints a public page and participant URLs with no review card. The prompt
-    already forbids the shape ("do not try to accomplish the send some other
-    way").
-
-    Order of work: extract `polls` into the lib; expose **two** poll tools,
-    because `polls create` has two mutually exclusive modes and a single tool
-    with a mode flag is what a model gets wrong — `poll_create` (a general
-    poll from a `--spec` TOML: choice, ranking, likert, vas, text) and
-    `poll_meeting_create` (policy plus the user's real busy time, seeded from
-    `mecha-mail freebusy`). The meeting one needs its freebusy as a **file
-    path**, since MCP cannot pipe stdin the way the CLI does. Then
-    `poll_status` / `poll_close`, then `notebook` and `type`. Creation verbs
-    that mint public URLs take `openWorldHint` so they route through
-    `[outbox] publish_tools`, like `bundle_publish` already does.
-
-    **The durable fix is a coverage test**: enumerate the CLI's subcommands
-    and assert each is either exposed or on an explicit exclusion list with a
-    reason, so adding a command fails the build until someone decides in
-    writing whether an agent should reach it. mecha already warns on every
-    start when `[outbox] tools` names a tool that does not exist, for exactly
-    this reason; the factory has no equivalent and that is why five
-    capabilities went unnoticed.
-
-    Costs to weigh rather than discover: every exposed tool is schema tokens
-    in every run — measured at ~7–8k a turn already — which argues for
-    exposing them *and* narrowing per surface (`[slack] tools`,
-    `[tools] enabled`), not for leaving them out.
+    Unchanged and worth re-reading before adding more: every exposed tool is
+    schema tokens in every run, measured at ~7–8k a turn before this grew the
+    surface by eight. That argues for narrowing per surface (`[slack] tools`,
+    `[tools] enabled`) rather than for exposing less.
 
   - **Verify the release workflow** (`release.yml`, authored 2026-08-07:
     static musl `factory` with an asserted-static gate and a checksum). Push a
@@ -614,7 +604,7 @@ The arc is complete and running nightly. What is missing is refinement:
   record and a triage run. See `CLAUDE.md`.
 
 - **Slack as a remote control — built and verified live; two things left.**
-  The arc is on branch `slack/transport` (**PR #25**) and is described in
+  The arc merged on 2026-08-09 (**PR #25**) and is described in
   [`HISTORY.md`](HISTORY.md) under 2026-08-09; the design authority is
   [`SLACK-DESIGN.md`](SLACK-DESIGN.md) and the evidence
   [`SLACK-RESEARCH.md`](SLACK-RESEARCH.md). What is genuinely unbuilt:
