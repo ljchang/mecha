@@ -46,9 +46,13 @@ pub struct PkceChallenge {
 
 /// Generate a PKCE code_verifier and code_challenge pair.
 pub fn generate_pkce() -> PkceChallenge {
-    let mut rng = rand::thread_rng();
-    let verifier_bytes: Vec<u8> = (0..32).map(|_| rng.gen::<u8>()).collect();
-    let code_verifier = URL_SAFE_NO_PAD.encode(&verifier_bytes);
+    // `rand::rng()` is the thread-local CSPRNG — rand 0.9 renamed it from
+    // `thread_rng` and dropped `gen` for `random`. Filled in one call rather
+    // than byte at a time, which is what the old `(0..32).map(...)` was doing
+    // the long way round.
+    let mut verifier_bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut verifier_bytes);
+    let code_verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
 
     let mut hasher = Sha256::new();
     hasher.update(code_verifier.as_bytes());
@@ -397,6 +401,45 @@ mod tests {
         assert!(params
             .iter()
             .any(|(k, v)| *k == "client_secret" && *v == "shhh"));
+    }
+
+    /// The PKCE pair had no test at all, which was noticed while migrating it
+    /// off `rand::thread_rng` — a security-relevant function whose random
+    /// source changed with nothing asserting it still worked.
+    ///
+    /// The challenge check is the real one: it is exactly what the
+    /// authorisation server recomputes, so a wrong transform fails every
+    /// sign-in with an error that names neither end.
+    #[test]
+    fn a_pkce_challenge_is_the_url_safe_sha256_of_its_verifier() {
+        let pkce = generate_pkce();
+
+        // 32 random bytes, base64url with no padding.
+        assert_eq!(pkce.code_verifier.len(), 43, "{}", pkce.code_verifier);
+        assert!(
+            pkce.code_verifier
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "not URL-safe: {}",
+            pkce.code_verifier
+        );
+
+        let mut hasher = Sha256::new();
+        hasher.update(pkce.code_verifier.as_bytes());
+        assert_eq!(
+            pkce.code_challenge,
+            URL_SAFE_NO_PAD.encode(hasher.finalize()),
+            "the challenge is not the digest of the verifier"
+        );
+    }
+
+    /// A generator that stopped being random would still pass every shape
+    /// check above, and would hand every sign-in the same verifier.
+    #[test]
+    fn two_pkce_pairs_are_not_the_same_pair() {
+        let (a, b) = (generate_pkce(), generate_pkce());
+        assert_ne!(a.code_verifier, b.code_verifier);
+        assert_ne!(a.code_challenge, b.code_challenge);
     }
 
     #[test]
