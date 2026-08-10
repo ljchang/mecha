@@ -21,8 +21,9 @@ maps which document holds what.
 
 ## Where the work is
 
-Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.1**
-(2026-08-10). **Four** crates are on crates.io at 0.1.1 — `mecha-core`,
+Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.2**
+(2026-08-10 evening — the reasoning round trip; 0.1.1 was earlier the same
+day). **Four** crates are on crates.io at 0.1.2 — `mecha-core`,
 `mecha-mail`, `mecha-slack`, `mecha-cli` (the bare name `mecha` was taken, so
 the CLI crate installs the `mecha` binary) — published through the tag-driven
 `release` workflow with Trusted Publishing, so no registry token exists
@@ -183,6 +184,23 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
 
 ### Standing machinery on this machine
 
+**Publishing a release changes nothing about a running system.** The installed
+binary is `~/.cargo/bin/mecha`, from crates.io, and every long-lived unit keeps
+whatever it started with. After tagging v0.1.2 the box was still executing
+0.1.1 everywhere — including `mecha-triggers`, which would have fired that
+night's scheduled runs on the pre-fix harness, and `mecha-ruminate` at 03:30,
+which mines sessions into learned rules that ride in every future prompt.
+Use the three-crate line below rather than upgrading `mecha-cli` alone —
+`mecha-mail` ships the MCP server binaries and a run spawns them fresh from
+whatever is installed, so a partial upgrade leaves the mail surface a version
+behind with nothing to say so. Done 2026-08-10 evening
+(`cargo install mecha-cli mecha-mail --locked`, both at 0.1.2), then
+`systemctl --user restart mecha-slack mecha-drain mecha-triggers` — verified,
+and the connector reconnected with its 12 threads intact at 14:28. The timer-driven units — `mecha-slots`, `mecha-frontdoor`,
+`mecha-ruminate` — are oneshot and exec a fresh `mecha` each fire, so they need
+no restart; restarting them would be cargo-culting. The set that needs action
+is exactly the set holding a long-lived process.
+
 - **Reflect-on-close**: `~/.mecha/config.toml` carries a `session_end` hook
   running `nohup mecha reflect -p local ... &` — every recorded session is mined
   minutes after it closes.
@@ -242,7 +260,7 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
   systemctl --user start mecha-slack mecha-drain mecha-triggers
   ```
 
-  Currently installed: `mecha-cli` 0.1.1, `mecha-mail` 0.1.1,
+  Currently installed (2026-08-10 evening): `mecha-cli` 0.1.2, `mecha-mail` 0.1.2,
   `mecha-factory-publish` 0.2.1. `mecha.prev` / `factory-publish.prev` remain
   as the pre-crates.io rollback copies.
 
@@ -789,15 +807,26 @@ The arc is complete and running nightly. What is missing is refinement:
   2026-08-07 05:22 launch was voided by the glibc trap; the 11:18 relaunch was
   stopped by hand ~4h in; and the **2026-08-10 03:39 launch at the 262k
   window** (`max_turns` 80, `--agent-timeout-multiplier 2.0`, k=1, preflighted
-  with `check-subset.py`) was **killed deliberately at 27/75 that evening**,
+  with `check-subset.py`) was **killed deliberately at 28/75 that evening**,
   because the reasoning round-trip bug found mid-run meant it was measuring a
   defect that was by then fixed. Its numbers, for whatever they are worth as a
-  before: 12 passes of 27 (44%), five `AgentTimeoutError`, one trial lost to
+  before: 13 passes of 28 (46%), five `AgentTimeoutError`, one trial lost to
   the dash-prompt crash, ~930 output tokens per turn. Do not treat it as a
   baseline — three known defects are baked into it (stripped reasoning causing
   empty turns, the argv crash, and a timeout tail), and the reasoning fix
-  changes per-turn context. The relaunch runs on **v0.1.2**; record its job
-  directory here when it finishes. The 2026-08-07 fragment was separately
+  changes per-turn context. Its artifacts are kept at
+  `.claude/worktrees/bench-run-262k/jobs/` — that checkout exists only to hold
+  them, because those transcripts are the evidence the 0.1.2 diagnosis rests
+  on and benchmark artifacts are gitignored.
+  **The relaunch is `mecha-arm64-subset-2026-08-10__14-15-05`**, launched
+  14:15 from `.claude/worktrees/bench-run-v012` (detached at `v0.1.2`), same
+  parameters, `check-subset.py` green on exactly the 75. Judge it on four
+  falsifiable things rather than on the score, none of which need the old run
+  as a baseline: empty-turn nudges should approach zero (`grep "turn produced
+  no content"` across the trials' `stderr.log`), the dash-prompt crash should
+  not recur, the timeout tail should shrink from 5-in-28, and **compaction
+  counts should not jump** — that last one is what settles whether replayed
+  reasoning stays unbounded. The 2026-08-07 fragment was separately
   **diagnosed trial by trial** (2026-08-09 — the write-up is in
   `docs/BENCHMARK-RESEARCH.md`, "The 2026-08-07 subset run, diagnosed"): of
   13 failures, 5 were the model and 8 involved harness defects, all five of
