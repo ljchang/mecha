@@ -299,12 +299,38 @@ fn produced_output(blocks: &[Block]) -> bool {
 /// **not** change the decode. Recovering a tool call out of a think block is a
 /// behaviour change that wants evidence first, and this is the instrument that
 /// produces it.
+/// Syntaxes that mean "a tool call was written here", across the model
+/// families this backend actually meets.
+///
+/// A table rather than one string, on purpose. The *phenomenon* is general —
+/// a reasoning model writes its action before closing the think block, the
+/// server's parser never sees it, and the turn arrives empty — and only the
+/// syntax is per-family. Measured on Qwen3.6 (2026-08-10): the reasoning of a
+/// reproduced empty turn held a complete `<tool_call><function=shell>…` that
+/// was never parsed. Gemma, Llama and DeepSeek would each write that same
+/// intent differently, and a matcher that knew only Qwen would report their
+/// identical failure as an unexplained silence.
+///
+/// This is a **hint on a warning, never a decision**: nothing branches on it,
+/// so a family missing from this list costs a vaguer log line and nothing
+/// more. Extend it when a new one turns up rather than reaching for a regex —
+/// the failure mode of a clever matcher is a false positive on a model merely
+/// *discussing* tool calls in prose, and this must not become the thing that
+/// decides whether a call gets executed.
+const TOOL_CALL_MARKERS: &[&str] = &[
+    "<tool_call>",           // Qwen, Hermes
+    "<function=",            // Qwen's inner form, also emitted bare
+    "<|python_tag|>",        // Llama 3.x
+    "<｜tool▁call▁begin｜>", // DeepSeek, fullwidth delimiters
+    "```tool_code",          // Gemma
+    "<function_call>",       // assorted OpenAI-compatible shims
+];
+
 #[derive(Debug, PartialEq)]
 struct DroppedReasoning<'a> {
     chars: usize,
-    /// Qwen emits `<tool_call>` inside the think block when it starts calling
-    /// before closing the tag. If this is ever true, the empty turn was a lost
-    /// call and not a silent model.
+    /// A model that started calling before closing its think block. When this
+    /// is true the empty turn was a lost call, not a silent model.
     looks_like_tool_call: bool,
     /// The end of the reasoning, which is where a call or a concluded answer
     /// would sit. The head is throat-clearing.
@@ -325,8 +351,7 @@ fn dropped_reasoning(produced_output: bool, reasoning: &str) -> Option<DroppedRe
     };
     Some(DroppedReasoning {
         chars: reasoning.chars().count(),
-        looks_like_tool_call: reasoning.contains("<tool_call>")
-            || reasoning.contains("</tool_call>"),
+        looks_like_tool_call: TOOL_CALL_MARKERS.iter().any(|m| reasoning.contains(m)),
         tail,
     })
 }
@@ -338,9 +363,16 @@ fn log_dropped_reasoning(produced_output: bool, reasoning: &str, finish: Option<
             looks_like_tool_call = d.looks_like_tool_call,
             finish_reason = finish.unwrap_or("<absent>"),
             tail = d.tail,
-            "turn decoded to no blocks but the response carried reasoning_content; \
-             these are the bytes being dropped"
+            "turn produced no output but the response carried reasoning_content"
         );
+        // The whole trace, at debug, because the tail is enough to classify a
+        // silence and never enough to explain it. An empty turn is not in the
+        // transcript at all — the loop nudges and continues before pushing the
+        // message, and the loop holds no session to record it into — so this
+        // log is the only durable record that the turn happened or what was in
+        // it. `MECHA_LOG=debug` is what the bench adapter already runs with,
+        // and it downloads the stderr beside the transcript.
+        tracing::debug!(reasoning = reasoning, "the dropped reasoning, in full");
     }
 }
 
@@ -649,6 +681,32 @@ mod tests {
             d.looks_like_tool_call,
             "a <tool_call> in the think block is the lost-call signature"
         );
+    }
+
+    #[test]
+    fn the_lost_call_signature_is_not_only_qwens() {
+        // The failure is a property of reasoning models, not of one vendor,
+        // and this backend serves every OpenAI-compatible server there is.
+        // Recognising only the family that happened to be on the bench would
+        // report an identical Gemma or Llama failure as an unexplained
+        // silence — which is how a diagnostic quietly stops working when the
+        // model changes.
+        for (family, reasoning) in [
+            (
+                "gemma",
+                "let me check\n```tool_code\nprint(shell(...))\n```",
+            ),
+            (
+                "llama",
+                "first I will look\n<|python_tag|>{\"name\": \"shell\"}",
+            ),
+            ("deepseek", "checking\n<｜tool▁call▁begin｜>shell"),
+            ("hermes", "<function_call>{\"name\": \"shell\"}"),
+        ] {
+            let d = dropped_reasoning(false, reasoning)
+                .unwrap_or_else(|| panic!("{family}: reportable"));
+            assert!(d.looks_like_tool_call, "{family} went unrecognised");
+        }
     }
 
     #[test]
