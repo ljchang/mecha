@@ -42,7 +42,20 @@ after.
 How work lands — branch per arc, one worktree per session, PR-gated, release
 by tag — is `CONTRIBUTING.md`'s to state.
 CI runs build, test, clippy and rustfmt on every push and pull request; the
-documentation site builds from `website/` and deploys to
+Claude review bot runs beside them, and the `@claude` mention bot answers on
+issues and pull requests. **Both were repaired on 2026-08-10 night and had
+never worked before it** — the review job had failed on every run it ever
+made (a credential, on both sides of the OAuth migration that was itself an
+attempt to fix it) and the mention job's condition could not be true. Both now
+pin `--model claude-opus-5`; without a pin the action runs `claude-sonnet-5`.
+Two things about them that will otherwise cost somebody an afternoon:
+`claude-code-action` **skips and exits 0** when the workflow file differs from
+the copy on `main`, so a workflow change can never be tested by its own pull
+request and a green check there means nothing; and the same workflows are now
+in mecha-factory but **inert until the Claude GitHub App is installed on that
+repository** — the token is not enough, and the job fails with
+`Claude Code is not installed on this repository`.
+The documentation site builds from `website/` and deploys to
 <https://docs.mecha-factory.ai/> — GitHub Pages still hosts it; the custom
 domain is asserted by `website/static/CNAME`, which ships inside the deployed
 artifact because `actions/deploy-pages` writes no such file itself.
@@ -83,7 +96,7 @@ unidentified, worth an eye.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 379 |
+| `mecha-core` unit | 396 |
 | `mecha-cli` unit | 143 |
 | `mecha-mail` unit | 86 |
 | `mecha-slack` unit | 68 |
@@ -347,7 +360,14 @@ tested, but has never been exercised against the real box by a person:
 
 Everything else below is independent of that.
 
-Every item below was verified against source on 2026-08-08 to still be unbuilt.
+Every item below was verified against source on 2026-08-10 night to still be
+unbuilt — MCP resources and HTTP/SSE transports, the subagent workspace field,
+per-command approval, the Landlock backend, `Rule`'s missing scope, the raw
+reflection window, a task store, file watchers and a TUI export are each still
+absent from the file the item names. One item was struck the same pass:
+`decode_usage` now reads `prompt_tokens_details.cached_tokens`
+(`mecha-core/src/provider/openai.rs:309`), shipped with the reasoning arc, and
+has moved to [`HISTORY.md`](HISTORY.md).
 Ordered by value per unit of effort, not by size.
 
 ### The scheduling instrument — live since 2026-08-08
@@ -461,14 +481,6 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
 - **Re-baseline `ambiguity` and `long-horizon` at k=5.** No scorecard in
   `results/` records `runs: 5` outside the compaction arc, and these are the two
   tags whose single-run numbers move.
-- **`decode_usage` reads only `prompt_tokens`/`completion_tokens`**
-  (`mecha-core/src/provider/openai.rs`), so cached input reports as zero on
-  every local run — the benchmark diagnosis had to reason around
-  `cache_read: 0` in all 21 transcripts, and the TUI fuel gauge cannot show
-  cache health. llama-server's OpenAI-shape usage carries
-  `prompt_tokens_details.cached_tokens` in current builds; parse it when
-  present, leave zero when absent. One function, one test.
-
 ### Structural gaps
 
 - **MCP resources are not implemented.** `mecha-core/src/mcp.rs` advertises
@@ -617,6 +629,31 @@ The arc is complete and running nightly. What is missing is refinement:
   chrome, scanner-proof magic links, and the signed-in artifact viewer. The
   full arcs are in [`HISTORY.md`](HISTORY.md); nothing from that night
   remains open except what the bullets below name.
+
+  **An artifact now has two URLs and the tools say which is which
+  (2026-08-10 night, merged, unreleased).** A publish reports the gate's
+  viewer page beside the bare artifact URL; the account page and the docs
+  point at the page; visibility is `Option` end to end so a caller asserts one
+  only when told one. The arc, its three fallout bugs and the review that
+  caught the worst of them are in [`HISTORY.md`](HISTORY.md). Two things a
+  reader needs from it here:
+
+  - **It is on `main` and not deployed.** Until the box runs a build carrying
+    `viewer_url`, `factory-publish` prints one column and the MCP answer names
+    one URL — the designed degradation, verified live against the current
+    origin. `mecha-manifest`/`mecha-factory`/`mecha-factory-publish` at the
+    next tag, then `factory-deploy`, is what turns it on. The version bump was
+    deliberately **not** made: 0.2.2 is the intended number (the public-API
+    break is knowingly shipped as a patch — crates.io reports zero reverse
+    dependencies), and the tag is being held to carry other work with it.
+  - **The local store and the box can now disagree about visibility**, and
+    nothing reconciles them. `bundle_publish`/`bundle_alias` still derive a
+    concrete visibility for the local record — its schema has no absence —
+    while sending `None` to the box. That is correct as written and is why
+    `factory-publish list` can report a visibility the origin does not hold.
+    Closing it means either reading the box's answer back onto the record or
+    dropping visibility from the local store; it was left out of a URL change
+    on purpose.
 
   **Open there, in the order they bite:**
 
