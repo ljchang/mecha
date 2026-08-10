@@ -1251,6 +1251,28 @@ matters is the general shape.
   read `entry-d084.md`, the one real terminator, names the failure instead. It
   also closed a hole in `chain-largest`, whose answer sits at link 9 of 16 and
   could be reached without ever finishing the walk.
+- **A pure function can be right in isolation and wrong against stored
+  state.** `merge_push` — the three-way fold behind the switchboard's two
+  writers — passed every unit test: right values, right conflict list. It
+  re-serialised the merged table, so a push that won *every* conflict produced
+  text differing from the pushed file only in formatting, and the stored
+  `baseline` and `effective` then differed too. "Has the browser edited this?"
+  is a text comparison, so the cockpit would have reported unpulled edits that
+  did not exist and every later push would have taken the merge path for
+  nothing. Invisible to a test on the function; obvious the first time the two
+  stored columns sat side by side. **Test a pure function where its output is
+  compared, not only where it is produced.**
+- **Parsing is not validation, and a permissive parser hides the case you
+  meant to catch.** A profile's timezone check was written as "does
+  `chrono_tz` accept it", and the test asserting `EST` is refused failed —
+  `EST` parses, because the IANA database still carries the legacy
+  fixed-offset zones. A booking page rendered in `EST` is an hour wrong from
+  March to November and looks right throughout, which is the failure shape
+  this project keeps finding. The rule is now `Region/City` (or `UTC`), and
+  the test asserts `"EST".parse::<Tz>().is_ok()` *first*, so it fails loudly
+  rather than silently passing if that premise ever changes. **When a library
+  accepts more than you mean, encode the narrower rule and pin the premise in
+  the test.**
 
 ### Learning
 
