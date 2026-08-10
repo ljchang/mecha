@@ -190,10 +190,13 @@ whatever it started with. After tagging v0.1.2 the box was still executing
 0.1.1 everywhere — including `mecha-triggers`, which would have fired that
 night's scheduled runs on the pre-fix harness, and `mecha-ruminate` at 03:30,
 which mines sessions into learned rules that ride in every future prompt.
-`cargo install mecha-cli --locked` then
-`systemctl --user restart mecha-slack mecha-drain mecha-triggers` (verified
-0.1.2 and the connector reconnected with its 12 threads intact, 2026-08-10
-14:28). The timer-driven units — `mecha-slots`, `mecha-frontdoor`,
+Use the three-crate line below rather than upgrading `mecha-cli` alone —
+`mecha-mail` ships the MCP server binaries and a run spawns them fresh from
+whatever is installed, so a partial upgrade leaves the mail surface a version
+behind with nothing to say so. Done 2026-08-10 evening
+(`cargo install mecha-cli mecha-mail --locked`, both at 0.1.2), then
+`systemctl --user restart mecha-slack mecha-drain mecha-triggers` — verified,
+and the connector reconnected with its 12 threads intact at 14:28. The timer-driven units — `mecha-slots`, `mecha-frontdoor`,
 `mecha-ruminate` — are oneshot and exec a fresh `mecha` each fire, so they need
 no restart; restarting them would be cargo-culting. The set that needs action
 is exactly the set holding a long-lived process.
@@ -257,7 +260,7 @@ is exactly the set holding a long-lived process.
   systemctl --user start mecha-slack mecha-drain mecha-triggers
   ```
 
-  Currently installed: `mecha-cli` 0.1.1, `mecha-mail` 0.1.1,
+  Currently installed (2026-08-10 evening): `mecha-cli` 0.1.2, `mecha-mail` 0.1.2,
   `mecha-factory-publish` 0.2.1. `mecha.prev` / `factory-publish.prev` remain
   as the pre-crates.io rollback copies.
 
@@ -804,10 +807,10 @@ The arc is complete and running nightly. What is missing is refinement:
   2026-08-07 05:22 launch was voided by the glibc trap; the 11:18 relaunch was
   stopped by hand ~4h in; and the **2026-08-10 03:39 launch at the 262k
   window** (`max_turns` 80, `--agent-timeout-multiplier 2.0`, k=1, preflighted
-  with `check-subset.py`) was **killed deliberately at 27/75 that evening**,
+  with `check-subset.py`) was **killed deliberately at 28/75 that evening**,
   because the reasoning round-trip bug found mid-run meant it was measuring a
   defect that was by then fixed. Its numbers, for whatever they are worth as a
-  before: 12 passes of 27 (44%), five `AgentTimeoutError`, one trial lost to
+  before: 13 passes of 28 (46%), five `AgentTimeoutError`, one trial lost to
   the dash-prompt crash, ~930 output tokens per turn. Do not treat it as a
   baseline — three known defects are baked into it (stripped reasoning causing
   empty turns, the argv crash, and a timeout tail), and the reasoning fix
