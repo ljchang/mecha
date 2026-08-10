@@ -249,6 +249,75 @@ fn decode_usage(v: Option<&Value>) -> Usage {
     }
 }
 
+/// The bytes a turn arrived with, when it decoded to nothing at all.
+///
+/// `llama-server --reasoning-format` defaults to `auto`, which for a thinking
+/// model routes the whole `<think>` block into `message.reasoning_content` and
+/// leaves `message.content` null. This decoder reads `content` and
+/// `tool_calls` and nothing else, so two very different turns arrive here
+/// identically — no blocks, `finish_reason: "stop"`:
+///
+/// - the model reasoned and then genuinely said nothing, and
+/// - the model said something, or called a tool, inside the reasoning channel.
+///
+/// The agent loop answers both with a nudge and a retry. That is correct for
+/// the first and pure waste for the second — a re-prefill of the whole
+/// transcript to ask for output that was already produced. Measured on the
+/// 2026-08-10 Terminal-Bench run: every one of `break-filter-js-from-html`'s
+/// ten nudges was followed immediately by a well-formed `shell` call, twice a
+/// near-duplicate of one issued a few messages earlier, which is what a lost
+/// tool call looks like — and also what a compliant answer to the nudge looks
+/// like. The two are not separable without these bytes.
+///
+/// So this reports them at the point they are dropped, and deliberately does
+/// **not** change the decode. Recovering a tool call out of a think block is a
+/// behaviour change that wants evidence first, and this is the instrument that
+/// produces it.
+#[derive(Debug, PartialEq)]
+struct DroppedReasoning<'a> {
+    chars: usize,
+    /// Qwen emits `<tool_call>` inside the think block when it starts calling
+    /// before closing the tag. If this is ever true, the empty turn was a lost
+    /// call and not a silent model.
+    looks_like_tool_call: bool,
+    /// The end of the reasoning, which is where a call or a concluded answer
+    /// would sit. The head is throat-clearing.
+    tail: &'a str,
+}
+
+/// `None` when there is nothing to explain: the turn produced blocks, or the
+/// reasoning channel was empty too.
+fn dropped_reasoning(decoded_blocks: usize, reasoning: &str) -> Option<DroppedReasoning<'_>> {
+    if decoded_blocks > 0 || reasoning.trim().is_empty() {
+        return None;
+    }
+    // Counted in chars and sliced on a char boundary: reasoning is model prose
+    // and slicing it by byte would panic on the first multibyte character.
+    let tail = match reasoning.char_indices().rev().nth(400) {
+        Some((i, _)) => &reasoning[i..],
+        None => reasoning,
+    };
+    Some(DroppedReasoning {
+        chars: reasoning.chars().count(),
+        looks_like_tool_call: reasoning.contains("<tool_call>")
+            || reasoning.contains("</tool_call>"),
+        tail,
+    })
+}
+
+fn log_dropped_reasoning(decoded_blocks: usize, reasoning: &str, finish: Option<&str>) {
+    if let Some(d) = dropped_reasoning(decoded_blocks, reasoning) {
+        tracing::warn!(
+            reasoning_chars = d.chars,
+            looks_like_tool_call = d.looks_like_tool_call,
+            finish_reason = finish.unwrap_or("<absent>"),
+            tail = d.tail,
+            "turn decoded to no blocks but the response carried reasoning_content; \
+             these are the bytes being dropped"
+        );
+    }
+}
+
 fn parse_arguments(name: &str, raw: &str) -> Result<Value> {
     if raw.trim().is_empty() {
         return Ok(json!({}));
@@ -300,9 +369,18 @@ fn decode_response(v: &Value) -> Result<CompletionResponse> {
         });
     }
 
+    let finish = choice.get("finish_reason").and_then(Value::as_str);
+    log_dropped_reasoning(
+        content.len(),
+        msg.get("reasoning_content")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+        finish,
+    );
+
     Ok(CompletionResponse {
         message: Message::assistant(content),
-        stop_reason: decode_finish(choice.get("finish_reason").and_then(Value::as_str)),
+        stop_reason: decode_finish(finish),
         usage: decode_usage(v.get("usage")),
         refusal: None,
         model: v
@@ -322,6 +400,10 @@ struct Accumulator {
     finish: Option<StopReason>,
     usage: Usage,
     model: String,
+    /// Accumulated for the diagnostic only — never turned into a block. See
+    /// `DroppedReasoning`. The streamed dialect carries it as
+    /// `delta.reasoning_content`, alongside the `delta.content` this decodes.
+    reasoning: String,
 }
 
 impl Accumulator {
@@ -353,6 +435,12 @@ impl Accumulator {
         if let Some(t) = delta.get("content").and_then(Value::as_str) {
             self.text.push_str(t);
             let _ = sink.send(StreamEvent::TextDelta(t.to_string()));
+        }
+        // Not sent to the sink: this is not the answer, and surfacing it would
+        // put a model's private reasoning on the user's screen. It is kept
+        // only so `finish` can say what a nothing-turn actually contained.
+        if let Some(r) = delta.get("reasoning_content").and_then(Value::as_str) {
+            self.reasoning.push_str(r);
         }
         for call in delta
             .get("tool_calls")
@@ -396,6 +484,7 @@ impl Accumulator {
             };
             content.push(Block::ToolUse { id, name, input });
         }
+        log_dropped_reasoning(content.len(), &self.reasoning, None);
         CompletionResponse {
             message: Message::assistant(content),
             stop_reason: self.finish.unwrap_or(StopReason::Other),
@@ -457,6 +546,138 @@ mod tests {
     /// One SSE chunk carrying a delta for choice 0.
     fn chunk(delta: Value) -> Value {
         json!({"choices": [{"index": 0, "delta": delta}]})
+    }
+
+    #[test]
+    fn a_turn_that_decoded_something_reports_no_dropped_reasoning() {
+        // The diagnostic is about turns that arrive empty. A turn with blocks
+        // is ordinary, however much it reasoned on the way, and firing here
+        // would bury the real signal under every thinking turn in the run.
+        assert_eq!(dropped_reasoning(1, "a long think"), None);
+    }
+
+    #[test]
+    fn an_empty_turn_with_an_empty_reasoning_channel_reports_nothing() {
+        // Nothing arrived anywhere: the model really did say nothing, and
+        // there are no dropped bytes to show. Whitespace counts as empty, or
+        // a lone newline would be reported as if it were evidence.
+        assert_eq!(dropped_reasoning(0, ""), None);
+        assert_eq!(dropped_reasoning(0, "  \n "), None);
+    }
+
+    #[test]
+    fn an_empty_turn_carrying_a_tool_call_in_its_reasoning_is_named_as_one() {
+        // The whole question the instrument exists to answer: was the empty
+        // turn a silent model, or a call we failed to see?
+        let d = dropped_reasoning(
+            0,
+            "let me check the file\n<tool_call>\n{\"name\": \"shell\"}",
+        )
+        .expect("an empty turn with reasoning is reportable");
+        assert!(
+            d.looks_like_tool_call,
+            "a <tool_call> in the think block is the lost-call signature"
+        );
+    }
+
+    #[test]
+    fn reasoning_without_a_call_is_reported_but_not_labelled_a_call() {
+        let d = dropped_reasoning(0, "I think the answer is 42, so I am done.")
+            .expect("an empty turn with reasoning is reportable");
+        assert!(!d.looks_like_tool_call);
+        assert_eq!(d.chars, 39);
+    }
+
+    #[test]
+    fn the_tail_is_kept_and_multibyte_reasoning_does_not_panic() {
+        // The end is where a call or a concluded answer sits, so the tail is
+        // the part worth keeping. Slicing model prose by byte offset would
+        // panic on the first multibyte character — and reasoning is exactly
+        // where an em dash or a CJK identifier turns up.
+        let long = format!("{}—the answer is 42", "x".repeat(5_000));
+        let d = dropped_reasoning(0, &long).expect("reportable");
+        assert_eq!(d.chars, 5_017);
+        assert!(d.tail.ends_with("—the answer is 42"));
+        assert!(
+            d.tail.chars().count() <= 401,
+            "the tail is bounded, not the whole think block"
+        );
+
+        // Short reasoning is kept whole rather than sliced to nothing.
+        let d = dropped_reasoning(0, "早い").expect("reportable");
+        assert_eq!(d.tail, "早い");
+    }
+
+    #[test]
+    fn llama_servers_empty_turn_shape_decodes_to_no_blocks_and_is_reported() {
+        // The exact wire shape behind the 2026-08-07 and 2026-08-10 empty
+        // turns: `--reasoning-format` defaults to `auto`, which puts the think
+        // block in `reasoning_content` and leaves `content` null, with
+        // `finish_reason: "stop"` — NOT "length", so this is not truncation
+        // and no budget raise addresses it.
+        let v = json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "I should read the file first.\n<tool_call>",
+                },
+            }],
+            "model": "qwen3.6-35b-a3b",
+        });
+        let resp = decode_response(&v).unwrap();
+
+        // Unchanged behaviour: the turn is still empty and still EndTurn. The
+        // patch is an instrument, not a fix — recovering the call is a
+        // behaviour change that wants this evidence first.
+        assert_eq!(resp.stop_reason, StopReason::EndTurn);
+        assert!(
+            resp.message.content.is_empty(),
+            "reasoning_content must not silently become an answer"
+        );
+
+        let d = dropped_reasoning(
+            resp.message.content.len(),
+            "I should read the file first.\n<tool_call>",
+        )
+        .expect("this is the shape the diagnostic exists for");
+        assert!(d.looks_like_tool_call);
+    }
+
+    #[test]
+    fn streamed_reasoning_deltas_never_become_answer_text() {
+        // Same rule on the streaming path, which had the same blind spot: the
+        // reasoning is accumulated for the diagnostic and must not leak into
+        // the message or onto the user's screen.
+        let (tx, mut rx) = sink();
+        let mut acc = Accumulator::default();
+        acc.push(&chunk(json!({"reasoning_content": "thinking "})), &tx);
+        acc.push(&chunk(json!({"reasoning_content": "hard"})), &tx);
+        acc.push(
+            &json!({"choices": [{"index": 0, "finish_reason": "stop", "delta": {}}]}),
+            &tx,
+        );
+
+        // Asserted before `finish` consumes it, and asserted at all because
+        // the rest of this test is about absence: without this, deleting the
+        // accumulation entirely would leave every assertion below still true.
+        assert_eq!(
+            acc.reasoning, "thinking hard",
+            "deltas must accumulate, or the diagnostic has nothing to report"
+        );
+
+        let resp = acc.finish();
+        assert!(
+            resp.message.content.is_empty(),
+            "a reasoning-only stream is still an empty turn"
+        );
+        assert_eq!(resp.stop_reason, StopReason::EndTurn);
+        rx.close();
+        assert!(
+            rx.try_recv().is_err(),
+            "reasoning must not be emitted as a TextDelta"
+        );
     }
 
     fn call_delta(index: u64, id: Option<&str>, name: Option<&str>, args: &str) -> Value {
