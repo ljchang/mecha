@@ -54,7 +54,9 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **690 tests**, no failures — verified 2026-08-09 night, after the day's
+Expect **690 tests**, no failures — re-measured 2026-08-10 after the poll and
+docs arc, which added none on this side; the count is from 2026-08-09 night and
+the day's
 four arcs (counts re-measured at the end of the session): inter-agent messaging
 (`mecha-core` grew with the mailbox store,
 taint-forwarding, and the review's fix tests), the benchmark-diagnosis fixes
@@ -362,6 +364,32 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
   layer shipped with the front-end pass; the axis-locked touch gesture and
   a separate Group heatmap tab from `SCHEDULING-DESIGN.md` §5.3 were left
   out on purpose — inline heat carries most of the value.)
+- **A poll cannot hold a real picture, because there is no asset endpoint on
+  the box.** Questions and options take `media = { src, alt }` as of
+  2026-08-10, and the two sources that render are the only two the policy
+  allows: a `data:` URI, or a path this origin already serves. Every class
+  sends `img-src 'self' data:`, so the obvious idea — publish a bundle of
+  figures and point the poll at it — is refused, and correctly: the artifact
+  host is a *different origin* and the browser would block it. An off-origin
+  `src` fails when the spec is parsed rather than becoming a hole in a page
+  sixty people are looking at.
+
+  What that leaves is inline images capped at 512 KB before base64, which is a
+  generous diagram and a hopeless photograph. So "poll a set of images" works
+  today only for figures somebody exported small on purpose, and the cap
+  cannot simply be raised: a spec travels as one request body through
+  `poll_create` and is stored whole, so the ceiling is protecting the store
+  and the request, not the page.
+
+  The fix is an **asset endpoint on the box**, scoped to a poll and served
+  same-origin, with the questions worth deciding before any code: who may
+  upload (the `slots` key, presumably, since that is what creates polls),
+  what the per-poll and per-file caps are, which content types are allowed
+  and whether the box re-derives the type rather than believing the
+  `Content-Type`, and what removes the bytes when a poll is deleted — a poll
+  is the one object here with no retention story of its own. Until then
+  `polls.md` says the limitation out loud rather than letting a reader
+  discover it at the worst moment.
 - **Cosmetic:** `factory-publish type push` prints a `/f/<handle>/<id>` URL
   for booking manifests; a booking's page is `/s/…`.
 
@@ -490,7 +518,7 @@ The arc is complete and running nightly. What is missing is refinement:
 
 - **`mecha-factory` — the public surface. It is deployed, it sends mail, and
   it is self-serve.** Its own repository, public at
-  **github.com/ljchang/mecha-factory** (325 tests, 2026-08-08 evening),
+  **github.com/ljchang/mecha-factory** (384 tests, re-measured 2026-08-10),
   running on a small VPS:
   the API at `https://gate.mecha-factory.ai`, artifacts at
   `https://<handle>.art.mecha-factory.ai`, notebooks at `…compute…`. Verified
@@ -534,26 +562,30 @@ The arc is complete and running nightly. What is missing is refinement:
     exposed-or-excluded in writing, and the arc is in
     [`HISTORY.md`](HISTORY.md). What was deliberately left:
 
-    - **`notebook_render` executes the notebook to export it.** On a box with
-      `[sandbox]` configured, mecha's `shell` would be confined while the
-      factory server deliberately is not, so it is an unconfined execution
-      path around a configured sandbox. No new capability on *this* box, whose
-      `[sandbox] kind` is the default `none` — but it becomes one the day that
-      changes, and the fix then is one row of `surface::REACH` flipped to
-      `NotATool`. The real answer is that repository confining
-      `marimo export html-wasm`, which is the same open item the `[[mcp]]`
-      config comment already names.
-    - **`poll_status` still reads its question prompts back from the box.**
-      Free-text answers are withheld from a privileged run by construction,
-      so what remains is the user's *own* question text round-tripped through
-      an origin the design assumes is lost — a much smaller channel, and
-      recorded rather than fixed. Closing it means caching the spec in the
-      local record at create time and rendering prompts from home.
+    - **`poll_status` reads its question prompts back from the box**, and now
+      the answers too. The prose is the point of a text question, and
+      `openWorldHint` marks the whole result untrusted, which is the mechanism
+      mecha already uses for mail bodies — so what is left is the user's *own*
+      question text round-tripped through an origin the design assumes is
+      lost. Smaller than it sounds, and recorded rather than fixed; closing it
+      means caching the spec in the local record at create time and rendering
+      prompts from home.
+    - **`vendor_runtime` is the notebook tool's one reach for the network**,
+      fetching Pyodide from a pinned allowlist. It is *not* code execution —
+      that belief was measured false on 2026-08-10 (see
+      [`HISTORY.md`](HISTORY.md)) — so a confined renderer would need network
+      for this template, not an execution exemption.
 
     Unchanged and worth re-reading before adding more: every exposed tool is
     schema tokens in every run, measured at ~7–8k a turn before this grew the
     surface by eight. That argues for narrowing per surface (`[slack] tools`,
     `[tools] enabled`) rather than for exposing less.
+
+    **A poll UI change does not reach live pages until the box is redeployed.**
+    `poll_render.rs` lives in `mecha-manifest`, which the *box* links, so the
+    2026-08-10 rendering fixes are in the repository and not yet in front of
+    anyone. The docs gallery lags too: `website/scripts/sync-gallery.mjs`
+    fetches `mecha-factory@main`.
 
   - **Verify the release workflow** (`release.yml`, authored 2026-08-07:
     static musl `factory` with an asserted-static gate and a checksum). Push a
@@ -582,15 +614,24 @@ The arc is complete and running nightly. What is missing is refinement:
     It does **not** unlock wildcard certificates either: `rustls-acme` speaks
     only HTTP-01 and TLS-ALPN-01, so the library forecloses them whoever
     hosts the zone.
-  - **The factory has one documentation page, and needs nine.** The
-    component gallery ships (see "Where the work is"); everything else about
-    the factory is still only in design docs, which is the wrong audience.
-    [`FACTORY-DOCS-DESIGN.md`](FACTORY-DOCS-DESIGN.md) lists the pages with the
-    claims each has to make, sourced from the code. `field-kinds.md` is the
-    one to write first — the four-column table (TOML · JSON Schema · rendered
-    control · what the server enforces) exists nowhere but `request.rs`, and
-    `second-client.md` assumes it. `booking.md` is the largest gap, since the
-    whole scheduling instrument shipped undocumented for readers.
+  - **The factory documentation is half written.** Shipped: the component
+    gallery, `polls.md`, `slides.md`, and — 2026-08-10 — `onboarding.md`
+    (claiming a handle, pairing, the five scoped keys, wiring the MCP surface
+    into an agent), `artifacts.md` (versions, the alias, visibility, the
+    share/revoke path and its oracle rules, takedown, what retention will not
+    sweep) and `notebooks.md`. Also `features/slack.md` on the mecha side,
+    which is setup plus what the remote control actually does.
+    [`FACTORY-DOCS-DESIGN.md`](FACTORY-DOCS-DESIGN.md) lists the rest with the
+    claims each has to make, sourced from the code. Still missing, in the order
+    they bite: `field-kinds.md` — the four-column table (TOML · JSON Schema ·
+    rendered control · what the server enforces) exists nowhere but
+    `request.rs`, and `second-client.md` assumes it; `booking.md`, since the
+    whole scheduling instrument is still undocumented for readers;
+    `overview.md`, `request-types.md` and `theming.md`.
+
+    Note for whoever writes the next one: the site's `sync-gallery` step
+    fetches **mecha-factory@main**, so a gallery fix on a branch does not show
+    up in a local docs build until it merges.
   - **The operator admin panel and private sharing are built, reviewed,
     tested, and deployed** (2026-08-07/08; the arcs are in
     [`HISTORY.md`](HISTORY.md)). What remains is the two live checks at the
