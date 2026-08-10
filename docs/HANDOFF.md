@@ -67,8 +67,9 @@ generated in mecha-factory (`cargo run --example gallery`), committed there at
 `gallery/` and copied in at build time by `website/scripts/sync-gallery.mjs` —
 sibling checkout first, public tarball otherwise, warning rather than failing
 so the prose still builds offline. The copy is gitignored here; that repo's CI
-owns the drift check, because that is where the renderer lives. Nine more
-pages are planned in [`FACTORY-DOCS-DESIGN.md`](FACTORY-DOCS-DESIGN.md).
+owns the drift check, because that is where the renderer lives. `overview.md`
+landed 2026-08-10; five more pages are planned in
+[`FACTORY-DOCS-DESIGN.md`](FACTORY-DOCS-DESIGN.md).
 
 Every commit was verified to build and pass tests **in isolation**, so the
 history bisects rather than merely ending in a good state.
@@ -799,18 +800,22 @@ The arc is complete and running nightly. What is missing is refinement:
     hosts the zone.
   - **The factory documentation is half written.** Shipped: the component
     gallery, `polls.md`, `slides.md`, and — 2026-08-10 — `onboarding.md`
-    (claiming a handle, pairing, the five scoped keys, wiring the MCP surface
-    into an agent), `artifacts.md` (versions, the alias, visibility, the
+    (claiming a handle, pairing, the five scoped keys — of which pairing
+    installs two, corrected 2026-08-10 — and wiring the MCP surface into an
+    agent), `artifacts.md` (versions, the alias, visibility, the
     share/revoke path and its oracle rules, takedown, what retention will not
     sweep) and `notebooks.md`. Also `features/slack.md` on the mecha side,
     which is setup plus what the remote control actually does.
     [`FACTORY-DOCS-DESIGN.md`](FACTORY-DOCS-DESIGN.md) lists the rest with the
-    claims each has to make, sourced from the code. Still missing, in the order
-    they bite: `field-kinds.md` — the four-column table (TOML · JSON Schema ·
-    rendered control · what the server enforces) exists nowhere but
-    `request.rs`, and `second-client.md` assumes it; `booking.md`, since the
-    whole scheduling instrument is still undocumented for readers;
-    `overview.md`, `request-types.md` and `theming.md`.
+    claims each has to make, sourced from the code. `overview.md` landed
+    2026-08-10 with the documentation overhaul — both directions of the
+    boundary, the three crates and the three origins, the request lifecycle
+    end to end, and the notebook confinement gap stated as a warning. Still
+    missing, in the order they bite: `field-kinds.md` — the four-column table
+    (TOML · JSON Schema · rendered control · what the server enforces) exists
+    nowhere but `request.rs`, and `second-client.md` assumes it; `booking.md`,
+    since the whole scheduling instrument is still undocumented for readers;
+    `request-types.md` and `theming.md`.
 
     Note for whoever writes the next one: the site's `sync-gallery` step
     fetches **mecha-factory@main**, so a gallery fix on a branch does not show
