@@ -143,7 +143,7 @@ from the afternoon pass, not re-checked):
 
 | Port | Model | State |
 |---|---|---|
-| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, **`-c 131072`** (raised 2026-08-10), **`--reasoning-budget 4096`** (new 2026-08-07 — it *reduces* this model reasoning without terminating and returning empty content, but the 08-07 benchmark run proved it does not end it: empty turns persisted with the budget active, which is why the loop's nudge-retry allowance now resets on productive turns). `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` (= `-c`) and `max_tokens` (**above** the budget; 8192) — four numbers that move together. **`-c` costs nothing** — re-measured 2026-08-10 across 32k/64k/128k at matched prompt lengths, generation is within noise (92-93 tok/s at 1k, 81-82 at 30k) and RSS is 21.5 GB either way. The 50x slowdown recorded on 2026-08-07 was that day's OOM leaving no room for the KV cache, not the flag; the table is in `scripts/start-moe-mtp.sh`. What still costs is *used* context: 63 tok/s at a 108k prompt. The model is trained for **262,144** (`qwen35moe.context_length`), so 131,072 is half its native window — no RoPE scaling, and room above. **`-np 1` still means everything serializes**: subagents, `batch` and `eval --concurrency` all queue behind one slot. Measured 2026-08-10, four slots cost 12% of single-stream speed (79.8 → 70.5 tok/s) and return 1.6x aggregate (~129 tok/s across four streams at ~35 each), so a fan-out finishes in ~0.6x the wall clock rather than 0.25x — and `-c` is *divided* across slots, so `-np 4` wants `-c 262144` to keep 64k each. Interactive use should stay at `-np 1`; raise slots for a batch or eval sweep and put it back. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`) — which is also why batching dilutes per-stream speed, since speculation has less to offer four streams than one. **Now a transient unit** (`systemctl --user status llama-qwen`), not a tmux pane — see below |
+| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, **`-c 262144`** — the model's whole trained window (`qwen35moe.context_length`), raised from 32768 on 2026-08-10 after re-measuring. **`-c` costs nothing in speed**: 32k/64k/128k/256k are within noise of each other (~92 tok/s at a 1k prompt, ~80 at 30k), and the 50x slowdown recorded on 2026-08-07 was that day's OOM, not the flag. It costs memory as a startup *reservation* — 21.4 GB at 32k to 28.5 GB at 256k, i.e. weights ~20.7 GB plus ~32 KiB/token. **The full tables, the needle test at 188k, the `-np` trade-off and the two traps live in `scripts/start-moe-mtp.sh`** — read it before touching any of this. **`--reasoning-budget 4096`** (2026-08-07) reduces but does not end this model's non-terminating reasoning, which is why the loop's nudge-retry allowance resets on productive turns. `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` (= `-c`) and `max_tokens` (**above** the budget; 8192) — four numbers that move together. `-np 1` means every fan-out serializes. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **A transient unit** (`systemctl --user status llama-qwen`), not a tmux pane — see below |
 | 8081 | gemma-4-E4B | down; nothing currently depends on it |
 | 8082 | gemma-4-26B-A4B | **down — restart it before any judged run.** The eval judge and nightly validate's judge both point here, so `mecha eval` with a `judge` rubric and the nightly validate will fail without it. `scripts/start-gemma26.sh` |
 | 8888 | SearXNG | up (docker, JSON format enabled) |
@@ -247,7 +247,8 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
     `mecha-slack.service` served the old seven-tool factory surface until it
     was restarted; a fresh `mecha chat` / `tui` / `run` spawns a new server and
     sees all fifteen immediately. It has now been restarted, though
-    `[slack] tools` still does not list the poll tools.
+    `[slack] tools` was emptied the same day, so a Slack thread now carries the
+    same surface as `chat` and `tui` — including `mail__*` and `pkg`.
 - The learning store (`~/.mecha/learning`) holds **zero live rules** — the one
   early rule was reverted with its poisoned reflection — so everything from here
   accumulates from real usage through the gate.
@@ -423,6 +424,19 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
   for booking manifests; a booking's page is `/s/…`.
 
 ### Cheap, and worth doing first
+
+- **Decide what the compaction threshold should be, now that it moved 8x on
+  its own.** `AgentConfig::compact_at` derives two thirds of the window when
+  `[agent] compact_at_tokens` is unset, so raising `-c` from 32768 to 262144
+  took the threshold from 21,845 to **174,762** as a side effect nobody chose.
+  Nothing is broken by it — prompt caching means a growing transcript is only
+  prefilled at the delta — but two things argue for setting it explicitly and
+  lower. A cache *miss* at that depth costs ~120s of prefill before the first
+  token, and a model's useful context is generally shorter than its trained
+  one, so a transcript allowed to reach 174k may be answered worse than one
+  compacted at 100k. Left unset deliberately: it is a judgement about how runs
+  should feel, not a fact that can be measured, and the reader who decides it
+  should know it is currently a default rather than a decision.
 
 - **Re-baseline `ambiguity` and `long-horizon` at k=5.** No scorecard in
   `results/` records `runs: 5` outside the compaction arc, and these are the two
@@ -725,7 +739,11 @@ The arc is complete and running nightly. What is missing is refinement:
   agent crash, transcripts lost on crash or corrupted by compaction, and a
   flat output budget bigger than the threshold-to-window gap). Relaunching
   the full 75 at k=1 (~15h) is still the open decision, and it is now worth
-  doing: the fixed binary should recover most of the 8. Rebuild the portable
+  doing twice over: the fixed binary should recover most of the 8, **and every
+  one of those trials ran against a 32k window that never needed to be 32k**
+  (2026-08-10 — see "Environment as left"). Compaction pressure was a live
+  variable in the fragment and is largely gone at 262,144, so the old numbers
+  are not a baseline for the new ones. Rebuild the portable
   binary (`bench/build-portable.sh`) from the merged branch first — the
   installed one predates every fix, and `bench/run.sh` resolves
   `$(pwd)/target-musl/release/mecha`, so the binary scored is whichever

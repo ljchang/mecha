@@ -846,6 +846,30 @@ The documentation caught up in the same pass: `factory/onboarding.md`,
 layout and picture sections in `polls.md` — four of the gaps a reader hits in
 their first hour and could previously close only by reading source.
 
+**2026-08-10 (later) — two releases, a deploy, and a ceiling that was never
+there.** `v0.1.1` and `v0.2.1` are cut and published: four mecha crates at
+0.1.1, three factory crates at 0.2.1, and a checksummed static `factory` binary
+attached to its release. That closes "verify the release workflow" and the
+crates.io split, both open since 2026-08-07. `factory-deploy v0.2.1` then ran
+the whole procedure against a real release for the first time — download,
+checksum, prove the binary and the config while the old one still served, swap,
+health check — so the poll rendering work is in front of visitors rather than
+sitting in a repository. Home switched to installing from crates.io rather than
+the repo build, which is the better habit once tags exist: it installs exactly
+what the world gets.
+
+Then the day's largest finding, which was not planned work at all. `-c 32768`
+had been pinned for three days by a single bad afternoon, and the rule written
+from it — *do not raise `-c`* — turned out to be four times larger than its
+evidence. Re-measured across 32k, 64k, 128k and 256k at matched prompt lengths:
+**`-c` costs nothing.** The server now runs at **262,144**, the model's whole
+trained window, and a needle at 21% depth in a 188,546-token prompt came back
+exactly. The compaction threshold moved from 21,845 to 174,762 as a side
+effect, which is recorded in the handoff as a decision somebody still owes.
+`[slack] tools` was emptied in the same session, so a Slack thread now carries
+the same surface as `chat` — the token argument that justified narrowing it was
+real, and stopped mattering when the window grew eightfold.
+
 ---
 
 ## The measurement record
@@ -1367,6 +1391,26 @@ All found by pre-push review or by running it.
   the test has to be repeated on the far side of them.
 
 ### Environment
+
+- **`cargo install` will happily install a version older than the one you just
+  published**, because the local registry index is cached and nothing warns.
+  Minutes after `mecha-factory-publish` 0.2.1 and `mecha-mail` 0.1.1 went up,
+  `cargo install` fetched 0.2.0 and 0.1.0 — and reported success both times.
+  It was caught only by reading `cargo install --list` against the versions
+  that were meant to land. **After installing something you just released,
+  verify the version rather than the exit code**, or pin it with `--version`.
+  The failure is silent and looks exactly like success, which is the whole
+  problem.
+
+- **Publishing a workspace is ordered, and a missing member fails it halfway.**
+  `mecha-cli` depends on `mecha-slack`, and cargo refuses to publish a crate
+  whose non-dev dependencies are not on the registry — so tagging v0.1.1 with
+  `mecha-slack` absent from the release workflow's list would have published
+  `mecha-core` and `mecha-mail`, then died on `mecha-cli`, leaving a version
+  that can be yanked but never unpublished. Caught by `cargo publish
+  --dry-run` before the tag existed. **A new workspace member that anything
+  published depends on belongs in the release list in the same change that
+  introduces it**, and a dry run is the cheap way to find out.
 
 - A `grep -o 'mk_slt_[A-Za-z0-9_-]*'` clipped a freshly minted key to 24 of
   its 88 bytes, and the truncated credential *looked* installed. The tell was
