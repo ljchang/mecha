@@ -161,6 +161,30 @@ trait that an external implementor could depend on — `Provider`, `Tool`,
 `Approver` — is a breaking change even when nothing inside this repository
 notices.
 
+### The minimum supported Rust version
+
+`rust-version` in the workspace manifest is the oldest Rust that builds the
+tree, and CI pins an arm to exactly that number so breaking it is a failure
+rather than a discovery. Keep the two in step; they are one promise written
+twice.
+
+**It moves when a dependency we want needs it to, and not otherwise.** Never
+to use a new language or standard-library feature ourselves — that trades
+somebody's ability to install mecha for a convenience, which is the wrong way
+round. Raise it in the same pull request as the dependency that forced it,
+and name that dependency in the message, so the number always has a reason
+attached to it.
+
+Two things follow from that rule, and they are why it is written down. Raise
+it to the **minimum** the dependency needs, not to current stable: the
+difference is headroom for anyone on a toolchain their distribution chose.
+And expect the rule to get harder to apply over time rather than easier —
+today the libraries here have no reverse dependencies on crates.io, so the
+number costs nobody anything; the first crate that depends on `mecha-core` is
+the moment it starts to.
+
+*Raised to 1.89 on 2026-08-10 for `rustyline` 18, which uses `file_lock`.*
+
 ## Releases
 
 A release is a **tag on main**, nothing else:
