@@ -26,7 +26,7 @@ jobs:
         # `stable` is what contributors use; the MSRV pin is what the manifest
         # promises. Breaking either should be a deliberate act, not a surprise.
         # Keep this arm in step with `rust-version` in the workspace manifest.
-        rust: [stable, "1.88"]
+        rust: [stable, "1.89"]
     steps:
       - uses: actions/checkout@v7
 
