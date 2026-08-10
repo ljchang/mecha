@@ -7,7 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-10
+
 ### Fixed
+
+#### Reasoning, and the empty turns it turned out to be causing
+
+A reasoning model's thinking arrives on its own channel, and this harness read
+none of it. `reasoning_content` appeared nowhere in the tree, so on any local
+model the reasoning toggle did nothing, the TUI showed silence where thinking
+should stream, and the transcript kept no trace. `Block::Thinking` and
+`StreamEvent::ThinkingDelta` had existed since the Anthropic backend was
+written; the plumbing was all there and nothing was ever fed into it.
+
+It was also, measurably, the cause of the empty turns this project has been
+mitigating since 2026-08-07. Replaying the exact prefixes that went quiet
+during the 2026-08-10 benchmark reproduced one, and its "reasoning" was a
+complete, unparsed tool call — in one case 120 characters that were *only* a
+tool call, with no deliberation at all. `finish_reason: "stop"`, no content,
+no `tool_calls`. The model had emitted its call before closing `</think>`, so
+llama.cpp filed the whole turn as reasoning (upstream ggml-org/llama.cpp
+[#20837], [#22684], [#20809] — all unfixed, and the same failure is reported
+against ollama). Note what that rules out: 120 characters is nowhere near a
+limit, so `--reasoning-budget`, `max_tokens` and the context window were never
+relevant. Every earlier mitigation aimed at "the model reasons too long" was
+aimed at the wrong failure.
+
+And half of it was ours. Because the history sent back stripped every
+`<think>` block, the model was shown turn after turn of itself apparently
+calling tools without thinking, and it obliged. Same server, same template,
+same prompt, varying only whether the history carried reasoning: **6 of 6
+empty turns without it, 0 of 6 with it** (Fisher exact p ≈ 0.001, on a
+reproducer that fails byte-identically).
+
+- `reasoning_content` decodes into a `Block::Thinking` and streams as
+  `ThinkingDelta`, so reasoning is visible live and recorded in the
+  transcript. It is never *output*: `produced_output` is the same definition
+  the loop decides `produced_nothing` on, so a reasoning-only turn is still
+  nudged rather than ending a run with an empty answer.
+- It rides back to the provider on the next request. Self-gating by
+  construction — a `Block::Thinking` exists on this path only because a server
+  sent the field, so it returns only to servers that speak it and never to an
+  endpoint that would reject an unknown one. No provider name is tested.
+  Affordable because the prefix cache absorbs it: measured, turns with
+  5,000-token prompts prefill 16–211 tokens, better than 95% reuse.
+- An empty turn now records what actually arrived — its full trace at debug,
+  with a tail and a family-agnostic lost-call marker at warn. Such a turn is
+  in no transcript (the loop nudges and continues before pushing, and holds no
+  session to record into), so this is its only durable record.
+- A run that ends having only reasoned hands that reasoning back, labelled as
+  deliberation rather than a committed answer, instead of reporting that the
+  model said nothing.
+- `usage.prompt_tokens_details.cached_tokens` is read, so cache reuse is no
+  longer invisible. The cached half is *subtracted* from `input_tokens`:
+  Anthropic reports the tiers beside the prompt count and OpenAI reports them
+  inside it, and `total_input` sums all three — carrying it over unchanged
+  would report a prompt at nearly twice its size, and the compaction threshold
+  reads exactly that number.
+
+[#20837]: https://github.com/ggml-org/llama.cpp/issues/20837
+[#22684]: https://github.com/ggml-org/llama.cpp/issues/22684
+[#20809]: https://github.com/ggml-org/llama.cpp/issues/20809
+
+#### The benchmark adapter
+
+- **A task whose instruction opens with `-` reaches mecha as a prompt, not a
+  flag.** `terminal-bench/pytorch-model-recovery` describes itself as a
+  bulleted list, so clap read `- ` as an argument and exited 2 before the run
+  started; Harbor records that as `NonZeroAgentExitCodeError` and scores 0.0,
+  indistinguishable from a model that tried and failed. `shlex.quote` never
+  helped — it makes the text one argv entry, and the problem is that entry's
+  first character. Fixed with `--`, rather than `allow_hyphen_values` on the
+  CLI, which would let a mistyped flag be swallowed as the prompt and run
+  anyway.
 
 #### The agent loop, after the 2026-08-07 Terminal-Bench diagnosis
 

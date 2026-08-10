@@ -93,6 +93,21 @@ impl Message {
             .join("")
     }
 
+    /// Concatenated thinking blocks. Deliberately separate from `text`: this
+    /// is deliberation, not an answer, and the two must never be confused —
+    /// `text` is what the loop grades a turn on and what a caller receives.
+    /// Read this only where the alternative is having nothing at all.
+    pub fn thinking(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|b| match b {
+                Block::Thinking { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
     pub fn tool_uses(&self) -> Vec<(&str, &str, &Value)> {
         self.content
             .iter()

@@ -65,9 +65,12 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **690 tests**, no failures — re-measured 2026-08-10 after the poll and
-docs arc, which added none on this side; the count is from 2026-08-09 night and
-the day's
+Expect **707 tests**, no failures — re-measured 2026-08-10 evening, after the
+reasoning round-trip arc added seventeen (`reasoning_content` decode and
+re-encode, `produced_output` versus block count, the cached-token split and its
+underflow guard, the salvage of a reasoning-only run, and the lost-call marker
+across four model families). Before that it was 690, from 2026-08-09 night and
+that day's
 four arcs (counts re-measured at the end of the session): inter-agent messaging
 (`mecha-core` grew with the mailbox store,
 taint-forwarding, and the review's fix tests), the benchmark-diagnosis fixes
@@ -143,7 +146,7 @@ from the afternoon pass, not re-checked):
 
 | Port | Model | State |
 |---|---|---|
-| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, **`-c 262144`** — the model's whole trained window (`qwen35moe.context_length`), raised from 32768 on 2026-08-10 after re-measuring. **`-c` costs nothing in speed**: 32k/64k/128k/256k are within noise of each other (~92 tok/s at a 1k prompt, ~80 at 30k), and the 50x slowdown recorded on 2026-08-07 was that day's OOM, not the flag. It costs memory as a startup *reservation* — 21.4 GB at 32k to 28.5 GB at 256k, i.e. weights ~20.7 GB plus ~32 KiB/token. **The full tables, the needle test at 188k, the `-np` trade-off and the two traps live in `scripts/start-moe-mtp.sh`** — read it before touching any of this. **`--reasoning-budget 4096`** (2026-08-07) reduces but does not end this model's non-terminating reasoning, which is why the loop's nudge-retry allowance resets on productive turns. `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` (= `-c`) and `max_tokens` (**above** the budget; 8192) — four numbers that move together. `-np 1` means every fan-out serializes. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **A transient unit** (`systemctl --user status llama-qwen`), not a tmux pane — see below |
+| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, **`-c 262144`** — the model's whole trained window (`qwen35moe.context_length`), raised from 32768 on 2026-08-10 after re-measuring. **`-c` costs nothing in speed**: 32k/64k/128k/256k are within noise of each other (~92 tok/s at a 1k prompt, ~80 at 30k), and the 50x slowdown recorded on 2026-08-07 was that day's OOM, not the flag. It costs memory as a startup *reservation* — 21.4 GB at 32k to 28.5 GB at 256k, i.e. weights ~20.7 GB plus ~32 KiB/token. **The full tables, the needle test at 188k, the `-np` trade-off and the two traps live in `scripts/start-moe-mtp.sh`** — read it before touching any of this. **`--reasoning-budget 4096`** (2026-08-07) was believed to be the mitigation for this model's "non-terminating reasoning" — **that diagnosis was wrong and is retired as of 2026-08-10 evening**: the empty turns were tool calls emitted before `</think>` closed, one of them 120 characters long, so no token budget was ever involved. The flag is harmless and stays; the real cause and fix are in `CHANGELOG.md` under 0.1.2. The nudge-retry allowance still resets on productive turns, which remains correct for its own reasons. `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` (= `-c`) and `max_tokens` (**above** the budget; 8192) — four numbers that move together. `-np 1` means every fan-out serializes. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **A transient unit** (`systemctl --user status llama-qwen`), not a tmux pane — see below |
 | 8081 | gemma-4-E4B | down; nothing currently depends on it |
 | 8082 | gemma-4-26B-A4B | **down — restart it before any judged run.** The eval judge and nightly validate's judge both point here, so `mecha eval` with a `judge` rubric and the nightly validate will fail without it. `scripts/start-gemma26.sh` |
 | 8888 | SearXNG | up (docker, JSON format enabled) |
@@ -424,6 +427,23 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
   for booking manifests; a booking's page is `/s/…`.
 
 ### Cheap, and worth doing first
+
+- **Decide whether replayed reasoning stays unbounded.** As of 0.1.2 the
+  OpenAI-compatible backend sends every `Block::Thinking` back, which is what
+  the model's own template expects and what took the empty turns from 6/6 to
+  0/6. The cost is bounded in *compute* — the prefix cache absorbs it, measured
+  at better than 95% reuse — but not in *context*: on the 08-10 run the model
+  averaged ~930 output tokens a turn, most of it reasoning, so an 80-turn trial
+  carries roughly 75k extra tokens by the end. Against a 174,762 threshold that
+  is survivable and it may bring compaction forward on long trials, trading a
+  cheap failure (a wasted nudge turn) for an expensive one (a lossy summary).
+  **The measurement that decides it is `expect.min_compactions` and the
+  compaction counts in the relaunched benchmark's transcripts**; if those jump
+  on the long trials, bound preservation to the last N assistant turns. Left
+  unbounded on purpose until there is a number: it is the behaviour the model
+  was trained with, and guessing a bound first would be tuning against nothing.
+  Note this only became affordable at 262,144 — at the old 32k it would have
+  been fatal, so the window raise and this fix are coupled.
 
 - **Decide what the compaction threshold should be, now that it moved 8x on
   its own.** `AgentConfig::compact_at` derives two thirds of the window when
@@ -727,23 +747,40 @@ The arc is complete and running nightly. What is missing is refinement:
   have a reference solution that passes on aarch64, and those 75 are the only
   comparable set — `bench/oracle-arm64-excluded.txt` holds the other 14.
   `bench/run-subset.sh` runs the calibrated subset. **No complete scorecard
-  exists yet**: the 2026-08-07 05:22 launch was voided by the glibc trap, and
-  the 11:18 relaunch (portable binary, verified to be exactly the 75) was
-  stopped by hand ~4h in to free the box — the salvaged fragment is 21 trials,
-  8 solved, in `jobs/mecha-arm64-subset/`. That fragment has now been
+  exists yet**, and there have now been three incomplete attempts. The
+  2026-08-07 05:22 launch was voided by the glibc trap; the 11:18 relaunch was
+  stopped by hand ~4h in; and the **2026-08-10 03:39 launch at the 262k
+  window** (`max_turns` 80, `--agent-timeout-multiplier 2.0`, k=1, preflighted
+  with `check-subset.py`) was **killed deliberately at 27/75 that evening**,
+  because the reasoning round-trip bug found mid-run meant it was measuring a
+  defect that was by then fixed. Its numbers, for whatever they are worth as a
+  before: 12 passes of 27 (44%), five `AgentTimeoutError`, one trial lost to
+  the dash-prompt crash, ~930 output tokens per turn. Do not treat it as a
+  baseline — three known defects are baked into it (stripped reasoning causing
+  empty turns, the argv crash, and a timeout tail), and the reasoning fix
+  changes per-turn context. The relaunch runs on **v0.1.2**; record its job
+  directory here when it finishes. The 2026-08-07 fragment was separately
   **diagnosed trial by trial** (2026-08-09 — the write-up is in
   `docs/BENCHMARK-RESEARCH.md`, "The 2026-08-07 subset run, diagnosed"): of
   13 failures, 5 were the model and 8 involved harness defects, all five of
   which are fixed with regression tests (PR #21 — overflow-recovery
   poisoning, cumulative empty-turn allowance, exit-3-on-exhausted read as an
   agent crash, transcripts lost on crash or corrupted by compaction, and a
-  flat output budget bigger than the threshold-to-window gap). Relaunching
-  the full 75 at k=1 (~15h) is still the open decision, and it is now worth
-  doing twice over: the fixed binary should recover most of the 8, **and every
-  one of those trials ran against a 32k window that never needed to be 32k**
-  (2026-08-10 — see "Environment as left"). Compaction pressure was a live
-  variable in the fragment and is largely gone at 262,144, so the old numbers
-  are not a baseline for the new ones. Rebuild the portable
+  flat output budget bigger than the threshold-to-window gap). Every one of
+  those trials also ran against a 32k window that never needed to be 32k
+  (2026-08-10 — see "Environment as left"), so compaction pressure was a live
+  variable there and is largely gone at 262,144: the fragment is not a
+  baseline for anything current either.
+  **Budget the wall clock honestly.** The ~15h figure quoted here for months
+  was never measured; the 08-10 run's own trials averaged 34 minutes and
+  projected **~29h at k=1**, because `--n-concurrent-agents 1` serialises every
+  agent phase against the single `-np 1` slot. Timeouts dominate the tail — a
+  runaway spends the full multiplied cap (2.0x meant two hours for one trial).
+  If that is too long, `-np 4` with `-c` raised to match is the measured
+  trade (12% of single-stream speed for 1.6x aggregate; see
+  `scripts/start-moe-mtp.sh`), and it needs `context_window` in
+  `bench/mecha_agent.py` moved to the per-slot figure in the same change.
+  Rebuild the portable
   binary (`bench/build-portable.sh`) from the merged branch first — the
   installed one predates every fix, and `bench/run.sh` resolves
   `$(pwd)/target-musl/release/mecha`, so the binary scored is whichever
