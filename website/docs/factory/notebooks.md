@@ -80,6 +80,22 @@ locally and not when published:
   cross-origin-isolated — another reason the runtime is vendored rather than
   fetched.
 
+### What framing costs, exactly
+
+Cross-origin isolation has to be granted by the *top-level* document and every
+frame above yours. The [viewer page](/docs/factory/artifacts#two-urls-and-which-one-to-send)
+is not isolated, so a notebook opened there has no `SharedArrayBuffer` — while
+the same notebook opened at its bare URL does.
+
+What that costs is one feature, and it is worth knowing which. marimo
+feature-detects: with isolation it allocates an interrupt buffer, and without it
+it logs `Not running in a secure context; interrupts are not available.` and
+carries on. So a framed notebook boots, runs its cells, and renders exactly as it
+otherwise would — **you just cannot interrupt a running cell.**
+
+Send someone the page. If interrupting long-running cells is the point of a
+particular notebook, send the bare URL for that one.
+
 The class is read from what the renderer recorded, never assumed. A `compute`
 bundle published as `static` would be served from the wrong origin under a policy
 it cannot boot under, so `publish` reads the record rather than taking your word
