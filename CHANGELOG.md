@@ -7,12 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-10
+
+Dependency maintenance, and the one migration hiding among the bumps.
+
 ### Changed
 
-- **Five dependency majors** — `rand` 0.8 → 0.10, `sha2` 0.10 → 0.11,
-  `rustyline` 15 → 17 (the line editor behind `mecha chat`), and `ratatui`
-  0.29 → 0.30 with `crossterm` 0.28 → 0.29, which cannot move separately
-  because ratatui pins it. The ratatui major was a migration rather than a
+- **The minimum supported Rust version is 1.89**, raised from 1.88 to take
+  `rustyline` 18, which uses `file_lock`. `CONTRIBUTING.md` now carries the
+  rule for when it may move again — with a dependency that needs it and never
+  to use a new feature ourselves, raised in the same change as the dependency
+  that forced it and naming it. The old number had no rationale attached,
+  which is why every bump reopened the argument.
+- **Nine dependency majors** — `rand` 0.8 → 0.10, `sha2` 0.10 → 0.11,
+  `toml` 0.8 → 1.1, `htmd` 0.1 → 0.5, `base64` 0.22 → 0.23,
+  `rustyline` 15 → 18 (the line editor behind `mecha chat`), `clap` 4.6.6,
+  and `ratatui` 0.29 → 0.30 with `crossterm` 0.28 → 0.29, which cannot move
+  separately because ratatui pins it. The ratatui major was a migration rather than a
   bump: 0.30 makes `Backend::Error` an associated type, so `terminal.draw(..)?`
   inside a function returning `anyhow::Result` stops compiling — anyhow needs
   the error to be `Send + Sync + 'static` and an opaque associated type
@@ -28,6 +39,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   watching; it has two now, the load-bearing one recomputing the challenge from
   the verifier exactly as the authorisation server does, because a wrong
   transform fails every sign-in with an error naming neither end.
+- **Four GitHub Action majors** — `checkout` 4 → 7, `setup-node` 4 → 7,
+  `upload-pages-artifact` 3 → 5, `deploy-pages` 4 → 5.
+
+### Added
+
+- **A test that an HTML-only email keeps its links, tables and lists.** `htmd`
+  is a behavioural dependency rather than an API one — it decides what a mail
+  body looks like to the model, and four minor versions can change that while
+  every type still lines up. Asserted on content surviving rather than exact
+  output: a golden-output test would break on every bump of a converter whose
+  formatting is its own business, where "the link's URL is still in there" is
+  what must never stop being true.
 
 ## [0.1.2] - 2026-08-10
 
@@ -773,7 +796,8 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/ljchang/mecha/releases/tag/v0.1.3
 [0.1.2]: https://github.com/ljchang/mecha/releases/tag/v0.1.2
 [0.1.1]: https://github.com/ljchang/mecha/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ljchang/mecha/releases/tag/v0.1.0
