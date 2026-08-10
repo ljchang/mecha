@@ -23,7 +23,7 @@ libc.workspace = true
 chrono-tz.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 futures.workspace = true
-rustyline = "17"
+rustyline = "18"
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
