@@ -690,6 +690,23 @@ The arc is complete and running nightly. What is missing is refinement:
     set of edits made in the cockpit, which is what a later push folds around
     rather than flattens.
 
+  **A high-effort review ran over the branch and its ten findings are fixed
+  (`f7350bb`), which took the suite to 467.** Three were reachable by a
+  stranger or an injected instruction — an MCP slug that became a filename
+  with no validation and skipped the `confined()` jail, `host_of` returning a
+  URL's userinfo as its host, and a labelled profile link rendering with no
+  host at all on the gate origin. Two were merge bugs: deletions never
+  applied to a record first written in the cockpit, and the pull-then-push
+  workflow announced data loss that had not happened. The two lessons worth
+  carrying are in [`HISTORY.md`](HISTORY.md) — a doc comment is not an
+  enforcement, and a static path segment shadows the parameter beside it.
+
+  One decision the fixes made, which the design doc now records: **`theme`
+  and `accent` are refused** rather than accepted and ignored. They validated
+  and stored and no renderer read them. They return with the renderer, and
+  §6.3 names the choice that has to be made first — an inline token block
+  keeps the stylesheet handle-free where a per-user sheet would not.
+
   Left undone deliberately, each named in the PR:
 
   - **Board deletion does not exist.** A retired slug must never be reissued —

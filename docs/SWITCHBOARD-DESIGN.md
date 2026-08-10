@@ -54,7 +54,7 @@ has gone wrong.
 | **In place** | Boards are created and edited in the cockpit as TOML source in a textarea, against the same validator the push endpoint runs (§5.4) |
 | **Listing** | A public bundle is listed by default; `--unlisted` and a cockpit toggle opt out |
 | **Chrome** | Every surface wears the standard shell; a bundle line goes through `/view/…`, never straight to the artifact origin (§6.1, §6.2) |
-| **Theming** | Shipped themes plus an accent. Custom CSS deferred, and scoped to content rather than the shell when it arrives (§6.3) |
+| **Theming** | Deployment-wide only. Per-record `theme`/`accent` are refused until a renderer reads them; custom CSS deferred and scoped to content rather than the shell when it arrives (§6.3) |
 | **Entries** | References (`kind` + `id`), resolved server-side. `link` is the honest external escape hatch, rendered with its host visible |
 | **Dangling** | Omitted from the page, and reported to the owner |
 | **Naming** | The system names the *kinds*; the user names each switchboard |
@@ -525,8 +525,22 @@ what a *line* points at.
 
 ### 6.3 Theming, and what custom CSS will have to respect
 
-**Now:** a `theme` field over the validated set in `mecha-manifest/src/theme.rs`,
-plus an optional accent. Nothing else.
+**Now: nothing per-record.** Every page takes the deployment's theme.
+
+This section first specified a `theme` field over `theme.rs`'s validated set
+plus an accent, and they were built — validated, stored, reported as saved,
+and read by no renderer, because `serve_asset` builds the stylesheet from
+`app.config.theme`. A review caught it. **A field that validates and stores
+and is silently ignored is worse than one that is refused**, because its
+author concludes the feature is broken rather than absent, so the fields are
+refused and there is a test naming their absence.
+
+They come back with the renderer that reads them, as one change — and that
+renderer has a decision to make first, because the shared stylesheet is
+deliberately handle-free (§3.1's asset rule: one cached file, and no way to
+learn whether a handle exists by fetching one). Emitting the palette as a
+small `<style>` block of custom properties in the page head keeps that
+property and matches *tokens, never rules*; a per-user stylesheet does not.
 
 **Later, wanted:** custom CSS. With §6.1 settled, the preparation is no longer
 "leave the chrome off" — it is the rule `theme.rs` already enforces, applied
@@ -585,6 +599,14 @@ Two consequences:
   `v`, `b`, `f`, `s`, `p`, `g`, `a`, `account`, `signin`, `signup`, `admin`,
   `view`, `slides`. Retrofitting a reserved list means either breaking a live
   URL or never using that route.
+- **And put nothing static under `/@` at all.** Reserving slugs governs the
+  *second* segment; a static segment in the first — the shared assets were
+  briefly at `/@a/{name}` — shadows `/@{handle}/{slug}` for whichever handle
+  matches it, and `a` is a legal handle. matchit prefers the static segment,
+  so that user's every switchboard answered 404 at a URL their own account
+  page printed. Reserving the handle would have fixed one case and left the
+  trap for the next static segment; the assets live at `/a/{name}`, outside
+  the namespace, instead.
 - **A retired slug resolves to nothing**, and is never reissued to a different
   board — for the reason a retired handle serves nothing rather than serving
   whoever claims it next.
@@ -664,6 +686,9 @@ Recorded so the argument is not had twice.
    configuration — see §3.1.
 2. **Avatar in the first version, or the second.** It is the only field that
    pulls in the blob path.
+2a. **How a per-record palette reaches the page** (§6.3), whenever it is
+   wanted: an inline token block keeps the handle-free stylesheet, a per-user
+   sheet does not.
 3. **Per-line click counts.** Wanted — *does the recommendation line actually
    get used* is a real question — but it is a new data class (visitor
    behaviour) on a box we have agreed to assume is lost, and it needs its own
