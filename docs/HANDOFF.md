@@ -592,15 +592,24 @@ The arc is complete and running nightly. What is missing is refinement:
     It does **not** unlock wildcard certificates either: `rustls-acme` speaks
     only HTTP-01 and TLS-ALPN-01, so the library forecloses them whoever
     hosts the zone.
-  - **The factory has one documentation page, and needs nine.** The
-    component gallery ships (see "Where the work is"); everything else about
-    the factory is still only in design docs, which is the wrong audience.
-    [`FACTORY-DOCS-DESIGN.md`](FACTORY-DOCS-DESIGN.md) lists the pages with the
-    claims each has to make, sourced from the code. `field-kinds.md` is the
-    one to write first — the four-column table (TOML · JSON Schema · rendered
-    control · what the server enforces) exists nowhere but `request.rs`, and
-    `second-client.md` assumes it. `booking.md` is the largest gap, since the
-    whole scheduling instrument shipped undocumented for readers.
+  - **The factory documentation is half written.** Shipped: the component
+    gallery, `polls.md`, `slides.md`, and — 2026-08-10 — `onboarding.md`
+    (claiming a handle, pairing, the five scoped keys, wiring the MCP surface
+    into an agent), `artifacts.md` (versions, the alias, visibility, the
+    share/revoke path and its oracle rules, takedown, what retention will not
+    sweep) and `notebooks.md`. Also `features/slack.md` on the mecha side,
+    which is setup plus what the remote control actually does.
+    [`FACTORY-DOCS-DESIGN.md`](FACTORY-DOCS-DESIGN.md) lists the rest with the
+    claims each has to make, sourced from the code. Still missing, in the order
+    they bite: `field-kinds.md` — the four-column table (TOML · JSON Schema ·
+    rendered control · what the server enforces) exists nowhere but
+    `request.rs`, and `second-client.md` assumes it; `booking.md`, since the
+    whole scheduling instrument is still undocumented for readers;
+    `overview.md`, `request-types.md` and `theming.md`.
+
+    Note for whoever writes the next one: the site's `sync-gallery` step
+    fetches **mecha-factory@main**, so a gallery fix on a branch does not show
+    up in a local docs build until it merges.
   - **The operator admin panel and private sharing are built, reviewed,
     tested, and deployed** (2026-08-07/08; the arcs are in
     [`HISTORY.md`](HISTORY.md)). What remains is the two live checks at the
