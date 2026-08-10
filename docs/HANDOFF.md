@@ -54,7 +54,9 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **690 tests**, no failures — verified 2026-08-09 night, after the day's
+Expect **690 tests**, no failures — re-measured 2026-08-10 after the poll and
+docs arc, which added none on this side; the count is from 2026-08-09 night and
+the day's
 four arcs (counts re-measured at the end of the session): inter-agent messaging
 (`mecha-core` grew with the mailbox store,
 taint-forwarding, and the review's fix tests), the benchmark-diagnosis fixes
@@ -516,7 +518,7 @@ The arc is complete and running nightly. What is missing is refinement:
 
 - **`mecha-factory` — the public surface. It is deployed, it sends mail, and
   it is self-serve.** Its own repository, public at
-  **github.com/ljchang/mecha-factory** (325 tests, 2026-08-08 evening),
+  **github.com/ljchang/mecha-factory** (384 tests, re-measured 2026-08-10),
   running on a small VPS:
   the API at `https://gate.mecha-factory.ai`, artifacts at
   `https://<handle>.art.mecha-factory.ai`, notebooks at `…compute…`. Verified
@@ -560,26 +562,30 @@ The arc is complete and running nightly. What is missing is refinement:
     exposed-or-excluded in writing, and the arc is in
     [`HISTORY.md`](HISTORY.md). What was deliberately left:
 
-    - **`notebook_render` executes the notebook to export it.** On a box with
-      `[sandbox]` configured, mecha's `shell` would be confined while the
-      factory server deliberately is not, so it is an unconfined execution
-      path around a configured sandbox. No new capability on *this* box, whose
-      `[sandbox] kind` is the default `none` — but it becomes one the day that
-      changes, and the fix then is one row of `surface::REACH` flipped to
-      `NotATool`. The real answer is that repository confining
-      `marimo export html-wasm`, which is the same open item the `[[mcp]]`
-      config comment already names.
-    - **`poll_status` still reads its question prompts back from the box.**
-      Free-text answers are withheld from a privileged run by construction,
-      so what remains is the user's *own* question text round-tripped through
-      an origin the design assumes is lost — a much smaller channel, and
-      recorded rather than fixed. Closing it means caching the spec in the
-      local record at create time and rendering prompts from home.
+    - **`poll_status` reads its question prompts back from the box**, and now
+      the answers too. The prose is the point of a text question, and
+      `openWorldHint` marks the whole result untrusted, which is the mechanism
+      mecha already uses for mail bodies — so what is left is the user's *own*
+      question text round-tripped through an origin the design assumes is
+      lost. Smaller than it sounds, and recorded rather than fixed; closing it
+      means caching the spec in the local record at create time and rendering
+      prompts from home.
+    - **`vendor_runtime` is the notebook tool's one reach for the network**,
+      fetching Pyodide from a pinned allowlist. It is *not* code execution —
+      that belief was measured false on 2026-08-10 (see
+      [`HISTORY.md`](HISTORY.md)) — so a confined renderer would need network
+      for this template, not an execution exemption.
 
     Unchanged and worth re-reading before adding more: every exposed tool is
     schema tokens in every run, measured at ~7–8k a turn before this grew the
     surface by eight. That argues for narrowing per surface (`[slack] tools`,
     `[tools] enabled`) rather than for exposing less.
+
+    **A poll UI change does not reach live pages until the box is redeployed.**
+    `poll_render.rs` lives in `mecha-manifest`, which the *box* links, so the
+    2026-08-10 rendering fixes are in the repository and not yet in front of
+    anyone. The docs gallery lags too: `website/scripts/sync-gallery.mjs`
+    fetches `mecha-factory@main`.
 
   - **Verify the release workflow** (`release.yml`, authored 2026-08-07:
     static musl `factory` with an asserted-static gate and a checksum). Push a
