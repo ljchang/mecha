@@ -8,6 +8,30 @@ M=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--Qwen3.6-35B-A3B-
 # 2026-08-05 after the empty-EndTurn deaths in the k=5 compaction runs.
 # Concurrent eval requests serialize instead; the MoE is fast enough.
 #
+# What `-np` actually buys, measured 2026-08-10 (short prompt, 300 generated
+# tokens, so this is generation and not prefill):
+#
+#   -c 131072 -np 1   1 stream                 79.8 tok/s   (three runs, ±0.1)
+#   -c 262144 -np 4   1 stream                 70.5 tok/s
+#   -c 262144 -np 4   4 streams   ~35 each,   ~129 tok/s aggregate
+#
+# So four slots cost **12% of single-stream speed** and return **1.6x
+# aggregate**. Four independent tasks finish in about 0.6x the wall clock of
+# running them one after another — not 0.25x. Generation here is bandwidth
+# bound, and `--spec-type draft-mtp` is exactly the thing batching dilutes: the
+# speculation that makes one stream fast has less to offer four.
+#
+# The choice is therefore per workload, not global. Interactive use — chat, the
+# TUI, Slack, a trigger — is single-stream and should keep `-np 1`. A batch or
+# eval sweep that fans out is the case for `-np 4`, and it wants `-c` raised
+# with it, because **`-c` is divided across slots**: `-c 262144 -np 4` is four
+# slots of 65,536, not four of 262,144. That division is the same trap as the
+# build's old 4-slot default, which silently gave each slot an eighth of what
+# the config claimed.
+#
+# The model is trained for 262,144 (`qwen35moe.context_length`), so 131,072 is
+# half its native window and needs no RoPE scaling. There is room above this.
+#
 # -c 131072 since 2026-08-10, and the story of that number is worth keeping,
 # because for three days this script said "do not raise it" on the strength of
 # one bad afternoon.
