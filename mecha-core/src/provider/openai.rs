@@ -7,13 +7,25 @@
 //! The shape is lossier than Anthropic's: no cache breakpoints, no effort.
 //! Those fields are accepted and ignored.
 //!
-//! Reasoning is the exception, and it is one-way. Servers that split it out
-//! (llama.cpp's `--reasoning-format auto`, vLLM, DeepSeek) return it as
+//! Reasoning is the exception. Servers that split it out (llama.cpp's
+//! `--reasoning-format auto`, vLLM, DeepSeek) return it as
 //! `reasoning_content`, which decodes into a `Block::Thinking` so it can be
-//! shown and recorded — but `encode_message` drops that block on the way back
-//! out, because the dialect has no field to put it in and a model's own
-//! reasoning is not meant to survive its turn. It is therefore never *output*
-//! either: see `produced_output`.
+//! shown and recorded. It is never *output* — see `produced_output`.
+//!
+//! It is currently one-way, and that is a **known gap, not a decision**.
+//! `reasoning_content` is a request field too: measured against llama-server
+//! on 2026-08-10 via `/apply-template`, an assistant message carrying it
+//! renders back into the prompt as a `<think>` block, and without it the same
+//! turn renders as a bare `<tool_call>` with no thinking at all. So every
+//! prior assistant turn in a mecha conversation shows this model calling
+//! tools without reasoning — which is both a lost prior and the suspected
+//! cause of the empty-turn bug, since the malformation reproduced 7/7 was a
+//! bare tool call emitted with no think block.
+//!
+//! `anthropic.rs` already replays thinking (signature-gated, see
+//! `encode_block`); this backend has simply never had the code. Fixing it
+//! needs care about context cost — reasoning runs to thousands of tokens a
+//! turn — and about servers in this dialect that reject the field.
 
 use crate::config::ProviderConfig;
 use crate::message::*;
