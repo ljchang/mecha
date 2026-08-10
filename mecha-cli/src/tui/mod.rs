@@ -558,7 +558,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
 
 #[allow(clippy::too_many_arguments)]
 async fn run_loop(
-    terminal: &mut Terminal<impl Backend>,
+    terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>,
     app: &mut App,
     live: &mut Live,
     approvals: &mut mpsc::UnboundedReceiver<approve::Request>,
@@ -2557,7 +2557,7 @@ fn spawn_detached(args: &[&str]) -> Result<()> {
 /// afterwards is load-bearing: whatever ran drew over everything, and a diff
 /// against the pre-suspend buffer would restore only what happened to change.
 fn with_terminal_suspended<T>(
-    terminal: &mut Terminal<impl Backend>,
+    terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>,
     f: impl FnOnce() -> T,
 ) -> Result<T> {
     disable_raw_mode()?;
@@ -2612,7 +2612,10 @@ fn self_cli_interactive(args: &[&str]) -> Result<()> {
 }
 
 /// Hand the terminal to `$EDITOR` with the current input, and take both back.
-fn suspend_and_edit(terminal: &mut Terminal<impl Backend>, app: &mut App) -> Result<()> {
+fn suspend_and_edit(
+    terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>,
+    app: &mut App,
+) -> Result<()> {
     let result = with_terminal_suspended(terminal, || {
         crate::editor::edit_text(
             &app.input,
@@ -2642,7 +2645,7 @@ fn suspend_and_edit(terminal: &mut Terminal<impl Backend>, app: &mut App) -> Res
 /// path — a file that does not parse is refused and the old one kept — so a
 /// mistyped schedule cannot silently disarm a trigger.
 fn suspend_and_edit_trigger(
-    terminal: &mut Terminal<impl Backend>,
+    terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>,
     app: &mut App,
     name: &str,
 ) -> Result<()> {
@@ -2675,7 +2678,7 @@ fn suspend_and_edit_trigger(
 /// learning capture that mines `diff(staged, sent)` sees the TUI's edits
 /// exactly as it sees the command line's.
 fn suspend_and_edit_outbox(
-    terminal: &mut Terminal<impl Backend>,
+    terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>,
     app: &mut App,
     id: &str,
 ) -> Result<()> {
@@ -3302,7 +3305,7 @@ fn enter() -> Result<(Terminal<CrosstermBackend<std::io::Stdout>>, bool)> {
     Ok((Terminal::new(CrosstermBackend::new(stdout))?, kitty))
 }
 
-fn leave(terminal: &mut Terminal<impl Backend>) -> Result<()> {
+fn leave(terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>) -> Result<()> {
     // An emptied title lets the shell's own prompt hook reclaim it; leaving
     // "mecha ▶ …" on a tab that no longer runs mecha is a small lie forever.
     set_title("");
