@@ -294,9 +294,29 @@ fn decode_finish(s: Option<&str>) -> StopReason {
 fn decode_usage(v: Option<&Value>) -> Usage {
     let Some(v) = v else { return Usage::default() };
     let g = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let prompt = g("prompt_tokens");
+
+    // The two dialects disagree about what the prompt count contains, and
+    // `Usage::total_input` sums all three fields. Anthropic reports
+    // `input_tokens` *beside* the cache tiers; OpenAI reports `prompt_tokens`
+    // with `cached_tokens` already *inside* it. Carrying the cached half over
+    // without subtracting it would report every prompt at nearly twice its
+    // size — and the compaction threshold reads exactly that number, so a long
+    // run would start summarising itself at half the window it actually had.
+    // Saturated because a provider is not to be trusted to keep the subset
+    // relation it documents.
+    let cached = v
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .min(prompt);
+
+    // No write tier in this dialect: a local server's prefix cache is filled
+    // as a side effect of serving, never billed or reported separately.
     Usage {
-        input_tokens: g("prompt_tokens"),
+        input_tokens: prompt - cached,
         output_tokens: g("completion_tokens"),
+        cache_read_input_tokens: cached,
         ..Usage::default()
     }
 }
@@ -765,6 +785,52 @@ mod tests {
             Value::Null,
             "reasoning must not leak into content"
         );
+    }
+
+    #[test]
+    fn cached_prompt_tokens_are_split_out_rather_than_counted_twice() {
+        // The load-bearing one. `total_input` sums the three fields and the
+        // compaction threshold reads it, so carrying `cached_tokens` over
+        // without removing it from `prompt_tokens` would report a 1,000-token
+        // prompt as 1,800 and compact at little over half the real window.
+        let u = decode_usage(Some(&json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 42,
+            "prompt_tokens_details": {"cached_tokens": 800},
+        })));
+        assert_eq!(u.input_tokens, 200, "the uncached remainder");
+        assert_eq!(u.cache_read_input_tokens, 800);
+        assert_eq!(u.output_tokens, 42);
+        assert_eq!(
+            u.total_input(),
+            1000,
+            "the reported prompt size must survive the split unchanged"
+        );
+    }
+
+    #[test]
+    fn a_server_that_reports_no_cache_detail_is_unchanged() {
+        // Most of this dialect's servers say nothing about caching. They must
+        // keep reporting exactly what they did before this field was read.
+        let u = decode_usage(Some(&json!({"prompt_tokens": 500, "completion_tokens": 7})));
+        assert_eq!(u.input_tokens, 500);
+        assert_eq!(u.cache_read_input_tokens, 0);
+        assert_eq!(u.total_input(), 500);
+    }
+
+    #[test]
+    fn a_cached_count_larger_than_the_prompt_cannot_underflow() {
+        // Subset by documentation, not by guarantee — and `input_tokens` is
+        // unsigned, so believing a bad provider would panic in release-mode
+        // wrapping or produce an astronomical prompt size.
+        let u = decode_usage(Some(&json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 1,
+            "prompt_tokens_details": {"cached_tokens": 9999},
+        })));
+        assert_eq!(u.input_tokens, 0);
+        assert_eq!(u.cache_read_input_tokens, 100);
+        assert_eq!(u.total_input(), 100);
     }
 
     #[test]
