@@ -21,8 +21,9 @@ maps which document holds what.
 
 ## Where the work is
 
-Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.1**
-(2026-08-10). **Four** crates are on crates.io at 0.1.1 — `mecha-core`,
+Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.2**
+(2026-08-10 evening — the reasoning round trip; 0.1.1 was earlier the same
+day). **Four** crates are on crates.io at 0.1.2 — `mecha-core`,
 `mecha-mail`, `mecha-slack`, `mecha-cli` (the bare name `mecha` was taken, so
 the CLI crate installs the `mecha` binary) — published through the tag-driven
 `release` workflow with Trusted Publishing, so no registry token exists
@@ -182,6 +183,20 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
 `small`, `gemma26`, `anthropic`).
 
 ### Standing machinery on this machine
+
+**Publishing a release changes nothing about a running system.** The installed
+binary is `~/.cargo/bin/mecha`, from crates.io, and every long-lived unit keeps
+whatever it started with. After tagging v0.1.2 the box was still executing
+0.1.1 everywhere — including `mecha-triggers`, which would have fired that
+night's scheduled runs on the pre-fix harness, and `mecha-ruminate` at 03:30,
+which mines sessions into learned rules that ride in every future prompt.
+`cargo install mecha-cli --locked` then
+`systemctl --user restart mecha-slack mecha-drain mecha-triggers` (verified
+0.1.2 and the connector reconnected with its 12 threads intact, 2026-08-10
+14:28). The timer-driven units — `mecha-slots`, `mecha-frontdoor`,
+`mecha-ruminate` — are oneshot and exec a fresh `mecha` each fire, so they need
+no restart; restarting them would be cargo-culting. The set that needs action
+is exactly the set holding a long-lived process.
 
 - **Reflect-on-close**: `~/.mecha/config.toml` carries a `session_end` hook
   running `nohup mecha reflect -p local ... &` — every recorded session is mined
