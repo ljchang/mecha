@@ -26,7 +26,7 @@ path = "src/bin/mecha-mail.rs"
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-base64 = "0.22"
+base64 = "0.23"
 chrono.workspace = true
 chrono-tz.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
