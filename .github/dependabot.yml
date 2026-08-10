@@ -23,10 +23,23 @@ updates:
       day: monday
     open-pull-requests-limit: 3
     groups:
+      # `typescript` rides with Docusaurus rather than moving on its own,
+      # because Docusaurus decides what it may be. TS 7 removed `baseUrl`,
+      # which `@docusaurus/tsconfig` sets at line 14 of its own file — a
+      # config a child cannot override — so `npm run typecheck` fails on 7
+      # while the site still builds. The version is theirs to choose; ours
+      # only to follow.
       docusaurus:
-        patterns: ["@docusaurus/*", "docusaurus*"]
+        patterns: ["@docusaurus/*", "docusaurus*", "typescript"]
       npm-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # A TypeScript major is adoptable when Docusaurus ships a tsconfig for
+      # it, and not before. The Docusaurus bump is what will surface it, so a
+      # standalone major here is only ever a PR to close again — #6 sat open
+      # for five days being exactly that.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "deps(docs)"
 
