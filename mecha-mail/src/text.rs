@@ -104,12 +104,43 @@ mod tests {
 
     /// The flowmail weakness this module exists to fix: an HTML-only email
     /// must not reach the model as an empty body.
+    ///
+    /// The assertions are about *content surviving*, never about the exact
+    /// markdown `htmd` emits — a golden-output test here would break on every
+    /// bump of a converter whose formatting is its own business. What must
+    /// not change is that a real email's substance arrives: its sentences,
+    /// the address behind a link, the cells of a table, the items of a list.
+    /// Checked on the shapes a real message actually carries, because
+    /// `<p>Hello</p>` would pass while a converter silently dropped all four.
     #[test]
     fn an_html_only_email_gets_a_text_body() {
         let e = email("", "<html><body><p>Hello <b>there</b></p></body></html>");
         let body = clean_body(&e);
         assert!(body.contains("Hello"), "{body}");
         assert!(!body.contains("<body>"), "tags must not leak: {body}");
+    }
+
+    #[test]
+    fn a_real_messages_links_tables_and_lists_survive_the_conversion() {
+        let e = email(
+            "",
+            r#"<html><body><div><p>Could we move to <b>Thursday</b>?</p>
+               <p>Details <a href="https://example.org/agenda">in the agenda</a>.</p>
+               <table><tr><th>Day</th><th>Time</th></tr><tr><td>Thu</td><td>15:00</td></tr></table>
+               <ul><li>Bring the draft</li><li>Room 204</li></ul></div></body></html>"#,
+        );
+        let body = clean_body(&e);
+        for needed in [
+            "Thursday",
+            // The destination, not just the anchor text: a link whose URL is
+            // dropped leaves the model unable to answer "where".
+            "https://example.org/agenda",
+            "15:00",
+            "Room 204",
+        ] {
+            assert!(body.contains(needed), "`{needed}` was lost:\n{body}");
+        }
+        assert!(!body.contains("<td>"), "tags must not leak: {body}");
     }
 
     #[test]
