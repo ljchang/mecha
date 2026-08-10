@@ -674,6 +674,55 @@ The arc is complete and running nightly. What is missing is refinement:
     dropping visibility from the local store; it was left out of a URL change
     on purpose.
 
+  **The personal public surface is built and open as a PR (2026-08-10
+  night), not merged and not deployed.** `feat/switchboard-inventory` in the
+  factory repo — [ljchang/mecha-factory#13](https://github.com/ljchang/mecha-factory/pull/13),
+  eight commits, 453 tests where `main` has 384 — adds two pages a stranger
+  sees: the **hangar** at `gate…/@<handle>`, which lists everything that
+  person has made public, and a **switchboard** at `gate…/@<handle>/<slug>`,
+  a hand-patched page of lines meant for an email signature. The design is
+  [`SWITCHBOARD-DESIGN.md`](SWITCHBOARD-DESIGN.md) (open here as
+  [ljchang/mecha#41](https://github.com/ljchang/mecha/pull/41)); it is the
+  authority and nothing about the arc should be re-derived from this
+  paragraph.
+
+  Three things a reader needs before touching it:
+
+  - **It closed a live bug on the way.** Withholding is stored per *version*
+    and visibility lives on the *alias*, so a public bundle whose live version
+    an operator had withheld read "everyone" on its owner's account page and
+    served nobody. `bundles_overview` reads the withheld column from the
+    aliased version's own row now — the old query's `MAX(b.version)` answered
+    about a version nobody serves.
+  - **`inventory.rs` is the load-bearing piece, not the pages.** One query
+    answers "what has this user got" across all four kinds (bundles, forms,
+    booking pages, polls) and computes `Reach` — can a stranger open this —
+    once, by the same reasoning `http/artifacts.rs` uses before serving a
+    byte. The account page, the hangar and a switchboard all render from it,
+    differing in a filter and never in a source. A second opinion about who
+    may read what is how a private artifact ends up named on a public page,
+    where the title alone is the leak.
+  - **Schema 13** adds one `records` table holding a profile and every board,
+    each as two texts: `baseline` (the TOML exactly as last pushed) and
+    `effective` (what the page renders). The difference between them *is* the
+    set of edits made in the cockpit, which is what a later push folds around
+    rather than flattens.
+
+  Left undone deliberately, each named in the PR:
+
+  - **Board deletion does not exist.** A retired slug must never be reissued —
+    the argument that makes a handle unreusable — which needs a retired-slugs
+    table like `handles`. A delete that silently frees a name somebody has in
+    an email signature is worse than no delete, so there is none.
+  - **`--unlisted` is unbuilt**, so every public artifact appears on the
+    hangar. That *is* the design's default (§3.3); what is missing is the
+    per-artifact opt-out, which is a property on the bundle row rather than
+    anything about the page.
+  - **Avatar and per-line click counts** are §12.2 and §12.3 of the design,
+    both past the core on purpose — the first pulls in the blob/upload path,
+    the second is a new data class (visitor behaviour) on a box we assume is
+    lost and needs its own retention answer.
+
   **Open there, in the order they bite:**
 
   - **The MCP surface tracks the CLI again, and two small things are left.**
