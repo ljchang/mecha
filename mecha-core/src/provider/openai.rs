@@ -4,8 +4,16 @@
 //! Ollama's compat endpoint, and anything else speaking the same dialect.
 //! Point `base_url` at whichever you're running.
 //!
-//! The shape is lossier than Anthropic's: no thinking blocks, no cache
-//! breakpoints, no effort. Those fields are accepted and ignored.
+//! The shape is lossier than Anthropic's: no cache breakpoints, no effort.
+//! Those fields are accepted and ignored.
+//!
+//! Reasoning is the exception, and it is one-way. Servers that split it out
+//! (llama.cpp's `--reasoning-format auto`, vLLM, DeepSeek) return it as
+//! `reasoning_content`, which decodes into a `Block::Thinking` so it can be
+//! shown and recorded — but `encode_message` drops that block on the way back
+//! out, because the dialect has no field to put it in and a model's own
+//! reasoning is not meant to survive its turn. It is therefore never *output*
+//! either: see `produced_output`.
 
 use crate::config::ProviderConfig;
 use crate::message::*;
@@ -249,13 +257,31 @@ fn decode_usage(v: Option<&Value>) -> Usage {
     }
 }
 
-/// The bytes a turn arrived with, when it decoded to nothing at all.
+/// Whether a turn produced anything the loop counts as output.
+///
+/// Deliberately the same definition `agent.rs` decides `produced_nothing` on —
+/// `Message::text()` collects only `Block::Text`, and `tool_uses()` only
+/// `Block::ToolUse`. Thinking is not output: a model that reasons and says
+/// nothing has still said nothing, and the day this disagrees with the loop is
+/// the day a reasoning-only turn ends a run with an empty answer instead of
+/// being nudged.
+fn produced_output(blocks: &[Block]) -> bool {
+    blocks.iter().any(|b| match b {
+        Block::Text { text } => !text.trim().is_empty(),
+        Block::ToolUse { .. } => true,
+        Block::Thinking { .. } | Block::ToolResult { .. } => false,
+    })
+}
+
+/// The bytes a turn arrived with, when it produced no output at all.
 ///
 /// `llama-server --reasoning-format` defaults to `auto`, which for a thinking
 /// model routes the whole `<think>` block into `message.reasoning_content` and
-/// leaves `message.content` null. This decoder reads `content` and
-/// `tool_calls` and nothing else, so two very different turns arrive here
-/// identically — no blocks, `finish_reason: "stop"`:
+/// leaves `message.content` null. That channel is now decoded into a
+/// `Block::Thinking` — visible, recorded, and dropped again by
+/// `encode_message` so it is never sent back — but it is still not *output*,
+/// so two very different turns arrive at the loop identically, with no text
+/// and no calls and `finish_reason: "stop"`:
 ///
 /// - the model reasoned and then genuinely said nothing, and
 /// - the model said something, or called a tool, inside the reasoning channel.
@@ -285,10 +311,10 @@ struct DroppedReasoning<'a> {
     tail: &'a str,
 }
 
-/// `None` when there is nothing to explain: the turn produced blocks, or the
+/// `None` when there is nothing to explain: the turn produced output, or the
 /// reasoning channel was empty too.
-fn dropped_reasoning(decoded_blocks: usize, reasoning: &str) -> Option<DroppedReasoning<'_>> {
-    if decoded_blocks > 0 || reasoning.trim().is_empty() {
+fn dropped_reasoning(produced_output: bool, reasoning: &str) -> Option<DroppedReasoning<'_>> {
+    if produced_output || reasoning.trim().is_empty() {
         return None;
     }
     // Counted in chars and sliced on a char boundary: reasoning is model prose
@@ -305,8 +331,8 @@ fn dropped_reasoning(decoded_blocks: usize, reasoning: &str) -> Option<DroppedRe
     })
 }
 
-fn log_dropped_reasoning(decoded_blocks: usize, reasoning: &str, finish: Option<&str>) {
-    if let Some(d) = dropped_reasoning(decoded_blocks, reasoning) {
+fn log_dropped_reasoning(produced_output: bool, reasoning: &str, finish: Option<&str>) {
+    if let Some(d) = dropped_reasoning(produced_output, reasoning) {
         tracing::warn!(
             reasoning_chars = d.chars,
             looks_like_tool_call = d.looks_like_tool_call,
@@ -332,6 +358,21 @@ fn decode_response(v: &Value) -> Result<CompletionResponse> {
     let msg = choice.get("message").context("choice has no message")?;
 
     let mut content = Vec::new();
+    // Thinking first, as Anthropic orders it, so a transcript reads in the
+    // order the model produced it. `signature: None` — that field is
+    // Anthropic's opaque echo-back token and this dialect has no equivalent;
+    // `encode_message` drops the whole block for this API regardless, so
+    // nothing is ever sent back and no context is spent on it.
+    let reasoning = msg
+        .get("reasoning_content")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !reasoning.is_empty() {
+        content.push(Block::Thinking {
+            text: reasoning.to_string(),
+            signature: None,
+        });
+    }
     if let Some(text) = msg.get("content").and_then(Value::as_str) {
         if !text.is_empty() {
             content.push(Block::text(text));
@@ -370,13 +411,7 @@ fn decode_response(v: &Value) -> Result<CompletionResponse> {
     }
 
     let finish = choice.get("finish_reason").and_then(Value::as_str);
-    log_dropped_reasoning(
-        content.len(),
-        msg.get("reasoning_content")
-            .and_then(Value::as_str)
-            .unwrap_or(""),
-        finish,
-    );
+    log_dropped_reasoning(produced_output(&content), reasoning, finish);
 
     Ok(CompletionResponse {
         message: Message::assistant(content),
@@ -436,11 +471,13 @@ impl Accumulator {
             self.text.push_str(t);
             let _ = sink.send(StreamEvent::TextDelta(t.to_string()));
         }
-        // Not sent to the sink: this is not the answer, and surfacing it would
-        // put a model's private reasoning on the user's screen. It is kept
-        // only so `finish` can say what a nothing-turn actually contained.
+        // `ThinkingDelta`, not `TextDelta`: front-ends render the two
+        // differently and an answer is not made of reasoning. This is the
+        // event `anthropic.rs` has always emitted and this dialect never did,
+        // which is why the reasoning toggle did nothing against a local model.
         if let Some(r) = delta.get("reasoning_content").and_then(Value::as_str) {
             self.reasoning.push_str(r);
+            let _ = sink.send(StreamEvent::ThinkingDelta(r.to_string()));
         }
         for call in delta
             .get("tool_calls")
@@ -469,6 +506,12 @@ impl Accumulator {
     fn finish(self) -> CompletionResponse {
         let mut content = Vec::new();
         let mut malformed = 0u32;
+        if !self.reasoning.is_empty() {
+            content.push(Block::Thinking {
+                text: self.reasoning.clone(),
+                signature: None,
+            });
+        }
         if !self.text.is_empty() {
             content.push(Block::text(self.text));
         }
@@ -484,7 +527,7 @@ impl Accumulator {
             };
             content.push(Block::ToolUse { id, name, input });
         }
-        log_dropped_reasoning(content.len(), &self.reasoning, None);
+        log_dropped_reasoning(produced_output(&content), &self.reasoning, None);
         CompletionResponse {
             message: Message::assistant(content),
             stop_reason: self.finish.unwrap_or(StopReason::Other),
@@ -549,11 +592,39 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_that_decoded_something_reports_no_dropped_reasoning() {
-        // The diagnostic is about turns that arrive empty. A turn with blocks
+    fn a_turn_that_produced_output_reports_no_dropped_reasoning() {
+        // The diagnostic is about turns that arrive empty. A turn with output
         // is ordinary, however much it reasoned on the way, and firing here
         // would bury the real signal under every thinking turn in the run.
-        assert_eq!(dropped_reasoning(1, "a long think"), None);
+        assert_eq!(dropped_reasoning(true, "a long think"), None);
+    }
+
+    #[test]
+    fn thinking_is_not_output_so_a_reasoning_only_turn_still_reports() {
+        // The load-bearing one. `decode_response` now turns reasoning into a
+        // Block::Thinking, so a reasoning-only turn is no longer block-empty —
+        // but it is still output-empty, and must still be both nudged by the
+        // loop and reported here. Counting blocks instead of output would
+        // silence the instrument at the exact moment it matters.
+        let blocks = vec![Block::Thinking {
+            text: "thinking".into(),
+            signature: None,
+        }];
+        assert!(!produced_output(&blocks));
+        assert!(dropped_reasoning(produced_output(&blocks), "thinking").is_some());
+    }
+
+    #[test]
+    fn whitespace_only_text_is_not_output_either() {
+        // `agent.rs` decides on `text.trim().is_empty()`; disagreeing here
+        // would report a turn the loop nudges, or stay silent on one it does.
+        assert!(!produced_output(&[Block::text("  \n ")]));
+        assert!(produced_output(&[Block::text("an answer")]));
+        assert!(produced_output(&[Block::ToolUse {
+            id: "t1".into(),
+            name: "shell".into(),
+            input: json!({}),
+        }]));
     }
 
     #[test]
@@ -561,8 +632,8 @@ mod tests {
         // Nothing arrived anywhere: the model really did say nothing, and
         // there are no dropped bytes to show. Whitespace counts as empty, or
         // a lone newline would be reported as if it were evidence.
-        assert_eq!(dropped_reasoning(0, ""), None);
-        assert_eq!(dropped_reasoning(0, "  \n "), None);
+        assert_eq!(dropped_reasoning(false, ""), None);
+        assert_eq!(dropped_reasoning(false, "  \n "), None);
     }
 
     #[test]
@@ -570,7 +641,7 @@ mod tests {
         // The whole question the instrument exists to answer: was the empty
         // turn a silent model, or a call we failed to see?
         let d = dropped_reasoning(
-            0,
+            false,
             "let me check the file\n<tool_call>\n{\"name\": \"shell\"}",
         )
         .expect("an empty turn with reasoning is reportable");
@@ -582,7 +653,7 @@ mod tests {
 
     #[test]
     fn reasoning_without_a_call_is_reported_but_not_labelled_a_call() {
-        let d = dropped_reasoning(0, "I think the answer is 42, so I am done.")
+        let d = dropped_reasoning(false, "I think the answer is 42, so I am done.")
             .expect("an empty turn with reasoning is reportable");
         assert!(!d.looks_like_tool_call);
         assert_eq!(d.chars, 39);
@@ -595,7 +666,7 @@ mod tests {
         // panic on the first multibyte character — and reasoning is exactly
         // where an em dash or a CJK identifier turns up.
         let long = format!("{}—the answer is 42", "x".repeat(5_000));
-        let d = dropped_reasoning(0, &long).expect("reportable");
+        let d = dropped_reasoning(false, &long).expect("reportable");
         assert_eq!(d.chars, 5_017);
         assert!(d.tail.ends_with("—the answer is 42"));
         assert!(
@@ -604,7 +675,7 @@ mod tests {
         );
 
         // Short reasoning is kept whole rather than sliced to nothing.
-        let d = dropped_reasoning(0, "早い").expect("reportable");
+        let d = dropped_reasoning(false, "早い").expect("reportable");
         assert_eq!(d.tail, "早い");
     }
 
@@ -628,17 +699,31 @@ mod tests {
         });
         let resp = decode_response(&v).unwrap();
 
-        // Unchanged behaviour: the turn is still empty and still EndTurn. The
-        // patch is an instrument, not a fix — recovering the call is a
-        // behaviour change that wants this evidence first.
         assert_eq!(resp.stop_reason, StopReason::EndTurn);
-        assert!(
-            resp.message.content.is_empty(),
-            "reasoning_content must not silently become an answer"
-        );
 
-        let d = dropped_reasoning(
+        // The reasoning is now kept, as a Thinking block — visible in the TUI
+        // and recorded in the transcript, where before it was discarded on the
+        // floor.
+        assert_eq!(
             resp.message.content.len(),
+            1,
+            "reasoning_content should survive decoding as a Thinking block"
+        );
+        assert!(matches!(resp.message.content[0], Block::Thinking { .. }));
+
+        // But it is NOT an answer. `text()` is what the loop reads, and it must
+        // stay empty or a reasoning-only turn ends the run with nothing said.
+        assert_eq!(
+            resp.message.text(),
+            "",
+            "reasoning_content must never silently become the answer"
+        );
+        assert!(resp.message.tool_uses().is_empty());
+        assert!(!produced_output(&resp.message.content));
+
+        // Still the shape the diagnostic exists for, and still reported.
+        let d = dropped_reasoning(
+            produced_output(&resp.message.content),
             "I should read the file first.\n<tool_call>",
         )
         .expect("this is the shape the diagnostic exists for");
@@ -646,10 +731,11 @@ mod tests {
     }
 
     #[test]
-    fn streamed_reasoning_deltas_never_become_answer_text() {
-        // Same rule on the streaming path, which had the same blind spot: the
-        // reasoning is accumulated for the diagnostic and must not leak into
-        // the message or onto the user's screen.
+    fn streamed_reasoning_arrives_as_thinking_and_never_as_answer_text() {
+        // Same rule on the streaming path, which had the same blind spot. The
+        // reasoning reaches the front-end as ThinkingDelta — the event
+        // anthropic.rs has always sent and this dialect never did — and still
+        // never counts as the answer.
         let (tx, mut rx) = sink();
         let mut acc = Accumulator::default();
         acc.push(&chunk(json!({"reasoning_content": "thinking "})), &tx);
@@ -668,14 +754,35 @@ mod tests {
         );
 
         let resp = acc.finish();
-        assert!(
-            resp.message.content.is_empty(),
-            "a reasoning-only stream is still an empty turn"
-        );
         assert_eq!(resp.stop_reason, StopReason::EndTurn);
-        rx.close();
+        assert_eq!(
+            resp.message.text(),
+            "",
+            "a reasoning-only stream produced no answer"
+        );
         assert!(
-            rx.try_recv().is_err(),
+            !produced_output(&resp.message.content),
+            "and must still be nudged rather than ending the run"
+        );
+
+        // The deltas went out as thinking, never as text.
+        rx.close();
+        let mut events = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+        let thinking: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ThinkingDelta(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thinking, vec!["thinking ", "hard"]);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::TextDelta(_))),
             "reasoning must not be emitted as a TextDelta"
         );
     }
