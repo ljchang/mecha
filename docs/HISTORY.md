@@ -915,6 +915,59 @@ itself as a bulleted list, so its instruction opens with `- `, clap read it as
 a flag, and the run exited 2 before starting — which Harbor scores 0.0,
 indistinguishable from a model that tried and failed.
 
+**2026-08-10 (night) — an artifact gets the URL a person can open, and the
+review bot turns out never to have run.** Two arcs, one on each side of the
+repo boundary.
+
+The factory's publish path reported one URL for a bundle — the bytes on the
+artifact origin — and reported it whatever the visibility. Since a publish key
+cannot move an alias by design, the state every agent publish *lands in* is
+private, where that URL answers 404; the tool said "It is live at" about it,
+and a model repeated the dead link to whoever asked. Measured against the live
+box before anything was written: `…/b/morning-brief/` → 404, and the gate's
+viewer page for the same bundle → 200. The server now answers with both
+(`viewer_url`, `viewer_version_url`, minted by one helper so the publish and
+alias responses cannot drift), the publisher funnels every report through one
+`Mirrored` type, and the MCP tool descriptions say which URL is for a person —
+that last part being where it actually gets fixed, since a model repeats
+whatever string the tool returned. Documented in `artifacts.md` as a named
+section, because the page taught the wrong URL as *the* one you send someone.
+
+Three things fell out that were not the arc. Following the URL a publish
+reports, while signed out, landed an owner on the reader sign-in form — which
+mails a link to an address a *share* names, and an owner holds no share to
+their own bundle, so the form answered "check your email" and nothing came;
+the page carries the tenant sign-in corner now, which leaks nothing because it
+is identical on every refusal. The account page linked every bundle through
+`Role::Artifacts` unconditionally, so each published notebook pointed at an
+origin it does not live on and was rescued by a redirect. And `factory-publish
+push`, which has no `--visibility`, read one out of the *local* store and sent
+it — a store that never hears about a release made from the account page, so
+the next push silently took public bundles down. Visibility is `Option` end to
+end now, and `None` omits the field, which is the box's own spelling of "leave
+who may read it alone" and was always what the server implemented.
+
+A 26-agent review over the branch found ten issues, nine fixed. The worst was
+the arc's own: a `for_a_person()` fallback substituted the bytes URL when the
+box named no page, so the private sentence read "only you can open it: <URL>.
+<the same URL> serves nobody" — the exact lie the change existed to remove,
+reinstated in the one arm the deployed box still exercises. Its guard had
+certified it, because the test only covered the single state where the
+substitution happens to be true.
+
+The other arc was the CI bots, and it began from a wrong premise — that
+mecha-factory needed switching from API billing to plan billing. It had never
+had the workflows at all. Checking the run logs to port them turned up three
+things: the model was `claude-sonnet-5` everywhere, since neither repo ever
+pinned one; `claude.yml`'s condition used a literal block scalar and the job
+had **never once run** (a real `@claude` comment left it skipped in 0s with no
+steps); and the review job had failed on every run it had ever made — 31
+failures in its last 40, identical before and after the OAuth switch, so
+subscription auth neither caused nor fixed it. That last was the credential:
+an API key that had presumably run dry, then an OAuth token that was never
+valid. A fresh token took the same job from `is_error: true`, 1 turn, 304ms to
+a real nine-turn review. Both bots now name `claude-opus-5` and both work.
+
 ---
 
 ## The measurement record
@@ -1702,6 +1755,52 @@ apart from the workspace it was made in — so the workspace is part of the
 draft, not part of the reviewer.** The loud failure was luck: an absolute path
 is the case that announces itself, and the design has to hold for the quiet
 one.
+
+### A guard that only covers the honest case
+
+`Reach::sentence()` had four arms and a `for_a_person()` that fell back to the
+bare artifact URL when the box named no viewer page. Its test asserted the
+fallback — on `Serves::Everyone`, the one arm where the bytes URL genuinely
+does open. In the other three the fallback made `page` and `bare` the same
+string, so the private arm read "only you can open it: <URL>. <the same URL>
+serves nobody" about an origin that answers 404, which is precisely the lie
+the whole change was written to remove. It shipped green and a 26-agent review
+caught it.
+
+**A test that exercises one value of an enum has tested one arm, not the
+function.** The fallback was uniform, so it looked like one behaviour worth
+one assertion; what varied was the *sentence around it*, and that is where the
+contradiction lived. When a helper feeds several branches, the branches are
+the unit under test. The replacement walks all four states and fails if any
+arm outside `Everyone` uses an opening-promise phrase with no page to name.
+
+### The bot that had never run, and the log that would not say why
+
+Porting the Claude workflows to a second repo turned into finding that neither
+worked in the first. Three separate things, each hidden by a different
+mechanism:
+
+- The review job had failed on **every run it had ever made** — 31 of its last
+  40, the rest skipped — and read as background noise because a red X on a
+  bot check is easy to stop seeing. The cause was the credential, on both
+  sides of an auth migration that was itself an attempt to fix it.
+- `claude.yml`'s job condition used `if: |`. The literal block keeps every
+  newline and adds a trailing one, and the job never matched; the workflow
+  beside it used `if: >-` and ran. The fix has a second trap inside it —
+  a folded scalar only folds lines at *equal* indentation and keeps a deeper
+  one literal, so re-wrapping the condition prettily reintroduced the
+  newlines. Caught by asserting the parsed string contained none.
+- `claude-code-action` refuses to run when the workflow file differs from the
+  default branch's copy, and **exits 0**. So a workflow change can never be
+  tested by its own pull request, and the green check on such a PR means
+  nothing at all.
+
+Two lessons, both general. **A check that has never once passed is not a
+flaky check, it is an unimplemented one** — and the way to tell them apart is
+to ask for its success rate rather than looking at the latest run. And **a
+diagnostic that requires making output public is the wrong diagnostic**: the
+same failure was isolated by reproducing the auth path locally, which cost
+nothing and exposed nothing.
 
 ### The TUI
 
