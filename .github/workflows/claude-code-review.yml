@@ -92,10 +92,6 @@ jobs:
             `confirmed: true`) for specific code issues.
             Only post GitHub comments — do not return review text as a message.
 
-          # TEMPORARY, for one run: the action hides the model's output, so a
-          # failing review reports `is_error: true` and nothing about why.
-          # This repo's review job has failed on every run it has ever made.
-          show_full_output: true
           # Pinned rather than left to the action's default, which is
           # `claude-sonnet-5` — verified in a run log's init event.
           claude_args: |
