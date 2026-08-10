@@ -7,6 +7,15 @@ wins and the research doc keeps the reasoning.
 
 **Still unbuilt.** This is the shape to build, written so someone can start.
 
+> **One section grew into its own document.** The personal public surface —
+> the **hangar** at `/@{handle}` and the **switchboards** at
+> `/@{handle}/{slug}` — is [`SWITCHBOARD-DESIGN.md`](SWITCHBOARD-DESIGN.md),
+> settled 2026-08-10. It is the authority for those two pages, the profile
+> record behind them, and the merge that lets a machine and a browser both
+> write one. Note that its §5.3 deliberately *disagrees* with §14.7 below on
+> which side wins a divergence, and says why: the box is authoritative for
+> what other machines must agree on, and home for what a person wrote.
+
 ---
 
 ## 0. What `mecha-factory` is for
