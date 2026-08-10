@@ -415,7 +415,9 @@ fn detail_lines(item: &OutboxItem) -> Vec<Line<'static>> {
             }
         }
         OutboxKind::Publish => {
-            for (label, path) in crate::commands::outbox::local_paths(&item.args) {
+            for (label, path) in
+                crate::commands::outbox::local_paths(&item.args, item.workspace.as_deref())
+            {
                 body.push(Line::styled(format!("{label}: {}", path.display()), white));
                 if let Some(entry) = crate::commands::outbox::entry_point(&path) {
                     body.push(Line::styled(format!("open  {}", entry.display()), grey));
