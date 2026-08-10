@@ -168,10 +168,28 @@ shell_timeout_secs = 600
             # needed to diagnose the trials that died. MECHA_LOG=debug is
             # cheap here (one run per container) and the log downloads with
             # the sessions below.
+            # `--` before the instruction, and it is load-bearing. The task
+            # text is a stranger's bytes going onto a command line, and
+            # `terminal-bench/pytorch-model-recovery` opens with "- " because
+            # its description is a bulleted list. clap reads that as a flag:
+            #
+            #   error: unexpected argument '- ' found
+            #
+            # exit 2, before mecha starts, which Harbor records as
+            # NonZeroAgentExitCodeError and scores 0.0 — indistinguishable in
+            # a scorecard from a model that tried and failed. One trial of the
+            # 2026-08-10 run was lost to it.
+            #
+            # shlex.quote does not help: it makes the text one argv entry, and
+            # the problem is that entry's first character. The separator is
+            # what says "everything after this is positional", and it is the
+            # fix rather than `allow_hyphen_values` on the CLI, which would
+            # make a mistyped flag silently become the prompt.
             await self.exec_as_agent(
                 environment,
                 f"mkdir -p {SESSION_DIR} && "
-                f"/installed-agent/mecha run --yes {model}{flags}{shlex.quote(instruction)} "
+                f"/installed-agent/mecha run --yes {model}{flags}-- "
+                f"{shlex.quote(instruction)} "
                 f"2> {SESSION_DIR}/stderr.log",
                 env={"MECHA_SESSION_DIR": SESSION_DIR, "MECHA_LOG": "debug"},
             )

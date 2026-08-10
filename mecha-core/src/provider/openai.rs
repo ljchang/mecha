@@ -4,8 +4,28 @@
 //! Ollama's compat endpoint, and anything else speaking the same dialect.
 //! Point `base_url` at whichever you're running.
 //!
-//! The shape is lossier than Anthropic's: no thinking blocks, no cache
-//! breakpoints, no effort. Those fields are accepted and ignored.
+//! The shape is lossier than Anthropic's: no cache breakpoints, no effort.
+//! Those fields are accepted and ignored.
+//!
+//! Reasoning is the exception. Servers that split it out (llama.cpp's
+//! `--reasoning-format auto`, vLLM, DeepSeek) return it as
+//! `reasoning_content`, which decodes into a `Block::Thinking` so it can be
+//! shown and recorded. It is never *output* — see `produced_output`.
+//!
+//! It is currently one-way, and that is a **known gap, not a decision**.
+//! `reasoning_content` is a request field too: measured against llama-server
+//! on 2026-08-10 via `/apply-template`, an assistant message carrying it
+//! renders back into the prompt as a `<think>` block, and without it the same
+//! turn renders as a bare `<tool_call>` with no thinking at all. So every
+//! prior assistant turn in a mecha conversation shows this model calling
+//! tools without reasoning — which is both a lost prior and the suspected
+//! cause of the empty-turn bug, since the malformation reproduced 7/7 was a
+//! bare tool call emitted with no think block.
+//!
+//! `anthropic.rs` already replays thinking (signature-gated, see
+//! `encode_block`); this backend has simply never had the code. Fixing it
+//! needs care about context cost — reasoning runs to thousands of tokens a
+//! turn — and about servers in this dialect that reject the field.
 
 use crate::config::ProviderConfig;
 use crate::message::*;
@@ -177,17 +197,43 @@ fn encode_message(m: &Message, out: &mut Vec<Value>) {
     match m.role {
         Role::Assistant => {
             let mut text = String::new();
+            let mut reasoning = String::new();
             let mut tool_calls = Vec::new();
             for b in &m.content {
                 match b {
                     Block::Text { text: t } => text.push_str(t),
+                    // Sent back, because the model's own history is what
+                    // teaches it the shape of a turn. Measured 2026-08-10
+                    // against llama-server on the prefix that had gone quiet
+                    // seven times out of seven: with reasoning stripped from
+                    // the history — which is what this backend did — the model
+                    // produced a bare `<tool_call>` with no think block, 6 of
+                    // 6, and the server misfiled the whole thing as reasoning
+                    // so the turn arrived empty. With reasoning restored to
+                    // the history and nothing else changed, 0 of 6. The
+                    // parser bug upstream is real, but this is the half that
+                    // was ours: we showed the model turn after turn of itself
+                    // calling tools without thinking, and it obliged.
+                    //
+                    // Self-gating, which is what keeps it honest: on this path
+                    // a Thinking block exists only because a server sent
+                    // `reasoning_content` in the first place. So this rides
+                    // back only to servers that speak the field — llama.cpp,
+                    // vLLM, DeepSeek — and never to an endpoint that would
+                    // reject an unknown one. No provider sniffing, no flag.
+                    //
+                    // `signature` is dropped: it is Anthropic's echo-back
+                    // token and has no counterpart here. That asymmetry is
+                    // why `anthropic.rs` refuses to replay an unsigned block
+                    // while this backend replays every one it has.
+                    Block::Thinking { text: t, .. } => reasoning.push_str(t),
                     Block::ToolUse { id, name, input } => tool_calls.push(json!({
                         "id": id,
                         "type": "function",
                         "function": {"name": name, "arguments": input.to_string()},
                     })),
-                    // No wire representation for these on this API.
-                    Block::Thinking { .. } | Block::ToolResult { .. } => {}
+                    // A result is its own message, never part of the turn.
+                    Block::ToolResult { .. } => {}
                 }
             }
             let mut msg = json!({"role": "assistant"});
@@ -202,6 +248,12 @@ fn encode_message(m: &Message, out: &mut Vec<Value>) {
             );
             if !tool_calls.is_empty() {
                 obj.insert("tool_calls".into(), json!(tool_calls));
+            }
+            // Absent rather than empty when there was no thinking: a server
+            // that renders the field conditionally must see it missing, not
+            // see an empty think block.
+            if !reasoning.is_empty() {
+                obj.insert("reasoning_content".into(), json!(reasoning));
             }
             out.push(msg);
         }
@@ -242,10 +294,149 @@ fn decode_finish(s: Option<&str>) -> StopReason {
 fn decode_usage(v: Option<&Value>) -> Usage {
     let Some(v) = v else { return Usage::default() };
     let g = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let prompt = g("prompt_tokens");
+
+    // The two dialects disagree about what the prompt count contains, and
+    // `Usage::total_input` sums all three fields. Anthropic reports
+    // `input_tokens` *beside* the cache tiers; OpenAI reports `prompt_tokens`
+    // with `cached_tokens` already *inside* it. Carrying the cached half over
+    // without subtracting it would report every prompt at nearly twice its
+    // size — and the compaction threshold reads exactly that number, so a long
+    // run would start summarising itself at half the window it actually had.
+    // Saturated because a provider is not to be trusted to keep the subset
+    // relation it documents.
+    let cached = v
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .min(prompt);
+
+    // No write tier in this dialect: a local server's prefix cache is filled
+    // as a side effect of serving, never billed or reported separately.
     Usage {
-        input_tokens: g("prompt_tokens"),
+        input_tokens: prompt - cached,
         output_tokens: g("completion_tokens"),
+        cache_read_input_tokens: cached,
         ..Usage::default()
+    }
+}
+
+/// Whether a turn produced anything the loop counts as output.
+///
+/// Deliberately the same definition `agent.rs` decides `produced_nothing` on —
+/// `Message::text()` collects only `Block::Text`, and `tool_uses()` only
+/// `Block::ToolUse`. Thinking is not output: a model that reasons and says
+/// nothing has still said nothing, and the day this disagrees with the loop is
+/// the day a reasoning-only turn ends a run with an empty answer instead of
+/// being nudged.
+fn produced_output(blocks: &[Block]) -> bool {
+    blocks.iter().any(|b| match b {
+        Block::Text { text } => !text.trim().is_empty(),
+        Block::ToolUse { .. } => true,
+        Block::Thinking { .. } | Block::ToolResult { .. } => false,
+    })
+}
+
+/// The bytes a turn arrived with, when it produced no output at all.
+///
+/// `llama-server --reasoning-format` defaults to `auto`, which for a thinking
+/// model routes the whole `<think>` block into `message.reasoning_content` and
+/// leaves `message.content` null. That channel is now decoded into a
+/// `Block::Thinking` — visible, recorded, and dropped again by
+/// `encode_message` so it is never sent back — but it is still not *output*,
+/// so two very different turns arrive at the loop identically, with no text
+/// and no calls and `finish_reason: "stop"`:
+///
+/// - the model reasoned and then genuinely said nothing, and
+/// - the model said something, or called a tool, inside the reasoning channel.
+///
+/// The agent loop answers both with a nudge and a retry. That is correct for
+/// the first and pure waste for the second — a re-prefill of the whole
+/// transcript to ask for output that was already produced. Measured on the
+/// 2026-08-10 Terminal-Bench run: every one of `break-filter-js-from-html`'s
+/// ten nudges was followed immediately by a well-formed `shell` call, twice a
+/// near-duplicate of one issued a few messages earlier, which is what a lost
+/// tool call looks like — and also what a compliant answer to the nudge looks
+/// like. The two are not separable without these bytes.
+///
+/// So this reports them at the point they are dropped, and deliberately does
+/// **not** change the decode. Recovering a tool call out of a think block is a
+/// behaviour change that wants evidence first, and this is the instrument that
+/// produces it.
+/// Syntaxes that mean "a tool call was written here", across the model
+/// families this backend actually meets.
+///
+/// A table rather than one string, on purpose. The *phenomenon* is general —
+/// a reasoning model writes its action before closing the think block, the
+/// server's parser never sees it, and the turn arrives empty — and only the
+/// syntax is per-family. Measured on Qwen3.6 (2026-08-10): the reasoning of a
+/// reproduced empty turn held a complete `<tool_call><function=shell>…` that
+/// was never parsed. Gemma, Llama and DeepSeek would each write that same
+/// intent differently, and a matcher that knew only Qwen would report their
+/// identical failure as an unexplained silence.
+///
+/// This is a **hint on a warning, never a decision**: nothing branches on it,
+/// so a family missing from this list costs a vaguer log line and nothing
+/// more. Extend it when a new one turns up rather than reaching for a regex —
+/// the failure mode of a clever matcher is a false positive on a model merely
+/// *discussing* tool calls in prose, and this must not become the thing that
+/// decides whether a call gets executed.
+const TOOL_CALL_MARKERS: &[&str] = &[
+    "<tool_call>",           // Qwen, Hermes
+    "<function=",            // Qwen's inner form, also emitted bare
+    "<|python_tag|>",        // Llama 3.x
+    "<｜tool▁call▁begin｜>", // DeepSeek, fullwidth delimiters
+    "```tool_code",          // Gemma
+    "<function_call>",       // assorted OpenAI-compatible shims
+];
+
+#[derive(Debug, PartialEq)]
+struct DroppedReasoning<'a> {
+    chars: usize,
+    /// A model that started calling before closing its think block. When this
+    /// is true the empty turn was a lost call, not a silent model.
+    looks_like_tool_call: bool,
+    /// The end of the reasoning, which is where a call or a concluded answer
+    /// would sit. The head is throat-clearing.
+    tail: &'a str,
+}
+
+/// `None` when there is nothing to explain: the turn produced output, or the
+/// reasoning channel was empty too.
+fn dropped_reasoning(produced_output: bool, reasoning: &str) -> Option<DroppedReasoning<'_>> {
+    if produced_output || reasoning.trim().is_empty() {
+        return None;
+    }
+    // Counted in chars and sliced on a char boundary: reasoning is model prose
+    // and slicing it by byte would panic on the first multibyte character.
+    let tail = match reasoning.char_indices().rev().nth(400) {
+        Some((i, _)) => &reasoning[i..],
+        None => reasoning,
+    };
+    Some(DroppedReasoning {
+        chars: reasoning.chars().count(),
+        looks_like_tool_call: TOOL_CALL_MARKERS.iter().any(|m| reasoning.contains(m)),
+        tail,
+    })
+}
+
+fn log_dropped_reasoning(produced_output: bool, reasoning: &str, finish: Option<&str>) {
+    if let Some(d) = dropped_reasoning(produced_output, reasoning) {
+        tracing::warn!(
+            reasoning_chars = d.chars,
+            looks_like_tool_call = d.looks_like_tool_call,
+            finish_reason = finish.unwrap_or("<absent>"),
+            tail = d.tail,
+            "turn produced no output but the response carried reasoning_content"
+        );
+        // The whole trace, at debug, because the tail is enough to classify a
+        // silence and never enough to explain it. An empty turn is not in the
+        // transcript at all — the loop nudges and continues before pushing the
+        // message, and the loop holds no session to record it into — so this
+        // log is the only durable record that the turn happened or what was in
+        // it. `MECHA_LOG=debug` is what the bench adapter already runs with,
+        // and it downloads the stderr beside the transcript.
+        tracing::debug!(reasoning = reasoning, "the dropped reasoning, in full");
     }
 }
 
@@ -263,6 +454,21 @@ fn decode_response(v: &Value) -> Result<CompletionResponse> {
     let msg = choice.get("message").context("choice has no message")?;
 
     let mut content = Vec::new();
+    // Thinking first, as Anthropic orders it, so a transcript reads in the
+    // order the model produced it. `signature: None` — that field is
+    // Anthropic's opaque echo-back token and this dialect has no equivalent;
+    // `encode_message` drops the whole block for this API regardless, so
+    // nothing is ever sent back and no context is spent on it.
+    let reasoning = msg
+        .get("reasoning_content")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !reasoning.is_empty() {
+        content.push(Block::Thinking {
+            text: reasoning.to_string(),
+            signature: None,
+        });
+    }
     if let Some(text) = msg.get("content").and_then(Value::as_str) {
         if !text.is_empty() {
             content.push(Block::text(text));
@@ -300,9 +506,12 @@ fn decode_response(v: &Value) -> Result<CompletionResponse> {
         });
     }
 
+    let finish = choice.get("finish_reason").and_then(Value::as_str);
+    log_dropped_reasoning(produced_output(&content), reasoning, finish);
+
     Ok(CompletionResponse {
         message: Message::assistant(content),
-        stop_reason: decode_finish(choice.get("finish_reason").and_then(Value::as_str)),
+        stop_reason: decode_finish(finish),
         usage: decode_usage(v.get("usage")),
         refusal: None,
         model: v
@@ -322,6 +531,10 @@ struct Accumulator {
     finish: Option<StopReason>,
     usage: Usage,
     model: String,
+    /// Accumulated for the diagnostic only — never turned into a block. See
+    /// `DroppedReasoning`. The streamed dialect carries it as
+    /// `delta.reasoning_content`, alongside the `delta.content` this decodes.
+    reasoning: String,
 }
 
 impl Accumulator {
@@ -354,6 +567,14 @@ impl Accumulator {
             self.text.push_str(t);
             let _ = sink.send(StreamEvent::TextDelta(t.to_string()));
         }
+        // `ThinkingDelta`, not `TextDelta`: front-ends render the two
+        // differently and an answer is not made of reasoning. This is the
+        // event `anthropic.rs` has always emitted and this dialect never did,
+        // which is why the reasoning toggle did nothing against a local model.
+        if let Some(r) = delta.get("reasoning_content").and_then(Value::as_str) {
+            self.reasoning.push_str(r);
+            let _ = sink.send(StreamEvent::ThinkingDelta(r.to_string()));
+        }
         for call in delta
             .get("tool_calls")
             .and_then(Value::as_array)
@@ -381,6 +602,12 @@ impl Accumulator {
     fn finish(self) -> CompletionResponse {
         let mut content = Vec::new();
         let mut malformed = 0u32;
+        if !self.reasoning.is_empty() {
+            content.push(Block::Thinking {
+                text: self.reasoning.clone(),
+                signature: None,
+            });
+        }
         if !self.text.is_empty() {
             content.push(Block::text(self.text));
         }
@@ -396,6 +623,7 @@ impl Accumulator {
             };
             content.push(Block::ToolUse { id, name, input });
         }
+        log_dropped_reasoning(produced_output(&content), &self.reasoning, None);
         CompletionResponse {
             message: Message::assistant(content),
             stop_reason: self.finish.unwrap_or(StopReason::Other),
@@ -457,6 +685,328 @@ mod tests {
     /// One SSE chunk carrying a delta for choice 0.
     fn chunk(delta: Value) -> Value {
         json!({"choices": [{"index": 0, "delta": delta}]})
+    }
+
+    #[test]
+    fn a_turn_that_produced_output_reports_no_dropped_reasoning() {
+        // The diagnostic is about turns that arrive empty. A turn with output
+        // is ordinary, however much it reasoned on the way, and firing here
+        // would bury the real signal under every thinking turn in the run.
+        assert_eq!(dropped_reasoning(true, "a long think"), None);
+    }
+
+    #[test]
+    fn thinking_is_not_output_so_a_reasoning_only_turn_still_reports() {
+        // The load-bearing one. `decode_response` now turns reasoning into a
+        // Block::Thinking, so a reasoning-only turn is no longer block-empty —
+        // but it is still output-empty, and must still be both nudged by the
+        // loop and reported here. Counting blocks instead of output would
+        // silence the instrument at the exact moment it matters.
+        let blocks = vec![Block::Thinking {
+            text: "thinking".into(),
+            signature: None,
+        }];
+        assert!(!produced_output(&blocks));
+        assert!(dropped_reasoning(produced_output(&blocks), "thinking").is_some());
+    }
+
+    #[test]
+    fn whitespace_only_text_is_not_output_either() {
+        // `agent.rs` decides on `text.trim().is_empty()`; disagreeing here
+        // would report a turn the loop nudges, or stay silent on one it does.
+        assert!(!produced_output(&[Block::text("  \n ")]));
+        assert!(produced_output(&[Block::text("an answer")]));
+        assert!(produced_output(&[Block::ToolUse {
+            id: "t1".into(),
+            name: "shell".into(),
+            input: json!({}),
+        }]));
+    }
+
+    #[test]
+    fn an_empty_turn_with_an_empty_reasoning_channel_reports_nothing() {
+        // Nothing arrived anywhere: the model really did say nothing, and
+        // there are no dropped bytes to show. Whitespace counts as empty, or
+        // a lone newline would be reported as if it were evidence.
+        assert_eq!(dropped_reasoning(false, ""), None);
+        assert_eq!(dropped_reasoning(false, "  \n "), None);
+    }
+
+    #[test]
+    fn an_empty_turn_carrying_a_tool_call_in_its_reasoning_is_named_as_one() {
+        // The whole question the instrument exists to answer: was the empty
+        // turn a silent model, or a call we failed to see?
+        let d = dropped_reasoning(
+            false,
+            "let me check the file\n<tool_call>\n{\"name\": \"shell\"}",
+        )
+        .expect("an empty turn with reasoning is reportable");
+        assert!(
+            d.looks_like_tool_call,
+            "a <tool_call> in the think block is the lost-call signature"
+        );
+    }
+
+    #[test]
+    fn reasoning_survives_the_round_trip_and_rides_back_with_the_turn() {
+        // The whole fix, end to end: what the server sends as
+        // `reasoning_content` must come back as `reasoning_content`, beside
+        // the call it belongs to. Stripping it is what produced a history of
+        // bare tool calls with no thinking, and with it the model reproduced
+        // that shape 6 times in 6 — see `encode_message`.
+        let v = json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "I should list the directory first.",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "shell", "arguments": "{\"command\": \"ls\"}"},
+                    }],
+                },
+            }],
+            "model": "qwen3.6-35b-a3b",
+        });
+        let decoded = decode_response(&v).unwrap();
+
+        let mut out = Vec::new();
+        encode_message(&decoded.message, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0]["reasoning_content"], "I should list the directory first.",
+            "the reasoning was dropped on the way back out"
+        );
+        assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "shell");
+        assert_eq!(
+            out[0]["content"],
+            Value::Null,
+            "reasoning must not leak into content"
+        );
+    }
+
+    #[test]
+    fn cached_prompt_tokens_are_split_out_rather_than_counted_twice() {
+        // The load-bearing one. `total_input` sums the three fields and the
+        // compaction threshold reads it, so carrying `cached_tokens` over
+        // without removing it from `prompt_tokens` would report a 1,000-token
+        // prompt as 1,800 and compact at little over half the real window.
+        let u = decode_usage(Some(&json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 42,
+            "prompt_tokens_details": {"cached_tokens": 800},
+        })));
+        assert_eq!(u.input_tokens, 200, "the uncached remainder");
+        assert_eq!(u.cache_read_input_tokens, 800);
+        assert_eq!(u.output_tokens, 42);
+        assert_eq!(
+            u.total_input(),
+            1000,
+            "the reported prompt size must survive the split unchanged"
+        );
+    }
+
+    #[test]
+    fn a_server_that_reports_no_cache_detail_is_unchanged() {
+        // Most of this dialect's servers say nothing about caching. They must
+        // keep reporting exactly what they did before this field was read.
+        let u = decode_usage(Some(&json!({"prompt_tokens": 500, "completion_tokens": 7})));
+        assert_eq!(u.input_tokens, 500);
+        assert_eq!(u.cache_read_input_tokens, 0);
+        assert_eq!(u.total_input(), 500);
+    }
+
+    #[test]
+    fn a_cached_count_larger_than_the_prompt_cannot_underflow() {
+        // Subset by documentation, not by guarantee — and `input_tokens` is
+        // unsigned, so believing a bad provider would panic in release-mode
+        // wrapping or produce an astronomical prompt size.
+        let u = decode_usage(Some(&json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 1,
+            "prompt_tokens_details": {"cached_tokens": 9999},
+        })));
+        assert_eq!(u.input_tokens, 0);
+        assert_eq!(u.cache_read_input_tokens, 100);
+        assert_eq!(u.total_input(), 100);
+    }
+
+    #[test]
+    fn a_turn_with_no_thinking_sends_no_reasoning_field() {
+        // Absent, not empty. A server rendering the field conditionally must
+        // see it missing rather than see an empty think block — and this is
+        // also what keeps the round trip self-gating: an endpoint that never
+        // sends `reasoning_content` never receives one.
+        let mut out = Vec::new();
+        encode_message(&Message::assistant(vec![Block::text("done")]), &mut out);
+        assert!(
+            out[0].get("reasoning_content").is_none(),
+            "an unrelated endpoint must not be sent a field it never spoke"
+        );
+    }
+
+    #[test]
+    fn the_lost_call_signature_is_not_only_qwens() {
+        // The failure is a property of reasoning models, not of one vendor,
+        // and this backend serves every OpenAI-compatible server there is.
+        // Recognising only the family that happened to be on the bench would
+        // report an identical Gemma or Llama failure as an unexplained
+        // silence — which is how a diagnostic quietly stops working when the
+        // model changes.
+        for (family, reasoning) in [
+            (
+                "gemma",
+                "let me check\n```tool_code\nprint(shell(...))\n```",
+            ),
+            (
+                "llama",
+                "first I will look\n<|python_tag|>{\"name\": \"shell\"}",
+            ),
+            ("deepseek", "checking\n<｜tool▁call▁begin｜>shell"),
+            ("hermes", "<function_call>{\"name\": \"shell\"}"),
+        ] {
+            let d = dropped_reasoning(false, reasoning)
+                .unwrap_or_else(|| panic!("{family}: reportable"));
+            assert!(d.looks_like_tool_call, "{family} went unrecognised");
+        }
+    }
+
+    #[test]
+    fn reasoning_without_a_call_is_reported_but_not_labelled_a_call() {
+        let d = dropped_reasoning(false, "I think the answer is 42, so I am done.")
+            .expect("an empty turn with reasoning is reportable");
+        assert!(!d.looks_like_tool_call);
+        assert_eq!(d.chars, 39);
+    }
+
+    #[test]
+    fn the_tail_is_kept_and_multibyte_reasoning_does_not_panic() {
+        // The end is where a call or a concluded answer sits, so the tail is
+        // the part worth keeping. Slicing model prose by byte offset would
+        // panic on the first multibyte character — and reasoning is exactly
+        // where an em dash or a CJK identifier turns up.
+        let long = format!("{}—the answer is 42", "x".repeat(5_000));
+        let d = dropped_reasoning(false, &long).expect("reportable");
+        assert_eq!(d.chars, 5_017);
+        assert!(d.tail.ends_with("—the answer is 42"));
+        assert!(
+            d.tail.chars().count() <= 401,
+            "the tail is bounded, not the whole think block"
+        );
+
+        // Short reasoning is kept whole rather than sliced to nothing.
+        let d = dropped_reasoning(false, "早い").expect("reportable");
+        assert_eq!(d.tail, "早い");
+    }
+
+    #[test]
+    fn llama_servers_empty_turn_shape_decodes_to_no_blocks_and_is_reported() {
+        // The exact wire shape behind the 2026-08-07 and 2026-08-10 empty
+        // turns: `--reasoning-format` defaults to `auto`, which puts the think
+        // block in `reasoning_content` and leaves `content` null, with
+        // `finish_reason: "stop"` — NOT "length", so this is not truncation
+        // and no budget raise addresses it.
+        let v = json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "I should read the file first.\n<tool_call>",
+                },
+            }],
+            "model": "qwen3.6-35b-a3b",
+        });
+        let resp = decode_response(&v).unwrap();
+
+        assert_eq!(resp.stop_reason, StopReason::EndTurn);
+
+        // The reasoning is now kept, as a Thinking block — visible in the TUI
+        // and recorded in the transcript, where before it was discarded on the
+        // floor.
+        assert_eq!(
+            resp.message.content.len(),
+            1,
+            "reasoning_content should survive decoding as a Thinking block"
+        );
+        assert!(matches!(resp.message.content[0], Block::Thinking { .. }));
+
+        // But it is NOT an answer. `text()` is what the loop reads, and it must
+        // stay empty or a reasoning-only turn ends the run with nothing said.
+        assert_eq!(
+            resp.message.text(),
+            "",
+            "reasoning_content must never silently become the answer"
+        );
+        assert!(resp.message.tool_uses().is_empty());
+        assert!(!produced_output(&resp.message.content));
+
+        // Still the shape the diagnostic exists for, and still reported.
+        let d = dropped_reasoning(
+            produced_output(&resp.message.content),
+            "I should read the file first.\n<tool_call>",
+        )
+        .expect("this is the shape the diagnostic exists for");
+        assert!(d.looks_like_tool_call);
+    }
+
+    #[test]
+    fn streamed_reasoning_arrives_as_thinking_and_never_as_answer_text() {
+        // Same rule on the streaming path, which had the same blind spot. The
+        // reasoning reaches the front-end as ThinkingDelta — the event
+        // anthropic.rs has always sent and this dialect never did — and still
+        // never counts as the answer.
+        let (tx, mut rx) = sink();
+        let mut acc = Accumulator::default();
+        acc.push(&chunk(json!({"reasoning_content": "thinking "})), &tx);
+        acc.push(&chunk(json!({"reasoning_content": "hard"})), &tx);
+        acc.push(
+            &json!({"choices": [{"index": 0, "finish_reason": "stop", "delta": {}}]}),
+            &tx,
+        );
+
+        // Asserted before `finish` consumes it, and asserted at all because
+        // the rest of this test is about absence: without this, deleting the
+        // accumulation entirely would leave every assertion below still true.
+        assert_eq!(
+            acc.reasoning, "thinking hard",
+            "deltas must accumulate, or the diagnostic has nothing to report"
+        );
+
+        let resp = acc.finish();
+        assert_eq!(resp.stop_reason, StopReason::EndTurn);
+        assert_eq!(
+            resp.message.text(),
+            "",
+            "a reasoning-only stream produced no answer"
+        );
+        assert!(
+            !produced_output(&resp.message.content),
+            "and must still be nudged rather than ending the run"
+        );
+
+        // The deltas went out as thinking, never as text.
+        rx.close();
+        let mut events = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+        let thinking: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ThinkingDelta(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thinking, vec!["thinking ", "hard"]);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::TextDelta(_))),
+            "reasoning must not be emitted as a TextDelta"
+        );
     }
 
     fn call_delta(index: u64, id: Option<&str>, name: Option<&str>, args: &str) -> Value {

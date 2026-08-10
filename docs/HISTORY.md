@@ -870,6 +870,51 @@ effect, which is recorded in the handoff as a decision somebody still owes.
 the same surface as `chat` — the token argument that justified narrowing it was
 real, and stopped mattering when the window grew eightfold.
 
+**2026-08-10 (evening) — the empty turns were half ours, and the model gets
+its reasoning back.** `v0.1.2`. The Terminal-Bench subset was relaunched at
+the 262k window with `max_turns` 80 and a 2.0x agent-timeout multiplier; 27 of
+75 trials in, it had 12 passes, five agent-timeouts and one trial lost to a
+crash that turned out to be a bug worth the whole run. Reading that crash
+opened the day's real finding.
+
+`reasoning_content` appeared nowhere in the tree. A local reasoning model's
+entire think channel was being discarded on every turn — invisible in the TUI,
+absent from every transcript, and unavailable to the diagnosis that had been
+chasing "empty turns" since 2026-08-07. Replaying the exact prefixes that went
+quiet reproduced one, and its reasoning held a complete, unparsed tool call;
+in a second case, 120 characters that were *only* a tool call with no
+deliberation at all. The model emits its call before closing `</think>`, so
+llama.cpp files the whole turn as reasoning and reports a clean stop
+(ggml-org/llama.cpp #20837, #22684, #20809 — all unfixed, same failure
+reported against ollama). Which killed the standing explanation: 120
+characters is nowhere near any limit, so `--reasoning-budget`, `max_tokens`
+and the window were never relevant, and every mitigation aimed at "the model
+reasons too long" had been aimed at the wrong failure for three days.
+
+Then the half that was ours. Because the history sent back stripped every
+`<think>` block, the model was shown turn after turn of itself apparently
+calling tools without thinking, and it obliged. Same server, same template,
+same prompt, varying only whether the history carried reasoning: **6 of 6
+empty turns without it, 0 of 6 with it**, p ~= 0.001 on a reproducer that
+fails byte-identically. A third-party replacement chat template fixes it too
+(6/6 to 0/6) but only by *instructing* the model, and only for Qwen; the
+history fix addresses the cause and names no vendor anywhere.
+
+So reasoning now decodes to a `Block::Thinking`, streams as `ThinkingDelta`,
+rides back to the provider on the next request, and is recorded — with the
+full trace of an empty turn going to the debug log, since such a turn reaches
+no transcript. Preserving all of it is affordable because the prefix cache
+absorbs it: measured, 5,000-token prompts prefill 16-211 tokens, better than
+95% reuse. That reuse had been invisible because `decode_usage` never read
+`prompt_tokens_details.cached_tokens`, which is now read and — the part that
+matters — *subtracted* from `input_tokens`, because `total_input` sums the
+tiers and the compaction threshold reads the sum.
+
+The crash that started it was its own bug: `pytorch-model-recovery` describes
+itself as a bulleted list, so its instruction opens with `- `, clap read it as
+a flag, and the run exited 2 before starting — which Harbor scores 0.0,
+indistinguishable from a model that tried and failed.
+
 ---
 
 ## The measurement record
@@ -1055,6 +1100,17 @@ matters is the general shape.
   hand-listed negation phrasings. The negation phrasing space has no bottom —
   that case is judge-only now. Reach for `expect.judge` when you catch yourself
   enumerating synonyms.
+- **Quoting a string is not the same as protecting it.** The benchmark adapter
+  `shlex.quote`d each task instruction, which is the correct reflex for
+  untrusted text on a command line and did nothing here: quoting guarantees the
+  text becomes one argv *entry*, and the problem was that entry's first
+  character. `terminal-bench/pytorch-model-recovery` opens with `- ` because
+  its description is a bulleted list, clap read a flag, and the run exited 2
+  before starting — scored 0.0 and indistinguishable from a model that tried.
+  Pass `--` before any positional you did not write. Note the general shape,
+  which this project keeps meeting: **a harness fault that produces a
+  plausible-looking score is worse than one that crashes**, because nothing
+  ever asks about it.
 - **The transcript you are reading may not be the run that happened.** A
   28-turn benchmark trial's session file held 8 assistant messages starting
   mid-conversation — recording sliced "what the run added" off a list
@@ -1184,6 +1240,37 @@ All found by pre-push review or by running it.
   session now.
 
 ### Providers
+
+- **A field you never read is a behaviour you never had.** The whole
+  reasoning channel of every local model was discarded because
+  `reasoning_content` appeared nowhere in the tree, and nothing failed: the
+  turns still worked, the tests still passed, and the only symptom was
+  "sometimes the model returns nothing" — which acquired a plausible causal
+  story ("it reasons without terminating") that survived three days and drove
+  three mitigations, none of which touched the cause. **When a symptom has an
+  explanation nobody has measured, the first move is to record what actually
+  arrived, not to mitigate.** The instrument was twenty lines and it inverted
+  the diagnosis on its first firing.
+
+- **The harness can be the thing teaching the model to misbehave.** Stripping
+  reasoning out of the history meant every prior assistant turn showed the
+  model calling tools with no think block — and the failure being chased was
+  the model emitting a tool call with no think block. Measured at 6/6 versus
+  0/6 on the same prefix. A conversation is not just what you send *this*
+  turn; it is the in-context demonstration of what a turn looks like, and a
+  harness that edits it is authoring that demonstration whether it means to or
+  not. Corollary: `anthropic.rs` had replayed thinking correctly all along, so
+  the asymmetry between two backends of the same codebase was visible evidence
+  and nobody had read it as such.
+
+- **Two dialects can disagree about what a number contains.** Anthropic reports
+  `input_tokens` *beside* the cache tiers; OpenAI reports `prompt_tokens` with
+  `cached_tokens` already *inside* it. `Usage::total_input` sums all three, and
+  the compaction threshold reads that sum — so mapping the field across without
+  subtracting would have reported every prompt at nearly twice its size and
+  started summarising long runs at half the window they had. **A field with the
+  same meaning in two APIs may not have the same arithmetic**, and the failure
+  would have looked like working.
 
 - **A guessed wire format has tests that agree with it.** Slack's
   `task_update` chunk was implemented from a plausible shape — nested under a
