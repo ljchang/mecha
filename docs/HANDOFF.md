@@ -796,8 +796,19 @@ The arc is complete and running nightly. What is missing is refinement:
   the dash-prompt crash, ~930 output tokens per turn. Do not treat it as a
   baseline — three known defects are baked into it (stripped reasoning causing
   empty turns, the argv crash, and a timeout tail), and the reasoning fix
-  changes per-turn context. The relaunch runs on **v0.1.2**; record its job
-  directory here when it finishes. The 2026-08-07 fragment was separately
+  changes per-turn context. Its artifacts are kept at
+  `.claude/worktrees/bench-run-262k/jobs/` — that checkout exists only to hold
+  them, because those transcripts are the evidence the 0.1.2 diagnosis rests
+  on and benchmark artifacts are gitignored.
+  **The relaunch is `mecha-arm64-subset-2026-08-10__14-15-05`**, launched
+  14:15 from `.claude/worktrees/bench-run-v012` (detached at `v0.1.2`), same
+  parameters, `check-subset.py` green on exactly the 75. Judge it on four
+  falsifiable things rather than on the score, none of which need the old run
+  as a baseline: empty-turn nudges should approach zero (`grep "turn produced
+  no content"` across the trials' `stderr.log`), the dash-prompt crash should
+  not recur, the timeout tail should shrink from 5-in-28, and **compaction
+  counts should not jump** — that last one is what settles whether replayed
+  reasoning stays unbounded. The 2026-08-07 fragment was separately
   **diagnosed trial by trial** (2026-08-09 — the write-up is in
   `docs/BENCHMARK-RESEARCH.md`, "The 2026-08-07 subset run, diagnosed"): of
   13 failures, 5 were the model and 8 involved harness defects, all five of
