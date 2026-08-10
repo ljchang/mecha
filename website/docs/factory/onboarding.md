@@ -16,9 +16,12 @@ The whole sequence is a few minutes and happens once per machine.
 ## 1. Claim a handle
 
 An account starts from an **invite**. Open the signup page the invite points at,
-choose a handle, and confirm the address — the handle is what your artifacts are
-served under (`https://<handle>.art.mecha-factory.ai/…`), so it is worth a
-moment's thought and it is not casually changed afterwards.
+choose a handle, and confirm the address — the handle names you in both of the
+URLs an artifact gets, the bytes on their own origin
+(`https://<handle>.art.mecha-factory.ai/…`) and the page you send a person
+(`https://gate.mecha-factory.ai/view/<handle>/…`; see
+[Artifacts](/docs/factory/artifacts#two-urls-and-which-one-to-send)). So it is
+worth a moment's thought, and it is not casually changed afterwards.
 
 What you get back is a **pairing code**. It is short-lived and single-use, and it
 is the only thing that crosses from the browser to your terminal.
