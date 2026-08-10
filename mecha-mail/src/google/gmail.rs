@@ -1,8 +1,7 @@
-//! The Gmail client, extracted from flowmail's `email/gmail.rs` and trimmed
-//! to what an agent doing on-demand work needs: search, thread reads, and
-//! send. The history/sync machinery, spam/trash/archive ops, and the local
-//! cache stayed behind — `threads.get` (which flowmail reconstructed from
-//! SQL) is the one addition.
+//! The Gmail client, scoped to what an agent doing on-demand work needs:
+//! search, thread reads, and send. There is deliberately no history/sync
+//! machinery, no spam/trash/archive ops, and no local cache; `threads.get`
+//! fetches a conversation directly instead.
 
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 use serde_json::Value;
@@ -127,8 +126,8 @@ impl GmailProvider {
         Ok(self.get_messages_concurrently(&message_ids).await)
     }
 
-    /// Fetch a whole conversation in one round trip — the payload flowmail
-    /// reconstructed from its SQL cache.
+    /// Fetch a whole conversation in one round trip, rather than
+    /// reassembling it from per-message reads.
     pub async fn get_thread(&self, thread_id: &str) -> Result<Vec<Email>, MailError> {
         let json = self
             .get_json(&format!(

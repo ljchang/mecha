@@ -1,4 +1,4 @@
-//! `mecha-core` — a standalone agent harness.
+//! `mecha-core` — an agent harness for local models.
 //!
 //! The library knows nothing about any particular CLI, UI, or project. It gives
 //! you four things and lets you wire them together:

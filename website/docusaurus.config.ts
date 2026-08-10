@@ -4,7 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'mecha',
-  tagline: 'A standalone agent harness — extracted so it can be reused, not rewritten',
+  tagline: 'Give a local open-weight model your context, your permissions, and a safe way to reach the world',
   // The .ico rather than the .svg: it is what a bare request for /favicon.ico
   // gets, and that request happens whether or not the <link> below is honoured.
   // Both are generated from brand/favicon.svg by scripts/build-brand-assets.py.

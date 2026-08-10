@@ -1,7 +1,7 @@
-//! The token lifecycle — the piece flowmail never had in Rust (its storage,
-//! refresh, and retry-on-401 all lived in the JS frontend). One JSON file,
-//! mode 0600, and a manager that refreshes ahead of expiry and persists
-//! rotated tokens atomically.
+//! The token lifecycle, kept in the library rather than in whatever calls it:
+//! storage, refresh, and retry-on-401 all live here. One JSON file, mode
+//! 0600, and a manager that refreshes ahead of expiry and persists rotated
+//! tokens atomically.
 
 use std::path::{Path, PathBuf};
 

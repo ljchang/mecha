@@ -20,6 +20,9 @@ mecha frontdoor list --state extraction_failed
 mecha frontdoor show 42            # the full request, including what a stranger wrote
 mecha frontdoor extract            # run the quarantined pass over anything new
 mecha frontdoor next --limit 5     # what a triage run may be told, as JSON
+mecha frontdoor triage --limit 5   # draft a reply to each extracted request
+mecha frontdoor needs-info 42 --note "which week?"
+mecha frontdoor close 42 --reason "answered in person"
 ```
 
 ## Why a quarantine
@@ -44,7 +47,7 @@ So the shape is CaMeL's dual-LLM split, at a size where it is cheap:
   free text ────────┴──▶ shown to you, never to the privileged pass
 ```
 
-## The three verbs, and the split between them
+## The verbs, and the split between them
 
 - **`list` and `show` are for you.** `show` prints the prose, because a person
   reading a stranger's request in a terminal is the safe context: you cannot be
@@ -59,6 +62,51 @@ So the shape is CaMeL's dual-LLM split, at a size where it is cheap:
 Draining is deliberately *not* here. `mecha-factory-publish drain` speaks the
 protocol and holds the key, and the common case — nothing new — has to cost
 zero tokens and no model at all.
+
+## And a request has to be able to reach an answer
+
+Otherwise the queue only grows, which is the failure this component exists to
+fix. Three verbs end one:
+
+- **`triage` is the privileged half.** A full agent, with mail and calendar,
+  told only what `next` would print, ending in outbox drafts and never in mail
+  in flight. Each request gets its own conversation, so prose flagged as reading
+  like instructions cannot arm the [interlock](/docs/features/security) for the
+  request behind it.
+
+  **It refuses to run without the outbox route**, rather than running unrouted:
+  without it a `mail_send` the model makes actually sends, and a stranger's
+  inbox is not where you want to discover that `[outbox] tools` was unset.
+- **`needs-info` parks a request** until the requester answers something.
+  `--note` records what is missing, and it replaces the previous note even when
+  absent — a stale explanation attached to a new state reads as an explanation
+  of that state.
+- **`close` ends one, and `--reason` is required.** Not optional: silence is
+  precisely the failure mode this component exists to fix, and a request that
+  went away without a recorded reason is indistinguishable from one that was
+  dropped.
+
+The join between a request and its drafts needed no building. A staged outbox
+item already records the session that drafted it, so a triage run with its own
+session is enough to say which drafts belong to which request. `reconcile` reads
+the outbox and updates the request store, and it runs on `list` and `next` on
+its own rather than on a verb you have to remember: a state that is only correct
+after someone runs a command is a state nobody can trust. The outbox has still
+never heard of a request, and `mecha outbox send` — another process, hours
+later — closes the loop without knowing it is doing so.
+
+Three decisions there:
+
+- **A rejected draft returns the request to `extracted`, never to `closed`.**
+  "Not this reply" is not "not this request", and a request closed because its
+  first draft was wrong is exactly the silence this exists to fix. The rejection
+  reason rides along, and the request becomes a triage candidate again.
+- **A partly-resolved set is left alone.** Some sent and some pending is a
+  person mid-review, not a state to settle on their behalf. So is a request
+  whose drafts have been swept: unknown stays unknown and waits for a person.
+- **Reconciliation is best-effort.** No outbox is a perfectly ordinary machine,
+  and a `list` that refuses to print because a cross-check store is absent would
+  be worse than one printing slightly stale states.
 
 ## Five decisions, each a bug if undone
 
@@ -91,9 +139,18 @@ the one call in the system whose output is trusted downstream by construction.
 
 ```text
 drained ──▶ extracted ──▶ triaged ──▶ awaiting_me ──▶ answered
+   │         ▲                             │
+   │         └───── every draft rejected ──┘
    │
-   └──▶ extraction_failed          (at any point; routes to a human)
+   ├──▶ extraction_failed     (at any point; routes to a human)
+   └──▶ needs_info            (parked until the requester answers)
+
+  any state ──▶ closed        (always with a reason)
 ```
+
+`triage` moves a request to `triaged`, and `awaiting_me` is where it sits while
+its drafts wait in the outbox. Releasing one gets `answered`; rejecting all of
+them gets `extracted` again, with the rejection reason attached.
 
 A record that did not validate against the manifest at drain time is never
 extracted and never reaches a run.

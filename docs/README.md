@@ -14,6 +14,7 @@ belonged in three other places.
 | [`AGENTS.md`](../AGENTS.md) | Orientation for an AI agent working here; points at CLAUDE.md rather than restating it | present | rarely |
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Build, test, review expectations | present | rarely |
 | [`SECURITY.md`](../SECURITY.md) | Reporting a vulnerability; the threat model and accepted limitations | present | rarely |
+| [`OPERATIONS.md`](OPERATIONS.md) | This deployment's specifics — hosts, keys, mailboxes, timers. **Gitignored**; the transferable lesson goes in `HISTORY.md` instead | present | with the machines |
 | [`HANDOFF.md`](HANDOFF.md) | Current state and **only the open work** | present | **only with open work — completed items leave** |
 | [`HISTORY.md`](HISTORY.md) | What shipped and when; what was learned the hard way | past | append-only |
 | `*-RESEARCH.md` | One question, researched once, with evidence and a date | past | one per question |
@@ -131,6 +132,16 @@ Explain what a thing does *and* why it is that way — the rationale is what
 makes the reference usable. Keep it accurate over complete: the reference
 pages are verified against the binary's own `--help` and against
 `ConfigLayer`, and they should stay that way.
+
+**The overview layer is a separate job from the feature pages, and it rots
+differently.** `intro.md` and `principles.md` answer *what this is for* and
+*what rules it keeps*; the feature pages answer *how one subsystem works*.
+Writing a good page for a new subsystem does not update the overview, so the
+overview drifts by omission rather than by becoming wrong — which is exactly
+what happened by 2026-08-10, when the whole site described a reusable harness
+library and no page anywhere said the project exists to make a local
+open-weight model into a personal assistant. When a feature changes what mecha
+is *for*, the overview is part of the change.
 
 ## Facts that go stale
 

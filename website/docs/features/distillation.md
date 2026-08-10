@@ -86,7 +86,7 @@ The read-back marking is one line of config, and it only ever widens — a
 ```toml
 [[mcp]]
 name = "pkg"
-command = "~/Github/personalized_knowledge_graph/target/release/pkg-mcp"
+command = "pkg-mcp"                    # or an absolute path to the binary
 
 [mcp.capabilities]
 untrusted_input = true

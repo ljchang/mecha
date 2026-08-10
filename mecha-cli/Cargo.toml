@@ -1,6 +1,6 @@
 [package]
 name = "mecha-cli"
-description = "The mecha CLI: a standalone agent harness."
+description = "The mecha CLI: an agent harness for local models."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

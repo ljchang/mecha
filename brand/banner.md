@@ -12,7 +12,7 @@
 
 <h1>mecha</h1>
 
-One loop, any model, native and MCP tools. Extracted so it can be reused, not rewritten.
+Give a local open-weight model your context, your permissions, and a safe way to reach the world.
 
 <!-- Or set the block mark in a fence, which needs no image and no theme
      handling at all — it inherits whatever colour the surrounding text has.

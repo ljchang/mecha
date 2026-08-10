@@ -33,7 +33,7 @@ function HomepageHeader() {
           {siteConfig.title}
         </Heading>
         <p className={clsx('hero__subtitle', styles.kicker)}>
-          AGENT HARNESS · RUST · MIT
+          LOCAL-FIRST AGENT HARNESS · RUST · MIT
         </p>
         <p className="hero__subtitle">{siteConfig.tagline}</p>
         <div className={styles.buttons}>
@@ -74,23 +74,29 @@ function Sample() {
               {`mecha tools                     # no provider needed: lists the surface
 mecha run "summarise the notes directory"
 mecha tui                       # full screen; steer a run in flight
-mecha trigger add briefing --cron "0 7 * * *" \\
+mecha trigger add briefing --schedule "0 7 * * 1-5" \\
   --prompt "What is on my calendar today?"`}
             </CodeBlock>
           </div>
           <div className="col col--6">
-            <Heading as="h2">Embed it</Heading>
+            <Heading as="h2">Connect it</Heading>
             <p>
-              <code>mecha-core</code> is a plain Rust library. Implement{' '}
-              <code>Tool</code> to add a tool, <code>Provider</code> to add a
-              backend, <code>Approver</code> to decide what needs permission.
+              An assistant is only as good as what it knows about you. Personal
+              context arrives over MCP, so adding a source is configuration
+              rather than a code change — and <code>[outbox]</code> means the
+              ones that can send stage drafts for you instead.
             </p>
             <CodeBlock language="toml">
-              {`[dependencies]
-mecha-core = { git = "https://github.com/ljchang/mecha" }
+              {`[[mcp]]
+name = "mail"          # every account behind one surface
+command = "mecha-mail"
 
-# The loop never learns which provider is behind it,
-# or where a tool came from. Both are trait objects.`}
+[[mcp]]
+name = "pkg"           # who people are, and what happened when
+command = "pkg-mcp"
+
+[outbox]               # staged for review, never sent outright
+tools = ["mail__mail_send", "mail__mail_reply"]`}
             </CodeBlock>
           </div>
         </div>
@@ -103,7 +109,7 @@ export default function Home(): ReactNode {
   const {siteConfig} = useDocusaurusContext();
   return (
     <Layout
-      title="A standalone agent harness"
+      title="An agent harness for local models"
       description={siteConfig.tagline as string}>
       <HomepageHeader />
       <main>

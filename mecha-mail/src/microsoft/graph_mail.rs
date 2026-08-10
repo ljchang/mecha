@@ -1,13 +1,13 @@
-//! Outlook mail over Microsoft Graph, extracted from flowmail's
-//! `email/outlook.rs` — with four things fixed rather than ported:
+//! Outlook mail over Microsoft Graph. Four rules here, each one a bug if
+//! undone:
 //!
-//! 1. **Replies go through `POST /messages/{id}/reply`.** flowmail hand-injects
-//!    `In-Reply-To`/`References` via `internetMessageHeaders`; those names are
-//!    on Graph's reserved list and may be silently dropped, landing replies as
-//!    new conversations. `/reply` makes Graph set the headers and
-//!    `conversationId` itself.
-//! 2. **`to` is split on commas** — flowmail split cc and bcc but not to, so a
-//!    multi-recipient To became one malformed address.
+//! 1. **Replies go through `POST /messages/{id}/reply`.** Hand-injecting
+//!    `In-Reply-To`/`References` via `internetMessageHeaders` does not work:
+//!    those names are on Graph's reserved list and may be silently dropped,
+//!    landing replies as new conversations. `/reply` makes Graph set the
+//!    headers and `conversationId` itself.
+//! 2. **`to` is split on commas**, exactly as cc and bcc are — otherwise a
+//!    multi-recipient To becomes one malformed address.
 //! 3. **`$search` for free text, `$filter` for structured**, never `$orderby`
 //!    alongside an arbitrary `$filter` (that combination 400s with
 //!    `InefficientFilter`).
@@ -191,8 +191,7 @@ impl OutlookProvider {
     /// profile, and asking for a scope you do not need is a consent prompt
     /// (and, in a managed tenant, possibly an admin approval) bought for
     /// nothing. So try it, and fall back to reading the From address off a
-    /// message in Sent Items, which `Mail.Read` already covers. flowmail
-    /// reached the same conclusion by the same route.
+    /// message in Sent Items, which `Mail.Read` already covers.
     pub async fn profile_address(&self) -> Result<String, MailError> {
         if let Ok(json) = self
             .get_json(&format!("{GRAPH}/me?$select=mail,userPrincipalName"))
@@ -236,8 +235,8 @@ impl OutlookProvider {
     }
 }
 
-/// Split a comma-separated address list into Graph recipient objects.
-/// flowmail did this for cc and bcc but not `to`.
+/// Split a comma-separated address list into Graph recipient objects. Every
+/// recipient field goes through this — `to` as much as cc and bcc.
 fn recipients(list: &str) -> Vec<Value> {
     list.split(',')
         .map(str::trim)
@@ -334,7 +333,11 @@ mod tests {
     #[test]
     fn every_recipient_field_splits_on_commas() {
         let r = recipients("a@x.com, b@y.com ,c@z.com");
-        assert_eq!(r.len(), 3, "flowmail's bug: `to` was sent as one address");
+        assert_eq!(
+            r.len(),
+            3,
+            "`to` must split on commas, not be sent as one address"
+        );
         assert_eq!(r[1]["emailAddress"]["address"], "b@y.com");
         assert!(recipients("").is_empty());
     }

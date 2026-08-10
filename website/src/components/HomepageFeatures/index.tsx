@@ -12,60 +12,59 @@ type FeatureItem = {
 
 const FeatureList: FeatureItem[] = [
   {
-    title: 'One loop, any backend',
+    title: 'Your model, on your machine',
     to: '/docs/features/providers',
     description: (
       <>
-        Anthropic over raw HTTP, or anything OpenAI-compatible — llama-server,
-        vLLM, Ollama. Transient failures are classified and retried; a retry
-        never duplicates work already shown or acted on.
+        Built for local open-weight models first — llama-server, vLLM, Ollama —
+        with Anthropic there when you want a ceiling to measure against. Your
+        mail and your calendar never have to leave the house to be useful.
       </>
     ),
   },
   {
-    title: 'Injection resistance, enforced structurally',
+    title: 'Your context, connected',
+    to: '/docs/features/mail',
+    description: (
+      <>
+        Mail and calendar behind one surface, a personalized knowledge graph for
+        who people are and what happened when, and anything else you can expose
+        over MCP. An assistant is only as good as what it knows about you.
+      </>
+    ),
+  },
+  {
+    title: 'Built for the lethal trifecta',
     to: '/docs/features/security',
     description: (
       <>
-        Tools declare capabilities, and the loop refuses to send anything
-        outward once private and untrusted data are both in the conversation.
-        It sits ahead of the human approver, because a person clicking yes is
-        what an injection is trying to engineer.
+        A personal assistant holds private data, reads other people&apos;s words,
+        and can send — all three, by definition. So the interlock is structural:
+        tools declare capabilities, the conversation carries the taint, and a
+        send is refused before the human is ever asked.
       </>
     ),
   },
   {
-    title: 'A path jail, not a prompt',
-    to: '/docs/features/sandbox',
+    title: 'Nothing leaves without you',
+    to: '/docs/features/outbox',
     description: (
       <>
-        Every model-supplied path is canonicalized and proven to be inside the
-        workspace before any filesystem call. Confinement for <code>shell</code>{' '}
-        comes from bubblewrap or docker, and a sandbox that does not work stops
-        the run rather than falling back.
+        Name a tool in the outbox and its calls are staged as drafts instead of
+        executed. Overnight inbox triage leaves you a review queue rather than
+        sent mail — and it needs no write permission at all, because staging
+        executes nothing.
       </>
     ),
   },
   {
-    title: 'Tools, subagents, and MCP',
-    to: '/docs/features/tools-and-mcp',
+    title: 'A public surface, both directions',
+    to: '/docs/factory/overview',
     description: (
       <>
-        Built-in file and shell tools, plus any MCP server over stdio. Servers
-        get a cleared environment and a named allowlist, so a third-party server
-        cannot quietly read your provider keys.
-      </>
-    ),
-  },
-  {
-    title: 'Rules that keep earning their seat',
-    to: '/docs/features/learning',
-    description: (
-      <>
-        mecha mines the moments you stepped in and consolidates them into rules.
-        A validation ledger measures each one, and a rule that accumulates
-        attributed regressions is proposed for retirement — measured harm, not a
-        model&apos;s opinion.
+        What the agent makes becomes a durable, versioned URL. What people need
+        from you arrives as a typed request rather than free-form prose, so a
+        stranger&apos;s words never reach a privileged run.
       </>
     ),
   },

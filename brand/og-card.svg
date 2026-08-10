@@ -17,9 +17,9 @@
   <path d="M14 39v15h13.24zM49 39v15H35.76z"></path>
   <path d="M21 24h21v7H21z"></path>
   </g>
-  <text x="96" y="330" font-family="&#39;JetBrains Mono&#39;, ui-monospace, monospace" font-size="19" letter-spacing="3.4" fill="#e8a24a">AGENT HARNESS · RUST · MIT</text>
-  <text x="96" y="404" font-family="Inter, system-ui, sans-serif" font-size="60" font-weight="500" letter-spacing="-1.8" fill="#e9e9ed">One loop, any model,</text>
-  <text x="96" y="474" font-family="Inter, system-ui, sans-serif" font-size="60" font-weight="500" letter-spacing="-1.8" fill="#e9e9ed">native and MCP tools</text>
-  <text x="96" y="534" font-family="Inter, system-ui, sans-serif" font-size="24" fill="#9a9aa8">Extracted so it can be reused, not rewritten.</text>
+  <text x="96" y="330" font-family="&#39;JetBrains Mono&#39;, ui-monospace, monospace" font-size="19" letter-spacing="3.4" fill="#e8a24a">LOCAL-FIRST AGENT HARNESS · RUST · MIT</text>
+  <text x="96" y="404" font-family="Inter, system-ui, sans-serif" font-size="60" font-weight="500" letter-spacing="-1.8" fill="#e9e9ed">Your context, your</text>
+  <text x="96" y="474" font-family="Inter, system-ui, sans-serif" font-size="60" font-weight="500" letter-spacing="-1.8" fill="#e9e9ed">permissions, your model</text>
+  <text x="96" y="534" font-family="Inter, system-ui, sans-serif" font-size="24" fill="#9a9aa8">An agent harness for local open-weight models.</text>
   <rect x="96" y="562" width="132" height="2" fill="#e8a24a"></rect>
 </svg>

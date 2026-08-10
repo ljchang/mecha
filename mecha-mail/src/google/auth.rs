@@ -1,12 +1,13 @@
 //! Google OAuth for a desktop client: PKCE, a loopback listener for the
 //! redirect, code exchange, and refresh.
 //!
-//! Extracted from flowmail (`src-tauri/src/email/auth.rs`), trimmed to Gmail:
-//! the Microsoft/Outlook config and its AADSTS error translation stayed
-//! behind. Two deliberate changes: the loopback port is a parameter (flowmail
-//! hardcoded 8923; we default to 8924 so both apps can run their flows on one
-//! machine), and the scope list drops `gmail.modify` — nothing here modifies
-//! messages, and least-privilege beats saving a future consent click.
+//! Scoped to Gmail: the Microsoft/Outlook config and its AADSTS error
+//! translation live under [`crate::microsoft`] instead. Two deliberate
+//! choices: the loopback port is a parameter rather than a hardcoded
+//! constant, so another desktop OAuth client on the same machine can hold
+//! its own port and both flows can run; and the scope list drops
+//! `gmail.modify` — nothing here modifies messages, and least-privilege
+//! beats saving a future consent click.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::Rng;
@@ -16,8 +17,9 @@ use sha2::{Digest, Sha256};
 use crate::types::MailError;
 
 /// The loopback port mecha-google listens on for the OAuth redirect. Google
-/// Desktop-type clients accept any loopback port; this one just needs to not
-/// collide with flowmail's 8923.
+/// Desktop-type clients accept any loopback port; this one just needs to be
+/// unlikely to collide with another desktop OAuth client's listener on the
+/// same machine.
 pub const DEFAULT_REDIRECT_PORT: u16 = 8924;
 
 #[derive(Debug, Clone)]
@@ -202,8 +204,8 @@ fn extract_token_error_description(body: &str) -> String {
 
 /// Start a temporary localhost HTTP server to capture the OAuth redirect.
 /// Returns the authorization code and state from the callback query params.
-/// Times out after 120 seconds — a human is reading a consent screen, and
-/// flowmail's 30s regularly lost the race to a careful reader.
+/// Times out after 120 seconds — a human is reading a consent screen, and a
+/// 30s window regularly loses the race to a careful reader.
 pub async fn wait_for_oauth_redirect(port: u16) -> Result<(String, String), MailError> {
     let addr = format!("127.0.0.1:{port}");
     let server = tiny_http::Server::http(&addr).map_err(|e| MailError::AuthError(e.to_string()))?;

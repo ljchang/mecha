@@ -1,14 +1,15 @@
 //! Microsoft Entra OAuth for a CLI.
 //!
 //! **Device code, not loopback.** The user's org has already approved one app
-//! registration, and its only redirect URI is flowmail's
-//! `http://localhost:8923/callback`. Device code needs *no* redirect URI, so
+//! registration, whose only redirect URI is another desktop client's loopback
+//! callback (`http://localhost:8923/callback`). Device code needs *no*
+//! redirect URI, so
 //! this reuses the approved registration without touching it — and it needs
 //! no port forwarding when you are working over SSH, which the loopback flow
 //! does. The tradeoff is that some tenants block device code by Conditional
 //! Access; [`super::auth`] keeps the loopback path available for that case.
 //!
-//! **No client secret, ever.** flowmail's Outlook flow is a public client:
+//! **No client secret, ever.** This Outlook flow is a public client:
 //! Entra binds the refresh credential to the auth method that minted it, so
 //! sending a `client_secret` after a PKCE- or device-code-minted token is
 //! rejected with `AADSTS7000215` even when the secret is correct.
@@ -21,8 +22,9 @@ use crate::google::auth::OAuthTokens;
 use crate::types::MailError;
 
 /// Graph scopes. `offline_access` is what yields a refresh token; the rest
-/// mirror flowmail's, minus `Mail.ReadWrite` — nothing here modifies a
-/// message in place, and least privilege beats a future consent click.
+/// are the least that read, send and calendar work need. `Mail.ReadWrite` is
+/// deliberately absent — nothing here modifies a message in place, and least
+/// privilege beats a future consent click.
 pub const SCOPES: &[&str] = &[
     "https://graph.microsoft.com/Mail.Read",
     "https://graph.microsoft.com/Mail.Send",
@@ -260,8 +262,7 @@ pub async fn device_flow(
 }
 
 /// Translate the AADSTS codes that actually block people into instructions,
-/// keeping the raw text so nothing is lost. Ported from flowmail, with the
-/// codes a CLI hits added.
+/// keeping the raw text so nothing is lost. Covers the codes a CLI hits.
 pub fn humanize_aadsts(description: &str) -> String {
     let code = description
         .split(|c: char| !c.is_ascii_alphanumeric())

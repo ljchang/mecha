@@ -1,7 +1,7 @@
-//! Shared types, extracted from flowmail's `email/types.rs` and trimmed: the
-//! `Email` struct keeps the fields that describe a mail message and drops the
-//! ~25 flowmail product fields (`ai_priority`, `card_id`, …) that describe
-//! flowmail's opinions about one.
+//! Shared types, deliberately narrow: the `Email` struct keeps the fields
+//! that describe a mail message and holds no product-level fields
+//! (`ai_priority`, `card_id`, …) — those describe an application's opinions
+//! about a message, not the message, and belong to whatever holds them.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

@@ -40,6 +40,16 @@ hooks to execute and tools to enable. That is a reasonable bargain for someone
 who just decided to work in that repository, and no bargain at all for a
 scheduled run firing at 03:00 with nobody watching.
 
+Two tables are stripped out of a project layer for the same reason, wherever the
+run happens: `[messages]` and `[slack]`. `[messages]` is receiver-side admission
+policy, so a cloned repository must not be able to set `inbound = "accept"` on
+your sessions; `[slack]` is the remote control, and a repository that could name
+a Slack owner would have been handed it. The strip is loud rather than silent — a
+project file naming either logs a warning saying the section is ignored, because
+an ignored section that looks applied is the silently-degrading-sandbox shape.
+A global `[messages]` or `[slack]` is kept, of course; there is a test on each
+side of that boundary.
+
 ## Top level
 
 | Key | Type | Default | Description |
@@ -156,8 +166,13 @@ a year. An unparseable name logs a warning and falls back to the machine's zone.
 | `shell_timeout_secs` | integer | `120` | Wall-clock ceiling on one `shell` call. |
 | `output_budget_bytes` | integer | derived | Byte budget one turn's tool results share, divided across the batch. Unset, it derives from the provider's `context_window` — an eighth of the window in tokens at ~3 bytes each, clamped to [6000, 24000] (so 12288 at a 32k window, 24000 when the window is wide or unknown). Set it to pin a value. |
 
-The built-in tools are `fs_read`, `fs_write`, `fs_edit`, `fs_list`, `shell` and
-`http_fetch`. `web_search` is registered when `[[search]]` names at least one backend.
+The built-in tools are `fs_read`, `fs_write`, `fs_edit`, `fs_list`, `shell`,
+`http_fetch` and `todo` — those are the names `enabled` and `disabled` filter.
+Three more are registered from outside that list and are not filtered by it:
+`web_search`, when `[[search]]` names at least one backend; `ask_user`, added by
+a front-end that owns a human, so an unattended run never has it; and
+`message_send`, added when `[messages] enabled` is on and `--no-messages` was
+not passed.
 
 `permission_mode` values:
 
@@ -250,6 +265,75 @@ conservative default. See [Publishing](/docs/features/publishing).
 run's path jail. Entries are counted, not files — a rendered bundle is a directory
 and counts as one. `clean` never removes anything a published bundle names as a
 source. See [The work directory](/docs/features/work).
+
+## `[messages]`
+
+Messages between this machine's own mecha sessions — a trigger telling `chat`
+what it found overnight, a chat asking a long-running job for a status. **Global
+file only**: a project layer naming this table is stripped, loudly.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Register `message_send` and deliver inbound messages into runs. |
+| `dir` | path | `~/.mecha/messages` | Where messages live. Overridden by `$MECHA_MESSAGES_DIR`. |
+| `inbound` | string | unset | `accept` folds messages in at turn boundaries; `hold` leaves them for `mecha msg`. |
+| `pending_cap` | integer | `50` | Pending messages one recipient may hold before senders are refused. |
+| `max_body_bytes` | integer | `65536` | Largest message body, in bytes. |
+| `keep` | integer | `100` | Resolved messages kept per recipient before the oldest are pruned. |
+
+Off by default, like outbox routing: a mailbox is a policy decision. `mecha msg`
+reads and writes the store either way, because "what did the overnight run tell
+me" must not depend on a feature flag.
+
+`inbound` unset resolves per surface rather than to a fixed value: an attended
+front-end holds, and an unattended run accepts. That is the right default in
+both directions — a person at a keyboard can read the backlog when they choose,
+and a 03:00 trigger has nobody to read it for them.
+
+`inbound = "refuse"` parses but is **not implemented**: it behaves exactly as
+`hold`, and says so on every start rather than letting a config author believe
+sends are being turned away. Refusing at send time needs the sender to read the
+recipient's policy, which this phase deliberately does not do.
+
+`pending_cap` is why `mecha msg dismiss` exists rather than only `rm`: a full
+mailbox refuses new sends, so a backlog nobody is coming to claim has to be set
+aside. `keep` is retention, so the per-turn claim scan stays bounded.
+
+## `[slack]`
+
+Tunables for the Slack remote control. **Global file only**, and for a sharper
+reason than `[messages]`: a `mecha.toml` arrives with a cloned repository, and
+Slack is the remote control.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `max_concurrent` | integer | `3` | Threads that may have a run in flight at once. |
+| `approval_timeout_secs` | integer | `600` | How long an approval card waits before the call is refused as unanswered. |
+| `default_mode` | string | `"ask"` | `ask`, `allow`, or `read-only`, for a thread nobody has set a mode on. |
+| `max_turns` | integer | `40` | Turn budget for one Slack-driven run. |
+| `max_cost_usd` | float | unset | Cost ceiling for one Slack-driven run. Requires prices on the provider. |
+| `stream_flush_chars` | integer | `800` | Flush a streamed chunk once this much text has accumulated. |
+| `stream_flush_ms` | integer | `1000` | Or once this long has passed, whichever comes first. |
+| `max_upload_mb` | integer | `25` | Largest attachment fetched into a run's workspace. |
+| `tools` | array of strings | `[]` | Narrow the tool surface for Slack-driven runs. Empty means everything configured. |
+
+**Nothing here grants anything.** Who may drive the agent lives in
+`~/.mecha/slack/binding.json`, a store rather than config, bound by a one-time
+code printed on this machine.
+
+At `max_concurrent` the connector refuses and says so rather than queueing: a
+run that starts twenty minutes later against a workspace that has moved is worse
+than an honest refusal. `approval_timeout_secs` expiring is never a denial *by
+the user* — it is the machine's refusal, and is never mined as a correction.
+
+`tools` empty is the default and is usually too much. Measured on the first live
+run, the schemas of every wired MCP server cost ~7–8k input tokens *per turn*
+before any work happened; against a 32k window whose compaction threshold is
+21,845, a run starts a third of the way there. A phone rarely needs the mail and
+the calendar and the factory at once, and naming what it does need is the
+cheapest context this system has to give.
+
+See [Slack](/docs/features/slack).
 
 ## `[[hook]]`
 
@@ -380,13 +464,20 @@ Manage them with `mecha trigger add` / `edit` / `rm`, or edit the files directly
 | `MECHA_MODEL` | Overrides `model` on the default provider entry. |
 | `MECHA_EFFORT` | Overrides `[agent] effort`. Ignored if unparseable. |
 | `MECHA_LOG` | Tracing filter for internal logs, written to stderr. `MECHA_LOG=debug` turns on the internals. Default `warn`. |
+| `MECHA_HOME` | The root every other store defaults under, and where the global config is read from. Default `~/.mecha`. |
 | `MECHA_SESSION_DIR` | Where transcripts are written. Default `~/.mecha/sessions`. |
 | `MECHA_OUTBOX_DIR` | Where outbox items are staged. Default `~/.mecha/outbox`. |
+| `MECHA_MESSAGES_DIR` | The inter-agent mailbox. Default `~/.mecha/messages`. |
 | `MECHA_LEARNING_DIR` | The learning store. Default `~/.mecha/learning`. |
 | `MECHA_TRIGGERS_DIR` | Trigger definitions and their ledger. Default `~/.mecha/triggers`. |
 
 API keys are read from whatever variable `api_key_env` names, per provider and per
 search backend.
+
+`MECHA_HOME` exists for tests and for anyone running two mechas side by side;
+nothing in a normal install sets it. Moving it moves everything — the global
+config, the sessions, the learning store, the mail tokens — so the per-store
+variables above are the finer instrument.
 
 ## A complete annotated `mecha.toml`
 
@@ -538,6 +629,10 @@ disabled = false
 kind = "tavily"
 api_key_env = "TAVILY_API_KEY"
 ```
+
+`[messages]` and `[slack]` are deliberately absent from that file: both are
+stripped out of a project layer, so a `mecha.toml` is the one place they cannot
+go. Put them in `~/.mecha/config.toml` — see the two sections above.
 
 `mecha config init` writes a shorter commented starter file to
 `~/.mecha/config.toml`, or to `./mecha.toml` with `--project`.

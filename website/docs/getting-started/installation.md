@@ -1,22 +1,24 @@
 ---
 title: Installation
 sidebar_position: 1
-description: Build mecha from source with cargo, and the optional dependencies for the sandbox and the eval fixtures.
+description: Install mecha from crates.io with cargo, build it from source, and add the optional dependencies for the sandbox and the eval fixtures.
 ---
 
 # Installation
 
-mecha is built from source. There are no published binaries yet, and no package
-in any distribution.
+mecha is published on crates.io, so installing it is one `cargo install`. There
+are no prebuilt binaries and no package in any distribution — `cargo` compiles
+it on your machine either way; the difference is only whether the source comes
+from the registry or from a checkout.
 
 ## Requirements
 
-**Rust 1.85 or newer.** The workspace pins `rust-version = "1.85"` on edition
+**Rust 1.88 or newer.** The workspace pins `rust-version = "1.88"` on edition
 2021, so an older toolchain fails at build time with a clear message rather than
 part-way through compiling a dependency.
 
 ```bash
-rustc --version        # must be 1.85.0 or later
+rustc --version        # must be 1.88.0 or later
 rustup update stable   # if it is not
 ```
 
@@ -25,7 +27,44 @@ system OpenSSL (`reqwest` is pulled in with `default-features = false` and the
 `rustls-tls` feature), so there is no `libssl-dev` step and no vendored C
 build.
 
-## Building
+## Installing
+
+```bash
+cargo install mecha-cli --locked      # installs `mecha` into ~/.cargo/bin
+```
+
+The crate is `mecha-cli`; the binary it installs is named `mecha`, and that is
+the name every command in these docs uses. `--locked` builds against the
+dependency versions the release was tested with rather than resolving fresh
+ones.
+
+Mail and calendar tools come from a second crate, and are optional — nothing
+else needs it:
+
+```bash
+cargo install mecha-mail --locked     # mecha-mail, mecha-google, mecha-outlook
+```
+
+See [Mail and calendar](/docs/features/mail) for what to do with them.
+
+Check what landed:
+
+```bash
+mecha --version
+mecha tools            # runs without any provider configured
+```
+
+:::warning[A fresh publish can install as a stale version]
+`cargo install` resolves against a cached registry index, so for a few minutes
+after a release it can quietly pick up the *previous* version — no warning, no
+error, just an older binary than the one you asked for. `cargo install mecha-cli
+--locked --version 0.1.2` pins it, and `mecha --version` is what confirms it.
+:::
+
+## Building from source
+
+The contributor path, and what you want if you are changing mecha rather than
+running it:
 
 ```bash
 git clone https://github.com/ljchang/mecha
@@ -33,11 +72,8 @@ cd mecha
 cargo build --release
 ```
 
-The binary is `./target/release/mecha`. The crate that produces it is
-`mecha-cli`, but the binary is named `mecha` — that is the name every command in
-these docs uses.
-
-To put it on your `PATH`:
+The binary is `./target/release/mecha`. To put a checkout's build on your
+`PATH`:
 
 ```bash
 cargo install --path mecha-cli    # installs `mecha` into ~/.cargo/bin
@@ -56,9 +92,9 @@ binary at `./target/debug/mecha`); use the release build for anything you
 actually run against a model, because the debug build spends noticeable time in
 JSON handling on large transcripts.
 
-### The other binaries
+### The crates, and what each produces
 
-The workspace has three members. `cargo build --release` builds all of them:
+The workspace has four members. `cargo build --release` builds all of them:
 
 | Binary | Crate | What it is |
 |---|---|---|
@@ -66,9 +102,11 @@ The workspace has three members. `cargo build --release` builds all of them:
 | `mecha-mail` | `mecha-mail` | One MCP server over every configured account, whatever provider each uses. This is the one to wire up. |
 | `mecha-google` | `mecha-mail` | Gmail and Google Calendar only, with its own credential store. |
 | `mecha-outlook` | `mecha-mail` | Outlook mail and calendar over Microsoft Graph, its own credential store. |
+| — | `mecha-core` | The library every interface is built on. No binary of its own. |
+| — | `mecha-slack` | The Slack transport: Socket Mode, the Web API, files both ways. No binary of its own — the connector is `mecha slack connect`, run as a systemd unit (`scripts/mecha-slack.service`). |
 
 You do not need the mail binaries unless you want mail and calendar tools; see
-[Mail and calendar](/docs/features/mail).
+[Mail and calendar](/docs/features/mail) and [Slack](/docs/features/slack).
 
 ## Verifying the build
 

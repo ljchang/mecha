@@ -1,4 +1,4 @@
-//! `mecha` — a standalone agent harness.
+//! `mecha` — an agent harness for local models.
 
 mod approve;
 mod commands;
@@ -19,7 +19,7 @@ use std::path::PathBuf;
 #[command(
     name = "mecha",
     version,
-    about = "A standalone agent harness: one loop, any model, native and MCP tools.",
+    about = "An agent harness for local models: one loop, any model, native and MCP tools.",
     disable_help_subcommand = true
 )]
 pub struct Cli {

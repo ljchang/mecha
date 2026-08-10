@@ -72,6 +72,17 @@ again.
 ### 4. Run it
 
 ```bash
+mecha slack connect                 # the connector, in the foreground
+```
+
+`connect` holds the Slack socket open and drives runs from threads. Run it by
+hand first: it is the same process the unit runs, with its logs on your
+terminal, which is what you want while a token, a scope or a tool surface is
+still being sorted out.
+
+Then hand it to systemd:
+
+```bash
 cp scripts/mecha-slack.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now mecha-slack
@@ -112,10 +123,27 @@ tools = [
   "factory__bundle_render", "factory__bundle_publish", "factory__bundle_list",
 ]
 default_mode = "ask"        # or "allow", "read-only"
-max_concurrent = 3
-approval_timeout_secs = 900
-max_upload_mb = 25
+max_concurrent = 3          # threads with a run in flight at once
+approval_timeout_secs = 600 # then the call is refused as unanswered
+max_turns = 40
+# max_cost_usd = 5.00       # unset by default: no per-run ceiling
+stream_flush_chars = 800    # flush a streamed chunk at this much text…
+stream_flush_ms = 1000      # …or this long, whichever comes first
+max_upload_mb = 25          # Slack allows 1 GB; a remote control does not need it
 ```
+
+At `max_concurrent` the connector refuses and says so rather than queueing: a
+run that starts twenty minutes later against a workspace that has moved is
+worse than an honest refusal. An approval that times out is `Blocked`, never a
+denial by the user — see [hooks](/docs/features/hooks) for why that distinction
+is in the type.
+
+**`[slack]` is stripped from project config layers**, with a warning, and loads
+from the global config only. A `mecha.toml` arrives with a cloned repository,
+and Slack is the remote control: nothing in this table grants access — who may
+drive lives in the binding store — but a repo must not get to widen the default
+mode or the budget of runs you drive from your phone. There is a test named on
+it.
 
 `tools` is worth setting rather than leaving empty. Empty means "everything
 configured", and measured on the first live run, the schemas of every wired MCP

@@ -52,23 +52,40 @@ anyone adds one without writing down why.
 
 ## 3. What the keys are, and why there are several
 
-Pairing installs a **scoped key per capability**, not one key that does
-everything:
+Authority is a **scoped key per capability**, not one key that does everything —
+and pairing installs exactly two of them:
 
-| Key | File | What it permits |
-|---|---|---|
-| `publish` | `publish.key` | Push new bundle versions |
-| `release` | `release.key` | Move what a share URL resolves to; serve a public form |
-| `drain` | `drain.key` | Collect what strangers submitted |
-| `slots` | `slots.key` | Push availability, create and read polls |
-| `operate` | `operate.key` | The admin panel: accounts, invites, keys |
+| Key | File | What it permits | Installed by pairing |
+|---|---|---|---|
+| `publish` | `publish.key` | Push new bundle versions | **yes** |
+| `drain` | `drain.key` | Collect what strangers submitted | **yes** |
+| `release` | `release.key` | Move what a share URL resolves to; serve a public form | no |
+| `slots` | `slots.key` | Push availability, create and read polls | no |
+| `operate` | `operate.key` | The admin panel: accounts, invites, keys | **never** |
 
-The split is load-bearing, and the one worth understanding is **publish versus
-release**. Publishing a version puts bytes on the box; releasing decides what the
-world sees when it follows a link somebody already has. A machine that renders
-and publishes on a schedule does not need to be able to change what an existing
-link resolves to. Separating them puts "a human decides what goes live" on the
-*credential*, where it cannot be argued with, instead of on a habit.
+**So a paired machine has no release key at all**, and that is the whole point.
+Publishing a version puts bytes on the box; releasing decides what the world
+sees when it follows a link somebody already has. A machine that renders and
+publishes on a schedule does not need to be able to change what an existing link
+resolves to — and, more to the point, an agent running on it should not be able
+to, however the conversation goes. Separating them puts "a human decides what
+goes live" on the *credential*, where nothing said in a prompt can argue with
+it, instead of on a habit.
+
+Release authority stays in the browser instead: a signed-in session at the
+gate's account page **is** a release credential, driving the same alias move the
+key-authenticated endpoint drives. A person moves a link by clicking, from the
+machine they review from. `release.key` exists for a machine somebody
+deliberately keeps for that job — and pairing a machine that already has one
+prints a warning rather than refusing, because you may be pairing exactly that
+machine.
+
+`operate` is never installed by pairing at all. It is minted once on the box and
+held on whichever machine the human chooses; suspending accounts and minting
+invites is not power an agent should acquire as a side effect of conversation,
+which is the same rule that keeps the operator commands off the MCP surface.
+`slots` is minted on the box the same way and dropped in beside the config when
+a machine needs the availability pipeline.
 
 Keys are **files the tools open**, never values in the environment, so a crash
 log or an environment dump cannot contain one.

@@ -19,14 +19,41 @@ command = "factory-publish"
 args = ["mcp"]
 
 [outbox]
-tools = ["factory__bundle_publish", "factory__bundle_alias"]
-publish_tools = ["factory__bundle_publish", "factory__bundle_alias"]
+tools = [
+  "factory__bundle_publish", "factory__bundle_alias", "factory__bundle_unpublish",
+  "factory__poll_create", "factory__poll_meeting_create", "factory__poll_close",
+  "factory__type_push",
+]
+publish_tools = [
+  "factory__bundle_publish", "factory__bundle_alias", "factory__bundle_unpublish",
+  "factory__poll_create", "factory__poll_meeting_create", "factory__type_push",
+]
 ```
 
-The surface is small: `bundle_render`, `bundle_publish`, `bundle_alias`,
-`bundle_unpublish`, `bundle_fetch`, `bundle_list`, `bundle_status`. Rendering
-is local and harmless; publishing is the one that reaches the outside world,
-so it goes through [the outbox](/docs/features/outbox) like a send does.
+Fifteen tools, in four families:
+
+| Family | Tools | Reaches the box |
+|---|---|---|
+| Bundles | `bundle_render`, `bundle_publish`, `bundle_alias`, `bundle_unpublish`, `bundle_fetch`, `bundle_list`, `bundle_status` | `publish`, `alias`, `unpublish` |
+| Polls | `poll_create`, `poll_meeting_create`, `poll_status`, `poll_close` | all four |
+| Notebooks | `notebook_render` | no |
+| Request types | `type_check`, `type_push`, `type_list` | `push`, `list` |
+
+The division that matters is **local versus outbound**. `bundle_render`,
+`notebook_render` and `type_check` do their work on your machine and touch
+nothing; `bundle_fetch`, `bundle_list` and `bundle_status` read your own
+records. Everything in the right-hand column carries `openWorldHint`, which in
+mecha sets **both** `untrusted_input` and `external_send` — so those are
+[trifecta](/docs/features/security) sinks, and the ones that change what the
+world can see go through [the outbox](/docs/features/outbox) exactly as a send
+does. See [the onboarding guide](/docs/factory/onboarding) for the routing to
+copy.
+
+`type_push` is the one to look at twice: uploading a request-type manifest is
+what makes a public form **exist and start accepting submissions from
+strangers**. It is a publication, not bookkeeping, which is why it is staged
+like one — and why the other end of it is [the front
+door](/docs/features/frontdoor).
 
 ## Staging is sink-agnostic; reviewing is not
 

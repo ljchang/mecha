@@ -196,7 +196,15 @@ A release is a **tag on main**, nothing else:
 3. The `release` workflow re-runs the full test suite (a tag can be pushed
    from anywhere; "it was green when I looked" is not a gate), refuses a tag
    that does not match the workspace version, and publishes the crates to
-   crates.io in dependency order: `mecha-core` → `mecha-mail` → `mecha-cli`.
+   crates.io in dependency order: `mecha-core` → `mecha-mail` →
+   `mecha-slack` → `mecha-cli`.
+
+**A new workspace member that anything published depends on belongs in that
+list in the same change that introduces it, not in a follow-up.** `mecha-slack`
+was missing from it for one release cycle: cargo refuses to publish a crate
+whose non-dev dependencies are not on the registry, so `mecha-cli` would have
+failed *after* `mecha-core` and `mecha-mail` had already uploaded — and a
+half-published version can be yanked but never unpublished.
 
 The same workflow shape lives in the
 [`mecha-factory`](https://github.com/ljchang/mecha-factory) repository, which

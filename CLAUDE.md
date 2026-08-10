@@ -2,15 +2,28 @@
 
 ## What this is
 
-A standalone agent harness, extracted so it can be reused across projects
-rather than rewritten per project. Two crates:
+An agent harness whose purpose is to make a **local open-weight model** into a
+usable personal assistant: wired into enough personal context to be worth
+asking (mail, calendar, a knowledge graph), able to reach the world through a
+reviewed surface, and safe to hold all of that at once. Almost every design
+decision below is downstream of that last clause — a personal assistant has
+private data, third-party content and a way to send *by definition*, so the
+lethal trifecta is the permanent condition rather than an edge case.
+
+Four crates:
 
 - `mecha-core/` — the library. Knows nothing about any CLI or application.
 - `mecha-cli/` — the `mecha` binary. Thin; all logic belongs in core.
+- `mecha-mail/` — mail and calendar behind one provider-neutral MCP surface.
+- `mecha-slack/` — the Slack transport. No `mecha-core` dependency, ever.
 
 Interfaces: `mecha run` (one-shot), `mecha chat` (readline REPL), `mecha tui`
 (full-screen; the input line stays live so you can steer a run in flight), and
 `mecha batch` / `mecha eval` for fan-out.
+
+The user-facing half of this reasoning is published at
+<https://docs.mecha-factory.ai/>; `website/docs/principles.md` is that site's
+restatement of the invariants below, without the incident behind each one.
 
 ## Build & test
 
@@ -386,8 +399,10 @@ snippets: it was written from the same pages.
 
 ## mecha-mail
 
-A third crate, extracted from flowmail: `mecha-mail/` is a **library plus
-three thin MCP binaries**. The library (Gmail + Google Calendar v3, Outlook
+`mecha-mail/` is a **library plus three thin MCP binaries**, and it is how
+personal context gets in: an assistant that cannot see your mail or your
+calendar cannot do most of the work this project exists to absorb. The library
+(Gmail + Google Calendar v3, Outlook
 mail + calendar over Graph, both OAuth flows, the token lifecycle) is what a
 GUI would depend on directly. `mecha-google` and `mecha-outlook` each serve
 one provider with its own credential store; **`mecha-mail` is the one
@@ -426,24 +441,22 @@ forwarded port, so it works over SSH. It is a *public client*: Entra binds
 the refresh credential to the auth method, so sending a `client_secret`
 after a device-code grant fails with `AADSTS7000215`. Scopes deliberately
 exclude `User.Read` — `GET /me` is not worth a consent prompt, so the
-account address comes from Sent Items instead (flowmail reached the same
-conclusion). And an account lookup must never be fatal to `auth`: losing a
-completed sign-in over a cosmetic detail makes the user authenticate twice.
+account address comes from Sent Items instead. And an account lookup must
+never be fatal to `auth`: losing a completed sign-in over a cosmetic detail
+makes the user authenticate twice.
 
-Four flowmail behaviours are fixed rather than ported, each filed upstream
-(`ljchang/flowmail` issues 3–6): Graph replies go through
-`POST /messages/{id}/reply` so they thread; the calendar reads `calendarView`
-so recurring events do not vanish from a window; search uses `$search`
-instead of a `$filter` that 400s beside `$orderby`; and `to` splits on commas
-like cc and bcc already did.
+Four provider quirks are handled here so no caller has to: Graph replies go
+through `POST /messages/{id}/reply` so they thread; the calendar reads
+`calendarView` so recurring events do not vanish from a window; search uses
+`$search` instead of a `$filter` that 400s beside `$orderby`; and `to` splits
+on commas like cc and bcc.
 
-What flowmail did not have and this crate does: **the token lifecycle in
-Rust** (flowmail kept storage, refresh, and retry-on-401 in its JS frontend)
-— `oauth.json` at mode 0600, refresh ahead of expiry behind a lock so two
-concurrent tool calls cannot race two refreshes, one forced refresh and
-retry on a 401; **retry with backoff** on 429/5xx; and an **HTML→text
-fallback**, because flowmail took only the `text/plain` part and an
-HTML-only email reached the model as an empty body.
+**The token lifecycle lives in the library**, so every caller gets it rather
+than each front-end reimplementing it: `oauth.json` at mode 0600, refresh
+ahead of expiry behind a lock so two concurrent tool calls cannot race two
+refreshes, one forced refresh and retry on a 401. Plus **retry with backoff**
+on 429/5xx, and an **HTML→text fallback**, without which an HTML-only email
+reaches the model as an empty body.
 
 The capability labeling is the part worth not re-litigating: **reads are
 untrusted sources but not send sinks.** Mail bodies are other people's words,
