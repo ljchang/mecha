@@ -213,23 +213,41 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
   nine hours, and a third time the same evening when the daemon's own `notify`
   could not see `~/.cargo/bin` at all. A fourth near-miss on 2026-08-07: the
   installed `mecha` predated the frontdoor triage verbs, caught only because
-  the timer's script was checked against it before enabling. **Both were
-  reinstalled 2026-08-09 night** — `factory-publish` for the wider MCP surface,
-  `mecha` for the outbox review fixes — each with the previous build kept
-  beside it as `factory-publish.prev` / `mecha.prev`, the same rollback shape
-  the factory box uses.
+  the timer's script was checked against it before enabling.
 
-  Two things learned doing that install, neither specific to this change.
-  **`cp` over a running binary fails with `Text file busy`**, and two live
-  consumers hold `factory-publish` at all times: `mecha-drain.service`'s
-  long-poll loop and the MCP server the Slack connector spawned. Rename the old
-  one and copy the new one in — running processes keep their inode, and the
-  rename is also how the rollback copy gets made. And **a long-lived MCP server
-  keeps the tool surface it started with**: `mecha-slack.service` will serve
-  the old seven-tool factory surface until it is restarted, where a fresh
-  `mecha chat` / `tui` / `run` spawns a new server and sees all fifteen
-  immediately. It is not currently restarted, and `[slack] tools` does not
-  list the poll tools anyway.
+  **Since 2026-08-10 the installs come from crates.io, not from the repo**,
+  which is the better habit now that releases are tagged: it installs exactly
+  what the world gets, so a broken package is found here rather than by a
+  stranger.
+
+  ```bash
+  systemctl --user stop mecha-slack mecha-drain mecha-triggers
+  cargo install mecha-cli mecha-mail mecha-factory-publish --locked
+  systemctl --user start mecha-slack mecha-drain mecha-triggers
+  ```
+
+  Currently installed: `mecha-cli` 0.1.1, `mecha-mail` 0.1.1,
+  `mecha-factory-publish` 0.2.1. `mecha.prev` / `factory-publish.prev` remain
+  as the pre-crates.io rollback copies.
+
+  Three things learned doing it, none specific to this change:
+
+  - **`cargo install` can resolve a version older than the one just
+    published**, because the local registry index is cached — it fetched
+    `mecha-factory-publish` 0.2.0 and `mecha-mail` 0.1.0 minutes after 0.2.1
+    and 0.1.1 went up. Check `cargo install --list` against the intended
+    versions afterwards, or pass `--version` explicitly. Nothing warns.
+  - **Stop the services first.** `cp` over a running binary fails with `Text
+    file busy`, and two consumers hold `factory-publish` at all times:
+    `mecha-drain.service`'s long-poll loop, and the MCP server the Slack
+    connector spawned. (`cargo install` renames rather than copies, so it
+    usually survives, but the mail binaries are held by whatever MCP servers
+    are alive.)
+  - **A long-lived MCP server keeps the tool surface it started with.**
+    `mecha-slack.service` served the old seven-tool factory surface until it
+    was restarted; a fresh `mecha chat` / `tui` / `run` spawns a new server and
+    sees all fifteen immediately. It has now been restarted, though
+    `[slack] tools` still does not list the poll tools.
 - The learning store (`~/.mecha/learning`) holds **zero live rules** — the one
   early rule was reverted with its poisoned reflection — so everything from here
   accumulates from real usage through the gate.
@@ -592,18 +610,14 @@ The arc is complete and running nightly. What is missing is refinement:
     surface by eight. That argues for narrowing per surface (`[slack] tools`,
     `[tools] enabled`) rather than for exposing less.
 
-    **The box is still serving 0.2.0, so the poll UI fixes are not in front of
-    anyone yet — this is the one thing left to press.** `poll_render.rs` lives
-    in `mecha-manifest`, which the *box* links, so the rendering work of
-    2026-08-10 reaches a real visitor only after:
-
-    ```bash
-    factory-deploy v0.2.1        # on the box
-    ```
-
-    The release artifact exists and is checksummed; nothing else blocks it.
-    The docs gallery updates on its own from `mecha-factory@main`, which now
-    has the fixes.
+    **The box runs v0.2.1 as of 2026-08-10**, so the poll UI work is live:
+    `factory-deploy v0.2.1` downloaded, checksummed, proved the binary and the
+    config while the old one was still serving, swapped, and health-checked —
+    the whole procedure exercised end to end for the first time on a real
+    release. The served stylesheet went from 23,397 to 30,939 bytes and now
+    carries the rank counters, the card-select rules and the VAS anchors.
+    Worth remembering that `poll_render.rs` lives in `mecha-manifest`, which
+    the *box* links: a rendering change is a box deploy, not a home reinstall.
 
   - **The release workflow is verified** — `v0.2.1` (2026-08-10)
     built the static musl `factory`, asserted it, checksummed it, attached
