@@ -30,7 +30,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io
 # native-tls to match reqwest above — two TLS stacks in one binary is two
 # certificate stores to reason about.
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
-toml = "0.8"
+toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
