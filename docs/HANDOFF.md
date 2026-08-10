@@ -21,15 +21,26 @@ maps which document holds what.
 
 ## Where the work is
 
-Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.0**.
-The three crates are on **crates.io at 0.1.0** as of 2026-08-08 (`mecha-core`,
-`mecha-mail`, `mecha-cli` — the bare name `mecha` was taken, so the CLI crate
-installs the `mecha` binary), published through the tag-driven `release`
-workflow with Trusted Publishing, so no registry token exists anywhere. The
-next repo release is **v0.1.1**: the v0.1.0 GitHub release predates the
-crates, and tags converge with crate versions from 0.1.1 on. How work lands —
-branch per arc, one worktree per session, PR-gated, release by tag — is
-`CONTRIBUTING.md`'s to state.
+Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.1**
+(2026-08-10). **Four** crates are on crates.io at 0.1.1 — `mecha-core`,
+`mecha-mail`, `mecha-slack`, `mecha-cli` (the bare name `mecha` was taken, so
+the CLI crate installs the `mecha` binary) — published through the tag-driven
+`release` workflow with Trusted Publishing, so no registry token exists
+anywhere. From v0.1.1 on, a tag and a crate version are the same number.
+
+`mecha-slack` joined at this release, and the reason is worth keeping because
+it generalises: **cargo refuses to publish a crate whose non-dev dependencies
+are not on the registry**, and `mecha-cli` depends on it. Tagging without
+adding it to the workflow's list would have published `mecha-core` and
+`mecha-mail`, then failed on `mecha-cli` — a half-published version that can
+be yanked but never unpublished. A new workspace member that anything
+published depends on belongs in that list in the same change that introduces
+it. Its first publish was by hand, because Trusted Publishing can only be
+configured on a crate that already exists; TP was added for it immediately
+after.
+
+How work lands — branch per arc, one worktree per session, PR-gated, release
+by tag — is `CONTRIBUTING.md`'s to state.
 CI runs build, test, clippy and rustfmt on every push and pull request; the
 documentation site builds from `website/` and deploys to
 <https://docs.mecha-factory.ai/> — GitHub Pages still hosts it; the custom
@@ -581,22 +592,24 @@ The arc is complete and running nightly. What is missing is refinement:
     surface by eight. That argues for narrowing per surface (`[slack] tools`,
     `[tools] enabled`) rather than for exposing less.
 
-    **A poll UI change does not reach live pages until the box is redeployed.**
-    `poll_render.rs` lives in `mecha-manifest`, which the *box* links, so the
-    2026-08-10 rendering fixes are in the repository and not yet in front of
-    anyone. The docs gallery lags too: `website/scripts/sync-gallery.mjs`
-    fetches `mecha-factory@main`.
+    **The box is still serving 0.2.0, so the poll UI fixes are not in front of
+    anyone yet — this is the one thing left to press.** `poll_render.rs` lives
+    in `mecha-manifest`, which the *box* links, so the rendering work of
+    2026-08-10 reaches a real visitor only after:
 
-  - **Verify the release workflow** (`release.yml`, authored 2026-08-07:
-    static musl `factory` with an asserted-static gate and a checksum). Push a
-    `v*` tag and watch it; `DEPLOY.md` already leads with the
-    download-and-verify procedure but says to verify the first release before
-    deleting the box's toolchain.
-  - **The crates.io split.** Both `mecha-manifest` and `mecha-factory-publish`
-    `cargo package` and verify cleanly (checked 2026-08-07, including the
-    packaged-dependency resolution). What remains is `cargo publish` with the
-    owner's token — claiming the names is forever, so it stays a human's
-    button to press.
+    ```bash
+    factory-deploy v0.2.1        # on the box
+    ```
+
+    The release artifact exists and is checksummed; nothing else blocks it.
+    The docs gallery updates on its own from `mecha-factory@main`, which now
+    has the fixes.
+
+  - **The release workflow is verified** — `v0.2.1` (2026-08-10)
+    built the static musl `factory`, asserted it, checksummed it, attached
+    both to the GitHub release, and published `mecha-manifest`,
+    `mecha-factory` and `mecha-factory-publish` at 0.2.1. The download-and-
+    verify procedure in `DEPLOY.md` now has a real artifact behind it.
   - **The apex redirect is deployed but dormant, waiting on DNS.**
     `redirect_hosts` (301 to the gate, path kept, riding the base
     certificate) is in the deployed binary; the config line was deliberately
