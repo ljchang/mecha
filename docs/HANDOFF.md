@@ -21,9 +21,10 @@ maps which document holds what.
 
 ## Where the work is
 
-Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.2**
-(2026-08-10 evening — the reasoning round trip; 0.1.1 was earlier the same
-day). **Four** crates are on crates.io at 0.1.2 — `mecha-core`,
+Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.3**
+(2026-08-10 — dependency maintenance and the MSRV move to 1.89; 0.1.2 the same
+evening was the reasoning round trip, and 0.1.1 earlier the same day). **Four**
+crates are on crates.io at 0.1.3 — `mecha-core`,
 `mecha-mail`, `mecha-slack`, `mecha-cli` (the bare name `mecha` was taken, so
 the CLI crate installs the `mecha` binary) — published through the tag-driven
 `release` workflow with Trusted Publishing, so no registry token exists
@@ -80,7 +81,9 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **707 tests**, no failures — re-measured 2026-08-10 evening, after the
+Expect **710 tests**, no failures — re-measured 2026-08-11 against 0.1.3,
+which added three to `mecha-mail` (the HTML-body test and the two PKCE ones).
+Before that it was 707, after the
 reasoning round-trip arc added seventeen (`reasoning_content` decode and
 re-encode, `produced_output` versus block count, the cached-token split and its
 underflow guard, the salvage of a reasoning-only run, and the lost-call marker
@@ -100,7 +103,7 @@ unidentified, worth an eye.
 |---|---:|
 | `mecha-core` unit | 396 |
 | `mecha-cli` unit | 143 |
-| `mecha-mail` unit | 86 |
+| `mecha-mail` unit | 89 |
 | `mecha-slack` unit | 68 |
 | integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
 | doctest | 1 |
@@ -466,23 +469,6 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
   for booking manifests; a booking's page is `/s/…`.
 
 ### Cheap, and worth doing first
-
-- **Decide whether replayed reasoning stays unbounded.** As of 0.1.2 the
-  OpenAI-compatible backend sends every `Block::Thinking` back, which is what
-  the model's own template expects and what took the empty turns from 6/6 to
-  0/6. The cost is bounded in *compute* — the prefix cache absorbs it, measured
-  at better than 95% reuse — but not in *context*: on the 08-10 run the model
-  averaged ~930 output tokens a turn, most of it reasoning, so an 80-turn trial
-  carries roughly 75k extra tokens by the end. Against a 174,762 threshold that
-  is survivable and it may bring compaction forward on long trials, trading a
-  cheap failure (a wasted nudge turn) for an expensive one (a lossy summary).
-  **The measurement that decides it is `expect.min_compactions` and the
-  compaction counts in the relaunched benchmark's transcripts**; if those jump
-  on the long trials, bound preservation to the last N assistant turns. Left
-  unbounded on purpose until there is a number: it is the behaviour the model
-  was trained with, and guessing a bound first would be tuning against nothing.
-  Note this only became affordable at 262,144 — at the old 32k it would have
-  been fatal, so the window raise and this fix are coupled.
 
 - **Decide what the compaction threshold should be, now that it moved 8x on
   its own.** `AgentConfig::compact_at` derives two thirds of the window when
@@ -889,15 +875,43 @@ The arc is complete and running nightly. What is missing is refinement:
   `.claude/worktrees/bench-run-262k/jobs/` — that checkout exists only to hold
   them, because those transcripts are the evidence the 0.1.2 diagnosis rests
   on and benchmark artifacts are gitignored.
-  **The relaunch is `mecha-arm64-subset-2026-08-10__14-15-05`**, launched
-  14:15 from `.claude/worktrees/bench-run-v012` (detached at `v0.1.2`), same
-  parameters, `check-subset.py` green on exactly the 75. Judge it on four
-  falsifiable things rather than on the score, none of which need the old run
-  as a baseline: empty-turn nudges should approach zero (`grep "turn produced
-  no content"` across the trials' `stderr.log`), the dash-prompt crash should
-  not recur, the timeout tail should shrink from 5-in-28, and **compaction
-  counts should not jump** — that last one is what settles whether replayed
-  reasoning stays unbounded. The 2026-08-07 fragment was separately
+  **`mecha-arm64-subset-2026-08-10__14-15-05`** answered it, on v0.1.2 with
+  the same parameters, and was itself stopped at 46/75 once its own numbers
+  made the next question obvious. Head to head on the 28 tasks both runs
+  reached: **passes 13 → 15, wall clock 10.5h → 6.0h (1.7x), timeouts 5 → 2,
+  crashes 1 → 0, and empty-turn nudges 41 → 0.** Four flips to a pass, two
+  away; three of the four wins were trials the old run stopped *too early*
+  (3 turns, 12 turns, and one that never finished), which is the shape of the
+  whole effect — the model is more persistent, and one loss (`polyglot-rust-c`,
+  a completed 11-turn run before, a 30-minute timeout after) is that same
+  persistence overrunning a wall clock. On identical work the paired trials
+  ran 2.3–4.2x faster, and the mechanism is per-turn cost collapsing toward a
+  floor: `break-filter-js-from-html` was already at 14s/turn and did not move,
+  while trials at 35–100s/turn fell to 6–39s.
+
+  It also **made `max_turns` the binding constraint**, which is why it was
+  stopped: **26% of trials ended at exactly 80 turns**, passing 30% of the
+  time against 50–67% in every band below. Terminal-Bench's own default is
+  **200** ([EvalScope](https://evalscope.readthedocs.io/en/latest/third_party/terminal_bench.html)),
+  so 80 was a ceiling this project chose, below the benchmark's, and nobody
+  re-derived it after the constraints that justified it were removed.
+
+  **The run now going is `mecha-arm64-subset-2026-08-11__01-59-33`**, launched
+  01:59 from `.claude/worktrees/bench-run-v012` (detached at `v0.1.2`, binary
+  verified `mecha 0.1.2`), `max_turns=200`, everything else unchanged,
+  `check-subset.py` green on exactly the 75. It is **not on 0.1.3
+  deliberately** — that release is dependency majors, an MSRV move, `rustyline`
+  (chat), `ratatui` (TUI) and a PKCE change, none of which touch `mecha run`,
+  so rebuilding would cost fifteen hours and move no measured behaviour. The
+  question it answers is narrow: how many of the 26% were clipped rather than
+  beaten.
+
+  **Both finished runs are archived at `jobs/mecha-arm64-subset/` in the main
+  checkout** (`…08-10__03-39-35`, pre-fix, 28 outcomes; `…08-10__14-15-05`,
+  v0.1.2, 46 outcomes) — copied out of the worktrees on purpose, because
+  `jobs/` is gitignored and a worktree is a directory somebody removes. Those
+  transcripts are the evidence behind the 0.1.2 diagnosis. The 2026-08-07
+  fragment was separately
   **diagnosed trial by trial** (2026-08-09 — the write-up is in
   `docs/BENCHMARK-RESEARCH.md`, "The 2026-08-07 subset run, diagnosed"): of
   13 failures, 5 were the model and 8 involved harness defects, all five of
