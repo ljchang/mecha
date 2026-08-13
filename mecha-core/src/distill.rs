@@ -145,37 +145,48 @@ impl Distilled {
         self.episode.trim().is_empty() && self.corrections.is_empty()
     }
 
-    /// The body to push, given the corrections that may actually LEAVE
-    /// this session (see [`corrections_for`]).
+    /// The body to push, or `None` when this session has nothing that may
+    /// leave it.
     ///
     /// A corrections-only session has no episode text, but pkg requires a
     /// non-empty body — pushing "" would bail, leave the session
     /// unledgered, and re-distill it every night forever. So the carrier
     /// says what happened, which is honest evidence in its own right.
     ///
-    /// It takes the SENDABLE set, not `self.corrections`, and that is the
-    /// whole point: describing a withheld correction would paraphrase the
-    /// claim into episode prose, pkg's extractor would mine that prose
-    /// into candidates, and the untrusted claim would reach the review
-    /// queue anyway — stripped of the structure that marked it a repair.
-    /// The taint gate has to be applied before the body is written, not
-    /// after.
-    pub fn body(&self, sendable: &[Correction]) -> String {
+    /// **It takes the taint, not a set of corrections, and computes the
+    /// sendable set itself.** An earlier version took `&[Correction]`,
+    /// which made `out.body(&out.corrections)` compile — the obvious call,
+    /// and one that launders a withheld claim into episode prose that
+    /// pkg's extractor mines into candidates anyway. A gate that the
+    /// caller can bypass by passing the wrong argument is a convention,
+    /// not a boundary; there is deliberately no argument here that
+    /// produces the withheld prose.
+    ///
+    /// `None` also removes the degenerate case: a corrections-only
+    /// session on an untrusted timeline used to render "The user
+    /// corrected 0 things the knowledge graph had wrong: ." and relied on
+    /// the caller skipping it.
+    pub fn body(&self, taint: Option<Taint>) -> Option<String> {
         if !self.episode.trim().is_empty() {
-            return self.episode.trim().to_string();
+            return Some(self.episode.trim().to_string());
+        }
+        let sendable = corrections_for(taint, &self.corrections);
+        if sendable.is_empty() {
+            return None;
         }
         let what: Vec<&str> = sendable.iter().map(|c| c.wrong.trim()).take(3).collect();
-        format!(
+        Some(format!(
             "The user corrected {} thing{} the knowledge graph had wrong: {}.",
             sendable.len(),
             if sendable.len() == 1 { "" } else { "s" },
             what.join("; ")
-        )
+        ))
     }
 
-    /// True when the only reason to push is the repairs that may be sent.
-    pub fn is_corrections_only(&self, sendable: &[Correction]) -> bool {
-        self.episode.trim().is_empty() && !sendable.is_empty()
+    /// True when the only reason to push is repairs that may actually be
+    /// sent from this timeline.
+    pub fn is_corrections_only(&self, taint: Option<Taint>) -> bool {
+        self.episode.trim().is_empty() && !corrections_for(taint, &self.corrections).is_empty()
     }
 }
 
@@ -586,35 +597,43 @@ mod tests {
             private: false,
             untrusted: false,
         };
-        let sendable = corrections_for(Some(clean), &out.corrections);
-        assert!(out.is_corrections_only(sendable));
-        let body = out.body(sendable);
-        assert!(!body.trim().is_empty());
+        assert!(out.is_corrections_only(Some(clean)));
+        let body = out.body(Some(clean)).expect("a sendable repair carries");
         assert!(
             body.contains("Priya is at Brown"),
             "the carrier says what happened"
         );
 
-        // Untrusted: nothing may be sent, so there is nothing to carry —
-        // and crucially the body must NOT paraphrase the withheld claim,
-        // or pkg's extractor would mine it into candidates anyway.
-        let withheld = corrections_for(None, &out.corrections);
-        assert!(withheld.is_empty());
-        assert!(
-            !out.is_corrections_only(withheld),
-            "an untrusted corrections-only session has no reason to push"
-        );
-        assert!(
-            !out.body(withheld).contains("Priya is at Brown"),
-            "a withheld correction must not launder into episode prose"
-        );
+        // Untrusted (and unknown) — nothing may be sent, so there is
+        // nothing to carry. The API takes the TAINT, so no argument
+        // exists that would render the withheld claim into prose for
+        // pkg's extractor to mine.
+        for hostile in [
+            None,
+            Some(Taint {
+                private: false,
+                untrusted: true,
+            }),
+        ] {
+            assert!(
+                !out.is_corrections_only(hostile),
+                "an untrusted corrections-only session has no reason to push"
+            );
+            assert_eq!(
+                out.body(hostile),
+                None,
+                "a withheld correction must not launder into episode prose"
+            );
+        }
 
         let normal = Distilled {
             episode: "  Did a thing.  ".into(),
             corrections: vec![],
         };
-        assert_eq!(normal.body(&[]), "Did a thing.");
-        assert!(!normal.is_corrections_only(&[]));
+        // An episode always carries, whatever the timeline: taint gates
+        // the repairs, never the record of the afternoon.
+        assert_eq!(normal.body(None).as_deref(), Some("Did a thing."));
+        assert!(!normal.is_corrections_only(None));
     }
 
     #[test]

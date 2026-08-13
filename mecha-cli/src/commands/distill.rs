@@ -140,10 +140,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // candidates anyway.
                 let sendable = distill::corrections_for(taint, &out.corrections).to_vec();
                 let withheld = out.corrections.len() - sendable.len();
-                if out.episode.trim().is_empty() && sendable.is_empty() {
-                    // Nothing to remember and nothing we may repair —
-                    // pushing a carrier for this would be an episode about
-                    // corrections that were not sent.
+                // `None` means nothing may leave this session: no episode
+                // text, and any corrections withheld by taint. Pushing a
+                // carrier here would be an episode *about* corrections
+                // that were not sent.
+                let Some(body) = out.body(taint) else {
                     store.mark_distilled(&meta.id)?;
                     skipped += 1;
                     if withheld > 0 {
@@ -154,12 +155,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         );
                     }
                     continue;
-                }
+                };
                 let push_args = distill::upsert_args(
                     &meta.id,
                     &path.display().to_string(),
                     &meta.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
-                    &out.body(&sendable),
+                    &body,
                     taint,
                     distiller.model(),
                     &sendable,
@@ -177,7 +178,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                             // distiller judged the session not worth
                             // remembering, and counting it as a distilled
                             // episode would report the opposite.
-                            if out.is_corrections_only(&sendable) {
+                            if out.is_corrections_only(taint) {
                                 ", corrections only"
                             } else {
                                 ""
