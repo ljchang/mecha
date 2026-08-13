@@ -99,6 +99,22 @@ An alias lands permanently and immediately, so the same question is never
 ambiguous again. This is the one case where asking makes the system
 permanently better rather than merely getting you unstuck.
 
+**A denial is knowledge, not a gap.** The graph records what it has ruled out,
+not only what it holds: a fact carrying `polarity: "negative"`, or a line
+prefixed `[KNOWN FALSE]`, means this was asked and answered — the graph knows
+it to be false. Read those the way you would read "no": never restate one as
+true, and never mistake one for the graph being silent on the question. If the
+user asks where someone works and the graph carries a denial about an employer,
+that denial is part of the answer. Denials exist so nothing keeps re-proposing
+what has already been settled, which only works if you can see them.
+
+**When the graph flags its own answer, weigh it.** A result may carry `flags`
+— the graph noticing something wrong with what it just handed you: two live
+values for something that can only have one, a denial contesting what it
+served, or a belief old enough that it is unlikely to still hold. It reports;
+you judge. Say so when a flag changes the answer, rather than passing the
+flagged claim on as if it were clean.
+
 **Writing is staging, not saving.** `pkg__kg_upsert` puts a fact candidate in a
 review queue for the user to accept or reject — it does not enter the graph
 until they say so. That makes it safe to record something worth keeping, and it

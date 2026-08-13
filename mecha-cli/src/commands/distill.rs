@@ -107,6 +107,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     let mut distilled = 0usize;
     let mut skipped = 0usize;
+    // Counted apart from `distilled`: a carrier is an episode the
+    // distiller judged NOT worth remembering, pushed only so its
+    // corrections have something to ride. Folding it into the episode
+    // count would tell an operator the graph gained five memories on a
+    // night it gained five repairs.
+    let mut carriers = 0usize;
     for (meta, path) in &todo {
         let (_, convo) = match Session::load(path) {
             Ok(loaded) => loaded,
@@ -133,7 +139,29 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
         let transcript = distill::render_for_distill(&convo.messages, 6000, 18000);
         match distiller.distill(&transcript).await {
-            Ok(Some(body)) => {
+            Ok(Some(out)) => {
+                // Decide what may leave BEFORE writing the body: a carrier
+                // describing a withheld correction would launder the claim
+                // into episode prose, which pkg's extractor mines into
+                // candidates anyway.
+                let sendable = distill::corrections_for(taint, &out.corrections).to_vec();
+                let withheld = out.corrections.len() - sendable.len();
+                // `None` means nothing may leave this session: no episode
+                // text, and any corrections withheld by taint. Pushing a
+                // carrier here would be an episode *about* corrections
+                // that were not sent.
+                let Some(body) = out.body(taint) else {
+                    store.mark_distilled(&meta.id)?;
+                    skipped += 1;
+                    if withheld > 0 {
+                        println!(
+                            "· {} — {withheld} correction(s) withheld (untrusted or unknown \
+                             timeline); nothing to push",
+                            meta.id
+                        );
+                    }
+                    continue;
+                };
                 let push_args = distill::upsert_args(
                     &meta.id,
                     &path.display().to_string(),
@@ -141,16 +169,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     &body,
                     taint,
                     distiller.model(),
+                    &sendable,
                 );
                 match distill::push_episode(&client, push_args).await {
                     Ok(outcome) => {
                         store.mark_distilled(&meta.id)?;
-                        distilled += 1;
+                        // A carrier is not a memory the graph gained.
+                        let carrier = out.is_corrections_only(taint);
+                        if carrier {
+                            carriers += 1;
+                        } else {
+                            distilled += 1;
+                        }
                         println!(
-                            "· {} → {} ({}, {} entit{} linked)",
+                            "· {} → {} ({}{}, {} entit{} linked)",
                             meta.id,
                             outcome.uid,
                             outcome.status,
+                            if carrier { ", corrections only" } else { "" },
                             outcome.entities_linked,
                             if outcome.entities_linked == 1 {
                                 "y"
@@ -158,6 +194,43 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                                 "ies"
                             }
                         );
+                        // A correction that resolved to nothing is a repair
+                        // that silently did not happen — say so. Report
+                        // SENT and WITHHELD separately: a zeroed tally for
+                        // a correction we never transmitted reads exactly
+                        // like pkg failing to pin one down, and the session
+                        // is marked distilled either way.
+                        if !sendable.is_empty() {
+                            println!(
+                                "  {} correction{} sent · {} repaired · {} sent to review",
+                                sendable.len(),
+                                if sendable.len() == 1 { "" } else { "s" },
+                                outcome.corrections_applied,
+                                outcome.corrections_unresolved
+                            );
+                            // The tally must add up, or the print is
+                            // theatre: anything pkg neither repaired nor
+                            // queued went nowhere, and would otherwise
+                            // leave no trace at all.
+                            let accounted =
+                                outcome.corrections_applied + outcome.corrections_unresolved;
+                            let sent = sendable.len() as i64;
+                            if accounted != sent || outcome.corrections_processed != sent {
+                                eprintln!(
+                                    "  WARNING: {sent} sent but pkg reports {} processed and \
+                                     {accounted} accounted for — {} unaccounted",
+                                    outcome.corrections_processed,
+                                    sent - accounted
+                                );
+                            }
+                        }
+                        if withheld > 0 {
+                            println!(
+                                "  {withheld} correction{} withheld — the session's timeline \
+                                 is untrusted or unknown",
+                                if withheld == 1 { "" } else { "s" }
+                            );
+                        }
                     }
                     Err(e) => {
                         // The push not landing is the one failure that must
@@ -186,10 +259,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     store.commit(&format!(
-        "distill: {distilled} episode(s), {skipped} skip(s)"
+        "distill: {distilled} episode(s), {carriers} carrier(s), {skipped} skip(s)"
     ));
+    let carried = if carriers > 0 {
+        format!(", {carriers} carried corrections only")
+    } else {
+        String::new()
+    };
     println!(
-        "distilled {distilled} session(s) into the graph, skipped {skipped} \
+        "distilled {distilled} session(s) into the graph{carried}, skipped {skipped} \
          (nothing durable); ledger: {}",
         store.root().join("distilled.jsonl").display()
     );

@@ -69,6 +69,73 @@ ENTITIES = {
     },
 }
 
+# Facts per entity, mirroring what real pkg's kg_entity returns — including
+# `polarity`. A "negative" fact is a recorded DENIAL: the graph knows the
+# claim to be false, which is not the same as the graph being silent on it.
+#
+# The Priya denial is the trap this exists to catch. Her summary reads
+# "collaborator on the Aurora grant proposal", so a model that skims for
+# affiliation and ignores polarity will happily put her on Meridian too. That
+# is the failure the agent prompt's "a denial is knowledge, not a gap" rule
+# forbids, and it is only testable if the fixture carries denials.
+FACTS = {
+    "person:priya-nair": [
+        {
+            "uid": "f-priya-1",
+            "statement": "Priya Nair collaborates on the Aurora grant proposal.",
+            "predicate": "collaborates_with",
+            "polarity": "positive",
+            "confidence": 0.92,
+        },
+        {
+            "uid": "f-priya-2",
+            "statement": "Priya Nair is NOT part of the Meridian pilot.",
+            "predicate": "member_of",
+            "polarity": "negative",
+            "confidence": 0.95,
+        },
+    ],
+    "person:alex-chen": [
+        {
+            "uid": "f-chen-1",
+            "statement": "Alex Chen is a PhD student in the lab.",
+            "predicate": "has_role",
+            "polarity": "positive",
+            "confidence": 0.9,
+        },
+    ],
+    "project:aurora": [
+        {
+            "uid": "f-aurora-1",
+            "statement": "The Aurora grant proposal is due 2026-09-30.",
+            "predicate": "due",
+            "polarity": "positive",
+            "confidence": 0.98,
+        },
+    ],
+    # Two live target dates — what a missed supersession looks like.
+    # Deliberately on HALCYON, not Aurora: memory-write-correction has the
+    # user moving the Aurora deadline to October 15, and seeding that as an
+    # existing value would undercut its premise. Nothing else in the
+    # fixture or the cases asserts a Halcyon date.
+    "project:halcyon": [
+        {
+            "uid": "f-halcyon-1",
+            "statement": "The Halcyon refactor is due 2026-08-20.",
+            "predicate": "due",
+            "polarity": "positive",
+            "confidence": 0.88,
+        },
+        {
+            "uid": "f-halcyon-2",
+            "statement": "The Halcyon refactor is due 2026-12-01.",
+            "predicate": "due",
+            "polarity": "positive",
+            "confidence": 0.83,
+        },
+    ],
+}
+
 RELATED = {
     "project:aurora": ["person:priya-nair", "person:alex-rivera"],
     "person:priya-nair": ["project:aurora"],
@@ -179,7 +246,11 @@ def entity_text(entity_id):
     e = ENTITIES.get(entity_id)
     if e is None:
         return None
-    return json.dumps({k: e[k] for k in ("id", "kind", "name", "summary")})
+    body = {k: e[k] for k in ("id", "kind", "name", "summary")}
+    # Real pkg returns facts with polarity; a fixture that omits them cannot
+    # exercise how the agent handles a recorded denial.
+    body["facts"] = FACTS.get(entity_id, [])
+    return json.dumps(body)
 
 
 def search(query):
@@ -207,7 +278,30 @@ def search(query):
 
     if not hits:
         return json.dumps({"results": [], "ambiguous": [], "note": "no results"})
-    return json.dumps({"results": hits, "ambiguous": []})
+
+    # Real pkg attaches `flags` when it notices a problem with what it is
+    # about to return — it detects, the agent judges. Without a fixture
+    # carrying one, the agent prompt's flag rule is prose nothing can
+    # test. Halcyon has two live target dates on a predicate that admits
+    # one; answering with either date alone, silently, is the failure.
+    flags = []
+    if any(t.startswith("halcyon") or t.startswith("refactor") for t in tokens):
+        flags.append(
+            {
+                "kind": "contradiction",
+                "subject_id": "project:halcyon",
+                "predicate": "due",
+                "detail": (
+                    "2 live values on single-valued 'due': "
+                    "due 2026-08-20 ⇄ due 2026-12-01"
+                ),
+                "fact_uids": ["f-halcyon-1", "f-halcyon-2"],
+            }
+        )
+    body = {"results": hits, "ambiguous": []}
+    if flags:
+        body["flags"] = flags
+    return json.dumps(body)
 
 
 def call_pkg(name, args):
