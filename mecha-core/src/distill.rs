@@ -174,9 +174,24 @@ impl Distilled {
         if sendable.is_empty() {
             return None;
         }
-        let what: Vec<&str> = sendable.iter().map(|c| c.wrong.trim()).take(3).collect();
+        // Truncate visibly. Listing three while the count says four
+        // leaves a number that disagrees with its own list — and this
+        // prose is evidence pkg's extractor mines, so the cut has to be
+        // legible rather than silent.
+        const SHOWN: usize = 3;
+        let what: Vec<&str> = sendable
+            .iter()
+            .map(|c| c.wrong.trim())
+            .take(SHOWN)
+            .collect();
+        let more = sendable.len().saturating_sub(SHOWN);
+        let tail = match more {
+            0 => String::new(),
+            1 => "; and 1 more".to_string(),
+            n => format!("; and {n} more"),
+        };
         Some(format!(
-            "The user corrected {} thing{} the knowledge graph had wrong: {}.",
+            "The user corrected {} thing{} the knowledge graph had wrong: {}{tail}.",
             sendable.len(),
             if sendable.len() == 1 { "" } else { "s" },
             what.join("; ")
@@ -728,6 +743,27 @@ mod tests {
             body.contains("Priya is at Brown"),
             "the carrier says what happened"
         );
+
+        // More than fit: the cut is stated, so the count never disagrees
+        // with the list it introduces.
+        let many = Distilled {
+            episode: String::new(),
+            corrections: (1..=5)
+                .map(|i| Correction {
+                    wrong: format!("claim {i}"),
+                    right: None,
+                    about: None,
+                    fact_uid: None,
+                })
+                .collect(),
+        };
+        let body = many.body(Some(clean)).unwrap();
+        assert!(body.starts_with("The user corrected 5 things"));
+        assert!(
+            body.contains("and 2 more"),
+            "silent truncation is a lie: {body}"
+        );
+        assert!(!body.contains("claim 4"), "only the first three are listed");
 
         // Untrusted (and unknown) — nothing may be sent, so there is
         // nothing to carry. The API takes the TAINT, so no argument
