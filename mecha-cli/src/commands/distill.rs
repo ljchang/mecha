@@ -107,6 +107,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     let mut distilled = 0usize;
     let mut skipped = 0usize;
+    // Counted apart from `distilled`: a carrier is an episode the
+    // distiller judged NOT worth remembering, pushed only so its
+    // corrections have something to ride. Folding it into the episode
+    // count would tell an operator the graph gained five memories on a
+    // night it gained five repairs.
+    let mut carriers = 0usize;
     for (meta, path) in &todo {
         let (_, convo) = match Session::load(path) {
             Ok(loaded) => loaded,
@@ -168,21 +174,19 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 match distill::push_episode(&client, push_args).await {
                     Ok(outcome) => {
                         store.mark_distilled(&meta.id)?;
-                        distilled += 1;
+                        // A carrier is not a memory the graph gained.
+                        let carrier = out.is_corrections_only(taint);
+                        if carrier {
+                            carriers += 1;
+                        } else {
+                            distilled += 1;
+                        }
                         println!(
                             "· {} → {} ({}{}, {} entit{} linked)",
                             meta.id,
                             outcome.uid,
                             outcome.status,
-                            // Say when the episode is only a carrier: the
-                            // distiller judged the session not worth
-                            // remembering, and counting it as a distilled
-                            // episode would report the opposite.
-                            if out.is_corrections_only(taint) {
-                                ", corrections only"
-                            } else {
-                                ""
-                            },
+                            if carrier { ", corrections only" } else { "" },
                             outcome.entities_linked,
                             if outcome.entities_linked == 1 {
                                 "y"
@@ -255,10 +259,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     store.commit(&format!(
-        "distill: {distilled} episode(s), {skipped} skip(s)"
+        "distill: {distilled} episode(s), {carriers} carrier(s), {skipped} skip(s)"
     ));
+    let carried = if carriers > 0 {
+        format!(", {carriers} carried corrections only")
+    } else {
+        String::new()
+    };
     println!(
-        "distilled {distilled} session(s) into the graph, skipped {skipped} \
+        "distilled {distilled} session(s) into the graph{carried}, skipped {skipped} \
          (nothing durable); ledger: {}",
         store.root().join("distilled.jsonl").display()
     );
