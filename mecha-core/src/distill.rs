@@ -271,7 +271,8 @@ impl Distiller {
     }
 
     /// `Ok(None)` means the model judged nothing durable happened, or replied
-    /// unusably (logged, not fatal). `Err` is the provider failing.
+    /// unusably (logged, not fatal). `Err` is the provider failing — or the
+    /// reply being cut off, which is not the same thing as a skip.
     pub async fn distill(&self, transcript: &str) -> Result<Option<Distilled>> {
         let request = crate::message::CompletionRequest {
             model: self.model.clone(),
@@ -289,11 +290,40 @@ impl Distiller {
         let response = self.provider.complete(&request, None).await?;
         let text = response.message.text();
         let parsed = parse_distiller_reply(&text);
-        if parsed.is_none() && crate::eval::extract_json(&text).is_none() {
-            tracing::warn!(
-                "distiller returned no JSON (stop: {:?})",
-                response.stop_reason
-            );
+
+        // A cut-off reply is not a skip. `max_tokens` truncates the JSON
+        // mid-object, so `extract_json` never closes the brace and the
+        // parse fails — and `Ok(None)` means "the model judged nothing
+        // durable happened", which makes the CLI mark the session
+        // distilled and lose the episode AND every correction forever,
+        // over a token budget. Erroring instead leaves it unledgered for a
+        // later run. Truncation is its own diagnosis, the same call
+        // frontdoor and the compaction validator already make; a refusal
+        // arrives at HTTP 200 and would likewise read as "no JSON".
+        //
+        // This branch got likelier on the corrections work: the reply grew
+        // an array, and the prompt asks for corrections even from sessions
+        // the model skips, so a reply that used to be `{"skip": true}` can
+        // now run long.
+        if parsed.is_none() {
+            match response.stop_reason {
+                crate::message::StopReason::MaxTokens => bail!(
+                    "distiller reply was cut off at max_tokens ({}) — raising the budget, \
+                     not the prompt, is the fix",
+                    self.max_tokens
+                ),
+                crate::message::StopReason::Refusal => {
+                    bail!("distiller refused the transcript")
+                }
+                _ => {
+                    if crate::eval::extract_json(&text).is_none() {
+                        tracing::warn!(
+                            "distiller returned no JSON (stop: {:?})",
+                            response.stop_reason
+                        );
+                    }
+                }
+            }
         }
         Ok(parsed)
     }
@@ -503,6 +533,68 @@ mod tests {
             None
         );
         assert_eq!(parse_distiller_reply("not json at all"), None);
+    }
+
+    /// A model that returns exactly what it is told to, with a chosen
+    /// stop reason.
+    struct Scripted(String, crate::message::StopReason);
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for Scripted {
+        fn id(&self) -> &str {
+            "scripted"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-1"
+        }
+        async fn complete(
+            &self,
+            _req: &crate::message::CompletionRequest,
+            _sink: Option<&crate::provider::StreamSink>,
+        ) -> Result<crate::message::CompletionResponse> {
+            Ok(crate::message::CompletionResponse {
+                message: Message::assistant(vec![crate::message::Block::Text {
+                    text: self.0.clone(),
+                }]),
+                stop_reason: self.1,
+                usage: crate::message::Usage::default(),
+                refusal: None,
+                model: "scripted-1".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_reply_is_an_error_not_a_skip() {
+        use crate::message::StopReason;
+        // Truncated mid-object: extract_json never closes the brace, so
+        // the parse fails. Returning Ok(None) would read as a deliberate
+        // skip, and the CLI would mark the session distilled — losing the
+        // episode and every correction over a token budget.
+        let truncated = r#"{"skip": false, "episode": "We discussed the grant and"#;
+        let d = Distiller::new(
+            Box::new(Scripted(truncated.into(), StopReason::MaxTokens)),
+            None,
+        );
+        let err = d
+            .distill("t")
+            .await
+            .expect_err("truncation must not read as a skip");
+        assert!(
+            format!("{err:#}").contains("cut off"),
+            "the error should name the budget, not the prompt: {err:#}"
+        );
+
+        // A refusal arrives at HTTP 200 and would likewise read as no JSON.
+        let d = Distiller::new(Box::new(Scripted(String::new(), StopReason::Refusal)), None);
+        assert!(d.distill("t").await.is_err());
+
+        // A genuine skip still returns Ok(None) — fail-soft is preserved.
+        let d = Distiller::new(
+            Box::new(Scripted(r#"{"skip": true}"#.into(), StopReason::EndTurn)),
+            None,
+        );
+        assert!(d.distill("t").await.unwrap().is_none());
     }
 
     #[test]
