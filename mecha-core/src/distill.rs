@@ -305,7 +305,21 @@ impl Distiller {
         // an array, and the prompt asks for corrections even from sessions
         // the model skips, so a reply that used to be `{"skip": true}` can
         // now run long.
-        if parsed.is_none() {
+        //
+        // Gate on whether the reply was RECOVERABLE, not on whether it
+        // yielded anything — the two are different, and confusing them
+        // trades this bug for its mirror image.
+        // `parse_distiller_reply` returns None three ways: no JSON, JSON
+        // that will not deserialise, and JSON that read perfectly and said
+        // "skip". Only the first two are truncation symptoms. A model that
+        // emits `{"skip": true}` and then keeps talking to the cap hits
+        // MaxTokens with complete, well-formed JSON; bailing there would
+        // leave the session unledgered and re-distill it every nightly
+        // forever, one model call each — and it is reachable by exactly
+        // the reply shape named just above.
+        let recovered = crate::eval::extract_json(&text)
+            .and_then(|j| serde_json::from_str::<DistillerReply>(&j).ok());
+        if recovered.is_none() {
             match response.stop_reason {
                 crate::message::StopReason::MaxTokens => bail!(
                     "distiller reply was cut off at max_tokens ({}) — raising the budget, \
@@ -315,14 +329,12 @@ impl Distiller {
                 crate::message::StopReason::Refusal => {
                     bail!("distiller refused the transcript")
                 }
-                _ => {
-                    if crate::eval::extract_json(&text).is_none() {
-                        tracing::warn!(
-                            "distiller returned no JSON (stop: {:?})",
-                            response.stop_reason
-                        );
-                    }
-                }
+                // Ended normally but unreadable: the model's problem, not
+                // the budget's. Fail soft, as before.
+                _ => tracing::warn!(
+                    "distiller returned no usable JSON (stop: {:?})",
+                    response.stop_reason
+                ),
             }
         }
         Ok(parsed)
@@ -595,6 +607,27 @@ mod tests {
             None,
         );
         assert!(d.distill("t").await.unwrap().is_none());
+
+        // The case that separates the two failures: a COMPLETE skip
+        // followed by rambling that hits the cap. The reply is readable,
+        // so this is a real skip and must be Ok(None) — erroring here
+        // would leave the session unledgered and re-distill it every
+        // nightly forever, which is the mirror image of the bug above.
+        // The truncated fixture cannot catch this: it never closes its
+        // brace, so both gates agree on it.
+        let d = Distiller::new(
+            Box::new(Scripted(
+                "{\"skip\": true}\nI decided nothing durable happened here, because \
+                 the session was a smoke test and …"
+                    .into(),
+                StopReason::MaxTokens,
+            )),
+            None,
+        );
+        assert!(
+            d.distill("t").await.unwrap().is_none(),
+            "a readable skip is a skip, whatever the stop reason"
+        );
     }
 
     #[test]
