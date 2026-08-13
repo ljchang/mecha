@@ -133,14 +133,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
         let transcript = distill::render_for_distill(&convo.messages, 6000, 18000);
         match distiller.distill(&transcript).await {
-            Ok(Some(body)) => {
+            Ok(Some(out)) => {
                 let push_args = distill::upsert_args(
                     &meta.id,
                     &path.display().to_string(),
                     &meta.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
-                    &body,
+                    &out.episode,
                     taint,
                     distiller.model(),
+                    &out.corrections,
                 );
                 match distill::push_episode(&client, push_args).await {
                     Ok(outcome) => {
@@ -158,6 +159,17 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                                 "ies"
                             }
                         );
+                        // A correction that resolved to nothing is a repair
+                        // that silently did not happen — say so.
+                        if !out.corrections.is_empty() {
+                            println!(
+                                "  {} correction{} sent · {} repaired · {} sent to review",
+                                out.corrections.len(),
+                                if out.corrections.len() == 1 { "" } else { "s" },
+                                outcome.corrections_applied,
+                                outcome.corrections_unresolved
+                            );
+                        }
                     }
                     Err(e) => {
                         // The push not landing is the one failure that must

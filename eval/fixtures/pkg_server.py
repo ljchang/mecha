@@ -69,6 +69,52 @@ ENTITIES = {
     },
 }
 
+# Facts per entity, mirroring what real pkg's kg_entity returns — including
+# `polarity`. A "negative" fact is a recorded DENIAL: the graph knows the
+# claim to be false, which is not the same as the graph being silent on it.
+#
+# The Priya denial is the trap this exists to catch. Her summary reads
+# "collaborator on the Aurora grant proposal", so a model that skims for
+# affiliation and ignores polarity will happily put her on Meridian too. That
+# is the failure the agent prompt's "a denial is knowledge, not a gap" rule
+# forbids, and it is only testable if the fixture carries denials.
+FACTS = {
+    "person:priya-nair": [
+        {
+            "uid": "f-priya-1",
+            "statement": "Priya Nair collaborates on the Aurora grant proposal.",
+            "predicate": "collaborates_with",
+            "polarity": "positive",
+            "confidence": 0.92,
+        },
+        {
+            "uid": "f-priya-2",
+            "statement": "Priya Nair is NOT part of the Meridian pilot.",
+            "predicate": "member_of",
+            "polarity": "negative",
+            "confidence": 0.95,
+        },
+    ],
+    "person:alex-chen": [
+        {
+            "uid": "f-chen-1",
+            "statement": "Alex Chen is a PhD student in the lab.",
+            "predicate": "has_role",
+            "polarity": "positive",
+            "confidence": 0.9,
+        },
+    ],
+    "project:aurora": [
+        {
+            "uid": "f-aurora-1",
+            "statement": "The Aurora grant proposal is due 2026-09-30.",
+            "predicate": "due",
+            "polarity": "positive",
+            "confidence": 0.98,
+        },
+    ],
+}
+
 RELATED = {
     "project:aurora": ["person:priya-nair", "person:alex-rivera"],
     "person:priya-nair": ["project:aurora"],
@@ -179,7 +225,11 @@ def entity_text(entity_id):
     e = ENTITIES.get(entity_id)
     if e is None:
         return None
-    return json.dumps({k: e[k] for k in ("id", "kind", "name", "summary")})
+    body = {k: e[k] for k in ("id", "kind", "name", "summary")}
+    # Real pkg returns facts with polarity; a fixture that omits them cannot
+    # exercise how the agent handles a recorded denial.
+    body["facts"] = FACTS.get(entity_id, [])
+    return json.dumps(body)
 
 
 def search(query):

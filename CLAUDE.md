@@ -245,6 +245,19 @@ review can see it. Unknown taint is recorded as unknown, never clean.
 Idempotent at both ends: `distilled.jsonl` in the learning store (same
 writer lock), and pkg's `(source, source_id)` key makes a re-push an update.
 
+The distiller also reports **corrections** — moments the user said the graph
+holds something wrong — as `meta.corrections`, `[{wrong, right?, about?,
+fact_uid?}]`. pkg acts on each: supersede the wrong belief, stage the
+replacement (or write a negation when the user simply rejected the claim),
+demote whatever produced the error on its autonomy ladder, and re-audit that
+producer's other output. `right` omitted means a rejection rather than a
+replacement. `fact_uid` is optional and usually absent — tool results are
+clipped before the distiller reads the transcript — so pkg falls back to
+matching the `wrong` text narrowed by `about`, and routes anything it cannot
+pin to exactly one belief into the review queue rather than guessing. A
+correction outlives a skip: a session can be worth no episode and still tell
+the graph it is wrong, so `{"skip": true}` carrying corrections still pushes.
+
 Known gap: `shell` is universal and taint tracking can't see inside a command,
 so it is not treated as an untrusted *source*. The mitigation is the sandbox.
 
