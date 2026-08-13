@@ -138,7 +138,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     &meta.id,
                     &path.display().to_string(),
                     &meta.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
-                    &out.episode,
+                    &out.body(),
                     taint,
                     distiller.model(),
                     &out.corrections,
@@ -148,10 +148,19 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         store.mark_distilled(&meta.id)?;
                         distilled += 1;
                         println!(
-                            "· {} → {} ({}, {} entit{} linked)",
+                            "· {} → {} ({}{}, {} entit{} linked)",
                             meta.id,
                             outcome.uid,
                             outcome.status,
+                            // Say when the episode is only a carrier: the
+                            // distiller judged the session not worth
+                            // remembering, and counting it as a distilled
+                            // episode would report the opposite.
+                            if out.is_corrections_only() {
+                                ", corrections only"
+                            } else {
+                                ""
+                            },
                             outcome.entities_linked,
                             if outcome.entities_linked == 1 {
                                 "y"

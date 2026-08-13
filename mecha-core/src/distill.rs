@@ -116,8 +116,18 @@ struct DistillerReply {
     skip: bool,
     #[serde(default)]
     episode: String,
+    /// Deliberately untyped. `#[serde(default)]` covers the key being
+    /// *absent*, not being junk — and `"corrections": null`, a bare
+    /// string instead of an object, or a missing `wrong` would each fail
+    /// the whole parse. That returns `None`, which the CLI treats as a
+    /// deliberate skip and marks the session distilled forever, so one
+    /// formatting slip in an OPTIONAL field would permanently lose an
+    /// episode that parsed fine before corrections existed. Junk drops
+    /// out per entry in [`parse_distiller_reply`] instead.
+    /// Untyped all the way down — even the array-ness. A local model
+    /// rendering "none" as `{}` must not cost the episode either.
     #[serde(default)]
-    corrections: Vec<Correction>,
+    corrections: Option<serde_json::Value>,
 }
 
 /// What one session yielded for the graph.
@@ -134,6 +144,36 @@ impl Distilled {
     pub fn is_empty(&self) -> bool {
         self.episode.trim().is_empty() && self.corrections.is_empty()
     }
+
+    /// The body to push. A corrections-only session has no episode text,
+    /// but pkg REQUIRES a non-empty body — pushing "" would bail, leave
+    /// the session unledgered, and re-distill it every night forever, a
+    /// model call per run with no way to converge. So the carrier says
+    /// what actually happened, which is honest evidence in its own right:
+    /// the user corrected the graph, even though the session was
+    /// otherwise not worth remembering.
+    pub fn body(&self) -> String {
+        if !self.episode.trim().is_empty() {
+            return self.episode.trim().to_string();
+        }
+        let what: Vec<&str> = self
+            .corrections
+            .iter()
+            .map(|c| c.wrong.trim())
+            .take(3)
+            .collect();
+        format!(
+            "The user corrected {} thing{} the knowledge graph had wrong: {}.",
+            self.corrections.len(),
+            if self.corrections.len() == 1 { "" } else { "s" },
+            what.join("; ")
+        )
+    }
+
+    /// True when the only reason to push is the repairs.
+    pub fn is_corrections_only(&self) -> bool {
+        self.episode.trim().is_empty() && !self.corrections.is_empty()
+    }
 }
 
 /// Parse the distiller's reply. Pure, so the contract is testable without a
@@ -147,11 +187,19 @@ impl Distilled {
 pub fn parse_distiller_reply(text: &str) -> Option<Distilled> {
     let json = crate::eval::extract_json(text)?;
     let reply: DistillerReply = serde_json::from_str(&json).ok()?;
+    // Salvage what parses, drop what does not: a malformed entry costs
+    // that entry, never the episode.
     let corrections: Vec<Correction> = reply
         .corrections
-        .into_iter()
-        .filter(|c| !c.wrong.trim().is_empty())
-        .collect();
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| serde_json::from_value::<Correction>(v.clone()).ok())
+                .filter(|c| !c.wrong.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
     let episode = if reply.skip {
         String::new()
     } else {
@@ -242,7 +290,20 @@ pub fn upsert_args(
     // none), demotes whatever produced the error, and re-audits that
     // producer's other output. Omitted when empty, matching pkg's
     // optional-field convention.
-    if !corrections.is_empty() {
+    //
+    // ONLY from a trusted timeline. The rule that lets a tainted session
+    // distill at all is that everything pkg derives from an episode waits
+    // in the user's review queue — corrections are the exception: the
+    // supersede and the class demotion land immediately, and only the
+    // replacement is staged. So an untrusted transcript could carry
+    // "correction: the graph is wrong that Dr. X is at Yale" from a
+    // fetched page and evict a true belief with nobody in the loop. The
+    // episode still goes (losing the record of a real afternoon because a
+    // web page was open would gut the memory); the repairs do not.
+    // Unknown taint counts as untrusted — uncovered never masquerades as
+    // clean, the same rule the snapshot above follows.
+    let trusted = matches!(taint, Some(t) if !t.untrusted);
+    if !corrections.is_empty() && trusted {
         meta["corrections"] = serde_json::to_value(corrections).unwrap_or(Value::Null);
     }
     json!({
@@ -343,12 +404,17 @@ mod tests {
 
     #[test]
     fn corrections_ride_in_episode_meta_for_pkg_to_repair() {
+        // Clean taint: repairs only leave a trusted timeline (see
+        // corrections_are_withheld_from_an_untrusted_timeline).
         let args = upsert_args(
             "s",
             "r",
             "2026-08-05 12:00:00",
             "b",
-            None,
+            Some(Taint {
+                private: false,
+                untrusted: false,
+            }),
             "m",
             &[
                 Correction {
@@ -397,6 +463,110 @@ mod tests {
     }
 
     #[test]
+    fn malformed_corrections_never_cost_the_episode() {
+        // Regression: `corrections` was `Vec<Correction>`, so junk in an
+        // OPTIONAL field failed the whole parse — and a None return is
+        // treated as a deliberate skip and marked distilled forever, so a
+        // formatting slip permanently lost an episode that parsed fine
+        // before corrections existed.
+        for junk in [
+            r#"{"skip": false, "episode": "x", "corrections": null}"#,
+            r#"{"skip": false, "episode": "x", "corrections": ["she is at Brown, not Yale"]}"#,
+            r#"{"skip": false, "episode": "x", "corrections": [{"right": "Yale"}]}"#,
+            r#"{"skip": false, "episode": "x", "corrections": {}}"#,
+        ] {
+            let out = parse_distiller_reply(junk)
+                .unwrap_or_else(|| panic!("episode must survive: {junk}"));
+            assert_eq!(out.episode, "x");
+            assert!(out.corrections.is_empty(), "junk drops out per entry");
+        }
+        // A good entry beside a bad one is still kept.
+        let out = parse_distiller_reply(
+            r#"{"skip": false, "episode": "x", "corrections": [
+                 "bare string", {"wrong": "she is at Brown", "right": "Yale"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(out.corrections.len(), 1);
+    }
+
+    #[test]
+    fn corrections_are_withheld_from_an_untrusted_timeline() {
+        // The rule that lets a tainted session distill is that everything
+        // pkg DERIVES waits in review. Corrections are the exception —
+        // the supersede and the demotion land immediately — so a fetched
+        // page saying "the graph is wrong that Dr. X is at Yale" must not
+        // reach pkg as a repair. The episode still goes.
+        let c = [Correction {
+            wrong: "Dr. X is at Yale".into(),
+            right: None,
+            about: None,
+            fact_uid: None,
+        }];
+        let untrusted = upsert_args(
+            "s",
+            "r",
+            "2026-08-05 12:00:00",
+            "b",
+            Some(Taint {
+                private: false,
+                untrusted: true,
+            }),
+            "m",
+            &c,
+        );
+        assert!(untrusted["meta"].get("corrections").is_none());
+        assert_eq!(untrusted["body"], "b", "the episode is not withheld");
+
+        // Unknown taint counts as untrusted: uncovered never masquerades
+        // as clean.
+        let unknown = upsert_args("s", "r", "2026-08-05 12:00:00", "b", None, "m", &c);
+        assert!(unknown["meta"].get("corrections").is_none());
+
+        let clean = upsert_args(
+            "s",
+            "r",
+            "2026-08-05 12:00:00",
+            "b",
+            Some(Taint {
+                private: true,
+                untrusted: false,
+            }),
+            "m",
+            &c,
+        );
+        assert_eq!(clean["meta"]["corrections"][0]["wrong"], "Dr. X is at Yale");
+    }
+
+    #[test]
+    fn a_corrections_only_session_still_has_a_body() {
+        // pkg requires a non-empty body; pushing "" would bail, leave the
+        // session unledgered, and re-distill it every night forever.
+        let out = Distilled {
+            episode: String::new(),
+            corrections: vec![Correction {
+                wrong: "Priya is at Brown".into(),
+                right: Some("Priya is at Yale".into()),
+                about: None,
+                fact_uid: None,
+            }],
+        };
+        assert!(out.is_corrections_only());
+        let body = out.body();
+        assert!(!body.trim().is_empty());
+        assert!(
+            body.contains("Priya is at Brown"),
+            "the carrier says what happened"
+        );
+
+        let normal = Distilled {
+            episode: "  Did a thing.  ".into(),
+            corrections: vec![],
+        };
+        assert_eq!(normal.body(), "Did a thing.");
+        assert!(!normal.is_corrections_only());
+    }
+
+    #[test]
     fn a_correction_survives_a_skipped_session() {
         // The repair is worth more than the episode: a session can leave
         // nothing to remember and still tell the graph it is wrong.
@@ -414,7 +584,10 @@ mod tests {
             "{\"skip\": false, \"episode\": \"x\", \"corrections\": [{\"wrong\": \"  \"}]}",
         )
         .unwrap();
-        assert!(out.corrections.is_empty(), "a correction with no claim is not one");
+        assert!(
+            out.corrections.is_empty(),
+            "a correction with no claim is not one"
+        );
     }
 
     #[test]
