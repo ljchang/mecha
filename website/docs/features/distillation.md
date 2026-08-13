@@ -74,9 +74,19 @@ What gets pushed:
 `source` is fixed at `agent:mecha` so provenance is the undo story: everything
 mecha wrote is browsable as a set, and redaction takes the set out.
 
-`corrections` is omitted when there were none. When present, the graph acts on
-each one: it closes the wrong belief, stages the replacement, and marks down
-whatever produced the error so the same source is trusted less next time.
+`corrections` is omitted when there were none — **and when the session's
+timeline is untrusted or unknown.** Everything else here can be sent from a
+tainted session because the graph stages what it derives for your review, but
+a correction is different: closing a belief and marking down its source happen
+immediately. A web page read mid-session could otherwise say "the graph is
+wrong that she is at Yale" and have that acted on with nobody in the loop. So
+corrections travel only from a session whose whole timeline is known clean;
+the episode still goes either way, and `mecha distill` prints how many were
+withheld rather than reporting a silent zero.
+
+When present, the graph acts on each one: it closes the wrong belief, stages
+the replacement, and marks down whatever produced the error so the same source
+is trusted less next time.
 Leaving `right` out says you rejected the claim outright rather than replacing
 it, and the graph records the denial so nothing proposes it again. A correction
 the graph cannot match to exactly one belief goes to your review queue instead

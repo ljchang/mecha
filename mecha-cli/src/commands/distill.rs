@@ -203,6 +203,21 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                                 outcome.corrections_applied,
                                 outcome.corrections_unresolved
                             );
+                            // The tally must add up, or the print is
+                            // theatre: anything pkg neither repaired nor
+                            // queued went nowhere, and would otherwise
+                            // leave no trace at all.
+                            let accounted =
+                                outcome.corrections_applied + outcome.corrections_unresolved;
+                            let sent = sendable.len() as i64;
+                            if accounted != sent || outcome.corrections_processed != sent {
+                                eprintln!(
+                                    "  WARNING: {sent} sent but pkg reports {} processed and \
+                                     {accounted} accounted for — {} unaccounted",
+                                    outcome.corrections_processed,
+                                    sent - accounted
+                                );
+                            }
                         }
                         if withheld > 0 {
                             println!(

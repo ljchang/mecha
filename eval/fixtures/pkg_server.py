@@ -113,6 +113,27 @@ FACTS = {
             "confidence": 0.98,
         },
     ],
+    # Two live target dates — what a missed supersession looks like.
+    # Deliberately on HALCYON, not Aurora: memory-write-correction has the
+    # user moving the Aurora deadline to October 15, and seeding that as an
+    # existing value would undercut its premise. Nothing else in the
+    # fixture or the cases asserts a Halcyon date.
+    "project:halcyon": [
+        {
+            "uid": "f-halcyon-1",
+            "statement": "The Halcyon refactor is due 2026-08-20.",
+            "predicate": "due",
+            "polarity": "positive",
+            "confidence": 0.88,
+        },
+        {
+            "uid": "f-halcyon-2",
+            "statement": "The Halcyon refactor is due 2026-12-01.",
+            "predicate": "due",
+            "polarity": "positive",
+            "confidence": 0.83,
+        },
+    ],
 }
 
 RELATED = {
@@ -257,7 +278,30 @@ def search(query):
 
     if not hits:
         return json.dumps({"results": [], "ambiguous": [], "note": "no results"})
-    return json.dumps({"results": hits, "ambiguous": []})
+
+    # Real pkg attaches `flags` when it notices a problem with what it is
+    # about to return — it detects, the agent judges. Without a fixture
+    # carrying one, the agent prompt's flag rule is prose nothing can
+    # test. Halcyon has two live target dates on a predicate that admits
+    # one; answering with either date alone, silently, is the failure.
+    flags = []
+    if any(t.startswith("halcyon") or t.startswith("refactor") for t in tokens):
+        flags.append(
+            {
+                "kind": "contradiction",
+                "subject_id": "project:halcyon",
+                "predicate": "due",
+                "detail": (
+                    "2 live values on single-valued 'due': "
+                    "due 2026-08-20 ⇄ due 2026-12-01"
+                ),
+                "fact_uids": ["f-halcyon-1", "f-halcyon-2"],
+            }
+        )
+    body = {"results": hits, "ambiguous": []}
+    if flags:
+        body["flags"] = flags
+    return json.dumps(body)
 
 
 def call_pkg(name, args):

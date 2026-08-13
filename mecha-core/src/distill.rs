@@ -356,6 +356,12 @@ pub struct PushOutcome {
     /// silently did not happen.
     pub corrections_applied: i64,
     pub corrections_unresolved: i64,
+    /// pkg's own count of what it looked at. Reported separately so the
+    /// tally can be CHECKED rather than assumed: if pkg ever resolves a
+    /// correction into some third outcome, `applied + unresolved` quietly
+    /// stops summing to what we sent, and the ones that went nowhere
+    /// leave no trace — the same silent-repair failure one level up.
+    pub corrections_processed: i64,
 }
 
 /// Push one episode through the graph server's `kg_upsert`. The tool's error
@@ -379,6 +385,7 @@ pub async fn push_episode(client: &Arc<McpClient>, args: Value) -> Result<PushOu
         // with defaults keeps an older pkg working unchanged.
         corrections_applied: v["corrections"]["superseded"].as_i64().unwrap_or(0),
         corrections_unresolved: v["corrections"]["unresolved"].as_i64().unwrap_or(0),
+        corrections_processed: v["corrections"]["processed"].as_i64().unwrap_or(0),
     })
 }
 
