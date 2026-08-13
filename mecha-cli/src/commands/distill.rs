@@ -134,14 +134,35 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let transcript = distill::render_for_distill(&convo.messages, 6000, 18000);
         match distiller.distill(&transcript).await {
             Ok(Some(out)) => {
+                // Decide what may leave BEFORE writing the body: a carrier
+                // describing a withheld correction would launder the claim
+                // into episode prose, which pkg's extractor mines into
+                // candidates anyway.
+                let sendable = distill::corrections_for(taint, &out.corrections).to_vec();
+                let withheld = out.corrections.len() - sendable.len();
+                if out.episode.trim().is_empty() && sendable.is_empty() {
+                    // Nothing to remember and nothing we may repair —
+                    // pushing a carrier for this would be an episode about
+                    // corrections that were not sent.
+                    store.mark_distilled(&meta.id)?;
+                    skipped += 1;
+                    if withheld > 0 {
+                        println!(
+                            "· {} — {withheld} correction(s) withheld (untrusted or unknown \
+                             timeline); nothing to push",
+                            meta.id
+                        );
+                    }
+                    continue;
+                }
                 let push_args = distill::upsert_args(
                     &meta.id,
                     &path.display().to_string(),
                     &meta.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
-                    &out.body(),
+                    &out.body(&sendable),
                     taint,
                     distiller.model(),
-                    &out.corrections,
+                    &sendable,
                 );
                 match distill::push_episode(&client, push_args).await {
                     Ok(outcome) => {
@@ -156,7 +177,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                             // distiller judged the session not worth
                             // remembering, and counting it as a distilled
                             // episode would report the opposite.
-                            if out.is_corrections_only() {
+                            if out.is_corrections_only(&sendable) {
                                 ", corrections only"
                             } else {
                                 ""
@@ -169,14 +190,25 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                             }
                         );
                         // A correction that resolved to nothing is a repair
-                        // that silently did not happen — say so.
-                        if !out.corrections.is_empty() {
+                        // that silently did not happen — say so. Report
+                        // SENT and WITHHELD separately: a zeroed tally for
+                        // a correction we never transmitted reads exactly
+                        // like pkg failing to pin one down, and the session
+                        // is marked distilled either way.
+                        if !sendable.is_empty() {
                             println!(
                                 "  {} correction{} sent · {} repaired · {} sent to review",
-                                out.corrections.len(),
-                                if out.corrections.len() == 1 { "" } else { "s" },
+                                sendable.len(),
+                                if sendable.len() == 1 { "" } else { "s" },
                                 outcome.corrections_applied,
                                 outcome.corrections_unresolved
+                            );
+                        }
+                        if withheld > 0 {
+                            println!(
+                                "  {withheld} correction{} withheld — the session's timeline \
+                                 is untrusted or unknown",
+                                if withheld == 1 { "" } else { "s" }
                             );
                         }
                     }

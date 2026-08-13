@@ -145,34 +145,57 @@ impl Distilled {
         self.episode.trim().is_empty() && self.corrections.is_empty()
     }
 
-    /// The body to push. A corrections-only session has no episode text,
-    /// but pkg REQUIRES a non-empty body — pushing "" would bail, leave
-    /// the session unledgered, and re-distill it every night forever, a
-    /// model call per run with no way to converge. So the carrier says
-    /// what actually happened, which is honest evidence in its own right:
-    /// the user corrected the graph, even though the session was
-    /// otherwise not worth remembering.
-    pub fn body(&self) -> String {
+    /// The body to push, given the corrections that may actually LEAVE
+    /// this session (see [`corrections_for`]).
+    ///
+    /// A corrections-only session has no episode text, but pkg requires a
+    /// non-empty body — pushing "" would bail, leave the session
+    /// unledgered, and re-distill it every night forever. So the carrier
+    /// says what happened, which is honest evidence in its own right.
+    ///
+    /// It takes the SENDABLE set, not `self.corrections`, and that is the
+    /// whole point: describing a withheld correction would paraphrase the
+    /// claim into episode prose, pkg's extractor would mine that prose
+    /// into candidates, and the untrusted claim would reach the review
+    /// queue anyway — stripped of the structure that marked it a repair.
+    /// The taint gate has to be applied before the body is written, not
+    /// after.
+    pub fn body(&self, sendable: &[Correction]) -> String {
         if !self.episode.trim().is_empty() {
             return self.episode.trim().to_string();
         }
-        let what: Vec<&str> = self
-            .corrections
-            .iter()
-            .map(|c| c.wrong.trim())
-            .take(3)
-            .collect();
+        let what: Vec<&str> = sendable.iter().map(|c| c.wrong.trim()).take(3).collect();
         format!(
             "The user corrected {} thing{} the knowledge graph had wrong: {}.",
-            self.corrections.len(),
-            if self.corrections.len() == 1 { "" } else { "s" },
+            sendable.len(),
+            if sendable.len() == 1 { "" } else { "s" },
             what.join("; ")
         )
     }
 
-    /// True when the only reason to push is the repairs.
-    pub fn is_corrections_only(&self) -> bool {
-        self.episode.trim().is_empty() && !self.corrections.is_empty()
+    /// True when the only reason to push is the repairs that may be sent.
+    pub fn is_corrections_only(&self, sendable: &[Correction]) -> bool {
+        self.episode.trim().is_empty() && !sendable.is_empty()
+    }
+}
+
+/// The corrections that may leave a session: all of them from a trusted
+/// timeline, none otherwise.
+///
+/// Split out so the CALLER can see the decision. Applying it only inside
+/// [`upsert_args`] made the withholding invisible — the CLI would report
+/// a zeroed pkg tally, indistinguishable from pkg receiving a correction
+/// and failing to pin it down, and then mark the session distilled so it
+/// is never re-examined. A repair dropped for a good reason still has to
+/// be a repair the operator can see was dropped.
+///
+/// Unknown taint (`None` — a torn or pre-taint transcript, not a rare
+/// path) counts as untrusted: uncovered never masquerades as clean.
+pub fn corrections_for(taint: Option<Taint>, corrections: &[Correction]) -> &[Correction] {
+    if matches!(taint, Some(t) if !t.untrusted) {
+        corrections
+    } else {
+        &[]
     }
 }
 
@@ -300,11 +323,13 @@ pub fn upsert_args(
     // fetched page and evict a true belief with nobody in the loop. The
     // episode still goes (losing the record of a real afternoon because a
     // web page was open would gut the memory); the repairs do not.
-    // Unknown taint counts as untrusted — uncovered never masquerades as
-    // clean, the same rule the snapshot above follows.
-    let trusted = matches!(taint, Some(t) if !t.untrusted);
-    if !corrections.is_empty() && trusted {
-        meta["corrections"] = serde_json::to_value(corrections).unwrap_or(Value::Null);
+    //
+    // Re-applied here even though the caller gates first: this is the
+    // boundary to pkg, and a boundary that trusts its caller is not one.
+    // Both paths call the same function, so they cannot drift.
+    let sendable = corrections_for(taint, corrections);
+    if !sendable.is_empty() {
+        meta["corrections"] = serde_json::to_value(sendable).unwrap_or(Value::Null);
     }
     json!({
         "kind": "episode",
@@ -550,20 +575,39 @@ mod tests {
                 fact_uid: None,
             }],
         };
-        assert!(out.is_corrections_only());
-        let body = out.body();
+        let clean = Taint {
+            private: false,
+            untrusted: false,
+        };
+        let sendable = corrections_for(Some(clean), &out.corrections);
+        assert!(out.is_corrections_only(sendable));
+        let body = out.body(sendable);
         assert!(!body.trim().is_empty());
         assert!(
             body.contains("Priya is at Brown"),
             "the carrier says what happened"
         );
 
+        // Untrusted: nothing may be sent, so there is nothing to carry —
+        // and crucially the body must NOT paraphrase the withheld claim,
+        // or pkg's extractor would mine it into candidates anyway.
+        let withheld = corrections_for(None, &out.corrections);
+        assert!(withheld.is_empty());
+        assert!(
+            !out.is_corrections_only(withheld),
+            "an untrusted corrections-only session has no reason to push"
+        );
+        assert!(
+            !out.body(withheld).contains("Priya is at Brown"),
+            "a withheld correction must not launder into episode prose"
+        );
+
         let normal = Distilled {
             episode: "  Did a thing.  ".into(),
             corrections: vec![],
         };
-        assert_eq!(normal.body(), "Did a thing.");
-        assert!(!normal.is_corrections_only());
+        assert_eq!(normal.body(&[]), "Did a thing.");
+        assert!(!normal.is_corrections_only(&[]));
     }
 
     #[test]
