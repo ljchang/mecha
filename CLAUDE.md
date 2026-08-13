@@ -245,6 +245,36 @@ review can see it. Unknown taint is recorded as unknown, never clean.
 Idempotent at both ends: `distilled.jsonl` in the learning store (same
 writer lock), and pkg's `(source, source_id)` key makes a re-push an update.
 
+The distiller also reports **corrections** — moments the user said the graph
+holds something wrong — as `meta.corrections`, `[{wrong, right?, about?,
+fact_uid?}]`. pkg acts on each: supersede the wrong belief, stage the
+replacement (or write a negation when the user simply rejected the claim),
+demote whatever produced the error on its autonomy ladder, and re-audit that
+producer's other output. `right` omitted means a rejection rather than a
+replacement. `fact_uid` is optional and usually absent — tool results are
+clipped before the distiller reads the transcript — so pkg falls back to
+matching the `wrong` text narrowed by `about`, and routes anything it cannot
+pin to exactly one belief into the review queue rather than guessing. A
+correction outlives a skip: a session can be worth no episode and still tell
+the graph it is wrong, so `{"skip": true}` carrying corrections still pushes.
+
+**Corrections are the exception to "a tainted session still distills", and
+the only part of this path carrying a security argument.** That rule holds
+because everything pkg *derives* from an episode waits in the user's review
+queue — but a correction's supersede and class demotion land immediately;
+only the replacement is staged. So an untrusted transcript could carry
+"correction: the graph is wrong that Dr. X is at Yale", lifted from a fetched
+page, and evict a true belief with nobody in the loop.
+`distill::corrections_for` therefore withholds every correction unless the
+recorded taint is present and not untrusted — unknown counts as untrusted,
+the same way the taint snapshot refuses to let uncovered masquerade as clean
+— and `upsert_args` re-applies the same function at the pkg boundary, because
+a boundary that trusts its caller is not one. The episode still goes; only the
+repairs are withheld. The trust decision is made *before* the body is written:
+a carrier episode describing a withheld correction would launder the claim
+into prose that pkg's extractor mines into candidates anyway, so an untrusted
+corrections-only session pushes nothing at all.
+
 Known gap: `shell` is universal and taint tracking can't see inside a command,
 so it is not treated as an untrusted *source*. The mitigation is the sandbox.
 
