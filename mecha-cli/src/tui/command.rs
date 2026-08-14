@@ -22,6 +22,8 @@ pub enum Command {
     Frontdoor,
     /// Open polls on the gate: tallies, close with an outcome, export.
     Polls,
+    /// Every store's distress in one pass, with the way out beside each.
+    Doctor,
     /// `None` shows the current model; `Some` switches to it.
     Model(Option<String>),
     Provider(Option<String>),
@@ -51,59 +53,14 @@ pub enum Command {
     BadReview(String),
 }
 
-/// What happens when a run this session started finishes having staged
-/// outbox items.
-///
-/// A *session mode set here*, deliberately never inferred from the prompt: a
-/// directive the model interprets ("this send is preapproved") is a directive
-/// an injected page can also write, and release policy must not be decidable
-/// by anything that shares the context window with third-party text. Only the
-/// items the finishing run itself staged are in scope — the rest of the queue
-/// (overnight triage, other sessions) is untouched by every mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ReviewMode {
-    /// Open the /outbox modal at run end, scoped to that run's drafts. The
-    /// default: a draft you just asked for is a draft you are about to read.
-    #[default]
-    Now,
-    /// A badge and a notice; review whenever you get to it.
-    Later,
-    /// Release the run's drafts at run end — except tainted ones, which stop
-    /// for review regardless: the approval happened *before* the run read
-    /// whatever armed the taint, so it cannot cover what was drafted after.
-    Auto,
-}
-
-impl ReviewMode {
-    pub fn name(self) -> &'static str {
-        match self {
-            ReviewMode::Now => "now",
-            ReviewMode::Later => "later",
-            ReviewMode::Auto => "auto",
-        }
-    }
-
-    /// One line on what the mode does, shown when it is set or asked about.
-    pub fn describe(self) -> &'static str {
-        match self {
-            ReviewMode::Now => "drafts a run stages open for review when it finishes",
-            ReviewMode::Later => "drafts wait — the outbox badge says how many, /outbox reviews",
-            ReviewMode::Auto => {
-                "drafts a run stages are released when it finishes — tainted drafts \
-                 still stop for review, and nothing releases after a failed or \
-                 interrupted run"
-            }
-        }
-    }
-}
+/// The release-policy mode `/review` sets. The enum, the release rule and
+/// the descriptions live in `crate::review_policy` — one encoding, shared
+/// with the Slack connector's `review` command word, so the two surfaces
+/// cannot drift about what `auto` releases.
+pub use crate::review_policy::ReviewMode;
 
 fn parse_review(s: &str) -> Option<ReviewMode> {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "now" => Some(ReviewMode::Now),
-        "later" => Some(ReviewMode::Later),
-        "auto" => Some(ReviewMode::Auto),
-        _ => None,
-    }
+    ReviewMode::parse(s)
 }
 
 /// Parse a line of input as a command, or `None` if it is an ordinary message.
@@ -132,6 +89,7 @@ pub fn parse(line: &str) -> Option<Command> {
         // component's name and the CLI's.
         "frontdoor" | "requests" => Command::Frontdoor,
         "polls" | "poll" => Command::Polls,
+        "doctor" => Command::Doctor,
         "model" | "m" => Command::Model(arg.map(str::to_string)),
         "provider" | "p" => Command::Provider(arg.map(str::to_string)),
         "usage" => Command::Usage,
@@ -277,13 +235,14 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 15] = [
+pub const NAMES: [&str; 16] = [
     "help",
     "tools",
     "triggers",
     "outbox",
     "frontdoor",
     "polls",
+    "doctor",
     "review",
     "model",
     "provider",
@@ -354,6 +313,7 @@ pub const HELP: &str = "\
   /outbox                staged outbound drafts: read, edit, send, reject
   /frontdoor             inbound requests: read, extract, triage, close
   /polls                 open polls on the gate: tallies, close, export
+  /doctor                what is silently wrong across the stores, and the way out
   /review [now|later|auto]      what happens when a run stages drafts
   /model [id]            show or switch the model
   /provider [name]       show or switch the provider

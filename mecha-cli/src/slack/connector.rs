@@ -29,8 +29,10 @@ use mecha_slack::{blocks, chat, Slack, SocketMode, SocketOptions};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use super::actions::{self, Action, ActionLedger, Executor};
 use super::approve::{self, Answer, Mode, SlackApprover};
 use super::pump::{pump, PumpConfig};
+use super::review::{self, ReviewMode};
 use super::threads::{Event, RunMarker, ThreadRecord, ThreadStore};
 use crate::{setup, GlobalOpts};
 
@@ -205,6 +207,8 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         staged_before: HashMap::new(),
         files_before: HashMap::new(),
         outbox_root,
+        ledger: Arc::new(ActionLedger::open_default()),
+        review: HashMap::new(),
         provider,
         model,
         config: prepared_config,
@@ -360,6 +364,15 @@ struct State {
     /// The workspace as it stood when each run began.
     files_before: HashMap<String, HashMap<PathBuf, (u64, std::time::SystemTime)>>,
     outbox_root: std::path::PathBuf,
+    /// Who tapped what and what became of it — the audit trail no store
+    /// carries, shared by every spawned execution.
+    ledger: Arc<ActionLedger>,
+    /// Per-thread release policy, keyed by thread key. **In memory on
+    /// purpose, never on the thread record**: the mode is session-scoped and
+    /// expires with this process — the same eviction that orphans a
+    /// mid-flight run clears every mode with it, and a restart resets every
+    /// thread to carding everything. See `review.rs`.
+    review: HashMap<String, review::Setting>,
     provider: String,
     model: String,
     config: mecha_core::config::Config,
@@ -411,6 +424,85 @@ impl State {
         ) else {
             return;
         };
+
+        // The `doctor` command word, matched before the text can become a
+        // prompt or a steering line — the same precedence slash commands get
+        // in the TUI. Owner-tier only by construction: the gate above already
+        // refused everyone else, and the report names stores, accounts and
+        // stuck items, which is the user's private surface. The examination
+        // is spawned work, never the ack path — it reads every store and
+        // shells out to systemctl, and the three-second ack budget is
+        // Slack's.
+        if super::doctor::is_doctor_command(&text) {
+            let slack = self.slack.clone();
+            let (channel, thread_ts) = (channel.clone(), thread_ts.clone());
+            tokio::spawn(async move {
+                let (text, blocks) = super::doctor::report().await;
+                let _ =
+                    chat::post_message(&slack, &channel, Some(&thread_ts), &text, blocks).await;
+            });
+            return;
+        }
+
+        // The `triggers` command word — the schedule with per-row controls,
+        // on the `doctor` pattern: gated before the word is matched, store
+        // read for display in spawned work, every button a typed action.
+        if super::triggers::is_triggers_command(&text) {
+            let slack = self.slack.clone();
+            let (channel, thread_ts) = (channel.clone(), thread_ts.clone());
+            tokio::spawn(async move {
+                let (text, blocks) = super::triggers::listing().await;
+                let _ =
+                    chat::post_message(&slack, &channel, Some(&thread_ts), &text, blocks).await;
+            });
+            return;
+        }
+
+        // The `review` command word — the explicit owner gesture, and the
+        // only thing that can set a thread's release policy. Matched with the
+        // same precedence as `doctor`, before the text can become a prompt or
+        // a steering line, so the model never sees it and nothing the model
+        // says can be it: release policy must not be decidable by anything
+        // sharing a context window with third-party text (the `/review`
+        // rule). The gate above already proved the speaker is an owner.
+        if let Some(asked) = review::command(&text) {
+            let reply = match asked {
+                Some(mode) => {
+                    // Scope follows where the word was spoken (F8): inside a
+                    // thread it governs that thread; as a top-level message it
+                    // governs the channel's subsequent top-level prompts —
+                    // keyed to its own message's ts it would confirm a policy
+                    // no later message ever inherits. The raw `thread_ts`
+                    // (never the fallen-back thread key) is what tells the
+                    // two apart, and the confirmation names the real scope.
+                    let (key, scope) = review::scope_for(&channel, event.thread_ts.as_deref());
+                    let who = event.user.clone().unwrap_or_default();
+                    self.review
+                        .insert(key, review::Setting { mode, set_by: who });
+                    format!(
+                        "Review mode for {scope} is now `{}` — {}. Tainted drafts \
+                         always stop for review, and the mode lasts only while the \
+                         connector runs.",
+                        mode.name(),
+                        mode.describe()
+                    )
+                }
+                None => {
+                    let key = super::threads::key_for(&channel, &thread_ts);
+                    let mode = review::effective(&self.review, &key, &channel)
+                        .map(|s| s.mode)
+                        .unwrap_or(ReviewMode::Now);
+                    format!(
+                        "Review mode is `{}` — {}. Set it with `review now|later|auto`.",
+                        mode.name(),
+                        mode.describe()
+                    )
+                }
+            };
+            let _ = chat::post_message(&self.slack, &channel, Some(&thread_ts), &reply, None)
+                .await;
+            return;
+        }
 
         let record = match self
             .threads
@@ -738,22 +830,34 @@ impl State {
                 // A run that staged drafts is not finished from the person's
                 // side, and the state says so.
                 let staged = outcome.tool_calls.iter().any(|c| c.staged);
+                // Whether the run said everything it meant to. `review auto`
+                // releases nothing after an errored or early-stopped run — a
+                // cancelled run's drafts are half a thought — but its
+                // untainted drafts still card below, so review stays
+                // possible from the phone. The rule itself lives in
+                // `review_policy::auto_releases` (F1/F10).
+                let finished_clean = !outcome.stop_cause.is_early();
                 let _ = self.threads.apply(&done.key, Event::Finished { staged });
                 self.post_artifacts(&done.key).await;
                 if staged {
-                    self.offer_drafts(&done.key).await;
+                    self.offer_drafts(&done.key, finished_clean).await;
                 }
             }
             Err(error) => {
                 let _ = self.threads.apply(&done.key, Event::Errored);
                 // Posted, never only logged: a failure the person cannot see
                 // is indistinguishable from a run that is still thinking.
+                // The breadcrumb is owner-tier by construction — the gate
+                // lets nobody else start a run, so every thread this posts
+                // into is an owner's.
                 if let Ok(Some(r)) = self.threads.get(&done.key) {
                     let _ = chat::post_message(
                         &self.slack,
                         &r.channel_id,
                         Some(&r.thread_ts),
-                        &format!("The run failed: {error}"),
+                        &format!(
+                            "The run failed: {error} — send `doctor` for a health report"
+                        ),
                         None,
                     )
                     .await;
@@ -934,7 +1038,7 @@ impl State {
     /// This is the phone UI `PUBLIC-SURFACE-DESIGN.md` §11 deferred as needing
     /// a home-side server. It needs none: the outbox is already the review
     /// surface, and Slack is already a screen the owner is holding.
-    async fn offer_drafts(&mut self, key: &str) {
+    async fn offer_drafts(&mut self, key: &str, finished_clean: bool) {
         let Ok(Some(record)) = self.threads.get(key) else {
             return;
         };
@@ -964,27 +1068,77 @@ impl State {
             return;
         }
 
+        // The thread's release policy — its own, else its channel's (F8).
+        // Default is `now` — card everything — and the setting only exists
+        // while this process does (see `review.rs`). This point is reached
+        // after early-stopped runs too: their drafts card, they just never
+        // auto-release, and `finished_clean` below is what carries that.
+        let setting = review::effective(&self.review, key, &record.channel_id).cloned();
+        let mode = setting
+            .as_ref()
+            .map(|s| s.mode)
+            .unwrap_or(ReviewMode::Now);
+
+        if mode == ReviewMode::Later {
+            let _ = chat::post_message(
+                &self.slack,
+                &record.channel_id,
+                Some(&record.thread_ts),
+                &format!(
+                    "{} draft(s) staged — waiting in the outbox (`mecha outbox review`, \
+                     or send `review now` and re-run).",
+                    fresh.len()
+                ),
+                None,
+            )
+            .await;
+            return;
+        }
+
+        // Auto mode after an early stop: say why nothing releases, once,
+        // before the cards — the same notice the TUI posts.
+        if mode == ReviewMode::Auto && !finished_clean {
+            let _ = chat::post_message(
+                &self.slack,
+                &record.channel_id,
+                Some(&record.thread_ts),
+                "The run stopped early — nothing auto-releases. Its drafts are \
+                 carded below for review.",
+                None,
+            )
+            .await;
+        }
+
         for item in fresh {
             // The taint snapshot rides on the item, and a draft written while
             // the trifecta was armed is the one a person must look at hardest.
             let armed = item.taint.private && item.taint.untrusted;
-            let heading = if armed {
-                format!(
-                    "*⚠️ Draft — written with the trifecta armed*\n`{}`",
-                    item.tool
-                )
-            } else {
-                format!("*Draft*\n`{}`", item.tool)
-            };
-            let blocks = vec![
-                blocks::section(&heading),
-                blocks::section(&format!("```\n{}\n```", truncate_for_slack(&item.summary))),
-                blocks::context(&format!("id `{}` · nothing has been sent", item.id)),
-                blocks::actions(vec![
-                    blocks::button("slack_outbox_send", "Send", &item.id, Some("primary")),
-                    blocks::button("slack_outbox_reject", "Reject", &item.id, Some("danger")),
-                ]),
-            ];
+            // `review auto`, owner-set: untainted drafts this thread's run
+            // staged release without a card. The whole decision — the tainted
+            // exclusion (a mode set before the hostile page was fetched
+            // authorises nothing about what came after) *and* the
+            // early-stop exclusion — is `review_policy::auto_releases`'s,
+            // shared with the TUI so neither surface can forget half of it.
+            // The ledger row attributes the release to the mode and the
+            // owner who set it, so "who released this" stays answerable.
+            if releases_without_card(setting.as_ref(), armed, finished_clean) {
+                let setter = setting
+                    .as_ref()
+                    .map(|s| s.set_by.clone())
+                    .unwrap_or_default();
+                self.dispatch_action(
+                    Action::OutboxSend {
+                        id: item.id.clone(),
+                    },
+                    &setter,
+                    "review-auto",
+                    ActionCard::Reply {
+                        channel: record.channel_id.clone(),
+                        thread_ts: record.thread_ts.clone(),
+                    },
+                );
+                continue;
+            }
             // No map of where the card went: a button press carries its own
             // channel and message ts, which is what makes a card still work
             // after the connector restarts.
@@ -993,107 +1147,179 @@ impl State {
                 &record.channel_id,
                 Some(&record.thread_ts),
                 "A draft is waiting for review.",
-                Some(blocks),
+                Some(draft_offer_blocks(&item)),
             )
             .await;
         }
     }
 
-    /// Whether a draft was written with both taint legs armed.
-    fn is_tainted(&self, id: &str) -> bool {
-        mecha_core::outbox::OutboxStore::open(&self.outbox_root)
-            .ok()
-            .and_then(|s| s.item(id).ok())
-            .is_some_and(|i| i.taint.private && i.taint.untrusted)
+    /// One draft, re-read from the store — the state every press-time
+    /// decision runs against. An exact single-file read on the blocking pool,
+    /// never `items()`'s scan of the whole outbox on the event-dispatch loop:
+    /// this loop serves every thread's events, and a directory of drafts is
+    /// as slow as its history is long. Button values carry full store-minted
+    /// ids, and `item_exact` refuses a hostile shape before it touches the
+    /// filesystem.
+    async fn outbox_item(&self, id: &str) -> Option<mecha_core::outbox::OutboxItem> {
+        let root = self.outbox_root.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            mecha_core::outbox::OutboxStore::open(&root)
+                .ok()?
+                .item_exact(&id)
+                .ok()
+                .flatten()
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// The second step for a tainted draft: the full arguments, and a button
-    /// that means what it says.
+    /// that means what it says. `item` is the read the caller already made
+    /// for the taint decision — reusing it is what keeps one press one read.
     ///
     /// The TUI shows the whole call in red and confirms before releasing one
     /// of these, and refuses to auto-release them at all. A single
     /// primary-styled Send that ran `outbox send -y` gave a phone less care
-    /// than a terminal, on the drafts that deserve the most.
-    async fn ask_to_confirm_tainted(&mut self, id: &str, channel: &str, ts: &str) {
-        let args = mecha_core::outbox::OutboxStore::open(&self.outbox_root)
-            .ok()
-            .and_then(|s| s.item(id).ok())
-            .map(|i| serde_json::to_string_pretty(&i.args).unwrap_or_default())
-            .unwrap_or_default();
-        let card = vec![
-            blocks::section(
-                "*⚠️ This draft was written while the trifecta was armed.*\nPrivate data and \
-                 untrusted content were both in the conversation that produced it. The full \
-                 arguments are below — read them before sending.",
-            ),
-            blocks::section(&format!("```\n{}\n```", truncate_for_slack(&args))),
-            blocks::actions(vec![
-                blocks::button(
-                    "slack_outbox_send_confirm",
-                    "Send anyway",
-                    id,
-                    Some("danger"),
-                ),
-                blocks::button("slack_outbox_reject", "Reject", id, None),
-            ]),
-        ];
-        let _ = chat::update(
-            &self.slack,
-            channel,
-            ts,
-            "This draft needs a second look before it is sent.",
-            Some(card),
-        )
-        .await;
+    /// than a terminal, on the drafts that deserve the most. The card is a
+    /// pure function (`tainted_confirm_card`) because its two rules have
+    /// tests: no Send on a draft the surface could not fully show, and no
+    /// Send on a draft the store could not read at all (F3) — a transient
+    /// store failure used to unwrap to empty arguments and offer a live Send
+    /// over zero shown bytes.
+    async fn ask_to_confirm_tainted(
+        &mut self,
+        id: &str,
+        item: Option<&mecha_core::outbox::OutboxItem>,
+        channel: &str,
+        ts: &str,
+    ) {
+        let (text, card) = tainted_confirm_card(id, item);
+        let _ = chat::update(&self.slack, channel, ts, &text, Some(card)).await;
     }
 
-    /// Release or reject a draft by driving the CLI, exactly as the TUI does.
+    /// Dispatch one action: a ledger row, an eagerly retired control, the
+    /// execution in spawned work, and the outcome read back from the store —
+    /// never from the child's exit alone.
     ///
     /// A child process rather than a library call, for the TUI's reasons: one
-    /// implementation of releasing, no way for this surface to do something
-    /// `mecha outbox` cannot, and a release can take a while because it may
-    /// start MCP servers. It is spawned into a task so the event loop keeps
-    /// answering while it runs.
-    fn resolve_draft(&mut self, id: &str, send: bool, who: &str, channel: String, ts: String) {
+    /// implementation of each verb, no way for this surface to do something
+    /// the command line cannot, and every store guard (the send flock, the
+    /// trigger flock, the pending checks) inherited rather than reimplemented.
+    fn dispatch_action(
+        &mut self,
+        action: Action,
+        who: &str,
+        surface: &'static str,
+        target: ActionCard,
+    ) {
+        let tap_id = actions::new_tap_id();
         let slack = self.slack.clone();
-        let id = id.to_string();
+        let ledger = Arc::clone(&self.ledger);
+        let executor = Executor {
+            outbox_root: self.outbox_root.clone(),
+        };
         let who = who.to_string();
         tokio::spawn(async move {
-            let exe = std::env::current_exe().unwrap_or_else(|_| "mecha".into());
-            let mut cmd = tokio::process::Command::new(exe);
-            if send {
-                cmd.args(["outbox", "send", &id, "-y"]);
-            } else {
-                cmd.args(["outbox", "reject", &id, "--reason", "rejected from Slack"]);
-            }
-            let outcome = cmd.output().await;
-            let (verb, detail) = match outcome {
-                Ok(o) if o.status.success() => {
-                    (if send { "sent" } else { "rejected" }, String::new())
+            // The dispatch row lands first, before anything runs: a crash
+            // between here and the outcome row is exactly when the record
+            // matters. Inside the spawned task rather than on the dispatch
+            // loop — the append is blocking fs, and the loop it sat on
+            // serves every thread's events.
+            ledger.dispatched(&tap_id, &who, &action, surface);
+            let pending = format!("⏳ {} — <@{}>", action.describe(), who);
+            // Retire the control before the child runs. For a one-card
+            // message that is the card itself; a multi-finding doctor report
+            // cannot be rewritten without destroying the rest of it, so the
+            // dispatch is announced as a reply and the store-state guards
+            // (the restart's re-examination, the flocks, the pending checks)
+            // are the defence — which §5 requires anyway: the card rewrite
+            // is never the *only* one.
+            //
+            // `card_ts` is the message the outcome can edit; `reply_ts` is
+            // where a fresh, notifying reply belongs when one is owed.
+            let (channel, card_ts, reply_ts) = match &target {
+                ActionCard::Rewrite {
+                    channel,
+                    ts,
+                    thread_ts,
+                } => {
+                    let _ = chat::update(
+                        &slack,
+                        channel,
+                        ts,
+                        &pending,
+                        Some(vec![blocks::context(&pending)]),
+                    )
+                    .await;
+                    (
+                        channel.clone(),
+                        Some(ts.clone()),
+                        thread_ts.clone().unwrap_or_else(|| ts.clone()),
+                    )
                 }
-                Ok(o) => (
-                    "failed",
-                    String::from_utf8_lossy(&o.stderr)
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .to_string(),
-                ),
-                Err(e) => ("failed", e.to_string()),
+                ActionCard::Reply { channel, thread_ts } => {
+                    let ts = chat::post_message(&slack, channel, Some(thread_ts), &pending, None)
+                        .await
+                        .ok();
+                    (channel.clone(), ts, thread_ts.clone())
+                }
             };
-            let line = if detail.is_empty() {
-                format!("Draft `{id}` {verb} by <@{who}>")
-            } else {
-                format!("Draft `{id}` {verb} by <@{who}> — {detail}")
-            };
-            let _ = chat::update(
-                &slack,
-                &channel,
-                &ts,
-                &line,
-                Some(vec![blocks::context(&line)]),
-            )
-            .await;
+
+            let started = std::time::Instant::now();
+            let outcome = executor.run(&action).await;
+            ledger.resolved(&tap_id, &outcome.status, &outcome.line);
+
+            let line = format!("{} · <@{}>", outcome.line, who);
+            // One delivery rule for both targets (F12): the dispatch message
+            // is updated when it exists, and a fresh reply lands when the
+            // dispatch never reached the thread — the outcome must land
+            // somewhere — or when the action ran long enough that a silent
+            // card edit would go unseen (a card edit fires no notification,
+            // and a person who tapped twenty minutes ago has stopped
+            // watching; a slow outbox release with an MCP startup is as slow
+            // as a trigger run). Never both fresh posts: the old shape
+            // double-posted a slow action whose dispatch reply had failed.
+            let (update_card, fresh_reply) =
+                outcome_delivery(card_ts.is_some(), started.elapsed() > Duration::from_secs(60));
+            if update_card {
+                if let Some(ts) = &card_ts {
+                    let _ = chat::update(
+                        &slack,
+                        &channel,
+                        ts,
+                        &line,
+                        Some(vec![blocks::context(&line)]),
+                    )
+                    .await;
+                }
+            }
+            if fresh_reply {
+                let _ = chat::post_message(&slack, &channel, Some(&reply_ts), &line, None).await;
+            }
+
+            // F13: a failed auto-release must leave the phone a path back.
+            // Nobody was shown a card before the release was attempted, so a
+            // draft that stayed pending would otherwise sit invisible until
+            // someone found a terminal — post the card the `now` mode would
+            // have posted, failure already reported above.
+            if let Action::OutboxSend { id } = &action {
+                let item = executor.item(id).await;
+                if failed_auto_release_needs_card(surface, item.as_ref().map(|i| i.status.as_str()))
+                {
+                    let item = item.expect("checked by the predicate");
+                    let _ = chat::post_message(
+                        &slack,
+                        &channel,
+                        Some(&reply_ts),
+                        "The auto-release failed and the draft is still pending — review it \
+                         here.",
+                        Some(draft_offer_blocks(&item)),
+                    )
+                    .await;
+                }
+            }
         });
     }
 
@@ -1234,6 +1460,15 @@ impl State {
             return;
         }
 
+        // A modal submission rides the same envelope and passed the same gate
+        // above, on the same signed field — the owner check runs before the
+        // callback id is so much as read, exactly as it runs before a button
+        // verb is.
+        if interaction.kind == "view_submission" {
+            self.on_view_submission(&interaction);
+            return;
+        }
+
         for action in &interaction.actions {
             let value = action.value.clone().unwrap_or_default();
             match action.action_id.as_str() {
@@ -1247,33 +1482,6 @@ impl State {
                     }
                 }
                 "slack_mode" => self.cycle_mode(&value).await,
-                "slack_outbox_send" | "slack_outbox_send_confirm" | "slack_outbox_reject" => {
-                    let who = interaction
-                        .user_id
-                        .as_deref()
-                        .unwrap_or("someone")
-                        .to_string();
-                    // **Where the card is comes from the payload**, not from an
-                    // in-memory map: a connector restart used to make Send do
-                    // nothing at all, silently, on a card still sitting in the
-                    // thread.
-                    let (Some(channel), Some(ts)) = (
-                        interaction.channel_id.clone(),
-                        interaction.message_ts.clone(),
-                    ) else {
-                        continue;
-                    };
-                    // A draft written with the trifecta armed gets a second
-                    // step showing the full arguments, because every other
-                    // release surface confirms and shows them — `-y` on one tap
-                    // did neither.
-                    if action.action_id == "slack_outbox_send" && self.is_tainted(&value) {
-                        self.ask_to_confirm_tainted(&value, &channel, &ts).await;
-                        continue;
-                    }
-                    let send = action.action_id != "slack_outbox_reject";
-                    self.resolve_draft(&value, send, &who, channel, ts);
-                }
                 "slack_approve" | "slack_approve_run" | "slack_reject" => {
                     // Any press on an approval card is proof someone is
                     // watching — including a late tap on an expired card,
@@ -1335,10 +1543,610 @@ impl State {
                         let _ = self.threads.apply(&key, Event::InputSettled);
                     }
                 }
-                _ => {}
+                // §6's doorways: a terminal-surface remedy translated, never
+                // spawned. The press posts the pending items into the thread
+                // as the cards this connector already knows how to make —
+                // draft cards through the one composer (send/reject, tainted
+                // two-step and all), request cards through the
+                // `for_privileged_run` boundary. Nothing executes; a
+                // replayed press can at most re-post cards.
+                super::doctor::REVIEW_HERE_OUTBOX | super::doctor::REVIEW_HERE_FRONTDOOR => {
+                    let Some(channel) = interaction.channel_id.clone() else {
+                        continue;
+                    };
+                    let Some(thread_ts) = interaction
+                        .thread_ts
+                        .clone()
+                        .or_else(|| interaction.message_ts.clone())
+                    else {
+                        continue;
+                    };
+                    let slack = self.slack.clone();
+                    if action.action_id == super::doctor::REVIEW_HERE_OUTBOX {
+                        let root = self.outbox_root.clone();
+                        tokio::spawn(async move {
+                            review_here_drafts(&slack, &root, &channel, &thread_ts).await;
+                        });
+                    } else {
+                        tokio::spawn(async move {
+                            review_here_requests(&slack, &channel, &thread_ts).await;
+                        });
+                    }
+                }
+                // The modal openers: they execute nothing — the typed action
+                // is constructed only from the gated submission. The
+                // `trigger_id` expires in three seconds and is one-use, so
+                // the view opens before any other work on this press.
+                super::frontdoor::CLOSE_OPEN | super::frontdoor::NEEDS_INFO_OPEN => {
+                    let Some(trigger) = interaction.trigger_id.clone() else {
+                        continue;
+                    };
+                    let Some(seq) = value.parse::<i64>().ok().filter(|s| *s > 0) else {
+                        continue;
+                    };
+                    // Where the card lives, so the submission's outcome can
+                    // retire it. Machine-authored, opaque to the person.
+                    let meta = super::frontdoor::metadata(
+                        seq,
+                        interaction.channel_id.as_deref(),
+                        interaction.message_ts.as_deref(),
+                        interaction.thread_ts.as_deref(),
+                    );
+                    let view = if action.action_id == super::frontdoor::CLOSE_OPEN {
+                        super::frontdoor::close_modal(seq, &meta)
+                    } else {
+                        super::frontdoor::needs_info_modal(seq, &meta)
+                    };
+                    if let Err(e) = mecha_slack::views::open(&self.slack, &trigger, view).await
+                    {
+                        // A tap that silently does nothing is the failure
+                        // this surface keeps naming; say so, and name the
+                        // terminal that always works.
+                        tracing::warn!("could not open the modal for request {seq}: {e}");
+                        if let (Some(channel), Some(ts)) = (
+                            interaction.channel_id.as_deref(),
+                            interaction
+                                .thread_ts
+                                .as_deref()
+                                .or(interaction.message_ts.as_deref()),
+                        ) {
+                            let _ = chat::post_message(
+                                &self.slack,
+                                channel,
+                                Some(ts),
+                                &format!(
+                                    "The form could not open. At a terminal: \
+                                     `mecha frontdoor close {seq} --reason ...` or \
+                                     `mecha frontdoor needs-info {seq} --note ...`"
+                                ),
+                                None,
+                            )
+                            .await;
+                        }
+                    }
+                }
+                // The tainted draft's second tap, re-decided from CURRENT
+                // store state (F6, design §5: the store is the defence, the
+                // card is convenience). The card's ladder ran at composition;
+                // a draft edited afterwards (`mecha outbox edit` keeps it
+                // pending) would otherwise send bytes nobody read. The
+                // button's value carries a fingerprint of the exact argument
+                // bytes the card showed; a press whose store item no longer
+                // matches — edited args, arguments that now truncate, a store
+                // that cannot be read, a pre-fingerprint card — re-cards or
+                // refuses instead of sending.
+                actions::ids::OUTBOX_SEND_CONFIRM => {
+                    let (Some(channel), Some(ts)) = (
+                        interaction.channel_id.clone(),
+                        interaction.message_ts.clone(),
+                    ) else {
+                        continue;
+                    };
+                    let Some((id, _)) = actions::parse_confirm_value(&value) else {
+                        continue;
+                    };
+                    let item = self.outbox_item(id).await;
+                    match confirm_press(&value, item.as_ref()) {
+                        ConfirmPress::Send { id } => {
+                            let who = interaction
+                                .user_id
+                                .as_deref()
+                                .unwrap_or("someone")
+                                .to_string();
+                            self.dispatch_action(
+                                Action::OutboxSend { id },
+                                &who,
+                                "draft-card",
+                                ActionCard::Rewrite {
+                                    channel,
+                                    ts,
+                                    thread_ts: interaction.thread_ts.clone(),
+                                },
+                            );
+                        }
+                        ConfirmPress::Recard { id } => {
+                            // Nothing sends; the fresh card is composed from
+                            // the store as it stands, so the truncated case
+                            // comes back reject-only by the same rule as ever.
+                            let (_, mut card) = tainted_confirm_card(&id, item.as_ref());
+                            card.insert(
+                                0,
+                                blocks::context(
+                                    "⚠️ The draft changed after this card was composed — \
+                                     nothing was sent. Re-read it.",
+                                ),
+                            );
+                            let _ = chat::update(
+                                &self.slack,
+                                &channel,
+                                &ts,
+                                "This draft changed after its card was composed — nothing \
+                                 was sent.",
+                                Some(card),
+                            )
+                            .await;
+                        }
+                        ConfirmPress::Unreadable { id } => {
+                            let (text, card) = tainted_confirm_card(&id, None);
+                            let _ =
+                                chat::update(&self.slack, &channel, &ts, &text, Some(card)).await;
+                        }
+                    }
+                }
+                // Everything else is either an executable action or nothing.
+                // `Action::from_payload` is the whole decision: a fixed verb
+                // from a closed set, a value that is an object id re-resolved
+                // against its store at execution time — an unknown verb or a
+                // value shaped like anything but an id parses to `None` and
+                // is dropped here, before any store is consulted.
+                other => {
+                    let Some(act) = Action::from_payload(other, &value) else {
+                        continue;
+                    };
+                    let who = interaction
+                        .user_id
+                        .as_deref()
+                        .unwrap_or("someone")
+                        .to_string();
+                    // **Where the card is comes from the payload**, not from an
+                    // in-memory map: a connector restart used to make Send do
+                    // nothing at all, silently, on a card still sitting in the
+                    // thread.
+                    let (Some(channel), Some(ts)) = (
+                        interaction.channel_id.clone(),
+                        interaction.message_ts.clone(),
+                    ) else {
+                        continue;
+                    };
+                    // A draft written with the trifecta armed gets a second
+                    // step showing the full arguments, because every other
+                    // release surface confirms and shows them — `-y` on one tap
+                    // did neither. Only the first tap detours; the confirm
+                    // verb resolves to the same typed action. One read decides
+                    // *and* composes: the taint check and the confirm card
+                    // share the same fetched item, instead of scanning the
+                    // store once to decide and again to show.
+                    if other == actions::ids::OUTBOX_SEND {
+                        let item = self.outbox_item(&value).await;
+                        if item
+                            .as_ref()
+                            .is_some_and(|i| i.taint.private && i.taint.untrusted)
+                        {
+                            self.ask_to_confirm_tainted(&value, item.as_ref(), &channel, &ts)
+                                .await;
+                            continue;
+                        }
+                    }
+                    let (surface, target) = match &act {
+                        // A draft card is one message: rewrite it, so the
+                        // button is gone before the child runs.
+                        Action::OutboxSend { .. } | Action::OutboxReject { .. } => (
+                            "draft-card",
+                            ActionCard::Rewrite {
+                                channel,
+                                ts,
+                                thread_ts: interaction.thread_ts.clone(),
+                            },
+                        ),
+                        // A doctor-report button reports beside the report,
+                        // threaded where the report is.
+                        _ => (
+                            "doctor",
+                            ActionCard::Reply {
+                                thread_ts: interaction
+                                    .thread_ts
+                                    .clone()
+                                    .unwrap_or_else(|| ts.clone()),
+                                channel,
+                            },
+                        ),
+                    };
+                    self.dispatch_action(act, &who, surface, target);
+                }
             }
         }
     }
+
+    /// A modal came back. The gate has already run on the signed user; this
+    /// parses and dispatches, fail-closed at every step — unusable metadata,
+    /// missing text, or an unknown callback constructs nothing and nothing
+    /// runs. `Action::from_submission` is the whole decision, exactly as
+    /// `from_payload` is for a button: the seq re-resolves against the
+    /// request store at execution time, and the owner-typed text travels
+    /// only inside the typed action — which is also what puts it in the
+    /// ledger's dispatch row.
+    fn on_view_submission(&mut self, interaction: &Interaction) {
+        let Some(view) = &interaction.view else { return };
+        let Some(meta) = super::frontdoor::parse_metadata(&view.private_metadata) else {
+            tracing::warn!("a view submission carried unusable metadata; nothing ran");
+            return;
+        };
+        let Some(text) = view.values.get(super::frontdoor::TEXT_INPUT) else {
+            tracing::warn!("a view submission carried no text; nothing ran");
+            return;
+        };
+        let Some(act) = Action::from_submission(&view.callback_id, &meta.seq.to_string(), text)
+        else {
+            tracing::warn!(
+                "a view submission ({}) parsed to no action; nothing ran",
+                view.callback_id
+            );
+            return;
+        };
+        let who = interaction
+            .user_id
+            .as_deref()
+            .unwrap_or("someone")
+            .to_string();
+        // The request card the modal was opened from is rewritten in place —
+        // buttons retired before the child runs, the outcome landing where
+        // the card was — with a thread reply as the fallback when the
+        // metadata could not say exactly where the card lives.
+        let target = match (meta.channel, meta.ts, meta.thread_ts) {
+            (Some(channel), Some(ts), thread_ts) => ActionCard::Rewrite {
+                channel,
+                ts,
+                thread_ts,
+            },
+            (Some(channel), None, Some(thread_ts)) => {
+                ActionCard::Reply { channel, thread_ts }
+            }
+            _ => {
+                tracing::warn!("a view submission had nowhere to report; nothing ran");
+                return;
+            }
+        };
+        self.dispatch_action(act, &who, "frontdoor-modal", target);
+    }
+}
+
+/// The outbox half of a Review-here press: every pending draft, carded into
+/// the thread through the one draft-card composer — send/reject, the tainted
+/// two-step and the truncated-reject-only rule all inherited, because the
+/// cards press into the same verbs. Capped, with the cut visible.
+async fn review_here_drafts(
+    slack: &Slack,
+    outbox_root: &std::path::Path,
+    channel: &str,
+    thread_ts: &str,
+) {
+    let items = mecha_core::outbox::OutboxStore::open(outbox_root)
+        .ok()
+        .and_then(|s| s.items().ok())
+        .unwrap_or_default();
+    let mut pending: Vec<_> = items
+        .into_iter()
+        .filter(|i| i.status == "pending")
+        .collect();
+    // Ids are timestamp-prefixed, so this is oldest first — the stuck ones
+    // the finding was about lead.
+    pending.sort_by(|a, b| a.id.cmp(&b.id));
+    if pending.is_empty() {
+        let _ = chat::post_message(
+            slack,
+            channel,
+            Some(thread_ts),
+            "Nothing is pending in the outbox.",
+            None,
+        )
+        .await;
+        return;
+    }
+    let total = pending.len();
+    for item in pending.iter().take(REVIEW_HERE_MAX) {
+        let _ = chat::post_message(
+            slack,
+            channel,
+            Some(thread_ts),
+            "A draft is waiting for review.",
+            Some(draft_offer_blocks(item)),
+        )
+        .await;
+    }
+    if let Some(note) = review_here_note(total, "mecha outbox review") {
+        let _ = chat::post_message(slack, channel, Some(thread_ts), &note, None).await;
+    }
+}
+
+/// The frontdoor half: every waiting request as a card built from the
+/// `for_privileged_run` boundary — a Slack thread is a model-adjacent
+/// surface, so the stranger's prose stays at the terminal. Capped, with the
+/// cut visible.
+async fn review_here_requests(slack: &Slack, channel: &str, thread_ts: &str) {
+    let records = mecha_core::frontdoor::Frontdoor::open_default()
+        .and_then(|f| f.records())
+        .unwrap_or_default();
+    let waiting = super::frontdoor::waiting(&records);
+    if waiting.is_empty() {
+        let _ = chat::post_message(
+            slack,
+            channel,
+            Some(thread_ts),
+            "Nothing is waiting at the front door.",
+            None,
+        )
+        .await;
+        return;
+    }
+    let total = waiting.len();
+    for record in waiting.iter().take(REVIEW_HERE_MAX) {
+        let _ = chat::post_message(
+            slack,
+            channel,
+            Some(thread_ts),
+            &format!("Request {} is waiting.", record.seq),
+            Some(super::frontdoor::request_card(record)),
+        )
+        .await;
+    }
+    if let Some(note) = review_here_note(total, "mecha frontdoor list") {
+        let _ = chat::post_message(slack, channel, Some(thread_ts), &note, None).await;
+    }
+}
+
+/// Where a dispatched action reports.
+///
+/// `Rewrite` retires a one-card message in place — the button is gone before
+/// the child runs, and the outcome lands where the card was. `Reply` is for
+/// controls that live inside a larger message (a doctor report), which cannot
+/// be rewritten without destroying the findings around it: the dispatch and
+/// outcome land as thread replies, and idempotence rests on the store guards,
+/// which §5 requires to be the real defence in every case.
+enum ActionCard {
+    Rewrite {
+        channel: String,
+        ts: String,
+        /// The thread the card sits in, when the payload said — where a slow
+        /// action's fresh, notifying reply lands (F12). Absent, the card's
+        /// own ts is the thread root and stands in.
+        thread_ts: Option<String>,
+    },
+    Reply {
+        channel: String,
+        thread_ts: String,
+    },
+}
+
+/// F12's one delivery rule: `(update the dispatch message, post a fresh
+/// reply)`. The dispatch message is updated whenever it exists; a fresh reply
+/// is owed when the dispatch never landed — the outcome must land somewhere —
+/// or when the action was slow, because a card edit fires no notification.
+/// Never both fresh posts, which was the double-post.
+fn outcome_delivery(dispatch_landed: bool, slow: bool) -> (bool, bool) {
+    (dispatch_landed, !dispatch_landed || slow)
+}
+
+/// F13: whether a finished send needs the draft's card posted afterwards — a
+/// release nobody was carded for (`review auto`) that left the item pending
+/// has no other phone path back to review. Card-tapped releases already have
+/// their card; other surfaces card on demand.
+fn failed_auto_release_needs_card(surface: &str, item_status: Option<&str>) -> bool {
+    surface == "review-auto" && item_status == Some("pending")
+}
+
+/// One pending draft as a review card — Send and Reject carrying the item id.
+///
+/// **The only draft-card composer.** `offer_drafts` (a run's own staged
+/// drafts) and the doctor doorway's review-here batch both post exactly this,
+/// which is what "zero new send paths" means structurally: a review-here card
+/// presses into the same `OUTBOX_SEND` verb, so the tainted detour
+/// (`ask_to_confirm_tainted`, and its truncated-arguments reject-only rule)
+/// and the store's pending check cover it without knowing where the card came
+/// from.
+fn draft_offer_blocks(item: &mecha_core::outbox::OutboxItem) -> Vec<serde_json::Value> {
+    let armed = item.taint.private && item.taint.untrusted;
+    let heading = if armed {
+        format!(
+            "*⚠️ Draft — written with the trifecta armed*\n`{}`",
+            item.tool
+        )
+    } else {
+        format!("*Draft*\n`{}`", item.tool)
+    };
+    vec![
+        blocks::section(&heading),
+        blocks::section(&format!("```\n{}\n```", truncate_for_slack(&item.summary))),
+        blocks::context(&format!("id `{}` · nothing has been sent", item.id)),
+        blocks::actions(vec![
+            blocks::button(actions::ids::OUTBOX_SEND, "Send", &item.id, Some("primary")),
+            blocks::button(
+                actions::ids::OUTBOX_REJECT,
+                "Reject",
+                &item.id,
+                Some("danger"),
+            ),
+        ]),
+    ]
+}
+
+/// How many items a review-here press cards into the thread before naming
+/// the terminal for the rest. A thread is a screen, not a queue; forty cards
+/// is a wall nobody reviews.
+const REVIEW_HERE_MAX: usize = 8;
+
+/// The visible cut when a review-here batch holds more than the cap: the
+/// rest are named, with the terminal surface that shows them all.
+fn review_here_note(total: usize, terminal_cmd: &str) -> Option<String> {
+    let rest = total.saturating_sub(REVIEW_HERE_MAX);
+    (rest > 0).then(|| {
+        format!("{rest} more not shown here — the rest at the terminal: `{terminal_cmd}`")
+    })
+}
+
+/// The tainted draft's confirm card, and the one rule it enforces: **you may
+/// reject what you cannot fully read; you may not send it.**
+///
+/// For a draft whose arguments fit under Slack's block cap, the red card is
+/// the TUI's full-arguments-in-red review and the confirm tap is as informed
+/// as the terminal's `y`. For a draft the cap truncates, the reviewer would
+/// be approving bytes the surface could not show — the exact "reading one
+/// file while approving another" failure the outbox's workspace-resolution
+/// rule exists to prevent, in miniature — so the card carries **no Send
+/// button at all**: it shows what fits, says what was cut, and names the
+/// terminal as where this draft is released. Reject stays; declining needs
+/// no completeness.
+fn tainted_confirm_blocks(id: &str, args: &str) -> Vec<serde_json::Value> {
+    let shown = truncate_for_slack(args);
+    let cut = shown != args;
+    let mut card = vec![
+        blocks::section(
+            "*⚠️ This draft was written while the trifecta was armed.*\nPrivate data and \
+             untrusted content were both in the conversation that produced it. The full \
+             arguments are below — read them before sending.",
+        ),
+        blocks::section(&format!("```\n{shown}\n```")),
+    ];
+    if cut {
+        card.push(blocks::section(&format!(
+            "*The arguments are longer than this card can show* ({} of {} characters). \
+             A draft you cannot fully read is not released from here: run \
+             `mecha outbox show {id}` in a terminal to read all of it and release it \
+             there.",
+            shown.chars().count(),
+            args.chars().count()
+        )));
+        card.push(blocks::actions(vec![blocks::button(
+            actions::ids::OUTBOX_REJECT,
+            "Reject",
+            id,
+            Some("danger"),
+        )]));
+    } else {
+        card.push(blocks::actions(vec![
+            // The value carries a fingerprint of the exact bytes this card
+            // shows (F6): the press re-proves the store still holds them
+            // before anything sends. Machine-authored correlation state, not
+            // a command fragment — the id half still resolves against the
+            // store, the fingerprint half only ever equals or differs.
+            blocks::button(
+                actions::ids::OUTBOX_SEND_CONFIRM,
+                "Send anyway",
+                &actions::confirm_value(id, args),
+                Some("danger"),
+            ),
+            blocks::button(actions::ids::OUTBOX_REJECT, "Reject", id, None),
+        ]));
+    }
+    card
+}
+
+/// The tainted second step, composed from CURRENT store state: the full red
+/// card when the item could be read, and an error card — reject-only — when
+/// it could not (F3). The old shape unwrapped an unreadable item to empty
+/// arguments, `cut = false`, and offered a live Send over zero shown bytes;
+/// nothing is offered for sending on bytes nobody can see.
+fn tainted_confirm_card(
+    id: &str,
+    item: Option<&mecha_core::outbox::OutboxItem>,
+) -> (String, Vec<serde_json::Value>) {
+    match item {
+        Some(item) => {
+            let args = serde_json::to_string_pretty(&item.args).unwrap_or_default();
+            (
+                "This draft needs a second look before it is sent.".to_string(),
+                tainted_confirm_blocks(id, &args),
+            )
+        }
+        None => (
+            format!("Draft `{id}` could not be read — nothing is offered for sending."),
+            vec![
+                blocks::section(&format!(
+                    "*Draft `{id}` could not be read from the outbox.*\nNothing is \
+                     offered for sending on bytes nobody can see. Read and release it \
+                     at a terminal: `mecha outbox show {id}`."
+                )),
+                blocks::actions(vec![blocks::button(
+                    actions::ids::OUTBOX_REJECT,
+                    "Reject",
+                    id,
+                    Some("danger"),
+                )]),
+            ],
+        ),
+    }
+}
+
+/// What a press on a tainted draft's Send-anyway button may do, decided from
+/// the store as it stands at press time (F6). Pure, so the ladder has a test:
+/// the composition-time decision ran against the store of hours ago, and
+/// `mecha outbox edit` keeps an edited item pending.
+#[derive(Debug, PartialEq, Eq)]
+enum ConfirmPress {
+    /// The bytes the card showed are the bytes the store holds: release.
+    Send { id: String },
+    /// The store moved under the card — edited arguments, arguments that now
+    /// truncate, or a pre-fingerprint card that cannot prove anything: show a
+    /// fresh card instead of sending.
+    Recard { id: String },
+    /// The item cannot be read at all: an error card, never a send (F3).
+    Unreadable { id: String },
+}
+
+fn confirm_press(
+    value: &str,
+    item: Option<&mecha_core::outbox::OutboxItem>,
+) -> ConfirmPress {
+    // The caller only reaches here for values `parse_confirm_value` accepted.
+    let (id, fingerprint) = match actions::parse_confirm_value(value) {
+        Some(parsed) => parsed,
+        None => {
+            return ConfirmPress::Recard {
+                id: value.to_string(),
+            }
+        }
+    };
+    let Some(item) = item else {
+        return ConfirmPress::Unreadable { id: id.to_string() };
+    };
+    let args = serde_json::to_string_pretty(&item.args).unwrap_or_default();
+    // The ladder, re-run: a draft whose arguments no longer fit under the
+    // card cap is reject-only however the press arrived — §8's rule keyed on
+    // current bytes, not on the bytes of composition time.
+    if truncate_for_slack(&args) != args {
+        return ConfirmPress::Recard { id: id.to_string() };
+    }
+    match fingerprint {
+        Some(fp) if fp == actions::fingerprint(&args) => ConfirmPress::Send {
+            id: id.to_string(),
+        },
+        // Drift — or a card composed before values carried a fingerprint,
+        // which cannot prove the bytes and re-cards: one extra tap, never an
+        // unread send.
+        _ => ConfirmPress::Recard { id: id.to_string() },
+    }
+}
+
+/// Whether one staged draft releases with no card at run completion: the
+/// thread (or channel) must have an auto setting *and* the shared policy must
+/// agree — the tainted exclusion and the early-stop rule (F1) both live in
+/// `review_policy::auto_releases`, so this call site cannot hold half the
+/// rule.
+fn releases_without_card(
+    setting: Option<&review::Setting>,
+    tainted: bool,
+    finished_clean: bool,
+) -> bool {
+    setting.is_some_and(|s| crate::review_policy::auto_releases(s.mode, tainted, finished_clean))
 }
 
 /// A filename safe to join onto a directory.
@@ -1472,7 +2280,371 @@ fn thread_workspace(key: &str) -> Result<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::safe_filename;
+    use super::{
+        confirm_press, draft_offer_blocks, failed_auto_release_needs_card, outcome_delivery,
+        releases_without_card, review_here_note, safe_filename, tainted_confirm_blocks,
+        tainted_confirm_card, ConfirmPress, REVIEW_HERE_MAX,
+    };
+    use crate::review_policy::ReviewMode;
+    use crate::slack::actions;
+    use crate::slack::review::Setting;
+
+    fn draft(id: &str, tainted: bool, summary: &str) -> mecha_core::outbox::OutboxItem {
+        mecha_core::outbox::OutboxItem {
+            id: id.into(),
+            status: "pending".into(),
+            tool: "mail__send".into(),
+            kind: mecha_core::outbox::OutboxKind::Message,
+            args_before: serde_json::json!({}),
+            args: serde_json::json!({}),
+            summary: summary.into(),
+            session_id: None,
+            workspace: None,
+            taint: mecha_core::agent::Taint {
+                private: tainted,
+                untrusted: tainted,
+            },
+            created_at: "2026-08-14T00:00:00Z".into(),
+            resolved_at: None,
+            reason: None,
+            error: None,
+        }
+    }
+
+    /// Review-here posts drafts through the EXISTING machinery — this is the
+    /// "zero new send paths" test. A tainted draft's card in a review-here
+    /// batch carries the same `OUTBOX_SEND` verb every draft card carries,
+    /// which is precisely the verb the connector detours through the red
+    /// two-step (`ask_to_confirm_tainted`); and the second step for a draft
+    /// whose arguments were truncated still offers Reject and never Send.
+    /// One composer, one detour, no way for a batch to reach a send the
+    /// one-off card could not.
+    #[test]
+    fn a_tainted_draft_in_a_review_here_batch_keeps_the_two_step_and_truncated_stays_reject_only()
+    {
+        let batch = [
+            draft("a-1", false, "hello"),
+            draft("a-2", true, "the tainted one"),
+        ];
+        let cards: Vec<String> = batch
+            .iter()
+            .map(|i| serde_json::to_string(&draft_offer_blocks(i)).unwrap())
+            .collect();
+
+        // Both cards press into the same verbs — the ones `from_payload`
+        // parses and the tainted detour keys on.
+        for card in &cards {
+            assert!(card.contains(actions::ids::OUTBOX_SEND), "{card}");
+            assert!(card.contains(actions::ids::OUTBOX_REJECT), "{card}");
+            assert!(
+                !card.contains(actions::ids::OUTBOX_SEND_CONFIRM),
+                "the confirm verb only ever appears on the second step: {card}"
+            );
+        }
+        // The tainted card says what it is before anything is pressed.
+        assert!(cards[1].contains("trifecta armed"), "{}", cards[1]);
+        assert!(!cards[0].contains("trifecta armed"), "{}", cards[0]);
+
+        // And the second step it detours into, for arguments the card cannot
+        // fully show, is reject-only — the batch inherits §8's rule because
+        // it is the same code, not a copy of it.
+        let second_step =
+            serde_json::to_string(&tainted_confirm_blocks("a-2", &"x".repeat(10_000))).unwrap();
+        assert!(!second_step.contains(actions::ids::OUTBOX_SEND_CONFIRM), "{second_step}");
+        assert!(second_step.contains(actions::ids::OUTBOX_REJECT), "{second_step}");
+    }
+
+    /// F1, failing on the old encoding, which had no way to ask how the run
+    /// ended: `review auto` released an interrupted run's drafts. The policy
+    /// signature now carries the stop-cause cleanliness, so an early-stopped
+    /// run's untainted drafts are carded — review stays possible — and never
+    /// dispatched.
+    #[test]
+    fn review_auto_releases_nothing_after_an_early_stopped_run() {
+        let auto = Setting {
+            mode: ReviewMode::Auto,
+            set_by: "U_OWNER".into(),
+        };
+        assert!(
+            !releases_without_card(Some(&auto), false, false),
+            "an interrupted run's untainted draft cards, never auto-releases"
+        );
+        assert!(
+            releases_without_card(Some(&auto), false, true),
+            "a clean finish still releases the untainted draft"
+        );
+        assert!(
+            !releases_without_card(Some(&auto), true, true),
+            "tainted never releases, clean finish or not"
+        );
+        assert!(
+            !releases_without_card(None, false, true),
+            "no setting means now: card everything"
+        );
+        for mode in [ReviewMode::Now, ReviewMode::Later] {
+            let s = Setting {
+                mode,
+                set_by: "U_OWNER".into(),
+            };
+            assert!(!releases_without_card(Some(&s), false, true));
+        }
+    }
+
+    /// F3, failing on the old `ask_to_confirm_tainted`, which unwrapped a
+    /// transient store failure to empty arguments (`cut = false`) and offered
+    /// a live Send over zero shown bytes. An unreadable item is an error
+    /// card: the failure stated, the terminal named, Reject the only button.
+    #[test]
+    fn an_unreadable_item_gets_an_error_card_and_never_a_send() {
+        let (text, card) = tainted_confirm_card("abc-123", None);
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(
+            !json.contains(actions::ids::OUTBOX_SEND_CONFIRM),
+            "no Send on bytes nobody can see: {json}"
+        );
+        assert!(!json.contains("\"slack_outbox_send\""), "{json}");
+        assert!(json.contains(actions::ids::OUTBOX_REJECT), "{json}");
+        assert!(json.contains("could not be read"), "the error is stated: {json}");
+        assert!(json.contains("mecha outbox show abc-123"), "{json}");
+        assert!(text.contains("could not be read"), "{text}");
+
+        // Not vacuous: a readable item still composes the real second step.
+        let item = draft("abc-123", true, "hello");
+        let (_, card) = tainted_confirm_card("abc-123", Some(&item));
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains(actions::ids::OUTBOX_SEND_CONFIRM), "{json}");
+    }
+
+    /// F6, failing on the old press handling, which mapped the confirm verb
+    /// straight to a send with no press-time re-check: a draft edited between
+    /// composition and press (`mecha outbox edit` keeps it pending) sent
+    /// bytes nobody read. The press now re-proves the store still holds the
+    /// exact bytes the card showed.
+    #[test]
+    fn a_confirm_press_on_a_draft_edited_after_composition_recards_instead_of_sending() {
+        let mut item = draft("abc-123", true, "the tainted one");
+        item.args = serde_json::json!({"to": "a@x.org", "body": "as reviewed"});
+        let shown = serde_json::to_string_pretty(&item.args).unwrap();
+        let value = actions::confirm_value("abc-123", &shown);
+
+        // The store still holds what the card showed: the press sends.
+        assert_eq!(
+            confirm_press(&value, Some(&item)),
+            ConfirmPress::Send {
+                id: "abc-123".into()
+            }
+        );
+
+        // Edited between composition and press: not sent — re-carded.
+        item.args = serde_json::json!({"to": "attacker@evil.example", "body": "as reviewed"});
+        assert_eq!(
+            confirm_press(&value, Some(&item)),
+            ConfirmPress::Recard {
+                id: "abc-123".into()
+            },
+            "changed bytes must never send"
+        );
+
+        // Unreadable at press time: the error card, never a send (F3 at the
+        // verb).
+        assert_eq!(
+            confirm_press(&value, None),
+            ConfirmPress::Unreadable {
+                id: "abc-123".into()
+            }
+        );
+
+        // A pre-fingerprint card cannot prove its bytes: one extra tap, not
+        // an unread send.
+        assert_eq!(
+            confirm_press("abc-123", Some(&item)),
+            ConfirmPress::Recard {
+                id: "abc-123".into()
+            }
+        );
+
+        // Arguments that now truncate re-card even when the fingerprint
+        // matches — §8's ladder keyed on current bytes: the fresh card comes
+        // back reject-only.
+        item.args = serde_json::json!({"body": "x".repeat(10_000)});
+        let long = serde_json::to_string_pretty(&item.args).unwrap();
+        let long_value = actions::confirm_value("abc-123", &long);
+        assert_eq!(
+            confirm_press(&long_value, Some(&item)),
+            ConfirmPress::Recard {
+                id: "abc-123".into()
+            }
+        );
+    }
+
+    /// The composition half of F6: the Send-anyway button's value carries the
+    /// fingerprint of the exact bytes the card shows, so press and
+    /// composition cannot drift.
+    #[test]
+    fn a_tainted_confirm_cards_send_button_carries_the_shown_bytes_fingerprint() {
+        let args = "{\n  \"to\": \"a@x.org\"\n}";
+        let json = serde_json::to_string(&tainted_confirm_blocks("abc-123", args)).unwrap();
+        assert!(
+            json.contains(&actions::confirm_value("abc-123", args)),
+            "the value is id#fingerprint: {json}"
+        );
+        // Reject still carries the bare id — declining needs no proof.
+        assert!(json.contains("\"abc-123\""), "{json}");
+    }
+
+    /// F12: one delivery rule for every target. The old shape double-posted a
+    /// slow Reply-target action whose dispatch post had failed, and gave a
+    /// slow Rewrite (an outbox release with an MCP startup) no fresh
+    /// notification at all.
+    #[test]
+    fn an_outcome_lands_exactly_once_plus_a_fresh_reply_when_slow_or_lost() {
+        // (dispatch landed, slow) -> (update the card, fresh reply)
+        assert_eq!(outcome_delivery(true, false), (true, false));
+        assert_eq!(
+            outcome_delivery(true, true),
+            (true, true),
+            "a slow rewrite earns the notifying reply too"
+        );
+        assert_eq!(outcome_delivery(false, false), (false, true));
+        assert_eq!(
+            outcome_delivery(false, true),
+            (false, true),
+            "never two fresh posts — that was the double-post"
+        );
+    }
+
+    /// F13: a failed `review auto` release used to leave the draft pending
+    /// with no card anywhere — no phone path back. The predicate that posts
+    /// the Now-mode card afterwards.
+    #[test]
+    fn a_failed_auto_release_gets_the_draft_carded_for_the_phone() {
+        assert!(failed_auto_release_needs_card("review-auto", Some("pending")));
+        assert!(
+            !failed_auto_release_needs_card("review-auto", Some("sent")),
+            "a release that landed needs no card"
+        );
+        assert!(
+            !failed_auto_release_needs_card("draft-card", Some("pending")),
+            "a card-tapped release already has its card"
+        );
+        assert!(
+            !failed_auto_release_needs_card("review-auto", None),
+            "an unreadable item is reported, not guessed into a card"
+        );
+    }
+
+    /// The handler's order is the guarantee, pinned the way the doctor
+    /// command word pins it: `on_interaction` runs `binding::check` on
+    /// `payload.user.id` — the field Slack signed — and returns before the
+    /// `view_submission` branch is reached, so a non-owner's submission is
+    /// dropped before its callback id, metadata or text are so much as read.
+    /// Nothing the view carries participates in the gate.
+    #[test]
+    fn a_non_owners_view_submission_is_gated_on_the_signed_user_before_anything_is_read() {
+        use mecha_slack::binding::{self, Binding};
+        let bound = Binding {
+            team_id: "T1".into(),
+            enterprise_id: None,
+            owners: vec!["U_OWNER".into()],
+            bound_at: chrono::Utc::now(),
+        };
+        // A submission whose every view-carried field is well-formed — valid
+        // callback, valid metadata, valid text — still authorises nothing:
+        // the gate never looks at them.
+        let stranger = binding::check(Some(&bound), Some("U_STRANGER"), Some("T1"));
+        assert!(
+            !stranger.is_allowed(),
+            "a stranger's submission is refused before the view is read"
+        );
+        // And the well-formed view parses into a real action, which is
+        // exactly why the gate has to come first.
+        assert!(
+            actions::Action::from_submission(
+                actions::ids::FRONTDOOR_CLOSE_SUBMIT,
+                "5",
+                "a perfectly plausible reason"
+            )
+            .is_some()
+        );
+        let owner = binding::check(Some(&bound), Some("U_OWNER"), Some("T1"));
+        assert!(owner.is_allowed());
+    }
+
+    /// The block-cap rule for a review-here batch: past the cap, the cut is
+    /// visible and the rest are at the terminal.
+    #[test]
+    fn a_review_here_batch_past_the_cap_names_the_terminal_for_the_rest() {
+        assert_eq!(review_here_note(REVIEW_HERE_MAX, "mecha outbox review"), None);
+        let note = review_here_note(REVIEW_HERE_MAX + 3, "mecha outbox review")
+            .expect("the cut says so");
+        assert!(note.contains("3 more"), "{note}");
+        assert!(note.contains("mecha outbox review"), "{note}");
+        let front = review_here_note(20, "mecha frontdoor list").unwrap();
+        assert!(front.contains("mecha frontdoor list"), "{front}");
+    }
+
+    /// §8's tightening, failing on the shipped behaviour: the old card put a
+    /// Send-anyway button on every tainted confirm, including drafts whose
+    /// arguments `truncate_for_slack` had cut — a reviewer approving bytes
+    /// the surface could not show. You may reject what you cannot fully
+    /// read; you may not send it.
+    #[test]
+    fn a_truncated_tainted_confirm_card_offers_reject_and_never_send() {
+        let long_args = "x".repeat(10_000);
+        let card = serde_json::to_string(&tainted_confirm_blocks("abc-123", &long_args)).unwrap();
+
+        assert!(
+            !card.contains("slack_outbox_send_confirm"),
+            "no Send on a draft the card could not fully show: {card}"
+        );
+        assert!(
+            card.contains("slack_outbox_reject"),
+            "declining needs no completeness: {card}"
+        );
+        // The cut says so, and names the surface that can show everything.
+        assert!(card.contains("mecha outbox show abc-123"), "{card}");
+        assert!(card.contains("characters"), "{card}");
+    }
+
+    #[test]
+    fn a_tainted_confirm_card_that_fits_keeps_the_informed_send() {
+        // Not vacuous: the reject-only rule is about what could not be shown,
+        // and a fully shown draft keeps the terminal's directness.
+        let card =
+            serde_json::to_string(&tainted_confirm_blocks("abc-123", "{\"to\": \"a@x.org\"}"))
+                .unwrap();
+        assert!(card.contains("slack_outbox_send_confirm"), "{card}");
+        assert!(card.contains("slack_outbox_reject"), "{card}");
+    }
+
+    /// The review mode is session-scoped by construction: it lives in the
+    /// connector's memory and is deliberately not a field of the thread
+    /// record, so a restart — the thread-state eviction that orphans
+    /// mid-flight runs — expires every mode with it. If someone persists it,
+    /// this fails and the expiry story has to be re-argued, not silently
+    /// widened.
+    #[test]
+    fn a_review_mode_is_never_written_to_the_thread_record() {
+        let record = super::super::threads::ThreadRecord {
+            key: "D1-1".into(),
+            channel_id: "D1".into(),
+            thread_ts: "1.0".into(),
+            state: super::super::threads::ThreadState::Idle,
+            session_id: None,
+            workspace: None,
+            mode: "ask".into(),
+            last_seen_ts: None,
+            run: None,
+            stream_ts: None,
+            controls_ts: None,
+            updated_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(
+            !json.contains("review"),
+            "a persisted review mode would outlive the attention that set it: {json}"
+        );
+    }
 
     #[test]
     fn approval_ids_never_repeat_even_as_entries_are_removed() {
