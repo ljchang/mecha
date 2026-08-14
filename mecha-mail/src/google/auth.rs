@@ -150,10 +150,7 @@ pub async fn refresh_token(
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        return Err(MailError::ApiError {
-            status,
-            message: extract_token_error_description(&body),
-        });
+        return Err(classify_refresh_failure(status, &body));
     }
 
     // Google usually omits the refresh token on refresh; carry the old one
@@ -182,6 +179,26 @@ pub fn parse_token_response(json: serde_json::Value, prior_refresh: Option<&str>
 fn append_optional_secret<'a>(params: &mut Vec<(&'a str, &'a str)>, client_secret: &'a str) {
     if !client_secret.is_empty() {
         params.push(("client_secret", client_secret));
+    }
+}
+
+/// Sort a failed refresh into permanent versus everything else.
+///
+/// `invalid_grant` is the OAuth server saying the refresh token itself is dead
+/// — revoked, expired, or the consent withdrawn. That never recovers on retry,
+/// so it becomes [`MailError::AuthRevoked`] rather than a generic `ApiError`
+/// indistinguishable from a transient 5xx; the token manager keys off the
+/// variant to leave a marker and name the re-auth command.
+pub(crate) fn classify_refresh_failure(status: u16, body: &str) -> MailError {
+    let code = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|c| c.as_str()).map(str::to_string));
+    if code.as_deref() == Some("invalid_grant") {
+        return MailError::AuthRevoked(extract_token_error_description(body));
+    }
+    MailError::ApiError {
+        status,
+        message: extract_token_error_description(body),
     }
 }
 
@@ -387,6 +404,37 @@ mod tests {
     #[test]
     fn extract_token_error_description_falls_back_to_body() {
         assert_eq!(extract_token_error_description("not json"), "not json");
+    }
+
+    /// The incident this guards: a revoked refresh token surfaced as a generic
+    /// auth error, so a scheduled sweep retried it every two minutes for three
+    /// days. `invalid_grant` is permanent and must be its own class.
+    #[test]
+    fn an_invalid_grant_refresh_is_classified_permanent() {
+        let body = r#"{"error":"invalid_grant","error_description":"Token has been revoked."}"#;
+        let err = classify_refresh_failure(400, body);
+        assert!(matches!(err, MailError::AuthRevoked(_)), "{err}");
+        let text = err.to_string();
+        assert!(
+            text.starts_with(crate::types::AUTH_REVOKED),
+            "the sentinel is what string-only surfaces key on: {text}"
+        );
+        assert!(text.contains("Token has been revoked"), "{text}");
+    }
+
+    /// Everything that is not `invalid_grant` stays transient-shaped: a 500,
+    /// or a 400 for a different error code, may recover on retry and must not
+    /// tell the user to re-authenticate.
+    #[test]
+    fn other_refresh_failures_stay_generic() {
+        assert!(matches!(
+            classify_refresh_failure(500, "gateway timeout"),
+            MailError::ApiError { status: 500, .. }
+        ));
+        assert!(matches!(
+            classify_refresh_failure(400, r#"{"error":"invalid_client"}"#),
+            MailError::ApiError { status: 400, .. }
+        ));
     }
 
     #[test]

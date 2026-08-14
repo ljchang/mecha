@@ -12,7 +12,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -43,6 +43,10 @@ pub struct McpClient {
     stdin: tokio::sync::Mutex<ChildStdin>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
     next_id: AtomicU64,
+    /// The directory the server was spawned in — where its relative paths
+    /// resolve, however the per-run workspace moves (see
+    /// [`Tool::fixed_workspace`]).
+    workspace: PathBuf,
     /// Held so the child is killed when the client drops.
     _child: Child,
 }
@@ -186,6 +190,7 @@ impl McpClient {
             stdin: tokio::sync::Mutex::new(stdin),
             pending,
             next_id: AtomicU64::new(1),
+            workspace: workspace.to_path_buf(),
             _child: child,
         });
 
@@ -416,6 +421,12 @@ impl Tool for McpTool {
         // is what most of them exist to do — but not to reach the open world,
         // because assuming otherwise would arm the interlock on every call.
         self.capabilities
+    }
+
+    fn fixed_workspace(&self) -> Option<PathBuf> {
+        // The server was spawned once, in one directory; its relative paths
+        // resolve there no matter which per-run workspace the call carries.
+        Some(self.client.workspace.clone())
     }
 
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {

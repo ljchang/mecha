@@ -50,7 +50,18 @@ echo "· bookings (zero tokens; drained bookings become calendar events)"
 # Deterministic like drain, and deliberately before the model health check:
 # a booked meeting must reach the calendar whether or not a model is up.
 # Idempotent against its ledger, so a failed tick retries next hour.
-"$MAIL" bookings || echo "bookings deferred; the ledger resumes next tick"
+# Exit 77 is mecha-mail's "refresh token expired or revoked" — permanent, so
+# retrying next tick fixes nothing; put it in the journal at err priority
+# where it is visible, instead of the same deferral line 24 times a day.
+"$MAIL" bookings
+rc=$?
+if [ "$rc" -eq 77 ]; then
+    echo "bookings BLOCKED: an account's refresh token is expired or revoked — run \`mecha-mail accounts\` and re-auth"
+    logger -p user.err -t mecha-frontdoor \
+        "mecha-mail bookings: refresh token expired or revoked; re-auth needed (mecha-mail accounts)" || true
+elif [ "$rc" -ne 0 ]; then
+    echo "bookings deferred; the ledger resumes next tick"
+fi
 
 if ! curl -sf -m 5 "$HEALTH" >/dev/null; then
     echo "model server not answering at $HEALTH; drained only, deferring the rest"

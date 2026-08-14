@@ -19,6 +19,7 @@
 //! months, and "allow this tool forever" made once on a phone is a much larger
 //! blast radius than it looks.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -100,6 +101,13 @@ pub struct SlackApprover {
     /// Tools waved through for the rest of this run. Owned by the approver, so
     /// it is destroyed with the `RunContext` that held it.
     blanket: Mutex<std::collections::HashSet<String>>,
+    /// Set by the first card nobody answered. After it, asking again is
+    /// pointless and expensive: the model retries a refused call, each retry
+    /// posts a fresh card and parks the run a full timeout — a real session
+    /// stalled three consecutive ten-minute waits on one `fs_write`. Scoped
+    /// like `blanket`: the approver is rebuilt for each inbound message, so
+    /// the latch clears exactly when the user is next known to be there.
+    unanswered: AtomicBool,
 }
 
 impl SlackApprover {
@@ -115,6 +123,7 @@ impl SlackApprover {
             tx,
             timeout,
             blanket: Mutex::new(std::collections::HashSet::new()),
+            unanswered: AtomicBool::new(false),
         }
     }
 
@@ -154,6 +163,18 @@ impl Approver for SlackApprover {
             return Decision::Allow;
         }
 
+        // After the mode and blanket checks, so a mid-run switch to `Allow` —
+        // a button press, which is proof someone is watching after all —
+        // still works. But never another card and another wait.
+        if self.unanswered.load(Ordering::Relaxed) {
+            return Decision::Blocked(
+                "nobody answered an earlier approval card in this run, so this \
+                 call was not asked. Reply in the thread to start a fresh run \
+                 that will ask again."
+                    .into(),
+            );
+        }
+
         let (reply, answer) = oneshot::channel();
         let request = Request {
             thread_key: self.thread_key.clone(),
@@ -182,10 +203,13 @@ impl Approver for SlackApprover {
             Ok(Err(_)) => {
                 Decision::Blocked("the approval was dropped before anyone answered it".into())
             }
-            Err(_) => Decision::Blocked(format!(
-                "nobody answered in Slack within {}",
-                humanise(self.timeout)
-            )),
+            Err(_) => {
+                self.unanswered.store(true, Ordering::Relaxed);
+                Decision::Blocked(format!(
+                    "nobody answered in Slack within {}",
+                    humanise(self.timeout)
+                ))
+            }
         }
     }
 }
@@ -302,6 +326,34 @@ mod tests {
             }
             other => panic!("a timeout must never be a user denial, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn after_one_timeout_the_run_stops_asking_and_is_refused_at_once() {
+        // The old behaviour re-asked: the model retries the refused call, each
+        // retry posts a new card and waits the full timeout again — three
+        // consecutive ten-minute stalls on one `fs_write` in a real session.
+        let (a, mut rx) = approver(Mode::Ask, Duration::from_millis(50));
+
+        assert!(matches!(
+            a.approve(&writer(), &json!({})).await,
+            Decision::Blocked(_)
+        ));
+        assert!(rx.try_recv().is_ok(), "the first ask posted a card");
+
+        let start = std::time::Instant::now();
+        match a.approve(&writer(), &json!({})).await {
+            Decision::Blocked(reason) => {
+                assert!(reason.contains("earlier"), "{reason}");
+                assert!(reason.contains("fresh run"), "{reason}");
+            }
+            other => panic!("expected Blocked, got {other:?}"),
+        }
+        assert!(
+            start.elapsed() < Duration::from_millis(50),
+            "the second ask must not wait out another timeout"
+        );
+        assert!(rx.try_recv().is_err(), "no second card was posted");
     }
 
     #[tokio::test]

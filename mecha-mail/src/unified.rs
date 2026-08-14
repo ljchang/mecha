@@ -706,6 +706,17 @@ impl MailTools {
         Ok((intervals, failures))
     }
 
+    /// The account a create with this argument lands on, by name — the same
+    /// `Mode::Create` resolution `create_event_invite` applies (the named
+    /// account, else the default, else instructions), exposed so the booking
+    /// sweep can scope its freebusy re-verification to it. The incident this
+    /// serves: the re-verify fanned out over *every* account, so a revoked
+    /// token on a mailbox irrelevant to the booking blocked event creation on
+    /// the account that was healthy — for three days, silently.
+    pub fn create_account_name(&self, account: Option<&str>) -> Result<String, String> {
+        self.pick(account, Mode::Create).map(|p| p[0].name.clone())
+    }
+
     /// Create one event with typed arguments — the bookings handler's
     /// path, beside the tool's. Same account resolution (the default, or
     /// instructions to ask), same token machinery. With an attendee, the
@@ -1438,6 +1449,57 @@ mod tests {
         // judgment" — the measured failure of the latter is the model
         // inventing an answer.
         assert!(err.contains("ask the user"), "{err}");
+    }
+
+    // ---- booking re-verification scoping ----
+
+    fn tools_over(names: &[&str], default: Option<&str>) -> MailTools {
+        let accounts = names
+            .iter()
+            .map(|n| Account {
+                name: n.to_string(),
+                provider: Provider::Google,
+                address: None,
+                manager: TokenManager::with_credentials(
+                    std::path::PathBuf::from("/nonexistent/oauth.json"),
+                    crate::token::StoredCredentials {
+                        client_id: "id".into(),
+                        client_secret: String::new(),
+                        tenant: None,
+                        access_token: "at".into(),
+                        refresh_token: "rt".into(),
+                        expires_at: 0,
+                        account: None,
+                    },
+                ),
+            })
+            .collect();
+        MailTools {
+            definitions: Vec::new(),
+            accounts,
+            default: default.map(String::from),
+        }
+    }
+
+    /// The booking sweep re-verifies freebusy against the account the event
+    /// will be created on — this is that scoping decision. It must resolve
+    /// exactly as the create will (explicit flag, else default), and refuse
+    /// with instructions rather than fan out when neither exists: fanning out
+    /// is how a revoked token on an unrelated account blocked bookings on the
+    /// healthy one.
+    #[test]
+    fn the_booking_reverify_account_is_the_one_the_event_lands_on() {
+        let tools = tools_over(&["dartmouth", "personal"], Some("dartmouth"));
+        assert_eq!(tools.create_account_name(None).unwrap(), "dartmouth");
+        assert_eq!(
+            tools.create_account_name(Some("personal")).unwrap(),
+            "personal"
+        );
+
+        let err = tools_over(&["a", "b"], None)
+            .create_account_name(None)
+            .unwrap_err();
+        assert!(err.contains("no default"), "{err}");
     }
 
     // ---- gmail reply synthesis ----

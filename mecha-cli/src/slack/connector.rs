@@ -1201,7 +1201,16 @@ impl State {
             interaction.team_id.as_deref(),
         );
         if !gate.is_allowed() {
-            tracing::debug!("ignored an interaction: {}", gate.reason());
+            // `warn`, not `debug`: a refused button press has no other symptom
+            // — an Approve tap silently does nothing and the card times out
+            // minutes later — so which check failed, and whose tap it was,
+            // must be visible under default logging.
+            tracing::warn!(
+                "dropped an interaction ({}): user {}, channel {}",
+                gate.reason(),
+                interaction.user_id.as_deref().unwrap_or("<none>"),
+                interaction.channel_id.as_deref().unwrap_or("<none>"),
+            );
             return;
         }
 
