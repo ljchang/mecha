@@ -560,7 +560,16 @@ only part that knows about both sides. Three decisions there:
   relative path points — that mismatch cost a real run five turns and a `shell`
   workaround. Closing the isolation gap means an agent per thread, and an MCP
   startup per thread with it. `ask_user` is absent for the same reason: it is a
-  tool, and the registry belongs to the agent.
+  tool, and the registry belongs to the agent. Two consequences of the split
+  worth knowing: a staged call from a fixed-root server records the *producer*
+  root as its release jail (see The outbox — that is where the server's paths
+  really pointed, at draft time and at release), which also means `outbox
+  show` on such an item resolves against a root the whole producer shares,
+  not one thread's corner of it. And an artifact authored with the built-in
+  fs tools lives in the *thread* jail, so handing its relative name to a
+  fixed-root server names a different place — the server needs the absolute
+  path, and a same-named sibling under the producer root is the wrong-bytes
+  case to keep in mind when reviewing a Slack-staged publish.
 
 Reconnect is **make-before-break**: Slack rotates connections every few hours
 with about ten seconds' warning, and the replacement opens before the old one
@@ -644,15 +653,25 @@ knowledge of the outbox to be covered by it. Decisions that carry it:
 - **A routed name that matches no registered tool warns on every start** — a
   typo means the real tool executes unrouted, which is the silently-degrading
   sandbox shape again.
-- **An item records the jail it was drafted under**, and the release rebuilds
-  its tool surface rooted there. A staged call is a *deferred* tool call, and a
-  tool call means nothing apart from its workspace: the drafting run said
-  `{"bundle": "site"}` inside `~/.mecha/work/<producer>/`, and `outbox send`
-  runs in another process, hours later, from wherever the reviewer is standing.
-  An absolute path fails loudly there; a **relative one is worse**, because a
-  same-named directory beside the reviewer publishes the wrong bytes with no
-  error anywhere. It is also the stricter jail of the two — the agent's, not
-  the human's — which is the one the interlock reasoned about. A batch builds
+- **An item records the jail its tool would really have executed under**, and
+  the release rebuilds its tool surface rooted there. A staged call is a
+  *deferred* tool call, and a tool call means nothing apart from its
+  workspace: the drafting run said `{"bundle": "site"}` inside
+  `~/.mecha/work/<producer>/`, and `outbox send` runs in another process,
+  hours later, from wherever the reviewer is standing. An absolute path fails
+  loudly there; a **relative one is worse**, because a same-named directory
+  beside the reviewer publishes the wrong bytes with no error anywhere. The
+  recorded jail is `Tool::fixed_workspace()` when the tool has one, else the
+  run's — because a tool with a fixed root (an MCP server spawned once for
+  many runs) resolved its paths against that root *at draft time too*, and a
+  release that re-roots it anywhere else executes a different call than the
+  one the model made. That was a live bug: Slack threads are jailed to
+  subdirectories of the producer root the MCP servers run in, staging
+  recorded the thread jail, and every Slack publish failed containment on
+  release, forever. The residual hazard is the mirror case and is documented
+  in the mecha-slack section: an artifact authored with the *built-in* fs
+  tools lives in the thread jail, and a fixed-root server must be handed its
+  absolute path. A batch builds
   one surface per distinct workspace, lazily, so the ordinary
   nine-replies-from-one-run case still starts the MCP servers exactly once.
   Defaulted on load, like `kind`: an item staged before the field releases

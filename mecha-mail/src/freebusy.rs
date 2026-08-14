@@ -54,6 +54,58 @@ pub fn merge(intervals: Vec<Interval>) -> Vec<Interval> {
     merged
 }
 
+// ----------------------------------------------------- partial coverage
+
+/// What an unattended freebusy consumer — the booking sweep, the slot-refresh
+/// pipeline — does about a fan-out's per-account failures.
+///
+/// The tension this resolves: fail-closed ("an unreadable calendar is never a
+/// free one") is right for transient weather, because a retry recovers and
+/// the pause is short. A *revoked* refresh token never recovers on its own,
+/// so fail-closed there halts bookings and slot publishing for days while
+/// the human is already alerted through the `auth_error.json` marker,
+/// `mecha doctor` and exit 77. And the previous answer — scoping the read to
+/// the one account the event lands on — silently dropped cross-account
+/// collision detection: a slot free on `dartmouth` but busy on `personal`
+/// double-booked with no record. Classification is the resolution: keep the
+/// full fan-out, skip a permanently dead account loudly, defer over anything
+/// that might recover.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PartialCoverage {
+    /// Every failure (possibly none) is a permanently revoked login: proceed
+    /// on the remaining accounts' busy data, warning loudly once per carried
+    /// failure line — each names its account.
+    SkipRevoked(Vec<String>),
+    /// At least one failure could be transient: refuse the partial answer.
+    /// Carries every failure so the refusal names them all.
+    Defer(Vec<String>),
+    /// No account could be read and every login is revoked: there is no busy
+    /// data to proceed on, and no retry will make any. Hard failure — the
+    /// CLI's sentinel-keyed exit code turns it into 77.
+    AllRevoked(Vec<String>),
+}
+
+/// Classify a fan-out's per-account failure lines (`` account `x`: … ``) by
+/// the [`AUTH_REVOKED`] sentinel — pinned to the typed variant's display by a
+/// test in `types.rs` precisely so string surfaces like this one can tell
+/// the permanent class from weather. `any_account_read` says whether the
+/// fan-out produced busy data from at least one account; without it, an
+/// all-revoked registry would read as a wide-open calendar.
+///
+/// [`AUTH_REVOKED`]: crate::types::AUTH_REVOKED
+pub fn classify_partial(any_account_read: bool, failures: &[String]) -> PartialCoverage {
+    if failures
+        .iter()
+        .any(|f| !f.contains(crate::types::AUTH_REVOKED))
+    {
+        return PartialCoverage::Defer(failures.to_vec());
+    }
+    if !any_account_read && !failures.is_empty() {
+        return PartialCoverage::AllRevoked(failures.to_vec());
+    }
+    PartialCoverage::SkipRevoked(failures.to_vec())
+}
+
 /// Split `[start, end)` into windows of at most `max_days`, for APIs with a
 /// bounded query span (Graph's `getSchedule` refuses more than 62 days).
 /// Windows abut exactly; an empty or inverted span yields nothing.
@@ -162,6 +214,52 @@ mod tests {
         for (a, b) in &windows {
             assert!(*b - *a <= Duration::days(62));
         }
+    }
+
+    /// The classification decision behind "restore the fan-out without
+    /// re-living the 2026-08-11 incident": a revoked login is permanent and
+    /// already alarmed elsewhere, so it is skipped loudly; anything else
+    /// might recover, so the partial answer is refused.
+    #[test]
+    fn a_revoked_failure_is_skipped_and_a_transient_one_defers() {
+        let revoked = format!(
+            "account `personal`: {}: invalid_grant",
+            crate::types::AUTH_REVOKED
+        );
+        let transient = "account `dartmouth`: HTTP request failed: timeout".to_string();
+
+        assert_eq!(
+            classify_partial(true, std::slice::from_ref(&revoked)),
+            PartialCoverage::SkipRevoked(vec![revoked.clone()]),
+            "permanent death must not halt the pipeline for days"
+        );
+        assert_eq!(
+            classify_partial(true, std::slice::from_ref(&transient)),
+            PartialCoverage::Defer(vec![transient.clone()]),
+            "weather recovers; fail closed"
+        );
+        // Mixed: one possibly-transient failure poisons the whole answer,
+        // and the refusal carries every failure line.
+        assert_eq!(
+            classify_partial(true, &[revoked.clone(), transient.clone()]),
+            PartialCoverage::Defer(vec![revoked, transient])
+        );
+        // No failures at all: proceed with nothing to warn about.
+        assert_eq!(
+            classify_partial(true, &[]),
+            PartialCoverage::SkipRevoked(vec![])
+        );
+    }
+
+    #[test]
+    fn every_login_revoked_is_a_hard_error_not_a_silently_empty_calendar() {
+        let a = format!("account `a`: {}", crate::types::AUTH_REVOKED);
+        let b = format!("account `b`: {}", crate::types::AUTH_REVOKED);
+        assert_eq!(
+            classify_partial(false, &[a.clone(), b.clone()]),
+            PartialCoverage::AllRevoked(vec![a, b]),
+            "no busy data at all must never read as a wide-open calendar"
+        );
     }
 
     #[test]

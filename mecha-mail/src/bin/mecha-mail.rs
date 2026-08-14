@@ -5,6 +5,7 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use mecha_mail::accounts::{self, AccountEntry, Provider};
+use mecha_mail::freebusy::{classify_partial, PartialCoverage};
 use mecha_mail::unified::MailTools;
 use mecha_mail::{google, mcp, microsoft, token};
 
@@ -74,9 +75,13 @@ enum Command {
     /// Merged busy intervals across every account, as data. Built for the
     /// slot-refresh pipeline (`mecha-mail freebusy --json | …`), which is a
     /// scheduled command with no model in it — so unlike the MCP surface,
-    /// this fails when ANY account is unreadable: a mailbox that could not
-    /// be read is not a mailbox with free time, and a booking page built
-    /// from a partial answer offers strangers slots the user does not have.
+    /// this fails when any account is *transiently* unreadable: a mailbox
+    /// that could not be read is not a mailbox with free time, and a booking
+    /// page built from a partial answer offers strangers slots the user does
+    /// not have. A permanently *revoked* login is the one exception —
+    /// already alarmed via its auth_error.json marker, `mecha doctor` and
+    /// exit 77, and never fixed by waiting — so its calendar is skipped with
+    /// a loud stderr warning instead of halting slot publishing for days.
     Freebusy {
         /// Days ahead to query, starting now.
         #[arg(long, default_value_t = 60)]
@@ -169,6 +174,17 @@ async fn run(cli: Cli) -> Result<()> {
     }
 }
 
+/// The freebusy scope for a booking's re-verify: every account, regardless
+/// of which one the event lands on. A slot free on the landing calendar but
+/// busy on another is exactly the collision the re-verify exists to catch,
+/// so the answer is `None` (fan out) for any input — the parameter exists to
+/// make that contract testable against the recorded regression, where this
+/// decision returned the event's account and cross-account collisions
+/// double-booked silently.
+fn reverify_scope(_event_account: Option<&str>) -> Option<&str> {
+    None
+}
+
 async fn bookings(
     requests: Option<std::path::PathBuf>,
     account: Option<String>,
@@ -249,12 +265,18 @@ async fn bookings(
         // human, never silently double-booked. Fail-closed like the slot
         // pipeline: an unreadable calendar is never a free one.
         //
-        // Scoped to the account the event will be created on, not a fan-out
-        // over every account: a dead token on a mailbox this booking never
-        // touches must not block the calendar that is healthy (it did, for
-        // three days, when one account's refresh token was revoked). The
-        // fail-closed rule survives narrower — if *this* account's calendar
-        // cannot be read, the sweep still refuses.
+        // A fan-out over EVERY account, never just the one the event lands
+        // on: a slot free on the landing calendar but busy on another is
+        // exactly the collision this check exists to catch, and scoping the
+        // read to one account silently dropped that. The dead-token incident
+        // the scoping once answered (one revoked refresh token blocked every
+        // booking for three days) is answered by classification instead: a
+        // failure carrying the AUTH_REVOKED sentinel is permanent — the
+        // human is already alerted via the marker, doctor and exit 77 — so
+        // that account's calendar is skipped loudly and the booking
+        // proceeds on the rest. Any other failure stays fail-closed and
+        // defers the booking: transient errors recover, revoked ones never
+        // do.
         let (start, end) = (
             chrono::DateTime::parse_from_rfc3339(&booking.start)
                 .with_context(|| format!("booking {} start", booking.booking_id))?
@@ -264,16 +286,36 @@ async fn bookings(
                 .with_timezone(&chrono::Utc),
         );
         let (busy, failures) = tools
-            .freebusy(&booking.start, &booking.end, event_account.as_deref())
+            .freebusy(
+                &booking.start,
+                &booking.end,
+                reverify_scope(event_account.as_deref()),
+            )
             .await
             .map_err(|e| anyhow::anyhow!(e))
             .with_context(|| format!("re-verifying booking {}", booking.booking_id))?;
-        if !failures.is_empty() {
-            anyhow::bail!(
-                "refusing to create an event for booking {} without full freebusy:\n{}",
-                booking.booking_id,
-                failures.join("\n")
-            );
+        // `freebusy` returned Ok, so at least one account was readable — an
+        // all-failed fan-out is its Err path, which `?` above propagates and
+        // the sentinel-keyed exit code turns into 77 when every login is
+        // revoked.
+        match classify_partial(true, &failures) {
+            PartialCoverage::SkipRevoked(revoked) => {
+                for failure in &revoked {
+                    eprintln!(
+                        "WARNING: {failure} — permanently revoked login; skipping that \
+                         account's calendar in booking {}'s collision check until it is \
+                         re-authenticated",
+                        booking.booking_id
+                    );
+                }
+            }
+            PartialCoverage::Defer(failures) | PartialCoverage::AllRevoked(failures) => {
+                anyhow::bail!(
+                    "refusing to create an event for booking {} without full freebusy:\n{}",
+                    booking.booking_id,
+                    failures.join("\n")
+                );
+            }
         }
         if bk::busy_overlaps(&busy, start, end) {
             bk::append(
@@ -297,8 +339,8 @@ async fn bookings(
             continue;
         }
         let (title, description) = bk::event_text(booking);
-        // The resolved name, not the raw flag: the create must land on the
-        // exact account the re-verify just read.
+        // The resolved name, not the raw flag: one resolution, made before
+        // the loop, decides where every event lands.
         let (account_name, event_id) = tools
             .create_event_invite(
                 event_account.as_deref(),
@@ -486,13 +528,30 @@ async fn freebusy(
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
 
-    // Fail closed: an unreadable account is not a free one. `--account`
-    // scopes the query when partial coverage is genuinely wanted.
-    if !failures.is_empty() {
-        bail!(
-            "refusing a partial answer — busy time would be missing:\n{}",
-            failures.join("\n")
-        );
+    // Fail closed on anything transient: an unreadable account is not a
+    // free one, and `--account` scopes the query when partial coverage is
+    // genuinely wanted. A permanently *revoked* login is classified out of
+    // that rule — no amount of waiting recovers it, its outage is already
+    // alarmed via the marker, doctor and exit 77, and refusing over it
+    // halts slot publishing for days — so it is skipped with a loud stderr
+    // warning instead (stdout keeps the pipeline contract). An all-revoked
+    // registry never reaches here: the fan-out itself errors, and the
+    // sentinel-keyed exit code makes that a 77.
+    match classify_partial(true, &failures) {
+        PartialCoverage::SkipRevoked(revoked) => {
+            for failure in &revoked {
+                eprintln!(
+                    "WARNING: {failure} — permanently revoked login; its busy time is \
+                     missing from this answer until the account is re-authenticated"
+                );
+            }
+        }
+        PartialCoverage::Defer(failures) | PartialCoverage::AllRevoked(failures) => {
+            bail!(
+                "refusing a partial answer — busy time would be missing:\n{}",
+                failures.join("\n")
+            );
+        }
     }
 
     if json {
@@ -761,5 +820,26 @@ fn set_default(name: Option<String>) -> Result<()> {
             eprintln!("✓ default account: {name}");
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The 2026-08-14 review finding: the re-verify had been scoped to the
+    /// account the event lands on (to stop one dead token from blocking
+    /// every booking), which silently dropped cross-account collision
+    /// detection — a slot free on `dartmouth` but busy on `personal`
+    /// double-booked with no record anywhere. The scope must stay the full
+    /// fan-out; the dead-token case is `classify_partial`'s job now.
+    #[test]
+    fn the_booking_reverify_fans_out_over_every_account() {
+        assert_eq!(
+            reverify_scope(Some("dartmouth")),
+            None,
+            "a slot free on the event's account but busy on another must still collide"
+        );
+        assert_eq!(reverify_scope(None), None);
     }
 }

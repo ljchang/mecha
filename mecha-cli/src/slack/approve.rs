@@ -104,10 +104,18 @@ pub struct SlackApprover {
     /// Set by the first card nobody answered. After it, asking again is
     /// pointless and expensive: the model retries a refused call, each retry
     /// posts a fresh card and parks the run a full timeout — a real session
-    /// stalled three consecutive ten-minute waits on one `fs_write`. Scoped
-    /// like `blanket`: the approver is rebuilt for each inbound message, so
-    /// the latch clears exactly when the user is next known to be there.
-    unanswered: AtomicBool,
+    /// stalled three consecutive ten-minute waits on one `fs_write`.
+    ///
+    /// **Shared with the connector** (via [`SlackApprover::unanswered_latch`])
+    /// rather than scoped like `blanket`, because "the approver is rebuilt for
+    /// each inbound message" is false for a LIVE run: the connector
+    /// short-circuits messages on a running thread into the steering queue,
+    /// so this approver — and this latch — survive exactly the moment the
+    /// user comes back. The connector clears it when a steering message is
+    /// enqueued or any approval-card button is pressed (a tap is proof
+    /// someone is watching, even on an expired card); the next gated call
+    /// then posts a fresh card and waits normally.
+    unanswered: Arc<AtomicBool>,
 }
 
 impl SlackApprover {
@@ -123,8 +131,19 @@ impl SlackApprover {
             tx,
             timeout,
             blanket: Mutex::new(std::collections::HashSet::new()),
-            unanswered: AtomicBool::new(false),
+            unanswered: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// The unanswered latch, for the connector's per-thread running state.
+    ///
+    /// The connector stores this beside the steering-queue handle and clears
+    /// it when the user is known to be watching again — a steering message,
+    /// or any approval-card button press. Without the shared handle the latch
+    /// could only clear with the run, and a live run refused every gated call
+    /// invisibly for up to its whole budget.
+    pub fn unanswered_latch(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.unanswered)
     }
 
     fn mode(&self) -> Mode {
@@ -169,8 +188,9 @@ impl Approver for SlackApprover {
         if self.unanswered.load(Ordering::Relaxed) {
             return Decision::Blocked(
                 "nobody answered an earlier approval card in this run, so this \
-                 call was not asked. Reply in the thread to start a fresh run \
-                 that will ask again."
+                 call was not asked. Reply in the thread, or press a button on \
+                 an approval card, and this run will ask again on its next \
+                 gated call."
                     .into(),
             );
         }
@@ -345,7 +365,11 @@ mod tests {
         match a.approve(&writer(), &json!({})).await {
             Decision::Blocked(reason) => {
                 assert!(reason.contains("earlier"), "{reason}");
-                assert!(reason.contains("fresh run"), "{reason}");
+                // The advice must match what actually clears the latch: this
+                // run's approver survives a reply (steering), so promising a
+                // "fresh run" was false for a live one.
+                assert!(reason.contains("ask again"), "{reason}");
+                assert!(!reason.contains("fresh run"), "{reason}");
             }
             other => panic!("expected Blocked, got {other:?}"),
         }
@@ -354,6 +378,52 @@ mod tests {
             "the second ask must not wait out another timeout"
         );
         assert!(rx.try_recv().is_err(), "no second card was posted");
+    }
+
+    #[tokio::test]
+    async fn clearing_the_shared_latch_makes_the_next_call_ask_again() {
+        // The latch assumed the approver dies with each inbound message —
+        // false for a LIVE run, where the connector folds new messages into
+        // the steering queue and the same approver survives the user's
+        // return. The connector now clears the shared latch on a steering
+        // message or any approval-card button press; from the approver's
+        // side, both are a store(false) on the handle this test uses. The old
+        // behaviour refused here instantly, with no card, for the rest of the
+        // run. The timeout has to be long enough for the responder below to
+        // beat it, and short enough that the first, deliberate timeout does
+        // not drag the test.
+        let (a, mut rx) = approver(Mode::Ask, Duration::from_millis(250));
+
+        // First card times out and sets the latch.
+        assert!(matches!(
+            a.approve(&writer(), &json!({})).await,
+            Decision::Blocked(_)
+        ));
+        assert!(rx.try_recv().is_ok(), "the first ask posted a card");
+
+        // Latched: refused at once, no card.
+        assert!(matches!(
+            a.approve(&writer(), &json!({})).await,
+            Decision::Blocked(_)
+        ));
+        assert!(rx.try_recv().is_err(), "no card while latched");
+
+        // The user spoke — the connector clears the latch it shares with us.
+        a.unanswered_latch().store(false, Ordering::Relaxed);
+
+        // The next gated call posts a fresh card and waits for the answer.
+        let responder = tokio::spawn(async move {
+            let req = rx
+                .recv()
+                .await
+                .expect("a fresh card once the latch is cleared");
+            req.reply.send(Answer::Approve).ok();
+        });
+        assert!(matches!(
+            a.approve(&writer(), &json!({})).await,
+            Decision::Allow
+        ));
+        responder.await.unwrap();
     }
 
     #[tokio::test]

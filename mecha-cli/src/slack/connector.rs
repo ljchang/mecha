@@ -13,6 +13,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -43,6 +44,12 @@ struct Live {
     cancel: CancellationToken,
     queue: Arc<Mutex<VecDeque<String>>>,
     mode: Arc<Mutex<Mode>>,
+    /// The run's unanswered-approval latch, shared with its `SlackApprover`.
+    /// Set after a card times out; while set, every gated call is refused
+    /// without asking. The approver lives as long as the run, so only this
+    /// loop can clear it — and it does, whenever the user is proven to be
+    /// watching again: a steering message, or any approval-card button press.
+    unanswered: Arc<AtomicBool>,
 }
 
 /// A finished run, handed back to the loop that owns the conversations.
@@ -421,6 +428,13 @@ impl State {
             if let Ok(mut queue) = live.queue.lock() {
                 queue.push_back(text);
             }
+            // The user spoke. If an earlier card timed out, this run's
+            // approver latched and was refusing every gated call without
+            // asking — and because this branch short-circuits the message
+            // into the queue, no rebuild would ever clear it. A reply is
+            // proof someone is watching, so the next gated call posts a
+            // fresh card and waits normally.
+            live.unanswered.store(false, Ordering::Relaxed);
             return;
         }
 
@@ -494,12 +508,17 @@ impl State {
             workspace,
             ..(*self.agent.ctx()).clone()
         });
-        cx.approver = Arc::new(SlackApprover::new(
+        let approver = SlackApprover::new(
             key.clone(),
             Arc::clone(&mode),
             self.approval_tx.clone(),
             Duration::from_secs(self.cfg.approval_timeout_secs),
-        ));
+        );
+        // Kept beside the steering queue in `Live`: the approver survives for
+        // the whole run, so the loop needs its own handle to clear the
+        // unanswered latch when the user shows up again.
+        let unanswered = approver.unanswered_latch();
+        cx.approver = Arc::new(approver);
         cx.budget = Budget {
             max_turns: Some(self.cfg.max_turns),
             max_cost_usd: self.cfg.max_cost_usd,
@@ -625,6 +644,7 @@ impl State {
                 cancel,
                 queue,
                 mode,
+                unanswered,
             },
         );
         let _ = self.threads.apply(&key, Event::OwnerSpoke);
@@ -1255,6 +1275,17 @@ impl State {
                     self.resolve_draft(&value, send, &who, channel, ts);
                 }
                 "slack_approve" | "slack_approve_run" | "slack_reject" => {
+                    // Any press on an approval card is proof someone is
+                    // watching — including a late tap on an expired card,
+                    // whose own call stays refused below. Clear the thread's
+                    // unanswered latch first, unconditionally, so the run's
+                    // next gated call posts a fresh card instead of being
+                    // refused invisibly for the rest of its budget.
+                    if let Some((key, _)) = value.rsplit_once('-') {
+                        if let Some(live) = self.live.get(key) {
+                            live.unanswered.store(false, Ordering::Relaxed);
+                        }
+                    }
                     if let Some(pending) = self.pending.remove(&value) {
                         let answer = match action.action_id.as_str() {
                             "slack_approve" => Answer::Approve,
