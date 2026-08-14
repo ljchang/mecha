@@ -385,12 +385,18 @@ pub struct Round {
     pub asked: Vec<(String, String)>,
     /// What each committed, before seeing the other.
     pub answered: Vec<(String, String)>,
-    /// Readers whose asker produced nothing usable, so the question they
-    /// were handed is a repeat. Recorded rather than hidden: a repeated
-    /// round reads like a reader that changed its mind, when in fact the
-    /// dialogue stalled and the orchestration papered over it.
+    /// Readers whose asker produced nothing usable, paired with what it did
+    /// emit. Recorded rather than hidden: a repeated round reads like a
+    /// reader that changed its mind, when in fact the dialogue stalled and
+    /// the orchestration papered over it — the first run with this field
+    /// showed every asker failing in every round, which the transcript had
+    /// been quietly presenting as three rounds of conversation.
+    ///
+    /// The rejected text is kept because "produced no question" is not a
+    /// diagnosis. Empty output, a refusal and a paragraph of prose that
+    /// happens to end in a full stop are three different bugs.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub stalled: Vec<String>,
+    pub stalled: Vec<(String, String)>,
 }
 
 /// The whole exchange about one entity.
@@ -467,7 +473,7 @@ pub async fn exchange(
     // same reader answering the same seed twice with different facts and no
     // sign it had noticed.
     let mut said: Vec<Vec<(String, String)>> = vec![vec![], vec![]];
-    let mut stalled: Vec<String> = vec![];
+    let mut stalled: Vec<(String, String)> = vec![];
 
     for n in 1..=rounds {
         // COMMIT. Both answer before either sees the other.
@@ -518,26 +524,53 @@ pub async fn exchange(
         let mut next = questions.clone();
         for (i, (vantage, _)) in agents.iter().enumerate() {
             let other = 1 - i;
-            let mut convo = Conversation::user(format!(
+            // Trimmed, and the imperative goes LAST. A system prompt
+            // followed by two twenty-line answers is overwhelmed by the
+            // shape of its own input: labelled answers read as "summarise
+            // these", and the asker duly returned a consolidated profile
+            // of the person instead of a question. Instruction position
+            // beats instruction strength.
+            let brief = |s: &String| -> String { s.chars().take(700).collect() };
+            let reveal = format!(
                 "The person is {entity}.\n\nYou read: {}\nYou answered: {}\n\n\
-                 They read: {}\nThey answered: {}",
+                 They read: {}\nThey answered: {}\n\n\
+                 Now ask them ONE question. Do not summarise either answer. \
+                 Your entire output is a single sentence ending in a question \
+                 mark.",
                 vantage.sources.join(", "),
-                answers[i],
+                brief(&answers[i]),
                 agents[other].0.sources.join(", "),
-                answers[other],
-            ));
+                brief(&answers[other]),
+            );
             // A DIFFERENT agent does the asking: same lens, different
             // system prompt. One agent cannot hold two roles, and giving
             // the answerer the asking prompt would mean whichever ran last
             // decided what it was.
-            let outcome = askers[i].1.run_in(cx, &mut convo, None).await?;
+            let mut convo = Conversation::user(reveal);
+            let mut outcome = askers[i].1.run_in(cx, &mut convo, None).await?;
+            // One retry, stripped to the bone. Every asker failed in every
+            // round of the run before this, so a single cheap retry is
+            // worth more than a round silently repeating its question —
+            // and if the bare form fails too, that is a finding rather
+            // than a flake.
+            if usable_question(&outcome.text).is_none() {
+                let mut bare = Conversation::user(format!(
+                    "They said this about {entity}: {}\n\n\
+                     Ask them one question about it. Output only the question.",
+                    brief(&answers[other]),
+                ));
+                outcome = askers[i].1.run_in(cx, &mut bare, None).await?;
+            }
             // A non-question must not propagate. Keeping the previous
             // question repeats a round; feeding garbage forward corrupts
             // every round after it, and the reader answers the garbage
             // earnestly because it cannot tell it was never asked anything.
             match usable_question(&outcome.text) {
                 Some(q) => next[other] = q,
-                None => stalled.push(agents[other].0.label.clone()),
+                None => stalled.push((
+                    agents[other].0.label.clone(),
+                    outcome.text.trim().chars().take(300).collect(),
+                )),
             }
         }
         questions = next;
@@ -588,6 +621,32 @@ pub fn strip_user_directed(text: &str) -> String {
     }
 }
 
+/// A question aimed at what the addressee *wants* rather than what its
+/// sources *hold*.
+///
+/// The last shape of the assistant reflex to survive into the question
+/// slot. A live round-2 asked "What specific aspect of Luke J Chang's work
+/// or background are you most interested in?" — grammatically a question,
+/// addressed to a peer, and worthless: the other reader has no preferences,
+/// only sources, so it burned a whole round explaining that it could not
+/// choose. A probe of someone's evidence is the only question worth asking
+/// here.
+fn elicits_a_preference(line: &str) -> bool {
+    let l = line.to_lowercase();
+    [
+        "interested in",
+        "would you like",
+        "do you want",
+        "should i",
+        "can i help",
+        "what would you",
+        "how can i",
+        "anything else",
+    ]
+    .iter()
+    .any(|p| l.contains(p))
+}
+
 /// The first line of `text` that is actually a question, or `None`.
 ///
 /// A model with no tools still emits tool syntax when it wants to look
@@ -607,6 +666,7 @@ pub fn usable_question(text: &str) -> Option<String> {
                 && !l.contains("tool:")
                 && !l.contains("args:")
                 && !l.starts_with('{')
+                && !elicits_a_preference(l)
         })
         .map(|l| l.trim_start_matches(['*', '-', '#', ' ']).to_string())
 }
@@ -620,14 +680,17 @@ pub fn render(x: &Exchange) -> String {
     for r in &x.rounds {
         s.push_str(&format!("\nRound {}\n", r.n));
         for ((who, q), (_, a)) in r.asked.iter().zip(r.answered.iter()) {
-            let repeat = if r.stalled.contains(who) {
-                " (repeat — its asker produced no usable question)"
-            } else {
-                ""
-            };
-            s.push_str(&format!(
-                "  {who} was asked{repeat}: {q}\n  {who} said: {a}\n"
-            ));
+            if let Some((_, raw)) = r.stalled.iter().find(|(l, _)| l == who) {
+                let raw = if raw.is_empty() {
+                    "(nothing at all)".to_string()
+                } else {
+                    raw.replace('\n', " ")
+                };
+                s.push_str(&format!(
+                    "  ! {who}'s asker produced no question. It emitted: {raw}\n"
+                ));
+            }
+            s.push_str(&format!("  {who} was asked: {q}\n  {who} said: {a}\n"));
         }
     }
     s
@@ -668,6 +731,29 @@ mod tests {
         // An answer that is ONLY an offer is not silence, and must not be
         // passed on as though the sources had been consulted.
         assert!(strip_user_directed("Would you like me to search?").starts_with("(no answer"));
+    }
+
+    #[test]
+    fn a_question_must_probe_sources_not_preferences() {
+        // Live round 2. Grammatical, addressed to the peer, and worthless:
+        // the other reader has no interests, only evidence.
+        assert_eq!(
+            usable_question(
+                "What specific aspect of Luke J Chang's work or background \
+                 are you most interested in?"
+            ),
+            None
+        );
+        assert_eq!(usable_question("Would you like me to dig deeper?"), None);
+        // The good ones from the same run must survive. Both are second
+        // person, so the rule cannot simply reject "you".
+        for q in [
+            "Are you referring to the Luke J Chang associated with the Chang \
+             lab at Dartmouth and the 'py-feat' paper?",
+            "Can you confirm if Luke J Chang is associated with the Chang lab?",
+        ] {
+            assert!(usable_question(q).is_some(), "rejected a real probe: {q}");
+        }
     }
 
     #[test]
