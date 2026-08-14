@@ -76,7 +76,15 @@ pub async fn run(global: &crate::GlobalOpts, args: &CorroborateArgs) -> Result<(
             .with_context(|| format!("connecting to MCP server '{}'", args.server))?,
     );
 
-    let candidates = gossip::pending(&client, &args.proposer, &args.predicate, args.limit).await?;
+    // Skip what corroboration already judged: each run extends coverage.
+    let candidates = gossip::pending(
+        &client,
+        &args.proposer,
+        &args.predicate,
+        args.limit,
+        Some("corroboration"),
+    )
+    .await?;
     if candidates.is_empty() {
         println!("nothing pending in {}·{}", args.proposer, args.predicate);
         return Ok(());

@@ -1597,16 +1597,26 @@ pub struct Candidate {
 }
 
 /// One class of the review queue, oldest first.
+/// `unjudged_by`: name the mechanism to skip candidates it has already
+/// filed a verdict on — a batch run then extends coverage instead of
+/// re-judging the same oldest N (pkg keeps verdict history, so re-judging
+/// duplicates opinions).
 pub async fn pending(
     client: &McpClient,
     proposed_by: &str,
     predicate: &str,
     limit: usize,
+    unjudged_by: Option<&str>,
 ) -> Result<Vec<Candidate>> {
     let out = client
         .call_tool(
             "kg_pending",
-            json!({ "proposed_by": proposed_by, "predicate": predicate, "limit": limit }),
+            json!({
+                "proposed_by": proposed_by,
+                "predicate": predicate,
+                "limit": limit,
+                "unjudged_by": unjudged_by,
+            }),
         )
         .await
         .context("kg_pending")?;
