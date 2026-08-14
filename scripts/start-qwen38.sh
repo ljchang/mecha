@@ -74,8 +74,45 @@ D=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--a4lg--Qwen3.8-27B-MTP-ONL
 # So the flag neither causes nor cures anything known. It is kept because it is
 # harmless, because the other local server runs with it, and because an arm
 # meant for comparison should differ from its baseline in as few places as
-# possible. If you are benchmarking *quality*, A/B it anyway: a budget that is
-# too small and a model that gives up early are indistinguishable from outside.
+# possible.
+#
+# It is also, on this model, INERT — measured 2026-08-14. Qwen3.8-27B does not
+# over-think: on a deliberately hard riddle it spent ~230 tokens of thinking,
+# and even a 200-token budget never fired. The flag only bites if you set it
+# absurdly low; at 20 it does work exactly as documented, cutting the trace and
+# injecting --reasoning-budget-message inline, after which the model closes the
+# think block and still answers correctly. Semantics, from --help: -1
+# unrestricted (the llama.cpp default), 0 immediate end, N>0 a real token cap.
+#
+# **The lever that actually moves this model is not this flag.** Qwen3.8's chat
+# template takes two variables, and llama-server exposes them per request under
+# `chat_template_kwargs` (NOT as top-level OpenAI fields — a top-level
+# `reasoning_effort` or `enable_thinking` is silently ignored, verified):
+#
+#   chat_template_kwargs: {"reasoning_effort": "low"|"medium"|"xhigh"}
+#   chat_template_kwargs: {"enable_thinking": false}
+#
+# `reasoning_effort` defaults to xhigh ('high' is aliased to it). It is a
+# PROMPT, not a cap: xhigh injects "think carefully… validate key assumptions…
+# consider plausible alternatives", low injects "keep your thinking brief", and
+# medium injects nothing at all. Which is why the measured effect is not what
+# the names promise — median thinking over 3 seeds on one hard prompt:
+#
+#   xhigh (default)   653 chars    374 out tok   16.1 s   <- shortest, fastest
+#   low             1,038 chars    589 out tok   21.8 s
+#   medium          1,176 chars    697 out tok   26.3 s
+#   thinking off        0 chars    667 out tok   25.2 s
+#
+# Two things worth keeping from that. The default is the fastest setting, so
+# do not "optimize" it downward without measuring. And turning thinking OFF did
+# not save time — the tokens simply moved from the think block into a longer
+# answer. One prompt, n=3, so treat it as a caution against assuming, not as a
+# result about the model.
+#
+# None of those kwargs are reachable from mecha today: ProviderConfig carries
+# no extra-body passthrough, so a mecha run gets whatever this server was
+# started with. If reasoning control ever needs to be per-run rather than
+# per-server, that passthrough is the change to make.
 #
 # Whatever sets max_tokens against this server must still leave room for an
 # answer after the budget — comfortably above 4096. Four numbers move together
