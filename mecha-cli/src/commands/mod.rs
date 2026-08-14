@@ -2,6 +2,7 @@ pub mod batch;
 pub mod chat;
 pub mod config;
 pub mod distill;
+pub mod doctor;
 pub mod eval;
 pub mod frontdoor;
 pub mod learn;

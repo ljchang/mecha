@@ -194,6 +194,13 @@ pub enum Command {
     /// path jail its runs get.
     Work(commands::work::Args),
 
+    /// Read every store — no network, no model, no tokens — and report what
+    /// is silently wrong: dead mail logins, stuck outbox drafts, stalled
+    /// frontdoor requests, failing triggers, failed units. On a terminal it
+    /// offers each remedy; piped, it only reports. Exit 1 when it found
+    /// anything.
+    Doctor(commands::doctor::Args),
+
     /// Requests that arrived through the public surface, and the quarantine
     /// they pass through before any run with tools is told about them.
     /// `factory-publish drain` fetches them; this is what happens next.
@@ -265,6 +272,7 @@ async fn dispatch() -> Result<()> {
         Command::Outbox(args) => commands::outbox::execute(&cli.global, args).await,
         Command::Msg(args) => commands::msg::execute(args).await,
         Command::Work(args) => commands::work::execute(args).await,
+        Command::Doctor(args) => commands::doctor::execute(args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
         Command::Slack(args) => commands::slack::run(&cli.global, args).await,
         Command::Trigger(args) => commands::trigger::execute(&cli.global, args).await,

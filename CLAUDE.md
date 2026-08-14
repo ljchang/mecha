@@ -849,6 +849,44 @@ build the types directly. That is exactly how hooks shipped unreachable.
 `every_field_of_config_is_reachable_from_a_file` now round-trips a serialised
 default through the layer to catch it.
 
+## The doctor
+
+`mecha doctor` (`doctor.rs`, `commands/doctor.rs`) reads every store in one
+pass — no network, no model, no tokens — and reports what is silently wrong:
+dead auth markers, releases that errored, drafts and requests waiting on you
+past a threshold, triggers whose slots stopped advancing, failed `mecha-*`
+units. It exists because of 2026-08-11: a revoked OAuth token took scheduling
+down for three days while five stores each recorded the distress correctly
+and nothing read across them. Error handling here is deliberately a
+*convention plus an aggregator*, not a shared type — each boundary keeps its
+own taxonomy (`ProviderError`, `SlackError`, `MailError`), each long-lived
+component leaves durable machine-readable markers in its own store, and
+doctor is the one reader. A new failure mode costs a marker and a check,
+never a cross-crate dependency.
+
+Three rules, each load-bearing:
+
+- **An observer, never load-bearing itself.** Every check is best-effort: an
+  unreadable store is a finding, not a crash, and one poisoned store never
+  suppresses the others (there is a test). Doctor reads files directly
+  rather than through the stores' `open` constructors, because `open`
+  creates-and-chmods on the way in — an examination that heals what it was
+  about to report is measuring itself.
+- **Findings propose; a human disposes.** Each finding carries a remedy argv
+  through an existing command (`mecha-mail auth …`, `mecha outbox review`),
+  offered one at a time only at a TTY, EOF = no, spawned inheriting the real
+  terminal (the `self_cli_interactive` rule — an OAuth flow needs a real
+  keyboard). Unattended runs report and exit 1, never fix; there is
+  deliberately no `--yes`, because a doctor that fixes with nobody watching
+  is the silently-degrading-sandbox shape. The remedy for stuck drafts is
+  opening the review, never releasing them — and where ordering matters, the
+  remedy says so (a failed unit's restart advice defers to a dead-auth
+  finding: restarting a service that will refail teaches nothing).
+- **`--json` is machine output** and never prompts, even at a TTY. Exit 0 is
+  healthy; 1 is findings. `mecha-mail`'s own exit 77 (`EX_NOPERM`) means
+  "re-auth needed" — permanent, not transient — which is what lets timers
+  and `OnFailure=` hooks route around blind retry.
+
 ## Conventions
 
 - Tools return `Ok(ToolOutput { is_error: true })` for expected failures — the
