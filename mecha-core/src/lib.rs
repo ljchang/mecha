@@ -54,6 +54,7 @@ pub mod cron;
 pub mod distill;
 pub mod eval;
 pub mod frontdoor;
+pub mod gossip;
 pub mod hooks;
 pub mod learning;
 pub mod mailbox;
