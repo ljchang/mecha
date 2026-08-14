@@ -112,7 +112,37 @@ D=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--a4lg--Qwen3.8-27B-MTP-ONL
 # None of those kwargs are reachable from mecha today: ProviderConfig carries
 # no extra-body passthrough, so a mecha run gets whatever this server was
 # started with. If reasoning control ever needs to be per-run rather than
-# per-server, that passthrough is the change to make.
+# per-server, that passthrough is the change to make. For the record, the
+# per-request budget field does work here (`reasoning_budget_tokens`, upstream
+# #23116) — with one trap: it defaults to -1, and -1 means "defer to the server
+# flag", so a request CANNOT ask for unlimited thinking against a server
+# started with a finite budget. The flag is a ceiling, not a default.
+#
+# Two upstream notes, both verified against this server on 2026-08-14.
+#
+# **Do not "fix" tool-call trouble with --reasoning-format none.** That is the
+# workaround in ggml-org/llama.cpp#20837 — still OPEN, filed against the same
+# `qwen35` architecture this model reuses — for tool calls emitted inside the
+# thinking block, which is precisely the malformation behind mecha's old
+# empty-turn bug. It is the wrong medicine here: with format `none` the server
+# stops splitting thoughts out, `reasoning_content` comes back null, and the
+# raw `<think>…</think>` lands in `message.content`. mecha decodes
+# `reasoning_content` into `Block::Thinking` and replays it (openai.rs), so
+# that setting would both show thinking as the answer and disable the replay
+# that CHANGELOG 0.1.2 measured at 7/7 → 0/6. Leave the format alone.
+#
+# **The template hard-rejects a system message that is not first**, raising
+# `System message must be at the beginning.` (line 110) — the server answers
+# HTTP 400, reproduced here, not a warning. It has bitten Claude Code
+# (llama.cpp discussion #27081) and ollama (#17757), both of which inject
+# system turns mid-conversation. mecha is structurally immune: `Role` is only
+# `User | Assistant`, and the system prompt is a separate `req.system` field
+# pushed ahead of every message. Worth knowing before anything is tempted to
+# add a mid-conversation system reminder to this backend.
+#
+# Finally, `--chat-template-kwargs enable_thinking=...` is deprecated upstream
+# in favour of `--reasoning on|off`; that is the flag to reach for if this arm
+# should ever run without thinking at all.
 #
 # Whatever sets max_tokens against this server must still leave room for an
 # answer after the budget — comfortably above 4096. Four numbers move together
