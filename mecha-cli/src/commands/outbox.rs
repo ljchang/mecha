@@ -578,7 +578,10 @@ impl Surface {
     async fn release(&self, store: &OutboxStore, item: &OutboxItem) -> Result<String> {
         let item = &claim_for_release(store, item)?;
         let Some(tool) = self.tools.registry.get(&item.tool) else {
-            bail!(
+            // Recorded like every other release failure: this one dies before
+            // any tool runs, and a failure that only reaches stderr is
+            // invisible to `list`/`show` and to the TUI's detached watch.
+            let msg = format!(
                 "tool `{}` is not available in this configuration. Available: {}",
                 item.tool,
                 self.tools
@@ -588,6 +591,8 @@ impl Surface {
                     .collect::<Vec<_>>()
                     .join(", ")
             );
+            store.record_error(&item.id, &msg)?;
+            bail!("{msg}");
         };
         let output = match tool.call(item.args.clone(), &self.ctx).await {
             Ok(out) => out,
@@ -627,6 +632,25 @@ impl Surfaces {
         let surface = Surface::build(global, key.as_deref()).await?;
         self.by_workspace.push((key, surface));
         Ok(&self.by_workspace.last().unwrap().1)
+    }
+}
+
+/// Put a release failure on the item before reporting it.
+///
+/// Everything on the release path must land in the store, the surface build
+/// included: `Surface::build` runs *before* `release`, so its failures — a bad
+/// workspace, an MCP server that won't start — used to reach only stderr, and
+/// the TUI spawns releases detached with stderr closed. The result was an item
+/// sitting pending with `error: null` while the watch said "still releasing"
+/// forever. `record_error` keeps the item pending — the draft is still good
+/// and the next `send` retries — with the reason where every review surface
+/// can display it.
+fn record_release_failure(store: &OutboxStore, id: &str, err: anyhow::Error) -> anyhow::Error {
+    match store.record_error(id, &format!("{err:#}")) {
+        Ok(()) => err,
+        Err(record) => {
+            anyhow::anyhow!("{err:#} (and recording the failure also failed: {record:#})")
+        }
     }
 }
 
@@ -709,7 +733,10 @@ async fn send(
     for item in &items {
         let release = match surfaces.for_item(global, item).await {
             Ok(surface) => surface.release(store, item).await,
-            Err(e) => Err(e),
+            // A surface that cannot be built is a failure of this item's
+            // release, so it is recorded like one — and only this item's:
+            // the next draft may name a workspace that builds fine.
+            Err(e) => Err(record_release_failure(store, &item.id, e)),
         };
         match release {
             Ok(output) => {
@@ -794,9 +821,18 @@ async fn review(global: &GlobalOpts, store: &OutboxStore, selection: &Selection)
             }
             match line.trim().to_ascii_lowercase().as_str() {
                 "s" | "send" => {
-                    let surface = surfaces.for_item(global, &current).await?;
-                    let _lock = store.lock()?;
-                    match surface.release(store, &current).await {
+                    // The surface is built before the lock — an MCP startup is
+                    // not something to hold the store across. A build failure
+                    // is recorded on the item and the walk continues: one bad
+                    // workspace must not end the whole review.
+                    let release = match surfaces.for_item(global, &current).await {
+                        Ok(surface) => {
+                            let _lock = store.lock()?;
+                            surface.release(store, &current).await
+                        }
+                        Err(e) => Err(record_release_failure(store, &current.id, e)),
+                    };
+                    match release {
                         Ok(output) => {
                             sent += 1;
                             println!("sent via `{}`", current.tool);
@@ -1177,6 +1213,99 @@ mod tests {
         assert_eq!(
             local_paths(&args, None),
             vec![("poll spec", std::path::PathBuf::from("retro-spec.toml"))]
+        );
+    }
+
+    /// A surface with nothing in it, standing in for one whose configuration
+    /// cannot serve the staged tool — buildable in a test because it needs no
+    /// MCP server, no config file, and no model.
+    fn empty_surface() -> Surface {
+        use std::sync::Arc;
+        Surface {
+            tools: setup::PreparedTools {
+                registry: mecha_core::tool::Registry::new(),
+                sandbox: Arc::new(mecha_core::sandbox::Sandbox::new(Default::default())),
+                workspace: std::env::temp_dir(),
+                config: mecha_core::config::Config::default(),
+                approver: Arc::new(mecha_core::tool::ModeApprover {
+                    mode: mecha_core::config::PermissionMode::Allow,
+                }),
+                todo: None,
+                mailbox: None,
+                _mcp: Vec::new(),
+            },
+            ctx: mecha_core::tool::ToolCtx::default(),
+        }
+    }
+
+    /// A release that dies before the tool executes must still say so on the
+    /// item. This path used to bail without `record_error`, so the failure
+    /// reached only stderr — which the TUI's detached release closes — and the
+    /// item sat pending with `error: null` while the watch reported "still
+    /// releasing" against a record holding nothing.
+    #[tokio::test]
+    async fn a_release_that_dies_before_the_tool_runs_records_the_error_on_the_item() {
+        let store = temp_store();
+        let staged = store
+            .stage(
+                "mail__mail_send",
+                OutboxKind::Message,
+                json!({"to": "a@example.com"}),
+                Default::default(),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let err = empty_surface()
+            .release(&store, &staged)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not available"), "{err}");
+
+        let after = store.item(&staged.id).unwrap();
+        assert_eq!(after.status, "pending", "the draft survives the failure");
+        assert!(
+            after
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("not available")),
+            "the failure must be on the item, not only stderr: {:?}",
+            after.error
+        );
+    }
+
+    /// `Surface::build` runs before `release`, so its failures never reached
+    /// `record_error` at all. Both `send` and `review` route them through
+    /// this, so a workspace that cannot build a surface leaves its reason on
+    /// the item it failed.
+    #[test]
+    fn a_surface_build_failure_lands_on_the_item_not_only_stderr() {
+        let store = temp_store();
+        let staged = store
+            .stage(
+                "factory__bundle_publish",
+                OutboxKind::Publish,
+                json!({"bundle": "site"}),
+                Default::default(),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let err = record_release_failure(
+            &store,
+            &staged.id,
+            anyhow::anyhow!("the MCP server would not start"),
+        );
+        assert!(err.to_string().contains("would not start"), "{err:#}");
+
+        let after = store.item(&staged.id).unwrap();
+        assert_eq!(after.status, "pending", "record_error never resolves");
+        assert_eq!(
+            after.error.as_deref(),
+            Some("the MCP server would not start")
         );
     }
 }

@@ -18,6 +18,14 @@
 //! a child whose tools can reach untrusted sources produces **untrusted
 //! output**, and the parent's trifecta interlock still applies.
 //!
+//! Nor do they launder private data into public data. A child whose tools read
+//! private sources — the knowledge graph, a mailbox — returns a summary
+//! *containing* private data, so the subagent tool declares `private_data` and
+//! the parent's taint keeps that leg armed. `trusted_output` narrows only the
+//! untrusted leg: it says "this answer carries no attacker's instructions",
+//! never "this answer carries none of your data" — private data does not
+//! become less private by being summarised.
+//!
 //! What you actually gain is threefold: the raw content never enters the
 //! parent's context, the child cannot send, and the two halves of the trifecta
 //! can be kept in separate agents entirely.
@@ -87,16 +95,27 @@ pub struct Subagent {
 impl Subagent {
     pub fn new(profile: SubagentProfile, agent: Arc<Agent>) -> Self {
         // A child's answer is only as trustworthy as the least trustworthy
-        // thing it can read. Private data is *not* propagated: the point of a
-        // subagent is that what it saw stays with it, and only its answer —
-        // which the parent is about to read anyway — comes back.
+        // thing it can read — and as private as the most private thing. Both
+        // legs derive from the child's own tools, so the parent's taint stays
+        // correct without anyone remembering to declare it. The private leg
+        // ignores `trusted_output` on purpose: that switch vouches that the
+        // answer carries no attacker's instructions, not that it carries none
+        // of the user's data, and a child that summarised the knowledge graph
+        // hands the parent a summary *made of* private data. Dropping the leg
+        // here was a laundering hole — the parent could then feed that
+        // summary to a send-capable tool with `taint.private` still false.
         let child_reads_untrusted = agent
             .registry()
             .iter()
             .any(|t| t.capabilities().untrusted_input);
+        let child_reads_private = agent
+            .registry()
+            .iter()
+            .any(|t| t.capabilities().private_data);
 
         let capabilities = Capabilities {
             untrusted_input: child_reads_untrusted && !profile.trusted_output,
+            private_data: child_reads_private,
             ..Capabilities::default()
         };
 
@@ -281,6 +300,10 @@ impl Tool for Subagent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{AgentConfig, PermissionMode};
+    use crate::message::{CompletionRequest, CompletionResponse};
+    use crate::provider::{Provider, StreamSink};
+    use crate::tool::{ModeApprover, Registry};
 
     #[test]
     fn profile_defaults_are_conservative() {
@@ -292,6 +315,121 @@ mod tests {
         assert!(
             !p.trusted_output,
             "child output is untrusted unless opted out"
+        );
+    }
+
+    /// Deriving capabilities never talks to a model, so the provider can be
+    /// one that refuses to.
+    struct InertProvider;
+
+    #[async_trait]
+    impl Provider for InertProvider {
+        fn id(&self) -> &str {
+            "inert"
+        }
+        fn default_model(&self) -> &str {
+            "inert-model"
+        }
+        async fn complete(
+            &self,
+            _req: &CompletionRequest,
+            _sink: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            anyhow::bail!("capability derivation must not reach a provider")
+        }
+    }
+
+    struct CapTool {
+        name: String,
+        caps: Capabilities,
+    }
+
+    #[async_trait]
+    impl Tool for CapTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "a tool that exists for its capability declaration"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn capabilities(&self) -> Capabilities {
+            self.caps
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok(""))
+        }
+    }
+
+    fn child_with(caps: &[Capabilities]) -> Arc<Agent> {
+        let mut registry = Registry::new();
+        for (i, c) in caps.iter().enumerate() {
+            registry.insert(Arc::new(CapTool {
+                name: format!("tool_{i}"),
+                caps: *c,
+            }));
+        }
+        Arc::new(
+            Agent::new(
+                Box::new(InertProvider),
+                registry,
+                Arc::new(ModeApprover {
+                    mode: PermissionMode::Allow,
+                }),
+                ToolCtx::default(),
+                AgentConfig::default(),
+                Some("inert-model".into()),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The laundering hole this closes: a child holding a private-capable
+    /// tool (pkg, mail) returns a summary *containing* private data, and with
+    /// `private_data` hard-coded false the parent's `taint.private` stayed
+    /// clear — so the parent could hand that summary to `web_search` with the
+    /// interlock disarmed. The leg has to come back with the answer, exactly
+    /// as the mailbox forwards both legs with a message.
+    #[test]
+    fn a_child_with_a_private_tool_returns_a_private_answer() {
+        let child = child_with(&[Capabilities::default().private()]);
+        let caps = Subagent::new(SubagentProfile::default(), child).capabilities();
+        assert!(caps.private_data, "the private leg must survive the return");
+        assert!(!caps.untrusted_input);
+        assert!(!caps.external_send, "a subagent is never itself a sink");
+    }
+
+    /// The web-only child keeps its old shape: untrusted comes back, private
+    /// does not appear from nowhere.
+    #[test]
+    fn a_web_only_child_stays_untrusted_but_not_private() {
+        let child = child_with(&[Capabilities::default().untrusted().sends()]);
+        let caps = Subagent::new(SubagentProfile::default(), child).capabilities();
+        assert!(caps.untrusted_input);
+        assert!(!caps.private_data);
+        assert!(!caps.external_send);
+    }
+
+    /// `trusted_output` vouches that the answer carries no attacker's
+    /// instructions — it says nothing about whose data the answer is made of,
+    /// so it narrows only the untrusted leg.
+    #[test]
+    fn trusted_output_narrows_the_untrusted_leg_and_never_the_private_one() {
+        let child = child_with(&[Capabilities::default().private().untrusted()]);
+        let caps = Subagent::new(
+            SubagentProfile {
+                trusted_output: true,
+                ..Default::default()
+            },
+            child,
+        )
+        .capabilities();
+        assert!(!caps.untrusted_input, "trusted_output disarms this leg");
+        assert!(
+            caps.private_data,
+            "a summary of private data is still private"
         );
     }
 }

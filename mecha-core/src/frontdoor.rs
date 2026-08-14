@@ -341,10 +341,35 @@ impl Frontdoor {
     }
 
     /// Rewrite one record, atomically.
+    ///
+    /// **The recorded outbox ids are append-only, and the store enforces it.**
+    /// `outbox` exists so "this was answered" outlives the draft that answered
+    /// it — but a re-triage builds its id list from its own session and would
+    /// overwrite the earlier drafts' ids, losing the only durable record that
+    /// a first reply was ever staged. Same idiom as `for_privileged_run`: a
+    /// boundary that is a function, not a rule every caller must remember —
+    /// any id already on disk is merged back in rather than trusted to the
+    /// caller's copy.
     pub fn write(&self, record: &Record) -> Result<()> {
         let path = self.root.join(record.file_name());
+        let mut record = record.clone();
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(prior) = serde_json::from_str::<Record>(&text) {
+                let merged: Vec<String> = prior
+                    .outbox
+                    .into_iter()
+                    .chain(record.outbox)
+                    .fold(Vec::new(), |mut ids, id| {
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
+                        ids
+                    });
+                record.outbox = merged;
+            }
+        }
         let temp = path.with_extension("json.tmp");
-        std::fs::write(&temp, serde_json::to_string_pretty(record)?)?;
+        std::fs::write(&temp, serde_json::to_string_pretty(&record)?)?;
         std::fs::rename(&temp, &path)?;
         Ok(())
     }
@@ -429,9 +454,12 @@ impl Frontdoor {
                 to: to.to_string(),
             });
             record.state = to.into();
-            if note.is_some() {
-                record.note = note;
-            }
+            // The note explains the state beside it, so a state change with no
+            // new reason *clears* the old one. Writing it only when Some left
+            // live records reading `answered` beside "the draft was rejected"
+            // — a stale reason for a state that no longer holds, which is
+            // worse than silence because it reads as an explanation.
+            record.note = note;
             self.write(&record)?;
         }
         Ok(moved)
@@ -822,6 +850,60 @@ mod tests {
 
         assert_eq!(s.front.reconcile(&s.outbox).unwrap(), vec![]);
         assert_eq!(s.front.record(1).unwrap().state, AWAITING_ME);
+    }
+
+    /// A re-triage writes the record with only its *own* session's draft ids —
+    /// the store must keep the earlier ones anyway, because they are the only
+    /// durable evidence a first reply was ever staged (the outbox is swept;
+    /// "this was answered" outlives the draft). Replacement was the live bug:
+    /// reject a draft, triage again, and the first draft's id vanished from
+    /// the record.
+    #[test]
+    fn a_later_write_appends_draft_ids_and_never_drops_the_earlier_ones() {
+        let s = Stores::new("append-outbox");
+        s.front.write(&awaiting(1, &["draft-1"])).unwrap();
+
+        // What the re-triage path does: a fresh id list from its own session.
+        let mut retriaged = awaiting(1, &["draft-2"]);
+        retriaged.triage_session = Some("sess-2".into());
+        s.front.write(&retriaged).unwrap();
+
+        assert_eq!(
+            s.front.record(1).unwrap().outbox,
+            vec!["draft-1".to_string(), "draft-2".to_string()],
+            "the first draft's id is the record that it was ever staged"
+        );
+
+        // Idempotent: writing the same ids again stacks nothing.
+        s.front.write(&awaiting(1, &["draft-2", "draft-1"])).unwrap();
+        assert_eq!(
+            s.front.record(1).unwrap().outbox,
+            vec!["draft-1".to_string(), "draft-2".to_string()]
+        );
+    }
+
+    /// A note explains the state beside it. A record that was once rejected
+    /// (note set) and later answered must not keep reading "the draft was
+    /// rejected" next to `answered` — an impossible combination that was live
+    /// in the store.
+    #[test]
+    fn answering_a_request_clears_the_stale_rejection_note() {
+        let s = Stores::new("stale-note");
+        let id = s.draft();
+        let mut record = awaiting(1, &[&id]);
+        record.note = Some("the draft was rejected".into());
+        s.front.write(&record).unwrap();
+
+        s.outbox.resolve(&id, "sent", None).unwrap();
+        let moved = s.front.reconcile(&s.outbox).unwrap();
+        assert_eq!(moved[0].to, ANSWERED);
+
+        let after = s.front.record(1).unwrap();
+        assert_eq!(after.state, ANSWERED);
+        assert_eq!(
+            after.note, None,
+            "a rejection note must not survive into `answered`"
+        );
     }
 
     /// The outbox is swept; a request outlives its draft. Losing the item must

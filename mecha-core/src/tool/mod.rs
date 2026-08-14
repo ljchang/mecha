@@ -162,6 +162,26 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// The root this tool's relative paths actually resolve against, when the
+    /// tool was constructed over a fixed directory rather than following the
+    /// per-run [`ToolCtx`] workspace.
+    ///
+    /// Most tools return `None` — the default — because they resolve paths
+    /// through the context they are called with. But a tool backed by a
+    /// process spawned once for many runs (an MCP server) resolves relative
+    /// paths against the directory it was spawned in, whatever workspace the
+    /// current run carries. A staged (deferred) call records a jail so its
+    /// release can rebuild the tool surface where the paths mean what they
+    /// meant at drafting time — and for these tools that jail must be the
+    /// spawn root, not the narrower per-run workspace, or every relative path
+    /// in the draft resolves outside the release jail forever.
+    ///
+    /// Like [`carried_state`](Tool::carried_state), the loop learns only that
+    /// some tools have a fixed root, never which kind of tool they are.
+    fn fixed_workspace(&self) -> Option<PathBuf> {
+        None
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: self.name().to_string(),

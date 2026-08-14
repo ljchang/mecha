@@ -187,15 +187,35 @@ pub async fn refresh_token(
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        return Err(MailError::ApiError {
-            status,
-            message: humanize_aadsts(&body),
-        });
+        return Err(classify_refresh_failure(status, &body));
     }
     Ok(crate::google::auth::parse_token_response(
         resp.json().await?,
         Some(refresh_tok),
     ))
+}
+
+/// Entra's twin of the Google classifier: `invalid_grant` is the code Entra
+/// puts on a dead refresh credential — AADSTS700082 (refresh token expired),
+/// AADSTS50173 (revoked by a password change or an admin), AADSTS70000 — and
+/// none of them ever recover on retry. Permanent gets its own class; the
+/// AADSTS translation still runs so the message stays actionable.
+pub(crate) fn classify_refresh_failure(status: u16, body: &str) -> MailError {
+    let json = serde_json::from_str::<serde_json::Value>(body).ok();
+    let code = json
+        .as_ref()
+        .and_then(|v| v.get("error").and_then(|c| c.as_str()));
+    if code == Some("invalid_grant") {
+        let detail = json
+            .as_ref()
+            .and_then(|v| v.get("error_description").and_then(|d| d.as_str()))
+            .unwrap_or(body);
+        return MailError::AuthRevoked(humanize_aadsts(detail));
+    }
+    MailError::ApiError {
+        status,
+        message: humanize_aadsts(body),
+    }
 }
 
 /// The complete device-code sign-in: request a code, tell the human where to
@@ -376,6 +396,25 @@ mod tests {
             !joined.contains("Mail.ReadWrite"),
             "nothing here modifies a message"
         );
+    }
+
+    /// Entra reports a dead refresh credential as `invalid_grant` with an
+    /// AADSTS code. Permanent — a sweep that retries it forever is the
+    /// recorded three-day silent failure.
+    #[test]
+    fn an_entra_invalid_grant_refresh_is_classified_permanent() {
+        let body = r#"{"error":"invalid_grant","error_description":"AADSTS700082: The refresh token has expired due to inactivity."}"#;
+        let err = classify_refresh_failure(400, body);
+        assert!(matches!(err, MailError::AuthRevoked(_)), "{err}");
+        let text = err.to_string();
+        assert!(text.starts_with(crate::types::AUTH_REVOKED), "{text}");
+        assert!(text.contains("AADSTS700082"), "raw code must survive: {text}");
+
+        // A throttle or an outage stays transient-shaped.
+        assert!(matches!(
+            classify_refresh_failure(503, "service unavailable"),
+            MailError::ApiError { status: 503, .. }
+        ));
     }
 
     #[test]

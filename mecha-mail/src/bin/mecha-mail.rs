@@ -8,10 +8,21 @@ use mecha_mail::accounts::{self, AccountEntry, Provider};
 use mecha_mail::unified::MailTools;
 use mecha_mail::{google, mcp, microsoft, token};
 
+/// The exit code for a **permanent** credential failure — a refresh token the
+/// provider says is expired or revoked, which no retry ever fixes. Distinct
+/// from the generic 1 so a systemd unit or a script can alert "re-auth
+/// needed" instead of blind-retrying: the 2026-08-11 revocation failed a
+/// two-minute timer identically for three days because nothing downstream
+/// could tell this class from transient weather. 77 is sysexits' EX_NOPERM.
+const EXIT_AUTH_REVOKED: u8 = 77;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "mecha-mail",
-    about = "All configured mail and calendar accounts as one MCP tool surface"
+    about = "All configured mail and calendar accounts as one MCP tool surface",
+    after_help = "Exit codes: 77 means a stored refresh token is expired or revoked \
+                  (permanent — run `mecha-mail auth <account> --provider <provider>`); \
+                  `mecha-mail accounts` names the dead account."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -105,9 +116,31 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> std::process::ExitCode {
     mecha_mail::init_tracing();
     let cli = Cli::parse();
+    match run(cli).await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            std::process::ExitCode::from(exit_code_for(&e))
+        }
+    }
+}
+
+/// Permanent credential death exits distinctly; everything else is a 1.
+/// Keyed on the sentinel because by the time an error reaches here it has
+/// crossed the fan-out's string boundary — the typed variant does not
+/// survive, the phrase does, and a test in `types.rs` pins the two together.
+fn exit_code_for(e: &anyhow::Error) -> u8 {
+    if format!("{e:#}").contains(mecha_mail::types::AUTH_REVOKED) {
+        EXIT_AUTH_REVOKED
+    } else {
+        1
+    }
+}
+
+async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Command::Auth {
             name,
@@ -195,6 +228,18 @@ async fn bookings(
     if waiting.is_empty() {
         println!("no new bookings");
     }
+    // Resolve where the events will land once, before any is created — and
+    // only when something is waiting, so a sweep with nothing to create
+    // never fails over an unset default.
+    let event_account = match waiting.is_empty() {
+        true => None,
+        false => Some(
+            tools
+                .create_account_name(account.as_deref())
+                .map_err(|e| anyhow::anyhow!(e))
+                .context("resolving the account for booking events")?,
+        ),
+    };
     let mut created = 0usize;
     for booking in &waiting {
         // Re-verify against *live* freebusy before creating anything: the
@@ -203,6 +248,13 @@ async fn bookings(
         // calendar meanwhile makes this a collision — parked loudly for a
         // human, never silently double-booked. Fail-closed like the slot
         // pipeline: an unreadable calendar is never a free one.
+        //
+        // Scoped to the account the event will be created on, not a fan-out
+        // over every account: a dead token on a mailbox this booking never
+        // touches must not block the calendar that is healthy (it did, for
+        // three days, when one account's refresh token was revoked). The
+        // fail-closed rule survives narrower — if *this* account's calendar
+        // cannot be read, the sweep still refuses.
         let (start, end) = (
             chrono::DateTime::parse_from_rfc3339(&booking.start)
                 .with_context(|| format!("booking {} start", booking.booking_id))?
@@ -212,7 +264,7 @@ async fn bookings(
                 .with_timezone(&chrono::Utc),
         );
         let (busy, failures) = tools
-            .freebusy(&booking.start, &booking.end, None)
+            .freebusy(&booking.start, &booking.end, event_account.as_deref())
             .await
             .map_err(|e| anyhow::anyhow!(e))
             .with_context(|| format!("re-verifying booking {}", booking.booking_id))?;
@@ -245,9 +297,11 @@ async fn bookings(
             continue;
         }
         let (title, description) = bk::event_text(booking);
+        // The resolved name, not the raw flag: the create must land on the
+        // exact account the re-verify just read.
         let (account_name, event_id) = tools
             .create_event_invite(
-                account.as_deref(),
+                event_account.as_deref(),
                 &title,
                 &description,
                 &booking.start,
@@ -648,9 +702,10 @@ fn import(name: String, provider: Provider) -> Result<()> {
 fn list_accounts() -> Result<()> {
     let file = accounts::load()?;
     for entry in &file.accounts {
-        let address = accounts::credentials_path(&entry.name)
-            .ok()
-            .and_then(|p| token::load(&p).ok())
+        let path = accounts::credentials_path(&entry.name).ok();
+        let address = path
+            .as_deref()
+            .and_then(|p| token::load(p).ok())
             .and_then(|c| c.account)
             .unwrap_or_else(|| "(no stored address)".into());
         let default = if file.default.as_deref() == Some(entry.name.as_str()) {
@@ -663,6 +718,13 @@ fn list_accounts() -> Result<()> {
             entry.name,
             entry.provider.to_string()
         );
+        // A dead login is the first thing this listing exists to reveal:
+        // the marker is written by the refresh path the moment a provider
+        // says the token is revoked, and cleared by the next successful
+        // refresh or re-auth — so this line costs no network call.
+        if let Some(marker) = path.as_deref().and_then(token::load_auth_error) {
+            println!("             !! DEAD since {}: {}", marker.at, marker.message);
+        }
     }
     if file.default.is_none() {
         println!(
