@@ -89,40 +89,39 @@ fn interactive() -> bool {
 }
 
 /// Grouped by component, components ordered by their worst finding, broken
-/// before attention within each.
+/// before attention within each — the order is [`grouped`]'s, not a private
+/// copy of it: three surfaces render this report, and a walk re-implemented
+/// here is exactly how they drift.
 fn render(findings: &[Finding]) {
     if findings.is_empty() {
         println!("nothing wrong that this doctor can see");
         return;
     }
-    let mut components: Vec<&str> = Vec::new();
-    for f in findings {
-        if !components.contains(&f.component.as_str()) {
-            components.push(&f.component);
+    let ordered = grouped(findings.to_vec());
+    let mut component: Option<&str> = None;
+    for f in &ordered {
+        if component != Some(f.component.as_str()) {
+            component = Some(f.component.as_str());
+            println!("{}:", f.component);
+        }
+        println!("  [{}] {}", f.severity.as_str(), f.summary);
+        for line in f.detail.lines() {
+            println!("      {line}");
+        }
+        if let Some(remedy) = &f.remedy {
+            println!("      remedy: {}", shell_words(&remedy.argv));
         }
     }
-    for component in components {
-        println!("{component}:");
-        for f in findings.iter().filter(|f| f.component == component) {
-            println!("  [{}] {}", f.severity.as_str(), f.summary);
-            for line in f.detail.lines() {
-                println!("      {line}");
-            }
-            if let Some(remedy) = &f.remedy {
-                println!("      remedy: {}", shell_words(&remedy.argv));
-            }
-        }
-    }
-    let broken = findings
+    let broken = ordered
         .iter()
         .filter(|f| f.severity == Severity::Broken)
         .count();
     println!(
         "\n{} finding{}: {} broken, {} for attention",
-        findings.len(),
-        if findings.len() == 1 { "" } else { "s" },
+        ordered.len(),
+        if ordered.len() == 1 { "" } else { "s" },
         broken,
-        findings.len() - broken
+        ordered.len() - broken
     );
 }
 
@@ -230,6 +229,46 @@ fn parse_failed_units(output: &str) -> Vec<String> {
             unit.starts_with("mecha-").then(|| unit.to_string())
         })
         .collect()
+}
+
+/// The restart re-examination both tap surfaces share (SLACK-ACTIONS-DESIGN
+/// §5, and F4): a restart is naturally idempotent against a *failed* unit but
+/// disruptive against a *running* one — `mecha-triggers` restarted mid-run
+/// cancels whatever it was doing — so the finding must still be true when the
+/// press lands, not just when the card (or modal) was composed. Given the
+/// unit's current failed-ness, `Some(line)` means skip the restart and say
+/// this; `None` means run it. Lives here, beside the finding that composes
+/// the remedy, because slack/ and tui/ must not import each other.
+pub fn recovered_before_restart(unit: &str, is_failed: bool) -> Option<String> {
+    (!is_failed).then(|| format!("{unit} already recovered — nothing was run"))
+}
+
+/// The recogniser the TUI's guard uses: the unit of a restart-shaped remedy
+/// argv, or `None` for anything else — a non-restart remedy has no
+/// re-examination to run.
+pub fn restart_unit_of(argv: &[String]) -> Option<&str> {
+    match argv {
+        [systemctl, user, restart, unit]
+            if systemctl == "systemctl" && user == "--user" && restart == "restart" =>
+        {
+            Some(unit)
+        }
+        _ => None,
+    }
+}
+
+/// `systemctl --user is-failed <unit>` exits 0 exactly when the unit is
+/// failed. A machine without systemd answers "not failed", which makes the
+/// guard skip the restart and report "already recovered" — doctor would never
+/// have composed the remedy there in the first place. The one probe both
+/// surfaces run (the Slack executor wraps it in `spawn_blocking`).
+pub fn unit_is_failed(unit: &str) -> bool {
+    std::process::Command::new("systemctl")
+        .args(["--user", "is-failed", unit])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
 }
 
 fn unit_finding(unit: &str, dead_auth: bool) -> Finding {
@@ -350,6 +389,42 @@ mod tests {
             vec!["mecha-triggers.service", "mecha-frontdoor.service"]
         );
         assert!(parse_failed_units("").is_empty());
+    }
+
+    /// F4's shared guard, failing on the old TUI behaviour: the /doctor
+    /// modal used to spawn `systemctl restart` unconditionally from a stale
+    /// confirm, killing a unit that had recovered mid-run. Both surfaces now
+    /// route through this decision.
+    #[test]
+    fn a_recovered_unit_is_not_restarted_and_a_failed_one_is() {
+        let skip = recovered_before_restart("mecha-triggers.service", false)
+            .expect("a recovered unit skips the restart");
+        assert!(skip.contains("already recovered"), "{skip}");
+        assert!(skip.contains("mecha-triggers.service"), "{skip}");
+
+        assert_eq!(
+            recovered_before_restart("mecha-triggers.service", true),
+            None,
+            "a unit that is still failed is restarted"
+        );
+    }
+
+    #[test]
+    fn only_a_restart_shaped_remedy_names_a_unit_to_re_examine() {
+        let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            restart_unit_of(&argv(&["systemctl", "--user", "restart", "mecha-x.service"])),
+            Some("mecha-x.service")
+        );
+        for other in [
+            argv(&["systemctl", "restart", "mecha-x.service"]),
+            argv(&["systemctl", "--user", "stop", "mecha-x.service"]),
+            argv(&["mecha", "trigger", "run", "briefing"]),
+            argv(&["systemctl", "--user", "restart", "mecha-x.service", "--now"]),
+            argv(&[]),
+        ] {
+            assert_eq!(restart_unit_of(&other), None, "{other:?}");
+        }
     }
 
     #[test]

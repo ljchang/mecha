@@ -1,5 +1,10 @@
-//! Per-thread release policy: what happens when this thread's runs stage
-//! drafts. The Slack counterpart of the TUI's `/review now|later|auto`.
+//! Per-thread (and per-channel) release policy: what happens when a run this
+//! surface started stages drafts. The Slack counterpart of the TUI's
+//! `/review now|later|auto` — and deliberately the same policy, not a copy:
+//! the mode enum and the release rule live in [`crate::review_policy`], where
+//! both front-ends consume them, so the tainted exclusion and the
+//! nothing-releases-after-an-early-stop rule cannot be forgotten on one
+//! surface and kept on the other.
 //!
 //! **Set by an explicit owner gesture only — the `review` command word — and
 //! never inferred from prompt or message text.** The rule is `/review`'s,
@@ -10,69 +15,29 @@
 //! no mail body and no model output can utter it into effect; anything that
 //! is not exactly the command word falls through and is just a message.
 //!
-//! **Session-scoped, expiring with the thread's in-memory state.** The
-//! setting lives in the connector's process and is deliberately never written
-//! to the thread record — the same eviction that orphans a mid-flight run on
-//! restart clears every review mode with it. That is the owner decision of
-//! 2026-08-14 (SLACK-ACTIONS-DESIGN §4): not an *unbounded* Always, a mode
-//! that dies with the state that watched it get set. A connector restart
-//! resets every thread to `now`, which is the safe direction: cards for
-//! everything.
+//! **Scope follows where the word was spoken.** Inside a thread, the setting
+//! governs that thread. As a *top-level* message it governs the channel's
+//! subsequent top-level prompts — a top-level `review auto` used to key
+//! itself to its own message's ts, a thread no later message ever joins, so
+//! it confirmed a policy that governed nothing. A thread's own setting still
+//! wins over its channel's.
 //!
-//! **Tainted drafts never auto-release, regardless of mode.** The approval a
-//! mode represents predates whatever armed the taint, so it authorises
-//! nothing about what came after — the TUI's rule, unchanged here.
+//! **Session-scoped, expiring with the connector's in-memory state.** The
+//! settings live in the connector's process and are deliberately never
+//! written to the thread record — the same eviction that orphans a mid-flight
+//! run on restart clears every review mode with it. That is the owner
+//! decision of 2026-08-14 (SLACK-ACTIONS-DESIGN §4): not an *unbounded*
+//! Always, a mode that dies with the state that watched it get set. A
+//! connector restart resets everything to `now`, which is the safe
+//! direction: cards for everything.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReviewMode {
-    /// Drafts a run stages are carded for review when it finishes. The
-    /// default, and what every thread returns to on restart.
-    Now,
-    /// Drafts wait in the outbox; the completion message says how many.
-    Later,
-    /// Untainted drafts staged by this thread's runs release when it
-    /// finishes; tainted ones still stop for a card, and an errored or
-    /// stopped run releases nothing.
-    Auto,
-}
+use std::collections::HashMap;
 
-impl ReviewMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ReviewMode::Now => "now",
-            ReviewMode::Later => "later",
-            ReviewMode::Auto => "auto",
-        }
-    }
+pub use crate::review_policy::ReviewMode;
 
-    /// One line on what the mode does, shown when it is set or asked about.
-    pub fn describe(self) -> &'static str {
-        match self {
-            ReviewMode::Now => "drafts this thread's runs stage are carded here for review",
-            ReviewMode::Later => {
-                "drafts wait in the outbox — the completion message says how many"
-            }
-            ReviewMode::Auto => {
-                "untainted drafts this thread's runs stage are released when the run \
-                 finishes; tainted drafts still stop for review. Expires when the \
-                 connector restarts"
-            }
-        }
-    }
-
-    fn parse(s: &str) -> Option<ReviewMode> {
-        match s.to_ascii_lowercase().as_str() {
-            "now" => Some(ReviewMode::Now),
-            "later" => Some(ReviewMode::Later),
-            "auto" => Some(ReviewMode::Auto),
-            _ => None,
-        }
-    }
-}
-
-/// Who set a thread's mode — the attribution every auto-released item's
-/// ledger row carries as its `user_id`; the *when* of each release is the
-/// ledger row's own stamp.
+/// Who set a mode — the attribution every auto-released item's ledger row
+/// carries as its `user_id`; the *when* of each release is the ledger row's
+/// own stamp.
 #[derive(Debug, Clone)]
 pub struct Setting {
     pub mode: ReviewMode,
@@ -99,11 +64,39 @@ pub fn command(text: &str) -> Option<Option<ReviewMode>> {
     }
 }
 
-/// Whether one staged item releases without a card under a mode. The tainted
-/// exclusion lives here, in a pure function, so it is testable and cannot be
-/// forgotten at a call site.
-pub fn auto_releases(mode: ReviewMode, tainted: bool) -> bool {
-    mode == ReviewMode::Auto && !tainted
+/// The key a channel-scoped setting lives under. Its `:` cannot appear in a
+/// thread key (`threads::key_for` maps every non-alphanumeric byte to `-`),
+/// so the two scopes cannot collide.
+pub fn channel_scope_key(channel: &str) -> String {
+    format!("channel:{channel}")
+}
+
+/// Where a `review` command's setting lands, and the words the confirmation
+/// uses to say so. `in_thread` is the event's **raw** `thread_ts` — present
+/// only when the message actually sits inside a thread. A top-level command
+/// scopes to the channel: keyed to its own message's ts it would govern a
+/// thread no later message ever joins.
+pub fn scope_for(channel: &str, in_thread: Option<&str>) -> (String, &'static str) {
+    match in_thread {
+        Some(ts) => (super::threads::key_for(channel, ts), "this thread"),
+        None => (
+            channel_scope_key(channel),
+            "top-level prompts in this channel",
+        ),
+    }
+}
+
+/// The setting that governs one run's drafts: the thread's own if it has one,
+/// else the channel's. Thread beats channel, because the narrower gesture is
+/// the later-considered one.
+pub fn effective<'a>(
+    settings: &'a HashMap<String, Setting>,
+    thread_key: &str,
+    channel: &str,
+) -> Option<&'a Setting> {
+    settings
+        .get(thread_key)
+        .or_else(|| settings.get(&channel_scope_key(channel)))
 }
 
 #[cfg(test)]
@@ -137,23 +130,79 @@ mod tests {
     }
 
     #[test]
-    fn tainted_drafts_never_auto_release_whatever_the_mode() {
+    fn every_mode_names_itself_and_round_trips_through_the_command_word() {
         for mode in [ReviewMode::Now, ReviewMode::Later, ReviewMode::Auto] {
-            assert!(
-                !auto_releases(mode, true),
-                "{mode:?} must not release a tainted draft"
-            );
+            assert_eq!(command(&format!("review {}", mode.name())), Some(Some(mode)));
+            assert!(!mode.describe().is_empty());
         }
-        assert!(auto_releases(ReviewMode::Auto, false));
-        assert!(!auto_releases(ReviewMode::Now, false));
-        assert!(!auto_releases(ReviewMode::Later, false));
+    }
+
+    /// F8, failing on the old keying: a top-level `review auto` used to key
+    /// itself to its own message's ts — a thread no later message ever joins —
+    /// so a later top-level run in the same channel found nothing. Channel
+    /// scope is what makes the confirmed policy govern something.
+    #[test]
+    fn a_top_level_setting_scopes_to_the_channel_and_later_top_level_runs_see_it() {
+        let channel = "D1";
+        let mut settings: HashMap<String, Setting> = HashMap::new();
+
+        // The owner sends a top-level `review auto` (raw thread_ts: None).
+        let (key, scope) = scope_for(channel, None);
+        assert_eq!(key, channel_scope_key(channel));
+        assert!(scope.contains("channel"), "the confirmation names the real scope: {scope}");
+        settings.insert(
+            key,
+            Setting {
+                mode: ReviewMode::Auto,
+                set_by: "U_OWNER".into(),
+            },
+        );
+
+        // A later top-level prompt starts a run whose thread key is its own
+        // ts — a key nobody ever set anything under. The channel setting
+        // governs it.
+        let later_run_key = super::super::threads::key_for(channel, "1755200000.000100");
+        let seen = effective(&settings, &later_run_key, channel).expect("the mode governs");
+        assert_eq!(seen.mode, ReviewMode::Auto);
     }
 
     #[test]
-    fn every_mode_names_itself_and_what_it_does() {
-        for mode in [ReviewMode::Now, ReviewMode::Later, ReviewMode::Auto] {
-            assert_eq!(command(&format!("review {}", mode.as_str())), Some(Some(mode)));
-            assert!(!mode.describe().is_empty());
-        }
+    fn a_threads_own_setting_wins_over_its_channels() {
+        let channel = "D1";
+        let mut settings: HashMap<String, Setting> = HashMap::new();
+        settings.insert(
+            channel_scope_key(channel),
+            Setting {
+                mode: ReviewMode::Auto,
+                set_by: "U_OWNER".into(),
+            },
+        );
+
+        // Inside a thread, the word scopes to that thread and overrides.
+        let (thread_key, scope) = scope_for(channel, Some("1755100000.000200"));
+        assert_eq!(scope, "this thread");
+        settings.insert(
+            thread_key.clone(),
+            Setting {
+                mode: ReviewMode::Now,
+                set_by: "U_OWNER".into(),
+            },
+        );
+        assert_eq!(
+            effective(&settings, &thread_key, channel).unwrap().mode,
+            ReviewMode::Now,
+            "the narrower gesture wins"
+        );
+
+        // A different thread in the channel still sees the channel mode.
+        let other = super::super::threads::key_for(channel, "1755100001.000300");
+        assert_eq!(
+            effective(&settings, &other, channel).unwrap().mode,
+            ReviewMode::Auto
+        );
+
+        // And the two scopes cannot collide by construction.
+        assert!(!thread_key.contains(':'));
+        assert!(channel_scope_key(channel).contains(':'));
     }
 }

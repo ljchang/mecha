@@ -104,13 +104,28 @@ enum Watch {
         since: std::time::Instant,
     },
     /// A doctor remedy spawned detached from the /doctor modal. When the
-    /// child exits, `mecha doctor --json` is re-run and *that* is the outcome
+    /// child exits, a fresh examination is started and *that* is the outcome
     /// reported — a restarted unit can refail on its next tick, and the exit
     /// code says nothing about it.
     Remedy {
         child: std::process::Child,
         /// The command line, for the notice.
         argv_line: String,
+        since: std::time::Instant,
+        /// Still-running notices already posted (F5): the watch outlives a
+        /// slow remedy — a trigger run gets twenty minutes — instead of
+        /// abandoning it at five, and says so periodically until the hard
+        /// cap kills, reaps and reports.
+        notices: u32,
+    },
+    /// A `mecha doctor --json` examination running detached (F7). The
+    /// synchronous `.output()` it replaces froze rendering and steering for
+    /// as long as a sick `systemctl` cared to take. Same exception as
+    /// `Remedy`: the child is the cue, the parsed JSON is the outcome —
+    /// installed into the /doctor modal if it is still open, a transcript
+    /// notice otherwise.
+    Examine {
+        child: std::process::Child,
         since: std::time::Instant,
     },
 }
@@ -827,19 +842,26 @@ fn settle_staged_drafts(
         ReviewMode::Later => notice_staged(app, staged.len()),
         ReviewMode::Now => open_scoped_review(app, staged.iter().map(|i| i.id.clone()).collect()),
         ReviewMode::Auto => {
+            // The whole release decision — the tainted exclusion (the
+            // approval `/review auto` records was given before the run read
+            // whatever armed the taint) *and* the early-stop exclusion — is
+            // `review_policy::auto_releases`'s, shared with the Slack
+            // connector so neither surface can forget half of it.
+            let (clean, tainted): (Vec<_>, Vec<_>) = staged.into_iter().partition(|i| {
+                crate::review_policy::auto_releases(
+                    ReviewMode::Auto,
+                    i.taint.trifecta_armed(),
+                    finished_clean,
+                )
+            });
             if !finished_clean {
                 app.transcript.push(Entry::Notice(
                     "the run stopped early — its drafts wait for review".into(),
                 ));
-                open_scoped_review(app, staged.iter().map(|i| i.id.clone()).collect());
+                // The policy held everything back; `tainted` is the lot.
+                open_scoped_review(app, tainted.iter().map(|i| i.id.clone()).collect());
                 return;
             }
-            // Tainted drafts are never auto-released. The approval `/review
-            // auto` records was given before the run read whatever armed the
-            // taint, so it cannot cover what was drafted afterwards — those
-            // stop for eyes, exactly as if the mode were `now`.
-            let (tainted, clean): (Vec<_>, Vec<_>) =
-                staged.into_iter().partition(|i| i.taint.trifecta_armed());
             if !clean.is_empty() {
                 let mut args = vec!["outbox".to_string(), "send".to_string()];
                 args.extend(clean.iter().map(|i| i.id.clone()));
@@ -985,58 +1007,139 @@ fn poll_watches(app: &mut App) {
                 mut child,
                 argv_line,
                 since,
+                notices,
             } => {
                 match child.try_wait() {
                     // The exit is the cue, never the outcome: what the remedy
                     // changed is answered by examining again, exactly as a
-                    // release's outcome is read from the outbox store.
+                    // release's outcome is read from the outbox store. The
+                    // examination itself is detached work (F7) — its verdict
+                    // lands when its own watch resolves.
                     Ok(Some(status)) => {
                         let exit = if status.success() {
                             "finished".to_string()
                         } else {
                             format!("exited with {status}")
                         };
-                        match doctor::load() {
-                            Ok(rows) => {
-                                let broken = rows
-                                    .iter()
-                                    .filter(|r| {
-                                        r.severity == mecha_core::doctor::Severity::Broken
-                                    })
-                                    .count();
-                                let verdict = if rows.is_empty() {
-                                    "nothing left wrong that doctor can see".to_string()
-                                } else {
-                                    format!(
-                                        "{} finding(s) remain, {broken} broken — /doctor has the report",
-                                        rows.len()
-                                    )
-                                };
-                                app.transcript.push(Entry::Notice(format!(
-                                    "remedy `{argv_line}` {exit} — {verdict}"
-                                )));
-                                install_doctor_rows(app, rows);
-                            }
-                            Err(e) => app.transcript.push(Entry::Notice(format!(
-                                "remedy `{argv_line}` {exit} — the re-examination failed: {e}"
-                            ))),
-                        }
-                    }
-                    Ok(None) if since.elapsed() > std::time::Duration::from_secs(300) => {
                         app.transcript.push(Entry::Notice(format!(
-                            "`{argv_line}` is still running after 5m — r in /doctor re-examines"
+                            "remedy `{argv_line}` {exit} — re-examining"
+                        )));
+                        start_examination(app);
+                    }
+                    // Still going. Keep the watch (F5): dropping it here
+                    // leaked the child as a zombie and lost the outcome a
+                    // twelve-minute trigger run was promised. Periodic
+                    // notices until the hard cap, which kills, reaps and
+                    // reports honestly.
+                    Ok(None) => match doctor::remedy_poll(since.elapsed(), notices) {
+                        doctor::RemedyPoll::Wait => app.watches.push(Watch::Remedy {
+                            child,
+                            argv_line,
+                            since,
+                            notices,
+                        }),
+                        doctor::RemedyPoll::Notice => {
+                            app.transcript.push(Entry::Notice(format!(
+                                "`{argv_line}` is still running after {}m — the outcome \
+                                 will be reported here",
+                                since.elapsed().as_secs() / 60
+                            )));
+                            app.watches.push(Watch::Remedy {
+                                child,
+                                argv_line,
+                                since,
+                                notices: notices + 1,
+                            });
+                        }
+                        doctor::RemedyPoll::Kill => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            app.transcript.push(Entry::Notice(format!(
+                                "`{argv_line}` did not finish after {}m and was stopped — \
+                                 r in /doctor re-examines",
+                                doctor::REMEDY_HARD_CAP.as_secs() / 60
+                            )));
+                        }
+                    },
+                    // A child that cannot be asked has nothing to stand on —
+                    // but it is still this process's child: reap it rather
+                    // than leaking a zombie, and say the outcome was lost.
+                    Err(e) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        app.transcript.push(Entry::Notice(format!(
+                            "`{argv_line}` could not be checked ({e}) and was stopped — \
+                             r in /doctor re-examines"
                         )));
                     }
-                    Ok(None) => app.watches.push(Watch::Remedy {
-                        child,
-                        argv_line,
-                        since,
-                    }),
-                    // A child that cannot be asked has nothing to stand on,
-                    // same as an unreadable store.
-                    Err(_) => {}
                 }
             }
+            Watch::Examine { mut child, since } => match child.try_wait() {
+                Ok(Some(_)) => {
+                    let verdict = match doctor::finish_examination(child) {
+                        Ok(rows) => {
+                            let broken = rows
+                                .iter()
+                                .filter(|r| r.severity == mecha_core::doctor::Severity::Broken)
+                                .count();
+                            let verdict = if rows.is_empty() {
+                                "nothing wrong that this doctor can see".to_string()
+                            } else {
+                                format!("{} finding(s), {broken} broken", rows.len())
+                            };
+                            if app.health.is_some() {
+                                install_doctor_rows(app, rows);
+                            } else {
+                                // The modal was closed while it examined (a
+                                // remedy's refresh, say): the verdict still
+                                // lands, as a notice.
+                                app.transcript.push(Entry::Notice(format!(
+                                    "doctor: {verdict} — /doctor has the report"
+                                )));
+                            }
+                            verdict
+                        }
+                        Err(e) => {
+                            let line = format!("{e:#}");
+                            if app.health.is_none() {
+                                app.transcript.push(Entry::Error(format!("doctor: {line}")));
+                            }
+                            line
+                        }
+                    };
+                    if let Some(modal) = &mut app.health {
+                        modal.examining = false;
+                        modal.status = Some(verdict);
+                    }
+                }
+                Ok(None) if since.elapsed() > doctor::EXAMINE_CAP => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let line = format!(
+                        "the examination did not answer within {}s and was stopped — \
+                         r in /doctor retries",
+                        doctor::EXAMINE_CAP.as_secs()
+                    );
+                    if let Some(modal) = &mut app.health {
+                        modal.examining = false;
+                        modal.status = Some(line);
+                    } else {
+                        app.transcript.push(Entry::Notice(format!("doctor: {line}")));
+                    }
+                }
+                Ok(None) => app.watches.push(Watch::Examine { child, since }),
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let line = format!("the examination could not be checked: {e}");
+                    if let Some(modal) = &mut app.health {
+                        modal.examining = false;
+                        modal.status = Some(line);
+                    } else {
+                        app.transcript.push(Entry::Error(format!("doctor: {line}")));
+                    }
+                }
+            },
         }
     }
 
@@ -1639,10 +1742,13 @@ fn run_command(
             Err(e) => say(format!("polls: {e:#}")),
         },
 
-        Command::Doctor => match doctor::load() {
-            Ok(rows) => app.health = Some(doctor::DoctorModal::new(rows)),
-            Err(e) => say(format!("doctor: {e:#}")),
-        },
+        Command::Doctor => {
+            // The modal opens at once in an examining state; the rows land
+            // when the detached examination answers (F7). Steering and
+            // rendering never wait on `systemctl`.
+            app.health = Some(doctor::DoctorModal::examining());
+            start_examination(app);
+        }
 
         Command::Usage => say(format!(
             "{} · {} in the last prompt",
@@ -2621,6 +2727,20 @@ fn handle_doctor_key(
     if let Some(confirm) = modal.confirm.take() {
         if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
             let argv_line = confirm.argv.join(" ");
+            // F4: the same re-examination the Slack executor runs at tap time
+            // (SLACK-ACTIONS-DESIGN §5), through the same shared guard. The
+            // finding must still be true when the `y` lands — this confirm
+            // may have sat under a stale modal for minutes, and restarting a
+            // unit that recovered kills whatever it is mid-run.
+            if let Some(unit) = crate::commands::doctor::restart_unit_of(&confirm.argv) {
+                let failed = crate::commands::doctor::unit_is_failed(unit);
+                if let Some(line) =
+                    crate::commands::doctor::recovered_before_restart(unit, failed)
+                {
+                    modal.status = Some(line);
+                    return Ok(());
+                }
+            }
             match spawn_remedy(&confirm.argv) {
                 Ok(child) => {
                     modal.status = Some(format!(
@@ -2630,6 +2750,7 @@ fn handle_doctor_key(
                         child,
                         argv_line,
                         since: std::time::Instant::now(),
+                        notices: 0,
                     });
                 }
                 Err(e) => modal.status = Some(format!("could not start `{argv_line}`: {e}")),
@@ -2670,8 +2791,9 @@ fn handle_doctor_key(
         }
         // A fresh examination on demand — the same child process the modal
         // opened with, so it can never see something `mecha doctor` cannot.
+        // Detached and watched (F7); the rows land when it answers, and the
+        // modal keeps taking keys meanwhile.
         KeyCode::Char('r') => {
-            modal.status = Some("re-examined".into());
             reload_doctor(app);
         }
         KeyCode::Char('a') => {
@@ -2706,16 +2828,49 @@ fn handle_doctor_key(
 }
 
 /// Rebuild the /doctor modal's rows from a fresh examination, keeping the
-/// cursor where it was.
+/// cursor where it was. The examination is detached and watched (F7); until
+/// it answers, the modal shows the previous rows and says it is examining.
 fn reload_doctor(app: &mut App) {
     if app.health.is_none() {
         return;
     }
-    match doctor::load() {
-        Ok(rows) => install_doctor_rows(app, rows),
+    start_examination(app);
+}
+
+/// Begin a detached `mecha doctor --json` and watch it (F7). The examination
+/// reads every store and shells out to `systemctl --user`, which on a sick
+/// D-Bus can take tens of seconds; run synchronously from a key handler it
+/// froze rendering and steering — the two things the TUI exists to keep
+/// live. One at a time: a second request while one is in flight just keeps
+/// waiting for the answer already coming.
+fn start_examination(app: &mut App) {
+    if app
+        .watches
+        .iter()
+        .any(|w| matches!(w, Watch::Examine { .. }))
+    {
+        if let Some(modal) = &mut app.health {
+            modal.examining = true;
+        }
+        return;
+    }
+    match doctor::spawn_examination() {
+        Ok(child) => {
+            if let Some(modal) = &mut app.health {
+                modal.examining = true;
+            }
+            app.watches.push(Watch::Examine {
+                child,
+                since: std::time::Instant::now(),
+            });
+        }
         Err(e) => {
-            app.health = None;
-            app.transcript.push(Entry::Error(format!("doctor: {e:#}")));
+            if let Some(modal) = &mut app.health {
+                modal.examining = false;
+                modal.status = Some(format!("doctor could not run: {e:#}"));
+            } else {
+                app.transcript.push(Entry::Error(format!("doctor: {e:#}")));
+            }
         }
     }
 }
@@ -2790,10 +2945,15 @@ fn suspend_and_run_remedy(
     Ok(())
 }
 
-/// Run a remedy inheriting the real terminal, `self_cli_interactive`-style:
-/// stdin and stdout stay connected because an OAuth flow needs a keyboard and
-/// a screen; only stderr is captured so a refusal's text can reach the
-/// modal's status line.
+/// Run a remedy inheriting the real terminal — stdin, stdout **and stderr**
+/// (F2). The suspend dance already handed the whole screen over, and a
+/// device-code sign-in prints its instructions to stderr (mecha-mail's
+/// `eprintln!`): capturing it left a blank suspended terminal until the code
+/// expired, with the one thing the person needed to read sitting in a pipe.
+/// This is the `.output()`-hands-`$EDITOR`-a-pipe bug in a new costume — a
+/// stream an interactive child needs must reach the real terminal. The cost
+/// is that a failure's text lands on that terminal rather than in the
+/// modal's status line; the exit status still names the failure there.
 fn run_remedy_interactive(argv: &[String]) -> Result<()> {
     let (program, rest) = argv
         .split_first()
@@ -2803,17 +2963,14 @@ fn run_remedy_interactive(argv: &[String]) -> Result<()> {
     } else {
         program.into()
     };
-    let child = std::process::Command::new(program)
+    let status = std::process::Command::new(program)
         .args(rest)
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .context("starting it")?;
-    let out = child.wait_with_output().context("waiting for it")?;
-    if out.status.success() {
+        .status()
+        .context("running it")?;
+    if status.success() {
         Ok(())
     } else {
-        let err = String::from_utf8_lossy(&out.stderr);
-        anyhow::bail!("{}", err.trim().lines().next().unwrap_or("failed"))
+        anyhow::bail!("exited with {status}")
     }
 }
 

@@ -402,6 +402,44 @@ fn is_outbox_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+// ------------------------------------------- the confirm card's fingerprint
+
+/// A fingerprint of the exact argument bytes a tainted confirm card showed,
+/// carried in the Send-anyway button's value so the press can prove the store
+/// still holds them (design §5: store state is the defence, the card is
+/// convenience). FNV-1a 64 rather than `DefaultHasher`, because the card may
+/// be pressed by a different connector process than composed it and the
+/// value must mean the same thing across restarts and builds. Not a secret
+/// and not authorisation — the press is still gated on the signed user, and
+/// the id is still re-resolved against the store; the fingerprint only ever
+/// equals or differs.
+pub fn fingerprint(text: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// The Send-anyway button's value: the item id plus the fingerprint of the
+/// arguments the card shows. Still no command fragment — an id whose meaning
+/// the store supplies, and correlation state the press verifies.
+pub fn confirm_value(id: &str, args: &str) -> String {
+    format!("{id}#{}", fingerprint(args))
+}
+
+/// `(id, fingerprint)` back out of a confirm button's value. A card composed
+/// before values carried a fingerprint has a bare id — parsed, fingerprint
+/// absent, and the press re-cards rather than sends on it. An id failing the
+/// shape check parses to nothing, exactly as in [`Action::from_payload`].
+pub fn parse_confirm_value(value: &str) -> Option<(&str, Option<&str>)> {
+    match value.split_once('#') {
+        Some((id, fp)) => is_outbox_id(id).then_some((id, Some(fp))),
+        None => is_outbox_id(value).then_some((value, None)),
+    }
+}
+
 // ---------------------------------------------------------------- the ledger
 
 /// A process-wide tap id: sortable, unique across concurrent taps, and shared
@@ -577,11 +615,13 @@ impl Executor {
     /// cheapest possible answer: the primitives were already safe.
     pub async fn run(&self, action: &Action) -> Outcome {
         if let Action::RestartUnit { unit } = action {
-            if !unit_is_failed(unit).await {
-                return Outcome::of(
-                    "skipped",
-                    format!("{unit} already recovered — nothing was run"),
-                );
+            // The guard is shared with the TUI's /doctor modal
+            // (`commands::doctor::recovered_before_restart`) so the two tap
+            // surfaces cannot disagree about when a restart is skipped.
+            if let Some(line) =
+                crate::commands::doctor::recovered_before_restart(unit, unit_is_failed(unit).await)
+            {
+                return Outcome::of("skipped", line);
             }
         }
 
@@ -666,7 +706,7 @@ impl Executor {
         }
     }
 
-    fn item(&self, id: &str) -> Option<OutboxItem> {
+    pub(crate) fn item(&self, id: &str) -> Option<OutboxItem> {
         OutboxStore::open(&self.outbox_root)
             .ok()
             .and_then(|s| s.item(id).ok())
@@ -913,30 +953,37 @@ pub fn mark_outcome(
     }
 }
 
-/// `systemctl --user is-failed <unit>` exits 0 exactly when the unit is
-/// failed. A machine without systemd answers "not failed", which makes the
-/// pre-check skip and the outcome read "running" — doctor would never have
-/// composed the button there in the first place.
+/// The probe behind the shared restart guard, off the async loop. The one
+/// implementation is `commands::doctor::unit_is_failed` — the same line the
+/// TUI's guard runs — wrapped in `spawn_blocking` because `systemctl` on a
+/// sick D-Bus can stall, and stalls belong on the blocking pool.
 async fn unit_is_failed(unit: &str) -> bool {
-    tokio::process::Command::new("systemctl")
-        .args(["--user", "is-failed", unit])
-        .stdin(std::process::Stdio::null())
-        .output()
+    let unit = unit.to_string();
+    tokio::task::spawn_blocking(move || crate::commands::doctor::unit_is_failed(&unit))
         .await
-        .map(|out| out.status.success())
         .unwrap_or(false)
 }
 
-/// The newest ledger row for `name` written at or after `since` (with a small
-/// allowance for clock rounding), whatever its status — a skip is an answer.
+/// F11: whether one ledger row is the run *this tap* started. Two honest
+/// facts carry the attribution: a tapped probe is `mecha trigger run`, which
+/// records a **manual** row (no slot — machine-checkable), and the child's
+/// clock is this machine's clock, so its row starts at or after the dispatch
+/// stamp. A daemon's scheduled row is never manual, so a tap that ran nothing
+/// (flock lost, spawn failed) can no longer adopt the daemon's run — the old
+/// fixed −5s window did exactly that.
+fn row_is_this_taps(row: &RunRecord, name: &str, since: DateTime<Utc>) -> bool {
+    row.trigger == name && row.manual && row.started_at >= since
+}
+
+/// The newest ledger row this tap's run wrote, whatever its status — a skip
+/// is an answer ("the previous run was still going").
 fn latest_trigger_row(name: &str, since: DateTime<Utc>) -> Option<RunRecord> {
     let store = TriggerStore::open_existing_default()?;
-    let cutoff = since - chrono::Duration::seconds(5);
     store
         .runs()
         .ok()?
         .into_iter()
-        .filter(|r| r.trigger == name && r.started_at >= cutoff)
+        .filter(|r| row_is_this_taps(r, name, since))
         .max_by_key(|r| r.started_at)
 }
 
@@ -1465,6 +1512,67 @@ mod tests {
         let failed = import_outcome("outlook", false, Some("already has credentials"));
         assert_eq!(failed.status, "failed");
         assert!(failed.line.contains("already has credentials"), "{}", failed.line);
+    }
+
+    /// F11, failing on the old −5s window: a daemon-fired (scheduled) row
+    /// that starts right around the tap is never the tap's run — a tap's run
+    /// is `mecha trigger run`, which records a manual row, begun at or after
+    /// the dispatch stamp. The old rule attributed any recent row.
+    #[test]
+    fn a_daemon_fired_run_is_never_attributed_to_a_tap() {
+        let since = Utc::now();
+        let late = since + chrono::Duration::seconds(2);
+
+        // The daemon's row: scheduled (a slot, not manual), started after the
+        // tap — inside the old window, refused by the new rule.
+        let mut daemon = RunRecord::started("briefing", Some(since), false);
+        daemon.started_at = late;
+        assert!(
+            !row_is_this_taps(&daemon, "briefing", since),
+            "a scheduled row is the daemon's evidence, not the tap's"
+        );
+
+        // The tap's own run: manual, begun after dispatch.
+        let mut manual = RunRecord::started("briefing", None, true);
+        manual.started_at = late;
+        assert!(row_is_this_taps(&manual, "briefing", since));
+
+        // An earlier manual run (someone at a terminal minutes ago) is not
+        // this tap's either — the old −5s allowance let one in.
+        let mut earlier = RunRecord::started("briefing", None, true);
+        earlier.started_at = since - chrono::Duration::seconds(2);
+        assert!(!row_is_this_taps(&earlier, "briefing", since));
+
+        // Another trigger's manual row never answers for this one.
+        let mut other = RunRecord::started("nightly", None, true);
+        other.started_at = late;
+        assert!(!row_is_this_taps(&other, "briefing", since));
+    }
+
+    /// F6's carrier: the confirm value round-trips id and fingerprint, a
+    /// changed byte changes the fingerprint, and a pre-fingerprint bare id
+    /// still parses (with no fingerprint, so the press re-cards rather than
+    /// sends on it).
+    #[test]
+    fn a_confirm_value_carries_the_id_and_a_fingerprint_of_the_shown_bytes() {
+        let args = "{\n  \"to\": \"a@x.org\"\n}";
+        let value = confirm_value("abc-123", args);
+        let (id, fp) = parse_confirm_value(&value).expect("round trips");
+        assert_eq!(id, "abc-123");
+        assert_eq!(fp, Some(fingerprint(args).as_str()));
+
+        // One changed byte is a different fingerprint — that is the whole
+        // drift detector.
+        assert_ne!(fingerprint(args), fingerprint("{\n  \"to\": \"b@x.org\"\n}"));
+        // Deterministic across processes: a literal, not DefaultHasher.
+        assert_eq!(fingerprint(""), "cbf29ce484222325");
+
+        // A legacy value is a bare id.
+        assert_eq!(parse_confirm_value("abc-123"), Some(("abc-123", None)));
+        // A hostile id fails the same shape check as every payload value.
+        assert_eq!(parse_confirm_value("a b#deadbeef"), None);
+        assert_eq!(parse_confirm_value("../x#00"), None);
+        assert_eq!(parse_confirm_value(""), None);
     }
 
     #[test]
