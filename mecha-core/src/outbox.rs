@@ -327,6 +327,33 @@ impl OutboxStore {
         }
     }
 
+    /// One item by its exact store-minted id — a single file read, never a
+    /// directory scan. For the hot paths (a button press on an event loop)
+    /// that already hold the full id and must not pay `items()`'s
+    /// read-and-parse of every draft ever staged. Prefix lookup stays
+    /// [`OutboxStore::item`]'s business.
+    ///
+    /// The id is validated by shape *before* it is joined onto the store
+    /// root: ids arrive here from button payloads, and a value shaped like a
+    /// path (`../…`) must be refused, not resolved. A hostile shape is an
+    /// error; a missing item is `Ok(None)`; a torn file is an error, so a
+    /// caller that maps errors to "unreadable" keeps failing closed.
+    pub fn item_exact(&self, id: &str) -> Result<Option<OutboxItem>> {
+        anyhow::ensure!(
+            is_item_id(id),
+            "`{id}` is not shaped like an outbox id"
+        );
+        let path = self.root.join(format!("{id}.json"));
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        Ok(Some(serde_json::from_str(&text).with_context(|| {
+            format!("parsing {}", path.display())
+        })?))
+    }
+
     /// Replace a pending item's release arguments. `args_before` is untouched
     /// — it is the baseline the learning capture diffs against.
     pub fn update_args(&self, id: &str, args: Value) -> Result<OutboxItem> {
@@ -392,6 +419,17 @@ impl OutboxStore {
         }
         Ok(OutboxLock { _file: file })
     }
+}
+
+/// The shape of a store-minted id (`Session::new_id`: a timestamp, a hyphen,
+/// a uuid fragment). Checked before an id from the outside is joined onto the
+/// store root — nothing with a separator or a dot can name a file elsewhere.
+fn is_item_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 80
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// A per-line diff of two argument renderings, `- `/`+ ` prefixed. Line-set
@@ -803,6 +841,56 @@ mod tests {
         // A later successful resolution clears the stale error.
         let sent = store.resolve(&item.id, "sent", None).unwrap();
         assert_eq!(sent.error, None);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The targeted read behind the hot paths: one file, found or honestly
+    /// missing, and a value shaped like a path is refused before it can name
+    /// a file outside the store — even one that exists and would parse.
+    #[test]
+    fn an_exact_lookup_reads_one_file_and_refuses_a_hostile_id() {
+        let root = scratch("exact");
+        let store = OutboxStore::open(&root).unwrap();
+        let staged = store
+            .stage(
+                "mail__send",
+                OutboxKind::Message,
+                json!({"to": "a@x.org"}),
+                Taint::default(),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let found = store.item_exact(&staged.id).unwrap().expect("found");
+        assert_eq!(found.id, staged.id);
+        assert_eq!(found.tool, "mail__send");
+
+        // Missing is None, not an error: the caller decides what absence means.
+        assert!(store
+            .item_exact("20990101T000000-deadbeef")
+            .unwrap()
+            .is_none());
+
+        // A perfectly valid item file sitting *beside* the store, reachable
+        // only by traversal — the refusal below is not vacuous.
+        let outside = root.parent().unwrap().join("mecha-outbox-evil.json");
+        std::fs::write(&outside, serde_json::to_string_pretty(&staged).unwrap()).unwrap();
+        for hostile in [
+            "../mecha-outbox-evil",
+            "a/b",
+            "a.b",
+            ".",
+            "",
+            &"x".repeat(200),
+        ] {
+            assert!(
+                store.item_exact(hostile).is_err(),
+                "{hostile:?} must be refused, not resolved"
+            );
+        }
+        let _ = std::fs::remove_file(&outside);
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -121,7 +121,8 @@ pub struct Interaction {
     pub kind: String,
     /// **The only field that authorises anything.** Never gate on an action's
     /// `value`, which is a correlation id chosen by whatever composed the
-    /// message.
+    /// message — and never on a view's `private_metadata`, which is the same
+    /// thing in a different pocket.
     pub user_id: Option<String>,
     pub team_id: Option<String>,
     pub channel_id: Option<String>,
@@ -132,6 +133,24 @@ pub struct Interaction {
     pub trigger_id: Option<String>,
     pub response_url: Option<String>,
     pub actions: Vec<ActionRef>,
+    /// Present when this is a `view_submission`: what the modal was and what
+    /// was typed into it. A submission carries no channel or container, so the
+    /// caller's correlation state rides in `private_metadata`.
+    pub view: Option<ViewRef>,
+}
+
+/// A submitted modal, flattened to what a caller needs: which modal
+/// (`callback_id`), the opaque state its composer stashed
+/// (`private_metadata`), and each input's value keyed by its `action_id`.
+///
+/// The values are what a person typed into the modal — the caller decides
+/// what, if anything, they authorise; this crate only carries them.
+#[derive(Debug, Clone, Default)]
+pub struct ViewRef {
+    pub callback_id: String,
+    pub private_metadata: String,
+    /// `action_id` → typed value, for every filled `plain_text_input`.
+    pub values: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -269,6 +288,36 @@ fn parse_interaction(payload: &Value) -> Interaction {
         trigger_id: str_at(payload, "trigger_id"),
         response_url: str_at(payload, "response_url"),
         actions,
+        view: payload.get("view").map(parse_view),
+    }
+}
+
+/// Flatten a submitted view: `state.values` is a map of block id → action id
+/// → `{type, value}`, and the block-id layer is the composer's own labelling —
+/// keying the result by `action_id` is what lets a caller ask for the field it
+/// named without re-walking the nesting.
+fn parse_view(view: &Value) -> ViewRef {
+    let mut values = std::collections::BTreeMap::new();
+    if let Some(blocks) = view
+        .get("state")
+        .and_then(|s| s.get("values"))
+        .and_then(Value::as_object)
+    {
+        for inputs in blocks.values() {
+            let Some(inputs) = inputs.as_object() else {
+                continue;
+            };
+            for (action_id, input) in inputs {
+                if let Some(text) = input.get("value").and_then(Value::as_str) {
+                    values.insert(action_id.clone(), text.to_string());
+                }
+            }
+        }
+    }
+    ViewRef {
+        callback_id: str_at(view, "callback_id").unwrap_or_default(),
+        private_metadata: str_at(view, "private_metadata").unwrap_or_default(),
+        values,
     }
 }
 
@@ -386,6 +435,64 @@ mod tests {
         assert_eq!(interaction.trigger_id.as_deref(), Some("trig"));
         assert_eq!(interaction.actions[0].action_id, "approve");
         assert_eq!(interaction.thread_ts.as_deref(), Some("1.0"));
+    }
+
+    #[test]
+    fn a_view_submission_carries_the_signed_user_the_callback_and_what_was_typed() {
+        let e = envelope(json!({
+            "type": "interactive",
+            "envelope_id": "env-4",
+            "payload": {
+                "type": "view_submission",
+                "user": { "id": "U1" },
+                "team": { "id": "T1" },
+                "view": {
+                    "callback_id": "close_request",
+                    "private_metadata": "{\"seq\":5}",
+                    "state": { "values": {
+                        "block_reason": { "reason": {
+                            "type": "plain_text_input", "value": "spam"
+                        }}
+                    }}
+                }
+            }
+        }));
+        let Inbound::Interactive { interaction, .. } = interpret(&e) else {
+            panic!("expected an interaction");
+        };
+        assert_eq!(interaction.kind, "view_submission");
+        // The gate runs on this exactly as on a button press; the field is
+        // the one Slack signed, never anything the view carries.
+        assert_eq!(interaction.user_id.as_deref(), Some("U1"));
+        let view = interaction.view.expect("the view rides along");
+        assert_eq!(view.callback_id, "close_request");
+        assert_eq!(view.private_metadata, "{\"seq\":5}");
+        assert_eq!(view.values.get("reason").map(String::as_str), Some("spam"));
+    }
+
+    #[test]
+    fn a_button_press_has_no_view_and_a_bodiless_submission_still_parses() {
+        let press = envelope(json!({
+            "type": "interactive", "envelope_id": "e",
+            "payload": { "type": "block_actions", "user": {"id":"U1"},
+                         "actions": [{ "action_id": "a", "value": "v" }] }
+        }));
+        let Inbound::Interactive { interaction, .. } = interpret(&press) else {
+            panic!()
+        };
+        assert!(interaction.view.is_none());
+
+        let bare = envelope(json!({
+            "type": "interactive", "envelope_id": "e",
+            "payload": { "type": "view_submission", "user": {"id":"U1"},
+                         "view": { "callback_id": "cb" } }
+        }));
+        let Inbound::Interactive { interaction, .. } = interpret(&bare) else {
+            panic!()
+        };
+        let view = interaction.view.unwrap();
+        assert_eq!(view.callback_id, "cb");
+        assert!(view.values.is_empty(), "no state means no values, not a crash");
     }
 
     #[test]

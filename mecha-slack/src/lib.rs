@@ -40,6 +40,7 @@ pub mod files;
 pub mod http;
 pub mod socket;
 pub mod store;
+pub mod views;
 
 #[cfg(test)]
 mod testutil;
