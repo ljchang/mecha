@@ -266,15 +266,27 @@ exactness as `doctor`, never inferred from prompt or message text, because
 release policy must not be decidable by anything sharing a context window
 with third-party text (the `/review` rule, unchanged) — a mode in which
 *untainted* drafts staged by that thread's runs release when the run
-finishes, which is also what stops the thread re-carding the drafts it would
-immediately release. The mode is **session-scoped**: it lives in the
+finishes **cleanly**, which is also what stops the thread re-carding the
+drafts it would immediately release. Scope follows where the word was
+spoken (amended 2026-08-14): inside a thread it governs that thread; as a
+*top-level* message it governs the channel's subsequent top-level prompts —
+keyed to its own message's ts it confirmed a policy no later message ever
+inherited — and a thread's own setting wins over its channel's. The mode is
+**session-scoped**: it lives in the
 connector's memory beside the thread state and is deliberately never
 persisted to the thread record, so the same eviction that orphans a
 mid-flight run on restart expires every mode with it, and a restart resets
 every thread to carding everything. **Tainted drafts never auto-release
-under any mode** — the approval predates whatever armed the taint — and
-every auto-released item still writes its ledger rows (§7), attributing the
-release to the mode and the owner who set it. Every tap still authorises
+under any mode** — the approval predates whatever armed the taint — **and an
+errored or early-stopped run releases nothing** (amended 2026-08-14): a
+cancelled run's drafts are half a thought, so they card instead. Both
+exclusions live *in* the shared policy function
+(`review_policy::auto_releases`, one encoding consumed by the TUI's
+`/review` and this surface alike), so no surface can hold half the rule.
+Every auto-released item still writes its ledger rows (§7), attributing the
+release to the mode and the owner who set it, and a release that *fails*
+posts the draft's card with the failure noted — a phone that was never
+carded must still have a path back to review. Every tap still authorises
 exactly one execution of exactly one action; the mode changes what needs a
 tap, never what a tap means.
 
@@ -294,7 +306,7 @@ bug, `connector.rs:246`).
 
 | Action | What makes a second delivery safe |
 |---|---|
-| `outbox send` | The store flock is held across execution (`commands/outbox.rs:697`), and `resolve` refuses a non-pending item (`outbox.rs:348`). The second child exits "is sent, not pending"; the card was already rewritten into a terminal record. Two layers, both needed: the card rewrite is UX, the store guard is correctness. |
+| `outbox send` | The store flock is held across execution (`commands/outbox.rs:697`), and `resolve` refuses a non-pending item (`outbox.rs:348`). The second child exits "is sent, not pending"; the card was already rewritten into a terminal record. Two layers, both needed: the card rewrite is UX, the store guard is correctness. **The tainted confirm re-runs its ladder at press time** (amended 2026-08-14): the pending check cannot catch an *edited* draft — `mecha outbox edit` keeps it pending — so the Send-anyway value carries a fingerprint of the exact bytes the card showed, and a press whose store item no longer matches (edited args, args that now truncate, an unreadable item, a pre-fingerprint card) re-cards or refuses instead of sending. Store state is the defence; the card was only ever convenience. |
 | `outbox reject` | Same pair — `resolve` guards, card rewrites. |
 | `restart unit` | **Re-examination before execution.** At tap time the executor re-runs the failed-units listing (`commands/doctor.rs:198`); if the unit is no longer failed, nothing is restarted and the card says "already recovered — nothing run". This is the doctor-specific rule: a restart is naturally idempotent against a *failed* unit but disruptive against a *running* one — `mecha-triggers` restarted mid-run cancels whatever it was doing — so the finding must still be true when the tap lands, not just when the card was posted. The card is also rewritten to "restarting…" on dispatch, so the button is gone before the child runs. |
 | `trigger run` | The trigger's own non-blocking flock: a second run while the first is in flight is a recorded overlap-skip, not a second fire (the store already answers this, and a skip is written to the ledger). A manual run records a row with no slot, so even N replays never advance the schedule. The cheapest possible answer: the primitive was already safe. |

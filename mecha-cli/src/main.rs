@@ -6,6 +6,7 @@ mod editor;
 mod interrupt;
 mod probe;
 mod render;
+mod review_policy;
 mod setup;
 mod slack;
 mod tui;
