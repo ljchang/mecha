@@ -4,6 +4,7 @@ pub mod config;
 pub mod distill;
 pub mod eval;
 pub mod frontdoor;
+pub mod gossip;
 pub mod learn;
 pub mod msg;
 pub mod outbox;

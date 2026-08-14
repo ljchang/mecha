@@ -198,6 +198,8 @@ pub enum Command {
     /// they pass through before any run with tools is told about them.
     /// `factory-publish drain` fetches them; this is what happens next.
     Frontdoor(commands::frontdoor::Args),
+    /// Two readers with different sources ask each other about one entity.
+    Gossip(commands::gossip::GossipArgs),
 
     /// Prompts that run on a schedule: a morning briefing, overnight inbox
     /// triage, calendar prep. `tick` fires what is due; `daemon` loops it.
@@ -266,6 +268,7 @@ async fn dispatch() -> Result<()> {
         Command::Msg(args) => commands::msg::execute(args).await,
         Command::Work(args) => commands::work::execute(args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
+        Command::Gossip(args) => commands::gossip::run(&cli.global, &args).await,
         Command::Slack(args) => commands::slack::run(&cli.global, args).await,
         Command::Trigger(args) => commands::trigger::execute(&cli.global, args).await,
         Command::Proposals(args) => commands::proposals::execute(args).await,

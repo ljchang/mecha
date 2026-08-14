@@ -155,6 +155,90 @@ impl Tool for LensedSearch {
     }
 }
 
+/// Sources that carry the same kind of account, so two vantages drawn from
+/// one family are two slices of one witness rather than two witnesses.
+pub fn family(source: &str) -> &'static str {
+    match source {
+        s if s.starts_with("bee.") => "spoken",
+        s if s.starts_with("reflect.") => "reflected",
+        s if s.starts_with("session.") || s.starts_with("agent:") => "agentic",
+        "calendar.event" => "scheduled",
+        "slack.thread" | "mbox" | "email.thread" => "written",
+        _ => "other",
+    }
+}
+
+/// What `kg_entity` reports about one source's coverage of an entity.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SourceCoverage {
+    pub source: String,
+    pub episodes: i64,
+}
+
+/// Pick two vantages from what actually covers this entity.
+///
+/// Deliberately NOT a fixed written-versus-spoken split. Coverage is
+/// lopsided in practice — one person in the live graph has 493 Slack
+/// episodes and 2 Bee conversations — and forcing the tidy split hands one
+/// reader almost nothing, which produces a confident "I don't know" that
+/// reads like a finding rather than like an empty shelf.
+///
+/// So: the best-covered source, then the best-covered source from a
+/// DIFFERENT family, falling back to next-best overall when no second
+/// family clears the floor. Two witnesses of the same kind is still better
+/// than one witness and a silence, but the family preference comes first
+/// because independence is the whole point.
+pub fn choose_vantages(coverage: &[SourceCoverage], min: i64) -> Option<(Vantage, Vantage)> {
+    let mut viable: Vec<&SourceCoverage> = coverage.iter().filter(|c| c.episodes >= min).collect();
+    viable.sort_by_key(|c| -c.episodes);
+    let first = *viable.first()?;
+    let second = viable
+        .iter()
+        .find(|c| family(&c.source) != family(&first.source))
+        .copied()
+        .or_else(|| viable.get(1).copied())?;
+    Some((
+        Vantage {
+            label: family(&first.source).into(),
+            sources: vec![first.source.clone()],
+        },
+        Vantage {
+            label: family(&second.source).into(),
+            sources: vec![second.source.clone()],
+        },
+    ))
+}
+
+/// Ask the graph which sources cover an entity. Keeps `call_tool` crate-
+/// private: a front-end should not be reaching into the MCP client to
+/// hand-roll a graph call.
+pub async fn coverage(
+    client: &McpClient,
+    entity: &str,
+) -> Result<(String, Vec<SourceCoverage>, Vec<String>)> {
+    let out = client
+        .call_tool("kg_entity", json!({ "name_or_id": entity }))
+        .await
+        .context("kg_entity")?;
+    let body: Value = serde_json::from_str(&out.content)
+        .with_context(|| format!("kg_entity returned non-JSON: {}", out.content))?;
+    if let Some(cands) = body.get("ambiguous").and_then(Value::as_array) {
+        let names = cands
+            .iter()
+            .map(|c| format!("{} ({})", c["name"], c["id"]))
+            .collect();
+        return Ok((String::new(), vec![], names));
+    }
+    anyhow::ensure!(
+        body["found"] != json!(false),
+        "no entity matching '{entity}'"
+    );
+    let name = body["node"]["name"].as_str().unwrap_or(entity).to_string();
+    let sources: Vec<SourceCoverage> =
+        serde_json::from_value(body["sources"].clone()).unwrap_or_default();
+    Ok((name, sources, vec![]))
+}
+
 /// One reader's vantage point.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vantage {
@@ -260,13 +344,20 @@ Reply with the question alone, no preamble.";
 /// `ask` is the seed both readers start from. Each subsequent round asks
 /// each reader the question the *other* generated after seeing its answer.
 pub async fn exchange(
-    agents: &[(Vantage, Agent)],
+    answerers: &[(Vantage, Agent)],
+    askers: &[(Vantage, Agent)],
     cx: &RunContext,
     entity: &str,
     seed: &str,
     rounds: u32,
 ) -> Result<Exchange> {
-    anyhow::ensure!(agents.len() == 2, "gossip is a pair; got {}", agents.len());
+    anyhow::ensure!(
+        answerers.len() == 2,
+        "gossip is a pair; got {}",
+        answerers.len()
+    );
+    anyhow::ensure!(askers.len() == 2, "one asker per reader");
+    let agents = answerers;
     let mut questions: Vec<String> = vec![seed.to_string(), seed.to_string()];
     let mut out = Exchange {
         entity: entity.to_string(),
@@ -311,7 +402,7 @@ pub async fn exchange(
         // REVEAL, and only now. Each reader sees the other's answer and asks
         // it something its own sources cannot settle.
         let mut next = questions.clone();
-        for (i, (vantage, agent)) in agents.iter().enumerate() {
+        for (i, (vantage, _)) in agents.iter().enumerate() {
             let other = 1 - i;
             let mut convo = Conversation::user(format!(
                 "The person is {entity}.\n\nYou read: {}\nYou answered: {}\n\n\
@@ -321,10 +412,11 @@ pub async fn exchange(
                 agents[other].0.sources.join(", "),
                 answers[other],
             ));
-            // The follow-up is generated with the SAME agent, whose system
-            // prompt is swapped for the asking one by the caller's config;
-            // a tool-less run keeps it from wandering off to search.
-            let outcome = agent.run_in(cx, &mut convo, None).await?;
+            // A DIFFERENT agent does the asking: same lens, different
+            // system prompt. One agent cannot hold two roles, and giving
+            // the answerer the asking prompt would mean whichever ran last
+            // decided what it was.
+            let outcome = askers[i].1.run_in(cx, &mut convo, None).await?;
             let q = outcome.text.trim().to_string();
             if !q.is_empty() {
                 next[other] = q;
@@ -353,6 +445,65 @@ pub fn render(x: &Exchange) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cov(pairs: &[(&str, i64)]) -> Vec<SourceCoverage> {
+        pairs
+            .iter()
+            .map(|(s, n)| SourceCoverage {
+                source: s.to_string(),
+                episodes: *n,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn vantages_prefer_independence_over_volume() {
+        // Slack and mbox are both "written" — two slices of one witness.
+        // The calendar is a different kind of account, so it wins the second
+        // seat despite having fewer episodes.
+        let c = cov(&[("slack.thread", 400), ("mbox", 300), ("calendar.event", 50)]);
+        let (a, b) = choose_vantages(&c, 3).unwrap();
+        assert_eq!(a.sources, vec!["slack.thread"]);
+        assert_eq!(
+            b.sources,
+            vec!["calendar.event"],
+            "a second family beats a bigger sibling"
+        );
+        assert_ne!(a.label, b.label);
+    }
+
+    #[test]
+    fn a_thin_source_is_not_a_witness() {
+        // The live shape that motivated this: 493 slack episodes and 2 bee
+        // conversations. Handing a reader the 2 produces a confident "I do
+        // not know" that reads like a finding rather than an empty shelf.
+        let c = cov(&[("slack.thread", 493), ("bee.conversation", 2)]);
+        assert!(
+            choose_vantages(&c, 3).is_none(),
+            "one witness and a silence is not a pair"
+        );
+        // Lower the floor and it becomes a legitimate, if lopsided, pair.
+        assert!(choose_vantages(&c, 2).is_some());
+    }
+
+    #[test]
+    fn same_family_is_better_than_no_pair() {
+        // Independence is preferred, not required: two written sources still
+        // beat refusing to run.
+        let c = cov(&[("slack.thread", 40), ("mbox", 30)]);
+        let (a, b) = choose_vantages(&c, 3).unwrap();
+        assert_eq!(
+            (a.sources[0].as_str(), b.sources[0].as_str()),
+            ("slack.thread", "mbox")
+        );
+    }
+
+    #[test]
+    fn families_split_the_kinds_of_account_apart() {
+        assert_eq!(family("bee.conversation"), family("bee.daily"));
+        assert_ne!(family("calendar.event"), family("slack.thread"));
+        assert_ne!(family("reflect.note"), family("bee.conversation"));
+    }
 
     #[test]
     fn lensed_search_hides_what_it_pins() {
