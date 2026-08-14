@@ -1594,6 +1594,19 @@ pub struct Candidate {
     pub subject_ambiguous: bool,
     #[serde(default)]
     pub confidence: Option<f64>,
+    /// The origin episode, when `pending` was asked for evidence — what
+    /// the verification mechanism judges the claim against.
+    #[serde(default)]
+    pub evidence: Option<EvidenceClip>,
+}
+
+/// The origin episode as `kg_pending include_evidence` hands it over.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceClip {
+    pub source: String,
+    #[serde(default)]
+    pub occurred_at: String,
+    pub body: String,
 }
 
 /// One class of the review queue, oldest first.
@@ -1607,6 +1620,7 @@ pub async fn pending(
     predicate: &str,
     limit: usize,
     unjudged_by: Option<&str>,
+    include_evidence: bool,
 ) -> Result<Vec<Candidate>> {
     let out = client
         .call_tool(
@@ -1616,6 +1630,7 @@ pub async fn pending(
                 "predicate": predicate,
                 "limit": limit,
                 "unjudged_by": unjudged_by,
+                "include_evidence": include_evidence,
             }),
         )
         .await
@@ -1871,4 +1886,239 @@ pub fn vantages_excluding(
         .cloned()
         .collect();
     choose_vantages(&kept, min)
+}
+
+// ─── Verification: does the evidence a claim cites actually say it? ──────────
+//
+// Corroboration asks whether a claim holds BEYOND its origin; this asks the
+// prior question — whether the origin ever said it. Complementary by
+// construction: bee:suggested candidates cite no episode and can only be
+// corroborated, llm-extracted candidates cite exactly one and can be vetted
+// against it. No search, no tools, one model call per candidate: the
+// evidence is handed over, not hunted for.
+
+/// What vetting a claim against its own origin can conclude.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum Vet {
+    /// The evidence says what the claim says.
+    Supported,
+    /// The evidence does not contain it. Judged against THIS evidence only —
+    /// the claim may still be true; that question belongs to corroboration.
+    Unsupported,
+    /// The evidence shows the statement — about someone else. The wearable's
+    /// diarization credits unknown speakers to the owner, so a claim wearing
+    /// the wrong name is a distinct and common failure, and it is repaired
+    /// by rebinding, not rejection.
+    Misattributed,
+    /// The evidence shows something weaker or narrower than the claim.
+    Overreach,
+    /// The judge did not answer in form. A harness failure, never a finding.
+    Unclear,
+}
+
+impl Vet {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Vet::Supported => "supported",
+            Vet::Unsupported => "unsupported",
+            Vet::Misattributed => "misattributed",
+            Vet::Overreach => "overreach",
+            Vet::Unclear => "unclear",
+        }
+    }
+}
+
+pub const VET_SYS: &str = "\
+You judge whether a piece of evidence supports a claim that was extracted \
+from it. Only the evidence in front of you counts — no outside knowledge, \
+no guessing at what other conversations might show. You will be told the \
+exact reply form; keep to it.";
+
+/// Build the vet judge: no tools, no graph, nothing but the handed evidence.
+///
+/// Deliberately blind for the same reason the corroboration readers are
+/// lensed: a judge that can search the graph will find the claim there —
+/// extraction put it there — and call that support.
+pub fn vet_judge(
+    provider: Box<dyn crate::provider::Provider>,
+    tool_ctx: ToolCtx,
+    agent_cfg: crate::config::AgentConfig,
+    model: Option<String>,
+) -> Result<Agent> {
+    let approver = Arc::new(crate::tool::ModeApprover {
+        mode: crate::config::PermissionMode::ReadOnly,
+    });
+    let mut cfg = agent_cfg;
+    cfg.system_prompt = Some(VET_SYS.to_string());
+    Agent::new(
+        provider,
+        crate::tool::Registry::new(),
+        approver,
+        tool_ctx,
+        cfg,
+        model,
+    )
+}
+
+/// The question, evidence first and the imperative LAST — with a long input
+/// a local model keeps the instruction it read most recently.
+pub fn vet_question(cand: &Candidate, ev: &EvidenceClip) -> String {
+    format!(
+        "Evidence — one episode from {}, {}:\n\n---\n{}\n---\n\n\
+         Claim extracted from that evidence:\n\n  {}\n{}\n\
+         Judge whether THIS evidence supports THAT claim. Absence from the \
+         evidence is UNSUPPORTED even if the claim sounds plausible. If the \
+         evidence shows the statement but credits it to a different person \
+         than the claim's subject, that is MISATTRIBUTED. If the evidence \
+         shows a weaker or narrower version, that is OVERREACH.\n\n\
+         Reply in exactly this form:\n\
+         VERDICT: SUPPORTED | UNSUPPORTED | MISATTRIBUTED | OVERREACH\n\
+         WHO: only for MISATTRIBUTED — who the evidence actually shows\n\
+         QUOTE: the evidence line that decides it, or 'nothing'",
+        ev.source,
+        ev.occurred_at,
+        ev.body,
+        cand.statement,
+        cand.subject
+            .as_deref()
+            .map(|s| format!("  (subject: {s})\n"))
+            .unwrap_or_default(),
+    )
+}
+
+/// Parse the judge's reply; an out-of-form reply is `Unclear` and the
+/// rejected text is kept — \"did not answer in form\" is not a diagnosis.
+pub fn parse_vet(text: &str) -> (Vet, Option<String>, String) {
+    let mut verdict = None;
+    let mut who = None;
+    let mut quote = String::new();
+    for line in text.lines() {
+        let l = line
+            .trim()
+            .trim_start_matches(['*', '-', '#', '>', ' '])
+            .trim_matches(['*', '`', ' '])
+            .to_string();
+        let upper = l.to_uppercase();
+        let body = upper.strip_prefix("VERDICT:").map(str::trim);
+        let word = body.unwrap_or(&upper);
+        if verdict.is_none() {
+            let head = word
+                .split(|c: char| !c.is_ascii_alphabetic())
+                .find(|w| !w.is_empty())
+                .unwrap_or_default();
+            // A bare word alone on its line counts; prose containing the
+            // word does not.
+            if body.is_some() || word.trim() == head {
+                verdict = match head {
+                    "SUPPORTED" => Some(Vet::Supported),
+                    "UNSUPPORTED" => Some(Vet::Unsupported),
+                    "MISATTRIBUTED" => Some(Vet::Misattributed),
+                    "OVERREACH" => Some(Vet::Overreach),
+                    _ => None,
+                };
+            }
+        }
+        if let Some(rest) = l.strip_prefix("WHO:").or(l.strip_prefix("Who:")) {
+            let w = rest.trim();
+            if !w.is_empty() && !w.eq_ignore_ascii_case("n/a") {
+                who = Some(w.to_string());
+            }
+        }
+        if let Some(rest) = l.strip_prefix("QUOTE:").or(l.strip_prefix("Quote:")) {
+            quote = rest.trim().to_string();
+        }
+    }
+    match verdict {
+        Some(v) => (v, who, quote),
+        None => (
+            Vet::Unclear,
+            None,
+            format!("not in form; it said: {}", {
+                let t: String = text.trim().chars().take(160).collect();
+                t.replace('\n', " ")
+            }),
+        ),
+    }
+}
+
+/// One candidate, judged against the evidence it cites.
+#[derive(Debug, Clone, Serialize)]
+pub struct Vetting {
+    pub candidate_id: i64,
+    pub statement: String,
+    pub verdict: Vet,
+    /// For `Misattributed`: who the evidence actually shows. The repair is
+    /// a rebind (review `b`), so the name is the finding.
+    pub who: Option<String>,
+    pub quote: String,
+}
+
+/// Judge one candidate against its origin evidence. Errors when the
+/// candidate carries none — the caller should have skipped it.
+pub async fn vet(agent: &Agent, cx: &RunContext, cand: &Candidate) -> Result<Vetting> {
+    let ev = cand
+        .evidence
+        .as_ref()
+        .context("candidate has no origin evidence to vet against")?;
+    let mut convo = Conversation::user(vet_question(cand, ev));
+    let out = agent
+        .run_in(cx, &mut convo, None)
+        .await
+        .with_context(|| format!("vet judge on candidate {}", cand.candidate_id))?;
+    let (verdict, who, quote) = parse_vet(&out.text);
+    Ok(Vetting {
+        candidate_id: cand.candidate_id,
+        statement: cand.statement.clone(),
+        verdict,
+        who,
+        quote,
+    })
+}
+
+#[cfg(test)]
+mod vet_tests {
+    use super::*;
+
+    #[test]
+    fn a_vet_verdict_is_parsed_or_admitted() {
+        let (v, who, quote) =
+            parse_vet("VERDICT: MISATTRIBUTED\nWHO: Eunice\nQUOTE: Eunice said she prefers DIY.");
+        assert_eq!(v, Vet::Misattributed);
+        assert_eq!(who.as_deref(), Some("Eunice"));
+        assert!(quote.contains("prefers DIY"));
+
+        assert_eq!(parse_vet("SUPPORTED").0, Vet::Supported, "a bare word alone is a format");
+        assert_eq!(parse_vet("**VERDICT:** OVERREACH").0, Vet::Overreach);
+
+        // Prose containing a verdict word is not a verdict, and the
+        // rejected text is kept.
+        let (v, _, quote) = parse_vet("I believe this is supported by the transcript.");
+        assert_eq!(v, Vet::Unclear);
+        assert!(quote.contains("I believe"), "the rejected text is kept");
+    }
+
+    #[test]
+    fn the_question_puts_the_imperative_last() {
+        // The harness lesson that cost the most reruns: with a long input a
+        // 35B keeps the instruction it read most recently, so the evidence
+        // must come first and the reply form last.
+        let cand = Candidate {
+            candidate_id: 1,
+            statement: "Luke prefers DIY.".into(),
+            subject: Some("Luke J Chang".into()),
+            origin_source: None,
+            subject_ambiguous: false,
+            confidence: None,
+            evidence: Some(EvidenceClip {
+                source: "bee.conversation".into(),
+                occurred_at: "2026-08-01".into(),
+                body: "a long transcript".into(),
+            }),
+        };
+        let q = vet_question(&cand, cand.evidence.as_ref().unwrap());
+        let ev_at = q.find("a long transcript").unwrap();
+        let claim_at = q.find("Luke prefers DIY.").unwrap();
+        let form_at = q.rfind("VERDICT:").unwrap();
+        assert!(ev_at < claim_at && claim_at < form_at);
+    }
 }

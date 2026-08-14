@@ -83,6 +83,7 @@ pub async fn run(global: &crate::GlobalOpts, args: &CorroborateArgs) -> Result<(
         &args.predicate,
         args.limit,
         Some("corroboration"),
+        false,
     )
     .await?;
     if candidates.is_empty() {

@@ -43,6 +43,11 @@ pub struct GossipArgs {
     /// having been checked.
     #[arg(long, default_value_t = 8)]
     pub verify: usize,
+    /// Append the whole run as one JSON line — exchange, graph findings,
+    /// audit verdicts. Exploration surfaces gaps and inconsistencies; a
+    /// surfacing that lives only in scrollback surfaces nothing twice.
+    #[arg(long)]
+    pub out: Option<std::path::PathBuf>,
 }
 
 pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
@@ -170,6 +175,8 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
 
     println!("\n{}", gossip::render(&exchange));
 
+    let mut graph_findings_text: Option<String> = None;
+    let mut audit_verdicts = Vec::new();
     if args.verify > 0 {
         // pkg's deterministic tier first, and printed whether or not the
         // model tier agrees with it. `kg_verify` dereferences stored claims
@@ -177,7 +184,10 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
         // one part of this audit that cannot hallucinate — it belongs above
         // the part that can.
         match gossip::graph_findings(&client, &name).await {
-            Ok(text) => println!("\nWhat the graph says about its own claims:\n{text}"),
+            Ok(text) => {
+                println!("\nWhat the graph says about its own claims:\n{text}");
+                graph_findings_text = Some(text);
+            }
             Err(e) => eprintln!("kg_verify failed: {e}"),
         }
 
@@ -201,11 +211,32 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
         )
         .await?;
         println!("{}", gossip::render_audit(&verdicts));
+        audit_verdicts = verdicts;
+    }
+
+    if let Some(p) = &args.out {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .with_context(|| format!("opening --out file {}", p.display()))?;
+        let line = serde_json::json!({
+            "at": chrono::Local::now().to_rfc3339(),
+            "entity": name,
+            "since": args.since,
+            "rounds": args.rounds,
+            "model": model,
+            "exchange": exchange,
+            "graph_findings": graph_findings_text,
+            "audit": audit_verdicts,
+        });
+        writeln!(f, "{line}").context("writing --out line")?;
     }
 
     println!(
-        "Nothing was written. Read it and decide whether the follow-ups found \
-         anything the templates would not have."
+        "Nothing was written to the graph. Read it and decide whether the \
+         follow-ups found anything the templates would not have."
     );
     Ok(())
 }

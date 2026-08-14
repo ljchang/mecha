@@ -10,6 +10,7 @@ pub mod learn;
 pub mod msg;
 pub mod outbox;
 pub mod proposals;
+pub mod vet;
 pub mod reflect;
 pub mod replay;
 pub mod rules;
