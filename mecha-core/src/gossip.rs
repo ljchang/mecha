@@ -370,6 +370,71 @@ pub async fn coverage(
     Ok((name, sources, vec![]))
 }
 
+/// Coverage for an entity, resolving an ambiguous name rather than dying on
+/// it.
+///
+/// [`coverage`] reports ambiguity and stops, which is right for an
+/// interactive command and wrong here. A positive control on the
+/// `llm·uses` class — 78% human acceptance, durable properties that plainly
+/// appear in several sources — returned "no witness" for all eight
+/// candidates, because their subject is the bare string "Luke" and the
+/// graph holds two Luke nodes. Coverage came back empty and every claim
+/// about the graph's owner became unjudgeable.
+///
+/// That is the third distinct thing one duplicate identity has broken
+/// today: `pkg dups` could not see the pair, staging dropped the subject
+/// from 189 candidates, and now coverage cannot be measured at all. So this
+/// picks the candidate with the most interactions, re-asks by id, and
+/// returns whether it had to guess. Merging the nodes remains the real fix.
+pub async fn coverage_best(
+    client: &McpClient,
+    entity: &str,
+) -> Result<(String, Vec<SourceCoverage>, bool)> {
+    let ask = |q: String| async move {
+        let out = client
+            .call_tool("kg_entity", json!({ "name_or_id": q }))
+            .await?;
+        let body: Value = serde_json::from_str(&out.content)
+            .with_context(|| format!("kg_entity returned non-JSON: {}", out.content))?;
+        anyhow::Ok(body)
+    };
+
+    let body = ask(entity.to_string()).await?;
+    if let Some(cands) = body.get("ambiguous").and_then(Value::as_array) {
+        // Most interactions wins. Not arbitrary: a name split across a
+        // dominant node and a stub is the commonest shape of a duplicate,
+        // and the dominant node is the one the sources actually cover.
+        let Some(best) = cands.iter().max_by_key(|c| {
+            c.get("interaction_count")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+        }) else {
+            return Ok((String::new(), vec![], true));
+        };
+        // `id`, not `node_id`: kg_entity's ambiguity envelope and its
+        // verify counterpart spell this field differently, and reading the
+        // wrong one fails silently — the re-ask got an empty string, found
+        // nothing, and fell back to the very name that was ambiguous, so
+        // the control run reported "measured on 'Luke'" and no coverage.
+        let Some(id) = best["id"].as_str().filter(|s| !s.is_empty()) else {
+            return Ok((String::new(), vec![], true));
+        };
+        let body = ask(id.to_string()).await?;
+        if body["found"] == json!(false) {
+            return Ok((String::new(), vec![], true));
+        }
+        let name = body["node"]["name"].as_str().unwrap_or(entity).to_string();
+        let sources = serde_json::from_value(body["sources"].clone()).unwrap_or_default();
+        return Ok((name, sources, true));
+    }
+    if body["found"] == json!(false) {
+        return Ok((String::new(), vec![], false));
+    }
+    let name = body["node"]["name"].as_str().unwrap_or(entity).to_string();
+    let sources = serde_json::from_value(body["sources"].clone()).unwrap_or_default();
+    Ok((name, sources, false))
+}
+
 /// How many episodes each source holds about this entity WITHIN the window.
 ///
 /// `kg_entity` reports all-time coverage, and all-time is a different
@@ -1639,7 +1704,13 @@ pub async fn corroborate(
             .await
             .with_context(|| format!("{} reader on candidate {}", v.label, cand.candidate_id))?;
         let (s, basis) = parse_sighting(&out.text);
-        found.push((v.label.clone(), s, basis));
+        // The SOURCE, not just the family label. Two readers both labelled
+        // "reflected" read reflect.note (2,263 episodes) and reflect.daily
+        // (118) — different sources entirely — and a live run showed one
+        // "reflected" seeing Flowmail and another not, which reads as a
+        // mechanism contradicting itself until you can see it was never
+        // the same shelf.
+        found.push((format!("{} [{}]", v.label, v.sources.join(",")), s, basis));
     }
 
     // REVEAL, only on a split, and only to the dissenter. Being pointed at
@@ -1662,7 +1733,15 @@ pub async fn corroborate(
         ));
         let out = readers[miss].1.run_in(cx, &mut convo, None).await?;
         let (s, basis) = parse_sighting(&out.text);
-        found[miss] = (readers[miss].0.label.clone(), s, basis);
+        found[miss] = (
+            format!(
+                "{} [{}]",
+                readers[miss].0.label,
+                readers[miss].0.sources.join(",")
+            ),
+            s,
+            basis,
+        );
     }
 
     Ok(Corroboration {

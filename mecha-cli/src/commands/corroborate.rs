@@ -117,15 +117,18 @@ pub async fn run(global: &crate::GlobalOpts, args: &CorroborateArgs) -> Result<(
         let cov = match coverage_cache.get(&subject) {
             Some(c) => c.clone(),
             None => {
-                let c = match gossip::coverage(&client, &subject).await {
-                    Ok((name, sources, ambiguous)) if ambiguous.is_empty() && !name.is_empty() => {
+                // coverage_best, not coverage: a bare "Luke" is ambiguous
+                // while the graph holds two of him, and stopping there made
+                // every claim about the graph's owner unjudgeable.
+                let c = match gossip::coverage_best(&client, &subject).await {
+                    Ok((name, sources, guessed)) if !name.is_empty() => {
+                        if guessed {
+                            println!("      (coverage for '{subject}' measured on '{name}' — the name matches more than one node)");
+                        }
                         gossip::windowed_coverage(&client, &name, &sources, &args.since, &until)
                             .await
                             .unwrap_or_default()
                     }
-                    // An ambiguous or unresolvable subject is not a
-                    // corroboration failure; say so and move on rather than
-                    // guessing which person was meant.
                     _ => vec![],
                 };
                 coverage_cache.insert(subject.clone(), c.clone());
@@ -142,12 +145,21 @@ pub async fn run(global: &crate::GlobalOpts, args: &CorroborateArgs) -> Result<(
                 args.min_coverage,
             )
         else {
+            // Two different failures, and conflating them misreported the
+            // first live control run: an empty coverage list means the
+            // subject could not be resolved at all, NOT that its origin is
+            // the only witness.
+            let why = if cov.is_empty() {
+                format!("'{subject}' does not resolve to anything the graph has coverage for")
+            } else {
+                format!(
+                    "nothing outside {} covers '{subject}'; a claim cannot corroborate itself",
+                    cand.origin_source.as_deref().unwrap_or(&args.proposer),
+                )
+            };
             println!(
-                "  [no-witness] {} — nothing but {} covers '{}'; a claim cannot corroborate itself\n      {}",
-                cand.candidate_id,
-                cand.origin_source.as_deref().unwrap_or("its origin"),
-                subject,
-                cand.statement,
+                "  [no-witness] {} — {why}\n      {}",
+                cand.candidate_id, cand.statement,
             );
             *tally.entry("no_witness").or_default() += 1;
             continue;
