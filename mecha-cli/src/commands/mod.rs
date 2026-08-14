@@ -1,10 +1,12 @@
 pub mod batch;
 pub mod chat;
 pub mod config;
+pub mod corroborate;
 pub mod distill;
 pub mod doctor;
 pub mod eval;
 pub mod frontdoor;
+pub mod gossip;
 pub mod learn;
 pub mod msg;
 pub mod outbox;
@@ -18,4 +20,5 @@ pub mod slack;
 pub mod tools;
 pub mod trigger;
 pub mod validate;
+pub mod vet;
 pub mod work;
