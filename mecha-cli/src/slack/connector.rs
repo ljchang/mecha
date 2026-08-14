@@ -412,6 +412,25 @@ impl State {
             return;
         };
 
+        // The `doctor` command word, matched before the text can become a
+        // prompt or a steering line — the same precedence slash commands get
+        // in the TUI. Owner-tier only by construction: the gate above already
+        // refused everyone else, and the report names stores, accounts and
+        // stuck items, which is the user's private surface. The examination
+        // is spawned work, never the ack path — it reads every store and
+        // shells out to systemctl, and the three-second ack budget is
+        // Slack's.
+        if super::doctor::is_doctor_command(&text) {
+            let slack = self.slack.clone();
+            let (channel, thread_ts) = (channel.clone(), thread_ts.clone());
+            tokio::spawn(async move {
+                let (text, blocks) = super::doctor::report().await;
+                let _ =
+                    chat::post_message(&slack, &channel, Some(&thread_ts), &text, blocks).await;
+            });
+            return;
+        }
+
         let record = match self
             .threads
             .ensure(&channel, &thread_ts, &self.cfg.default_mode)
@@ -748,12 +767,17 @@ impl State {
                 let _ = self.threads.apply(&done.key, Event::Errored);
                 // Posted, never only logged: a failure the person cannot see
                 // is indistinguishable from a run that is still thinking.
+                // The breadcrumb is owner-tier by construction — the gate
+                // lets nobody else start a run, so every thread this posts
+                // into is an owner's.
                 if let Ok(Some(r)) = self.threads.get(&done.key) {
                     let _ = chat::post_message(
                         &self.slack,
                         &r.channel_id,
                         Some(&r.thread_ts),
-                        &format!("The run failed: {error}"),
+                        &format!(
+                            "The run failed: {error} — send `doctor` for a health report"
+                        ),
                         None,
                     )
                     .await;

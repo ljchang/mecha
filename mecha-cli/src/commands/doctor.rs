@@ -59,6 +59,28 @@ pub async fn execute(args: Args) -> Result<()> {
     }
 }
 
+/// The findings regrouped for display: every finding of a component together,
+/// components ordered by their worst finding, broken before attention within
+/// each — the shape `render` prints. Public because the TUI's `/doctor` modal
+/// and the Slack `doctor` command render the same report, and three surfaces
+/// that disagree about what comes first would each be read as the whole truth.
+pub fn grouped(mut findings: Vec<Finding>) -> Vec<Finding> {
+    doctor::sort(&mut findings);
+    let mut components: Vec<String> = Vec::new();
+    for f in &findings {
+        if !components.contains(&f.component) {
+            components.push(f.component.clone());
+        }
+    }
+    let mut out = Vec::with_capacity(findings.len());
+    for component in components {
+        // Stable within a component: the sorted order already put broken
+        // before attention, and insertion order after that.
+        out.extend(findings.iter().filter(|f| f.component == component).cloned());
+    }
+    out
+}
+
 /// Only a human at both ends of the terminal gets offered anything. A piped
 /// doctor — cron, a script, `| tee` — reports and stops.
 fn interactive() -> bool {
@@ -283,6 +305,39 @@ mod tests {
         // The severity is a word a script can match, not an index.
         assert!(text.contains("\"broken\""), "{text}");
         assert!(text.contains("\"attention\""), "{text}");
+    }
+
+    /// The display grouping every front-end shares: a component's findings
+    /// stay together, the component with the broken finding leads, and broken
+    /// outranks attention within a component.
+    #[test]
+    fn grouping_keeps_a_component_together_and_leads_with_what_is_broken() {
+        let finding = |component: &str, severity: Severity, summary: &str| Finding {
+            component: component.into(),
+            severity,
+            summary: summary.into(),
+            detail: String::new(),
+            remedy: None,
+        };
+        let scattered = vec![
+            finding("outbox", Severity::Attention, "stuck drafts"),
+            finding("mail", Severity::Broken, "dead auth"),
+            finding("mail", Severity::Attention, "legacy login"),
+            finding("frontdoor", Severity::Attention, "stale request"),
+        ];
+        let order: Vec<(String, Severity)> = grouped(scattered)
+            .into_iter()
+            .map(|f| (f.component, f.severity))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("mail".to_string(), Severity::Broken),
+                ("mail".to_string(), Severity::Attention),
+                ("frontdoor".to_string(), Severity::Attention),
+                ("outbox".to_string(), Severity::Attention),
+            ]
+        );
     }
 
     #[test]
