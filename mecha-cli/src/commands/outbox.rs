@@ -17,7 +17,7 @@
 //! editing neither the draft nor anything a reader sees.
 
 use anyhow::{bail, Context, Result};
-use mecha_core::outbox::{OutboxItem, OutboxKind, OutboxStore};
+use mecha_core::outbox::{OutboxItem, OutboxKind, OutboxLock, OutboxStore};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -645,7 +645,21 @@ impl Surfaces {
 /// forever. `record_error` keeps the item pending — the draft is still good
 /// and the next `send` retries — with the reason where every review surface
 /// can display it.
-fn record_release_failure(store: &OutboxStore, id: &str, err: anyhow::Error) -> anyhow::Error {
+///
+/// **The lock guard is a parameter on purpose.** `record_error` is a
+/// read-then-write of the item with no flock of its own, and the store lock's
+/// contract is "taken before reading the state acted on". A lockless call
+/// here raced a concurrent `mecha outbox send`: the other terminal marks the
+/// item sent inside this helper's read/write gap, the unlocked write restores
+/// a stale `pending`, and a later send double-delivers. Demanding the guard
+/// makes an unlocked call a compile error rather than a rule each call site
+/// must remember — the guard is never read, only proven held.
+fn record_release_failure(
+    store: &OutboxStore,
+    _lock: &OutboxLock,
+    id: &str,
+    err: anyhow::Error,
+) -> anyhow::Error {
     match store.record_error(id, &format!("{err:#}")) {
         Ok(()) => err,
         Err(record) => {
@@ -680,7 +694,7 @@ async fn send(
     // Held across the whole batch, execution included: two concurrent `send`s
     // of the same item must not both pass the pending check and double-send.
     // Staging never takes this lock, so no agent is blocked by a review.
-    let _lock = store.lock()?;
+    let lock = store.lock()?;
     let items = select(store.items()?, selection)?;
 
     for item in &items {
@@ -736,7 +750,7 @@ async fn send(
             // A surface that cannot be built is a failure of this item's
             // release, so it is recorded like one — and only this item's:
             // the next draft may name a workspace that builds fine.
-            Err(e) => Err(record_release_failure(store, &item.id, e)),
+            Err(e) => Err(record_release_failure(store, &lock, &item.id, e)),
         };
         match release {
             Ok(output) => {
@@ -824,13 +838,26 @@ async fn review(global: &GlobalOpts, store: &OutboxStore, selection: &Selection)
                     // The surface is built before the lock — an MCP startup is
                     // not something to hold the store across. A build failure
                     // is recorded on the item and the walk continues: one bad
-                    // workspace must not end the whole review.
+                    // workspace must not end the whole review. Both arms write
+                    // under the lock: `record_error` reads the item before it
+                    // writes, and a lockless write in that gap can restore a
+                    // stale `pending` over a draft another terminal just sent.
                     let release = match surfaces.for_item(global, &current).await {
                         Ok(surface) => {
                             let _lock = store.lock()?;
                             surface.release(store, &current).await
                         }
-                        Err(e) => Err(record_release_failure(store, &current.id, e)),
+                        Err(e) => match store.lock() {
+                            Ok(lock) => {
+                                Err(record_release_failure(store, &lock, &current.id, e))
+                            }
+                            // No lock means no safe write; the failure is
+                            // reported without touching the store.
+                            Err(lock_err) => Err(e.context(format!(
+                                "(and the store lock needed to record this \
+                                 failure could not be taken: {lock_err:#})"
+                            ))),
+                        },
                     };
                     match release {
                         Ok(output) => {
@@ -1280,6 +1307,12 @@ mod tests {
     /// `record_error` at all. Both `send` and `review` route them through
     /// this, so a workspace that cannot build a surface leaves its reason on
     /// the item it failed.
+    ///
+    /// That the guard argument below is *required to compile* is itself the
+    /// type-level test for the race this helper used to permit: `review`'s
+    /// build-failure arm called it without the store lock, and a concurrent
+    /// send inside `record_error`'s read/write gap had its `sent` overwritten
+    /// back to `pending`. There is no way to write this call lockless now.
     #[test]
     fn a_surface_build_failure_lands_on_the_item_not_only_stderr() {
         let store = temp_store();
@@ -1294,8 +1327,10 @@ mod tests {
             )
             .unwrap();
 
+        let lock = store.lock().unwrap();
         let err = record_release_failure(
             &store,
+            &lock,
             &staged.id,
             anyhow::anyhow!("the MCP server would not start"),
         );

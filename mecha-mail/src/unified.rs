@@ -709,10 +709,11 @@ impl MailTools {
     /// The account a create with this argument lands on, by name — the same
     /// `Mode::Create` resolution `create_event_invite` applies (the named
     /// account, else the default, else instructions), exposed so the booking
-    /// sweep can scope its freebusy re-verification to it. The incident this
-    /// serves: the re-verify fanned out over *every* account, so a revoked
-    /// token on a mailbox irrelevant to the booking blocked event creation on
-    /// the account that was healthy — for three days, silently.
+    /// sweep can resolve it once before creating anything. Deliberately NOT
+    /// a scope for the sweep's freebusy re-verify: that read fans out over
+    /// every account, because a slot free on the landing calendar but busy
+    /// on another is a collision — a revoked token on one of the others is
+    /// classified and skipped there, never used to narrow the read.
     pub fn create_account_name(&self, account: Option<&str>) -> Result<String, String> {
         self.pick(account, Mode::Create).map(|p| p[0].name.clone())
     }
@@ -1481,14 +1482,14 @@ mod tests {
         }
     }
 
-    /// The booking sweep re-verifies freebusy against the account the event
-    /// will be created on — this is that scoping decision. It must resolve
-    /// exactly as the create will (explicit flag, else default), and refuse
-    /// with instructions rather than fan out when neither exists: fanning out
-    /// is how a revoked token on an unrelated account blocked bookings on the
-    /// healthy one.
+    /// The booking sweep resolves where its events land once, up front —
+    /// this is that resolution. It must resolve exactly as the create will
+    /// (explicit flag, else default), and refuse with instructions when
+    /// neither exists. Note what it no longer scopes: the freebusy
+    /// re-verify fans out over every account (see the sweep), because
+    /// scoping it here silently dropped cross-account collision detection.
     #[test]
-    fn the_booking_reverify_account_is_the_one_the_event_lands_on() {
+    fn the_booking_event_account_resolves_like_the_create() {
         let tools = tools_over(&["dartmouth", "personal"], Some("dartmouth"));
         assert_eq!(tools.create_account_name(None).unwrap(), "dartmouth");
         assert_eq!(

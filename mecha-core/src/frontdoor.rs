@@ -420,32 +420,40 @@ impl Frontdoor {
                 continue;
             }
 
-            let (to, note) = if mine.iter().any(|i| i.status == "sent") {
-                // At least one reply went out. A rejected draft beside a sent
-                // one is someone choosing which reply to send, not a refusal.
-                (ANSWERED, None)
-            } else if mine.iter().all(|i| i.status == "rejected") {
+            // Every draft is resolved, so the NEWEST one decides. Outbox ids
+            // are timestamp-prefixed (`20260813T192217-…`), so the
+            // lexicographic max is the chronological newest. Any-sent was the
+            // old rule and it read history as the present: a request
+            // re-opened after being answered (`extract --force`, re-triage)
+            // carries [old-sent-id, new-pending-id], and when the new draft
+            // was rejected the stale sent id flipped it to `answered`, erased
+            // the rejection reason, and the request never returned for
+            // re-triage — the silent drop this component exists to prevent.
+            let Some(newest) = mine.iter().max_by(|a, b| a.id.cmp(&b.id)) else {
+                // Unreachable — `mine` is non-empty — but a `continue` keeps
+                // the unknown-waits-for-a-person rule rather than panicking.
+                continue;
+            };
+            let (to, note) = match newest.status.as_str() {
+                "sent" => (ANSWERED, None),
                 // Back to `extracted`, not to `closed`. Rejecting a draft says
                 // "not this reply", never "not this request" — and a request
-                // closed because its first draft was wrong is exactly the
+                // closed because its latest draft was wrong is exactly the
                 // silence this component exists to prevent. It becomes a
-                // candidate for triage again.
-                (
+                // candidate for triage again, carrying the rejection reason.
+                "rejected" => (
                     EXTRACTED,
                     Some(
-                        mine.iter()
-                            .find_map(|i| i.reason.clone())
+                        newest
+                            .reason
+                            .clone()
                             .unwrap_or_else(|| "the draft was rejected".into()),
                     ),
-                )
-            } else {
-                // Unreachable: nothing pending, nothing sent, and not all
-                // rejected has no fourth option. Left as a `continue` rather
-                // than an `unreachable!` because a store written by a future
-                // version could carry a status this one has never seen, and
-                // leaving the request for a person is what every other unknown
-                // here does.
-                continue;
+                ),
+                // A status this version has never seen — a store written by a
+                // future version. Leaving the request for a person is what
+                // every other unknown here does.
+                _ => continue,
             };
 
             moved.push(Transition {
@@ -813,27 +821,96 @@ mod tests {
         assert_eq!(s.front.record(1).unwrap().state, ANSWERED);
     }
 
-    /// Send one draft and reject the other. Nothing is pending, so no later
-    /// pass can change the answer — and asking `all(sent)` then `all(rejected)`
-    /// leaves this case matching neither, parking the request in `awaiting_me`
-    /// permanently. One reply going out is an answer; the rejected sibling is
-    /// someone choosing which reply to send.
+    /// Reject one draft and send the newer one. Nothing is pending, so no
+    /// later pass can change the answer — and asking `all(sent)` then
+    /// `all(rejected)` left this case matching neither, parking the request in
+    /// `awaiting_me` permanently. The newest reply going out is an answer; the
+    /// rejected older sibling is someone choosing which reply to send.
     #[test]
     fn a_set_that_was_partly_sent_and_partly_rejected_still_settles() {
         let s = Stores::new("mixed-resolved");
-        let sent = s.draft();
-        let rejected = s.draft();
+        let (a, b) = (s.draft(), s.draft());
+        // Ids are timestamp-prefixed but two drafts staged in the same second
+        // order by their random suffix, so assign roles by id: "newest" must
+        // be deterministic for the rule under test to be the one measured.
+        let (older, newest) = if a < b { (a, b) } else { (b, a) };
         s.front
-            .write(&awaiting(1, &[sent.as_str(), rejected.as_str()]))
+            .write(&awaiting(1, &[older.as_str(), newest.as_str()]))
             .unwrap();
-        s.outbox.resolve(&sent, "sent", None).unwrap();
         s.outbox
-            .resolve(&rejected, "rejected", Some("used the other one".into()))
+            .resolve(&older, "rejected", Some("used the other one".into()))
             .unwrap();
+        s.outbox.resolve(&newest, "sent", None).unwrap();
 
         let moved = s.front.reconcile(&s.outbox).unwrap();
         assert_eq!(moved.len(), 1, "{moved:?}");
         assert_eq!(s.front.record(1).unwrap().state, ANSWERED);
+    }
+
+    /// The re-opened-request scenario: a first draft was sent and the request
+    /// answered; it was re-opened (`extract --force`, re-triage), and the id
+    /// merge — correctly — kept the old sent id beside the new draft's. When
+    /// the *new* draft is rejected, the old rule's `any(sent)` let the stale
+    /// sent id win: the request flipped back to `answered`, the unconditional
+    /// note assignment erased the rejection reason, and it never returned for
+    /// re-triage — the silent drop this component exists to prevent. The
+    /// newest resolved draft decides, and here it says rejected.
+    #[test]
+    fn an_old_sent_draft_never_answers_a_reopened_request_whose_new_draft_was_rejected() {
+        let s = Stores::new("reopened-rejected");
+        let (a, b) = (s.draft(), s.draft());
+        let (old_sent, new_rejected) = if a < b { (a, b) } else { (b, a) };
+        // The first round: draft sent, long since resolved.
+        s.outbox.resolve(&old_sent, "sent", None).unwrap();
+        // The re-triage merged both ids onto the record.
+        s.front
+            .write(&awaiting(1, &[old_sent.as_str(), new_rejected.as_str()]))
+            .unwrap();
+        s.outbox
+            .resolve(
+                &new_rejected,
+                "rejected",
+                Some("does not answer what they re-asked".into()),
+            )
+            .unwrap();
+
+        let moved = s.front.reconcile(&s.outbox).unwrap();
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert_eq!(moved[0].to, EXTRACTED, "an old sent draft must not win");
+        let after = s.front.record(1).unwrap();
+        assert_eq!(after.state, EXTRACTED);
+        assert_eq!(
+            after.note.as_deref(),
+            Some("does not answer what they re-asked"),
+            "the rejection reason must survive, not be erased by the stale sent id"
+        );
+    }
+
+    /// The mirror case, pinning that the old behaviour still holds through the
+    /// new rule: an old rejection followed by a newer sent draft is answered,
+    /// and the stale rejection note is cleared with the state it explained.
+    #[test]
+    fn an_old_rejection_does_not_hold_back_a_request_whose_new_draft_was_sent() {
+        let s = Stores::new("reopened-sent");
+        let (a, b) = (s.draft(), s.draft());
+        let (old_rejected, new_sent) = if a < b { (a, b) } else { (b, a) };
+        s.outbox
+            .resolve(&old_rejected, "rejected", Some("too formal".into()))
+            .unwrap();
+        let mut record = awaiting(1, &[old_rejected.as_str(), new_sent.as_str()]);
+        record.note = Some("too formal".into());
+        s.front.write(&record).unwrap();
+        s.outbox.resolve(&new_sent, "sent", None).unwrap();
+
+        let moved = s.front.reconcile(&s.outbox).unwrap();
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert_eq!(moved[0].to, ANSWERED);
+        let after = s.front.record(1).unwrap();
+        assert_eq!(after.state, ANSWERED);
+        assert_eq!(
+            after.note, None,
+            "a rejection note must not survive into `answered`"
+        );
     }
 
     /// The pending check has to come first and on its own, or it only catches

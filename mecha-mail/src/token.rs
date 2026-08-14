@@ -125,25 +125,54 @@ pub fn load_auth_error(credentials: &Path) -> Option<AuthErrorMarker> {
 /// error, and failing the refresh error over a marker write would bury the
 /// message that names the fix. Owner-only like everything else in the store.
 fn record_auth_error(credentials: &Path, message: &str) {
+    record_auth_error_at(
+        credentials,
+        message,
+        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    );
+}
+
+/// [`record_auth_error`] with the clock injected, for testability.
+///
+/// Atomic like [`save`] — temp sibling, mode before contents, rename — never
+/// an in-place truncate-and-write: a failing sweep rewrites this every two
+/// minutes while doctor and `accounts` read it locklessly, and a torn or
+/// empty read degrades a Broken finding into a parse warning. The rename
+/// also re-establishes 0600 over a pre-existing wider-permission marker,
+/// which `OpenOptions::mode` alone never would (it applies only at
+/// creation). And a repeat of the *same* message is skipped entirely: `at`
+/// records when the failure was FIRST observed (the field's contract), and
+/// thirty identical rewrites an hour carry no information while multiplying
+/// a reader's chances of landing in a write window.
+fn record_auth_error_at(credentials: &Path, message: &str, at: &str) {
     use std::os::unix::fs::OpenOptionsExt;
+    if let Some(existing) = load_auth_error(credentials) {
+        if existing.message == message {
+            return;
+        }
+    }
     let marker = AuthErrorMarker {
-        at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        at: at.to_string(),
         message: message.to_string(),
     };
     let Ok(text) = serde_json::to_string_pretty(&marker) else {
         return;
     };
     let path = auth_error_path(credentials);
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&path)
-        .and_then(|mut f| {
+    let tmp = path.with_extension("json.tmp");
+    let _ = (|| -> std::io::Result<()> {
+        {
             use std::io::Write;
-            f.write_all(text.as_bytes())
-        });
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            f.write_all(text.as_bytes())?;
+        }
+        std::fs::rename(&tmp, &path)
+    })();
 }
 
 fn clear_auth_error(credentials: &Path) {
@@ -428,6 +457,84 @@ mod tests {
         assert!(
             load_auth_error(&manager.path).is_none(),
             "a successful refresh must clear the marker"
+        );
+    }
+
+    /// `at` is "when the failure was FIRST observed": a sweep failing every
+    /// two minutes must not move the stamp — or churn the file at all — for
+    /// a repeat of the same message.
+    #[test]
+    fn a_repeated_identical_failure_keeps_the_first_observed_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oauth.json");
+
+        record_auth_error_at(&path, "the login is dead", "2026-08-11T09:00:00Z");
+        record_auth_error_at(&path, "the login is dead", "2026-08-12T09:00:00Z");
+        let marker = load_auth_error(&path).expect("a marker");
+        assert_eq!(
+            marker.at, "2026-08-11T09:00:00Z",
+            "an identical repeat must keep the first-observed stamp"
+        );
+
+        // A *different* message is new information and takes a fresh stamp.
+        record_auth_error_at(&path, "a different failure", "2026-08-13T09:00:00Z");
+        let marker = load_auth_error(&path).expect("a marker");
+        assert_eq!(marker.at, "2026-08-13T09:00:00Z");
+        assert_eq!(marker.message, "a different failure");
+    }
+
+    /// The rename-into-place write is what fixes a pre-existing
+    /// wider-permission marker: `OpenOptions::mode` applies only at
+    /// creation, so the old in-place rewrite left 0644 as 0644 forever.
+    #[test]
+    fn the_marker_write_is_atomic_and_restores_owner_only_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oauth.json");
+        let marker_path = auth_error_path(&path);
+        // A pre-existing, unparseable, world-readable marker.
+        std::fs::write(&marker_path, "{ torn").unwrap();
+        std::fs::set_permissions(&marker_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        record_auth_error(&path, "the login is dead");
+
+        let mode = std::fs::metadata(&marker_path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "the marker must come back owner-only");
+        assert_eq!(
+            load_auth_error(&path).unwrap().message,
+            "the login is dead",
+            "the torn predecessor was replaced whole"
+        );
+        assert!(
+            !marker_path.with_extension("json.tmp").exists(),
+            "the temp sibling must not outlive the rename"
+        );
+    }
+
+    /// Finding-6 drift pin, writer half. Twin test (same golden bytes):
+    /// `mecha_core::doctor::tests::the_golden_marker_literal_parses_into_the_dead_auth_finding`
+    /// in mecha-core/src/doctor.rs — the crates share no types on purpose
+    /// (the seam is a file of JSON), so a field rename here would pass both
+    /// suites separately and silently kill doctor's dead-auth finding at
+    /// runtime. If this literal changes, change the twin's too.
+    #[test]
+    fn record_auth_error_serialises_the_golden_marker_byte_for_byte() {
+        const GOLDEN: &str = r#"{
+  "at": "2026-08-11T09:00:00Z",
+  "message": "account `personal`: refresh token expired or revoked — run `mecha-mail auth personal --provider google` (invalid_grant: Token has been revoked.)"
+}"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oauth.json");
+        record_auth_error_at(
+            &path,
+            "account `personal`: refresh token expired or revoked — run `mecha-mail auth \
+             personal --provider google` (invalid_grant: Token has been revoked.)",
+            "2026-08-11T09:00:00Z",
+        );
+        let written = std::fs::read_to_string(auth_error_path(&path)).unwrap();
+        assert_eq!(
+            written, GOLDEN,
+            "field names and shape are the contract mecha-core's doctor reads"
         );
     }
 

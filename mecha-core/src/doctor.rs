@@ -110,6 +110,7 @@ const STALE_REQUEST_AFTER: chrono::Duration = chrono::Duration::hours(72);
 pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let mut findings = Vec::new();
     findings.extend(check_mail(&home.join("mail")));
+    findings.extend(check_legacy_mail(home));
     findings.extend(check_outbox(&home.join("outbox"), now));
     findings.extend(check_frontdoor(&home.join("requests"), now));
     findings.extend(check_triggers(&home.join("triggers"), now));
@@ -248,6 +249,67 @@ fn check_mail(mail: &Path) -> Vec<Finding> {
     out
 }
 
+/// The legacy per-provider stores — `<home>/google/oauth.json` and
+/// `<home>/outlook/oauth.json`, still served by the shipped `mecha-google`
+/// and `mecha-outlook` binaries and what `mecha-mail import` exists to
+/// migrate — get the same marker written beside their credentials by the
+/// same token lifecycle. A doctor that reads only the registry layout
+/// reports "all clear" over a dead legacy login.
+fn check_legacy_mail(home: &Path) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for provider in ["google", "outlook"] {
+        let marker_path = home.join(provider).join("auth_error.json");
+        if !marker_path.is_file() {
+            continue;
+        }
+        let text = match std::fs::read_to_string(&marker_path) {
+            Ok(text) => text,
+            Err(e) => {
+                out.push(Finding::unreadable(
+                    "mail",
+                    &format!("auth_error.json for the legacy {provider} store"),
+                    format!("{}: {e}", marker_path.display()),
+                ));
+                continue;
+            }
+        };
+        match serde_json::from_str::<AuthMarker>(&text) {
+            Ok(marker) => out.push(Finding {
+                component: "mail".to_string(),
+                severity: Severity::Broken,
+                summary: format!("legacy {provider} mail auth is dead"),
+                // The marker's message names the exact re-auth command (the
+                // writer derives it from the store's directory), so it rides
+                // in the detail.
+                detail: format!(
+                    "permanent refresh failure since {}: {}",
+                    marker.at, marker.message
+                ),
+                remedy: Some(Remedy {
+                    description: format!(
+                        "bring the legacy {provider} login into the unified registry — \
+                         and re-authenticate it per the detail, which no import fixes"
+                    ),
+                    argv: vec![
+                        "mecha-mail".to_string(),
+                        "import".to_string(),
+                        provider.to_string(),
+                        "--provider".to_string(),
+                        provider.to_string(),
+                    ],
+                    needs_terminal: false,
+                }),
+            }),
+            Err(e) => out.push(Finding::unreadable(
+                "mail",
+                &format!("auth_error.json for the legacy {provider} store did not parse"),
+                format!("{}: {e}", marker_path.display()),
+            )),
+        }
+    }
+    out
+}
+
 // --- stuck outbox items -----------------------------------------------------
 
 /// Read the outbox items directly — one JSON file per item, the store's own
@@ -353,9 +415,15 @@ fn check_outbox(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
 // --- frontdoor --------------------------------------------------------------
 
 /// The states that mean a request is waiting on the user rather than on the
-/// requester: `extracted` awaits triage, `awaiting_me` awaits a draft review.
+/// requester: `extracted` awaits triage, `awaiting_me` awaits a draft review,
+/// and `triaged` is triage's "I drafted nothing — this needs a person":
+/// nothing ever re-triages it, so left alone it waits forever, invisibly.
 /// (`needs_info` waits on the stranger, and `drained` on the extraction pass.)
-const WAITING_ON_ME: [&str; 2] = [crate::frontdoor::EXTRACTED, crate::frontdoor::AWAITING_ME];
+const WAITING_ON_ME: [&str; 3] = [
+    crate::frontdoor::EXTRACTED,
+    crate::frontdoor::AWAITING_ME,
+    crate::frontdoor::TRIAGED,
+];
 
 /// Read the request records directly, for the same no-side-effects reason as
 /// the outbox — [`crate::frontdoor::Frontdoor::open`] creates the directory.
@@ -511,10 +579,10 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         }
     }
 
-    // One ledger scan for both questions: the newest row per trigger, and the
-    // newest *accounted slot* per trigger (manual runs carry no slot, so they
-    // are invisible to the schedule on purpose).
-    let mut last_row: BTreeMap<String, crate::trigger::RunRecord> = BTreeMap::new();
+    // One ledger scan for both questions: the newest row that actually *ran*
+    // per trigger, and the newest *accounted slot* per trigger (manual runs
+    // carry no slot, so they are invisible to the schedule on purpose).
+    let mut last_run: BTreeMap<String, crate::trigger::RunRecord> = BTreeMap::new();
     let mut last_slot: BTreeMap<String, DateTime<Utc>> = BTreeMap::new();
     let ledger = root.join("runs.jsonl");
     if ledger.is_file() {
@@ -532,7 +600,16 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
                             *newest = slot;
                         }
                     }
-                    last_row.insert(row.trigger.clone(), row);
+                    // A skip is a row, not a run: a skipped-stale or
+                    // skipped-overlap appended after an error is bookkeeping,
+                    // not a recovery, and keying on the literal last row let
+                    // it hide the failure the operator needed to see.
+                    if matches!(
+                        row.status,
+                        crate::trigger::RunStatus::Ok | crate::trigger::RunStatus::Error
+                    ) {
+                        last_run.insert(row.trigger.clone(), row);
+                    }
                 }
             }
             Err(e) => out.push(Finding::unreadable(
@@ -550,7 +627,7 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
 
         // The most recent run failed: a manual run is the safe probe, because
         // it records a row with no slot and so never advances the schedule.
-        if let Some(row) = last_row.get(&trigger.name) {
+        if let Some(row) = last_run.get(&trigger.name) {
             if row.status == crate::trigger::RunStatus::Error {
                 out.push(Finding {
                     component: "triggers".to_string(),
@@ -803,6 +880,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// Legacy per-provider stores (`<home>/google/oauth.json`, still served
+    /// by the shipped `mecha-google` binary) get the same marker beside
+    /// their credentials — and the old scan, which read only
+    /// `<home>/mail/*/`, walked straight past it.
+    #[test]
+    fn a_marker_in_a_legacy_per_provider_store_is_found_and_proposes_import() {
+        let home = home("legacy-auth");
+        let dir = home.join("google");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("auth_error.json"),
+            json!({
+                "at": "2026-08-11T09:00:00Z",
+                "message": "account `google`: refresh token expired or revoked — run `mecha-mail auth google --provider google` (invalid_grant)",
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let findings = examine(&home, utc(NOW));
+        let mail = of(&findings, "mail");
+        assert_eq!(mail.len(), 1, "{findings:#?}");
+        assert_eq!(mail[0].severity, Severity::Broken);
+        assert!(mail[0].summary.contains("legacy google"), "{}", mail[0].summary);
+        // The marker's message names the exact re-auth command; it must ride
+        // in the detail.
+        assert!(
+            mail[0].detail.contains("run `mecha-mail auth google --provider google`"),
+            "{}",
+            mail[0].detail
+        );
+        let remedy = mail[0].remedy.as_ref().expect("a way out");
+        assert_eq!(
+            remedy.argv,
+            vec!["mecha-mail", "import", "google", "--provider", "google"]
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn an_unparseable_marker_is_a_store_unreadable_finding_not_a_crash() {
         let home = home("bad-marker");
@@ -927,6 +1044,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// `triaged` means "triage considered it and drafted nothing — a person
+    /// has to decide", and nothing ever re-triages it: left off the
+    /// waiting-on-me list it waits forever, invisibly.
+    #[test]
+    fn a_triaged_request_nothing_will_revisit_goes_stale() {
+        let home = home("frontdoor-triaged");
+        // 73h before NOW.
+        request(&home, 4, crate::frontdoor::TRIAGED, "2026-08-11T11:00:00Z");
+        // Older still, but waiting on the *stranger*: never the user's fault.
+        request(&home, 5, crate::frontdoor::NEEDS_INFO, "2026-08-01T00:00:00Z");
+
+        let findings = examine(&home, utc(NOW));
+        let front = of(&findings, "frontdoor");
+        assert_eq!(front.len(), 1, "{findings:#?}");
+        assert_eq!(front[0].severity, Severity::Attention);
+        assert!(front[0].detail.contains("triaged"), "{}", front[0].detail);
+        assert!(
+            !front[0].detail.contains("needs_info"),
+            "needs_info waits on the requester: {}",
+            front[0].detail
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn a_trigger_whose_last_run_failed_is_flagged_with_the_manual_probe() {
         let home = home("trigger-failed");
@@ -963,6 +1105,75 @@ mod tests {
             vec!["mecha", "trigger", "run", "morning"],
             "a manual run is the safe probe: it never advances the schedule"
         );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A skip is a row, not a run: the overlap/staleness bookkeeping the
+    /// scheduler appends after a failure must not read as a recovery. The
+    /// old check keyed on the literal last ledger row and reported nothing.
+    #[test]
+    fn a_skip_row_after_a_failed_run_does_not_hide_the_failure() {
+        let home = home("trigger-skip-hides-error");
+        trigger_file(&home, "morning", "");
+        ledger_row(
+            &home,
+            &json!({
+                "trigger": "morning",
+                "slot": "2026-08-13T07:00:00Z",
+                "started_at": "2026-08-13T07:00:01Z",
+                "status": "error",
+                "error": "provider unreachable",
+            }),
+        );
+        ledger_row(
+            &home,
+            &json!({
+                "trigger": "morning",
+                "slot": "2026-08-14T07:00:00Z",
+                "started_at": "2026-08-14T07:00:01Z",
+                "status": "skipped-stale",
+            }),
+        );
+
+        let findings = examine(&home, utc(NOW));
+        let triggers = of(&findings, "triggers");
+        assert_eq!(triggers.len(), 1, "{findings:#?}");
+        assert!(
+            triggers[0].summary.contains("most recent run failed"),
+            "{}",
+            triggers[0].summary
+        );
+        assert!(triggers[0].detail.contains("provider unreachable"));
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_ok_run_followed_by_a_skip_is_healthy() {
+        let home = home("trigger-ok-then-skip");
+        trigger_file(&home, "morning", "");
+        ledger_row(
+            &home,
+            &json!({
+                "trigger": "morning",
+                "slot": "2026-08-13T07:00:00Z",
+                "started_at": "2026-08-13T07:00:01Z",
+                "status": "ok",
+            }),
+        );
+        ledger_row(
+            &home,
+            &json!({
+                "trigger": "morning",
+                "slot": "2026-08-14T07:00:00Z",
+                "started_at": "2026-08-14T07:00:01Z",
+                "status": "skipped-overlap",
+            }),
+        );
+
+        let findings = examine(&home, utc(NOW));
+        assert!(of(&findings, "triggers").is_empty(), "{findings:#?}");
 
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -1060,6 +1271,41 @@ mod tests {
             broken_store[0].summary.starts_with("store unreadable:"),
             "{}",
             broken_store[0].summary
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Finding-6 drift pin, reader half. Twin test (same golden bytes):
+    /// `mecha_mail::token::tests::record_auth_error_serialises_the_golden_marker_byte_for_byte`
+    /// in mecha-mail/src/token.rs — the crates share no types on purpose
+    /// (the seam is a file of JSON), so a field rename on either side would
+    /// pass both suites separately and silently kill this finding at
+    /// runtime. If this literal changes, change the twin's too.
+    #[test]
+    fn the_golden_marker_literal_parses_into_the_dead_auth_finding() {
+        const GOLDEN: &str = r#"{
+  "at": "2026-08-11T09:00:00Z",
+  "message": "account `personal`: refresh token expired or revoked — run `mecha-mail auth personal --provider google` (invalid_grant: Token has been revoked.)"
+}"#;
+        let home = home("golden-marker");
+        write_marker(&home, "personal", GOLDEN);
+
+        let findings = examine(&home, utc(NOW));
+        let mail = of(&findings, "mail");
+        assert_eq!(mail.len(), 1, "{findings:#?}");
+        assert_eq!(mail[0].severity, Severity::Broken);
+        assert!(
+            mail[0].detail.contains("since 2026-08-11T09:00:00Z"),
+            "the marker's `at` must reach the detail: {}",
+            mail[0].detail
+        );
+        assert!(
+            mail[0]
+                .detail
+                .contains("run `mecha-mail auth personal --provider google`"),
+            "the marker's `message` must reach the detail: {}",
+            mail[0].detail
         );
 
         let _ = std::fs::remove_dir_all(&home);
