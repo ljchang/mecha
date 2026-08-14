@@ -385,6 +385,12 @@ pub struct Round {
     pub asked: Vec<(String, String)>,
     /// What each committed, before seeing the other.
     pub answered: Vec<(String, String)>,
+    /// Readers whose asker produced nothing usable, so the question they
+    /// were handed is a repeat. Recorded rather than hidden: a repeated
+    /// round reads like a reader that changed its mind, when in fact the
+    /// dialogue stalled and the orchestration papered over it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stalled: Vec<String>,
 }
 
 /// The whole exchange about one entity.
@@ -453,23 +459,43 @@ pub async fn exchange(
         rounds: vec![],
     };
 
+    // What each reader has already said, so a round can build on the last
+    // one. Its OWN answers only. The leak commit-then-reveal exists to
+    // prevent is seeing the other's answer before committing; a reader kept
+    // blind to itself does not hold a conversation, it draws three
+    // independent samples — which is what the third live run produced, the
+    // same reader answering the same seed twice with different facts and no
+    // sign it had noticed.
+    let mut said: Vec<Vec<(String, String)>> = vec![vec![], vec![]];
+    let mut stalled: Vec<String> = vec![];
+
     for n in 1..=rounds {
-        // COMMIT. Both answer before either sees the other — each in a fresh
-        // conversation, so no round leaks into the next as context either.
+        // COMMIT. Both answer before either sees the other.
         let mut answers = Vec::new();
         for (i, (vantage, agent)) in agents.iter().enumerate() {
+            let mut prior = String::new();
+            for (q, a) in &said[i] {
+                prior.push_str(&format!("\nEarlier you were asked: {q}\nYou said: {a}\n"));
+            }
+            // Framed as a peer speaking, not a user querying an assistant.
+            // "Question:" on its own reads as a user prompt, and the model
+            // answered it as one — bulleted, exhaustive, closing with an
+            // offer of further help.
             let mut convo = Conversation::user(format!(
-                "The person is {entity}.\n\nQuestion: {}",
+                "The person is {entity}.{prior}\nThe other assistant asks you: {}",
                 questions[i]
             ));
             let outcome = agent
                 .run_in(cx, &mut convo, None)
                 .await
                 .with_context(|| format!("{} reader, round {n}", vantage.label))?;
-            answers.push(outcome.text.trim().to_string());
+            let answer = strip_user_directed(outcome.text.trim());
+            said[i].push((questions[i].clone(), answer.clone()));
+            answers.push(answer);
         }
 
         out.rounds.push(Round {
+            stalled: std::mem::take(&mut stalled),
             n,
             asked: agents
                 .iter()
@@ -509,13 +535,57 @@ pub async fn exchange(
             // question repeats a round; feeding garbage forward corrupts
             // every round after it, and the reader answers the garbage
             // earnestly because it cannot tell it was never asked anything.
-            if let Some(q) = usable_question(&outcome.text) {
-                next[other] = q;
+            match usable_question(&outcome.text) {
+                Some(q) => next[other] = q,
+                None => stalled.push(agents[other].0.label.clone()),
             }
         }
         questions = next;
     }
     Ok(out)
+}
+
+/// Drop trailing lines where the answerer stops reporting and starts
+/// serving a user.
+///
+/// `ANSWER_SYS` already forbids this in as many words, and a 35B local model
+/// ignored it in every live round: answers ran to twenty lines and closed
+/// with "Would you like me to dig deeper?". The tic is not merely untidy.
+/// An answer is the asker's entire input, and in the third live run one
+/// reader's closing offer to the user became the other's question verbatim
+/// — a politeness reflex promoted to the next agent's task. So it is cut
+/// here rather than asked for once more in a prompt the model overrides.
+///
+/// Only the tail is cut. An answerer never has a legitimate reason to close
+/// on a question: asking is the other role, and it has nobody to ask.
+pub fn strip_user_directed(text: &str) -> String {
+    let serves_a_user = |l: &str| {
+        let lower = l.to_lowercase();
+        l.ends_with('?')
+            || lower.starts_with("let me know")
+            || lower.starts_with("would you")
+            || lower.starts_with("if you'd like")
+            || lower.starts_with("i can look")
+            || lower.starts_with("i can dig")
+    };
+    let mut lines: Vec<&str> = text.lines().collect();
+    while let Some(last) = lines.last() {
+        let t = last.trim().trim_start_matches(['*', '-', '#', '>', ' ']);
+        if t.is_empty() || serves_a_user(t) {
+            lines.pop();
+        } else {
+            break;
+        }
+    }
+    let cut = lines.join("\n").trim().to_string();
+    // A model that answers with nothing BUT an offer has said nothing. Say
+    // that, rather than passing an empty string on as if it were a silence
+    // the sources produced.
+    if cut.is_empty() {
+        "(no answer — the reader only offered to look things up)".to_string()
+    } else {
+        cut
+    }
 }
 
 /// The first line of `text` that is actually a question, or `None`.
@@ -550,7 +620,14 @@ pub fn render(x: &Exchange) -> String {
     for r in &x.rounds {
         s.push_str(&format!("\nRound {}\n", r.n));
         for ((who, q), (_, a)) in r.asked.iter().zip(r.answered.iter()) {
-            s.push_str(&format!("  {who} was asked: {q}\n  {who} said: {a}\n"));
+            let repeat = if r.stalled.contains(who) {
+                " (repeat — its asker produced no usable question)"
+            } else {
+                ""
+            };
+            s.push_str(&format!(
+                "  {who} was asked{repeat}: {q}\n  {who} said: {a}\n"
+            ));
         }
     }
     s
@@ -568,6 +645,29 @@ mod tests {
                 episodes: *n,
             })
             .collect()
+    }
+
+    #[test]
+    fn an_offer_to_the_user_never_reaches_the_other_reader() {
+        // The live failure: reader A closed with an offer of further help,
+        // and that offer became reader B's question in the next round.
+        let answered = "Slack shows he ran a hyperscanning practice with Rutgers.\n\
+             His birthday is May 28.\n\n\
+             Would you like me to dig deeper into one of these workstreams?";
+        let cut = strip_user_directed(answered);
+        assert!(cut.ends_with("His birthday is May 28."));
+        assert!(!cut.contains("dig deeper"));
+        // And what survives must still be answerable material, not a stub.
+        assert!(cut.contains("hyperscanning"));
+
+        // A real silence is preserved — it is a contribution, not a defect.
+        assert_eq!(
+            strip_user_directed("My sources show nothing about that."),
+            "My sources show nothing about that."
+        );
+        // An answer that is ONLY an offer is not silence, and must not be
+        // passed on as though the sources had been consulted.
+        assert!(strip_user_directed("Would you like me to search?").starts_with("(no answer"));
     }
 
     #[test]
