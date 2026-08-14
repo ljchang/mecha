@@ -14,6 +14,7 @@
 mod approve;
 mod ask;
 mod command;
+mod doctor;
 mod frontdoor;
 mod outbox;
 mod polls;
@@ -81,7 +82,10 @@ struct Running {
 /// The polling is against the *stores*, never the child process: the store is
 /// the record, a child that died without writing is indistinguishable from
 /// one still working, and the `since` cap is what keeps a wedged child from
-/// pinning the fast tick forever.
+/// pinning the fast tick forever. (`Remedy` bends the first half because it
+/// must: nothing durable records a `systemctl restart`, so the child's exit
+/// is the cue — but the *outcome* reported is a fresh examination, never the
+/// exit code alone.)
 enum Watch {
     /// An outbox item whose release was spawned. `error_before` is the item's
     /// error at spawn time, because a failed release leaves the item pending
@@ -97,6 +101,16 @@ enum Watch {
     Request {
         seq: i64,
         state_before: String,
+        since: std::time::Instant,
+    },
+    /// A doctor remedy spawned detached from the /doctor modal. When the
+    /// child exits, `mecha doctor --json` is re-run and *that* is the outcome
+    /// reported — a restarted unit can refail on its next tick, and the exit
+    /// code says nothing about it.
+    Remedy {
+        child: std::process::Child,
+        /// The command line, for the notice.
+        argv_line: String,
         since: std::time::Instant,
     },
 }
@@ -229,6 +243,13 @@ struct App {
     requests: Option<frontdoor::FrontdoorModal>,
     /// The /polls modal, when open. Takes every key while it is up.
     poll_monitor: Option<polls::PollsModal>,
+    /// The /doctor modal, when open. Takes every key while it is up.
+    health: Option<doctor::DoctorModal>,
+    /// A doctor remedy that needs the real terminal (an OAuth flow), deferred
+    /// to the event loop like an `$EDITOR` shell-out and for the same reason:
+    /// suspending the TUI needs the terminal, which a key handler does not
+    /// hold.
+    pending_doctor_remedy: Option<mecha_core::doctor::Remedy>,
     /// A trigger file to open in $EDITOR, deferred to the event loop for the
     /// same reason `pending_editor` is: suspending the TUI needs the terminal.
     pending_trigger_edit: Option<String>,
@@ -474,6 +495,8 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         staged: None,
         requests: None,
         poll_monitor: None,
+        health: None,
+        pending_doctor_remedy: None,
         pending_trigger_edit: None,
         pending_outbox_edit: None,
         outbox_pending: outbox_pending_count(),
@@ -625,6 +648,13 @@ async fn run_loop(
         // Editing an outbox draft's arguments, same again.
         if let Some(id) = app.pending_outbox_edit.take() {
             suspend_and_edit_outbox(terminal, app, &id)?;
+            continue;
+        }
+
+        // A doctor remedy that needs the real terminal — an OAuth flow —
+        // same suspend dance again.
+        if let Some(remedy) = app.pending_doctor_remedy.take() {
+            suspend_and_run_remedy(terminal, app, &remedy)?;
             continue;
         }
 
@@ -891,14 +921,14 @@ fn poll_watches(app: &mut App) {
                     // failed. The old error staying put says nothing.
                     Some(item) if item.error != error_before && item.error.is_some() => {
                         app.transcript.push(Entry::Notice(format!(
-                            "release of `{id}` failed: {} — it stays pending",
+                            "release of `{id}` failed: {} — it stays pending — /doctor for a full report",
                             item.error.as_deref().unwrap_or("unknown")
                         )));
                         outbox_moved = true;
                     }
                     Some(_) if since.elapsed() > std::time::Duration::from_secs(300) => {
                         app.transcript.push(Entry::Notice(format!(
-                            "`{id}` is still releasing after 5m — /outbox has the record"
+                            "`{id}` is still releasing after 5m — /outbox has the record — /doctor for a full report"
                         )));
                         outbox_moved = true;
                     }
@@ -939,7 +969,7 @@ fn poll_watches(app: &mut App) {
                     // plus slack before giving up on the fast tick.
                     Some(_) if since.elapsed() > std::time::Duration::from_secs(1800) => {
                         app.transcript.push(Entry::Notice(format!(
-                            "request {seq} is still {state_before} after 30m — /frontdoor has the record"
+                            "request {seq} is still {state_before} after 30m — /frontdoor has the record — /doctor for a full report"
                         )));
                         requests_moved = true;
                     }
@@ -949,6 +979,62 @@ fn poll_watches(app: &mut App) {
                         since,
                     }),
                     None => {}
+                }
+            }
+            Watch::Remedy {
+                mut child,
+                argv_line,
+                since,
+            } => {
+                match child.try_wait() {
+                    // The exit is the cue, never the outcome: what the remedy
+                    // changed is answered by examining again, exactly as a
+                    // release's outcome is read from the outbox store.
+                    Ok(Some(status)) => {
+                        let exit = if status.success() {
+                            "finished".to_string()
+                        } else {
+                            format!("exited with {status}")
+                        };
+                        match doctor::load() {
+                            Ok(rows) => {
+                                let broken = rows
+                                    .iter()
+                                    .filter(|r| {
+                                        r.severity == mecha_core::doctor::Severity::Broken
+                                    })
+                                    .count();
+                                let verdict = if rows.is_empty() {
+                                    "nothing left wrong that doctor can see".to_string()
+                                } else {
+                                    format!(
+                                        "{} finding(s) remain, {broken} broken — /doctor has the report",
+                                        rows.len()
+                                    )
+                                };
+                                app.transcript.push(Entry::Notice(format!(
+                                    "remedy `{argv_line}` {exit} — {verdict}"
+                                )));
+                                install_doctor_rows(app, rows);
+                            }
+                            Err(e) => app.transcript.push(Entry::Notice(format!(
+                                "remedy `{argv_line}` {exit} — the re-examination failed: {e}"
+                            ))),
+                        }
+                    }
+                    Ok(None) if since.elapsed() > std::time::Duration::from_secs(300) => {
+                        app.transcript.push(Entry::Notice(format!(
+                            "`{argv_line}` is still running after 5m — r in /doctor re-examines"
+                        )));
+                    }
+                    Ok(None) => app.watches.push(Watch::Remedy {
+                        child,
+                        argv_line,
+                        since,
+                    }),
+                    // A child that cannot be asked has nothing to stand on,
+                    // same as an unreadable store.
+                    Err(_) => {}
                 }
             }
         }
@@ -974,6 +1060,7 @@ fn open_scoped_review(app: &mut App, ids: Vec<String>) {
         || app.scheduled.is_some()
         || app.staged.is_some()
         || app.requests.is_some()
+        || app.health.is_some()
         || app.help;
     if busy {
         notice_staged(app, ids.len());
@@ -1155,6 +1242,9 @@ fn on_key(
     }
     if app.poll_monitor.is_some() {
         return handle_polls_key(app, key);
+    }
+    if app.health.is_some() {
+        return handle_doctor_key(app, key, agent, session);
     }
 
     // A modal list owns the keyboard while it is up, for the same reason the
@@ -1547,6 +1637,11 @@ fn run_command(
         Command::Polls => match polls::load() {
             Ok(rows) => app.poll_monitor = Some(polls::PollsModal::new(rows)),
             Err(e) => say(format!("polls: {e:#}")),
+        },
+
+        Command::Doctor => match doctor::load() {
+            Ok(rows) => app.health = Some(doctor::DoctorModal::new(rows)),
+            Err(e) => say(format!("doctor: {e:#}")),
         },
 
         Command::Usage => say(format!(
@@ -2502,6 +2597,226 @@ fn reload_frontdoor(app: &mut App) {
     }
 }
 
+/// Keys for the /doctor modal.
+///
+/// Acting on a finding routes through `doctor::dispatch`, a pure function
+/// over the remedy, so the three arms live in one testable place: a remedy
+/// whose surface is already a TUI modal deep-links to it (spawning a nested
+/// CLI inside the TUI would be a terminal fighting itself); a `needs_terminal`
+/// remedy defers to the event loop for the suspend dance an `$EDITOR` gets;
+/// anything else confirms with y/N, spawns detached, and is watched — the
+/// outcome reported from a fresh examination, never the exit code alone.
+fn handle_doctor_key(
+    app: &mut App,
+    key: KeyEvent,
+    agent: &Arc<Agent>,
+    session: Option<&Session>,
+) -> Result<()> {
+    let Some(modal) = &mut app.health else {
+        return Ok(());
+    };
+
+    // A pending confirmation swallows the keyboard: y runs the remedy,
+    // anything else leaves the machine as it is.
+    if let Some(confirm) = modal.confirm.take() {
+        if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+            let argv_line = confirm.argv.join(" ");
+            match spawn_remedy(&confirm.argv) {
+                Ok(child) => {
+                    modal.status = Some(format!(
+                        "running `{argv_line}` — the outcome will be reported here"
+                    ));
+                    app.watches.push(Watch::Remedy {
+                        child,
+                        argv_line,
+                        since: std::time::Instant::now(),
+                    });
+                }
+                Err(e) => modal.status = Some(format!("could not start `{argv_line}`: {e}")),
+            }
+        }
+        return Ok(());
+    }
+
+    modal.status = None;
+
+    match key.code {
+        KeyCode::Up => {
+            if modal.detail {
+                modal.scroll_detail(-1)
+            } else {
+                modal.move_by(-1)
+            }
+        }
+        KeyCode::Down => {
+            if modal.detail {
+                modal.scroll_detail(1)
+            } else {
+                modal.move_by(1)
+            }
+        }
+        KeyCode::PageUp if modal.detail => modal.scroll_detail(-10),
+        KeyCode::PageDown if modal.detail => modal.scroll_detail(10),
+        KeyCode::Enter => {
+            modal.detail = !modal.detail;
+            modal.detail_scroll = 0;
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            if modal.detail {
+                modal.detail = false;
+            } else {
+                app.health = None;
+            }
+        }
+        // A fresh examination on demand — the same child process the modal
+        // opened with, so it can never see something `mecha doctor` cannot.
+        KeyCode::Char('r') => {
+            modal.status = Some("re-examined".into());
+            reload_doctor(app);
+        }
+        KeyCode::Char('a') => {
+            let remedy = modal.selected_row().and_then(|r| r.remedy.clone());
+            match remedy {
+                None => {
+                    modal.status =
+                        Some("this finding carries no remedy — it is the diagnosis".into())
+                }
+                Some(remedy) => match doctor::dispatch(&remedy) {
+                    doctor::RemedyDispatch::DeepLink(cmd) => {
+                        // The surface the remedy names is a keystroke away —
+                        // switch to it rather than spawning a nested CLI.
+                        app.health = None;
+                        return run_command(app, cmd, agent, session);
+                    }
+                    doctor::RemedyDispatch::Interactive => {
+                        app.pending_doctor_remedy = Some(remedy);
+                    }
+                    doctor::RemedyDispatch::Spawn => {
+                        modal.confirm = Some(doctor::RemedyConfirm {
+                            description: remedy.description,
+                            argv: remedy.argv,
+                        });
+                    }
+                },
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Rebuild the /doctor modal's rows from a fresh examination, keeping the
+/// cursor where it was.
+fn reload_doctor(app: &mut App) {
+    if app.health.is_none() {
+        return;
+    }
+    match doctor::load() {
+        Ok(rows) => install_doctor_rows(app, rows),
+        Err(e) => {
+            app.health = None;
+            app.transcript.push(Entry::Error(format!("doctor: {e:#}")));
+        }
+    }
+}
+
+/// Install freshly examined rows into the /doctor modal, if it is open,
+/// keeping the cursor where it was. Split from `reload_doctor` so the remedy
+/// watch — which already ran the examination for its notice — does not run
+/// the child process twice.
+fn install_doctor_rows(app: &mut App, rows: Vec<doctor::FindingRow>) {
+    let (selected, detail, status) = match &app.health {
+        Some(m) => (m.selected, m.detail, m.status.clone()),
+        None => return,
+    };
+    let selected = selected.min(rows.len().saturating_sub(1));
+    app.health = Some(doctor::DoctorModal {
+        selected,
+        detail: detail && !rows.is_empty(),
+        status,
+        ..doctor::DoctorModal::new(rows)
+    });
+}
+
+/// Start a remedy's argv and hand back the child so a watch can notice it
+/// exiting. Like `spawn_detached`, with two differences: the program may be
+/// another binary entirely (`systemctl`, `mecha-mail`), and `mecha` itself
+/// resolves to `current_exe` so a TUI run from `target/debug` drives the
+/// build it is part of.
+fn spawn_remedy(argv: &[String]) -> Result<std::process::Child> {
+    let (program, rest) = argv
+        .split_first()
+        .context("a remedy with an empty argv")?;
+    let program: std::path::PathBuf = if program.as_str() == "mecha" {
+        std::env::current_exe().context("cannot find my own binary")?
+    } else {
+        program.into()
+    };
+    std::process::Command::new(program)
+        .args(rest)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("starting it")
+}
+
+/// Run a doctor remedy that needs the real terminal — an OAuth flow — then
+/// refresh the modal from a fresh examination on return. The suspend is the
+/// same dance as an outbox edit; what differs is that the child may be
+/// another binary entirely, so the program is resolved rather than always
+/// exec'ing ourselves.
+fn suspend_and_run_remedy(
+    terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>,
+    app: &mut App,
+    remedy: &mecha_core::doctor::Remedy,
+) -> Result<()> {
+    let argv_line = remedy.argv.join(" ");
+    let result = with_terminal_suspended(terminal, || run_remedy_interactive(&remedy.argv))?;
+
+    if let Some(modal) = &mut app.health {
+        modal.status = Some(match &result {
+            Ok(_) => format!("`{argv_line}` finished"),
+            Err(e) => format!("`{argv_line}` failed: {e}"),
+        });
+    }
+    // Loud as well as in the title, like a rejected trigger edit: a dead
+    // login that stayed dead must not surface only at the next scheduled run.
+    if let Err(e) = result {
+        app.transcript
+            .push(Entry::Error(format!("remedy `{argv_line}` failed: {e}")));
+    }
+    reload_doctor(app);
+    Ok(())
+}
+
+/// Run a remedy inheriting the real terminal, `self_cli_interactive`-style:
+/// stdin and stdout stay connected because an OAuth flow needs a keyboard and
+/// a screen; only stderr is captured so a refusal's text can reach the
+/// modal's status line.
+fn run_remedy_interactive(argv: &[String]) -> Result<()> {
+    let (program, rest) = argv
+        .split_first()
+        .context("a remedy with an empty argv")?;
+    let program: std::path::PathBuf = if program.as_str() == "mecha" {
+        std::env::current_exe().context("cannot find my own binary")?
+    } else {
+        program.into()
+    };
+    let child = std::process::Command::new(program)
+        .args(rest)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("starting it")?;
+    let out = child.wait_with_output().context("waiting for it")?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("{}", err.trim().lines().next().unwrap_or("failed"))
+    }
+}
+
 /// Run `mecha <args...>` and return its output.
 ///
 /// `current_exe` rather than a bare `mecha`, so a TUI started from
@@ -2983,6 +3298,9 @@ fn draw(
     if let Some(modal) = &app.poll_monitor {
         modal.draw(frame);
     }
+    if let Some(modal) = &app.health {
+        modal.draw(frame);
+    }
     if let Some(question) = &app.asking {
         draw_question(frame, question);
     }
@@ -3372,6 +3690,8 @@ mod tests {
             staged: None,
             requests: None,
             poll_monitor: None,
+            health: None,
+            pending_doctor_remedy: None,
             pending_trigger_edit: None,
             pending_outbox_edit: None,
             outbox_pending: 0,
@@ -3451,9 +3771,11 @@ mod tests {
     fn the_help_overlay_advertises_the_newline_key_only_where_it_exists() {
         // On a terminal without the kitty protocol, Shift+Enter *submits* —
         // help that teaches it as a newline is worse than no help.
+        // 36 rows: the whole card, keys plus every HELP line, has to fit —
+        // the /clear assertion below reads the far end of it.
         let mut app = test_app();
         app.help = true;
-        let plain = frame_text(&mut app, 100, 30, None);
+        let plain = frame_text(&mut app, 100, 36, None);
         assert!(plain.contains("alt+enter"), "{plain}");
         assert!(!plain.contains("shift+enter"), "{plain}");
         assert!(
@@ -3462,7 +3784,7 @@ mod tests {
         );
 
         app.kitty_keyboard = true;
-        let kitty = frame_text(&mut app, 100, 30, None);
+        let kitty = frame_text(&mut app, 100, 36, None);
         assert!(kitty.contains("shift+enter"), "{kitty}");
     }
 

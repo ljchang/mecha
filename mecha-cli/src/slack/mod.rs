@@ -7,5 +7,6 @@
 
 pub mod approve;
 pub mod connector;
+pub mod doctor;
 pub mod pump;
 pub mod threads;
