@@ -39,8 +39,19 @@ pub struct Row {
 }
 
 /// Read the store and shape the answer for a thread: the notification
-/// fallback line, and the blocks when there is a store to read.
-pub fn listing() -> (String, Option<Vec<Value>>) {
+/// fallback line, and the blocks when there is a store to read. The reads
+/// run on the blocking pool — this is called from a spawned task on the
+/// connector's runtime, and a "plain spawned task" still runs on the very
+/// threads every other thread's events dispatch on.
+pub async fn listing() -> (String, Option<Vec<Value>>) {
+    tokio::task::spawn_blocking(read_listing)
+        .await
+        .unwrap_or_else(|e| (format!("The trigger listing was lost: {e}"), None))
+}
+
+/// The blocking half: every store read, and the last-status words from the
+/// ledger's tail.
+fn read_listing() -> (String, Option<Vec<Value>>) {
     let Some(store) = mecha_core::trigger::TriggerStore::open_existing_default() else {
         return (
             "No triggers — `mecha trigger add` creates one.".to_string(),
@@ -57,12 +68,9 @@ pub fn listing() -> (String, Option<Vec<Value>>) {
             None,
         );
     }
-    let mut last: std::collections::BTreeMap<String, String> = Default::default();
-    if let Ok(runs) = store.runs() {
-        for run in runs {
-            last.insert(run.trigger.clone(), run.status.as_str().to_string());
-        }
-    }
+    let names: std::collections::BTreeSet<&str> =
+        triggers.iter().map(|t| t.name.as_str()).collect();
+    let last = last_statuses(&store, &names);
     let rows: Vec<Row> = triggers
         .iter()
         .map(|t| Row {
@@ -87,6 +95,28 @@ pub fn listing() -> (String, Option<Vec<Value>>) {
         format!("Triggers: {} known, {} enabled.", rows.len(), enabled),
         Some(blocks::cap_blocks(blocks_out)),
     )
+}
+
+/// The newest ledger status word per listed trigger, from the tail.
+///
+/// The ledger is append-only, so the first row seen per trigger scanning
+/// newest-first is its last word, and the scan stops the moment every listed
+/// trigger has one — one status word each must not deserialize every run
+/// ever recorded (the old full parse also died wholesale on one torn old
+/// line, taking every trigger's status with it).
+fn last_statuses(
+    store: &mecha_core::trigger::TriggerStore,
+    names: &std::collections::BTreeSet<&str>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut last = std::collections::BTreeMap::new();
+    let _ = store.scan_runs_rev(|run| {
+        if names.contains(run.trigger.as_str()) {
+            let status = run.status.as_str().to_string();
+            last.entry(run.trigger).or_insert(status);
+        }
+        last.len() < names.len()
+    });
+    last
 }
 
 /// The rows as Block Kit: one section and one actions block per trigger, the
@@ -229,6 +259,64 @@ mod tests {
             !running.contains(ids::TRIGGER_RUN),
             "re-running a mid-flight trigger is an overlap-skip: {running}"
         );
+    }
+
+    /// The listing's status words come from the ledger tail: the newest row
+    /// per listed trigger wins, and the scan survives — and never reaches —
+    /// a torn old line. Fails on the old shape twice over: the full
+    /// `store.runs()` parse dies wholesale on invalid UTF-8 anywhere in the
+    /// file (pinned below), so the old `if let Ok(runs)` silently dropped
+    /// every trigger's status the moment one ancient line tore.
+    #[test]
+    fn the_last_status_comes_from_the_ledger_tail_past_a_torn_old_line() {
+        use mecha_core::trigger::{RunRecord, RunStatus, TriggerStore};
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-slack-triggers-tail-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = TriggerStore::open(&dir).unwrap();
+
+        // A torn, invalid-UTF-8 row from long ago, at the head of the file.
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(store.ledger_path())
+                .unwrap();
+            file.write_all(b"{\"trigger\": \"morning\xff\xfe\n").unwrap();
+        }
+        // An older error and a newer ok for `morning`: the tail's first
+        // sighting — the newest row — is the word shown.
+        let mut old = RunRecord::started("morning", None, false);
+        old.status = RunStatus::Error;
+        store.append_run(&old).unwrap();
+        let mut prep = RunRecord::started("prep", None, false);
+        prep.status = RunStatus::SkippedOverlap;
+        store.append_run(&prep).unwrap();
+        let mut new = RunRecord::started("morning", None, false);
+        new.status = RunStatus::Ok;
+        store.append_run(&new).unwrap();
+
+        let names: std::collections::BTreeSet<&str> =
+            ["morning", "prep", "never-ran"].into_iter().collect();
+        let last = last_statuses(&store, &names);
+        assert_eq!(last.get("morning").map(String::as_str), Some("ok"));
+        assert_eq!(
+            last.get("prep").map(String::as_str),
+            Some("skipped (overlap)")
+        );
+        // No row is no status — the listing shows nothing, not a guess.
+        assert_eq!(last.get("never-ran"), None);
+
+        // The contrast the fix rests on, pinned: the full parse cannot even
+        // read this ledger.
+        assert!(store.runs().is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -451,7 +451,7 @@ impl State {
             let slack = self.slack.clone();
             let (channel, thread_ts) = (channel.clone(), thread_ts.clone());
             tokio::spawn(async move {
-                let (text, blocks) = super::triggers::listing();
+                let (text, blocks) = super::triggers::listing().await;
                 let _ =
                     chat::post_message(&slack, &channel, Some(&thread_ts), &text, blocks).await;
             });
@@ -1154,21 +1154,30 @@ impl State {
     }
 
     /// One draft, re-read from the store — the state every press-time
-    /// decision runs against.
-    fn outbox_item(&self, id: &str) -> Option<mecha_core::outbox::OutboxItem> {
-        mecha_core::outbox::OutboxStore::open(&self.outbox_root)
-            .ok()
-            .and_then(|s| s.item(id).ok())
-    }
-
-    /// Whether a draft was written with both taint legs armed.
-    fn is_tainted(&self, id: &str) -> bool {
-        self.outbox_item(id)
-            .is_some_and(|i| i.taint.private && i.taint.untrusted)
+    /// decision runs against. An exact single-file read on the blocking pool,
+    /// never `items()`'s scan of the whole outbox on the event-dispatch loop:
+    /// this loop serves every thread's events, and a directory of drafts is
+    /// as slow as its history is long. Button values carry full store-minted
+    /// ids, and `item_exact` refuses a hostile shape before it touches the
+    /// filesystem.
+    async fn outbox_item(&self, id: &str) -> Option<mecha_core::outbox::OutboxItem> {
+        let root = self.outbox_root.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            mecha_core::outbox::OutboxStore::open(&root)
+                .ok()?
+                .item_exact(&id)
+                .ok()
+                .flatten()
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// The second step for a tainted draft: the full arguments, and a button
-    /// that means what it says.
+    /// that means what it says. `item` is the read the caller already made
+    /// for the taint decision — reusing it is what keeps one press one read.
     ///
     /// The TUI shows the whole call in red and confirms before releasing one
     /// of these, and refuses to auto-release them at all. A single
@@ -1179,9 +1188,14 @@ impl State {
     /// Send on a draft the store could not read at all (F3) — a transient
     /// store failure used to unwrap to empty arguments and offer a live Send
     /// over zero shown bytes.
-    async fn ask_to_confirm_tainted(&mut self, id: &str, channel: &str, ts: &str) {
-        let item = self.outbox_item(id);
-        let (text, card) = tainted_confirm_card(id, item.as_ref());
+    async fn ask_to_confirm_tainted(
+        &mut self,
+        id: &str,
+        item: Option<&mecha_core::outbox::OutboxItem>,
+        channel: &str,
+        ts: &str,
+    ) {
+        let (text, card) = tainted_confirm_card(id, item);
         let _ = chat::update(&self.slack, channel, ts, &text, Some(card)).await;
     }
 
@@ -1201,9 +1215,6 @@ impl State {
         target: ActionCard,
     ) {
         let tap_id = actions::new_tap_id();
-        // The dispatch row lands before anything runs: a crash between here
-        // and the outcome row is exactly when the record matters.
-        self.ledger.dispatched(&tap_id, who, &action, surface);
         let slack = self.slack.clone();
         let ledger = Arc::clone(&self.ledger);
         let executor = Executor {
@@ -1211,6 +1222,12 @@ impl State {
         };
         let who = who.to_string();
         tokio::spawn(async move {
+            // The dispatch row lands first, before anything runs: a crash
+            // between here and the outcome row is exactly when the record
+            // matters. Inside the spawned task rather than on the dispatch
+            // loop — the append is blocking fs, and the loop it sat on
+            // serves every thread's events.
+            ledger.dispatched(&tap_id, &who, &action, surface);
             let pending = format!("⏳ {} — <@{}>", action.describe(), who);
             // Retire the control before the child runs. For a one-card
             // message that is the card itself; a multi-finding doctor report
@@ -1288,7 +1305,7 @@ impl State {
             // someone found a terminal — post the card the `now` mode would
             // have posted, failure already reported above.
             if let Action::OutboxSend { id } = &action {
-                let item = executor.item(id);
+                let item = executor.item(id).await;
                 if failed_auto_release_needs_card(surface, item.as_ref().map(|i| i.status.as_str()))
                 {
                     let item = item.expect("checked by the predicate");
@@ -1628,7 +1645,7 @@ impl State {
                     let Some((id, _)) = actions::parse_confirm_value(&value) else {
                         continue;
                     };
-                    let item = self.outbox_item(id);
+                    let item = self.outbox_item(id).await;
                     match confirm_press(&value, item.as_ref()) {
                         ConfirmPress::Send { id } => {
                             let who = interaction
@@ -1705,10 +1722,20 @@ impl State {
                     // step showing the full arguments, because every other
                     // release surface confirms and shows them — `-y` on one tap
                     // did neither. Only the first tap detours; the confirm
-                    // verb resolves to the same typed action.
-                    if other == actions::ids::OUTBOX_SEND && self.is_tainted(&value) {
-                        self.ask_to_confirm_tainted(&value, &channel, &ts).await;
-                        continue;
+                    // verb resolves to the same typed action. One read decides
+                    // *and* composes: the taint check and the confirm card
+                    // share the same fetched item, instead of scanning the
+                    // store once to decide and again to show.
+                    if other == actions::ids::OUTBOX_SEND {
+                        let item = self.outbox_item(&value).await;
+                        if item
+                            .as_ref()
+                            .is_some_and(|i| i.taint.private && i.taint.untrusted)
+                        {
+                            self.ask_to_confirm_tainted(&value, item.as_ref(), &channel, &ts)
+                                .await;
+                            continue;
+                        }
                     }
                     let (surface, target) = match &act {
                         // A draft card is one message: rewrite it, so the

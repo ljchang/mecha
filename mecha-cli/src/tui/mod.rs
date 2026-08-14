@@ -128,6 +128,21 @@ enum Watch {
         child: std::process::Child,
         since: std::time::Instant,
     },
+    /// A restart remedy's press-time re-examination (F4), off the event
+    /// loop. The `y` handler used to run `unit_is_failed` — a blocking
+    /// `systemctl` probe — inline, which froze rendering exactly when
+    /// systemd was sick: the one situation a restart remedy exists for, and
+    /// the same D-Bus stall `Examine` was detached over. The probe runs on
+    /// its own thread instead; this watch collects the answer, execs the
+    /// remedy only if the unit is still failed, and reports "already
+    /// recovered" as the outcome otherwise.
+    RestartProbe {
+        rx: std::sync::mpsc::Receiver<bool>,
+        /// The remedy to spawn if the unit is still failed.
+        argv: Vec<String>,
+        unit: String,
+        since: std::time::Instant,
+    },
 }
 
 /// Everything a provider or MCP change replaces at once.
@@ -899,6 +914,16 @@ fn settle_staged_drafts(
     }
 }
 
+/// A restart probe's verdict lands where the person is looking: the /doctor
+/// modal's title while it is open, the transcript otherwise — the same rule
+/// an examination's verdict follows.
+fn report_restart_probe(app: &mut App, line: String) {
+    match &mut app.health {
+        Some(modal) => modal.status = Some(line),
+        None => app.transcript.push(Entry::Notice(line)),
+    }
+}
+
 fn notice_staged(app: &mut App, n: usize) {
     app.transcript.push(Entry::Notice(format!(
         "{n} draft(s) staged — /outbox to review"
@@ -1074,6 +1099,72 @@ fn poll_watches(app: &mut App) {
                     }
                 }
             }
+            Watch::RestartProbe {
+                rx,
+                argv,
+                unit,
+                since,
+            } => match rx.try_recv() {
+                Ok(failed) => {
+                    // The shared guard, answered off the loop: exec only if
+                    // the finding is still true when the probe lands.
+                    if let Some(line) =
+                        crate::commands::doctor::recovered_before_restart(&unit, failed)
+                    {
+                        report_restart_probe(app, line);
+                    } else {
+                        let argv_line = argv.join(" ");
+                        match spawn_remedy(&argv) {
+                            Ok(child) => {
+                                report_restart_probe(
+                                    app,
+                                    format!(
+                                        "running `{argv_line}` — the outcome will be \
+                                         reported here"
+                                    ),
+                                );
+                                app.watches.push(Watch::Remedy {
+                                    child,
+                                    argv_line,
+                                    since: std::time::Instant::now(),
+                                    notices: 0,
+                                });
+                            }
+                            Err(e) => report_restart_probe(
+                                app,
+                                format!("could not start `{argv_line}`: {e}"),
+                            ),
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // A probe that never answers is a wedged systemctl; give
+                    // up on the examination cap's scale and run nothing —
+                    // restarting on no proof is the thing the guard forbids.
+                    if since.elapsed() > doctor::EXAMINE_CAP {
+                        report_restart_probe(
+                            app,
+                            format!(
+                                "the {unit} probe never answered — nothing was run; \
+                                 r in /doctor re-examines"
+                            ),
+                        );
+                    } else {
+                        app.watches.push(Watch::RestartProbe {
+                            rx,
+                            argv,
+                            unit,
+                            since,
+                        });
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    report_restart_probe(
+                        app,
+                        format!("the {unit} probe was lost — nothing was run"),
+                    );
+                }
+            },
             Watch::Examine { mut child, since } => match child.try_wait() {
                 Ok(Some(_)) => {
                     let verdict = match doctor::finish_examination(child) {
@@ -2731,15 +2822,30 @@ fn handle_doctor_key(
             // (SLACK-ACTIONS-DESIGN §5), through the same shared guard. The
             // finding must still be true when the `y` lands — this confirm
             // may have sat under a stale modal for minutes, and restarting a
-            // unit that recovered kills whatever it is mid-run.
+            // unit that recovered kills whatever it is mid-run. The probe is
+            // spawned work, like the Slack side's `spawn_blocking` and the
+            // examination itself (F7): `unit_is_failed` is a blocking
+            // `systemctl` call, and run here it froze rendering exactly when
+            // systemd was sick. The watch execs only if still failed and
+            // reports "already recovered" as its outcome.
             if let Some(unit) = crate::commands::doctor::restart_unit_of(&confirm.argv) {
-                let failed = crate::commands::doctor::unit_is_failed(unit);
-                if let Some(line) =
-                    crate::commands::doctor::recovered_before_restart(unit, failed)
-                {
-                    modal.status = Some(line);
-                    return Ok(());
-                }
+                let unit = unit.to_string();
+                let (tx, rx) = std::sync::mpsc::channel();
+                let probed = unit.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(crate::commands::doctor::unit_is_failed(&probed));
+                });
+                modal.status = Some(format!(
+                    "checking whether {unit} is still failed — the outcome will be \
+                     reported here"
+                ));
+                app.watches.push(Watch::RestartProbe {
+                    rx,
+                    argv: confirm.argv,
+                    unit,
+                    since: std::time::Instant::now(),
+                });
+                return Ok(());
             }
             match spawn_remedy(&confirm.argv) {
                 Ok(child) => {

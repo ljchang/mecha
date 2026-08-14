@@ -29,7 +29,7 @@
 //! never from the child's exit alone: a child killed after the send but before
 //! exiting must not report failure over a mail that left.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
@@ -623,52 +623,26 @@ impl Executor {
             {
                 return Outcome::of("skipped", line);
             }
+            let _ = self.spawn(action).await;
+            return restart_outcome(unit, unit_is_failed(unit).await);
         }
 
         let started = Utc::now();
         let child_note = self.spawn(action).await;
 
-        // The child's exit is never the answer; the store is. A child killed
-        // after the send but before exiting must not report failure over a
-        // mail that left.
-        match action {
-            Action::OutboxSend { id } => {
-                draft_outcome(true, id, self.item(id).as_ref(), child_note.as_deref())
-            }
-            Action::OutboxReject { id } => {
-                draft_outcome(false, id, self.item(id).as_ref(), child_note.as_deref())
-            }
-            Action::RestartUnit { unit } => restart_outcome(unit, unit_is_failed(unit).await),
-            Action::TriggerRun { name } => trigger_run_outcome(
-                name,
-                latest_trigger_row(name, started).as_ref(),
-                child_note.as_deref(),
-            ),
-            Action::TriggerCancel { name } => cancel_outcome(name),
-            Action::TriggerEnable { name } => {
-                toggle_outcome(name, true, trigger_enabled(name), child_note.as_deref())
-            }
-            Action::TriggerDisable { name } => {
-                toggle_outcome(name, false, trigger_enabled(name), child_note.as_deref())
-            }
-            Action::MailImport { provider } => import_outcome(
-                provider,
-                registry_credentials_exist(provider),
-                child_note.as_deref(),
-            ),
-            Action::FrontdoorClose { seq, .. } => mark_outcome(
-                *seq,
-                mecha_core::frontdoor::CLOSED,
-                request_state(*seq).as_deref(),
-                child_note.as_deref(),
-            ),
-            Action::FrontdoorNeedsInfo { seq, .. } => mark_outcome(
-                *seq,
-                mecha_core::frontdoor::NEEDS_INFO,
-                request_state(*seq).as_deref(),
-                child_note.as_deref(),
-            ),
-        }
+        // The read-back is store reads — blocking fs — and this future runs
+        // on the connector's one runtime, so it goes to the blocking pool
+        // exactly as the systemctl probe above does. Losing the read-back
+        // task is answered as unknown, never a guess.
+        let action = action.clone();
+        let outbox_root = self.outbox_root.clone();
+        tokio::task::spawn_blocking(move || {
+            store_outcome(&outbox_root, &action, started, child_note.as_deref())
+        })
+        .await
+        .unwrap_or_else(|e| {
+            Outcome::of("unknown", format!("the outcome could not be read back: {e}"))
+        })
     }
 
     /// Spawn the derived argv. `mecha` means this binary, exactly as the
@@ -706,10 +680,82 @@ impl Executor {
         }
     }
 
-    pub(crate) fn item(&self, id: &str) -> Option<OutboxItem> {
-        OutboxStore::open(&self.outbox_root)
+    /// The one draft an action named, off the runtime: an exact single-file
+    /// read (card values carry full store-minted ids), on the blocking pool.
+    pub(crate) async fn item(&self, id: &str) -> Option<OutboxItem> {
+        let root = self.outbox_root.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || item_in(&root, &id))
+            .await
             .ok()
-            .and_then(|s| s.item(id).ok())
+            .flatten()
+    }
+}
+
+/// The blocking single-item read behind the executor's read-backs: the exact
+/// item file, never `items()`'s scan of every draft ever staged. Unreadable
+/// — hostile shape, torn file, unopenable store — collapses to `None`, which
+/// every outcome function reports as unknown rather than guessed.
+fn item_in(root: &Path, id: &str) -> Option<OutboxItem> {
+    OutboxStore::open(root).ok()?.item_exact(id).ok().flatten()
+}
+
+/// The store read-back for every non-restart action, run on the blocking
+/// pool by [`Executor::run`]: a full outbox scan or a ledger read on the
+/// connector's runtime would stall every thread's event dispatch. The
+/// restart arm stays in `run` — its probe is already `spawn_blocking`.
+///
+/// The child's exit is never the answer; the store is. A child killed after
+/// the send but before exiting must not report failure over a mail that
+/// left.
+fn store_outcome(
+    outbox_root: &Path,
+    action: &Action,
+    started: DateTime<Utc>,
+    child_note: Option<&str>,
+) -> Outcome {
+    match action {
+        Action::OutboxSend { id } => {
+            draft_outcome(true, id, item_in(outbox_root, id).as_ref(), child_note)
+        }
+        Action::OutboxReject { id } => {
+            draft_outcome(false, id, item_in(outbox_root, id).as_ref(), child_note)
+        }
+        // Answered in `run`, before this function is reached; an arm here
+        // anyway, so the match stays total without a panic in spawned work.
+        Action::RestartUnit { unit } => Outcome::of(
+            "unknown",
+            format!("{unit} — the restart outcome is read in run()"),
+        ),
+        Action::TriggerRun { name } => trigger_run_outcome(
+            name,
+            latest_trigger_row(name, started).as_ref(),
+            child_note,
+        ),
+        Action::TriggerCancel { name } => cancel_outcome(name),
+        Action::TriggerEnable { name } => {
+            toggle_outcome(name, true, trigger_enabled(name), child_note)
+        }
+        Action::TriggerDisable { name } => {
+            toggle_outcome(name, false, trigger_enabled(name), child_note)
+        }
+        Action::MailImport { provider } => import_outcome(
+            provider,
+            registry_credentials_exist(provider),
+            child_note,
+        ),
+        Action::FrontdoorClose { seq, .. } => mark_outcome(
+            *seq,
+            mecha_core::frontdoor::CLOSED,
+            request_state(*seq).as_deref(),
+            child_note,
+        ),
+        Action::FrontdoorNeedsInfo { seq, .. } => mark_outcome(
+            *seq,
+            mecha_core::frontdoor::NEEDS_INFO,
+            request_state(*seq).as_deref(),
+            child_note,
+        ),
     }
 }
 
@@ -978,13 +1024,27 @@ fn row_is_this_taps(row: &RunRecord, name: &str, since: DateTime<Utc>) -> bool {
 /// The newest ledger row this tap's run wrote, whatever its status — a skip
 /// is an answer ("the previous run was still going").
 fn latest_trigger_row(name: &str, since: DateTime<Utc>) -> Option<RunRecord> {
-    let store = TriggerStore::open_existing_default()?;
-    store
-        .runs()
-        .ok()?
-        .into_iter()
-        .filter(|r| row_is_this_taps(r, name, since))
-        .max_by_key(|r| r.started_at)
+    latest_trigger_row_in(&TriggerStore::open_existing_default()?, name, since)
+}
+
+/// The tail scan behind it: the ledger is append-only, so the first matching
+/// row scanning newest-first is the newest, and the scan stops there instead
+/// of materializing every `RunRecord` ever written to answer for one tap.
+fn latest_trigger_row_in(
+    store: &TriggerStore,
+    name: &str,
+    since: DateTime<Utc>,
+) -> Option<RunRecord> {
+    let mut found = None;
+    let _ = store.scan_runs_rev(|row| {
+        if row_is_this_taps(&row, name, since) {
+            found = Some(row);
+            false
+        } else {
+            true
+        }
+    });
+    found
 }
 
 #[cfg(test)]
@@ -1547,6 +1607,58 @@ mod tests {
         let mut other = RunRecord::started("nightly", None, true);
         other.started_at = late;
         assert!(!row_is_this_taps(&other, "briefing", since));
+    }
+
+    /// The tap's row comes from the ledger *tail*: newest matching row, scan
+    /// stopped at it. The fails-on-old proof is the torn old line — invalid
+    /// UTF-8 the tail scan never decodes, where the old full parse
+    /// (`runs()` → `read_to_string`) dies on the whole file and answered
+    /// `None` for a run that plainly happened.
+    #[test]
+    fn a_taps_row_is_found_from_the_ledger_tail_past_a_torn_old_line() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-action-tail-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = mecha_core::trigger::TriggerStore::open(&dir).unwrap();
+
+        // A torn, invalid-UTF-8 row from long ago, at the head of the file.
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(store.ledger_path())
+                .unwrap();
+            file.write_all(b"{\"trigger\": \"briefing\xff\xfe\n").unwrap();
+        }
+
+        let since = Utc::now();
+        // An older manual row (before the tap) and the tap's own — a full
+        // parse-then-filter would pick the same newest row; the tail scan
+        // proves itself by answering at all.
+        let mut before = RunRecord::started("briefing", None, true);
+        before.started_at = since - chrono::Duration::seconds(30);
+        store.append_run(&before).unwrap();
+        let mut mine = RunRecord::started("briefing", None, true);
+        mine.started_at = since + chrono::Duration::seconds(2);
+        mine.status = RunStatus::Ok;
+        store.append_run(&mine).unwrap();
+
+        let row = latest_trigger_row_in(&store, "briefing", since).expect("the tap's row");
+        assert_eq!(row.started_at, mine.started_at);
+        assert!(row.manual);
+
+        // The contrast the fix rests on, pinned: the full parse cannot even
+        // read this ledger.
+        assert!(store.runs().is_err());
+
+        // No matching row is still an honest None, not a guess.
+        assert!(latest_trigger_row_in(&store, "nightly", since).is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// F6's carrier: the confirm value round-trips id and fingerprint, a

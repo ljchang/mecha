@@ -656,6 +656,42 @@ impl TriggerStore {
             .collect())
     }
 
+    /// Visit ledger rows newest-first, stopping as soon as `visit` returns
+    /// `false` — the tail read behind "what happened last", for callers that
+    /// need one recent row and must not deserialize an append-only file that
+    /// only ever grows. Read once as bytes, not `read_to_string`: one
+    /// invalid-UTF-8 byte in an old torn line would otherwise poison every
+    /// future tail read of a file whose end is fine. An undecodable or
+    /// unparseable line is skipped, the same audit-trail rule as [`runs`]:
+    /// one bad line must not hide the rest.
+    ///
+    /// [`runs`]: TriggerStore::runs
+    pub fn scan_runs_rev(&self, mut visit: impl FnMut(RunRecord) -> bool) -> Result<()> {
+        let bytes = match std::fs::read(self.ledger_path()) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e).context("reading the run ledger"),
+        };
+        for line in bytes.split(|b| *b == b'\n').rev() {
+            let Ok(line) = std::str::from_utf8(line) else {
+                tracing::warn!("skipping an undecodable ledger row");
+                continue;
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<RunRecord>(line) {
+                Ok(row) => {
+                    if !visit(row) {
+                        break;
+                    }
+                }
+                Err(e) => tracing::warn!("skipping unreadable ledger row: {e}"),
+            }
+        }
+        Ok(())
+    }
+
     /// The most recent accounted-for slot per trigger — one ledger scan for the
     /// whole tick. Manual runs carry no slot and so are invisible here, which
     /// is the point.
@@ -1169,6 +1205,75 @@ mod tests {
         let mut t = daily_7am("briefing");
         t.prompt = "   ".into();
         assert!(store.save(&t).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The tail read behind "what happened last": rows arrive newest-first,
+    /// the visitor's `false` stops the scan, and — the byte-level point — an
+    /// old line of invalid UTF-8 is skipped where `runs()`'s `read_to_string`
+    /// dies on the whole file. That contrast is the fails-on-old proof for
+    /// every caller that moved off the full parse.
+    #[test]
+    fn the_tail_scan_visits_newest_first_stops_when_told_and_survives_a_torn_head() {
+        use std::io::Write;
+        let root = scratch("tailscan");
+        let store = TriggerStore::open(&root).unwrap();
+
+        // An old row torn into invalid UTF-8, at the head of the file.
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(store.ledger_path())
+                .unwrap();
+            file.write_all(b"{\"trigger\": \"briefing\xff\xfe\n").unwrap();
+        }
+        for (name, at) in [
+            ("briefing", "2026-08-14T07:00:00Z"),
+            ("nightly", "2026-08-14T08:00:00Z"),
+            ("briefing", "2026-08-14T09:00:00Z"),
+        ] {
+            let mut row = RunRecord::started(name, None, true);
+            row.started_at = utc(at);
+            store.append_run(&row).unwrap();
+        }
+
+        // Newest-first, all three rows, the torn head skipped.
+        let mut seen = Vec::new();
+        store
+            .scan_runs_rev(|row| {
+                seen.push((row.trigger.clone(), row.started_at));
+                true
+            })
+            .unwrap();
+        assert_eq!(
+            seen,
+            vec![
+                ("briefing".into(), utc("2026-08-14T09:00:00Z")),
+                ("nightly".into(), utc("2026-08-14T08:00:00Z")),
+                ("briefing".into(), utc("2026-08-14T07:00:00Z")),
+            ]
+        );
+
+        // `false` stops the scan: one row visited, the rest never parsed.
+        let mut visited = 0;
+        store
+            .scan_runs_rev(|_| {
+                visited += 1;
+                false
+            })
+            .unwrap();
+        assert_eq!(visited, 1);
+
+        // The full parse dies on the torn head — which is exactly why the
+        // tail scan reads bytes. If `runs()` ever learns to survive this,
+        // the contrast is gone, not the guarantee; this assert is the flag.
+        assert!(store.runs().is_err(), "read_to_string dies on invalid UTF-8");
+
+        // An absent ledger is an empty scan, not an error.
+        let empty = TriggerStore::open(scratch("tailscan-empty")).unwrap();
+        empty.scan_runs_rev(|_| panic!("nothing to visit")).unwrap();
 
         let _ = std::fs::remove_dir_all(&root);
     }
