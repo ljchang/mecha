@@ -55,6 +55,7 @@ pub mod distill;
 pub mod doctor;
 pub mod eval;
 pub mod frontdoor;
+pub mod gossip;
 pub mod hooks;
 pub mod learning;
 pub mod mailbox;
