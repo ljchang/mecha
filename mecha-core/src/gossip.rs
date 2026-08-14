@@ -1594,6 +1594,8 @@ pub struct Candidate {
     pub subject_ambiguous: bool,
     #[serde(default)]
     pub confidence: Option<f64>,
+    #[serde(default)]
+    pub predicate: Option<String>,
     /// The origin episode, when `pending` was asked for evidence — what
     /// the verification mechanism judges the claim against.
     #[serde(default)]
@@ -1912,6 +1914,11 @@ pub enum Vet {
     Misattributed,
     /// The evidence shows something weaker or narrower than the claim.
     Overreach,
+    /// The evidence supports the content but the predicate mislabels the
+    /// relationship — an event recorded as a durable property is the
+    /// commonest shape (llm·has_role ran 2% accepted on TRUE sentences).
+    /// The repair is a retype, not a rejection; `predicate` names it.
+    Mistyped,
     /// The judge did not answer in form. A harness failure, never a finding.
     Unclear,
 }
@@ -1923,6 +1930,7 @@ impl Vet {
             Vet::Unsupported => "unsupported",
             Vet::Misattributed => "misattributed",
             Vet::Overreach => "overreach",
+            Vet::Mistyped => "mistyped",
             Vet::Unclear => "unclear",
         }
     }
@@ -1965,15 +1973,19 @@ pub fn vet_judge(
 pub fn vet_question(cand: &Candidate, ev: &EvidenceClip) -> String {
     format!(
         "Evidence — one episode from {}, {}:\n\n---\n{}\n---\n\n\
-         Claim extracted from that evidence:\n\n  {}\n{}\n\
+         Claim extracted from that evidence:\n\n  {}\n{}{}\n\
          Judge whether THIS evidence supports THAT claim. Absence from the \
          evidence is UNSUPPORTED even if the claim sounds plausible. If the \
          evidence shows the statement but credits it to a different person \
          than the claim's subject, that is MISATTRIBUTED. If the evidence \
-         shows a weaker or narrower version, that is OVERREACH.\n\n\
+         shows a weaker or narrower version, that is OVERREACH. If the \
+         evidence supports the content but the relation label mislabels it \
+         — a one-time event filed as a durable property, or simply the \
+         wrong relation — that is MISTYPED.\n\n\
          Reply in exactly this form:\n\
-         VERDICT: SUPPORTED | UNSUPPORTED | MISATTRIBUTED | OVERREACH\n\
+         VERDICT: SUPPORTED | UNSUPPORTED | MISATTRIBUTED | OVERREACH | MISTYPED\n\
          WHO: only for MISATTRIBUTED — who the evidence actually shows\n\
+         PREDICATE: only for MISTYPED — a better relation name, lowercase_with_underscores\n\
          QUOTE: the evidence line that decides it, or 'nothing'",
         ev.source,
         ev.occurred_at,
@@ -1983,14 +1995,19 @@ pub fn vet_question(cand: &Candidate, ev: &EvidenceClip) -> String {
             .as_deref()
             .map(|s| format!("  (subject: {s})\n"))
             .unwrap_or_default(),
+        cand.predicate
+            .as_deref()
+            .map(|p| format!("  (relation label: {p})\n"))
+            .unwrap_or_default(),
     )
 }
 
 /// Parse the judge's reply; an out-of-form reply is `Unclear` and the
 /// rejected text is kept — \"did not answer in form\" is not a diagnosis.
-pub fn parse_vet(text: &str) -> (Vet, Option<String>, String) {
+pub fn parse_vet(text: &str) -> (Vet, Option<String>, Option<String>, String) {
     let mut verdict = None;
     let mut who = None;
+    let mut predicate = None;
     let mut quote = String::new();
     for line in text.lines() {
         let l = line
@@ -2014,6 +2031,7 @@ pub fn parse_vet(text: &str) -> (Vet, Option<String>, String) {
                     "UNSUPPORTED" => Some(Vet::Unsupported),
                     "MISATTRIBUTED" => Some(Vet::Misattributed),
                     "OVERREACH" => Some(Vet::Overreach),
+                    "MISTYPED" => Some(Vet::Mistyped),
                     _ => None,
                 };
             }
@@ -2024,14 +2042,24 @@ pub fn parse_vet(text: &str) -> (Vet, Option<String>, String) {
                 who = Some(w.to_string());
             }
         }
+        if let Some(rest) = l
+            .strip_prefix("PREDICATE:")
+            .or(l.strip_prefix("Predicate:"))
+        {
+            let p = rest.trim().trim_matches('`').to_lowercase().replace(' ', "_");
+            if !p.is_empty() && p != "n/a" {
+                predicate = Some(p);
+            }
+        }
         if let Some(rest) = l.strip_prefix("QUOTE:").or(l.strip_prefix("Quote:")) {
             quote = rest.trim().to_string();
         }
     }
     match verdict {
-        Some(v) => (v, who, quote),
+        Some(v) => (v, who, predicate, quote),
         None => (
             Vet::Unclear,
+            None,
             None,
             format!("not in form; it said: {}", {
                 let t: String = text.trim().chars().take(160).collect();
@@ -2050,6 +2078,9 @@ pub struct Vetting {
     /// For `Misattributed`: who the evidence actually shows. The repair is
     /// a rebind (review `b`), so the name is the finding.
     pub who: Option<String>,
+    /// For `Mistyped`: the better relation name. The repair is a retype
+    /// (review `e`), so the predicate is the finding.
+    pub predicate: Option<String>,
     pub quote: String,
 }
 
@@ -2065,12 +2096,13 @@ pub async fn vet(agent: &Agent, cx: &RunContext, cand: &Candidate) -> Result<Vet
         .run_in(cx, &mut convo, None)
         .await
         .with_context(|| format!("vet judge on candidate {}", cand.candidate_id))?;
-    let (verdict, who, quote) = parse_vet(&out.text);
+    let (verdict, who, predicate, quote) = parse_vet(&out.text);
     Ok(Vetting {
         candidate_id: cand.candidate_id,
         statement: cand.statement.clone(),
         verdict,
         who,
+        predicate,
         quote,
     })
 }
@@ -2081,18 +2113,24 @@ mod vet_tests {
 
     #[test]
     fn a_vet_verdict_is_parsed_or_admitted() {
-        let (v, who, quote) =
+        let (v, who, _, quote) =
             parse_vet("VERDICT: MISATTRIBUTED\nWHO: Eunice\nQUOTE: Eunice said she prefers DIY.");
         assert_eq!(v, Vet::Misattributed);
         assert_eq!(who.as_deref(), Some("Eunice"));
         assert!(quote.contains("prefers DIY"));
+
+        // A mistype carries its repair, normalized to vocabulary shape.
+        let (v, _, predicate, _) =
+            parse_vet("VERDICT: MISTYPED\nPREDICATE: cared for\nQUOTE: was caring for the twins");
+        assert_eq!(v, Vet::Mistyped);
+        assert_eq!(predicate.as_deref(), Some("cared_for"));
 
         assert_eq!(parse_vet("SUPPORTED").0, Vet::Supported, "a bare word alone is a format");
         assert_eq!(parse_vet("**VERDICT:** OVERREACH").0, Vet::Overreach);
 
         // Prose containing a verdict word is not a verdict, and the
         // rejected text is kept.
-        let (v, _, quote) = parse_vet("I believe this is supported by the transcript.");
+        let (v, _, _, quote) = parse_vet("I believe this is supported by the transcript.");
         assert_eq!(v, Vet::Unclear);
         assert!(quote.contains("I believe"), "the rejected text is kept");
     }
@@ -2109,6 +2147,7 @@ mod vet_tests {
             origin_source: None,
             subject_ambiguous: false,
             confidence: None,
+            predicate: Some("related_to".into()),
             evidence: Some(EvidenceClip {
                 source: "bee.conversation".into(),
                 occurred_at: "2026-08-01".into(),

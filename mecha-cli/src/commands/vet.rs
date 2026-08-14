@@ -135,14 +135,18 @@ pub async fn run(global: &crate::GlobalOpts, args: &VetArgs) -> Result<()> {
         if let Some(who) = &v.who {
             println!("      the evidence shows: {who}");
         }
+        if let Some(p) = &v.predicate {
+            println!("      better relation: {p}");
+        }
         if !v.quote.is_empty() {
             println!("      {}", v.quote);
         }
 
         if args.record {
-            let basis = match &v.who {
-                Some(w) => format!("who:{w} · {}", v.quote),
-                None => v.quote.clone(),
+            let basis = match (&v.who, &v.predicate) {
+                (Some(w), _) => format!("who:{w} · {}", v.quote),
+                (None, Some(p)) => format!("predicate:{p} · {}", v.quote),
+                (None, None) => v.quote.clone(),
             };
             if let Err(e) = gossip::file_verdict(
                 &client,
