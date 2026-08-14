@@ -505,14 +505,40 @@ pub async fn exchange(
             // the answerer the asking prompt would mean whichever ran last
             // decided what it was.
             let outcome = askers[i].1.run_in(cx, &mut convo, None).await?;
-            let q = outcome.text.trim().to_string();
-            if !q.is_empty() {
+            // A non-question must not propagate. Keeping the previous
+            // question repeats a round; feeding garbage forward corrupts
+            // every round after it, and the reader answers the garbage
+            // earnestly because it cannot tell it was never asked anything.
+            if let Some(q) = usable_question(&outcome.text) {
                 next[other] = q;
             }
         }
         questions = next;
     }
     Ok(out)
+}
+
+/// The first line of `text` that is actually a question, or `None`.
+///
+/// A model with no tools still emits tool syntax when it wants to look
+/// something up — a live run produced `tool:pkg__kg_search args:{...}` in
+/// the question slot, which the next reader then answered earnestly,
+/// because a reader cannot tell it was never asked anything. Removing the
+/// asker's tools stopped it *researching*; only validation stops the
+/// wreckage of the attempt from propagating.
+pub fn usable_question(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .find(|l| {
+            l.ends_with('?')
+                && l.len() > 10
+                // Tool syntax and JSON fragments are the failure mode, not
+                // stray punctuation.
+                && !l.contains("tool:")
+                && !l.contains("args:")
+                && !l.starts_with('{')
+        })
+        .map(|l| l.trim_start_matches(['*', '-', '#', ' ']).to_string())
 }
 
 /// Render an exchange for a distiller or a reader.
@@ -542,6 +568,38 @@ mod tests {
                 episodes: *n,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_non_question_never_propagates() {
+        // The live failure: an asker with no tools still emitted tool
+        // syntax, which became the next round's "question" and was
+        // answered earnestly.
+        assert_eq!(
+            usable_question("tool:pkg__kg_search\nargs:{\"query\": \"ljchang\"}"),
+            None
+        );
+        assert_eq!(
+            usable_question("Based on my searches, here is what I found:"),
+            None
+        );
+        assert_eq!(usable_question(""), None);
+        assert_eq!(
+            usable_question("ok?"),
+            None,
+            "too short to be a real question"
+        );
+
+        // A real question survives, and decoration is trimmed.
+        assert_eq!(
+            usable_question("Who does she collaborate with on the grant?").as_deref(),
+            Some("Who does she collaborate with on the grant?")
+        );
+        assert_eq!(
+            usable_question("Some preamble.\n- What role does he hold in the lab?").as_deref(),
+            Some("What role does he hold in the lab?"),
+            "the question is found past preamble and stripped of its bullet"
+        );
     }
 
     #[test]
