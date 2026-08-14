@@ -444,6 +444,20 @@ impl State {
             return;
         }
 
+        // The `triggers` command word — the schedule with per-row controls,
+        // on the `doctor` pattern: gated before the word is matched, store
+        // read for display in spawned work, every button a typed action.
+        if super::triggers::is_triggers_command(&text) {
+            let slack = self.slack.clone();
+            let (channel, thread_ts) = (channel.clone(), thread_ts.clone());
+            tokio::spawn(async move {
+                let (text, blocks) = super::triggers::listing();
+                let _ =
+                    chat::post_message(&slack, &channel, Some(&thread_ts), &text, blocks).await;
+            });
+            return;
+        }
+
         // The `review` command word — the explicit owner gesture, and the
         // only thing that can set a thread's release policy. Matched with the
         // same precedence as `doctor`, before the text can become a prompt or
@@ -1094,28 +1108,6 @@ impl State {
                 );
                 continue;
             }
-            let heading = if armed {
-                format!(
-                    "*⚠️ Draft — written with the trifecta armed*\n`{}`",
-                    item.tool
-                )
-            } else {
-                format!("*Draft*\n`{}`", item.tool)
-            };
-            let blocks = vec![
-                blocks::section(&heading),
-                blocks::section(&format!("```\n{}\n```", truncate_for_slack(&item.summary))),
-                blocks::context(&format!("id `{}` · nothing has been sent", item.id)),
-                blocks::actions(vec![
-                    blocks::button(actions::ids::OUTBOX_SEND, "Send", &item.id, Some("primary")),
-                    blocks::button(
-                        actions::ids::OUTBOX_REJECT,
-                        "Reject",
-                        &item.id,
-                        Some("danger"),
-                    ),
-                ]),
-            ];
             // No map of where the card went: a button press carries its own
             // channel and message ts, which is what makes a card still work
             // after the connector restarts.
@@ -1124,7 +1116,7 @@ impl State {
                 &record.channel_id,
                 Some(&record.thread_ts),
                 "A draft is waiting for review.",
-                Some(blocks),
+                Some(draft_offer_blocks(&item)),
             )
             .await;
         }
@@ -1391,6 +1383,15 @@ impl State {
             return;
         }
 
+        // A modal submission rides the same envelope and passed the same gate
+        // above, on the same signed field — the owner check runs before the
+        // callback id is so much as read, exactly as it runs before a button
+        // verb is.
+        if interaction.kind == "view_submission" {
+            self.on_view_submission(&interaction);
+            return;
+        }
+
         for action in &interaction.actions {
             let value = action.value.clone().unwrap_or_default();
             match action.action_id.as_str() {
@@ -1465,6 +1466,88 @@ impl State {
                         let _ = self.threads.apply(&key, Event::InputSettled);
                     }
                 }
+                // §6's doorways: a terminal-surface remedy translated, never
+                // spawned. The press posts the pending items into the thread
+                // as the cards this connector already knows how to make —
+                // draft cards through the one composer (send/reject, tainted
+                // two-step and all), request cards through the
+                // `for_privileged_run` boundary. Nothing executes; a
+                // replayed press can at most re-post cards.
+                super::doctor::REVIEW_HERE_OUTBOX | super::doctor::REVIEW_HERE_FRONTDOOR => {
+                    let Some(channel) = interaction.channel_id.clone() else {
+                        continue;
+                    };
+                    let Some(thread_ts) = interaction
+                        .thread_ts
+                        .clone()
+                        .or_else(|| interaction.message_ts.clone())
+                    else {
+                        continue;
+                    };
+                    let slack = self.slack.clone();
+                    if action.action_id == super::doctor::REVIEW_HERE_OUTBOX {
+                        let root = self.outbox_root.clone();
+                        tokio::spawn(async move {
+                            review_here_drafts(&slack, &root, &channel, &thread_ts).await;
+                        });
+                    } else {
+                        tokio::spawn(async move {
+                            review_here_requests(&slack, &channel, &thread_ts).await;
+                        });
+                    }
+                }
+                // The modal openers: they execute nothing — the typed action
+                // is constructed only from the gated submission. The
+                // `trigger_id` expires in three seconds and is one-use, so
+                // the view opens before any other work on this press.
+                super::frontdoor::CLOSE_OPEN | super::frontdoor::NEEDS_INFO_OPEN => {
+                    let Some(trigger) = interaction.trigger_id.clone() else {
+                        continue;
+                    };
+                    let Some(seq) = value.parse::<i64>().ok().filter(|s| *s > 0) else {
+                        continue;
+                    };
+                    // Where the card lives, so the submission's outcome can
+                    // retire it. Machine-authored, opaque to the person.
+                    let meta = super::frontdoor::metadata(
+                        seq,
+                        interaction.channel_id.as_deref(),
+                        interaction.message_ts.as_deref(),
+                        interaction.thread_ts.as_deref(),
+                    );
+                    let view = if action.action_id == super::frontdoor::CLOSE_OPEN {
+                        super::frontdoor::close_modal(seq, &meta)
+                    } else {
+                        super::frontdoor::needs_info_modal(seq, &meta)
+                    };
+                    if let Err(e) = mecha_slack::views::open(&self.slack, &trigger, view).await
+                    {
+                        // A tap that silently does nothing is the failure
+                        // this surface keeps naming; say so, and name the
+                        // terminal that always works.
+                        tracing::warn!("could not open the modal for request {seq}: {e}");
+                        if let (Some(channel), Some(ts)) = (
+                            interaction.channel_id.as_deref(),
+                            interaction
+                                .thread_ts
+                                .as_deref()
+                                .or(interaction.message_ts.as_deref()),
+                        ) {
+                            let _ = chat::post_message(
+                                &self.slack,
+                                channel,
+                                Some(ts),
+                                &format!(
+                                    "The form could not open. At a terminal: \
+                                     `mecha frontdoor close {seq} --reason ...` or \
+                                     `mecha frontdoor needs-info {seq} --note ...`"
+                                ),
+                                None,
+                            )
+                            .await;
+                        }
+                    }
+                }
                 // Everything else is either an executable action or nothing.
                 // `Action::from_payload` is the whole decision: a fixed verb
                 // from a closed set, a value that is an object id re-resolved
@@ -1523,6 +1606,138 @@ impl State {
             }
         }
     }
+
+    /// A modal came back. The gate has already run on the signed user; this
+    /// parses and dispatches, fail-closed at every step — unusable metadata,
+    /// missing text, or an unknown callback constructs nothing and nothing
+    /// runs. `Action::from_submission` is the whole decision, exactly as
+    /// `from_payload` is for a button: the seq re-resolves against the
+    /// request store at execution time, and the owner-typed text travels
+    /// only inside the typed action — which is also what puts it in the
+    /// ledger's dispatch row.
+    fn on_view_submission(&mut self, interaction: &Interaction) {
+        let Some(view) = &interaction.view else { return };
+        let Some(meta) = super::frontdoor::parse_metadata(&view.private_metadata) else {
+            tracing::warn!("a view submission carried unusable metadata; nothing ran");
+            return;
+        };
+        let Some(text) = view.values.get(super::frontdoor::TEXT_INPUT) else {
+            tracing::warn!("a view submission carried no text; nothing ran");
+            return;
+        };
+        let Some(act) = Action::from_submission(&view.callback_id, &meta.seq.to_string(), text)
+        else {
+            tracing::warn!(
+                "a view submission ({}) parsed to no action; nothing ran",
+                view.callback_id
+            );
+            return;
+        };
+        let who = interaction
+            .user_id
+            .as_deref()
+            .unwrap_or("someone")
+            .to_string();
+        // The request card the modal was opened from is rewritten in place —
+        // buttons retired before the child runs, the outcome landing where
+        // the card was — with a thread reply as the fallback when the
+        // metadata could not say exactly where the card lives.
+        let target = match (meta.channel, meta.ts, meta.thread_ts) {
+            (Some(channel), Some(ts), _) => ActionCard::Rewrite { channel, ts },
+            (Some(channel), None, Some(thread_ts)) => {
+                ActionCard::Reply { channel, thread_ts }
+            }
+            _ => {
+                tracing::warn!("a view submission had nowhere to report; nothing ran");
+                return;
+            }
+        };
+        self.dispatch_action(act, &who, "frontdoor-modal", target);
+    }
+}
+
+/// The outbox half of a Review-here press: every pending draft, carded into
+/// the thread through the one draft-card composer — send/reject, the tainted
+/// two-step and the truncated-reject-only rule all inherited, because the
+/// cards press into the same verbs. Capped, with the cut visible.
+async fn review_here_drafts(
+    slack: &Slack,
+    outbox_root: &std::path::Path,
+    channel: &str,
+    thread_ts: &str,
+) {
+    let items = mecha_core::outbox::OutboxStore::open(outbox_root)
+        .ok()
+        .and_then(|s| s.items().ok())
+        .unwrap_or_default();
+    let mut pending: Vec<_> = items
+        .into_iter()
+        .filter(|i| i.status == "pending")
+        .collect();
+    // Ids are timestamp-prefixed, so this is oldest first — the stuck ones
+    // the finding was about lead.
+    pending.sort_by(|a, b| a.id.cmp(&b.id));
+    if pending.is_empty() {
+        let _ = chat::post_message(
+            slack,
+            channel,
+            Some(thread_ts),
+            "Nothing is pending in the outbox.",
+            None,
+        )
+        .await;
+        return;
+    }
+    let total = pending.len();
+    for item in pending.iter().take(REVIEW_HERE_MAX) {
+        let _ = chat::post_message(
+            slack,
+            channel,
+            Some(thread_ts),
+            "A draft is waiting for review.",
+            Some(draft_offer_blocks(item)),
+        )
+        .await;
+    }
+    if let Some(note) = review_here_note(total, "mecha outbox review") {
+        let _ = chat::post_message(slack, channel, Some(thread_ts), &note, None).await;
+    }
+}
+
+/// The frontdoor half: every waiting request as a card built from the
+/// `for_privileged_run` boundary — a Slack thread is a model-adjacent
+/// surface, so the stranger's prose stays at the terminal. Capped, with the
+/// cut visible.
+async fn review_here_requests(slack: &Slack, channel: &str, thread_ts: &str) {
+    let records = mecha_core::frontdoor::Frontdoor::open_default()
+        .and_then(|f| f.records())
+        .unwrap_or_default();
+    let waiting = super::frontdoor::waiting(&records);
+    if waiting.is_empty() {
+        let _ = chat::post_message(
+            slack,
+            channel,
+            Some(thread_ts),
+            "Nothing is waiting at the front door.",
+            None,
+        )
+        .await;
+        return;
+    }
+    let total = waiting.len();
+    for record in waiting.iter().take(REVIEW_HERE_MAX) {
+        let _ = chat::post_message(
+            slack,
+            channel,
+            Some(thread_ts),
+            &format!("Request {} is waiting.", record.seq),
+            Some(super::frontdoor::request_card(record)),
+        )
+        .await;
+    }
+    if let Some(note) = review_here_note(total, "mecha frontdoor list") {
+        let _ = chat::post_message(slack, channel, Some(thread_ts), &note, None).await;
+    }
 }
 
 /// Where a dispatched action reports.
@@ -1536,6 +1751,55 @@ impl State {
 enum ActionCard {
     Rewrite { channel: String, ts: String },
     Reply { channel: String, thread_ts: String },
+}
+
+/// One pending draft as a review card — Send and Reject carrying the item id.
+///
+/// **The only draft-card composer.** `offer_drafts` (a run's own staged
+/// drafts) and the doctor doorway's review-here batch both post exactly this,
+/// which is what "zero new send paths" means structurally: a review-here card
+/// presses into the same `OUTBOX_SEND` verb, so the tainted detour
+/// (`ask_to_confirm_tainted`, and its truncated-arguments reject-only rule)
+/// and the store's pending check cover it without knowing where the card came
+/// from.
+fn draft_offer_blocks(item: &mecha_core::outbox::OutboxItem) -> Vec<serde_json::Value> {
+    let armed = item.taint.private && item.taint.untrusted;
+    let heading = if armed {
+        format!(
+            "*⚠️ Draft — written with the trifecta armed*\n`{}`",
+            item.tool
+        )
+    } else {
+        format!("*Draft*\n`{}`", item.tool)
+    };
+    vec![
+        blocks::section(&heading),
+        blocks::section(&format!("```\n{}\n```", truncate_for_slack(&item.summary))),
+        blocks::context(&format!("id `{}` · nothing has been sent", item.id)),
+        blocks::actions(vec![
+            blocks::button(actions::ids::OUTBOX_SEND, "Send", &item.id, Some("primary")),
+            blocks::button(
+                actions::ids::OUTBOX_REJECT,
+                "Reject",
+                &item.id,
+                Some("danger"),
+            ),
+        ]),
+    ]
+}
+
+/// How many items a review-here press cards into the thread before naming
+/// the terminal for the rest. A thread is a screen, not a queue; forty cards
+/// is a wall nobody reviews.
+const REVIEW_HERE_MAX: usize = 8;
+
+/// The visible cut when a review-here batch holds more than the cap: the
+/// rest are named, with the terminal surface that shows them all.
+fn review_here_note(total: usize, terminal_cmd: &str) -> Option<String> {
+    let rest = total.saturating_sub(REVIEW_HERE_MAX);
+    (rest > 0).then(|| {
+        format!("{rest} more not shown here — the rest at the terminal: `{terminal_cmd}`")
+    })
 }
 
 /// The tainted draft's confirm card, and the one rule it enforces: **you may
@@ -1721,7 +1985,126 @@ fn thread_workspace(key: &str) -> Result<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{safe_filename, tainted_confirm_blocks};
+    use super::{
+        draft_offer_blocks, review_here_note, safe_filename, tainted_confirm_blocks,
+        REVIEW_HERE_MAX,
+    };
+    use crate::slack::actions;
+
+    fn draft(id: &str, tainted: bool, summary: &str) -> mecha_core::outbox::OutboxItem {
+        mecha_core::outbox::OutboxItem {
+            id: id.into(),
+            status: "pending".into(),
+            tool: "mail__send".into(),
+            kind: mecha_core::outbox::OutboxKind::Message,
+            args_before: serde_json::json!({}),
+            args: serde_json::json!({}),
+            summary: summary.into(),
+            session_id: None,
+            workspace: None,
+            taint: mecha_core::agent::Taint {
+                private: tainted,
+                untrusted: tainted,
+            },
+            created_at: "2026-08-14T00:00:00Z".into(),
+            resolved_at: None,
+            reason: None,
+            error: None,
+        }
+    }
+
+    /// Review-here posts drafts through the EXISTING machinery — this is the
+    /// "zero new send paths" test. A tainted draft's card in a review-here
+    /// batch carries the same `OUTBOX_SEND` verb every draft card carries,
+    /// which is precisely the verb the connector detours through the red
+    /// two-step (`ask_to_confirm_tainted`); and the second step for a draft
+    /// whose arguments were truncated still offers Reject and never Send.
+    /// One composer, one detour, no way for a batch to reach a send the
+    /// one-off card could not.
+    #[test]
+    fn a_tainted_draft_in_a_review_here_batch_keeps_the_two_step_and_truncated_stays_reject_only()
+    {
+        let batch = [
+            draft("a-1", false, "hello"),
+            draft("a-2", true, "the tainted one"),
+        ];
+        let cards: Vec<String> = batch
+            .iter()
+            .map(|i| serde_json::to_string(&draft_offer_blocks(i)).unwrap())
+            .collect();
+
+        // Both cards press into the same verbs — the ones `from_payload`
+        // parses and the tainted detour keys on.
+        for card in &cards {
+            assert!(card.contains(actions::ids::OUTBOX_SEND), "{card}");
+            assert!(card.contains(actions::ids::OUTBOX_REJECT), "{card}");
+            assert!(
+                !card.contains(actions::ids::OUTBOX_SEND_CONFIRM),
+                "the confirm verb only ever appears on the second step: {card}"
+            );
+        }
+        // The tainted card says what it is before anything is pressed.
+        assert!(cards[1].contains("trifecta armed"), "{}", cards[1]);
+        assert!(!cards[0].contains("trifecta armed"), "{}", cards[0]);
+
+        // And the second step it detours into, for arguments the card cannot
+        // fully show, is reject-only — the batch inherits §8's rule because
+        // it is the same code, not a copy of it.
+        let second_step =
+            serde_json::to_string(&tainted_confirm_blocks("a-2", &"x".repeat(10_000))).unwrap();
+        assert!(!second_step.contains(actions::ids::OUTBOX_SEND_CONFIRM), "{second_step}");
+        assert!(second_step.contains(actions::ids::OUTBOX_REJECT), "{second_step}");
+    }
+
+    /// The handler's order is the guarantee, pinned the way the doctor
+    /// command word pins it: `on_interaction` runs `binding::check` on
+    /// `payload.user.id` — the field Slack signed — and returns before the
+    /// `view_submission` branch is reached, so a non-owner's submission is
+    /// dropped before its callback id, metadata or text are so much as read.
+    /// Nothing the view carries participates in the gate.
+    #[test]
+    fn a_non_owners_view_submission_is_gated_on_the_signed_user_before_anything_is_read() {
+        use mecha_slack::binding::{self, Binding};
+        let bound = Binding {
+            team_id: "T1".into(),
+            enterprise_id: None,
+            owners: vec!["U_OWNER".into()],
+            bound_at: chrono::Utc::now(),
+        };
+        // A submission whose every view-carried field is well-formed — valid
+        // callback, valid metadata, valid text — still authorises nothing:
+        // the gate never looks at them.
+        let stranger = binding::check(Some(&bound), Some("U_STRANGER"), Some("T1"));
+        assert!(
+            !stranger.is_allowed(),
+            "a stranger's submission is refused before the view is read"
+        );
+        // And the well-formed view parses into a real action, which is
+        // exactly why the gate has to come first.
+        assert!(
+            actions::Action::from_submission(
+                actions::ids::FRONTDOOR_CLOSE_SUBMIT,
+                "5",
+                "a perfectly plausible reason"
+            )
+            .is_some()
+        );
+        let owner = binding::check(Some(&bound), Some("U_OWNER"), Some("T1"));
+        assert!(owner.is_allowed());
+    }
+
+    /// The block-cap rule for a review-here batch: past the cap, the cut is
+    /// visible and the rest are at the terminal.
+    #[test]
+    fn a_review_here_batch_past_the_cap_names_the_terminal_for_the_rest() {
+        assert_eq!(review_here_note(REVIEW_HERE_MAX, "mecha outbox review"), None);
+        let note = review_here_note(REVIEW_HERE_MAX + 3, "mecha outbox review")
+            .expect("the cut says so");
+        assert!(note.contains("3 more"), "{note}");
+        assert!(note.contains("mecha outbox review"), "{note}");
+        let front = review_here_note(20, "mecha frontdoor list").unwrap();
+        assert!(front.contains("mecha frontdoor list"), "{front}");
+    }
 
     /// §8's tightening, failing on the shipped behaviour: the old card put a
     /// Send-anyway button on every tainted confirm, including drafts whose

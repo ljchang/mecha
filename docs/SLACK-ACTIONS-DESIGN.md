@@ -160,6 +160,32 @@ field is ever interpolated into argv. The one store field that does reach an
 argv is the trigger name and the unit name, both of which are filenames/unit
 names validated by shape and by existence, not free text.
 
+Phase 2 added a fourth function, and one deliberate extension to the rule —
+written out because "no free text between a finding and a command line" now
+has exactly one exception, and the exception's provenance is the point:
+
+- **`Action::from_submission(callback_id, seq, text) -> Option<Action>`** —
+  the parser for a modal coming back, and the **only** constructor that
+  accepts free text. The provenance splits three ways. The *verb* is the
+  modal's `callback_id`, fixed at compose time from the same closed set of
+  literals as any button — `from_payload` deliberately refuses those ids, so
+  a button payload can never smuggle text into an argv. The *seq* is
+  machine-authored correlation state (`private_metadata`, written by the code
+  that opened the modal and parsed fail-closed on this side). And the *text*
+  — a close's reason, a needs-info's question — is **owner-authored**: typed
+  by a human into a modal that only opened for a gate-passing tap, arriving
+  in a `view_submission` gated on `payload.user.id` exactly as every
+  interaction is, before the callback id is so much as read. It is
+  length-capped at the parser (the input element's `max_length` is a
+  courtesy; the parser is the boundary), refused when empty after trimming,
+  and it crosses into the argv as **one element, never through a shell** —
+  its bytes reach exactly one `--reason`/`--note` argument and can name no
+  second command. Nothing model-authored composes any part of it. The
+  sentence this document carries survives because the one place free text
+  enters is a human's own keyboard behind the owner gate — and the ledger's
+  dispatch row serializes the typed action, text included, so what was typed
+  is what is audited.
+
 ---
 
 ## 3. Trust tiers: owner-only, with no exceptions to design
@@ -457,14 +483,46 @@ approval cards, Stop/Mode. The precedents this design generalises.
    owner decision 2026-08-14): untainted drafts a thread's runs stage may
    auto-release, ledgered and attributed; tainted drafts always card.
 
-**Phase 2 — the modal actions and the translations.**
+**Phase 2 — the modal actions and the translations. Shipped 2026-08-14.**
 
-- `trigger enable/disable` buttons (on the doctor card's trigger findings, and
-  on a `triggers` command word listing, same shape as `doctor`).
-- `frontdoor close` / `needs-info` via modals with required text fields.
-- **Review here** — the terminal-surface remedies translated into item cards
-  (§6), which closes the loop on doctor's outbox and frontdoor findings.
-- `mecha-mail import` for the legacy-store finding.
+- `trigger enable/disable` — shipped as `Action::TriggerEnable` /
+  `TriggerDisable`. **Disable** rides beside doctor's trigger-finding buttons
+  (the probe when idle, Cancel when mid-run): doctor only surfaces *enabled*
+  triggers — a disabled one is nobody's emergency — so the finding's half of
+  the pair is the silence. The way back lives on the **`triggers` command
+  word** (exact-word, the `doctor` pattern, gated before matching, spawned
+  off the ack path): every trigger with state and per-row Run/Disable, Cancel
+  when running, Enable — and only Enable — when disabled. Outcome is the
+  trigger file re-read; setting the flag to its current value is a no-op, so
+  replay collapses into the same honest line.
+- `frontdoor close` / `needs-info` via modals — shipped. The transport gained
+  `views.open` (through the one `interpret`, refusal-at-200 checked), the
+  `modal`/`required_text_input` builders (truncation-visible, the input
+  required by construction), and `view_submission` parsing into a `ViewRef`
+  the transport does not interpret — mecha-slack still knows nothing about
+  frontdoor, actions or mecha-core, and its dependency list did not change.
+  On this side: the request card's Close/Needs-info buttons open a modal
+  (doorway verbs `from_payload` refuses), the submission is gated on the
+  signed user before its callback is read, and `Action::from_submission`
+  (§2's extension) is the whole decision. Outcomes from the request store;
+  the ledger's dispatch row carries the owner-typed text inside the
+  serialized action.
+- **Review here** — shipped. Doctor's outbox and frontdoor findings grow a
+  doorway button (`from_payload` refuses the ids; a replayed press can at
+  most re-post cards): pending drafts post through the **one** draft-card
+  composer, so send/reject, the tainted red two-step and the
+  truncated-reject-only rule are inherited rather than copied — zero new
+  send paths; waiting requests post as cards built from
+  `Record::for_privileged_run`, because a Slack thread is a model-adjacent
+  surface — the prose and the extractor's own `reading` never leave the
+  terminal, and an unextracted request cards as its machine fields with no
+  verbs at all. Both batches cap at 8 items with the rest counted and the
+  terminal named.
+- `mecha-mail import` — shipped as `Action::MailImport`, recognised from the
+  legacy-store finding's remedy (account and provider must agree and come
+  from the closed `{google, outlook}` set; anything else stays copyable
+  text). One tap; the outcome is the registry re-read, and the success line
+  says what no import fixes — the re-auth still needs a terminal.
 
 **Never built** — named the way POLL-DESIGN names the Keynote no-build, so the
 absence reads as a decision rather than a gap:

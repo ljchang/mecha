@@ -18,10 +18,21 @@
 
 use std::collections::BTreeSet;
 
-use mecha_core::doctor::{Finding, Severity};
+use mecha_core::doctor::{Finding, Remedy, Severity};
 use mecha_slack::blocks;
 
 use super::actions::Action;
+
+/// Doorway verbs for the terminal-surface remedies, which **translate rather
+/// than spawn** (design §6): `mecha outbox review` and `mecha frontdoor list`
+/// are review surfaces, and spawning either from Slack is meaningless — there
+/// is no terminal. The button posts the pending items into the thread as the
+/// cards the connector already knows how to make; the remedy's *intent* — put
+/// the stuck thing in front of the human — is honoured, and the argv is never
+/// executed, because it was never an action, only a doorway. Not in
+/// `actions::ids` for exactly that reason: `from_payload` must not know them.
+pub const REVIEW_HERE_OUTBOX: &str = "slack_review_here_outbox";
+pub const REVIEW_HERE_FRONTDOOR: &str = "slack_review_here_frontdoor";
 
 /// A message that is the word `doctor` and nothing else, however cased or
 /// padded. Anything more is a prompt for the model, not a command — "run
@@ -146,6 +157,8 @@ pub fn report_blocks(
         out.push(blocks::section(&finding_text(finding)));
         if let Some(action) = finding.remedy.as_ref().and_then(Action::from_remedy) {
             out.extend(action_blocks(&action, running));
+        } else if let Some(doorway) = finding.remedy.as_ref().and_then(review_here_block) {
+            out.push(doorway);
         }
     }
     // The block ceiling, made visible: Slack silently discards blocks past
@@ -161,28 +174,67 @@ fn action_blocks(action: &Action, running: &BTreeSet<String>) -> Vec<serde_json:
     // Composed from the typed action's own verb and value, so the pair the
     // payload carries cannot drift from what `from_payload` parses.
     let button = |action: &Action, label: &str, style: Option<&str>| {
-        blocks::button(action.action_id(), label, action.value(), style)
+        blocks::button(action.action_id(), label, &action.value(), style)
     };
     match action {
         Action::TriggerRun { name } if running.contains(name) => {
             let cancel = Action::TriggerCancel { name: name.clone() };
+            let disable = Action::TriggerDisable { name: name.clone() };
             vec![
                 blocks::context(&format!(
                     "trigger `{name}` is running right now — Cancel stops it at its next \
                      safe point, partial turn kept"
                 )),
-                blocks::actions(vec![button(&cancel, "Cancel run", Some("danger"))]),
+                blocks::actions(vec![
+                    button(&cancel, "Cancel run", Some("danger")),
+                    button(&disable, "Disable", None),
+                ]),
             ]
         }
-        Action::TriggerRun { .. } => {
-            vec![blocks::actions(vec![button(action, "Run now", None)])]
+        // Doctor only reports enabled triggers (a disabled one is nobody's
+        // emergency), so the pair a finding can offer is the probe and the
+        // silence; the way back — Enable — lives on the `triggers` listing,
+        // the one surface that shows disabled triggers at all.
+        Action::TriggerRun { name } => {
+            let disable = Action::TriggerDisable { name: name.clone() };
+            vec![blocks::actions(vec![
+                button(action, "Run now", None),
+                button(&disable, "Disable", None),
+            ])]
         }
         Action::RestartUnit { .. } => {
             vec![blocks::actions(vec![button(action, "Restart", Some("primary"))])]
         }
+        Action::MailImport { .. } => {
+            vec![blocks::actions(vec![button(action, "Import", Some("primary"))])]
+        }
         // No other variant is constructible from a remedy; if one becomes so,
         // rendering nothing keeps it display-only until this match learns it.
         _ => Vec::new(),
+    }
+}
+
+/// The terminal-surface remedies, translated (§6). Recognised by exact argv
+/// shape like `from_remedy`, and anything else — including these argvs with
+/// extra arguments — stays copyable text. The button's value is a constant
+/// tag: it authorises nothing and resolves against nothing, because the
+/// doorway has no object; the connector keys on the verb alone.
+fn review_here_block(remedy: &Remedy) -> Option<serde_json::Value> {
+    let argv: Vec<&str> = remedy.argv.iter().map(String::as_str).collect();
+    match argv.as_slice() {
+        ["mecha", "outbox", "review"] => Some(blocks::actions(vec![blocks::button(
+            REVIEW_HERE_OUTBOX,
+            "Review here",
+            "outbox",
+            Some("primary"),
+        )])),
+        ["mecha", "frontdoor", "list"] => Some(blocks::actions(vec![blocks::button(
+            REVIEW_HERE_FRONTDOOR,
+            "Review here",
+            "frontdoor",
+            Some("primary"),
+        )])),
+        _ => None,
     }
 }
 
@@ -366,7 +418,8 @@ mod tests {
                     needs_terminal: true,
                 }),
             ),
-            // Recognised by nobody: a terminal-surface doorway stays text.
+            // A terminal-surface doorway: never executed, translated into a
+            // Review-here button (§6) with its copyable code intact.
             finding(
                 "outbox",
                 Severity::Attention,
@@ -380,28 +433,33 @@ mod tests {
         let rendered = report_blocks(&findings, &no_running());
         let text = blocks_text(&rendered);
 
-        // Exactly two buttons, one per recognised shape.
-        assert_eq!(text.matches("\"button\"").count(), 2, "{text}");
+        // The restart's one button, the trigger finding's probe-and-silence
+        // pair, and the outbox doorway (§6, translated not spawned): four.
+        assert_eq!(text.matches("\"button\"").count(), 4, "{text}");
         assert!(text.contains("\"slack_action_restart_unit\""), "{text}");
         assert!(text.contains("\"slack_action_trigger_run\""), "{text}");
+        assert!(text.contains("\"slack_action_trigger_disable\""), "{text}");
+        assert!(text.contains(REVIEW_HERE_OUTBOX), "{text}");
         assert!(!text.contains("\"slack_action_trigger_cancel\""), "{text}");
 
-        // The payload is the object id only — never a command fragment.
+        // The payload is the object id only — never a command fragment. The
+        // doorway's value is a constant tag that authorises nothing.
         for block in &rendered {
             let Some(elements) = block.get("elements").and_then(|e| e.as_array()) else {
                 continue;
             };
-            for button in elements {
+            for button in elements.iter().filter(|b| b["type"] == "button") {
                 let value = button["value"].as_str().unwrap_or_default();
                 assert!(
-                    value == "mecha-triggers.service" || value == "briefing",
+                    value == "mecha-triggers.service" || value == "briefing" || value == "outbox",
                     "a button value must be a store id, got {value:?}"
                 );
                 assert!(!value.contains(' '), "no argv in a payload: {value:?}");
             }
         }
 
-        // The unrecognised remedies keep their copyable code and gain nothing.
+        // The unrecognised remedies keep their copyable code, and the OAuth
+        // flow gains nothing.
         assert!(text.contains("`mecha-mail auth personal`"), "{text}");
         assert!(text.contains("`mecha outbox review`"), "{text}");
     }
@@ -442,6 +500,134 @@ mod tests {
         let idle = blocks_text(&report_blocks(&findings, &no_running()));
         assert!(idle.contains("\"slack_action_trigger_run\""), "{idle}");
         assert!(!idle.contains("\"slack_action_trigger_cancel\""), "{idle}");
+    }
+
+    /// Phase 2, and the fails-on-old-behaviour half: the outbox and
+    /// frontdoor findings were button-less — their remedies are terminal
+    /// surfaces, and `from_remedy` rightly refuses them forever. The doorway
+    /// translates instead of spawning (§6): the button posts the pending
+    /// items into the thread as cards; the argv is never executed.
+    #[test]
+    fn outbox_and_frontdoor_findings_grow_review_here_doorways() {
+        let findings = vec![
+            finding(
+                "outbox",
+                Severity::Broken,
+                Some(Remedy {
+                    description: "open the outbox review surface — doctor never releases a draft"
+                        .into(),
+                    argv: vec!["mecha".into(), "outbox".into(), "review".into()],
+                    needs_terminal: true,
+                }),
+            ),
+            finding(
+                "frontdoor",
+                Severity::Attention,
+                Some(Remedy {
+                    description: "list the frontdoor queue".into(),
+                    argv: vec!["mecha".into(), "frontdoor".into(), "list".into()],
+                    needs_terminal: false,
+                }),
+            ),
+        ];
+        let text = blocks_text(&report_blocks(&findings, &no_running()));
+        assert!(text.contains(REVIEW_HERE_OUTBOX), "{text}");
+        assert!(text.contains(REVIEW_HERE_FRONTDOOR), "{text}");
+        // Doorways, not verbs: neither id is parseable into an executable
+        // action, so a replayed press can at most re-post cards.
+        assert_eq!(Action::from_payload(REVIEW_HERE_OUTBOX, "outbox"), None);
+        assert_eq!(Action::from_payload(REVIEW_HERE_FRONTDOOR, "frontdoor"), None);
+        // The copyable command survives beside the button.
+        assert!(text.contains("`mecha outbox review`"), "{text}");
+        assert!(text.contains("`mecha frontdoor list`"), "{text}");
+    }
+
+    /// A shape that merely resembles the doorway stays text — the same
+    /// fail-closed direction as `from_remedy`.
+    #[test]
+    fn a_near_miss_of_the_doorway_shape_stays_copyable_text() {
+        for argv in [
+            vec!["mecha", "outbox", "review", "--all"],
+            vec!["mecha", "outbox", "send"],
+            vec!["mecha", "frontdoor", "list", "--state", "closed"],
+            vec!["mecha", "frontdoor", "triage"],
+        ] {
+            let f = finding(
+                "outbox",
+                Severity::Attention,
+                Some(Remedy {
+                    description: "d".into(),
+                    argv: argv.iter().map(|s| s.to_string()).collect(),
+                    needs_terminal: false,
+                }),
+            );
+            let text = blocks_text(&report_blocks(&[f], &no_running()));
+            assert!(!text.contains("\"button\""), "{argv:?} must stay text: {text}");
+        }
+    }
+
+    /// Phase 2: a trigger finding offers the silence beside the probe. Doctor
+    /// only surfaces enabled triggers, so Disable is the half of the pair
+    /// that makes sense here; Enable lives on the `triggers` listing, the one
+    /// surface that shows a disabled trigger at all.
+    #[test]
+    fn a_trigger_finding_offers_disable_beside_the_probe_and_beside_cancel() {
+        let findings = vec![finding(
+            "triggers",
+            Severity::Attention,
+            Some(Remedy {
+                description: "run `briefing` by hand".into(),
+                argv: vec![
+                    "mecha".into(),
+                    "trigger".into(),
+                    "run".into(),
+                    "briefing".into(),
+                ],
+                needs_terminal: false,
+            }),
+        )];
+        let idle = blocks_text(&report_blocks(&findings, &no_running()));
+        assert!(idle.contains("\"slack_action_trigger_run\""), "{idle}");
+        assert!(idle.contains("\"slack_action_trigger_disable\""), "{idle}");
+
+        let running: BTreeSet<String> = ["briefing".to_string()].into();
+        let mid_run = blocks_text(&report_blocks(&findings, &running));
+        assert!(mid_run.contains("\"slack_action_trigger_cancel\""), "{mid_run}");
+        assert!(mid_run.contains("\"slack_action_trigger_disable\""), "{mid_run}");
+    }
+
+    /// Phase 2: the legacy-store finding's remedy is a one-tap import — the
+    /// fails-on-old direction is that this argv shape used to render as
+    /// copyable text with no button at all.
+    #[test]
+    fn a_legacy_import_finding_grows_a_one_tap_import_button() {
+        let findings = vec![finding(
+            "mail",
+            Severity::Broken,
+            Some(Remedy {
+                description: "bring the legacy google login into the unified registry".into(),
+                argv: vec![
+                    "mecha-mail".into(),
+                    "import".into(),
+                    "google".into(),
+                    "--provider".into(),
+                    "google".into(),
+                ],
+                needs_terminal: false,
+            }),
+        )];
+        let rendered = report_blocks(&findings, &no_running());
+        let text = blocks_text(&rendered);
+        assert!(text.contains("\"slack_action_mail_import\""), "{text}");
+        // The value is the provider, from the closed set — never the argv.
+        for block in &rendered {
+            let Some(elements) = block.get("elements").and_then(|e| e.as_array()) else {
+                continue;
+            };
+            for button in elements.iter().filter(|b| b["type"] == "button") {
+                assert_eq!(button["value"], "google", "{text}");
+            }
+        }
     }
 
     /// Slack drops blocks past its cap of 50 with a warning nobody reads; a

@@ -49,7 +49,22 @@ pub mod ids {
     pub const RESTART_UNIT: &str = "slack_action_restart_unit";
     pub const TRIGGER_RUN: &str = "slack_action_trigger_run";
     pub const TRIGGER_CANCEL: &str = "slack_action_trigger_cancel";
+    pub const TRIGGER_ENABLE: &str = "slack_action_trigger_enable";
+    pub const TRIGGER_DISABLE: &str = "slack_action_trigger_disable";
+    pub const MAIL_IMPORT: &str = "slack_action_mail_import";
+    /// Modal callback ids, parsed by [`super::Action::from_submission`] — the
+    /// one constructor that accepts owner-typed text, and only from a signed,
+    /// gated `view_submission`. Never valid in [`super::Action::from_payload`]:
+    /// a button cannot carry free text into an argv.
+    pub const FRONTDOOR_CLOSE_SUBMIT: &str = "slack_frontdoor_close_submit";
+    pub const FRONTDOOR_NEEDS_INFO_SUBMIT: &str = "slack_frontdoor_needs_info_submit";
 }
+
+/// The most characters of owner-typed modal text an action will carry into an
+/// argv. The modal's input element declares the same cap so the person is told
+/// at typing time; this constant is the enforcement, because a client-side cap
+/// is a courtesy and not a boundary.
+pub const MODAL_TEXT_MAX: usize = 500;
 
 /// The closed set of things a tap may execute. A Rust enum rather than an
 /// allowlist of strings, because a string list is data and data gets appended
@@ -74,6 +89,24 @@ pub enum Action {
     /// kept. A sentinel file the runner polls — writing it twice is writing
     /// it once.
     TriggerCancel { name: String },
+    /// Re-arm a disabled trigger. A reversible flag; setting it to its
+    /// current value is a no-op, so replay is harmless by construction.
+    TriggerEnable { name: String },
+    /// Silence a trigger without deleting it — the phone-safe answer to "make
+    /// this stop", where delete stays terminal-only.
+    TriggerDisable { name: String },
+    /// Bring a legacy per-provider mail login into the unified registry —
+    /// additive: the import refuses to overwrite live credentials, so a
+    /// second tap fails loudly rather than swapping a mailbox.
+    MailImport { provider: String },
+    /// Close a frontdoor request, with the reason the frontdoor design makes
+    /// mandatory. `reason` is **owner-authored text from a gated modal
+    /// submission** — see [`Action::from_submission`], the only constructor
+    /// that can produce this variant.
+    FrontdoorClose { seq: i64, reason: String },
+    /// Park a frontdoor request until the requester answers. `question` has
+    /// the same provenance rule as a close's reason.
+    FrontdoorNeedsInfo { seq: i64, question: String },
 }
 
 impl Action {
@@ -81,6 +114,14 @@ impl Action {
     /// the flags and the subcommand are literals in the arms, and the only
     /// non-literal parts are the typed fields — each validated by the
     /// constructor that admitted it.
+    ///
+    /// Provenance, extended for the modal variants: the verb and the object id
+    /// are machine-authored from typed store state as ever; a `reason` or
+    /// `question` is **owner-authored text that arrived through a gated modal
+    /// submission**, length-capped by [`Action::from_submission`], and it
+    /// rides as **one argv element** — never through a shell, so its bytes
+    /// reach exactly one `--reason`/`--note` argument and can name no second
+    /// command. Nothing model-authored composes any part of any arm.
     pub fn argv(&self) -> Vec<String> {
         match self {
             Action::OutboxSend { id } => vec![
@@ -116,6 +157,41 @@ impl Action {
                 "cancel".into(),
                 name.clone(),
             ],
+            Action::TriggerEnable { name } => vec![
+                "mecha".into(),
+                "trigger".into(),
+                "enable".into(),
+                name.clone(),
+            ],
+            Action::TriggerDisable { name } => vec![
+                "mecha".into(),
+                "trigger".into(),
+                "disable".into(),
+                name.clone(),
+            ],
+            Action::MailImport { provider } => vec![
+                "mecha-mail".into(),
+                "import".into(),
+                provider.clone(),
+                "--provider".into(),
+                provider.clone(),
+            ],
+            Action::FrontdoorClose { seq, reason } => vec![
+                "mecha".into(),
+                "frontdoor".into(),
+                "close".into(),
+                seq.to_string(),
+                "--reason".into(),
+                reason.clone(),
+            ],
+            Action::FrontdoorNeedsInfo { seq, question } => vec![
+                "mecha".into(),
+                "frontdoor".into(),
+                "needs-info".into(),
+                seq.to_string(),
+                "--note".into(),
+                question.clone(),
+            ],
         }
     }
 
@@ -141,6 +217,17 @@ impl Action {
             ["mecha", "trigger", "run", name] if is_trigger_name(name) => {
                 Some(Action::TriggerRun {
                     name: (*name).to_string(),
+                })
+            }
+            // The legacy-store import: additive (it refuses to overwrite live
+            // credentials), and the doctor remedy always names the provider
+            // twice — account name and provider flag — so a shape where they
+            // disagree is not this remedy and stays copyable text.
+            ["mecha-mail", "import", name, "--provider", provider]
+                if name == provider && is_mail_provider(provider) =>
+            {
+                Some(Action::MailImport {
+                    provider: (*provider).to_string(),
                 })
             }
             _ => None,
@@ -172,12 +259,60 @@ impl Action {
             ids::TRIGGER_CANCEL if is_trigger_name(value) => Some(Action::TriggerCancel {
                 name: value.to_string(),
             }),
+            ids::TRIGGER_ENABLE if is_trigger_name(value) => Some(Action::TriggerEnable {
+                name: value.to_string(),
+            }),
+            ids::TRIGGER_DISABLE if is_trigger_name(value) => Some(Action::TriggerDisable {
+                name: value.to_string(),
+            }),
+            ids::MAIL_IMPORT if is_mail_provider(value) => Some(Action::MailImport {
+                provider: value.to_string(),
+            }),
+            // Deliberately unreachable here: the frontdoor variants carry
+            // owner-typed text, and a button's payload must never be able to
+            // smuggle text into an argv. They are constructible only through
+            // [`Action::from_submission`].
+            _ => None,
+        }
+    }
+
+    /// Parse a gated modal submission into an action. The **only** constructor
+    /// that accepts free text, and the provenance is the point: the verb is
+    /// the modal's `callback_id`, fixed at compose time from the closed set;
+    /// the seq is machine-authored correlation state (`private_metadata`,
+    /// written by the code that opened the modal); and the text is
+    /// **owner-authored**, typed into a modal that only opened for a
+    /// gate-passing tap and only parses here after the submission's signed
+    /// user passed the same gate. Nothing model-authored composes any of it.
+    ///
+    /// Fail-closed on every field: an unknown callback, a seq that is not a
+    /// positive integer, empty-after-trim text, or text past
+    /// [`MODAL_TEXT_MAX`] all parse to `None` — the length cap holds here even
+    /// though the modal's input element declares the same cap, because a
+    /// client-side cap is a courtesy and not a boundary.
+    pub fn from_submission(callback_id: &str, seq: &str, text: &str) -> Option<Action> {
+        let seq: i64 = seq.parse().ok().filter(|s| *s > 0)?;
+        let text = text.trim();
+        if text.is_empty() || text.chars().count() > MODAL_TEXT_MAX {
+            return None;
+        }
+        match callback_id {
+            ids::FRONTDOOR_CLOSE_SUBMIT => Some(Action::FrontdoorClose {
+                seq,
+                reason: text.to_string(),
+            }),
+            ids::FRONTDOOR_NEEDS_INFO_SUBMIT => Some(Action::FrontdoorNeedsInfo {
+                seq,
+                question: text.to_string(),
+            }),
             _ => None,
         }
     }
 
     /// The verb a card composing this action puts on its button — the same
-    /// literal [`Action::from_payload`] parses, so the pair cannot drift.
+    /// literal [`Action::from_payload`] parses, so the pair cannot drift. For
+    /// the modal variants it is the `callback_id` the submission carries, and
+    /// [`Action::from_submission`] is the parser it cannot drift from.
     pub fn action_id(&self) -> &'static str {
         match self {
             Action::OutboxSend { .. } => ids::OUTBOX_SEND,
@@ -185,15 +320,29 @@ impl Action {
             Action::RestartUnit { .. } => ids::RESTART_UNIT,
             Action::TriggerRun { .. } => ids::TRIGGER_RUN,
             Action::TriggerCancel { .. } => ids::TRIGGER_CANCEL,
+            Action::TriggerEnable { .. } => ids::TRIGGER_ENABLE,
+            Action::TriggerDisable { .. } => ids::TRIGGER_DISABLE,
+            Action::MailImport { .. } => ids::MAIL_IMPORT,
+            Action::FrontdoorClose { .. } => ids::FRONTDOOR_CLOSE_SUBMIT,
+            Action::FrontdoorNeedsInfo { .. } => ids::FRONTDOOR_NEEDS_INFO_SUBMIT,
         }
     }
 
-    /// The object id the button carries — never a command fragment.
-    pub fn value(&self) -> &str {
+    /// The object id the button carries — never a command fragment, and never
+    /// the modal text: a frontdoor variant's value is its seq, because the
+    /// text travels only inside the typed action, from the submission.
+    pub fn value(&self) -> String {
         match self {
-            Action::OutboxSend { id } | Action::OutboxReject { id } => id,
-            Action::RestartUnit { unit } => unit,
-            Action::TriggerRun { name } | Action::TriggerCancel { name } => name,
+            Action::OutboxSend { id } | Action::OutboxReject { id } => id.clone(),
+            Action::RestartUnit { unit } => unit.clone(),
+            Action::TriggerRun { name }
+            | Action::TriggerCancel { name }
+            | Action::TriggerEnable { name }
+            | Action::TriggerDisable { name } => name.clone(),
+            Action::MailImport { provider } => provider.clone(),
+            Action::FrontdoorClose { seq, .. } | Action::FrontdoorNeedsInfo { seq, .. } => {
+                seq.to_string()
+            }
         }
     }
 
@@ -205,6 +354,15 @@ impl Action {
             Action::RestartUnit { unit } => format!("restarting {unit}"),
             Action::TriggerRun { name } => format!("running trigger `{name}`"),
             Action::TriggerCancel { name } => format!("cancelling trigger `{name}`"),
+            Action::TriggerEnable { name } => format!("enabling trigger `{name}`"),
+            Action::TriggerDisable { name } => format!("disabling trigger `{name}`"),
+            Action::MailImport { provider } => {
+                format!("importing the legacy {provider} mail login")
+            }
+            Action::FrontdoorClose { seq, .. } => format!("closing request {seq}"),
+            Action::FrontdoorNeedsInfo { seq, .. } => {
+                format!("parking request {seq} for more information")
+            }
         }
     }
 }
@@ -224,6 +382,13 @@ fn is_mecha_unit(unit: &str) -> bool {
 /// refuse as a filename is refused here for the same reasons.
 fn is_trigger_name(name: &str) -> bool {
     Trigger::valid_name(name).is_ok()
+}
+
+/// The two legacy per-provider stores that exist. A closed set rather than a
+/// shape check, because the set is closed: `mecha-google` and `mecha-outlook`
+/// are the shipped binaries `mecha-mail import` migrates from.
+fn is_mail_provider(provider: &str) -> bool {
+    matches!(provider, "google" | "outlook")
 }
 
 /// An outbox id is minted by the store (timestamp + uuid fragment). Shape
@@ -440,19 +605,49 @@ impl Executor {
                 child_note.as_deref(),
             ),
             Action::TriggerCancel { name } => cancel_outcome(name),
+            Action::TriggerEnable { name } => {
+                toggle_outcome(name, true, trigger_enabled(name), child_note.as_deref())
+            }
+            Action::TriggerDisable { name } => {
+                toggle_outcome(name, false, trigger_enabled(name), child_note.as_deref())
+            }
+            Action::MailImport { provider } => import_outcome(
+                provider,
+                registry_credentials_exist(provider),
+                child_note.as_deref(),
+            ),
+            Action::FrontdoorClose { seq, .. } => mark_outcome(
+                *seq,
+                mecha_core::frontdoor::CLOSED,
+                request_state(*seq).as_deref(),
+                child_note.as_deref(),
+            ),
+            Action::FrontdoorNeedsInfo { seq, .. } => mark_outcome(
+                *seq,
+                mecha_core::frontdoor::NEEDS_INFO,
+                request_state(*seq).as_deref(),
+                child_note.as_deref(),
+            ),
         }
     }
 
     /// Spawn the derived argv. `mecha` means this binary, exactly as the
-    /// doctor report already resolves it; `systemctl`
-    /// comes from `PATH`. Returns the first stderr line (or the spawn error)
-    /// as a note for the store-answered outcome to fall back on when the
-    /// store shows nothing changed.
+    /// doctor report already resolves it; `mecha-mail` is looked for beside
+    /// this binary first (the release layout) before falling back to `PATH`;
+    /// `systemctl` comes from `PATH`. Returns the first stderr line (or the
+    /// spawn error) as a note for the store-answered outcome to fall back on
+    /// when the store shows nothing changed.
     async fn spawn(&self, action: &Action) -> Option<String> {
         let argv = action.argv();
         let (program, rest) = argv.split_first().expect("argv() is never empty");
         let program: PathBuf = if program == "mecha" {
             std::env::current_exe().unwrap_or_else(|_| "mecha".into())
+        } else if let Some(sibling) = std::env::current_exe()
+            .ok()
+            .and_then(|exe| Some(exe.parent()?.join(program)))
+            .filter(|p| program.starts_with("mecha-") && p.is_file())
+        {
+            sibling
         } else {
             program.into()
         };
@@ -594,6 +789,130 @@ fn cancel_outcome(name: &str) -> Outcome {
     }
 }
 
+/// The trigger file, re-read: enable and disable report the flag as it now
+/// stands, never the child's exit.
+fn trigger_enabled(name: &str) -> Option<bool> {
+    let store = TriggerStore::open_existing_default()?;
+    store.get(name).ok().map(|t| t.enabled)
+}
+
+/// The flag as it stands is the outcome. Setting it to its current value is a
+/// no-op, so "already" and "now" collapse into the same honest line.
+pub fn toggle_outcome(
+    name: &str,
+    want_enabled: bool,
+    enabled_now: Option<bool>,
+    child_note: Option<&str>,
+) -> Outcome {
+    let (verb, undo) = if want_enabled {
+        ("enabled", "disable")
+    } else {
+        ("disabled", "enable")
+    };
+    match enabled_now {
+        Some(state) if state == want_enabled => Outcome::of(
+            verb,
+            format!("Trigger `{name}` is {verb} — `mecha trigger {undo} {name}` undoes it"),
+        ),
+        Some(_) => Outcome::of(
+            "failed",
+            match child_note {
+                Some(note) => format!("Trigger `{name}` is unchanged — {note}"),
+                None => format!("Trigger `{name}` is unchanged — see `mecha trigger show {name}`"),
+            },
+        ),
+        None => Outcome::of(
+            "unknown",
+            format!("Trigger `{name}` could not be re-read — see `mecha trigger show {name}`"),
+        ),
+    }
+}
+
+/// Whether the unified registry now holds credentials for the imported
+/// account. The import writes `~/.mecha/mail/<provider>/oauth.json`; its
+/// presence, not the child's exit, is the outcome.
+fn registry_credentials_exist(provider: &str) -> bool {
+    mecha_core::work::mecha_home()
+        .map(|home| {
+            home.join("mail")
+                .join(provider)
+                .join("oauth.json")
+                .is_file()
+        })
+        .unwrap_or(false)
+}
+
+/// The registry is the outcome. An import moves the login, not its health —
+/// the doctor finding that offered this button was about a *dead* legacy
+/// login, so the success line says what still needs a terminal.
+pub fn import_outcome(
+    provider: &str,
+    credentials_present: bool,
+    child_note: Option<&str>,
+) -> Outcome {
+    if credentials_present {
+        Outcome::of(
+            "imported",
+            format!(
+                "Imported the legacy {provider} login into the unified registry as \
+                 `{provider}`. The import moves the login, not its health — \
+                 re-authenticate at a terminal: `mecha-mail auth {provider} \
+                 --provider {provider}`"
+            ),
+        )
+    } else {
+        Outcome::of(
+            "failed",
+            match child_note {
+                Some(note) => format!("The {provider} import made no account — {note}"),
+                None => format!(
+                    "The {provider} import made no account — see `mecha-mail accounts`"
+                ),
+            },
+        )
+    }
+}
+
+/// The request's state, re-read from the store the CLI wrote.
+fn request_state(seq: i64) -> Option<String> {
+    let store = mecha_core::frontdoor::Frontdoor::open_default().ok()?;
+    store.record(seq).ok().map(|r| r.state)
+}
+
+/// The request store answers for close and needs-info: the state as it now
+/// stands, never the child's exit.
+pub fn mark_outcome(
+    seq: i64,
+    want: &str,
+    state_now: Option<&str>,
+    child_note: Option<&str>,
+) -> Outcome {
+    match state_now {
+        Some(state) if state == want => match want {
+            mecha_core::frontdoor::NEEDS_INFO => Outcome::of(
+                want,
+                format!(
+                    "Request {seq} is parked as `needs_info` — it waits on the requester now"
+                ),
+            ),
+            _ => Outcome::of(want, format!("Request {seq} is `{want}`")),
+        },
+        Some(state) => Outcome::of(
+            "failed",
+            match child_note {
+                Some(note) => format!("Request {seq} is still `{state}` — {note}"),
+                None => format!(
+                    "Request {seq} is still `{state}` — see `mecha frontdoor show {seq}`"
+                ),
+            },
+        ),
+        None => Outcome::of(
+            "unknown",
+            format!("Request {seq} could not be re-read — see `mecha frontdoor list`"),
+        ),
+    }
+}
+
 /// `systemctl --user is-failed <unit>` exits 0 exactly when the unit is
 /// failed. A machine without systemd answers "not failed", which makes the
 /// pre-check skip and the outcome read "running" — doctor would never have
@@ -635,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn from_remedy_recognises_exactly_the_two_shapes() {
+    fn from_remedy_recognises_exactly_the_three_shapes() {
         assert_eq!(
             Action::from_remedy(&remedy(
                 &["systemctl", "--user", "restart", "mecha-triggers.service"],
@@ -649,6 +968,18 @@ mod tests {
             Action::from_remedy(&remedy(&["mecha", "trigger", "run", "briefing"], false)),
             Some(Action::TriggerRun {
                 name: "briefing".into()
+            })
+        );
+        // Phase 2: the legacy-store import. This shape was in the refusal
+        // list until this pass deliberately admitted it — the fails-on-old
+        // direction is that it *now* grows a button.
+        assert_eq!(
+            Action::from_remedy(&remedy(
+                &["mecha-mail", "import", "google", "--provider", "google"],
+                false
+            )),
+            Some(Action::MailImport {
+                provider: "google".into()
             })
         );
     }
@@ -667,7 +998,12 @@ mod tests {
         // Every other shipped remedy shape degrades to display.
         for argv in [
             vec!["mecha-mail", "auth", "personal", "--provider", "google"],
-            vec!["mecha-mail", "import", "google", "--provider", "google"],
+            // Not the trusted import shape: a provider outside the closed
+            // set, the account and provider disagreeing, extra arguments.
+            vec!["mecha-mail", "import", "aol", "--provider", "aol"],
+            vec!["mecha-mail", "import", "personal", "--provider", "google"],
+            vec!["mecha-mail", "import", "google", "--provider", "outlook"],
+            vec!["mecha-mail", "import", "google", "--provider", "google", "--force"],
             vec!["mecha", "outbox", "review"],
             vec!["mecha", "frontdoor", "list"],
             // Not the trusted unit shape: another unit, a hostile lookalike,
@@ -704,19 +1040,77 @@ mod tests {
             Action::TriggerCancel {
                 name: "briefing".into(),
             },
+            Action::TriggerEnable {
+                name: "briefing".into(),
+            },
+            Action::TriggerDisable {
+                name: "briefing".into(),
+            },
+            Action::MailImport {
+                provider: "google".into(),
+            },
+            Action::FrontdoorClose {
+                seq: 5,
+                reason: "spam".into(),
+            },
+            Action::FrontdoorNeedsInfo {
+                seq: 5,
+                question: "which Tuesday?".into(),
+            },
         ];
         for action in &samples {
             let argv = action.argv();
             assert!(!argv.is_empty());
             assert!(
-                argv[0] == "mecha" || argv[0] == "systemctl",
+                argv[0] == "mecha" || argv[0] == "systemctl" || argv[0] == "mecha-mail",
                 "{argv:?} spawns an unexpected program"
             );
             assert!(
-                argv.iter().any(|a| a == action.value()),
+                argv.iter().any(|a| *a == action.value()),
                 "the object id rides as its own argument: {argv:?}"
             );
         }
+    }
+
+    /// The modal text crosses into the argv as **exactly one element**, never
+    /// through a shell — a reason full of spaces, quotes, semicolons and a
+    /// would-be second command reaches `--reason` as one argument and can
+    /// name no second command. This is the provenance comment's enforceable
+    /// half.
+    #[test]
+    fn owner_typed_modal_text_rides_as_a_single_argv_element() {
+        let hostile = r#"done"; rm -rf ~; echo "--yes $(cat /etc/passwd)"#;
+        let close = Action::FrontdoorClose {
+            seq: 9,
+            reason: hostile.into(),
+        };
+        let argv = close.argv();
+        assert_eq!(
+            argv,
+            vec![
+                "mecha".to_string(),
+                "frontdoor".into(),
+                "close".into(),
+                "9".into(),
+                "--reason".into(),
+                hostile.into(),
+            ],
+            "the text is one element, bytes intact, position fixed"
+        );
+        assert_eq!(
+            argv.iter().filter(|a| a.contains("rm -rf")).count(),
+            1,
+            "the hostile text exists only inside the one reason argument"
+        );
+
+        let park = Action::FrontdoorNeedsInfo {
+            seq: 9,
+            question: "which Tuesday — this week's, or next?".into(),
+        };
+        let argv = park.argv();
+        assert_eq!(argv[4], "--note");
+        assert_eq!(argv[5], "which Tuesday — this week's, or next?");
+        assert_eq!(argv.len(), 6);
     }
 
     #[test]
@@ -735,8 +1129,17 @@ mod tests {
             Action::TriggerCancel {
                 name: "briefing".into(),
             },
+            Action::TriggerEnable {
+                name: "briefing".into(),
+            },
+            Action::TriggerDisable {
+                name: "briefing".into(),
+            },
+            Action::MailImport {
+                provider: "outlook".into(),
+            },
         ] {
-            let back = Action::from_payload(action.action_id(), action.value());
+            let back = Action::from_payload(action.action_id(), &action.value());
             assert_eq!(back, Some(action));
         }
         // The confirm verb resolves to the same send action — the two-step's
@@ -765,10 +1168,86 @@ mod tests {
         for hostile in ["../escape", "a b", "UPPER", ""] {
             assert_eq!(Action::from_payload(ids::TRIGGER_RUN, hostile), None, "{hostile}");
             assert_eq!(Action::from_payload(ids::TRIGGER_CANCEL, hostile), None, "{hostile}");
+            assert_eq!(Action::from_payload(ids::TRIGGER_ENABLE, hostile), None, "{hostile}");
+            assert_eq!(Action::from_payload(ids::TRIGGER_DISABLE, hostile), None, "{hostile}");
         }
         for hostile in ["", "a b", "x/../y", &"x".repeat(200)] {
             assert_eq!(Action::from_payload(ids::OUTBOX_SEND, hostile), None, "{hostile}");
         }
+        // The provider set is closed; anything else — including a legal shell
+        // word — is not a legacy store.
+        for hostile in ["aol", "google; rm -rf /", "GOOGLE", "google outlook", ""] {
+            assert_eq!(Action::from_payload(ids::MAIL_IMPORT, hostile), None, "{hostile}");
+        }
+        // The frontdoor verbs are modal callback ids, and a button payload
+        // must never construct them: text can only arrive through the gated
+        // submission parser.
+        assert_eq!(
+            Action::from_payload(ids::FRONTDOOR_CLOSE_SUBMIT, "5"),
+            None,
+            "a button cannot close a request — the reason comes from a modal"
+        );
+        assert_eq!(Action::from_payload(ids::FRONTDOOR_NEEDS_INFO_SUBMIT, "5"), None);
+    }
+
+    #[test]
+    fn a_submission_round_trips_and_carries_the_owner_text_typed() {
+        let close = Action::from_submission(ids::FRONTDOOR_CLOSE_SUBMIT, "5", "  spam, politely declined  ");
+        assert_eq!(
+            close,
+            Some(Action::FrontdoorClose {
+                seq: 5,
+                reason: "spam, politely declined".into()
+            }),
+            "trimmed, typed, and nothing else changed"
+        );
+        let park = Action::from_submission(ids::FRONTDOOR_NEEDS_INFO_SUBMIT, "12", "which Tuesday?");
+        assert_eq!(
+            park,
+            Some(Action::FrontdoorNeedsInfo {
+                seq: 12,
+                question: "which Tuesday?".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_submission_with_a_bad_seq_an_empty_text_or_an_over_cap_text_is_refused() {
+        // The seq is machine-authored correlation state, but the parser
+        // trusts nothing: it must be a positive integer and only that.
+        for bad_seq in ["", "abc", "-1", "0", "5; rm -rf /", "5 6", "1e3"] {
+            assert_eq!(
+                Action::from_submission(ids::FRONTDOOR_CLOSE_SUBMIT, bad_seq, "a reason"),
+                None,
+                "{bad_seq:?}"
+            );
+        }
+        // A required reason that is empty after trimming is no reason.
+        for empty in ["", "   ", "\n\t"] {
+            assert_eq!(
+                Action::from_submission(ids::FRONTDOOR_CLOSE_SUBMIT, "5", empty),
+                None,
+                "{empty:?}"
+            );
+        }
+        // The length cap holds here even though the modal's input element
+        // declares the same cap — a client-side cap is a courtesy, not a
+        // boundary.
+        let over = "x".repeat(MODAL_TEXT_MAX + 1);
+        assert_eq!(
+            Action::from_submission(ids::FRONTDOOR_CLOSE_SUBMIT, "5", &over),
+            None
+        );
+        let at_cap = "x".repeat(MODAL_TEXT_MAX);
+        assert!(Action::from_submission(ids::FRONTDOOR_CLOSE_SUBMIT, "5", &at_cap).is_some());
+        // An unknown callback id constructs nothing, exactly like an unknown
+        // button verb.
+        assert_eq!(
+            Action::from_submission("slack_outbox_send", "5", "a reason"),
+            None,
+            "a message verb is not a modal verb"
+        );
+        assert_eq!(Action::from_submission("anything_else", "5", "a reason"), None);
     }
 
     #[test]
@@ -946,5 +1425,65 @@ mod tests {
         let none = trigger_run_outcome("briefing", None, None);
         assert_eq!(none.status, "unknown");
         assert!(none.line.contains("mecha trigger runs briefing"), "{}", none.line);
+    }
+
+    /// §6's rule for the flag: the trigger file re-read is the outcome. The
+    /// signature has no exit code, so a child that died after writing the
+    /// flag still reports the flag.
+    #[test]
+    fn an_enable_or_disable_reports_the_flag_as_it_now_stands() {
+        let on = toggle_outcome("briefing", true, Some(true), Some("child was killed"));
+        assert_eq!(on.status, "enabled");
+        assert!(on.line.contains("mecha trigger disable briefing"), "{}", on.line);
+        assert!(!on.line.contains("killed"), "{}", on.line);
+
+        let off = toggle_outcome("briefing", false, Some(false), None);
+        assert_eq!(off.status, "disabled");
+        assert!(off.line.contains("mecha trigger enable briefing"), "{}", off.line);
+
+        let unchanged = toggle_outcome("briefing", false, Some(true), Some("store locked"));
+        assert_eq!(unchanged.status, "failed");
+        assert!(unchanged.line.contains("store locked"), "{}", unchanged.line);
+
+        let unknown = toggle_outcome("briefing", true, None, None);
+        assert_eq!(unknown.status, "unknown");
+        assert!(unknown.line.contains("mecha trigger show briefing"), "{}", unknown.line);
+    }
+
+    #[test]
+    fn an_import_reports_the_registry_and_names_the_reauth_it_cannot_do() {
+        let ok = import_outcome("google", true, None);
+        assert_eq!(ok.status, "imported");
+        // The finding this button rode on was about a *dead* login; the
+        // import moves it, and the outcome says what still needs a terminal.
+        assert!(
+            ok.line.contains("mecha-mail auth google --provider google"),
+            "{}",
+            ok.line
+        );
+
+        let failed = import_outcome("outlook", false, Some("already has credentials"));
+        assert_eq!(failed.status, "failed");
+        assert!(failed.line.contains("already has credentials"), "{}", failed.line);
+    }
+
+    #[test]
+    fn a_frontdoor_mark_reports_the_requests_state_never_the_childs_exit() {
+        let closed = mark_outcome(5, "closed", Some("closed"), Some("child was killed"));
+        assert_eq!(closed.status, "closed");
+        assert!(!closed.line.contains("killed"), "{}", closed.line);
+
+        let parked = mark_outcome(5, "needs_info", Some("needs_info"), None);
+        assert_eq!(parked.status, "needs_info");
+        assert!(parked.line.contains("requester"), "{}", parked.line);
+
+        let stuck = mark_outcome(5, "closed", Some("extracted"), Some("no request with seq 5"));
+        assert_eq!(stuck.status, "failed");
+        assert!(stuck.line.contains("extracted"), "{}", stuck.line);
+        assert!(stuck.line.contains("no request with seq 5"), "{}", stuck.line);
+
+        let unknown = mark_outcome(5, "closed", None, None);
+        assert_eq!(unknown.status, "unknown");
+        assert!(unknown.line.contains("mecha frontdoor list"), "{}", unknown.line);
     }
 }
