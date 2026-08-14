@@ -99,17 +99,11 @@ impl LensedSearch {
             description,
         }
     }
-}
 
-#[async_trait]
-impl Tool for LensedSearch {
-    fn name(&self) -> &str {
-        "kg_search"
-    }
-    fn description(&self) -> &str {
-        &self.description
-    }
-    fn input_schema(&self) -> Value {
+    /// The schema handed to the model. An associated fn so the boundary
+    /// tests exercise THIS — a test asserting on its own copy of the schema
+    /// keeps passing after the production one grows a hole.
+    pub fn lens_schema() -> Value {
         // No `sources`, no `since`, no `until`: what the model cannot name,
         // it cannot widen.
         json!({
@@ -121,10 +115,9 @@ impl Tool for LensedSearch {
             "required": ["query"]
         })
     }
-    fn read_only(&self) -> bool {
-        true
-    }
-    fn capabilities(&self) -> Capabilities {
+
+    /// What a reader declares. Same reasoning as [`Self::lens_schema`].
+    pub fn lens_capabilities() -> Capabilities {
         Capabilities {
             // The graph holds the user's own life; episodes are private-tier.
             private_data: true,
@@ -134,6 +127,25 @@ impl Tool for LensedSearch {
             external_send: false,
             destructive: false,
         }
+    }
+}
+
+#[async_trait]
+impl Tool for LensedSearch {
+    fn name(&self) -> &str {
+        "kg_search"
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn input_schema(&self) -> Value {
+        Self::lens_schema()
+    }
+    fn read_only(&self) -> bool {
+        true
+    }
+    fn capabilities(&self) -> Capabilities {
+        Self::lens_capabilities()
     }
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(query) = input.get("query").and_then(Value::as_str) else {
@@ -1523,16 +1535,12 @@ mod tests {
     fn lensed_search_hides_what_it_pins() {
         // The point of the wrapper: a child cannot widen its own lens,
         // because the schema it is shown has no way to name the lens.
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "What to look for"},
-                "k": {"type": "integer", "description": "Max results (default 10)"}
-            },
-            "required": ["query"]
-        });
+        // Asserts on the PRODUCTION schema — an earlier version asserted on
+        // its own copy, which would keep passing after the real one grew a
+        // hole.
+        let schema = LensedSearch::lens_schema();
         let props = schema["properties"].as_object().unwrap();
-        for pinned in ["sources", "since", "until", "include_private"] {
+        for pinned in ["sources", "since", "until", "include_private", "scope"] {
             assert!(
                 !props.contains_key(pinned),
                 "{pinned} must not be nameable by the child"
@@ -1545,15 +1553,43 @@ mod tests {
         // The guarantee the owner asked for: a gossip run cannot put a
         // question to them. ModeApprover in ReadOnly answers from policy —
         // anything not read-only is Blocked with a reason, and nothing is
-        // ever raised to a terminal nobody is sitting at.
+        // ever raised to a terminal nobody is sitting at. Exercises
+        // approve() itself; an earlier version only inspected the mode
+        // field, which a broken approve() would have sailed past.
+        struct Probe {
+            ro: bool,
+        }
+        #[async_trait]
+        impl Tool for Probe {
+            fn name(&self) -> &str {
+                "probe"
+            }
+            fn description(&self) -> &str {
+                "test probe"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                self.ro
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("ok"))
+            }
+        }
+        use crate::tool::Approver as _;
         let a = crate::tool::ModeApprover {
             mode: crate::config::PermissionMode::ReadOnly,
         };
-        assert!(matches!(a.mode, crate::config::PermissionMode::ReadOnly));
-        // Ask mode would be the wrong choice here: it blocks too, but its
-        // message invites `--yes`, which is exactly the escape hatch a
-        // background measurement must not have.
-        assert!(!matches!(a.mode, crate::config::PermissionMode::Ask));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let read = rt.block_on(a.approve(&Probe { ro: true }, &json!({})));
+        assert!(matches!(read, crate::tool::Decision::Allow));
+        let write = rt.block_on(a.approve(&Probe { ro: false }, &json!({})));
+        // Blocked, not Deny, and never a question raised to a terminal
+        // nobody is sitting at.
+        assert!(matches!(write, crate::tool::Decision::Blocked(_)));
     }
 
     #[test]
@@ -1561,18 +1597,15 @@ mod tests {
         // Both halves of the trifecta enter a gossip child by design — it
         // reads the user's life, and episode bodies are third-party text.
         // The third leg must therefore never be handed over, or the pair
-        // becomes an exfiltration path.
-        let caps = Capabilities {
-            private_data: true,
-            untrusted_input: true,
-            external_send: false,
-            destructive: false,
-        };
+        // becomes an exfiltration path. Asserts on the PRODUCTION
+        // declaration, not a literal copy of it.
+        let caps = LensedSearch::lens_capabilities();
         assert!(caps.private_data && caps.untrusted_input);
         assert!(
             !caps.external_send,
             "a gossip reader with a way to send is the leak the interlock exists for"
         );
+        assert!(!caps.destructive);
     }
 }
 
