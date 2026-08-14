@@ -288,14 +288,44 @@ impl Tool for GraphTool {
 
 /// Sources that carry the same kind of account, so two vantages drawn from
 /// one family are two slices of one witness rather than two witnesses.
+///
+/// Reflect is split where Bee is not: `bee.daily` is a machine digest of
+/// `bee.conversation` — one witness wearing two labels — while a Reflect
+/// note and a Reflect daily are separately written accounts that happen to
+/// share an app. Collapsed under one name, two runs could read different
+/// shelves and present as one mechanism contradicting itself.
 pub fn family(source: &str) -> &'static str {
     match source {
         s if s.starts_with("bee.") => "spoken",
+        "reflect.note" => "reflected.note",
+        "reflect.daily" => "reflected.daily",
         s if s.starts_with("reflect.") => "reflected",
         s if s.starts_with("session.") || s.starts_with("agent:") => "agentic",
         "calendar.event" => "scheduled",
         "slack.thread" | "mbox" | "email.thread" => "written",
         _ => "other",
+    }
+}
+
+/// The family a candidate's ORIGIN belongs to — accepting either a full
+/// source name (`bee.conversation`) or a proposer string (`bee:suggested`).
+///
+/// This must not be reconstructed by re-suffixing the origin's head token:
+/// `slack.thread` round-tripped through `"slack."` lands in `other`, which
+/// bars nothing and leaves the origin itself eligible as its own witness.
+/// A proposer names a family only when the tool itself is the source (Bee's
+/// fact API); an extractor proposer (`llm`, `llm:commitment`) says nothing
+/// about where the evidence lived, and pretending otherwise is how a claim
+/// gets corroborated by its own transcript — so those return None.
+pub fn family_of_origin(origin: &str) -> Option<&'static str> {
+    if origin.starts_with("agent:") {
+        return Some(family(origin));
+    }
+    match origin.split_once(':') {
+        Some(("bee", _)) => Some("spoken"),
+        Some(_) => None,
+        None if origin == "llm" => None,
+        None => Some(family(origin)),
     }
 }
 
@@ -1287,6 +1317,39 @@ mod tests {
     }
 
     #[test]
+    fn every_origin_bars_its_own_family_not_a_reconstruction() {
+        // Regression: the origin's family used to be rebuilt from its head
+        // token (`slack.thread` → "slack." → "other"), which barred nothing
+        // and left the origin itself eligible as its own witness for every
+        // Slack, calendar, mail, and llm-proposed candidate.
+        let spread = cov(&[
+            ("slack.thread", 40),
+            ("bee.conversation", 30),
+            ("calendar.event", 20),
+        ]);
+        for origin in ["slack.thread", "mbox", "email.thread"] {
+            let (a, b) = vantages_excluding(&spread, Some(origin), 3).unwrap();
+            for v in [&a, &b] {
+                assert!(
+                    !v.sources.iter().any(|s| s == "slack.thread"),
+                    "origin {origin} left its own family eligible: {v:?}"
+                );
+            }
+        }
+        let (a, b) = vantages_excluding(&spread, Some("calendar.event"), 3).unwrap();
+        for v in [&a, &b] {
+            assert!(!v.sources.iter().any(|s| s == "calendar.event"), "{v:?}");
+        }
+        // An extractor proposer names no source at all. With the origin
+        // unknowable, refusing is the only answer that cannot let a claim
+        // vote for itself.
+        assert!(vantages_excluding(&spread, Some("llm:commitment"), 3).is_none());
+        assert!(vantages_excluding(&spread, Some("llm"), 3).is_none());
+        // agent:mecha is a real source whose name happens to hold a colon.
+        assert_eq!(family_of_origin("agent:mecha"), Some("agentic"));
+    }
+
+    #[test]
     fn an_unparseable_verdict_is_never_guessed() {
         assert_eq!(
             parse_verdict("VERDICT: contradicted\nBASIS: the graph lists one node."),
@@ -1450,6 +1513,10 @@ mod tests {
         assert_eq!(family("bee.conversation"), family("bee.daily"));
         assert_ne!(family("calendar.event"), family("slack.thread"));
         assert_ne!(family("reflect.note"), family("bee.conversation"));
+        // bee.daily is a digest of bee.conversation — one witness. A Reflect
+        // note and a Reflect daily are separately written accounts, so they
+        // may serve as each other's witness.
+        assert_ne!(family("reflect.note"), family("reflect.daily"));
     }
 
     #[test]
@@ -1667,12 +1734,18 @@ CONTRADICTED means your evidence shows the opposite, not merely that it is \
 absent. Absence is UNSEEN.";
 
 /// One candidate, judged by two readers on sources that exclude its origin.
+#[derive(Debug, Clone, Serialize)]
 pub struct Corroboration {
     pub candidate_id: i64,
     pub statement: String,
     pub verdict: &'static str,
     pub sightings: Vec<(String, Sighting, String)>,
     pub rechecked: bool,
+    /// The dissenter's answer BEFORE the reveal, when one happened. A flip
+    /// from Unseen after being shown the other's citation and an independent
+    /// Seen are different findings — overwriting the first look erased the
+    /// distinction, and it is exactly the datum rule-derivation needs.
+    pub pre_reveal: Option<(String, Sighting, String)>,
 }
 
 /// Commit, then reveal, then compute.
@@ -1717,10 +1790,12 @@ pub async fn corroborate(
     // something is how a second look differs from a first — the reader may
     // hold the same episode under a wording its own query never reached.
     let mut rechecked = false;
+    let mut pre_reveal = None;
     let seen_at = found.iter().position(|(_, s, _)| *s == Sighting::Seen);
     let unseen_at = found.iter().position(|(_, s, _)| *s == Sighting::Unseen);
     if let (Some(hit), Some(miss)) = (seen_at, unseen_at) {
         rechecked = true;
+        pre_reveal = Some(found[miss].clone());
         let mut convo = Conversation::user(format!(
             "Claim: {}\n\nAnother assistant, reading {}, found this:\n{}\n\n\
              Search YOUR sources once more with that in mind. Do not take \
@@ -1750,6 +1825,7 @@ pub async fn corroborate(
         verdict: corroboration_verdict(found[0].1, found[1].1),
         sightings: found,
         rechecked,
+        pre_reveal,
     })
 }
 
@@ -1765,15 +1841,20 @@ pub async fn corroborate(
 /// (`bee:suggested`), because many candidates have no originating episode
 /// at all — Bee's fact API stages 200 with a null episode_id — and the
 /// proposer prefix is then the only honest record of where they came from.
+/// An origin whose family cannot be determined refuses outright: no verdict
+/// is strictly better than one the origin may have voted in.
 pub fn vantages_excluding(
     coverage: &[SourceCoverage],
     origin: Option<&str>,
     min: i64,
 ) -> Option<(Vantage, Vantage)> {
-    let barred = origin.map(|o| {
-        let head = o.split([':', '.']).next().unwrap_or(o);
-        family(&format!("{head}."))
-    });
+    let barred = match origin {
+        Some(o) => match family_of_origin(o) {
+            Some(f) => Some(f),
+            None => return None,
+        },
+        None => None,
+    };
     let kept: Vec<SourceCoverage> = coverage
         .iter()
         .filter(|c| barred != Some(family(&c.source)))

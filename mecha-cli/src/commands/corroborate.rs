@@ -55,6 +55,12 @@ pub struct CorroborateArgs {
     /// inheriting.
     #[arg(long)]
     pub record: bool,
+    /// Append one JSON line per judged candidate — verdict, both sightings
+    /// with citations, and the dissenter's pre-reveal answer. The rule this
+    /// mechanism exists to derive gets derived from these transcripts;
+    /// stdout alone leaves nothing to derive from.
+    #[arg(long)]
+    pub out: Option<std::path::PathBuf>,
 }
 
 pub async fn run(global: &crate::GlobalOpts, args: &CorroborateArgs) -> Result<()> {
@@ -103,6 +109,16 @@ pub async fn run(global: &crate::GlobalOpts, args: &CorroborateArgs) -> Result<(
     // rather than asking the graph the same question 300 times.
     let mut coverage_cache: HashMap<String, Vec<gossip::SourceCoverage>> = HashMap::new();
     let mut tally: HashMap<&str, usize> = HashMap::new();
+    let mut out_file = match &args.out {
+        Some(p) => Some(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)
+                .with_context(|| format!("opening --out file {}", p.display()))?,
+        ),
+        None => None,
+    };
 
     for cand in &candidates {
         let subject = cand.subject.clone().unwrap_or_default();
@@ -182,7 +198,16 @@ pub async fn run(global: &crate::GlobalOpts, args: &CorroborateArgs) -> Result<(
         };
         let readers = vec![(va.clone(), build(&va)?), (vb.clone(), build(&vb)?)];
 
-        let result = gossip::corroborate(&readers, &cx, cand).await?;
+        // One candidate's failure must not abort the batch: an MCP hiccup on
+        // candidate 150 used to lose everything after it.
+        let result = match gossip::corroborate(&readers, &cx, cand).await {
+            Ok(r) => r,
+            Err(e) => {
+                println!("  [error] {} — {e:#}\n", cand.candidate_id);
+                *tally.entry("error").or_default() += 1;
+                continue;
+            }
+        };
         *tally.entry(result.verdict).or_default() += 1;
 
         println!("  [{}] {}", result.verdict, result.statement);
@@ -192,8 +217,8 @@ pub async fn run(global: &crate::GlobalOpts, args: &CorroborateArgs) -> Result<(
         for (who, sighting, cite) in &result.sightings {
             println!("      {who}: {sighting:?} — {cite}");
         }
-        if result.rechecked {
-            println!("      (the dissenter looked again after seeing the other's citation)");
+        if let Some((who, first, _)) = &result.pre_reveal {
+            println!("      ({who} first said {first:?}, then looked again after seeing the other's citation)");
         }
 
         if args.record {
@@ -203,7 +228,7 @@ pub async fn run(global: &crate::GlobalOpts, args: &CorroborateArgs) -> Result<(
                 .map(|(w, s, _)| format!("{w}:{s:?}"))
                 .collect::<Vec<_>>()
                 .join(" ");
-            gossip::file_verdict(
+            if let Err(e) = gossip::file_verdict(
                 &client,
                 result.candidate_id,
                 "corroboration",
@@ -211,7 +236,29 @@ pub async fn run(global: &crate::GlobalOpts, args: &CorroborateArgs) -> Result<(
                 &basis,
                 model.as_deref(),
             )
-            .await?;
+            .await
+            {
+                println!("      (verdict not filed: {e:#})");
+                *tally.entry("file_error").or_default() += 1;
+            }
+        }
+        if let Some(f) = out_file.as_mut() {
+            use std::io::Write;
+            let line = serde_json::json!({
+                "at": chrono::Local::now().to_rfc3339(),
+                "proposer": args.proposer,
+                "predicate": args.predicate,
+                "subject": subject,
+                "subject_ambiguous": cand.subject_ambiguous,
+                "origin_source": cand.origin_source,
+                "vantages": [&va, &vb],
+                "since": args.since,
+                "until": until,
+                "model": model,
+                "recorded": args.record,
+                "result": result,
+            });
+            writeln!(f, "{line}").context("writing --out line")?;
         }
         println!();
     }
