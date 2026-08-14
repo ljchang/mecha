@@ -36,6 +36,13 @@ pub struct GossipArgs {
     /// Minimum episodes a source needs before it can be a vantage.
     #[arg(long, default_value_t = 3)]
     pub min_coverage: i64,
+    /// Claims to audit after the exchange; 0 skips the audit.
+    ///
+    /// Bounded because it costs one model call each, and because an audit
+    /// nobody reads is worse than none — it lends a transcript the look of
+    /// having been checked.
+    #[arg(long, default_value_t = 8)]
+    pub verify: usize,
 }
 
 pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
@@ -149,7 +156,7 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
     let approver = Arc::new(mecha_core::tool::ModeApprover {
         mode: mecha_core::config::PermissionMode::ReadOnly,
     });
-    let cx = mecha_core::agent::RunContext::new(tool_ctx, approver);
+    let cx = mecha_core::agent::RunContext::new(tool_ctx.clone(), approver);
 
     let exchange = gossip::exchange(
         &answerers,
@@ -162,6 +169,40 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
     .await?;
 
     println!("\n{}", gossip::render(&exchange));
+
+    if args.verify > 0 {
+        // pkg's deterministic tier first, and printed whether or not the
+        // model tier agrees with it. `kg_verify` dereferences stored claims
+        // to their cited evidence with no model in the loop, so it is the
+        // one part of this audit that cannot hallucinate — it belongs above
+        // the part that can.
+        match gossip::graph_findings(&client, &name).await {
+            Ok(text) => println!("\nWhat the graph says about its own claims:\n{text}"),
+            Err(e) => eprintln!("kg_verify failed: {e}"),
+        }
+
+        let verdicts = gossip::audit(
+            &gossip::extractor(
+                mecha_core::provider::build(provider_cfg)?,
+                tool_ctx.clone(),
+                cfg.agent.clone(),
+                model.clone(),
+            )?,
+            &gossip::verifier(
+                mecha_core::provider::build(provider_cfg)?,
+                Arc::clone(&client),
+                tool_ctx.clone(),
+                cfg.agent.clone(),
+                model.clone(),
+            )?,
+            &cx,
+            &exchange,
+            args.verify,
+        )
+        .await?;
+        println!("{}", gossip::render_audit(&verdicts));
+    }
+
     println!(
         "Nothing was written. Read it and decide whether the follow-ups found \
          anything the templates would not have."

@@ -165,6 +165,127 @@ impl Tool for LensedSearch {
     }
 }
 
+/// A graph tool handed through unchanged, for the one participant that is
+/// not a witness.
+///
+/// [`LensedSearch`] exists to *narrow*; this exists to refuse to. The
+/// Verifier is the only role allowed the whole graph — every source, the
+/// full window, and the fact layer the readers are deliberately kept away
+/// from — because an adjudicator restricted to one vantage is just a third
+/// witness with opinions about the other two.
+///
+/// It stays read-only and outbound-free like everything else here, so the
+/// wider view costs nothing in interlock terms: it reads more, and it still
+/// has no way to send.
+pub struct GraphTool {
+    client: Arc<McpClient>,
+    name: String,
+    description: String,
+    schema: Value,
+}
+
+impl GraphTool {
+    pub fn verify(client: Arc<McpClient>) -> Self {
+        GraphTool {
+            client,
+            name: "kg_verify".into(),
+            description: "Check what the graph BELIEVES against what its evidence \
+                 actually says — deterministic, no model in the loop. Give a `node` \
+                 (name or id) for every live claim about it. Verdicts include \
+                 supported, contradicted, denied, stale, residue, unrooted."
+                .into(),
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "node": {"type": "string", "description": "Entity name, alias or id"},
+                    "fact": {"type": "string", "description": "A single fact uid"},
+                    "limit": {"type": "integer"}
+                }
+            }),
+        }
+    }
+
+    /// Entity metadata: node id, aliases, identifiers, per-source coverage,
+    /// interaction count, last seen.
+    ///
+    /// Added because the audit was inconsistent without it. "Luke was last
+    /// seen on August 13" came back supported while "Luke has 1,212 recorded
+    /// interactions" came back unsupported — the same class of claim, judged
+    /// two ways, because both live in entity metadata and the verifier could
+    /// only reach whichever of them happened to surface in a search result.
+    /// An adjudicator that cannot see a field will call a true claim about
+    /// it unsupported, which is the one verdict that must stay trustworthy.
+    pub fn entity(client: Arc<McpClient>) -> Self {
+        GraphTool {
+            client,
+            name: "kg_entity".into(),
+            description: "Look up an entity's record: node id, aliases, identifiers \
+                 (emails, Slack ids), which sources cover it, interaction count and \
+                 when it was last seen. Use this for claims about the graph's own \
+                 bookkeeping rather than about events."
+                .into(),
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "name_or_id": {"type": "string", "description": "Entity name, alias or id"}
+                },
+                "required": ["name_or_id"]
+            }),
+        }
+    }
+
+    pub fn search_everything(client: Arc<McpClient>) -> Self {
+        GraphTool {
+            client,
+            name: "kg_search".into(),
+            description: "Search the whole knowledge graph — every source, no time \
+                 limit, facts as well as evidence. Use it to find whether anything \
+                 actually supports a claim."
+                .into(),
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "k": {"type": "integer", "description": "Max results (default 10)"}
+                },
+                "required": ["query"]
+            }),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for GraphTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn input_schema(&self) -> Value {
+        self.schema.clone()
+    }
+    fn read_only(&self) -> bool {
+        true
+    }
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            private_data: true,
+            untrusted_input: true,
+            external_send: false,
+            destructive: false,
+        }
+    }
+    async fn call(&self, mut input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+        if self.name == "kg_search" {
+            if let Some(o) = input.as_object_mut() {
+                o.insert("include_private".into(), json!(true));
+            }
+        }
+        self.client.call_tool(&self.name, input).await
+    }
+}
+
 /// Sources that carry the same kind of account, so two vantages drawn from
 /// one family are two slices of one witness rather than two witnesses.
 pub fn family(source: &str) -> &'static str {
@@ -316,6 +437,62 @@ pub fn asker(
         cfg,
         model,
     )
+}
+
+/// Build the claim EXTRACTOR: no tools, for the same reason the asker has
+/// none. An extractor that can search begins checking as it reads, and
+/// returns a filtered list rather than a faithful one — the claims most
+/// worth auditing are exactly the ones it would quietly drop.
+pub fn extractor(
+    provider: Box<dyn crate::provider::Provider>,
+    tool_ctx: ToolCtx,
+    agent_cfg: crate::config::AgentConfig,
+    model: Option<String>,
+) -> Result<Agent> {
+    let approver = Arc::new(crate::tool::ModeApprover {
+        mode: crate::config::PermissionMode::ReadOnly,
+    });
+    let mut cfg = agent_cfg;
+    cfg.system_prompt = Some(EXTRACT_SYS.to_string());
+    Agent::new(
+        provider,
+        crate::tool::Registry::new(),
+        approver,
+        tool_ctx,
+        cfg,
+        model,
+    )
+}
+
+/// Build the VERIFIER: the whole graph, and still no way to send.
+///
+/// The one participant deliberately not given a lens. Readers are narrowed
+/// so that their agreement means something; an adjudicator narrowed the
+/// same way would just be a third witness. It gets `kg_verify` — pkg's
+/// deterministic tier, which dereferences a stored claim to the evidence
+/// cited for it with no model in the loop — and an unrestricted
+/// `kg_search`.
+///
+/// The interlock is unchanged by the wider view: both tools are read-only,
+/// the registry holds nothing outbound, and the approver answers from
+/// policy. It reads more and can still tell nobody.
+pub fn verifier(
+    provider: Box<dyn crate::provider::Provider>,
+    client: Arc<McpClient>,
+    tool_ctx: ToolCtx,
+    agent_cfg: crate::config::AgentConfig,
+    model: Option<String>,
+) -> Result<Agent> {
+    let approver = Arc::new(crate::tool::ModeApprover {
+        mode: crate::config::PermissionMode::ReadOnly,
+    });
+    let mut registry = crate::tool::Registry::new();
+    registry.insert(Arc::new(GraphTool::verify(Arc::clone(&client))));
+    registry.insert(Arc::new(GraphTool::entity(Arc::clone(&client))));
+    registry.insert(Arc::new(GraphTool::search_everything(client)));
+    let mut cfg = agent_cfg;
+    cfg.system_prompt = Some(VERIFY_SYS.to_string());
+    Agent::new(provider, registry, approver, tool_ctx, cfg, model)
 }
 
 /// One reader's vantage point.
@@ -671,6 +848,244 @@ pub fn usable_question(text: &str) -> Option<String> {
         .map(|l| l.trim_start_matches(['*', '-', '#', ' ']).to_string())
 }
 
+/// System prompt for the claim extractor. Tool-less on purpose: an
+/// extractor that can search starts checking as it reads, and what comes
+/// back is a filtered list rather than a faithful one.
+pub const EXTRACT_SYS: &str = "\
+You are given a transcript in which two assistants discussed one person. \
+List the factual claims they made about that person or about the graph's \
+records of them.
+
+One claim per line, each a single short sentence that stands on its own — \
+resolve pronouns and back-references so a line can be checked without the \
+transcript. Include claims you suspect are wrong; judging them is not your \
+job. Exclude questions, hedges about what a source failed to contain, and \
+statements about the assistants themselves.
+
+Output only the list. No numbering, no headings, no commentary.";
+
+/// System prompt for the adjudicator.
+pub const VERIFY_SYS: &str = "\
+You check one claim against a knowledge graph. You can see everything: all \
+sources, all time, facts as well as evidence.
+
+Use kg_search to look for evidence, and kg_verify to see what the graph \
+already believes about an entity and whether its own evidence holds up.
+
+Then answer in exactly this form, two lines:
+VERDICT: supported | unsupported | contradicted
+BASIS: one sentence, naming what you found
+
+'supported' means you found evidence that actually says this. 'contradicted' \
+means the graph or its evidence says otherwise. 'unsupported' means you \
+looked and found nothing either way — which is the verdict for anything the \
+assistant knew from outside the graph, however true it may be in the world. \
+Absence of evidence is 'unsupported', never 'contradicted'.";
+
+/// One claim, checked.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClaimVerdict {
+    pub claim: String,
+    pub verdict: String,
+    pub basis: String,
+}
+
+/// Parse the adjudicator's two-line reply.
+///
+/// Unparseable output becomes `unchecked` rather than a guess. A verdict
+/// invented from prose that merely mentions "supported" is worse than an
+/// admitted gap: it launders a model's mood into an audit result.
+pub fn parse_verdict(text: &str) -> (String, String) {
+    const WORDS: [&str; 3] = ["supported", "unsupported", "contradicted"];
+    let word_at = |s: &str| -> Option<String> {
+        let v = s.trim().to_lowercase();
+        let head = v
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .find(|w| !w.is_empty())?;
+        WORDS.contains(&head).then(|| head.to_string())
+    };
+
+    let mut verdict = String::new();
+    let mut basis = String::new();
+    for line in text.lines() {
+        let l = line
+            .trim()
+            .trim_start_matches(['*', '-', '#', '>', ' '])
+            .trim_matches(['*', '`', ' '])
+            .to_string();
+        let upper = l.to_uppercase();
+        if upper.starts_with("VERDICT:") {
+            if let Some(w) = word_at(&l[8..]) {
+                verdict = w;
+            }
+        } else if upper.starts_with("BASIS:") {
+            basis = l[6..].trim().to_string();
+        } else if verdict.is_empty() && WORDS.contains(&l.to_lowercase().as_str()) {
+            // A bare verdict alone on its line. Accepting this is not the
+            // guessing forbidden above: the entire line is the word, so
+            // there is no prose to misread. Prose stays rejected.
+            verdict = l.to_lowercase();
+        }
+    }
+    if verdict.is_empty() {
+        // Keep what it actually said. "Did not answer in form" is not a
+        // diagnosis, and a run in which all eight claims came back
+        // unchecked left nothing whatever to work from — exactly the
+        // mistake the asker's stall record had already corrected once.
+        let said: String = text.trim().chars().take(200).collect();
+        return (
+            "unchecked".into(),
+            if said.is_empty() {
+                "the adjudicator said nothing at all".into()
+            } else {
+                format!("not in form; it said: {}", said.replace('\n', " "))
+            },
+        );
+    }
+    (verdict, basis)
+}
+
+/// Split the extractor's output into claims.
+///
+/// The filter earns its place. A tool-less extractor handed a transcript of
+/// two agents searching carries on searching: a live run produced
+/// "search_query: U034F8HLM7S" and "I will search the knowledge graph
+/// for..." in the claim slot, and all three were dutifully sent to the
+/// adjudicator. A claim is a statement about the person; an announcement of
+/// what the model is about to do is not one, and passing it on wastes a
+/// verification call to conclude nothing.
+pub fn claim_lines(text: &str, max: usize) -> Vec<String> {
+    let is_intent = |l: &str| {
+        let lower = l.to_lowercase();
+        lower.contains("search_query")
+            || lower.contains("tool:")
+            || lower.starts_with("i will ")
+            || lower.starts_with("i'll ")
+            || lower.starts_with("let me ")
+            || lower.starts_with("i need to ")
+            || lower.starts_with("first, i")
+    };
+    text.lines()
+        .map(|l| {
+            l.trim()
+                .trim_start_matches(['*', '-', '#', '•', ' '])
+                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')')
+                .trim()
+                .to_string()
+        })
+        .filter(|l| l.len() > 15 && !l.ends_with(':') && !l.ends_with('?') && !is_intent(l))
+        .take(max)
+        .collect()
+}
+
+/// pkg's deterministic verdicts on its own stored claims about an entity.
+///
+/// No model in the loop: `kg_verify` dereferences each live claim to the
+/// evidence cited for it. This is the one part of an audit that cannot
+/// hallucinate, which is why it is reported alongside the model tier rather
+/// than folded into it — and why it lives here rather than in the CLI,
+/// where reaching into the MCP client to hand-roll a graph call would put a
+/// second, unaudited path to the graph in the front end.
+pub async fn graph_findings(client: &McpClient, entity: &str) -> Result<String> {
+    let out = client
+        .call_tool("kg_verify", json!({ "node": entity, "limit": 20 }))
+        .await
+        .context("kg_verify")?;
+    Ok(out.content)
+}
+
+/// Audit an exchange: extract what was claimed, then check each claim
+/// against the whole graph.
+///
+/// Runs after the rounds rather than during them, deliberately. A verifier
+/// speaking mid-exchange would be a third voice the readers accommodate,
+/// and the readers' independence is the only thing making the exchange
+/// worth auditing.
+pub async fn audit(
+    extractor: &Agent,
+    verifier: &Agent,
+    cx: &RunContext,
+    exchange: &Exchange,
+    max_claims: usize,
+) -> Result<Vec<ClaimVerdict>> {
+    // The imperative goes LAST, after the transcript. The same lesson the
+    // asker taught and this call initially ignored: a system prompt in
+    // front of a long input loses to the shape of that input. The
+    // transcript ends with two agents searching, so the extractor carried
+    // on searching — it has no tools, and still emitted "search_query:
+    // U034F8HLM7S" where a claim belonged.
+    let mut convo = Conversation::user(format!(
+        "The person is {}.\n\n{}\n\n\
+         Now list the factual claims made about {} in the transcript above. \
+         One per line. Do not search, do not comment, do not explain — you \
+         have no tools and the list is your whole output.",
+        exchange.entity,
+        render(exchange),
+        exchange.entity,
+    ));
+    let listed = extractor
+        .run_in(cx, &mut convo, None)
+        .await
+        .context("extracting claims from the exchange")?;
+
+    let mut out = Vec::new();
+    for claim in claim_lines(&listed.text, max_claims) {
+        // Imperative last, again. This is the third role to need it: the
+        // required form lived only in VERIFY_SYS, and after a few tool
+        // calls the model was far enough from it to answer in prose. Every
+        // claim of one run came back unchecked for that reason alone.
+        let mut convo = Conversation::user(format!(
+            "The person is {}.\n\nClaim to check: {claim}\n\n\
+             Search first, then reply with exactly two lines:\n\
+             VERDICT: supported | unsupported | contradicted\n\
+             BASIS: one sentence naming what you found",
+            exchange.entity
+        ));
+        let res = verifier
+            .run_in(cx, &mut convo, None)
+            .await
+            .with_context(|| format!("checking claim: {claim}"))?;
+        let (verdict, basis) = parse_verdict(&res.text);
+        out.push(ClaimVerdict {
+            claim,
+            verdict,
+            basis,
+        });
+    }
+    Ok(out)
+}
+
+/// Render an audit, findings first — an audit read top-down should hit
+/// what is wrong before what is fine.
+pub fn render_audit(verdicts: &[ClaimVerdict]) -> String {
+    let rank = |v: &str| match v {
+        "contradicted" => 0,
+        "unsupported" => 1,
+        "unchecked" => 2,
+        _ => 3,
+    };
+    let mut sorted: Vec<&ClaimVerdict> = verdicts.iter().collect();
+    sorted.sort_by_key(|c| rank(&c.verdict));
+
+    let mut s = String::from("\nAudit\n");
+    for c in &sorted {
+        s.push_str(&format!(
+            "  [{}] {}\n      {}\n",
+            c.verdict, c.claim, c.basis
+        ));
+    }
+    let n = |v: &str| verdicts.iter().filter(|c| c.verdict == v).count();
+    s.push_str(&format!(
+        "  — {} claim(s): {} supported, {} unsupported, {} contradicted, {} unchecked\n",
+        verdicts.len(),
+        n("supported"),
+        n("unsupported"),
+        n("contradicted"),
+        n("unchecked"),
+    ));
+    s
+}
+
 /// Render an exchange for a distiller or a reader.
 pub fn render(x: &Exchange) -> String {
     let mut s = format!("Gossip about {} \n", x.entity);
@@ -731,6 +1146,68 @@ mod tests {
         // An answer that is ONLY an offer is not silence, and must not be
         // passed on as though the sources had been consulted.
         assert!(strip_user_directed("Would you like me to search?").starts_with("(no answer"));
+    }
+
+    #[test]
+    fn an_unparseable_verdict_is_never_guessed() {
+        assert_eq!(
+            parse_verdict("VERDICT: contradicted\nBASIS: the graph lists one node."),
+            ("contradicted".into(), "the graph lists one node.".into())
+        );
+        // Prose that merely mentions a verdict word must not become one:
+        // laundering a model's mood into an audit result is worse than an
+        // admitted gap.
+        let (v, basis) = parse_verdict("I think this is probably supported by the Slack thread.");
+        assert_eq!(v, "unchecked");
+        // And the rejected text is kept: "did not answer in form" is not a
+        // diagnosis, as a run of eight unchecked claims demonstrated.
+        assert!(basis.contains("I think this is probably supported"));
+
+        // A bare verdict alone on its line is a format, not prose.
+        assert_eq!(parse_verdict("supported").0, "supported");
+        assert_eq!(parse_verdict("**VERDICT:** contradicted").0, "contradicted");
+        assert_eq!(
+            parse_verdict("Verdict: unsupported\nBasis: nothing found").0,
+            "unsupported"
+        );
+        assert_eq!(parse_verdict("").0, "unchecked");
+        // A verdict outside the vocabulary is not a verdict.
+        assert_eq!(
+            parse_verdict("VERDICT: mostly true\nBASIS: x").0,
+            "unchecked"
+        );
+    }
+
+    #[test]
+    fn claim_extraction_drops_scaffolding() {
+        let listed = "**Claims:**\n\
+             1. Luke J Chang works at Dartmouth.\n\
+             - py-feat is a tool for fNIRS analysis.\n\
+             Is he the lab PI?\n\
+             short\n\
+             He maintains the /home/ljchang/Git directory.";
+        let claims = claim_lines(listed, 8);
+        assert_eq!(claims.len(), 3, "got {claims:?}");
+        assert!(claims[0].starts_with("Luke J Chang works"));
+        assert!(
+            !claims.iter().any(|c| c.ends_with('?')),
+            "questions are not claims"
+        );
+        assert!(!claims.iter().any(|c| c.contains("Claims:")));
+        // The cap is a cap, not a suggestion.
+        assert_eq!(claim_lines(listed, 2).len(), 2);
+
+        // The live failure: a tool-less extractor announcing searches, and
+        // every one of them sent to the adjudicator as a claim.
+        let intent = "I will search the knowledge graph for the Slack handle U034F8HLM7S.\n\
+             search_query: ljchang@email.arizona.edu\n\
+             Let me check whether the two entities are distinct.\n\
+             Luke J Chang presented a poster on April 19, 2026.";
+        let claims = claim_lines(intent, 8);
+        assert_eq!(
+            claims,
+            vec!["Luke J Chang presented a poster on April 19, 2026."]
+        );
     }
 
     #[test]
