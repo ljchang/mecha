@@ -200,6 +200,8 @@ pub enum Command {
     Frontdoor(commands::frontdoor::Args),
     /// Two readers with different sources ask each other about one entity.
     Gossip(commands::gossip::GossipArgs),
+    /// Judge whether queued generalisations hold beyond their one source.
+    Corroborate(commands::corroborate::CorroborateArgs),
 
     /// Prompts that run on a schedule: a morning briefing, overnight inbox
     /// triage, calendar prep. `tick` fires what is due; `daemon` loops it.
@@ -269,6 +271,7 @@ async fn dispatch() -> Result<()> {
         Command::Work(args) => commands::work::execute(args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
         Command::Gossip(args) => commands::gossip::run(&cli.global, &args).await,
+        Command::Corroborate(args) => commands::corroborate::run(&cli.global, &args).await,
         Command::Slack(args) => commands::slack::run(&cli.global, args).await,
         Command::Trigger(args) => commands::trigger::execute(&cli.global, args).await,
         Command::Proposals(args) => commands::proposals::execute(args).await,

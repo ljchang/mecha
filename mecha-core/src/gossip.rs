@@ -1149,6 +1149,79 @@ mod tests {
     }
 
     #[test]
+    fn a_verdict_is_computed_from_two_sightings_not_asked_for() {
+        use Sighting::*;
+        assert_eq!(corroboration_verdict(Seen, Seen), "corroborated");
+        assert_eq!(corroboration_verdict(Seen, Unseen), "single_source");
+        assert_eq!(corroboration_verdict(Unseen, Seen), "single_source");
+        assert_eq!(corroboration_verdict(Unseen, Unseen), "unseen");
+        // A contradiction outranks agreement in both directions: one source
+        // actively denying it matters more than another merely echoing it.
+        assert_eq!(corroboration_verdict(Seen, Contradicted), "contradicted");
+        assert_eq!(corroboration_verdict(Contradicted, Seen), "contradicted");
+        // A mangled reply is our failure, and must never be counted as
+        // absence of evidence — that would convert harness bugs into
+        // rejections of true claims.
+        assert_eq!(corroboration_verdict(Seen, Unclear), "unclear");
+        assert_eq!(corroboration_verdict(Unclear, Unseen), "unclear");
+    }
+
+    #[test]
+    fn a_sighting_is_parsed_or_admitted() {
+        let (s, cite) = parse_sighting("SIGHTING: SEEN\nCITE: slack #random, 2026-05-28");
+        assert_eq!(s, Sighting::Seen);
+        assert_eq!(cite, "slack #random, 2026-05-28");
+        assert_eq!(
+            parse_sighting("SIGHTING: UNSEEN\nCITE: nothing").0,
+            Sighting::Unseen
+        );
+        assert_eq!(
+            parse_sighting("**SIGHTING:** CONTRADICTED").0,
+            Sighting::Contradicted
+        );
+        // A bare word alone on a line is a format.
+        assert_eq!(parse_sighting("UNSEEN").0, Sighting::Unseen);
+        // Prose that merely contains the word is not.
+        let (s, basis) = parse_sighting("I have not seen anything like this claim.");
+        assert_eq!(s, Sighting::Unclear);
+        assert!(
+            basis.contains("I have not seen"),
+            "the rejected text is kept"
+        );
+    }
+
+    #[test]
+    fn corroboration_never_reads_the_source_it_came_from() {
+        // A reader that can see the episode a claim was extracted from will
+        // find the claim there and call it corroborated: the same witness
+        // twice, which is the facts-versus-evidence failure one level up.
+        let spread = cov(&[
+            ("bee.conversation", 40),
+            ("bee.daily", 35),
+            ("slack.thread", 30),
+            ("reflect.daily", 20),
+        ]);
+        // The whole FAMILY goes, not just the one source. bee.daily is a
+        // summary of bee.conversation: excluding only the exact origin
+        // would let a claim be corroborated by a digest of itself.
+        let (a, b) = vantages_excluding(&spread, Some("bee.conversation"), 3).unwrap();
+        for v in [&a, &b] {
+            assert!(!v.sources.iter().any(|s| s.starts_with("bee.")), "{v:?}");
+        }
+        // A proposer works in place of a source, because Bee's fact API
+        // stages 200 candidates with no originating episode at all and the
+        // prefix is then the only honest record of where they came from.
+        let (a, b) = vantages_excluding(&spread, Some("bee:suggested"), 3).unwrap();
+        for v in [&a, &b] {
+            assert!(!v.sources.iter().any(|s| s.starts_with("bee.")), "{v:?}");
+        }
+        // With nothing else covering the subject there is no pair — better
+        // no verdict than a self-corroborating one.
+        let only = cov(&[("bee.conversation", 40), ("bee.daily", 9)]);
+        assert!(vantages_excluding(&only, Some("bee:suggested"), 3).is_none());
+    }
+
+    #[test]
     fn an_unparseable_verdict_is_never_guessed() {
         assert_eq!(
             parse_verdict("VERDICT: contradicted\nBASIS: the graph lists one node."),
@@ -1369,4 +1442,263 @@ mod tests {
             "a gossip reader with a way to send is the leak the interlock exists for"
         );
     }
+}
+
+// ─── Corroboration: is a generalisation more than its one transcript? ────────
+
+/// A pending fact candidate, as the queue hands it over.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Candidate {
+    pub candidate_id: i64,
+    pub statement: String,
+    #[serde(default)]
+    pub subject: Option<String>,
+    #[serde(default)]
+    pub origin_source: Option<String>,
+    /// The subject was guessed from an ambiguous name match. Carried
+    /// through rather than hidden: the guess is usually right and the
+    /// ambiguity is usually a duplicate identity worth fixing at the root.
+    #[serde(default)]
+    pub subject_ambiguous: bool,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+}
+
+/// One class of the review queue, oldest first.
+pub async fn pending(
+    client: &McpClient,
+    proposed_by: &str,
+    predicate: &str,
+    limit: usize,
+) -> Result<Vec<Candidate>> {
+    let out = client
+        .call_tool(
+            "kg_pending",
+            json!({ "proposed_by": proposed_by, "predicate": predicate, "limit": limit }),
+        )
+        .await
+        .context("kg_pending")?;
+    let body: Value = serde_json::from_str(&out.content)
+        .with_context(|| format!("kg_pending returned non-JSON: {}", out.content))?;
+    if let Some(e) = body.get("error").and_then(Value::as_str) {
+        anyhow::bail!("kg_pending: {e}");
+    }
+    Ok(serde_json::from_value(body["items"].clone()).unwrap_or_default())
+}
+
+/// File an opinion beside a candidate. Decides nothing.
+pub async fn file_verdict(
+    client: &McpClient,
+    candidate_id: i64,
+    mechanism: &str,
+    verdict: &str,
+    basis: &str,
+    model: Option<&str>,
+) -> Result<()> {
+    client
+        .call_tool(
+            "kg_verdict",
+            json!({
+                "candidate_id": candidate_id, "mechanism": mechanism,
+                "verdict": verdict, "basis": basis, "model": model,
+            }),
+        )
+        .await
+        .context("kg_verdict")?;
+    Ok(())
+}
+
+/// What one reader found in its own sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum Sighting {
+    Seen,
+    Unseen,
+    Contradicted,
+    /// The reader did not answer in form. Not the same as `Unseen`: a
+    /// mangled reply is our failure, and counting it as absence of evidence
+    /// would quietly convert harness bugs into rejections.
+    Unclear,
+}
+
+pub fn parse_sighting(text: &str) -> (Sighting, String) {
+    let mut sighting = None;
+    let mut basis = String::new();
+    for line in text.lines() {
+        let l = line
+            .trim()
+            .trim_start_matches(['*', '-', '#', '>', ' '])
+            .trim_matches(['*', '`', ' '])
+            .to_string();
+        let upper = l.to_uppercase();
+        let body = upper.strip_prefix("SIGHTING:").map(str::trim);
+        let word = body.unwrap_or(&upper);
+        if (body.is_some() || sighting.is_none()) && sighting.is_none() {
+            let head = word
+                .split(|c: char| !c.is_ascii_alphabetic())
+                .find(|w| !w.is_empty())
+                .unwrap_or_default();
+            // A bare word alone on its line counts, exactly as a bare
+            // verdict does; prose containing the word does not.
+            if body.is_some() || word.trim() == head {
+                sighting = match head {
+                    "SEEN" => Some(Sighting::Seen),
+                    "UNSEEN" => Some(Sighting::Unseen),
+                    "CONTRADICTED" => Some(Sighting::Contradicted),
+                    _ => None,
+                };
+            }
+        }
+        if let Some(rest) = l.strip_prefix("CITE:").or(l.strip_prefix("Cite:")) {
+            basis = rest.trim().to_string();
+        }
+    }
+    match sighting {
+        Some(s) => (s, basis),
+        None => (
+            Sighting::Unclear,
+            format!("not in form; it said: {}", {
+                let t: String = text.trim().chars().take(160).collect();
+                t.replace('\n', " ")
+            }),
+        ),
+    }
+}
+
+/// The verdict, computed from two sightings rather than asked for.
+///
+/// Deliberately code and not a third model call. The whole value of
+/// commit-then-reveal is that two independent judgements were formed; a
+/// model asked to "summarise the verdict" can and will overrule them, and
+/// then the independence bought nothing.
+pub fn corroboration_verdict(a: Sighting, b: Sighting) -> &'static str {
+    use Sighting::*;
+    match (a, b) {
+        // A contradiction anywhere outranks agreement: one source actively
+        // denying it matters more than another merely echoing it.
+        (Contradicted, _) | (_, Contradicted) => "contradicted",
+        (Seen, Seen) => "corroborated",
+        (Seen, Unseen) | (Unseen, Seen) => "single_source",
+        (Unseen, Unseen) => "unseen",
+        // Anything touching Unclear is not a finding about the world.
+        _ => "unclear",
+    }
+}
+
+pub const SIGHT_SYS: &str = "\
+You are checking whether a claim about a person shows up in YOUR sources. \
+Another assistant is checking DIFFERENT sources.
+
+The claim came from somewhere else entirely; your job is not to judge \
+whether it sounds right, but whether your own evidence shows it. Search, \
+then answer. 'UNSEEN' is the honest and expected answer for most claims, \
+and it is a real contribution — a generalisation drawn from one \
+conversation and visible nowhere else is exactly what needs finding.
+
+Reply in exactly this form, two lines:
+SIGHTING: SEEN | UNSEEN | CONTRADICTED
+CITE: what you found, or 'nothing' — quote or name the episode
+
+CONTRADICTED means your evidence shows the opposite, not merely that it is \
+absent. Absence is UNSEEN.";
+
+/// One candidate, judged by two readers on sources that exclude its origin.
+pub struct Corroboration {
+    pub candidate_id: i64,
+    pub statement: String,
+    pub verdict: &'static str,
+    pub sightings: Vec<(String, Sighting, String)>,
+    pub rechecked: bool,
+}
+
+/// Commit, then reveal, then compute.
+///
+/// The reveal is narrower than in an open exchange, and deliberately: only
+/// a lone dissenter is shown the other's citation, and only to look again
+/// at its OWN sources. Showing both readers everything would let the one
+/// with nothing simply agree, which is the conformity commit-then-reveal
+/// exists to prevent.
+pub async fn corroborate(
+    readers: &[(Vantage, Agent)],
+    cx: &RunContext,
+    cand: &Candidate,
+) -> Result<Corroboration> {
+    anyhow::ensure!(readers.len() == 2, "corroboration is a pair");
+    let ask = format!(
+        "Claim to check against your sources:\n\n{}\n\n\
+         Search your sources, then reply with exactly two lines:\n\
+         SIGHTING: SEEN | UNSEEN | CONTRADICTED\n\
+         CITE: what you found, or 'nothing'",
+        cand.statement
+    );
+
+    let mut found = Vec::new();
+    for (v, agent) in readers {
+        let mut convo = Conversation::user(ask.clone());
+        let out = agent
+            .run_in(cx, &mut convo, None)
+            .await
+            .with_context(|| format!("{} reader on candidate {}", v.label, cand.candidate_id))?;
+        let (s, basis) = parse_sighting(&out.text);
+        found.push((v.label.clone(), s, basis));
+    }
+
+    // REVEAL, only on a split, and only to the dissenter. Being pointed at
+    // something is how a second look differs from a first — the reader may
+    // hold the same episode under a wording its own query never reached.
+    let mut rechecked = false;
+    let seen_at = found.iter().position(|(_, s, _)| *s == Sighting::Seen);
+    let unseen_at = found.iter().position(|(_, s, _)| *s == Sighting::Unseen);
+    if let (Some(hit), Some(miss)) = (seen_at, unseen_at) {
+        rechecked = true;
+        let mut convo = Conversation::user(format!(
+            "Claim: {}\n\nAnother assistant, reading {}, found this:\n{}\n\n\
+             Search YOUR sources once more with that in mind. Do not take \
+             their word for it — report only what your own evidence shows.\n\
+             SIGHTING: SEEN | UNSEEN | CONTRADICTED\n\
+             CITE: what you found, or 'nothing'",
+            cand.statement,
+            readers[hit].0.sources.join(", "),
+            found[hit].2,
+        ));
+        let out = readers[miss].1.run_in(cx, &mut convo, None).await?;
+        let (s, basis) = parse_sighting(&out.text);
+        found[miss] = (readers[miss].0.label.clone(), s, basis);
+    }
+
+    Ok(Corroboration {
+        candidate_id: cand.candidate_id,
+        statement: cand.statement.clone(),
+        verdict: corroboration_verdict(found[0].1, found[1].1),
+        sightings: found,
+        rechecked,
+    })
+}
+
+/// Sources that may serve as a vantage for a candidate: everything the
+/// subject is covered by, minus the FAMILY the claim came from.
+///
+/// Family, not source. `bee.conversation` and `bee.daily` are one witness
+/// wearing two labels, and excluding only the exact origin would let a
+/// claim taken from a Bee transcript be corroborated by the Bee daily
+/// summary of that same transcript.
+///
+/// `origin` takes either a source (`bee.conversation`) or a proposer
+/// (`bee:suggested`), because many candidates have no originating episode
+/// at all — Bee's fact API stages 200 with a null episode_id — and the
+/// proposer prefix is then the only honest record of where they came from.
+pub fn vantages_excluding(
+    coverage: &[SourceCoverage],
+    origin: Option<&str>,
+    min: i64,
+) -> Option<(Vantage, Vantage)> {
+    let barred = origin.map(|o| {
+        let head = o.split([':', '.']).next().unwrap_or(o);
+        family(&format!("{head}."))
+    });
+    let kept: Vec<SourceCoverage> = coverage
+        .iter()
+        .filter(|c| barred != Some(family(&c.source)))
+        .cloned()
+        .collect();
+    choose_vantages(&kept, min)
 }
