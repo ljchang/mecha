@@ -146,6 +146,16 @@ impl Tool for LensedSearch {
             "sources": self.sources,
             "since": self.since,
             "until": self.until,
+            // EVIDENCE ONLY, and load-bearing rather than tidy. pkg's
+            // source and window filters apply to the episode arm; the
+            // facts arm takes neither. Leave scope at its default and both
+            // readers are served the same distilled layer — the very thing
+            // they are supposed to be independent of — so they agree by
+            // construction and cite it back as their own reading. The
+            // first live run did exactly that: both returned "892 shared
+            // episodes, NPMI 1.00" and meetings from 2016 and 2020,
+            // through a 2024+ window, because those are facts.
+            "scope": "evidence_only",
         });
         let mut out = self.client.call_tool("kg_search", args).await?;
         // Label whose view this was, so a transcript read later says which
@@ -239,6 +249,75 @@ pub async fn coverage(
     Ok((name, sources, vec![]))
 }
 
+/// How many episodes each source holds about this entity WITHIN the window.
+///
+/// `kg_entity` reports all-time coverage, and all-time is a different
+/// number: one person here has 493 Slack episodes since 2015 and two since
+/// 2024. Choosing vantages on the all-time figure picked a pair that was
+/// nearly empty in the window actually read, and both readers correctly
+/// reported knowing almost nothing — a null result manufactured by the
+/// selection rather than found in the graph. Ask the question the run will
+/// actually ask.
+pub async fn windowed_coverage(
+    client: &McpClient,
+    entity: &str,
+    sources: &[SourceCoverage],
+    since: &str,
+    until: &str,
+) -> Result<Vec<SourceCoverage>> {
+    let mut out = Vec::new();
+    for c in sources {
+        let res = client
+            .call_tool(
+                "kg_search",
+                json!({
+                    "query": entity, "k": 25, "include_private": true,
+                    "scope": "evidence_only", "sources": [c.source.clone()],
+                    "since": since, "until": until,
+                }),
+            )
+            .await?;
+        let body: Value = serde_json::from_str(&res.content).unwrap_or_else(|_| json!({}));
+        let n = body["items"].as_array().map(|a| a.len()).unwrap_or(0) as i64;
+        if n > 0 {
+            out.push(SourceCoverage {
+                source: c.source.clone(),
+                episodes: n,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Build the ASKER half of a pair: no tools at all.
+///
+/// An asker reasons over the two answers it is shown and produces one
+/// question. Give it `kg_search` and it goes researching instead — the
+/// first live run did exactly that, and round 2's "question" was the other
+/// reader's answer pasted back, because a model holding a search tool and
+/// told to ask something will answer instead. Removing the tool is the
+/// difference between a rule and a hope.
+pub fn asker(
+    provider: Box<dyn crate::provider::Provider>,
+    tool_ctx: ToolCtx,
+    agent_cfg: crate::config::AgentConfig,
+    model: Option<String>,
+) -> Result<Agent> {
+    let approver = Arc::new(crate::tool::ModeApprover {
+        mode: crate::config::PermissionMode::ReadOnly,
+    });
+    let mut cfg = agent_cfg;
+    cfg.system_prompt = Some(FOLLOWUP_SYS.to_string());
+    Agent::new(
+        provider,
+        crate::tool::Registry::new(),
+        approver,
+        tool_ctx,
+        cfg,
+        model,
+    )
+}
+
 /// One reader's vantage point.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vantage {
@@ -318,25 +397,34 @@ pub struct Exchange {
 
 /// System prompt for a reader answering from its own sources.
 pub const ANSWER_SYS: &str = "\
-You are one of two assistants building up what is known about one person, \
-each reading different sources. Search your sources and answer the question \
-from what you find.
+You and another assistant are each reading DIFFERENT sources about one \
+person, comparing notes. Search your sources and answer from what you find.
 
-Answer in at most three sentences. Say plainly when your sources do not \
-cover it — the other assistant may see what you cannot, and a guess is worse \
-than a gap. Do not speculate beyond what you read.";
+You are talking to the other assistant, not to a user. Never address the \
+user, never offer to look something up, never ask what they need — there is \
+nobody there to answer, and an offer is a wasted turn.
+
+At most three sentences. Say plainly and briefly when your sources do not \
+cover it: the other assistant may see what you cannot, and 'my sources show \
+nothing about that' is a real contribution. Report only what you read — do \
+not speculate, and do not pad a thin answer by listing what you would need \
+in order to answer.";
 
 /// System prompt for a reader generating a question for the other.
 pub const FOLLOWUP_SYS: &str = "\
 You and another assistant each read DIFFERENT sources about one person, so \
 each of you can see things the other cannot.
 
-You have just seen their answer. Ask ONE question that THEIR sources might \
-answer and yours cannot — something that would genuinely add to what is \
-known, not a rephrasing of what was already said. Prefer relationships, \
-roles, commitments and the reasons behind things over dates and logistics.
+You have both just answered and you can see their answer. Ask ONE question \
+that THEIR sources might answer and yours cannot — aim at what they seem to \
+have seen and you did not. Prefer relationships, roles, commitments and the \
+reasons behind things over dates and logistics. If their sources turned up \
+nothing, ask instead about something yours hinted at and could not settle.
 
-Reply with the question alone, no preamble.";
+Output the question and nothing else: one interrogative sentence. Do not \
+answer it yourself, do not summarise what was said, do not explain your \
+reasoning. You have no tools and nothing to look up — the question IS your \
+whole output.";
 
 /// Run one exchange. Deterministic orchestration: the code decides who is
 /// asked what and when, so commit-then-reveal cannot be skipped.

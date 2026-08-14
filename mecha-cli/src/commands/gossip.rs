@@ -67,21 +67,30 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
         return Ok(());
     }
 
-    let Some((va, vb)) = gossip::choose_vantages(&coverage, args.min_coverage) else {
-        println!(
-            "{name}: fewer than two sources clear {} episodes — there is only one \
-             witness here, and one witness cannot gossip.",
-            args.min_coverage
-        );
-        for c in &coverage {
-            println!("  {} {} episode(s)", c.source, c.episodes);
-        }
-        return Ok(());
-    };
-
     // A plan is not a fact: the calendar is full of meetings that have not
     // happened, and probing them invites reporting intentions as history.
     let until = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    // Re-measure inside the window the run will actually read. All-time
+    // counts chose a pair that was nearly empty in-window on the first live
+    // run — 493 Slack episodes since 2015, two since 2024 — and both readers
+    // dutifully reported knowing nothing, a null manufactured by the
+    // selection rather than found in the graph.
+    let coverage = gossip::windowed_coverage(&client, &name, &coverage, &args.since, &until)
+        .await
+        .context("measuring in-window coverage")?;
+
+    let Some((va, vb)) = gossip::choose_vantages(&coverage, args.min_coverage) else {
+        println!(
+            "{name}: fewer than two sources hold {} episode(s) between {} and {until} — \
+             there is only one witness here, and one witness cannot gossip.",
+            args.min_coverage, args.since
+        );
+        for c in &coverage {
+            println!("  {} {} episode(s) in window", c.source, c.episodes);
+        }
+        return Ok(());
+    };
 
     let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
     let model = global.model.clone().or_else(|| provider_cfg.model.clone());
@@ -124,10 +133,18 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
         (va.clone(), build(&va, gossip::ANSWER_SYS)?),
         (vb.clone(), build(&vb, gossip::ANSWER_SYS)?),
     ];
-    let askers = vec![
-        (va.clone(), build(&va, gossip::FOLLOWUP_SYS)?),
-        (vb.clone(), build(&vb, gossip::FOLLOWUP_SYS)?),
-    ];
+    // Askers get NO tools. Handed kg_search they research and answer
+    // instead of asking — the first live run's round-2 "question" was the
+    // other reader's answer pasted back.
+    let ask = || -> Result<mecha_core::agent::Agent> {
+        gossip::asker(
+            mecha_core::provider::build(provider_cfg)?,
+            tool_ctx.clone(),
+            cfg.agent.clone(),
+            model.clone(),
+        )
+    };
+    let askers = vec![(va.clone(), ask()?), (vb.clone(), ask()?)];
 
     let approver = Arc::new(mecha_core::tool::ModeApprover {
         mode: mecha_core::config::PermissionMode::ReadOnly,
