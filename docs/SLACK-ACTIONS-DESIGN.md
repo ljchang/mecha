@@ -219,10 +219,38 @@ the real problem, which is that the phone cannot show what the decision needs:
 the trigger file and its ledger, the work entries and which bundle sources pin
 them, the rule diff against the prompt it will ride in.
 
-**No `Always`, no blankets across runs, no remembered approvals** — the same
-decision `approve.rs` already made and for the same reason: a connector runs
-for months, and a widening made once on a phone is a blast radius nobody
-re-reviews. Every tap authorises exactly one execution of exactly one action.
+**One tap wherever a second tap's only argument is tap-count** (owner
+decision, 2026-08-14). Where this ladder reaches for a second step, the
+reason has to be a security property — the first tap could not have shown
+enough to decide — and never general caution: ceremony that adds nothing
+teaches the owner that ceremony is noise, which is the same lesson the
+untainted-send parity above already encodes. The two-step rungs that remain
+are exactly the security ones, and they stand: the tainted draft's red
+confirm, and §8's truncated-tainted rule, which is reject-only.
+
+**No *inferred or unbounded* `Always`** (owner decision, 2026-08-14 —
+amended from "no `Always`, no blankets across runs"). The blanket this
+section originally refused stays refused, for `approve.rs`'s reason: a
+connector runs for months, and a widening made once on a phone is a blast
+radius nobody re-reviews. What exists instead is narrower on every axis that
+made the blanket dangerous, mirroring the TUI's `/review now|later|auto`: an
+owner may set, **per thread**, by **explicit gesture only** — the
+`review now|later|auto` command word, matched with the same precedence and
+exactness as `doctor`, never inferred from prompt or message text, because
+release policy must not be decidable by anything sharing a context window
+with third-party text (the `/review` rule, unchanged) — a mode in which
+*untainted* drafts staged by that thread's runs release when the run
+finishes, which is also what stops the thread re-carding the drafts it would
+immediately release. The mode is **session-scoped**: it lives in the
+connector's memory beside the thread state and is deliberately never
+persisted to the thread record, so the same eviction that orphans a
+mid-flight run on restart expires every mode with it, and a restart resets
+every thread to carding everything. **Tainted drafts never auto-release
+under any mode** — the approval predates whatever armed the taint — and
+every auto-released item still writes its ledger rows (§7), attributing the
+release to the mode and the owner who set it. Every tap still authorises
+exactly one execution of exactly one action; the mode changes what needs a
+tap, never what a tap means.
 
 ---
 
@@ -255,7 +283,13 @@ approval cards retired on expiry (`connector.rs:1125`), orphaned threads'
 controls rewritten before anything else on restart (`connector.rs:148`). An
 action card follows the same law: rewritten on dispatch, rewritten again with
 the outcome, and a press that races the rewrite is caught by the store guard
-behind it. The card rewrite is never the *only* defense.
+behind it. The card rewrite is never the *only* defense — which carries the
+one place a rewrite is impossible: a button inside a multi-finding doctor
+report cannot be rewritten without destroying the findings around it (the
+interaction payload does not carry the message's blocks), so there the
+dispatch is announced as a thread reply, the outcome updates that reply, and
+the store-state guard — the restart's re-examination, the trigger flock — is
+the defense doing the work, exactly as this paragraph requires it to be.
 
 ---
 
@@ -419,6 +453,9 @@ approval cards, Stop/Mode. The precedents this design generalises.
 5. Outcome-from-store reporting (§6) for everything above, including the
    existing draft cards' move off exit-code reporting.
 6. The truncated-tainted rule (§8).
+7. The session-scoped `review now|later|auto` command word per thread (§4,
+   owner decision 2026-08-14): untainted drafts a thread's runs stage may
+   auto-release, ledgered and attributed; tainted drafts always card.
 
 **Phase 2 — the modal actions and the translations.**
 
@@ -438,10 +475,16 @@ absence reads as a decision rather than a gap:
   any relay of a device-code sign-in through Slack (§1).
 - **`trigger delete`, `work clean`, `proposals accept` from a tap** (§1).
 - **Any non-owner action, any factory-hosted action surface** (§3).
-- **Auto-release of tainted drafts, an `Always`/blanket approval for actions,
-  or a `/review auto` equivalent** — release policy set from a surface other
-  people can post into is not a policy (SLACK-DESIGN §5.4), and a standing
-  approval made on a phone outlives the attention that made it.
+- **Auto-release of tainted drafts, and any *inferred or unbounded*
+  `Always`** (amended 2026-08-14 — this bullet used to refuse a
+  `/review auto` equivalent outright). A session-scoped, owner-gestured
+  `review auto` for the untainted class now exists (§4): explicit command
+  word only, thread scope, expiring with the connector's thread state, every
+  release ledgered. What stays never-built is each axis that made the
+  original refusal right — a mode inferred from anything sharing a context
+  window with third-party text, a mode that survives the process that
+  watched it get set, a blanket that crosses threads, and the auto-release
+  of a tainted draft, in any mode, ever.
 - **A parallel executor.** Every action spawns the CLI as a child process,
   exactly as `resolve_draft` and the TUI's modals do: one implementation of
   each verb, no way for this surface to do something the command line cannot,

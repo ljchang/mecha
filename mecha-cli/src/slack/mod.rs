@@ -5,8 +5,10 @@
 //! run, a tool or an approval is. This module knows both sides, which is why it
 //! lives here beside `tui/` rather than in that crate.
 
+pub mod actions;
 pub mod approve;
 pub mod connector;
 pub mod doctor;
 pub mod pump;
+pub mod review;
 pub mod threads;
