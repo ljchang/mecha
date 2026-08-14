@@ -192,7 +192,9 @@ pub async fn run(global: &crate::GlobalOpts, args: &VetArgs) -> Result<()> {
     if args.record {
         println!("Verdicts filed. Every candidate is still pending: a verdict is an opinion, and the decision is yours.");
     } else {
-        println!("Nothing was written. Re-run with --record to file these beside their candidates.");
+        println!(
+            "Nothing was written. Re-run with --record to file these beside their candidates."
+        );
     }
     Ok(())
 }

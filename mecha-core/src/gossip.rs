@@ -1909,10 +1909,9 @@ pub fn vantages_excluding(
     min: i64,
 ) -> Option<(Vantage, Vantage)> {
     let barred = match origin {
-        Some(o) => match family_of_origin(o) {
-            Some(f) => Some(f),
-            None => return None,
-        },
+        // An unknowable origin family refuses outright (the `?`): no
+        // verdict beats one the origin may have voted in.
+        Some(o) => Some(family_of_origin(o)?),
         None => None,
     };
     let kept: Vec<SourceCoverage> = coverage
@@ -2079,7 +2078,11 @@ pub fn parse_vet(text: &str) -> (Vet, Option<String>, Option<String>, String) {
             .strip_prefix("PREDICATE:")
             .or(l.strip_prefix("Predicate:"))
         {
-            let p = rest.trim().trim_matches('`').to_lowercase().replace(' ', "_");
+            let p = rest
+                .trim()
+                .trim_matches('`')
+                .to_lowercase()
+                .replace(' ', "_");
             if !p.is_empty() && p != "n/a" {
                 predicate = Some(p);
             }
@@ -2158,7 +2161,11 @@ mod vet_tests {
         assert_eq!(v, Vet::Mistyped);
         assert_eq!(predicate.as_deref(), Some("cared_for"));
 
-        assert_eq!(parse_vet("SUPPORTED").0, Vet::Supported, "a bare word alone is a format");
+        assert_eq!(
+            parse_vet("SUPPORTED").0,
+            Vet::Supported,
+            "a bare word alone is a format"
+        );
         assert_eq!(parse_vet("**VERDICT:** OVERREACH").0, Vet::Overreach);
 
         // Prose containing a verdict word is not a verdict, and the
