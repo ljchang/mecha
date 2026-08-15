@@ -35,6 +35,12 @@ cargo clippy --all-targets
 
 `MECHA_LOG=debug` turns on internal tracing (goes to stderr).
 
+**Deploying or restarting anything: use the `update` skill**
+(`.claude/skills/update/SKILL.md`). "Update everything" spans six surfaces
+across two machines and three repositories, and they go stale independently —
+a tag is not an install, a restart is not a reinstall, and the MCP server and
+the benchmark both run *release* paths that a debug build never touches.
+
 ## Architecture
 
 ```
