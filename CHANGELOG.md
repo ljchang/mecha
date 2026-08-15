@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-15
+
+Slack stops being a place to read about work and becomes a place to do it,
+and five stores that each knew something was wrong get something that reads
+across them.
+
+### Added
+
+- **`mecha doctor` — one pass over every store, no network, no model, no
+  tokens.** The 2026-08-11 incident in one sentence: five stores each recorded
+  a real failure correctly and the operator learned nothing, because nothing
+  read across them. Doctor is that read — dead auth markers, releases that
+  errored, drafts and requests waiting past a threshold, triggers whose slots
+  stopped advancing, failed `mecha-*` units.
+- **`/doctor` in the TUI, one keystroke from where the error surfaced.**
+  Findings from `mecha doctor --json` as a child process, broken before
+  attention, a component's findings kept together. Acting on a finding
+  dispatches on the remedy's shape: one whose surface is already a modal
+  deep-links to it rather than spawning a nested CLI over the modal that *is*
+  the review, and a remedy needing a terminal suspends the TUI and inherits
+  the real one.
+- **Executable actions from Slack.** Buttons and modals that do the thing
+  rather than describe it — the button carries an id, the enum carries the
+  verb, so the prose that shares a context window with third-party text never
+  becomes the instruction. Trigger enable/disable, frontdoor close and
+  needs-info by modal, and a session-scoped `review now|later|auto` taken only
+  as the owner's exact command word, expiring with the thread state, with
+  tainted drafts carded in every mode.
+- **Tier-2 gossip and the vet mechanism** (`mecha gossip --out`,
+  `mecha vet`) — corroboration and queue-verification over pkg's review queue,
+  origin-family exclusion computed rather than reconstructed, batch runs that
+  keep their evidence as JSONL with per-candidate error containment.
+- **Recorded denials and structured corrections**, mecha's half of pkg's D3:
+  the graph can say "no", and the distiller can say "that was wrong".
+- **A start script for Qwen3.8-27B** (`scripts/start-qwen38.sh`) as a fourth
+  local arm on port 8083 — dense rather than MoE, with the MTP draft model
+  loaded separately because unsloth ships no MTP variant for 3.8. It carries
+  the measurements and the two traps this model brings: llama.cpp#20837 is
+  still open against the `qwen35` architecture it reuses, and its chat
+  template rejects any system message that is not first.
+
+### Changed
+
+- **One release policy instead of two.** `review_policy.rs` holds the mode and
+  `auto_releases(mode, tainted, finished_clean)`, so the tainted exclusion and
+  the early-stop exclusion are the function's signature rather than a check
+  each surface has to remember. Slack auto no longer releases what a stopped
+  run produced.
+- **Nothing blocks the dispatch loop.** A button press reads its one item file
+  — id shape-checked before it touches a path — instead of parsing the whole
+  outbox, twice, for tainted. The ledger append rides inside the spawned task,
+  and the TUI's restart guard probes on a watched thread so a probe that never
+  answers cannot hang the interface.
+- **`cargo fmt --all`**, which CI had been failing on for four commits. No
+  semantic change; the drift spanned 20 files and predated the commits it was
+  failing on.
+
+### Fixed
+
+- **Nothing fails silently: the staged jail, the unanswered card, the revoked
+  token.** Three field failures with one shape — a component that knew
+  something was wrong and told no one. A staged call now records the jail its
+  tool really runs under, via `Tool::fixed_workspace`.
+
 ## [0.1.3] - 2026-08-10
 
 Dependency maintenance, and the one migration hiding among the bumps.
