@@ -166,6 +166,23 @@ a different repository on a different version line.
   a flag when the real cause was memory pressure. Either finish the benchmark
   or stop it, then build.
 
+### 7. The sandbox image
+
+`~/.mecha/config.toml`'s `[sandbox]` runs confined `shell` in the
+`mecha-sandbox` docker image (built from `scripts/sandbox.Dockerfile`). It
+bakes in its own Rust toolchain, so **it goes stale independently of
+everything above** — after a host toolchain bump, rebuild it or confined
+`cargo` quietly diverges from the cargo that CI and the host run:
+
+```bash
+docker build -t mecha-sandbox -f scripts/sandbox.Dockerfile .
+docker run --rm mecha-sandbox bash -lc 'cargo --version'   # compare to host
+```
+
+(bwrap would be the cheaper backend but is blocked on this host:
+`kernel.apparmor_restrict_unprivileged_userns=1`. The config comment above
+`[sandbox]` records the targeted fix if that's ever wanted.)
+
 ## What no amount of this reaches
 
 `~/.mecha/` **is not a git repository.** `config.toml` and `triggers/*.toml`
