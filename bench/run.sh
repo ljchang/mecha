@@ -19,7 +19,15 @@ cd "$(dirname "$0")/.."
 
 DATASET="${MECHA_BENCH_DATASET:-terminal-bench/terminal-bench-2}"
 FORWARD_PORT=18080
-MODEL_PORT=8080
+# Which local server to measure. 8080 is the qwen3.6 MoE and the number every
+# existing scorecard was produced against, so it stays the default; 8083 is the
+# Qwen3.8-27B arm (scripts/start-qwen38.sh). Override BOTH together —
+# MECHA_BENCH_MODEL has to name the alias the chosen server actually serves, or
+# the run measures whatever is on that port under the wrong name:
+#
+#   MECHA_BENCH_MODEL_PORT=8083 MECHA_BENCH_MODEL=local/qwen3.8-27b bench/run.sh -t <task>
+MODEL_PORT="${MECHA_BENCH_MODEL_PORT:-8080}"
+MODEL="${MECHA_BENCH_MODEL:-local/qwen3.6-35b-a3b}"
 
 # Not `cargo build --release`: that binary links the host's glibc 2.39 and
 # will not start in most task containers. See bench/build-portable.sh.
@@ -52,6 +60,6 @@ trap 'kill "$FORWARDER" 2>/dev/null || true' EXIT
 PYTHONPATH="$(pwd)/bench" harbor run \
   -d "$DATASET" \
   --agent-import-path mecha_agent:MechaAgent \
-  -m local/qwen3.6-35b-a3b \
+  -m "$MODEL" \
   --force-build \
   "$@"
