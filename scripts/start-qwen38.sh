@@ -162,9 +162,36 @@ D=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--a4lg--Qwen3.8-27B-MTP-ONL
 # weights here, against roughly 3B active params there; speculative decoding is
 # the thing that might close part of that gap, which is exactly what the draft
 # model above is for.
+# Sampling is Qwen's published recipe for THINKING mode, not llama.cpp's
+# defaults, and three of the six disagree — so the defaults are wrong here
+# rather than merely different:
+#
+#                 llama.cpp default   Qwen3.8 thinking
+#   temperature              0.80              1.0
+#   top_k                      40               20
+#   min_p                    0.05              0.0   (i.e. disabled)
+#   top_p                    0.95             0.95
+#   presence_penalty         0.00              0.0
+#   repeat_penalty           1.00              1.0
+#
+# min_p is the one to notice: llama.cpp truncates the tail by default and Qwen
+# asks for that off entirely. Qwen's non-thinking recipe differs (temp 0.7,
+# top_p 0.80, presence_penalty 1.5) — if this arm is ever run with
+# `--reasoning off`, those are the numbers, and the model card warns that a
+# high presence_penalty can cause language mixing.
+#
+# These are server DEFAULTS, which is the only place most of them can live:
+# mecha's ProviderConfig carries `temperature` and `seed` and nothing else, so
+# top_k/top_p/min_p/penalties have no path through a request and a mecha run
+# would silently get llama.cpp's defaults instead. Note the consequence for
+# temperature specifically — mecha *does* send it, so `[providers.qwen38]
+# temperature` OVERRIDES the value below. The two are pinned to 1.0 together
+# and must move together.
 exec ${LLAMA_SERVER:-llama-server} -m "$M" \
   --host 127.0.0.1 --port 8083 -ngl 999 -c 262144 -np 1 --alias qwen3.8-27b --jinja \
   --reasoning-budget 4096 \
+  --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 \
+  --presence-penalty 0.0 --repeat-penalty 1.0 \
   --model-draft "$D" \
   --spec-type draft-mtp \
   --spec-draft-n-max 4
