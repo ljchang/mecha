@@ -137,6 +137,17 @@ does have `~/.ssh` and can reach the network.
   stash.
 - Run `cargo fmt --all`, `cargo clippy --all-targets`, and `cargo test
   --workspace` before pushing. CI treats warnings as errors.
+- **Enable the hooks once per clone: `git config core.hooksPath .githooks`.**
+  `core.hooksPath` is local config and does not survive a clone, so this is
+  opt-in per checkout. The pre-commit hook refuses a commit that CI's rustfmt
+  job would reject; `--no-verify` skips it for a WIP commit on a branch. It
+  exists because the line above was already the rule and did not hold — the
+  tree drifted 105 sites across 20 files between 0.1.3 and 0.1.4, and four
+  commits landed red, because a failing job nobody is watching is not a gate.
+  Note what the fix is *not*: v0.1.3 is fmt-clean under the same rustfmt that
+  found those 105 sites, so this was never toolchain drift, and a
+  `rust-toolchain.toml` would both fix nothing and override the `[stable,
+  "1.89"]` test matrix into testing stable twice.
 - Every commit builds and passes tests alone — history is bisectable and
   stays that way.
 - Explain *why* in the description. The code shows what changed; the reasoning
