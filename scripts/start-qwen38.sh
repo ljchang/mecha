@@ -17,26 +17,27 @@
 # rather than absent.
 M=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--Qwen3.8-27B-GGUF/snapshots/*/Qwen3.8-27B-Q4_K_M.gguf)
 
-# Speculative decoding needs a SECOND file here, unlike the 3.6 MoE.
+# MTP is IN THE FILE, exactly like the 3.6 MoE — an earlier version of this
+# script was wrong about that, and the correction is worth its history.
 #
-# unsloth published Qwen3.6-35B-A3B-MTP-GGUF with the multi-token-prediction
-# tensors baked into the single file, which is why start-moe-mtp.sh passes
-# `--spec-type draft-mtp` and nothing else. For 3.8 they published no MTP
-# variant at all — only the plain Qwen3.8-27B-GGUF — and the standard GGUF
-# conversion drops the MTP tensors on the floor.
+# This script originally loaded a4lg/Qwen3.8-27B-MTP-ONLY-GGUF as a separate
+# `--model-draft` (2.03 GB), on the strength of that repo's README: standard
+# GGUF conversions drop the MTP tensors, here is the extracted head. True of
+# the conversions it was written for — fine-tunes, abliterations — but not of
+# unsloth's: inspected 2026-08-15 with gguf-py, Qwen3.8-27B-Q4_K_M already
+# carries all fifteen blk.64.* tensors and declares block_count=65 and
+# nextn_predict_layers=1. Every tensor in the a4lg file is already in the
+# main one. The graft the README calls Method 2 had nothing to graft.
 #
-# The base model does have the head: Qwen/Qwen3.8-27B's config.json declares
-# `mtp_num_hidden_layers: 1`. a4lg/Qwen3.8-27B-MTP-ONLY-GGUF is that head
-# extracted from the official weights and nothing else (2.03 GB at Q4_K_M,
-# Apache 2.0), published precisely so models "without MTP tensors" can still
-# speculate. Its own README says to benchmark rather than trust it, which is
-# also this file's position.
+# Proof it works from the single file, because the server logs never mention
+# speculation either way: with no --model-draft, timings still report
+# draft_n/draft_n_accepted (86/128 on the smoke prompt). Those fields are the
+# only observable evidence — check them, not the log, after touching this.
 #
-# This is the repo's Method 1 (separate draft file). Method 2 grafts the MTP
-# tensors into the main GGUF with a conversion script, saving the memory the
-# two files duplicate and slightly changing the acceptance rate. Worth doing if
-# this arm earns its place; not worth doing to find out whether it does.
-D=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--a4lg--Qwen3.8-27B-MTP-ONLY-GGUF/snapshots/*/Qwen3.8-27B-MTP-ONLY-Q4_K_M.gguf)
+# The a4lg download can be deleted from the HF cache; nothing uses it now.
+# If a future quant of this model really does lack blk.64.* (llama-server
+# would fail to start with --spec-type draft-mtp, or timings would carry no
+# draft stats), that repo and its Method 1 are the remedy — see its README.
 
 # Port 8083: 8080 is the qwen3.6 MoE, 8081 gemma-4-e4b, 8082 gemma-4-26b-a4b.
 # Standing this up does not disturb 8080 — that is the point of a fourth port
@@ -192,6 +193,5 @@ exec ${LLAMA_SERVER:-llama-server} -m "$M" \
   --reasoning-budget 4096 \
   --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 \
   --presence-penalty 0.0 --repeat-penalty 1.0 \
-  --model-draft "$D" \
   --spec-type draft-mtp \
   --spec-draft-n-max 4
