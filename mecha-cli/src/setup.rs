@@ -698,7 +698,7 @@ fn build_subagent(
         child.set_outbox(Arc::clone(outbox));
     }
 
-    Ok(Subagent::new(profile.clone(), Arc::new(child)))
+    Subagent::new(profile.clone(), Arc::new(child))
 }
 
 /// `@path` reads from a file; anything else is the literal value. Lets

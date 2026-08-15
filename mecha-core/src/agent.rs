@@ -4497,15 +4497,16 @@ mod tests {
             PermissionMode::Allow,
         );
         let mut parent = parent;
-        parent
-            .registry_mut()
-            .insert(Arc::new(crate::subagent::Subagent::new(
+        parent.registry_mut().insert(Arc::new(
+            crate::subagent::Subagent::new(
                 crate::subagent::SubagentProfile {
                     name: "helper".into(),
                     ..Default::default()
                 },
                 Arc::new(child),
-            )));
+            )
+            .unwrap(),
+        ));
 
         let cx = parent.context().as_ref().clone().with_phase(Phase::Plan);
         let mut convo = Conversation::from(vec![Message::user("plan something")]);
@@ -4549,15 +4550,16 @@ mod tests {
             ],
             PermissionMode::Allow,
         );
-        parent
-            .registry_mut()
-            .insert(Arc::new(crate::subagent::Subagent::new(
+        parent.registry_mut().insert(Arc::new(
+            crate::subagent::Subagent::new(
                 crate::subagent::SubagentProfile {
                     name: "helper".into(),
                     ..Default::default()
                 },
                 Arc::new(child),
-            )));
+            )
+            .unwrap(),
+        ));
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut convo = Conversation::from(vec![Message::user("go")]);
@@ -4701,15 +4703,16 @@ mod tests {
             )],
             PermissionMode::Allow,
         );
-        parent
-            .registry_mut()
-            .insert(Arc::new(crate::subagent::Subagent::new(
+        parent.registry_mut().insert(Arc::new(
+            crate::subagent::Subagent::new(
                 crate::subagent::SubagentProfile {
                     name: "helper".into(),
                     ..Default::default()
                 },
                 Arc::new(child),
-            )));
+            )
+            .unwrap(),
+        ));
 
         let cx = parent.context().as_ref().clone().with_cancel(token);
         let mut convo = Conversation::from(vec![Message::user("go")]);

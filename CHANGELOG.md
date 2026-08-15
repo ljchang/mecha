@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`trusted_output` must now name what it vouches for.** A subagent profile
+  setting `trusted_output = true` without an `answer_shape` refuses to
+  construct — the old semantics let one config line disarm the trifecta's
+  untrusted leg for every answer the child ever gave, with nothing checking
+  anything. Trust is now granted per answer: declare `answer_shape =
+  "number"`, `"boolean"`, or a list of allowed strings, and an answer earns
+  the vouch by parsing as that shape at return time. Prose never parses, a
+  mismatch comes back marked untrusted with a note saying why, and the
+  subagent's static capability now stays honest (`untrusted_input` derives
+  from the child's tools unconditionally — the loop's `untrusted_input &&
+  external` rule is what lets a shape-proven answer through clean). There is
+  deliberately no bounded-string shape. `docs/TRIFECTA.md` (new) maps all
+  four trifecta channels and which mechanism owns each.
+
 - **A trifecta refusal now names the durable fix, not just the workaround.**
   Tools gained `denial_remedy()` — the tool's own account of what would make a
   call like the refused one safe, relayed at the end of the interlock's

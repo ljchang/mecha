@@ -147,6 +147,13 @@ outbox, because a scorecard grades the model it names.
 
 ## Security model
 
+**The full trifecta map lives in `docs/TRIFECTA.md`** — the four ways a
+session assembles private data + untrusted content + a way out, which
+mechanism owns each (sandbox, outbox, delegation, source declarations, the
+shaped vouch), and every opt-in switch with its cost. Read it before
+loosening anything: the answer to a refusal is almost never `trifecta =
+"allow"`.
+
 Two things are enforced structurally rather than by prompting:
 
 **The path jail.** Every model-supplied path goes through `ToolCtx::resolve`,
