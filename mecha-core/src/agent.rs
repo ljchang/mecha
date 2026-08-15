@@ -1985,8 +1985,10 @@ impl Agent {
                                 .collect();
                             if !delegates.is_empty() {
                                 reason.push_str(&format!(
-                                    " Or delegate the outside-world work to {}, which runs \
-                                     it in a separate conversation.",
+                                    " If the goal is to READ something from the outside \
+                                     world, delegate that part to {}, which runs it in a \
+                                     separate conversation — it can only fetch, not do \
+                                     local work.",
                                     delegates.join(" or ")
                                 ));
                             }
@@ -1998,6 +2000,20 @@ impl Agent {
                                  configured to keep private data local. Answer from what you \
                                  already have, or ask the user to run the lookup separately."
                             )
+                        };
+                        // The delegate route above covers fetching; the tool's
+                        // own remedy covers everything else. A refusal naming
+                        // neither teaches the operator to weaken `trifecta`
+                        // policy — the worst outcome of a control working
+                        // correctly. The measured dead end: shell denials
+                        // advised delegating to subagents, none of which had a
+                        // shell, while the actual fix (`[sandbox]`, one config
+                        // section) went unmentioned. The remedy is addressed
+                        // to the user — the model relays it and cannot act on
+                        // it, since config edits are not among its tools.
+                        let reason = match tool.denial_remedy() {
+                            Some(remedy) => format!("{reason} {remedy}"),
+                            None => reason,
                         };
                         *blocked_sends += 1;
                         tracing::warn!(tool = %name, "blocked outbound call: trifecta armed");
@@ -2944,10 +2960,51 @@ mod tests {
         // registry matches the delegate signature.
         let refusal = armed_send_refusal(vec![]).await;
         assert!(
-            !refusal.contains("Or delegate"),
+            !refusal.contains("delegate that part"),
             "no delegate exists, so none may be suggested: {refusal}"
         );
         assert!(refusal.contains("Summarise for the user"), "{refusal}");
+    }
+
+    /// The measured dead end this guards against: `shell` denials advised
+    /// delegating to subagents, none of which had a shell, while the actual
+    /// fix — one `[sandbox]` config section — went unmentioned. A tool that
+    /// knows why its capability bit is set may now say so, and the refusal
+    /// relays it. Fails on the old behaviour.
+    #[tokio::test]
+    async fn the_refusal_relays_the_tools_own_remedy() {
+        struct RemediableSend;
+        #[async_trait]
+        impl Tool for RemediableSend {
+            fn name(&self) -> &str {
+                "send" // replaces SendTool in the registry; the script calls it
+            }
+            fn description(&self) -> &str {
+                "send"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                crate::tool::Capabilities::default().sends()
+            }
+            fn denial_remedy(&self) -> Option<String> {
+                Some("Confining this tool in `[sandbox]` ends this class of refusal.".into())
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                panic!("executed despite the interlock");
+            }
+        }
+
+        let refusal = armed_send_refusal(vec![Arc::new(RemediableSend)]).await;
+        assert!(
+            refusal.contains("Confining this tool in `[sandbox]`"),
+            "the tool's remedy must ride the refusal: {refusal}"
+        );
+        assert!(
+            refusal.contains("Refusing"),
+            "the remedy extends the refusal, never replaces it: {refusal}"
+        );
     }
 
     /// A private-data-carrying untrusted reader — the pkg shape — is not a

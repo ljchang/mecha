@@ -348,6 +348,33 @@ impl Tool for Shell {
         }
     }
 
+    // Which condition set `external_send` decides the remedy, and only this
+    // tool knows: no sandbox at all and a sandbox sharing the host's network
+    // produce the same capability bit with different one-line fixes. Confined
+    // without a network the bit is off, the interlock never fires on this
+    // tool, and there is rightly nothing to say.
+    fn denial_remedy(&self) -> Option<String> {
+        if !self.sandbox.is_enabled() {
+            Some(
+                "The durable fix is confinement, not looser policy: add `[sandbox]` \
+                 with `kind = \"bwrap\"` or `\"docker\"` and `network = false` to \
+                 ~/.mecha/config.toml. A confined shell cannot send, so local \
+                 commands stop tripping this interlock entirely."
+                    .into(),
+            )
+        } else if self.sandbox.can_reach_network() {
+            Some(
+                "The sandbox is on but shares the host's network (`network = true`), \
+                 which is why shell still counts as a send route. Setting \
+                 `network = false` in `[sandbox]` exempts local commands from this \
+                 interlock."
+                    .into(),
+            )
+        } else {
+            None
+        }
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let command = arg_str(&input, "command")?;
         let cwd = match input.get("cwd").and_then(Value::as_str) {
@@ -693,6 +720,29 @@ mod tests {
                 .capabilities()
                 .external_send
         );
+    }
+
+    #[test]
+    fn the_remedy_names_the_condition_that_set_the_bit() {
+        // Unconfined: the fix is enabling the sandbox, and the remedy must
+        // say so concretely enough to act on — section and the flag.
+        let r = shell_with(Backend::None, false).denial_remedy().unwrap();
+        assert!(r.contains("[sandbox]") && r.contains("network = false"));
+
+        // Confined but sharing the host network: the sandbox is already on,
+        // so advising the operator to enable it would be the same class of
+        // dead-end advice this method exists to end. Only the flag.
+        let r = shell_with(Backend::Bwrap, true).denial_remedy().unwrap();
+        assert!(r.contains("network = false"));
+        assert!(
+            !r.contains("kind ="),
+            "the sandbox is on; do not advise enabling it"
+        );
+
+        // Confined without a network: external_send is off, the interlock
+        // never fires on this tool, and a remedy here would be advice for a
+        // refusal that cannot happen.
+        assert!(shell_with(Backend::Docker, false).denial_remedy().is_none());
     }
 
     #[test]
