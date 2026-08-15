@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A trifecta refusal now names the durable fix, not just the workaround.**
+  Tools gained `denial_remedy()` — the tool's own account of what would make a
+  call like the refused one safe, relayed at the end of the interlock's
+  message. `shell` uses it to point at the actual remedy (`[sandbox]` with
+  `network = false`, or just the network flag when the sandbox is already on),
+  which ends the measured dead end where denials advised delegating to
+  subagents that had no shell. The delegate suggestion itself now says it is
+  for *reading* the outside world, so the model stops treating it as a route
+  for local work. Security is unchanged: the same calls are refused, the
+  refusal just routes somewhere real.
+
 ## [0.1.4] - 2026-08-15
 
 Slack stops being a place to read about work and becomes a place to do it,

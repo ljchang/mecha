@@ -162,6 +162,36 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// How the *operator* could make a call like the one just refused safe —
+    /// one sentence appended to a trifecta denial, or `None` when nothing
+    /// short of policy would change the answer.
+    ///
+    /// The interlock's refusal message has to route somewhere, and the loop
+    /// cannot write that route: it sees capability bits, and the same
+    /// `external_send: true` means "this is HTTP" on one tool and "the shell
+    /// is unconfined" on another, with completely different fixes. The tool is
+    /// the only party that knows which condition set the bit, so the tool
+    /// carries the remedy — same division of labour as
+    /// [`carried_state`](Tool::carried_state) and
+    /// [`fixed_workspace`](Tool::fixed_workspace): the loop learns that a
+    /// remedy exists, never what kind of tool it is talking to.
+    ///
+    /// This is the difference between a security posture that redirects work
+    /// and one that dead-ends it. A refusal that names no exit teaches the
+    /// operator to weaken policy (`trifecta = "allow"`), which is the worst
+    /// possible outcome of a control that was working correctly. The measured
+    /// case: `shell` denials in the TUI advised delegating to subagents, none
+    /// of which had a shell — advice that could not work, for a call whose
+    /// real fix (`[sandbox]`, one config section) went unmentioned.
+    ///
+    /// Addressed to the person, relayed by the model. It must not be an
+    /// instruction the model could act on itself — "enable X in config.toml"
+    /// is for hands on a keyboard, and a model that tried to do it would find
+    /// config edits are not among its tools.
+    fn denial_remedy(&self) -> Option<String> {
+        None
+    }
+
     /// The root this tool's relative paths actually resolve against, when the
     /// tool was constructed over a fixed directory rather than following the
     /// per-run [`ToolCtx`] workspace.
