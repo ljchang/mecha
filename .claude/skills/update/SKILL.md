@@ -120,16 +120,41 @@ factory-publish --version          # compare against the newest tag
 ### 6. The factory server (the DigitalOcean droplet)
 
 **Not this machine, and not covered by anything above.** The server runs on a
-droplet in NYC behind `mecha-factory.ai`; everything local is a client of it.
-Deploys go through the script in `mecha-factory/docs/DEPLOY.md`:
+DigitalOcean droplet in NYC1 (`ubuntu-s-1vcpu-1gb-nyc1`, a 1 vCPU / 1 GB box)
+behind `mecha-factory.ai`; everything local is a client of it. Note the apex
+domain resolves to Squarespace, not the droplet — the origin you want is
+`gate.mecha-factory.ai` (`compute.` is the same host).
+
+spark reaches it as **root**, using a dedicated key generated here for this
+purpose (`~/.ssh/mecha_factory_deploy`, comment `spark-8c43`). No `~/.ssh/config`
+entry exists, so the key has to be named explicitly:
 
 ```bash
-ssh <box> factory-deploy vX.Y.Z     # download, checksum, prove binary+config, swap, health-check
-ssh <box> factory-deploy --rollback # reinstall factory.prev
+# Read-only: what is actually deployed right now
+ssh -i ~/.ssh/mecha_factory_deploy root@gate.mecha-factory.ai \
+    'factory --version; systemctl is-active mecha-factory.service'
+
+# Deploy a released version
+ssh -i ~/.ssh/mecha_factory_deploy root@gate.mecha-factory.ai \
+    'factory-deploy vX.Y.Z'      # download, checksum, prove binary+config, swap, health-check
+ssh -i ~/.ssh/mecha_factory_deploy root@gate.mecha-factory.ai \
+    'factory-deploy --rollback'  # reinstall /usr/local/bin/factory.prev
 ```
 
-This is production and serves people who are not the owner. **Ask before
-deploying it**, and never infer that "update everything" included it.
+The unit is `mecha-factory.service`; the binary is `/usr/local/bin/factory`,
+with the previous one kept beside it as `factory.prev`, which is what
+`--rollback` restores. Adding a `Host factory` block to `~/.ssh/config` would
+make all of this shorter and is worth doing.
+
+**Check before assuming it is behind.** On 2026-08-15 the droplet was already
+serving `factory 0.2.4` — the newest release — while the *local* client was two
+releases back at `0.2.2`. The staleness ran the opposite direction from the
+guess, and one read-only `factory --version` settled it in seconds.
+
+This is production, on a 1 GB box, serving people who are not the owner. The
+read-only check above is always fine. **Ask before deploying**, and never infer
+that "update everything" included the droplet — it is a different machine from
+a different repository on a different version line.
 
 ## Ordering constraints
 
