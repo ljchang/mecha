@@ -782,7 +782,10 @@ fn list_accounts() -> Result<()> {
         // says the token is revoked, and cleared by the next successful
         // refresh or re-auth — so this line costs no network call.
         if let Some(marker) = path.as_deref().and_then(token::load_auth_error) {
-            println!("             !! DEAD since {}: {}", marker.at, marker.message);
+            println!(
+                "             !! DEAD since {}: {}",
+                marker.at, marker.message
+            );
         }
     }
     if file.default.is_none() {

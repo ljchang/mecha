@@ -231,9 +231,14 @@ fn check_mail(mail: &Path) -> Vec<Finding> {
                     // command, so it rides in the detail — which also covers
                     // the case where accounts.toml could not say which
                     // provider the remedy needs.
-                    detail: format!("permanent refresh failure since {}: {}", marker.at, marker.message),
+                    detail: format!(
+                        "permanent refresh failure since {}: {}",
+                        marker.at, marker.message
+                    ),
                     remedy: Some(Remedy {
-                        description: format!("re-authenticate the `{account}` account (opens an OAuth flow)"),
+                        description: format!(
+                            "re-authenticate the `{account}` account (opens an OAuth flow)"
+                        ),
                         argv,
                         needs_terminal: true,
                     }),
@@ -475,7 +480,10 @@ fn check_frontdoor(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             out.push(Finding {
                 component: "frontdoor".to_string(),
                 severity: Severity::Broken,
-                summary: format!("request {} failed extraction and waits for a human", record.seq),
+                summary: format!(
+                    "request {} failed extraction and waits for a human",
+                    record.seq
+                ),
                 detail: format!(
                     "{} ({}) — {}",
                     record.seq,
@@ -857,7 +865,10 @@ mod tests {
             remedy.argv,
             vec!["mecha-mail", "auth", "personal", "--provider", "google"]
         );
-        assert!(remedy.needs_terminal, "an OAuth flow needs the real terminal");
+        assert!(
+            remedy.needs_terminal,
+            "an OAuth flow needs the real terminal"
+        );
 
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -875,7 +886,11 @@ mod tests {
         assert_eq!(remedy.argv, vec!["mecha-mail", "auth", "personal"]);
         // The marker's message names the full command, and it rides in the
         // detail so the operator still sees the provider.
-        assert!(mail[0].detail.contains("--provider google"), "{}", mail[0].detail);
+        assert!(
+            mail[0].detail.contains("--provider google"),
+            "{}",
+            mail[0].detail
+        );
 
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -903,11 +918,17 @@ mod tests {
         let mail = of(&findings, "mail");
         assert_eq!(mail.len(), 1, "{findings:#?}");
         assert_eq!(mail[0].severity, Severity::Broken);
-        assert!(mail[0].summary.contains("legacy google"), "{}", mail[0].summary);
+        assert!(
+            mail[0].summary.contains("legacy google"),
+            "{}",
+            mail[0].summary
+        );
         // The marker's message names the exact re-auth command; it must ride
         // in the detail.
         assert!(
-            mail[0].detail.contains("run `mecha-mail auth google --provider google`"),
+            mail[0]
+                .detail
+                .contains("run `mecha-mail auth google --provider google`"),
             "{}",
             mail[0].detail
         );
@@ -941,7 +962,12 @@ mod tests {
     #[test]
     fn a_pending_item_with_an_error_is_broken_and_a_resolved_one_is_not() {
         let home = home("outbox-error");
-        pending_item(&home, "20260814-000001-aaa", NOW, Some("server unreachable"));
+        pending_item(
+            &home,
+            "20260814-000001-aaa",
+            NOW,
+            Some("server unreachable"),
+        );
         // A sent item with an old date and even an error field: never flagged.
         let mut sent = json!({
             "id": "20260810-000001-bbb",
@@ -964,7 +990,9 @@ mod tests {
         assert_eq!(outbox.len(), 1, "{findings:#?}");
         assert_eq!(outbox[0].severity, Severity::Broken);
         assert!(
-            outbox[0].summary.contains("release failed: server unreachable"),
+            outbox[0]
+                .summary
+                .contains("release failed: server unreachable"),
             "{}",
             outbox[0].summary
         );
@@ -1022,7 +1050,12 @@ mod tests {
     fn a_request_waiting_on_me_is_stale_at_73_hours_and_not_at_71() {
         let home = home("frontdoor-stale");
         // 73h before NOW.
-        request(&home, 1, crate::frontdoor::AWAITING_ME, "2026-08-11T11:00:00Z");
+        request(
+            &home,
+            1,
+            crate::frontdoor::AWAITING_ME,
+            "2026-08-11T11:00:00Z",
+        );
         let findings = examine(&home, utc(NOW));
         let front = of(&findings, "frontdoor");
         assert_eq!(front.len(), 1, "{findings:#?}");
@@ -1031,13 +1064,23 @@ mod tests {
 
         // 71h: not yet.
         let _ = std::fs::remove_dir_all(home.join("requests"));
-        request(&home, 2, crate::frontdoor::AWAITING_ME, "2026-08-11T13:00:00Z");
+        request(
+            &home,
+            2,
+            crate::frontdoor::AWAITING_ME,
+            "2026-08-11T13:00:00Z",
+        );
         let findings = examine(&home, utc(NOW));
         assert!(of(&findings, "frontdoor").is_empty(), "{findings:#?}");
 
         // And a state waiting on the *requester* is never the user's fault.
         let _ = std::fs::remove_dir_all(home.join("requests"));
-        request(&home, 3, crate::frontdoor::NEEDS_INFO, "2026-08-01T00:00:00Z");
+        request(
+            &home,
+            3,
+            crate::frontdoor::NEEDS_INFO,
+            "2026-08-01T00:00:00Z",
+        );
         let findings = examine(&home, utc(NOW));
         assert!(of(&findings, "frontdoor").is_empty(), "{findings:#?}");
 
@@ -1053,7 +1096,12 @@ mod tests {
         // 73h before NOW.
         request(&home, 4, crate::frontdoor::TRIAGED, "2026-08-11T11:00:00Z");
         // Older still, but waiting on the *stranger*: never the user's fault.
-        request(&home, 5, crate::frontdoor::NEEDS_INFO, "2026-08-01T00:00:00Z");
+        request(
+            &home,
+            5,
+            crate::frontdoor::NEEDS_INFO,
+            "2026-08-01T00:00:00Z",
+        );
 
         let findings = examine(&home, utc(NOW));
         let front = of(&findings, "frontdoor");
@@ -1217,7 +1265,11 @@ mod tests {
         assert_eq!(triggers.len(), 1, "{findings:#?}");
         assert_eq!(triggers[0].severity, Severity::Attention);
         assert!(triggers[0].summary.contains("missed more than two slots"));
-        assert!(triggers[0].detail.contains("daemon"), "{}", triggers[0].detail);
+        assert!(
+            triggers[0].detail.contains("daemon"),
+            "{}",
+            triggers[0].detail
+        );
         assert!(
             triggers[0].remedy.is_none(),
             "running the trigger would not restart the scheduler"

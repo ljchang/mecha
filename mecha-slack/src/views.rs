@@ -109,7 +109,9 @@ fn cap_view_blocks(mut blocks_in: Vec<Value>) -> Vec<Value> {
     }
     let dropped = blocks_in.len() - (limits::BLOCKS_PER_VIEW - 1);
     blocks_in.truncate(limits::BLOCKS_PER_VIEW - 1);
-    blocks_in.push(blocks::context(&format!("_{dropped} more blocks not shown_")));
+    blocks_in.push(blocks::context(&format!(
+        "_{dropped} more blocks not shown_"
+    )));
     blocks_in
 }
 

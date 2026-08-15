@@ -408,7 +408,10 @@ mod tests {
         assert!(matches!(err, MailError::AuthRevoked(_)), "{err}");
         let text = err.to_string();
         assert!(text.starts_with(crate::types::AUTH_REVOKED), "{text}");
-        assert!(text.contains("AADSTS700082"), "raw code must survive: {text}");
+        assert!(
+            text.contains("AADSTS700082"),
+            "raw code must survive: {text}"
+        );
 
         // A throttle or an outage stays transient-shaped.
         assert!(matches!(

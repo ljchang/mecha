@@ -1227,7 +1227,8 @@ mod tests {
                 .append(true)
                 .open(store.ledger_path())
                 .unwrap();
-            file.write_all(b"{\"trigger\": \"briefing\xff\xfe\n").unwrap();
+            file.write_all(b"{\"trigger\": \"briefing\xff\xfe\n")
+                .unwrap();
         }
         for (name, at) in [
             ("briefing", "2026-08-14T07:00:00Z"),
@@ -1269,7 +1270,10 @@ mod tests {
         // The full parse dies on the torn head — which is exactly why the
         // tail scan reads bytes. If `runs()` ever learns to survive this,
         // the contrast is gone, not the guarantee; this assert is the flag.
-        assert!(store.runs().is_err(), "read_to_string dies on invalid UTF-8");
+        assert!(
+            store.runs().is_err(),
+            "read_to_string dies on invalid UTF-8"
+        );
 
         // An absent ledger is an empty scan, not an error.
         let empty = TriggerStore::open(scratch("tailscan-empty")).unwrap();

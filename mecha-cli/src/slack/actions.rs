@@ -145,12 +145,9 @@ impl Action {
                 "restart".into(),
                 unit.clone(),
             ],
-            Action::TriggerRun { name } => vec![
-                "mecha".into(),
-                "trigger".into(),
-                "run".into(),
-                name.clone(),
-            ],
+            Action::TriggerRun { name } => {
+                vec!["mecha".into(), "trigger".into(), "run".into(), name.clone()]
+            }
             Action::TriggerCancel { name } => vec![
                 "mecha".into(),
                 "trigger".into(),
@@ -521,13 +518,7 @@ impl ActionLedger {
         }
     }
 
-    pub fn dispatched(
-        &self,
-        tap_id: &str,
-        user_id: &str,
-        action: &Action,
-        surface: &str,
-    ) {
+    pub fn dispatched(&self, tap_id: &str, user_id: &str, action: &Action, surface: &str) {
         self.append(&LedgerRow::Dispatch {
             tap_id: tap_id.to_string(),
             at: Utc::now(),
@@ -641,7 +632,10 @@ impl Executor {
         })
         .await
         .unwrap_or_else(|e| {
-            Outcome::of("unknown", format!("the outcome could not be read back: {e}"))
+            Outcome::of(
+                "unknown",
+                format!("the outcome could not be read back: {e}"),
+            )
         })
     }
 
@@ -727,11 +721,9 @@ fn store_outcome(
             "unknown",
             format!("{unit} — the restart outcome is read in run()"),
         ),
-        Action::TriggerRun { name } => trigger_run_outcome(
-            name,
-            latest_trigger_row(name, started).as_ref(),
-            child_note,
-        ),
+        Action::TriggerRun { name } => {
+            trigger_run_outcome(name, latest_trigger_row(name, started).as_ref(), child_note)
+        }
         Action::TriggerCancel { name } => cancel_outcome(name),
         Action::TriggerEnable { name } => {
             toggle_outcome(name, true, trigger_enabled(name), child_note)
@@ -739,11 +731,9 @@ fn store_outcome(
         Action::TriggerDisable { name } => {
             toggle_outcome(name, false, trigger_enabled(name), child_note)
         }
-        Action::MailImport { provider } => import_outcome(
-            provider,
-            registry_credentials_exist(provider),
-            child_note,
-        ),
+        Action::MailImport { provider } => {
+            import_outcome(provider, registry_credentials_exist(provider), child_note)
+        }
         Action::FrontdoorClose { seq, .. } => mark_outcome(
             *seq,
             mecha_core::frontdoor::CLOSED,
@@ -804,7 +794,11 @@ pub fn draft_outcome(
             other,
             format!(
                 "Draft `{id}` is `{other}`{}",
-                if send { " — nothing was sent by this tap" } else { "" }
+                if send {
+                    " — nothing was sent by this tap"
+                } else {
+                    ""
+                }
             ),
         ),
     }
@@ -848,9 +842,9 @@ pub fn trigger_run_outcome(
             "unknown",
             match child_note {
                 Some(note) => format!("Trigger `{name}` recorded no run — {note}"),
-                None => format!(
-                    "Trigger `{name}` recorded no run — see `mecha trigger runs {name}`"
-                ),
+                None => {
+                    format!("Trigger `{name}` recorded no run — see `mecha trigger runs {name}`")
+                }
             },
         ),
     }
@@ -951,9 +945,9 @@ pub fn import_outcome(
             "failed",
             match child_note {
                 Some(note) => format!("The {provider} import made no account — {note}"),
-                None => format!(
-                    "The {provider} import made no account — see `mecha-mail accounts`"
-                ),
+                None => {
+                    format!("The {provider} import made no account — see `mecha-mail accounts`")
+                }
             },
         )
     }
@@ -977,9 +971,7 @@ pub fn mark_outcome(
         Some(state) if state == want => match want {
             mecha_core::frontdoor::NEEDS_INFO => Outcome::of(
                 want,
-                format!(
-                    "Request {seq} is parked as `needs_info` — it waits on the requester now"
-                ),
+                format!("Request {seq} is parked as `needs_info` — it waits on the requester now"),
             ),
             _ => Outcome::of(want, format!("Request {seq} is `{want}`")),
         },
@@ -987,9 +979,9 @@ pub fn mark_outcome(
             "failed",
             match child_note {
                 Some(note) => format!("Request {seq} is still `{state}` — {note}"),
-                None => format!(
-                    "Request {seq} is still `{state}` — see `mecha frontdoor show {seq}`"
-                ),
+                None => {
+                    format!("Request {seq} is still `{state}` — see `mecha frontdoor show {seq}`")
+                }
             },
         ),
         None => Outcome::of(
@@ -1110,7 +1102,14 @@ mod tests {
             vec!["mecha-mail", "import", "aol", "--provider", "aol"],
             vec!["mecha-mail", "import", "personal", "--provider", "google"],
             vec!["mecha-mail", "import", "google", "--provider", "outlook"],
-            vec!["mecha-mail", "import", "google", "--provider", "google", "--force"],
+            vec![
+                "mecha-mail",
+                "import",
+                "google",
+                "--provider",
+                "google",
+                "--force",
+            ],
             vec!["mecha", "outbox", "review"],
             vec!["mecha", "frontdoor", "list"],
             // Not the trusted unit shape: another unit, a hostile lookalike,
@@ -1136,8 +1135,12 @@ mod tests {
         // Every variant renders, the program is a literal, and the typed
         // field appears as one argument — never spliced into a command word.
         let samples = [
-            Action::OutboxSend { id: "abc-123".into() },
-            Action::OutboxReject { id: "abc-123".into() },
+            Action::OutboxSend {
+                id: "abc-123".into(),
+            },
+            Action::OutboxReject {
+                id: "abc-123".into(),
+            },
             Action::RestartUnit {
                 unit: "mecha-triggers.service".into(),
             },
@@ -1225,8 +1228,12 @@ mod tests {
         // The value that travelled through Slack is the object id; the argv
         // is re-derived on this side, never parsed from the payload.
         for action in [
-            Action::OutboxSend { id: "abc-123".into() },
-            Action::OutboxReject { id: "abc-123".into() },
+            Action::OutboxSend {
+                id: "abc-123".into(),
+            },
+            Action::OutboxReject {
+                id: "abc-123".into(),
+            },
             Action::RestartUnit {
                 unit: "mecha-triggers.service".into(),
             },
@@ -1253,7 +1260,9 @@ mod tests {
         // second tap executes nothing new.
         assert_eq!(
             Action::from_payload(ids::OUTBOX_SEND_CONFIRM, "abc-123"),
-            Some(Action::OutboxSend { id: "abc-123".into() })
+            Some(Action::OutboxSend {
+                id: "abc-123".into()
+            })
         );
     }
 
@@ -1270,21 +1279,49 @@ mod tests {
             "nginx.service",
             "",
         ] {
-            assert_eq!(Action::from_payload(ids::RESTART_UNIT, hostile), None, "{hostile}");
+            assert_eq!(
+                Action::from_payload(ids::RESTART_UNIT, hostile),
+                None,
+                "{hostile}"
+            );
         }
         for hostile in ["../escape", "a b", "UPPER", ""] {
-            assert_eq!(Action::from_payload(ids::TRIGGER_RUN, hostile), None, "{hostile}");
-            assert_eq!(Action::from_payload(ids::TRIGGER_CANCEL, hostile), None, "{hostile}");
-            assert_eq!(Action::from_payload(ids::TRIGGER_ENABLE, hostile), None, "{hostile}");
-            assert_eq!(Action::from_payload(ids::TRIGGER_DISABLE, hostile), None, "{hostile}");
+            assert_eq!(
+                Action::from_payload(ids::TRIGGER_RUN, hostile),
+                None,
+                "{hostile}"
+            );
+            assert_eq!(
+                Action::from_payload(ids::TRIGGER_CANCEL, hostile),
+                None,
+                "{hostile}"
+            );
+            assert_eq!(
+                Action::from_payload(ids::TRIGGER_ENABLE, hostile),
+                None,
+                "{hostile}"
+            );
+            assert_eq!(
+                Action::from_payload(ids::TRIGGER_DISABLE, hostile),
+                None,
+                "{hostile}"
+            );
         }
         for hostile in ["", "a b", "x/../y", &"x".repeat(200)] {
-            assert_eq!(Action::from_payload(ids::OUTBOX_SEND, hostile), None, "{hostile}");
+            assert_eq!(
+                Action::from_payload(ids::OUTBOX_SEND, hostile),
+                None,
+                "{hostile}"
+            );
         }
         // The provider set is closed; anything else — including a legal shell
         // word — is not a legacy store.
         for hostile in ["aol", "google; rm -rf /", "GOOGLE", "google outlook", ""] {
-            assert_eq!(Action::from_payload(ids::MAIL_IMPORT, hostile), None, "{hostile}");
+            assert_eq!(
+                Action::from_payload(ids::MAIL_IMPORT, hostile),
+                None,
+                "{hostile}"
+            );
         }
         // The frontdoor verbs are modal callback ids, and a button payload
         // must never construct them: text can only arrive through the gated
@@ -1294,12 +1331,19 @@ mod tests {
             None,
             "a button cannot close a request — the reason comes from a modal"
         );
-        assert_eq!(Action::from_payload(ids::FRONTDOOR_NEEDS_INFO_SUBMIT, "5"), None);
+        assert_eq!(
+            Action::from_payload(ids::FRONTDOOR_NEEDS_INFO_SUBMIT, "5"),
+            None
+        );
     }
 
     #[test]
     fn a_submission_round_trips_and_carries_the_owner_text_typed() {
-        let close = Action::from_submission(ids::FRONTDOOR_CLOSE_SUBMIT, "5", "  spam, politely declined  ");
+        let close = Action::from_submission(
+            ids::FRONTDOOR_CLOSE_SUBMIT,
+            "5",
+            "  spam, politely declined  ",
+        );
         assert_eq!(
             close,
             Some(Action::FrontdoorClose {
@@ -1308,7 +1352,8 @@ mod tests {
             }),
             "trimmed, typed, and nothing else changed"
         );
-        let park = Action::from_submission(ids::FRONTDOOR_NEEDS_INFO_SUBMIT, "12", "which Tuesday?");
+        let park =
+            Action::from_submission(ids::FRONTDOOR_NEEDS_INFO_SUBMIT, "12", "which Tuesday?");
         assert_eq!(
             park,
             Some(Action::FrontdoorNeedsInfo {
@@ -1354,7 +1399,10 @@ mod tests {
             None,
             "a message verb is not a modal verb"
         );
-        assert_eq!(Action::from_submission("anything_else", "5", "a reason"), None);
+        assert_eq!(
+            Action::from_submission("anything_else", "5", "a reason"),
+            None
+        );
     }
 
     #[test]
@@ -1496,7 +1544,11 @@ mod tests {
         // surface that can answer.
         let unknown = draft_outcome(true, "abc-123", None, None);
         assert_eq!(unknown.status, "unknown");
-        assert!(unknown.line.contains("mecha outbox show abc-123"), "{}", unknown.line);
+        assert!(
+            unknown.line.contains("mecha outbox show abc-123"),
+            "{}",
+            unknown.line
+        );
     }
 
     #[test]
@@ -1509,7 +1561,9 @@ mod tests {
         assert_eq!(refailed.status, "failed-again");
         assert!(refailed.line.contains("upstream"), "{}", refailed.line);
         assert!(
-            refailed.line.contains("journalctl --user -u mecha-triggers.service"),
+            refailed
+                .line
+                .contains("journalctl --user -u mecha-triggers.service"),
             "{}",
             refailed.line
         );
@@ -1531,7 +1585,11 @@ mod tests {
 
         let none = trigger_run_outcome("briefing", None, None);
         assert_eq!(none.status, "unknown");
-        assert!(none.line.contains("mecha trigger runs briefing"), "{}", none.line);
+        assert!(
+            none.line.contains("mecha trigger runs briefing"),
+            "{}",
+            none.line
+        );
     }
 
     /// §6's rule for the flag: the trigger file re-read is the outcome. The
@@ -1541,20 +1599,36 @@ mod tests {
     fn an_enable_or_disable_reports_the_flag_as_it_now_stands() {
         let on = toggle_outcome("briefing", true, Some(true), Some("child was killed"));
         assert_eq!(on.status, "enabled");
-        assert!(on.line.contains("mecha trigger disable briefing"), "{}", on.line);
+        assert!(
+            on.line.contains("mecha trigger disable briefing"),
+            "{}",
+            on.line
+        );
         assert!(!on.line.contains("killed"), "{}", on.line);
 
         let off = toggle_outcome("briefing", false, Some(false), None);
         assert_eq!(off.status, "disabled");
-        assert!(off.line.contains("mecha trigger enable briefing"), "{}", off.line);
+        assert!(
+            off.line.contains("mecha trigger enable briefing"),
+            "{}",
+            off.line
+        );
 
         let unchanged = toggle_outcome("briefing", false, Some(true), Some("store locked"));
         assert_eq!(unchanged.status, "failed");
-        assert!(unchanged.line.contains("store locked"), "{}", unchanged.line);
+        assert!(
+            unchanged.line.contains("store locked"),
+            "{}",
+            unchanged.line
+        );
 
         let unknown = toggle_outcome("briefing", true, None, None);
         assert_eq!(unknown.status, "unknown");
-        assert!(unknown.line.contains("mecha trigger show briefing"), "{}", unknown.line);
+        assert!(
+            unknown.line.contains("mecha trigger show briefing"),
+            "{}",
+            unknown.line
+        );
     }
 
     #[test]
@@ -1571,7 +1645,11 @@ mod tests {
 
         let failed = import_outcome("outlook", false, Some("already has credentials"));
         assert_eq!(failed.status, "failed");
-        assert!(failed.line.contains("already has credentials"), "{}", failed.line);
+        assert!(
+            failed.line.contains("already has credentials"),
+            "{}",
+            failed.line
+        );
     }
 
     /// F11, failing on the old −5s window: a daemon-fired (scheduled) row
@@ -1632,7 +1710,8 @@ mod tests {
                 .append(true)
                 .open(store.ledger_path())
                 .unwrap();
-            file.write_all(b"{\"trigger\": \"briefing\xff\xfe\n").unwrap();
+            file.write_all(b"{\"trigger\": \"briefing\xff\xfe\n")
+                .unwrap();
         }
 
         let since = Utc::now();
@@ -1675,7 +1754,10 @@ mod tests {
 
         // One changed byte is a different fingerprint — that is the whole
         // drift detector.
-        assert_ne!(fingerprint(args), fingerprint("{\n  \"to\": \"b@x.org\"\n}"));
+        assert_ne!(
+            fingerprint(args),
+            fingerprint("{\n  \"to\": \"b@x.org\"\n}")
+        );
         // Deterministic across processes: a literal, not DefaultHasher.
         assert_eq!(fingerprint(""), "cbf29ce484222325");
 
@@ -1697,13 +1779,26 @@ mod tests {
         assert_eq!(parked.status, "needs_info");
         assert!(parked.line.contains("requester"), "{}", parked.line);
 
-        let stuck = mark_outcome(5, "closed", Some("extracted"), Some("no request with seq 5"));
+        let stuck = mark_outcome(
+            5,
+            "closed",
+            Some("extracted"),
+            Some("no request with seq 5"),
+        );
         assert_eq!(stuck.status, "failed");
         assert!(stuck.line.contains("extracted"), "{}", stuck.line);
-        assert!(stuck.line.contains("no request with seq 5"), "{}", stuck.line);
+        assert!(
+            stuck.line.contains("no request with seq 5"),
+            "{}",
+            stuck.line
+        );
 
         let unknown = mark_outcome(5, "closed", None, None);
         assert_eq!(unknown.status, "unknown");
-        assert!(unknown.line.contains("mecha frontdoor list"), "{}", unknown.line);
+        assert!(
+            unknown.line.contains("mecha frontdoor list"),
+            "{}",
+            unknown.line
+        );
     }
 }

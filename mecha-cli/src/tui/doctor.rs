@@ -208,7 +208,11 @@ impl DoctorModal {
                         row.component,
                         row.severity.as_str(),
                         row.summary,
-                        if row.remedy.is_some() { "  · remedy" } else { "" },
+                        if row.remedy.is_some() {
+                            "  · remedy"
+                        } else {
+                            ""
+                        },
                     );
                     if selected {
                         Line::styled(text, Style::new().fg(Color::Black).bg(Color::Cyan))
@@ -436,7 +440,10 @@ fn detail_lines(finding: &Finding) -> Vec<Line<'static>> {
             for line in remedy.description.lines() {
                 body.push(Line::styled(line.to_string(), white));
             }
-            body.push(Line::styled(format!("run: {}", remedy.argv.join(" ")), white));
+            body.push(Line::styled(
+                format!("run: {}", remedy.argv.join(" ")),
+                white,
+            ));
             match dispatch(remedy) {
                 RemedyDispatch::DeepLink(_) => body.push(Line::styled(
                     "a opens that surface right here, as a modal",
@@ -688,8 +695,14 @@ mod tests {
             Severity::Broken,
             Some(remedy(&["mecha-mail", "auth", "personal"], true)),
         )));
-        assert!(interactive.contains("run: mecha-mail auth personal"), "{interactive}");
-        assert!(interactive.contains("needs the real terminal"), "{interactive}");
+        assert!(
+            interactive.contains("run: mecha-mail auth personal"),
+            "{interactive}"
+        );
+        assert!(
+            interactive.contains("needs the real terminal"),
+            "{interactive}"
+        );
 
         let deep = text(&detail_lines(&finding(
             "outbox",
@@ -701,7 +714,10 @@ mod tests {
         let spawn = text(&detail_lines(&finding(
             "systemd",
             Severity::Broken,
-            Some(remedy(&["systemctl", "--user", "restart", "x.service"], false)),
+            Some(remedy(
+                &["systemctl", "--user", "restart", "x.service"],
+                false,
+            )),
         )));
         assert!(spawn.contains("re-examines when it exits"), "{spawn}");
 

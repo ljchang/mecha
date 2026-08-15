@@ -68,18 +68,25 @@ pub fn request_card(record: &Record) -> Vec<Value> {
             let rendered = serde_json::to_string_pretty(&brief).unwrap_or_default();
             vec![
                 blocks::section(&header),
-                blocks::section(&format!(
-                    "```\n{}\n```",
-                    blocks::truncate(&rendered, 2_600)
-                )),
+                blocks::section(&format!("```\n{}\n```", blocks::truncate(&rendered, 2_600))),
                 blocks::context(&format!(
                     "what a privileged run would see — the prose never leaves the \
                      terminal (`mecha frontdoor show {}`)",
                     record.seq
                 )),
                 blocks::actions(vec![
-                    blocks::button(CLOSE_OPEN, "Close…", &record.seq.to_string(), Some("danger")),
-                    blocks::button(NEEDS_INFO_OPEN, "Needs info…", &record.seq.to_string(), None),
+                    blocks::button(
+                        CLOSE_OPEN,
+                        "Close…",
+                        &record.seq.to_string(),
+                        Some("danger"),
+                    ),
+                    blocks::button(
+                        NEEDS_INFO_OPEN,
+                        "Needs info…",
+                        &record.seq.to_string(),
+                        None,
+                    ),
                 ]),
             ]
         }
@@ -308,7 +315,10 @@ mod tests {
         assert_eq!(close["private_metadata"], meta);
 
         let ask = needs_info_modal(5, &meta);
-        assert_eq!(ask["callback_id"], actions::ids::FRONTDOOR_NEEDS_INFO_SUBMIT);
+        assert_eq!(
+            ask["callback_id"],
+            actions::ids::FRONTDOOR_NEEDS_INFO_SUBMIT
+        );
 
         // Both carry one required input under the shared action id, capped at
         // the same length the submission parser enforces.

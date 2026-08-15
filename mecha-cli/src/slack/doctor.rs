@@ -137,10 +137,7 @@ fn running_triggers(findings: &[Finding]) -> BTreeSet<String> {
 /// **Cancel** instead of a probe run, because re-running a trigger that is
 /// mid-run is an overlap-skip and what the owner plausibly wants at that
 /// moment is the stop.
-pub fn report_blocks(
-    findings: &[Finding],
-    running: &BTreeSet<String>,
-) -> Vec<serde_json::Value> {
+pub fn report_blocks(findings: &[Finding], running: &BTreeSet<String>) -> Vec<serde_json::Value> {
     if findings.is_empty() {
         return vec![blocks::section(
             "*Doctor:* nothing wrong that this doctor can see.",
@@ -203,10 +200,18 @@ fn action_blocks(action: &Action, running: &BTreeSet<String>) -> Vec<serde_json:
             ])]
         }
         Action::RestartUnit { .. } => {
-            vec![blocks::actions(vec![button(action, "Restart", Some("primary"))])]
+            vec![blocks::actions(vec![button(
+                action,
+                "Restart",
+                Some("primary"),
+            )])]
         }
         Action::MailImport { .. } => {
-            vec![blocks::actions(vec![button(action, "Import", Some("primary"))])]
+            vec![blocks::actions(vec![button(
+                action,
+                "Import",
+                Some("primary"),
+            )])]
         }
         // No other variant is constructible from a remedy; if one becomes so,
         // rendering nothing keeps it display-only until this match learns it.
@@ -357,7 +362,10 @@ mod tests {
         // Summary, detail and remedy all ride along.
         assert!(text.contains("mail is unwell"), "{text}");
         assert!(text.contains("the longer story"), "{text}");
-        assert!(text.contains("re-authenticate the `personal` account"), "{text}");
+        assert!(
+            text.contains("re-authenticate the `personal` account"),
+            "{text}"
+        );
         // The remedy's command line stays copyable code beside any button —
         // the tap must never run something the reader could not have read.
         assert!(text.contains("`mecha-mail auth personal`"), "{text}");
@@ -536,7 +544,10 @@ mod tests {
         // Doorways, not verbs: neither id is parseable into an executable
         // action, so a replayed press can at most re-post cards.
         assert_eq!(Action::from_payload(REVIEW_HERE_OUTBOX, "outbox"), None);
-        assert_eq!(Action::from_payload(REVIEW_HERE_FRONTDOOR, "frontdoor"), None);
+        assert_eq!(
+            Action::from_payload(REVIEW_HERE_FRONTDOOR, "frontdoor"),
+            None
+        );
         // The copyable command survives beside the button.
         assert!(text.contains("`mecha outbox review`"), "{text}");
         assert!(text.contains("`mecha frontdoor list`"), "{text}");
@@ -562,7 +573,10 @@ mod tests {
                 }),
             );
             let text = blocks_text(&report_blocks(&[f], &no_running()));
-            assert!(!text.contains("\"button\""), "{argv:?} must stay text: {text}");
+            assert!(
+                !text.contains("\"button\""),
+                "{argv:?} must stay text: {text}"
+            );
         }
     }
 
@@ -592,8 +606,14 @@ mod tests {
 
         let running: BTreeSet<String> = ["briefing".to_string()].into();
         let mid_run = blocks_text(&report_blocks(&findings, &running));
-        assert!(mid_run.contains("\"slack_action_trigger_cancel\""), "{mid_run}");
-        assert!(mid_run.contains("\"slack_action_trigger_disable\""), "{mid_run}");
+        assert!(
+            mid_run.contains("\"slack_action_trigger_cancel\""),
+            "{mid_run}"
+        );
+        assert!(
+            mid_run.contains("\"slack_action_trigger_disable\""),
+            "{mid_run}"
+        );
     }
 
     /// Phase 2: the legacy-store finding's remedy is a one-tap import — the

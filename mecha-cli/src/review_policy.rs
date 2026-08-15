@@ -156,6 +156,9 @@ mod tests {
         // a person reads before trusting the mode.
         let auto = ReviewMode::Auto.describe();
         assert!(auto.contains("tainted"), "{auto}");
-        assert!(auto.contains("early-stopped") || auto.contains("errored"), "{auto}");
+        assert!(
+            auto.contains("early-stopped") || auto.contains("errored"),
+            "{auto}"
+        );
     }
 }

@@ -76,7 +76,12 @@ pub fn grouped(mut findings: Vec<Finding>) -> Vec<Finding> {
     for component in components {
         // Stable within a component: the sorted order already put broken
         // before attention, and insertion order after that.
-        out.extend(findings.iter().filter(|f| f.component == component).cloned());
+        out.extend(
+            findings
+                .iter()
+                .filter(|f| f.component == component)
+                .cloned(),
+        );
     }
     out
 }
@@ -311,9 +316,18 @@ mod tests {
         assert!(affirmed(&mut "y\n".as_bytes()));
         assert!(affirmed(&mut "Y\n".as_bytes()));
         assert!(!affirmed(&mut "n\n".as_bytes()));
-        assert!(!affirmed(&mut "yes\n".as_bytes()), "only a bare y, like the outbox");
-        assert!(!affirmed(&mut "\n".as_bytes()), "enter alone is the default: no");
-        assert!(!affirmed(&mut "".as_bytes()), "EOF is no — a piped doctor releases nothing");
+        assert!(
+            !affirmed(&mut "yes\n".as_bytes()),
+            "only a bare y, like the outbox"
+        );
+        assert!(
+            !affirmed(&mut "\n".as_bytes()),
+            "enter alone is the default: no"
+        );
+        assert!(
+            !affirmed(&mut "".as_bytes()),
+            "EOF is no — a piped doctor releases nothing"
+        );
     }
 
     #[test]
@@ -413,7 +427,12 @@ mod tests {
     fn only_a_restart_shaped_remedy_names_a_unit_to_re_examine() {
         let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
-            restart_unit_of(&argv(&["systemctl", "--user", "restart", "mecha-x.service"])),
+            restart_unit_of(&argv(&[
+                "systemctl",
+                "--user",
+                "restart",
+                "mecha-x.service"
+            ])),
             Some("mecha-x.service")
         );
         for other in [
@@ -430,7 +449,12 @@ mod tests {
     #[test]
     fn a_dead_auth_reorders_the_unit_advice() {
         let plain = unit_finding("mecha-triggers.service", false);
-        assert!(!plain.remedy.as_ref().unwrap().description.contains("re-auth"));
+        assert!(!plain
+            .remedy
+            .as_ref()
+            .unwrap()
+            .description
+            .contains("re-auth"));
 
         let with_auth = unit_finding("mecha-triggers.service", true);
         let remedy = with_auth.remedy.unwrap();
@@ -444,6 +468,8 @@ mod tests {
             remedy.argv,
             vec!["systemctl", "--user", "restart", "mecha-triggers.service"]
         );
-        assert!(with_auth.detail.contains("journalctl --user -u mecha-triggers.service -n 20"));
+        assert!(with_auth
+            .detail
+            .contains("journalctl --user -u mecha-triggers.service -n 20"));
     }
 }

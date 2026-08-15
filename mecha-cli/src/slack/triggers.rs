@@ -241,7 +241,10 @@ mod tests {
         let t = text(&rendered);
         assert!(t.contains(ids::TRIGGER_ENABLE), "{t}");
         assert!(!t.contains(ids::TRIGGER_DISABLE), "{t}");
-        assert!(!t.contains(ids::TRIGGER_RUN), "a disabled trigger cannot run: {t}");
+        assert!(
+            !t.contains(ids::TRIGGER_RUN),
+            "a disabled trigger cannot run: {t}"
+        );
         assert!(!t.contains(ids::TRIGGER_CANCEL), "{t}");
     }
 
@@ -287,7 +290,8 @@ mod tests {
                 .append(true)
                 .open(store.ledger_path())
                 .unwrap();
-            file.write_all(b"{\"trigger\": \"morning\xff\xfe\n").unwrap();
+            file.write_all(b"{\"trigger\": \"morning\xff\xfe\n")
+                .unwrap();
         }
         // An older error and a newer ok for `morning`: the tail's first
         // sighting — the newest row — is the word shown.

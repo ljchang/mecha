@@ -132,7 +132,10 @@ mod tests {
     #[test]
     fn every_mode_names_itself_and_round_trips_through_the_command_word() {
         for mode in [ReviewMode::Now, ReviewMode::Later, ReviewMode::Auto] {
-            assert_eq!(command(&format!("review {}", mode.name())), Some(Some(mode)));
+            assert_eq!(
+                command(&format!("review {}", mode.name())),
+                Some(Some(mode))
+            );
             assert!(!mode.describe().is_empty());
         }
     }
@@ -149,7 +152,10 @@ mod tests {
         // The owner sends a top-level `review auto` (raw thread_ts: None).
         let (key, scope) = scope_for(channel, None);
         assert_eq!(key, channel_scope_key(channel));
-        assert!(scope.contains("channel"), "the confirmation names the real scope: {scope}");
+        assert!(
+            scope.contains("channel"),
+            "the confirmation names the real scope: {scope}"
+        );
         settings.insert(
             key,
             Setting {
