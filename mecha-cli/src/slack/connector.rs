@@ -438,8 +438,7 @@ impl State {
             let (channel, thread_ts) = (channel.clone(), thread_ts.clone());
             tokio::spawn(async move {
                 let (text, blocks) = super::doctor::report().await;
-                let _ =
-                    chat::post_message(&slack, &channel, Some(&thread_ts), &text, blocks).await;
+                let _ = chat::post_message(&slack, &channel, Some(&thread_ts), &text, blocks).await;
             });
             return;
         }
@@ -452,8 +451,7 @@ impl State {
             let (channel, thread_ts) = (channel.clone(), thread_ts.clone());
             tokio::spawn(async move {
                 let (text, blocks) = super::triggers::listing().await;
-                let _ =
-                    chat::post_message(&slack, &channel, Some(&thread_ts), &text, blocks).await;
+                let _ = chat::post_message(&slack, &channel, Some(&thread_ts), &text, blocks).await;
             });
             return;
         }
@@ -499,8 +497,7 @@ impl State {
                     )
                 }
             };
-            let _ = chat::post_message(&self.slack, &channel, Some(&thread_ts), &reply, None)
-                .await;
+            let _ = chat::post_message(&self.slack, &channel, Some(&thread_ts), &reply, None).await;
             return;
         }
 
@@ -855,9 +852,7 @@ impl State {
                         &self.slack,
                         &r.channel_id,
                         Some(&r.thread_ts),
-                        &format!(
-                            "The run failed: {error} — send `doctor` for a health report"
-                        ),
+                        &format!("The run failed: {error} — send `doctor` for a health report"),
                         None,
                     )
                     .await;
@@ -1074,10 +1069,7 @@ impl State {
         // after early-stopped runs too: their drafts card, they just never
         // auto-release, and `finished_clean` below is what carries that.
         let setting = review::effective(&self.review, key, &record.channel_id).cloned();
-        let mode = setting
-            .as_ref()
-            .map(|s| s.mode)
-            .unwrap_or(ReviewMode::Now);
+        let mode = setting.as_ref().map(|s| s.mode).unwrap_or(ReviewMode::Now);
 
         if mode == ReviewMode::Later {
             let _ = chat::post_message(
@@ -1281,8 +1273,10 @@ impl State {
             // watching; a slow outbox release with an MCP startup is as slow
             // as a trigger run). Never both fresh posts: the old shape
             // double-posted a slow action whose dispatch reply had failed.
-            let (update_card, fresh_reply) =
-                outcome_delivery(card_ts.is_some(), started.elapsed() > Duration::from_secs(60));
+            let (update_card, fresh_reply) = outcome_delivery(
+                card_ts.is_some(),
+                started.elapsed() > Duration::from_secs(60),
+            );
             if update_card {
                 if let Some(ts) = &card_ts {
                     let _ = chat::update(
@@ -1597,8 +1591,7 @@ impl State {
                     } else {
                         super::frontdoor::needs_info_modal(seq, &meta)
                     };
-                    if let Err(e) = mecha_slack::views::open(&self.slack, &trigger, view).await
-                    {
+                    if let Err(e) = mecha_slack::views::open(&self.slack, &trigger, view).await {
                         // A tap that silently does nothing is the failure
                         // this surface keeps naming; say so, and name the
                         // terminal that always works.
@@ -1776,7 +1769,9 @@ impl State {
     /// only inside the typed action — which is also what puts it in the
     /// ledger's dispatch row.
     fn on_view_submission(&mut self, interaction: &Interaction) {
-        let Some(view) = &interaction.view else { return };
+        let Some(view) = &interaction.view else {
+            return;
+        };
         let Some(meta) = super::frontdoor::parse_metadata(&view.private_metadata) else {
             tracing::warn!("a view submission carried unusable metadata; nothing ran");
             return;
@@ -1808,9 +1803,7 @@ impl State {
                 ts,
                 thread_ts,
             },
-            (Some(channel), None, Some(thread_ts)) => {
-                ActionCard::Reply { channel, thread_ts }
-            }
+            (Some(channel), None, Some(thread_ts)) => ActionCard::Reply { channel, thread_ts },
             _ => {
                 tracing::warn!("a view submission had nowhere to report; nothing ran");
                 return;
@@ -1988,9 +1981,8 @@ const REVIEW_HERE_MAX: usize = 8;
 /// rest are named, with the terminal surface that shows them all.
 fn review_here_note(total: usize, terminal_cmd: &str) -> Option<String> {
     let rest = total.saturating_sub(REVIEW_HERE_MAX);
-    (rest > 0).then(|| {
-        format!("{rest} more not shown here — the rest at the terminal: `{terminal_cmd}`")
-    })
+    (rest > 0)
+        .then(|| format!("{rest} more not shown here — the rest at the terminal: `{terminal_cmd}`"))
 }
 
 /// The tainted draft's confirm card, and the one rule it enforces: **you may
@@ -2102,10 +2094,7 @@ enum ConfirmPress {
     Unreadable { id: String },
 }
 
-fn confirm_press(
-    value: &str,
-    item: Option<&mecha_core::outbox::OutboxItem>,
-) -> ConfirmPress {
+fn confirm_press(value: &str, item: Option<&mecha_core::outbox::OutboxItem>) -> ConfirmPress {
     // The caller only reaches here for values `parse_confirm_value` accepted.
     let (id, fingerprint) = match actions::parse_confirm_value(value) {
         Some(parsed) => parsed,
@@ -2126,9 +2115,7 @@ fn confirm_press(
         return ConfirmPress::Recard { id: id.to_string() };
     }
     match fingerprint {
-        Some(fp) if fp == actions::fingerprint(&args) => ConfirmPress::Send {
-            id: id.to_string(),
-        },
+        Some(fp) if fp == actions::fingerprint(&args) => ConfirmPress::Send { id: id.to_string() },
         // Drift — or a card composed before values carried a fingerprint,
         // which cannot prove the bytes and re-cards: one extra tap, never an
         // unread send.
@@ -2320,8 +2307,7 @@ mod tests {
     /// One composer, one detour, no way for a batch to reach a send the
     /// one-off card could not.
     #[test]
-    fn a_tainted_draft_in_a_review_here_batch_keeps_the_two_step_and_truncated_stays_reject_only()
-    {
+    fn a_tainted_draft_in_a_review_here_batch_keeps_the_two_step_and_truncated_stays_reject_only() {
         let batch = [
             draft("a-1", false, "hello"),
             draft("a-2", true, "the tainted one"),
@@ -2350,8 +2336,14 @@ mod tests {
         // it is the same code, not a copy of it.
         let second_step =
             serde_json::to_string(&tainted_confirm_blocks("a-2", &"x".repeat(10_000))).unwrap();
-        assert!(!second_step.contains(actions::ids::OUTBOX_SEND_CONFIRM), "{second_step}");
-        assert!(second_step.contains(actions::ids::OUTBOX_REJECT), "{second_step}");
+        assert!(
+            !second_step.contains(actions::ids::OUTBOX_SEND_CONFIRM),
+            "{second_step}"
+        );
+        assert!(
+            second_step.contains(actions::ids::OUTBOX_REJECT),
+            "{second_step}"
+        );
     }
 
     /// F1, failing on the old encoding, which had no way to ask how the run
@@ -2404,7 +2396,10 @@ mod tests {
         );
         assert!(!json.contains("\"slack_outbox_send\""), "{json}");
         assert!(json.contains(actions::ids::OUTBOX_REJECT), "{json}");
-        assert!(json.contains("could not be read"), "the error is stated: {json}");
+        assert!(
+            json.contains("could not be read"),
+            "the error is stated: {json}"
+        );
         assert!(json.contains("mecha outbox show abc-123"), "{json}");
         assert!(text.contains("could not be read"), "{text}");
 
@@ -2518,7 +2513,10 @@ mod tests {
     /// the Now-mode card afterwards.
     #[test]
     fn a_failed_auto_release_gets_the_draft_carded_for_the_phone() {
-        assert!(failed_auto_release_needs_card("review-auto", Some("pending")));
+        assert!(failed_auto_release_needs_card(
+            "review-auto",
+            Some("pending")
+        ));
         assert!(
             !failed_auto_release_needs_card("review-auto", Some("sent")),
             "a release that landed needs no card"
@@ -2558,14 +2556,12 @@ mod tests {
         );
         // And the well-formed view parses into a real action, which is
         // exactly why the gate has to come first.
-        assert!(
-            actions::Action::from_submission(
-                actions::ids::FRONTDOOR_CLOSE_SUBMIT,
-                "5",
-                "a perfectly plausible reason"
-            )
-            .is_some()
-        );
+        assert!(actions::Action::from_submission(
+            actions::ids::FRONTDOOR_CLOSE_SUBMIT,
+            "5",
+            "a perfectly plausible reason"
+        )
+        .is_some());
         let owner = binding::check(Some(&bound), Some("U_OWNER"), Some("T1"));
         assert!(owner.is_allowed());
     }
@@ -2574,9 +2570,12 @@ mod tests {
     /// visible and the rest are at the terminal.
     #[test]
     fn a_review_here_batch_past_the_cap_names_the_terminal_for_the_rest() {
-        assert_eq!(review_here_note(REVIEW_HERE_MAX, "mecha outbox review"), None);
-        let note = review_here_note(REVIEW_HERE_MAX + 3, "mecha outbox review")
-            .expect("the cut says so");
+        assert_eq!(
+            review_here_note(REVIEW_HERE_MAX, "mecha outbox review"),
+            None
+        );
+        let note =
+            review_here_note(REVIEW_HERE_MAX + 3, "mecha outbox review").expect("the cut says so");
         assert!(note.contains("3 more"), "{note}");
         assert!(note.contains("mecha outbox review"), "{note}");
         let front = review_here_note(20, "mecha frontdoor list").unwrap();

@@ -339,19 +339,16 @@ impl OutboxStore {
     /// error; a missing item is `Ok(None)`; a torn file is an error, so a
     /// caller that maps errors to "unreadable" keeps failing closed.
     pub fn item_exact(&self, id: &str) -> Result<Option<OutboxItem>> {
-        anyhow::ensure!(
-            is_item_id(id),
-            "`{id}` is not shaped like an outbox id"
-        );
+        anyhow::ensure!(is_item_id(id), "`{id}` is not shaped like an outbox id");
         let path = self.root.join(format!("{id}.json"));
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
-        Ok(Some(serde_json::from_str(&text).with_context(|| {
-            format!("parsing {}", path.display())
-        })?))
+        Ok(Some(
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?,
+        ))
     }
 
     /// Replace a pending item's release arguments. `args_before` is untouched

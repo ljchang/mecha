@@ -355,16 +355,15 @@ impl Frontdoor {
         let mut record = record.clone();
         if let Ok(text) = std::fs::read_to_string(&path) {
             if let Ok(prior) = serde_json::from_str::<Record>(&text) {
-                let merged: Vec<String> = prior
-                    .outbox
-                    .into_iter()
-                    .chain(record.outbox)
-                    .fold(Vec::new(), |mut ids, id| {
+                let merged: Vec<String> = prior.outbox.into_iter().chain(record.outbox).fold(
+                    Vec::new(),
+                    |mut ids, id| {
                         if !ids.contains(&id) {
                             ids.push(id);
                         }
                         ids
-                    });
+                    },
+                );
                 record.outbox = merged;
             }
         }
@@ -952,7 +951,9 @@ mod tests {
         );
 
         // Idempotent: writing the same ids again stacks nothing.
-        s.front.write(&awaiting(1, &["draft-2", "draft-1"])).unwrap();
+        s.front
+            .write(&awaiting(1, &["draft-2", "draft-1"]))
+            .unwrap();
         assert_eq!(
             s.front.record(1).unwrap().outbox,
             vec!["draft-1".to_string(), "draft-2".to_string()]

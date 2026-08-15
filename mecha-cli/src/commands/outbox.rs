@@ -848,9 +848,7 @@ async fn review(global: &GlobalOpts, store: &OutboxStore, selection: &Selection)
                             surface.release(store, &current).await
                         }
                         Err(e) => match store.lock() {
-                            Ok(lock) => {
-                                Err(record_release_failure(store, &lock, &current.id, e))
-                            }
+                            Ok(lock) => Err(record_release_failure(store, &lock, &current.id, e)),
                             // No lock means no safe write; the failure is
                             // reported without touching the store.
                             Err(lock_err) => Err(e.context(format!(

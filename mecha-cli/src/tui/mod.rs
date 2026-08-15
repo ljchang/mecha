@@ -1215,7 +1215,8 @@ fn poll_watches(app: &mut App) {
                         modal.examining = false;
                         modal.status = Some(line);
                     } else {
-                        app.transcript.push(Entry::Notice(format!("doctor: {line}")));
+                        app.transcript
+                            .push(Entry::Notice(format!("doctor: {line}")));
                     }
                 }
                 Ok(None) => app.watches.push(Watch::Examine { child, since }),
@@ -3005,9 +3006,7 @@ fn install_doctor_rows(app: &mut App, rows: Vec<doctor::FindingRow>) {
 /// resolves to `current_exe` so a TUI run from `target/debug` drives the
 /// build it is part of.
 fn spawn_remedy(argv: &[String]) -> Result<std::process::Child> {
-    let (program, rest) = argv
-        .split_first()
-        .context("a remedy with an empty argv")?;
+    let (program, rest) = argv.split_first().context("a remedy with an empty argv")?;
     let program: std::path::PathBuf = if program.as_str() == "mecha" {
         std::env::current_exe().context("cannot find my own binary")?
     } else {
@@ -3061,9 +3060,7 @@ fn suspend_and_run_remedy(
 /// is that a failure's text lands on that terminal rather than in the
 /// modal's status line; the exit status still names the failure there.
 fn run_remedy_interactive(argv: &[String]) -> Result<()> {
-    let (program, rest) = argv
-        .split_first()
-        .context("a remedy with an empty argv")?;
+    let (program, rest) = argv.split_first().context("a remedy with an empty argv")?;
     let program: std::path::PathBuf = if program.as_str() == "mecha" {
         std::env::current_exe().context("cannot find my own binary")?
     } else {

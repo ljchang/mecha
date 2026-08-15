@@ -492,7 +492,10 @@ mod tests {
         };
         let view = interaction.view.unwrap();
         assert_eq!(view.callback_id, "cb");
-        assert!(view.values.is_empty(), "no state means no values, not a crash");
+        assert!(
+            view.values.is_empty(),
+            "no state means no values, not a crash"
+        );
     }
 
     #[test]

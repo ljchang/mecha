@@ -390,8 +390,7 @@ mod tests {
         let addr = server.server_addr().to_ip().unwrap().to_string();
         std::thread::spawn(move || {
             for (request, (status, body)) in server.incoming_requests().zip(responses) {
-                let response =
-                    tiny_http::Response::from_string(body).with_status_code(status);
+                let response = tiny_http::Response::from_string(body).with_status_code(status);
                 let _ = request.respond(response);
             }
         });
@@ -401,8 +400,7 @@ mod tests {
     fn manager_against(dir: &Path, token_url: String) -> TokenManager {
         let path = dir.join("personal").join("oauth.json");
         save(&path, &creds()).unwrap();
-        let mut config =
-            crate::google::auth::google_oauth_config("id".into(), "secret".into(), 1);
+        let mut config = crate::google::auth::google_oauth_config("id".into(), "secret".into(), 1);
         config.token_url = token_url;
         TokenManager {
             path: path.clone(),
@@ -447,7 +445,11 @@ mod tests {
             .unwrap()
             .permissions()
             .mode();
-        assert_eq!(mode & 0o777, 0o600, "the marker is owner-only like the store");
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "the marker is owner-only like the store"
+        );
 
         // The next successful refresh is the recovery, and it must clear the
         // marker — a signal that outlives the outage reports a dead account
@@ -498,7 +500,10 @@ mod tests {
 
         record_auth_error(&path, "the login is dead");
 
-        let mode = std::fs::metadata(&marker_path).unwrap().permissions().mode();
+        let mode = std::fs::metadata(&marker_path)
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600, "the marker must come back owner-only");
         assert_eq!(
             load_auth_error(&path).unwrap().message,
