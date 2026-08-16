@@ -855,6 +855,12 @@ impl Agent {
         let mut prompt_tokens = 0u64;
         let mut compaction_gave_up = false;
         let mut compactions = 0u32;
+        // Watches whether the cached prefix is actually being reused, and
+        // names the reason when it legitimately is not. Per run, because
+        // within a run "append-only between turns" is the invariant to
+        // verify; across runs the surface may honestly differ, and that diff
+        // is `RunConfig`'s to record.
+        let mut cache_lens = crate::cache_lens::CacheLens::new();
         let mut loop_guard = LoopGuard::new(self.cfg.loop_guard);
         let mut loop_detected = false;
         // Consecutive empty turns, reset by any turn that produces something.
@@ -1177,6 +1183,27 @@ impl Agent {
             prompt_tokens = response.usage.total_input();
             malformed += response.malformed_tool_args;
             emit(&events, AgentEvent::TurnUsage(response.usage.clone()));
+
+            // Judged against what was actually sent — `request.messages` is
+            // reassigned by the overflow recovery above, so a recovered
+            // turn's legitimate cache break reads as the rewrite it is.
+            if self.cfg.cache_prompt {
+                use crate::cache_lens::Verdict;
+                match cache_lens.observe(&request, &response.usage) {
+                    Verdict::Drop {
+                        uncached,
+                        prev_total,
+                    } => tracing::warn!(
+                        uncached,
+                        prev_total,
+                        "prompt cache reuse dropped: this request re-paid {uncached} input \
+                         tokens against a previous prompt of {prev_total}, with no change \
+                         in tools, system prompt, or transcript prefix — something is \
+                         destabilising the cached prefix"
+                    ),
+                    verdict => tracing::debug!(?verdict, "cache lens"),
+                }
+            }
 
             let text = response.message.text();
             if !text.is_empty() {
