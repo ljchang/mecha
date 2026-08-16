@@ -362,6 +362,17 @@ impl Tool for Shell {
                  commands stop tripping this interlock entirely."
                     .into(),
             )
+        } else if self.sandbox.backend() == crate::sandbox::Backend::Landlock {
+            // Before the generic network branch, because a landlocked shell
+            // reports reachable regardless of `network`, and "set network =
+            // false" would be advice the operator may have already followed.
+            Some(
+                "The landlock sandbox confines files but cannot close the network \
+                 (UDP is not restrictable), so shell still counts as a send route \
+                 whatever `network` is set to. The interlock relaxation needs \
+                 `kind = \"bwrap\"` or `\"docker\"` with `network = false`."
+                    .into(),
+            )
         } else if self.sandbox.can_reach_network() {
             Some(
                 "The sandbox is on but shares the host's network (`network = true`), \

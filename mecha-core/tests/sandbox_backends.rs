@@ -208,6 +208,80 @@ async fn network_is_available_when_the_policy_asks_for_it() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+fn landlock() -> Sandbox {
+    Sandbox::new(SandboxConfig {
+        kind: Backend::Landlock,
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn landlock_preflight_proves_the_backend_and_its_containment() {
+    if unavailable("landlock", mecha_core::sandbox::landlock_supported()) {
+        return;
+    }
+    let dir = tmpdir("preflight-landlock");
+    landlock()
+        .preflight(&dir)
+        .await
+        .expect("landlock preflight failed on a kernel that supports it");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The backend's whole claim: workspace writable, home unreadable, nothing
+/// inherited. The negative is not vacuous — the file it fails to read is
+/// planted first, and the same read succeeds unconfined.
+#[tokio::test]
+async fn a_landlocked_command_writes_the_workspace_and_cannot_read_home() {
+    if unavailable("landlock", mecha_core::sandbox::landlock_supported()) {
+        return;
+    }
+    let Some(home) = dirs::home_dir() else {
+        eprintln!("SKIPPED: no home directory to prove containment against");
+        return;
+    };
+    let dir = tmpdir("confined-landlock");
+    let sandbox = landlock();
+
+    let (ok, _) = run(&sandbox, "echo hello > written.txt", &dir).await;
+    assert!(ok, "the confined write inside the workspace failed");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("written.txt"))
+            .unwrap()
+            .trim(),
+        "hello"
+    );
+
+    let probe = home.join(format!(".mecha-landlock-test-{}", uuid::Uuid::new_v4()));
+    std::fs::write(&probe, "canary").unwrap();
+    let script = format!(
+        "cat '{}' >/dev/null 2>&1 && echo YES || echo NO",
+        probe.display()
+    );
+    // Unconfined, the read works — otherwise the confined NO proves nothing.
+    let unconfined = Sandbox::new(SandboxConfig::default());
+    let (_, open) = run(&unconfined, &script, &dir).await;
+    let (_, confined) = run(&sandbox, &script, &dir).await;
+    std::fs::remove_file(&probe).ok();
+    assert_eq!(
+        open, "YES",
+        "the probe file was not readable even unconfined"
+    );
+    assert_eq!(
+        confined, "NO",
+        "a landlocked command read a file in your home"
+    );
+
+    let (_, count) = run(&sandbox, "env | wc -l", &dir).await;
+    let count: usize = count.parse().expect("a count");
+    assert!(
+        count < 12,
+        "the landlocked command inherited {count} env vars"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[tokio::test]
 async fn files_written_inside_the_sandbox_stay_yours_on_the_host() {
     if unavailable("docker", docker_available()) || unavailable(IMAGE, docker_image_present(IMAGE))

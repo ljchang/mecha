@@ -24,3 +24,8 @@ tokio-util.workspace = true
 toml.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+# Landlock is a Linux LSM; the crate does not build elsewhere. Everything
+# that uses it in sandbox.rs is behind cfg(target_os = "linux").
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.7"
