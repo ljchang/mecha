@@ -168,6 +168,14 @@ impl Tool for LensedSearch {
             // episodes, NPMI 1.00" and meetings from 2016 and 2020,
             // through a 2024+ window, because those are facts.
             "scope": "evidence_only",
+            // Instrumentation, not interest. pkg's Selector ranks probe
+            // targets by retrieval demand, and a reader's own searches were
+            // feeding that signal: one probe took its target from 2 touches
+            // to 28 and tripled its score, so the Selector elected the same
+            // person again, harder, out of a pool of nine. A probe that
+            // manufactures its own justification is not selecting anything.
+            // Still logged in pkg's query_log — just not counted as demand.
+            "probe": true,
         });
         let mut out = self.client.call_tool("kg_search", args).await?;
         // Label whose view this was, so a transcript read later says which
