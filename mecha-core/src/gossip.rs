@@ -1644,6 +1644,46 @@ pub struct EvidenceClip {
     pub body: String,
 }
 
+/// Pending candidates MENTIONING an entity, across every class.
+///
+/// The other axis of the same queue. [`pending`] works a class, which is
+/// right when the shared history is the thing being judged; this works a
+/// person, which is right when a reader has just spent real effort
+/// understanding one. A probe finishes holding two vantages, three rounds of
+/// dialogue and cited evidence, and that context is worth more against the
+/// claims already pending about that person than against the next N items of
+/// some predicate.
+///
+/// It is also the only route by which a probe can make the queue *smaller*.
+/// Everything else gossip could write — a new claim, an unsupported reader
+/// assertion — adds to it.
+pub async fn pending_about(
+    client: &McpClient,
+    entity: &str,
+    limit: usize,
+    unjudged_by: Option<&str>,
+    include_evidence: bool,
+) -> Result<Vec<Candidate>> {
+    let out = client
+        .call_tool(
+            "kg_pending",
+            json!({
+                "entity": entity,
+                "limit": limit,
+                "unjudged_by": unjudged_by,
+                "include_evidence": include_evidence,
+            }),
+        )
+        .await
+        .context("kg_pending")?;
+    let body: Value = serde_json::from_str(&out.content)
+        .with_context(|| format!("kg_pending returned non-JSON: {}", out.content))?;
+    if let Some(e) = body.get("error").and_then(Value::as_str) {
+        anyhow::bail!("kg_pending: {e}");
+    }
+    Ok(serde_json::from_value(body["items"].clone()).unwrap_or_default())
+}
+
 /// One class of the review queue, oldest first.
 /// `unjudged_by`: name the mechanism to skip candidates it has already
 /// filed a verdict on — a batch run then extends coverage instead of
