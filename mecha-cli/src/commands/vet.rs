@@ -32,7 +32,7 @@ pub struct VetArgs {
     /// Candidates to judge, oldest first.
     #[arg(long, default_value_t = 10)]
     pub limit: usize,
-    #[arg(long, default_value = "pkg")]
+    #[arg(long, default_value = "graph")]
     pub server: String,
     /// File the verdicts beside their candidates (mechanism `verification`).
     #[arg(long)]

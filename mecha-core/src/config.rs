@@ -696,6 +696,14 @@ pub struct McpServerConfig {
     /// API, confined, while `shell` still has no way off the machine. With one
     /// shared switch you would have to open `shell` to satisfy the server.
     pub network: Option<bool>,
+    /// Register this server's tools under their own names, without the
+    /// `<name>__` prefix. Unset means prefixed — the default that lets two
+    /// servers both expose a `search`. Turn it off for a server whose tools
+    /// already carry their own namespace (`kg_*`), where the prefix is pure
+    /// stutter the model types in every call. The setting is a promise of
+    /// distinct names: an unprefixed tool that collides with anything
+    /// already registered fails startup loudly rather than shadowing it.
+    pub prefix_tools: Option<bool>,
     /// Capabilities forced onto every tool this server exposes, on top of
     /// whatever it declares for itself.
     ///

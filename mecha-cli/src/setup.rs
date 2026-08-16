@@ -481,6 +481,21 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             // `--tool` filters MCP tools too, so a run can be narrowed to
             // exactly one remote capability.
             if opts.tools.is_empty() || opts.tools.iter().any(|t| t == tool.name()) {
+                // A prefixed MCP tool always contains `__` (the prefix is the
+                // marker) and shadowing through it keeps its existing
+                // semantics. An UNPREFIXED tool arrived on a promise of
+                // distinct names — `prefix_tools = false` — and a collision
+                // is that promise broken: fail the start rather than let one
+                // tool silently replace another, which is the
+                // silently-degrading-sandbox shape wearing a tool name.
+                if !tool.name().contains("__") && registry.get(tool.name()).is_some() {
+                    anyhow::bail!(
+                        "MCP tool `{}` collides with an already-registered tool; its \
+                         server sets `prefix_tools = false`, which promises distinct \
+                         names. Restore the prefix or rename the tool.",
+                        tool.name()
+                    );
+                }
                 registry.insert(tool);
             }
         }

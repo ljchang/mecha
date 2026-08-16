@@ -37,6 +37,9 @@ fn response_id(msg: &Value) -> Option<u64> {
 /// A live connection to one MCP server.
 pub struct McpClient {
     name: String,
+    /// Whether tools register as `<name>__<tool>` (the collision-proof
+    /// default) or under their raw names. See [`McpServerConfig::prefix_tools`].
+    prefix_tools: bool,
     /// Capabilities forced onto every tool from this server, unioned with what
     /// it declares. See [`McpServerConfig::capabilities`].
     forced: Capabilities,
@@ -186,6 +189,7 @@ impl McpClient {
 
         let client = Arc::new(McpClient {
             name: cfg.name.clone(),
+            prefix_tools: cfg.prefix_tools.unwrap_or(true),
             forced: cfg.capabilities.into(),
             stdin: tokio::sync::Mutex::new(stdin),
             pending,
@@ -326,8 +330,14 @@ impl McpClient {
                         destructive: hint("destructiveHint"),
                     }
                     .union(self.forced),
-                    // Namespaced so two servers can each expose a `search`.
-                    local_name: format!("{}__{}", self.name, remote_name),
+                    // Namespaced so two servers can each expose a `search` —
+                    // unless the config says this server's tools carry their
+                    // own namespace, in which case the raw name is the name.
+                    local_name: if self.prefix_tools {
+                        format!("{}__{}", self.name, remote_name)
+                    } else {
+                        remote_name.clone()
+                    },
                     remote_name,
                     description: t
                         .get("description")
