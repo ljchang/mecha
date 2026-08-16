@@ -1,14 +1,20 @@
-# Fixture MCP servers for eval/pkg-cases.jsonl — pass to `mecha eval` as
+# Fixture MCP servers for eval/graph-cases.jsonl — pass to `mecha eval` as
 # `--mcp-file eval/mcp.toml`. Relative paths in `args` resolve against this
 # file's directory, so the invocation works from any CWD.
 
 [[mcp]]
-name = "pkg"
+name = "graph"
 command = "python3"
-args = ["fixtures/pkg_server.py", "--persona", "pkg"]
+# Unprefixed, exactly as production runs it: the eval grades the surface the
+# model actually sees, and since the rename that surface is bare kg_* names.
+# Scorecards from before this change are not comparable with ones after —
+# the tool surface changed, which is the boundary the case-set split exists
+# to mark.
+prefix_tools = false
+args = ["fixtures/graph_server.py", "--persona", "graph"]
 
 # The fixture declares no openWorldHint on its read tools (neither does the
-# real pkg), so without this the graph would count as private-but-trusted.
+# real graph server), so without this the graph would count as private-but-trusted.
 # Production ~/.mecha/config.toml forces the same thing for the same reason:
 # the graph holds other people's words, and reads must arm the interlock.
 [mcp.capabilities]
@@ -17,4 +23,4 @@ untrusted_input = true
 [[mcp]]
 name = "web"
 command = "python3"
-args = ["fixtures/pkg_server.py", "--persona", "web"]
+args = ["fixtures/graph_server.py", "--persona", "web"]

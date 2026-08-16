@@ -9,7 +9,7 @@ grade *whether the model reaches for memory* on the trace.
 
 Two personas, selected by argv, so one file backs two `[[mcp]]` entries:
 
-- `--persona pkg`  — kg_search / kg_entity / kg_related / kg_timeline
+- `--persona graph`  — kg_search / kg_entity / kg_related / kg_timeline
   (readOnlyHint) and kg_upsert (a write; echoes what was staged, stores
   nothing). Serve it under the name `pkg` so tool names match the ones
   `prompts/agent.md` teaches (`pkg__kg_search`, ...).
@@ -358,11 +358,11 @@ def fail(request_id, message):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--persona", choices=["pkg", "web"], required=True)
+    parser.add_argument("--persona", choices=["graph", "web"], required=True)
     opts = parser.parse_args()
 
-    tools = PKG_TOOLS if opts.persona == "pkg" else WEB_TOOLS
-    call = call_pkg if opts.persona == "pkg" else call_web
+    tools = PKG_TOOLS if opts.persona == "graph" else WEB_TOOLS
+    call = call_pkg if opts.persona == "graph" else call_web
 
     while True:
         line = sys.stdin.readline()

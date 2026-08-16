@@ -942,7 +942,7 @@ fn elicits_a_preference(line: &str) -> bool {
 /// The first line of `text` that is actually a question, or `None`.
 ///
 /// A model with no tools still emits tool syntax when it wants to look
-/// something up — a live run produced `tool:pkg__kg_search args:{...}` in
+/// something up — a live run produced `tool:kg_search args:{...}` in
 /// the question slot, which the next reader then answered earnestly,
 /// because a reader cannot tell it was never asked anything. Removing the
 /// asker's tools stopped it *researching*; only validation stops the
@@ -1460,7 +1460,7 @@ mod tests {
         // syntax, which became the next round's "question" and was
         // answered earnestly.
         assert_eq!(
-            usable_question("tool:pkg__kg_search\nargs:{\"query\": \"ljchang\"}"),
+            usable_question("tool:kg_search\nargs:{\"query\": \"ljchang\"}"),
             None
         );
         assert_eq!(

@@ -3084,7 +3084,7 @@ mod tests {
         #[async_trait]
         impl Tool for GraphRead {
             fn name(&self) -> &str {
-                "pkg__kg_search"
+                "kg_search"
             }
             fn description(&self) -> &str {
                 "Search the knowledge graph."
@@ -3102,7 +3102,7 @@ mod tests {
 
         let refusal = armed_send_refusal(vec![Arc::new(GraphRead)]).await;
         assert!(
-            !refusal.contains("pkg__kg_search"),
+            !refusal.contains("kg_search"),
             "a private-data reader must never be suggested: {refusal}"
         );
         assert!(!refusal.contains("Or delegate"), "{refusal}");

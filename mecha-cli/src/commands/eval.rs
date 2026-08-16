@@ -684,7 +684,17 @@ fn load_mcp_file(path: &Path) -> Result<Vec<mecha_core::config::McpServerConfig>
         path.display()
     );
 
-    let base = path.parent().unwrap_or(Path::new("."));
+    // Canonicalized, because the joined path must survive a change of
+    // working directory: fixture servers are spawned in the run's WORKSPACE
+    // (like every MCP server since servers started in the workspace), and a
+    // path left relative to the invocation directory resolves there instead —
+    // `eval/fixtures/server.py` became `<workspace>/eval/fixtures/server.py`
+    // and every handshake failed.
+    let base = path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .canonicalize()
+        .with_context(|| format!("resolving the directory of {}", path.display()))?;
     let resolve = |s: String| -> String {
         let joined = base.join(&s);
         if Path::new(&s).is_relative() && joined.is_file() {
@@ -1003,9 +1013,9 @@ mod tests {
             &toml_path,
             r#"
             [[mcp]]
-            name = "pkg"
+            name = "graph"
             command = "python3"
-            args = ["server.py", "--persona", "pkg"]
+            args = ["server.py", "--persona", "graph"]
 
             [mcp.capabilities]
             untrusted_input = true
