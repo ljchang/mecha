@@ -467,6 +467,8 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     // On create and on resume both: a session picked up under different flags
     // is exactly what this record exists to catch.
     if let Some(s) = &session {
+        // Before the config record, which captures the tool list for replay.
+        setup::register_recall(&mut prepared.agent, s);
         s.append(&Record::Config(RunConfig::of(
             &prepared.agent,
             &prepared.config,

@@ -701,6 +701,31 @@ fn build_subagent(
     Subagent::new(profile.clone(), Arc::new(child))
 }
 
+/// Register the recall tool over this session's transcript, so the run can
+/// search its own recorded history — including what a compaction summarised
+/// away — instead of re-running tools or re-living the dropped stretch.
+///
+/// Call this *before* appending the session's `Record::Config`: that record
+/// captures the registry's tool list for replay, and a list missing `recall`
+/// would make every replay diff against a surface the run never had.
+///
+/// Where it belongs is decided by what the transcript can hold (see
+/// `mecha_core::tool::recall`): chat and the TUI always (their sessions span
+/// runs, and prior turns are exactly what compaction removes), a resumed
+/// `mecha run` (the resumed file holds the history). Not fresh one-shots or
+/// triggers — a per-run session's record is empty until the run ends, so the
+/// tool would be a dead spec in the prompt. And not Slack: one shared agent
+/// serves every thread while sessions are per-run, so a per-run insert into
+/// the shared registry would point one thread's recall at another thread's
+/// transcript — a cross-conversation read the fixed path exists to prevent.
+pub fn register_recall(agent: &mut Agent, session: &mecha_core::session::Session) {
+    agent
+        .registry_mut()
+        .insert(Arc::new(mecha_core::tool::recall::Recall::new(
+            session.path.clone(),
+        )));
+}
+
 /// `@path` reads from a file; anything else is the literal value. Lets
 /// `--system @prompts/reviewer.md` work without a second flag.
 pub fn read_maybe_file(value: &str) -> Result<String> {
