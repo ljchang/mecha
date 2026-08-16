@@ -49,7 +49,22 @@ cargo install --path mecha-cli  --locked --force   # mecha
 cargo install --path mecha-mail --locked --force   # mecha-mail, mecha-google, mecha-outlook
 ```
 
-Verify: `mecha --version` matches the workspace `Cargo.toml`.
+And the graph, from `~/Github/personalized_knowledge_graph` (the mecha-graph
+repo — installed *with* mecha since 2026-08-16, because
+`~/.mecha/config.toml` runs `~/.cargo/bin/mecha-graph-mcp`, not a repo path):
+
+```bash
+cargo install --path mecha-graph     --locked --force   # mecha-graph (CLI)
+cargo install --path mecha-graph-mcp --locked --force   # mecha-graph-mcp (MCP server)
+```
+
+Verify: `mecha --version` matches mecha's workspace `Cargo.toml`, and the
+graph server answers from the *installed* path:
+
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | ~/.cargo/bin/mecha-graph-mcp | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["result"]["tools"]), "tools")'
+```
 
 ### 2. The long-running services
 
@@ -70,24 +85,21 @@ should show the reconnect line ("Connected to … N owner(s)"), and
 `mecha-triggers` should log "N trigger(s), N enabled · ticking every minute".
 A service that comes back but logs nothing is not evidence of success.
 
-### 3. The pkg MCP server (different repository)
+### 3. The graph MCP server — folded into step 1 since 2026-08-16
 
-`~/Github/personalized_knowledge_graph`. `~/.mecha/config.toml` points at
-`target/release/pkg-mcp`, so **a debug build changes nothing mecha can see**,
-and a newly added `kg_*` tool stays invisible until:
+`~/.mecha/config.toml` runs `~/.cargo/bin/mecha-graph-mcp` (server alias
+`graph`, `prefix_tools = false`, tools are bare `kg_*`), so the graph updates
+through the same `cargo install` ritual as everything else — step 1 covers
+it, and step 2's restart is what hands the running Slack connector the new
+server (its MCP children are spawned at connector start). What this surface
+still owns: **a repo build is no longer an install here either** — a
+`cargo build --release` in the graph repo changes nothing mecha can see,
+which is the same trap as mecha's own binaries wearing a different repo.
+The graph repo's *own* nightly (`scripts/nightly.sh`, cron 01:30) builds and
+runs from its repo tree and is not mecha's concern.
 
-```bash
-cargo build --release -p pkg-mcp
-```
-
-Verify by asking the server what it serves, rather than trusting the build:
-
-```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
-  | ./target/release/pkg-mcp | python3 -c 'import json,sys; print([t["name"] for t in json.load(sys.stdin)["result"]["tools"]])'
-```
-
-mecha itself needs no change — it discovers tools via `tools/list`.
+mecha itself needs no change when graph tools change — it discovers tools
+via `tools/list`.
 
 ### 4. The benchmark binary
 
