@@ -6,6 +6,7 @@
 
 pub mod ask;
 pub mod builtin;
+pub mod recall;
 pub mod todo;
 
 use crate::config::{PermissionMode, SecurityConfig, ToolsConfig};

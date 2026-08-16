@@ -39,7 +39,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Nothing can answer an approval prompt when output is being piped or
     // parsed, so those runs use the configured permission mode instead.
     let interactive = std::io::stdin().is_terminal() && !args.json;
-    let prepared = setup::prepare(global, interactive).await?;
+    let mut prepared = setup::prepare(global, interactive).await?;
 
     let session_dir = Session::default_dir()?;
     let mut convo = mecha_core::agent::Conversation::new();
@@ -67,6 +67,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Written on create *and* on resume: a session picked up under different
     // flags is exactly the case this record exists to catch.
     if let Some(s) = &session {
+        // Only a resumed run: a fresh one-shot's record is empty until the
+        // run ends, so recall would be a dead spec in its prompt. Before the
+        // config record, which captures the tool list for replay.
+        if args.resume.is_some() {
+            setup::register_recall(&mut prepared.agent, s);
+        }
         s.append(&Record::Config(RunConfig::of(
             &prepared.agent,
             &prepared.config,

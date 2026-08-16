@@ -20,7 +20,7 @@ pub struct Args {
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
-    let prepared = setup::prepare(global, true).await?;
+    let mut prepared = setup::prepare(global, true).await?;
     let session_dir = Session::default_dir()?;
 
     // One conversation for the whole session: the taint travels with it, so a
@@ -51,6 +51,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // On create and on resume both: a session picked up under different flags
     // is exactly what this record exists to catch.
     if let Some(s) = &session {
+        // Before the config record, which captures the tool list for replay.
+        setup::register_recall(&mut prepared.agent, s);
         s.append(&Record::Config(RunConfig::of(
             &prepared.agent,
             &prepared.config,
