@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-16
+
+The release where the knowledge graph became a sibling product: pkg went
+public as [mecha-graph](https://github.com/ljchang/mecha-graph) (three crates
+on crates.io), and mecha's side of the seam was renamed, un-prefixed, and
+folded into the install ritual.
+
+### Added
+
+- **`prefix_tools` on `[[mcp]]`.** Unset keeps the collision-proof
+  `<name>__<tool>` default; `false` registers a server's tools under their
+  raw names, for a server whose tools already carry their own namespace —
+  the graph's `kg_*` family, where `graph__kg_search` was stutter the model
+  typed in every call. Unprefixed is a promise of distinct names, and the
+  promise is enforced: a collision with anything already registered fails
+  startup loudly (a prefixed name always contains the `__` marker, so the
+  two cases cannot be confused, and prefixed shadowing keeps its existing
+  semantics).
+
+### Changed
+
+- **The eval grades the surface that actually runs.** `pkg-cases.jsonl` is
+  now `graph-cases.jsonl`, its fixture `graph_server.py`, and the trace
+  checks expect the bare `kg_*` names production serves — an eval still
+  measuring `pkg__kg_*` would grade a configuration that no longer exists
+  anywhere. Scorecards across the rename are not comparable, which is the
+  honest cost of any tool-surface change. The `distill`, `vet`, and
+  `corroborate` server defaults follow the live alias to `graph`.
+
+- **The graph installs with mecha.** The README offers `mecha-graph-mcp`
+  and `mecha-graph` beside `mecha-mail`, the sample `[[mcp]]` block wires
+  the installed binary (`command = "mecha-graph-mcp"`, `prefix_tools =
+  false`), and the update skill folds the graph into the same
+  cargo-install ritual as every other binary.
+
+### Fixed
+
+- **`--mcp-file` fixture paths survive the workspace.** Relative `args`
+  were joined against the file's directory but left relative, and since
+  MCP servers began starting in the run's workspace that join resolved
+  there instead — every fixture handshake failed regardless of names. The
+  base directory is canonicalized, so the joined path means the same file
+  from any working directory.
+
 ## [0.1.5] - 2026-08-16
 
 ### Added
@@ -952,7 +996,8 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/ljchang/mecha/releases/tag/v0.1.6
 [0.1.5]: https://github.com/ljchang/mecha/releases/tag/v0.1.5
 [0.1.4]: https://github.com/ljchang/mecha/releases/tag/v0.1.4
 [0.1.3]: https://github.com/ljchang/mecha/releases/tag/v0.1.3
