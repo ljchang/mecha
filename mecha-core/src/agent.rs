@@ -404,6 +404,21 @@ pub struct Conversation {
     /// What has entered this conversation so far. Grows, never shrinks: there
     /// is no way to un-read a page.
     pub taint: Taint,
+    /// Full states of `messages` that an in-place rewrite replaced during the
+    /// current run, oldest first — compaction, eviction, thinning. The loop
+    /// snapshots the list before each rewrite pass and clears at run start;
+    /// [`Session::record_run`] walks these before the final state, so turns a
+    /// mid-run rewrite dropped still reach the file. Without this, a run long
+    /// enough to compact *itself* lost its own head: the front-end records at
+    /// run end, and the rewrite record carries only what survived.
+    ///
+    /// On the conversation rather than the outcome for the same reason taint
+    /// is: it is a fact about what the messages went through, and bundling it
+    /// with them makes the right thing the default — the recording call
+    /// receives the conversation and cannot skip what it carries.
+    ///
+    /// [`Session::record_run`]: crate::session::Session::record_run
+    pub rewritten: Vec<Vec<Message>>,
 }
 
 impl Conversation {
@@ -416,13 +431,18 @@ impl Conversation {
         Conversation {
             messages: vec![Message::user(text)],
             taint: Taint::default(),
+            rewritten: Vec::new(),
         }
     }
 
     /// Resume a transcript whose taint is known — from a session file that
     /// recorded it.
     pub fn resumed(messages: Vec<Message>, taint: Taint) -> Self {
-        Conversation { messages, taint }
+        Conversation {
+            messages,
+            taint,
+            rewritten: Vec::new(),
+        }
     }
 
     pub fn push(&mut self, message: Message) {
@@ -447,6 +467,7 @@ impl From<Vec<Message>> for Conversation {
         Conversation {
             messages,
             taint: Taint::default(),
+            rewritten: Vec::new(),
         }
     }
 }
@@ -879,6 +900,11 @@ impl Agent {
         // conversation has already seen still applies — this is the whole
         // point of the type.
         let mut taint = convo.taint;
+        // One run's worth only. What the previous run's rewrites dropped was
+        // the previous recording's to take — and it took it, or declined to
+        // record at all. Without this, a `--no-session` chat accumulates
+        // every compacted state it ever passed through.
+        convo.rewritten.clear();
         // Whatever happens below, including an early return, the conversation
         // keeps what it learned. `RunOutcome.taint` reports the same thing for
         // callers that want it without reaching into the conversation.
@@ -962,6 +988,10 @@ impl Agent {
             // transcript that is about to be abandoned is pure waste.
             if let Some(limit) = self.compact_limit(cx) {
                 if prompt_tokens >= limit && !compaction_gave_up && !loop_detected {
+                    // What is about to be rewritten, kept for the recording:
+                    // the front-end records at run end, so without this the
+                    // turns a rewrite replaces were never anyone's to write.
+                    let pre_rewrite = messages.clone();
                     // Cheapest pass first: evict results a later call has
                     // superseded. Lossless — the newest result still says
                     // everything the transcript knows — and it removes the
@@ -979,6 +1009,7 @@ impl Agent {
                         crate::compact::THINNED_RESULT_CHARS,
                     );
                     if evicted + thinned > 0 {
+                        convo.rewritten.push(pre_rewrite);
                         tracing::info!(evicted, thinned, "evicted and shortened old tool results");
                         emit(
                             &events,
@@ -997,6 +1028,9 @@ impl Agent {
 
                     match self.compact(cx, messages, &events).await {
                         Ok(Some(spent)) => {
+                            // `Some` is compact's word that a summary was
+                            // installed — the rewrite happened.
+                            convo.rewritten.push(pre_rewrite);
                             usage.add(&spent);
                             compactions += 1;
                             loop_guard.arm();
@@ -1110,6 +1144,10 @@ impl Agent {
             let completion = match self.complete(cx, &request, &events).await {
                 Err(e) if is_context_overflow(&e) => {
                     tracing::warn!("prompt overflowed the context window; compacting to recover");
+                    // Kept for the recording, as at the threshold site — but
+                    // compared at the end rather than pushed per pass, because
+                    // this arm has three mutation points and one exit.
+                    let pre_rewrite = messages.clone();
                     crate::compact::evict_superseded_results(messages);
                     // keep_recent 0, unlike the between-turns pass: the
                     // request does not fit, so *something* must shrink, and in
@@ -1145,6 +1183,9 @@ impl Agent {
                                 compaction_gave_up = true;
                             }
                         }
+                    }
+                    if *messages != pre_rewrite {
+                        convo.rewritten.push(pre_rewrite);
                     }
                     request.messages = messages.clone();
                     self.complete(cx, &request, &events).await?
@@ -3875,6 +3916,20 @@ mod tests {
             "a live transcript must never carry an orphaned tool result"
         );
         assert!(!outcome.text.is_empty());
+
+        // The states the rewrites replaced ride on the conversation, so the
+        // recording at run end can write what compaction dropped. The first
+        // snapshot is the transcript as it stood before the first rewrite —
+        // the verbatim turns whose summary now heads the live list.
+        assert!(
+            !convo.rewritten.is_empty(),
+            "a run that compacted must carry its pre-rewrite states"
+        );
+        let first: String = convo.rewritten[0].iter().map(|m| m.text()).collect();
+        assert!(
+            first.contains("step 0") && !first.contains("compacted"),
+            "the snapshot must be the pre-compaction transcript: {first}"
+        );
     }
 
     #[tokio::test]

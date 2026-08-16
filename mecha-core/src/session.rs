@@ -255,7 +255,26 @@ impl Session {
     ///
     /// `before` must be what the file already holds — every front-end has
     /// appended the opening user message (and, resumed, the loaded history)
-    /// before the run starts. When the run only appended, the new tail is
+    /// before the run starts. The walk visits every state the run's rewrites
+    /// replaced ([`Conversation::rewritten`]) and then the final one, so a
+    /// run long enough to compact *itself* still gets its whole head into
+    /// the file: each pre-rewrite snapshot extends the previous recorded
+    /// state append-only (its cheap tail append), and each post-rewrite
+    /// state lands as the [`Record::Rewrite`] the next transition writes.
+    /// The signature takes the conversation rather than a message slice so a
+    /// caller cannot record the destination while skipping the journey.
+    ///
+    /// [`Conversation::rewritten`]: crate::agent::Conversation
+    pub fn record_run(&self, before: &[Message], convo: &Conversation) -> Result<()> {
+        let mut prev: &[Message] = before;
+        for state in &convo.rewritten {
+            self.record_transition(prev, state)?;
+            prev = state;
+        }
+        self.record_transition(prev, &convo.messages)
+    }
+
+    /// One before→after step. When the run only appended, the new tail is
     /// appended here too. When it rewrote what was already recorded —
     /// compaction, eviction, thinning, all of which edit earlier messages in
     /// place — a [`Record::Rewrite`] carries the whole current list instead,
@@ -265,7 +284,7 @@ impl Session {
     /// Comparison, not a flag from the loop: any mutation the loop grows
     /// later is caught by construction, and the clone this costs is one more
     /// beside the one the loop already pays per request.
-    pub fn record_run(&self, before: &[Message], after: &[Message]) -> Result<()> {
+    fn record_transition(&self, before: &[Message], after: &[Message]) -> Result<()> {
         let appended_only = after.len() >= before.len() && after[..before.len()] == *before;
         if appended_only {
             self.append_messages(&after[before.len()..])
@@ -546,7 +565,7 @@ mod tests {
         let before = vec![Message::user("go")];
         session.append_messages(&before).unwrap();
 
-        let mut after = before.clone();
+        let mut after = Conversation::from(before.clone());
         after.push(Message::assistant(vec![Block::text("done")]));
         session.record_run(&before, &after).unwrap();
 
@@ -579,7 +598,7 @@ mod tests {
         let mut head = before[0].clone();
         head.content
             .push(Block::text("[Earlier turns were compacted]"));
-        let after = vec![head, Message::assistant(vec![Block::text("done")])];
+        let after = Conversation::from(vec![head, Message::assistant(vec![Block::text("done")])]);
         session.record_run(&before, &after).unwrap();
 
         let (_, convo) = Session::load(&session.path).unwrap();
@@ -590,6 +609,50 @@ mod tests {
             convo.messages[0].text()
         );
         assert_eq!(convo.messages[1].text(), "done");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The gap this closes: a run long enough to compact *itself* produced
+    /// turns the file never saw — the front-end records at run end, and the
+    /// rewrite record carries only what survived. With the pre-rewrite states
+    /// walked first, the dropped turn is in the file (where `recall` searches
+    /// the union) while `load` still returns only the final state.
+    #[test]
+    fn record_run_walks_the_states_a_mid_run_rewrite_replaced() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-midrun")).unwrap();
+        let before = vec![Message::user("go")];
+        session.append_messages(&before).unwrap();
+
+        // The state the run reached before compaction: the opening message
+        // plus a turn holding the detail the summary will drop.
+        let mut reached = before.clone();
+        reached.push(Message::assistant(vec![Block::text(
+            "the magic number is 74656",
+        )]));
+        // What compaction left, then one more turn on top of it.
+        let compacted = vec![
+            Message::user("[summary: a number was computed]"),
+            Message::assistant(vec![Block::text("done")]),
+        ];
+        let mut convo = Conversation::from(compacted);
+        convo.rewritten = vec![reached];
+
+        session.record_run(&before, &convo).unwrap();
+
+        // Loading replays to the final state — the summary, not the head.
+        let (_, loaded) = Session::load(&session.path).unwrap();
+        assert_eq!(loaded.messages.len(), 2);
+        assert!(loaded.messages[0].text().contains("summary"));
+
+        // And the dropped detail is in the file all the same, which is what
+        // recall's union over every recorded message reads back.
+        let text = std::fs::read_to_string(&session.path).unwrap();
+        assert!(
+            text.contains("74656"),
+            "the pre-rewrite turn never reached the file: {text}"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

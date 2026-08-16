@@ -27,12 +27,16 @@
 //!   one, which is exactly the laundering the fixed path forecloses. Register
 //!   it only on the conversation the transcript records.
 //!
-//! Known gap, inherited from the recording contract rather than introduced
-//! here: front-ends record a run when it finishes, so turns of the *current*
-//! run that a mid-run compaction summarised were never written — the rewrite
-//! record carries only the post-compaction state. Everything from earlier runs
-//! (every prior chat turn, every previous trigger firing) is present, which
-//! for long-lived sessions is precisely what compaction removes.
+//! Coverage: everything from earlier runs — every prior chat turn, every
+//! previous firing — which for long-lived sessions is precisely what
+//! compaction removes. Turns a *mid-run* compaction replaced reach the file
+//! too: the loop keeps each pre-rewrite state on the conversation
+//! ([`Conversation::rewritten`]) and `Session::record_run` walks them at run
+//! end. The one thing the corpus lags on is the current run itself —
+//! recording happens when it finishes — and those turns are the ones still
+//! in context, so the lag costs recall nothing it was for.
+//!
+//! [`Conversation::rewritten`]: crate::agent::Conversation
 
 use super::{Capabilities, Tool, ToolCtx, ToolOutput};
 use crate::message::{Block, Message, Role};

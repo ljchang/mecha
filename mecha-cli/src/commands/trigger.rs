@@ -956,7 +956,7 @@ async fn run_agent(
     let _ = timer.await;
     let _ = canceller.await;
 
-    session.record_run(&recorded, &convo.messages)?;
+    session.record_run(&recorded, &convo)?;
     session.append(&Record::Taint(convo.taint))?;
     if let Some(mb) = &prepared.mailbox {
         mb.detach(&session.meta.id);
