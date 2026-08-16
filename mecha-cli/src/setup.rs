@@ -277,7 +277,11 @@ pub fn sandbox_line(sandbox: &mecha_core::sandbox::Sandbox) -> String {
         format!(
             "sandbox: {} · network {} · reads {}",
             sandbox.backend().as_str(),
-            if sandbox.can_reach_network() {
+            // Landlock's "on" is a property of the backend, not a setting the
+            // operator chose — say so, or the line reads like a config error.
+            if sandbox.backend() == mecha_core::sandbox::Backend::Landlock {
+                "reachable (landlock cannot close UDP)"
+            } else if sandbox.can_reach_network() {
                 "on"
             } else {
                 "off"
