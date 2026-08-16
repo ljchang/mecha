@@ -1072,7 +1072,14 @@ The things that decide the design:
   sign a compaction had happened. `Session::record_run` compares what was
   recorded against what came back and writes a `rewrite` record carrying the
   whole current state when they diverge. Comparison rather than a flag from
-  the loop, so any future in-place mutation is caught by construction.
+  the loop, so any future in-place mutation is caught by construction. And
+  the states a rewrite *replaced* are recorded too: the loop snapshots the
+  message list before each rewrite pass onto `Conversation::rewritten`
+  (bundled with the messages for the same reason taint is), and
+  `record_run` — which takes the conversation, so a caller cannot skip what
+  it carries — walks those states before the final one. A run long enough
+  to compact itself therefore still gets its whole head into the file,
+  where `recall`'s union can read it back.
 - **A tool's own state crosses a compaction, verbatim.** The measured failure
   mode is that a summariser preserves *what is true* and drops *how far you
   got*, and some of "how far you got" does not live in the messages at all. The

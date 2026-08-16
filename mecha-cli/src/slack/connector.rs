@@ -705,7 +705,7 @@ impl State {
             let _ = renderer.await;
             // Recorded whether it succeeded or not: a failed run is exactly
             // the transcript someone wants afterwards.
-            let _ = session_for_task.record_run(&before, &conversation.messages);
+            let _ = session_for_task.record_run(&before, &conversation);
 
             let _ = completion_tx
                 .send(Completion {

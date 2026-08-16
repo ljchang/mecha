@@ -451,7 +451,7 @@ async fn triage(
             None,
         )
         .await;
-        session.record_run(&recorded, &convo.messages)?;
+        session.record_run(&recorded, &convo)?;
         // Taint too, like every other front-end that writes a session. It
         // cannot be recovered by reading the transcript back, because it keys
         // off *provenance* and the transcript stores only content — so without

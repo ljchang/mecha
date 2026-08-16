@@ -137,7 +137,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // leaves its turns on disk. `?` first is how a fatal 400 used to leave
         // a three-line transcript of a three-minute benchmark trial — and the
         // failed runs are precisely the transcripts that get read.
-        s.record_run(&recorded, &convo.messages)?;
+        s.record_run(&recorded, &convo)?;
         // Taint too, and for the same reason `chat` and `tui` record it: it
         // cannot be recovered by reading the transcript back, because it keys
         // off *provenance* and the transcript stores only content. `run`

@@ -807,7 +807,7 @@ fn finish_run(
                 // history mid-run, a rewrite record of the whole current
                 // state. The opening user message was written when it was
                 // submitted.
-                s.record_run(&persisted, &app.convo.messages)?;
+                s.record_run(&persisted, &app.convo)?;
                 s.append(&Record::Taint(app.convo.taint))?;
             }
         }

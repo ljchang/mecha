@@ -165,7 +165,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             Ok(outcome) => {
                 total.add(&outcome.usage);
                 if let Some(s) = &session {
-                    s.record_run(&recorded, &convo.messages)?;
+                    s.record_run(&recorded, &convo)?;
                     // Persist what the conversation now knows, or resuming it
                     // launders the taint exactly as a turn boundary used to.
                     s.append(&Record::Taint(convo.taint))?;
