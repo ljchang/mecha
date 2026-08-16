@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-08-16
+
+### Added
+
+- **`recall` — the record is searchable after the summary.** A tool over the
+  session's recorded transcript: the union of every message ever recorded,
+  including what a compaction rewrite replaced, so a run missing a dropped
+  detail looks it up instead of re-running tools or re-living the stretch.
+  Taint-neutral by construction (everything it returns entered this
+  conversation once, and its arrival is what armed the interlock; the
+  transcript path is fixed at registration, never model input). Registered
+  by chat, the TUI, and resumed runs — deliberately not Slack (one shared
+  registry across per-thread conversations would cross-wire transcripts) and
+  not fresh one-shots or triggers (a per-run record is empty until run end).
+
+- **The cache lens: prompt-cache reuse is watched, not assumed.** A pure
+  per-run observer fed each request as actually sent plus the usage the
+  provider reported. It names the reason when reuse legitimately breaks
+  (tool/system surface changed, transcript rewritten by compaction), stays
+  silent on providers that have never reported a cache figure (zeros are
+  silence, not a miss), and warns on the one remaining shape — a large
+  re-payment with nothing changed. Verdicts go to tracing only; the model
+  and the loop never see them.
+
+- **`kind = "landlock"`: file confinement that needs no privilege.** A
+  fourth sandbox backend for machines where `bwrap` fails even installed
+  (Ubuntu 23.10+'s AppArmor userns switch): Landlock LSM rules applied in
+  the child between fork and exec — ruleset built in the parent, the
+  post-fork closure makes raw syscalls only, and a kernel reporting
+  `NotEnforced` fails the spawn rather than running unconfined. Priced
+  honestly: Landlock cannot close the network (TCP denied on 6.7+ kernels,
+  UDP unrestrictable at any ABI), so a landlocked `shell` **never earns the
+  interlock relaxation** — what it buys is the file story, hard-required at
+  ABI 3 because older kernels cannot restrict truncate. Preflight proves
+  the *denial*, not just the apply: it plants a file in the real home and
+  requires the confined read to fail.
+
+- **Gossip adjudicates the queue instead of adding to it.** After building
+  deep context on an entity, a gossip probe now pulls the pending claims
+  about that same entity and judges them under vet's existing
+  `verification` mechanism — the one output that makes the review backlog
+  smaller. Verdicts are opinions filed beside still-pending candidates;
+  `--adjudicate` caps the batch (default 25) so the owner node's ~1,800
+  claims cannot absorb a whole night.
+
+### Fixed
+
+- **A run that compacts itself no longer loses its own head.** Front-ends
+  record at run end, so turns of the current run that a mid-run rewrite
+  replaced were never anyone's to write. The states a rewrite replaces now
+  ride on the `Conversation` (`rewritten`, cleared at run start), and
+  `Session::record_run` — which now takes the conversation, so a caller
+  cannot record the destination while skipping the journey — walks
+  snapshot → snapshot → final. `load()` still replays to the live state;
+  `recall` reads back what the summary dropped; the taint timeline only
+  gains rewrite records, which drop checkpoints in the over-tainting
+  direction.
+
+- **A reader's searches no longer feed the probe selector.** Gossip's
+  `LensedSearch` passes `probe: true` to `kg_search`, so pkg's Selector —
+  which ranks probe targets by retrieval demand — stops counting a probe's
+  own reads as the owner reaching for something. One probe had taken its
+  target from 2 touches to 28 and re-elected the same person out of a pool
+  of nine.
+
 ### Changed
 
 - **`trusted_output` must now name what it vouches for.** A subagent profile
@@ -887,7 +952,9 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/ljchang/mecha/releases/tag/v0.1.5
+[0.1.4]: https://github.com/ljchang/mecha/releases/tag/v0.1.4
 [0.1.3]: https://github.com/ljchang/mecha/releases/tag/v0.1.3
 [0.1.2]: https://github.com/ljchang/mecha/releases/tag/v0.1.2
 [0.1.1]: https://github.com/ljchang/mecha/releases/tag/v0.1.1
