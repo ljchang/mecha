@@ -50,6 +50,7 @@ tool/        Tool trait, Registry, Approver, builtin.rs
 mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
 search.rs    web_search: a chain of backends, first to answer wins
 agent.rs     the loop: ask → run tools → feed results back → repeat
+cache_lens.rs  per-run observer: is the cached prefix actually being reused?
 subagent.rs  a profile-narrowed child agent, exposed to the parent as a tool
 hooks.rs     user commands at lifecycle points; pre_tool can deny a call
 outbox.rs    the store behind staged sends and publishes
@@ -293,9 +294,21 @@ so it is not treated as an untrusted *source*. The mitigation is the sandbox.
 
 **The sandbox** (`sandbox.rs`, `[sandbox]` in config) is the enforcement behind
 `shell`'s capability label. `kind = "bwrap"` uses user namespaces; `"docker"`
-runs a throwaway container; `"none"` (the default) runs commands as you. A
-confined command gets the workspace, a read-only system, no home directory, no
-environment except a named allowlist, and by default no network.
+runs a throwaway container; `"landlock"` applies LSM rules in the child between
+fork and exec (no privilege, no wrapper — the ruleset is built in the parent
+because the post-fork closure may only make raw syscalls); `"none"` (the
+default) runs commands as you. A confined command gets the workspace, a
+read-only system, no home directory, no environment except a named allowlist,
+and by default no network — except under `landlock`, **which cannot close the
+network** (TCP is denied on 6.7+ kernels, UDP is unrestrictable at any ABI, and
+bash alone sends over `/dev/udp`), so `can_reach_network()` stays true there
+and a landlocked shell never earns the interlock relaxation. What it buys is
+the file story where bwrap is blocked: home denied, hard-required at ABI 3
+(kernel 6.2+, else preflight refuses — older ABIs cannot restrict truncate),
+with preflight also planting a file in the real home and requiring the
+confined read to *fail*, because `echo` passing only proves the ruleset
+attached. Weaker than bwrap in three known ways: shared `/tmp`, visible
+`/proc`, no PID/IPC isolation.
 
 Three rules here, each of which cost something to learn:
 
@@ -341,9 +354,10 @@ model asked for out loud. Two rules:
 
 On Ubuntu 23.10+, `bwrap` fails even when installed and
 `kernel.unprivileged_userns_clone=1`, because AppArmor gained a separate switch:
-`kernel.apparmor_restrict_unprivileged_userns=1`. Use `docker` there, or install
-an AppArmor profile. `mecha tools` prints the active sandbox, and
-`mecha tools --json` prints each tool's capabilities.
+`kernel.apparmor_restrict_unprivileged_userns=1`. Use `landlock` there (it needs
+no privilege at all — but read the paragraph above for what it does not close),
+or `docker`, or install an AppArmor profile. `mecha tools` prints the active
+sandbox, and `mecha tools --json` prints each tool's capabilities.
 
 ## The front door
 
@@ -1022,6 +1036,16 @@ The things that decide the design:
   send. Gradeable via `expect.stop_cause: "loop"`; no shipped case asserts
   it, because a case cannot reliably make a model loop, and a case that
   asserts an outcome it may never exercise is worse than no case.
+- **The record is searchable after the summary.** `tool/recall.rs` registers
+  `recall` on the session-recording front-ends (chat, the TUI, resumed runs):
+  it searches the union of everything the transcript ever recorded — including
+  what a rewrite replaced — so a run missing a dropped detail can look it up
+  instead of re-living the stretch. Taint-neutral by construction: everything
+  it can return entered this conversation once, and the transcript path is
+  fixed at registration, never model input. Deliberately absent from Slack
+  (one shared registry across per-thread conversations would cross-wire
+  transcripts) and from fresh one-shots and triggers (a per-run record is
+  empty until the run ends).
 - **The summariser gets prose, not a replay.** Sending the real messages means
   sending `tool_result`s on a request that declares no tools, and llama-server
   answers that with an empty completion. Found by running it, not by reading the

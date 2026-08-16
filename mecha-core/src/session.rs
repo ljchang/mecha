@@ -111,10 +111,12 @@ pub struct RunConfig {
     /// session under `--yes` compares nothing.
     pub permission_mode: PermissionMode,
     pub trifecta: TrifectaPolicy,
-    /// `none` | `bwrap` | `docker`. Load-bearing beyond the obvious: `shell`
-    /// declares *narrower* capabilities when confined, and the interlock
-    /// believes them, so the same prompt can be refused in one and allowed in
-    /// the other.
+    /// `none` | `bwrap` | `docker` | `landlock`. Load-bearing beyond the
+    /// obvious: `shell` declares *narrower* capabilities when confined, and
+    /// the interlock believes them, so the same prompt can be refused in one
+    /// and allowed in the other. (`landlock` never narrows `external_send` —
+    /// see the sandbox module — so it patterns with `none` for the interlock
+    /// while still confining files.)
     pub sandbox: String,
     pub sandbox_network: bool,
 }
