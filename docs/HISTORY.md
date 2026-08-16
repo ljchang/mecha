@@ -970,6 +970,72 @@ a real nine-turn review. Both bots now name `claude-opus-5` and both work.
 
 ---
 
+**2026-08-14/15 — Slack acts, the doctor reads across the stores, and 0.1.3/0.1.4
+ship.** (Bridge entry, reconstructed from `CHANGELOG.md` — the sessions that
+built these predate this handoff pass; the changelog entries for 0.1.3 and
+0.1.4 are the detailed record.) The hardening branch merged 2026-08-14 (ten
+review findings fixed), Slack gained executable actions behind the closed
+`Action` enum with the tainted two-step, and `mecha doctor` landed as the one
+reader over every store after the 2026-08-11 incident where a revoked OAuth
+token took scheduling down for three days while five stores each recorded the
+distress correctly and nothing read across them. v0.1.4 was tagged 2026-08-15
+— and the deploy that followed is the reason the `update` skill exists: the
+tag published crates while `mecha --version` still said 0.1.3, because
+nothing had run `cargo install`.
+
+**2026-08-16 (afternoon) — DeepSeek's harness is read, and mecha keeps four
+ideas.** A survey of the just-released DeepSeek Harness (dsh) produced a
+ranked steal-list, and the same day shipped it as v0.1.5: `recall` (the
+session transcript is searchable, including what compaction rewrote away —
+taint-neutral by construction, since everything it returns entered the
+conversation once and its arrival is what armed the interlock), the cache
+lens (per-run observer that names why prompt-cache reuse broke and warns only
+on unexplained re-payment), the Landlock sandbox backend (no-privilege file
+confinement that deliberately never earns the interlock relaxation, because
+UDP is unrestrictable at any ABI), and the recording-gap fix
+(`Conversation::rewritten` — a run long enough to compact itself no longer
+loses its own head, because `record_run` now takes the conversation and walks
+the pre-rewrite states a caller could otherwise skip). The survey also found
+dsh has no taint tracking, no send-sink concept, and no summary validation —
+the trifecta work has no counterpart there. Spill, the fourth idea, turned
+out to have shipped here already (`cap_result`), which the research memory
+now records against its own earlier wrong claim.
+
+**2026-08-16 (evening) — the knowledge graph becomes a public sibling.** pkg
+went public as **mecha-graph** in a clean-room extraction: fresh history
+(the private repo's 137 commit bodies narrate live measurements about named
+people — no filter makes a journal safe), a canonical replacement map that
+preserved every test's linguistic property (Ana⊂Anastasia⊂Lana for the
+word-boundary family, Ada B/Ada B. for initials dedup, the June trio for
+same-first-name disambiguation), a synthetic eval world measured at 23/24
+with one deliberately hard bridging query left as headroom, and a
+private-only denylist gate plus export script that every publish must pass.
+Two independent audits ran, the second given no list of what the first
+removed — and it found what the first had rationalized: a "replacement"
+address that was a real Vermont locality, a real founder kept under a
+public-figure excuse, and household facts renamed rather than fictionalized.
+Three crates published to crates.io (`mecha-graph` took the bare name; the
+CLI installs as `cargo install mecha-graph`), the repo flipped public the
+same night.
+
+**2026-08-16 (night) — the graph's names reach all the way down, and 0.1.6
+ships.** The rename went end to end: crates and binaries
+(`mecha-graph-core/-cli/-mcp`, dirs included), env vars (`MECHA_GRAPH_*`),
+the store (`~/pkg` → `~/.mecha-graph`, migrated live and verified by reading
+13k episodes back), and — the piece that needed a mecha feature — the tool
+names: `prefix_tools = false` on `[[mcp]]` registers a server's tools under
+their raw names, so the model calls `kg_search`, not `pkg__kg_search`.
+Unprefixed is a promise of distinct names, enforced by a loud startup
+failure on collision (a prefixed name always contains the `__` marker, so
+the cases cannot be confused). The eval followed — `graph-cases.jsonl`
+grades the surface that actually runs, with the comparability break across
+the rename stated in the case file rather than discovered later — and
+running the renamed set immediately caught a latent `--mcp-file` bug that
+had silently broken fixture evals since MCP servers started spawning in the
+run's workspace. v0.1.6 tagged, published, deployed, and the graph now
+installs with mecha (`~/.cargo/bin/mecha-graph-mcp` in the config, the
+update skill's step 1, and the README's install block).
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -1075,6 +1141,17 @@ preserves *what is true* while dropping *how far you got* — is in
 and it is worth reading before changing that code.
 
 ---
+
+**The first complete Terminal-Bench scorecard (2026-08-11).**
+`mecha-arm64-subset-2026-08-11__02-11-55`: all 75 trials of the oracle-passing
+arm64 subset, k=1, v0.1.2 portable binary, qwen3.6-35b at the 262k window,
+`max_turns` 80, timeout multiplier 2.0, ~19.5h wall clock. **Mean reward
+0.4533 (34/75), 8 errored trials.** The run was launched to answer four
+falsifiable questions from the 08-07 diagnosis rather than to produce a
+number, and it answered them: empty-turn nudges fell to 4 across the whole
+run, the dash-prompt crash did not recur. It is the k=1 baseline for the
+0.1.2 harness; a leaderboard-comparable k=5 (~74h) remains unrun, so compare
+nothing against the leaderboard yet.
 
 ## The compaction measurement record
 
@@ -1341,6 +1418,19 @@ matters is the general shape.
   parameter's namespace entirely rather than reserving the values that
   collide.**
 
+- **The scrub's own author passed it; fresh eyes with no list did not.** The
+  mecha-graph extraction was audited twice. The first pass (and the agents
+  that applied it) rationalized three keeps: a "replacement" address that was
+  a real Vermont locality triple, a real company founder kept because he was
+  "a public figure in his public role", and household fixtures whose names
+  were synthetic but whose facts — the pediatrician visit, the snow tires,
+  the river — were still one real household lightly relabeled. The second
+  auditor was deliberately given no list of what had been removed, and found
+  all three plus a live wearable transcript. The lesson: a verification pass
+  that knows the answer key checks the key, not the work. Independence means
+  withholding the list, and every new find goes into the gate so the next
+  regression is caught mechanically.
+
 ### Learning
 
 All found by pre-push review or by running it.
@@ -1556,6 +1646,17 @@ All found by pre-push review or by running it.
   state should be run as whoever will own it, which is why the systemd unit
   runs its pre-flight as the service user.
 
+- **A relative path is a bet that "here" never moves, and "here" moved.**
+  `--mcp-file` joined fixture-server paths against the file's directory but
+  left them relative — correct for as long as mecha spawned MCP servers from
+  the invocation directory. When servers started spawning in the run's
+  workspace (the fixed-root work), the join silently resolved against the
+  workspace and every fixture handshake failed; the eval that would have
+  caught it was not run again until the graph rename forced it. Canonicalize
+  at the seam where a path is *read*, not where it is used — and when a
+  subsystem changes its working directory, grep for every relative join that
+  was betting on the old one.
+
 ### Unattended runs
 
 - **An edit that silently matches nothing ships a false claim.** The fix for
@@ -1760,6 +1861,16 @@ All found by pre-push review or by running it.
   aggregators report.
 
 ---
+
+- **A gitignored file in a disposable worktree dies with the worktree.** The
+  mecha-graph OPERATIONS.md — the machine-specific values extracted from a
+  public doc — was written inside a scrub worktree, gitignored by design, and
+  destroyed when the merged worktree was removed. Nothing warned: git had
+  never tracked it, so no tool considered it a loss. It was recreated from
+  the pre-scrub file's git history, which happened to contain the same
+  values. The lesson: gitignored means "no home but its directory" — a file
+  meant to outlive a branch must be written in the main checkout, and a
+  worktree should be treated as already deleted from the moment it is made.
 
 ## Design notes worth keeping
 

@@ -21,13 +21,26 @@ maps which document holds what.
 
 ## Where the work is
 
-Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.2**
-(2026-08-10 evening — the reasoning round trip; 0.1.1 was earlier the same
-day). **Four** crates are on crates.io at 0.1.2 — `mecha-core`,
-`mecha-mail`, `mecha-slack`, `mecha-cli` (the bare name `mecha` was taken, so
-the CLI crate installs the `mecha` binary) — published through the tag-driven
+Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.6**
+(2026-08-16 night; 0.1.5 was the same afternoon — two releases in one day,
+the second because the knowledge-graph rename touched mecha's own surface).
+**Four** crates are on crates.io at 0.1.6 — `mecha-core`, `mecha-mail`,
+`mecha-slack`, `mecha-cli` (the bare name `mecha` was taken, so the CLI
+crate installs the `mecha` binary) — published through the tag-driven
 `release` workflow with Trusted Publishing, so no registry token exists
 anywhere. From v0.1.1 on, a tag and a crate version are the same number.
+
+The knowledge graph is now a **sibling public project**:
+**github.com/ljchang/mecha-graph** (fresh history — the private repo's
+journal is the data the project exists to hold, so the public tree starts
+where every fixture wears a synthetic world), with `mecha-graph`,
+`mecha-graph-core` and `mecha-graph-mcp` on crates.io at 0.1.0, hand-published
+2026-08-16 (no release workflow there yet; mecha's is the template). The CLI
+crate took the bare name deliberately — `cargo install mecha-graph` is the
+front door, and mecha-cli's own name was necessity, not preference. mecha
+wires it as `[[mcp]] name = "graph"` with `prefix_tools = false`, so the
+model calls bare `kg_*` names; the store lives at `~/.mecha-graph/` under
+`MECHA_GRAPH_*` env vars.
 
 `mecha-slack` joined at this release, and the reason is worth keeping because
 it generalises: **cargo refuses to publish a crate whose non-dev dependencies
@@ -80,30 +93,20 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **707 tests**, no failures — re-measured 2026-08-10 evening, after the
-reasoning round-trip arc added seventeen (`reasoning_content` decode and
-re-encode, `produced_output` versus block count, the cached-token split and its
-underflow guard, the salvage of a reasoning-only run, and the lost-call marker
-across four model families). Before that it was 690, from 2026-08-09 night and
-that day's
-four arcs (counts re-measured at the end of the session): inter-agent messaging
-(`mecha-core` grew with the mailbox store,
-taint-forwarding, and the review's fix tests), the benchmark-diagnosis fixes
-(overflow-recovery, empty-turn, and session-rewrite regression tests, including
-the review-caught rewrite-drops-stale-taint-positions one), the Slack
-transport with its binding store and thread state machine, and the outbox
-review fixes that came with the factory's wider tool surface. One flake was seen
-once in `mecha-core` on 2026-08-08 and never reproduced across five re-runs —
-unidentified, worth an eye.
+Expect **888 tests**, no failures — re-measured 2026-08-16 night at
+v0.1.6. The growth from 707 (2026-08-10) spans the 0.1.3–0.1.6 arcs; each
+release's CHANGELOG entry names what its tests pin. One flake was seen once
+in `mecha-core` on 2026-08-08 and never reproduced — unidentified, worth an
+eye.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 396 |
-| `mecha-cli` unit | 143 |
-| `mecha-mail` unit | 86 |
-| `mecha-slack` unit | 68 |
-| integration (`mcp_server` 6 + `sandbox_backends` 7) | 13 |
-| doctest | 1 |
+| `mecha-core` unit | 472 |
+| `mecha-cli` unit | 223 |
+| `mecha-mail` unit | 101 |
+| `mecha-slack` unit | 75 |
+| integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
+| doctest | 2 |
 
 The integration tests need docker (with `debian:stable-slim` and `python:3-slim`
 pulled) and `python3`; without them they skip and say so. CI sets
@@ -124,17 +127,17 @@ A working agent harness, used and measured rather than just compiled.
 |---|---|
 | Providers | Anthropic (raw HTTP, **verified live**) + OpenAI-compatible (llama-server, vLLM, Ollama) |
 | Agent loop | Streaming, tool dispatch, parallel execution, forced final answer |
-| Tools | `fs_read/write/edit/list`, `shell`, `http_fetch`, `todo`, `web_search`, `ask_user` |
+| Tools | `fs_read/write/edit/list`, `shell`, `http_fetch`, `todo`, `web_search`, `ask_user`; `recall` on session-recording front-ends (chat, TUI, resumed runs) — searches the transcript union, including what compaction rewrote away |
 | Planning | `Phase::Plan` hides writing tools structurally — not offered, not dispatchable |
-| MCP | stdio client; per-server on/off; capability overrides that only widen |
-| Memory | pkg wired as an MCP server — the user's mail, Slack, calendar, conversations |
+| MCP | stdio client; per-server on/off; capability overrides that only widen; `prefix_tools = false` for a server whose tools carry their own namespace (collision fails startup loudly) |
+| Memory | mecha-graph (the artist formerly known as pkg, now public) wired as MCP server `graph`, unprefixed `kg_*` tools — the user's mail, Slack, calendar, conversations |
 | Subagents | `Agent` wrapped as a `Tool`, allowlisted registry, per-profile model |
 | Search | `SearchBackend` trait — Exa, Tavily, SearXNG — with fall-through |
 | Security | Path jail, SSRF guard, trifecta interlock, leak guard, capability model |
-| Sandbox | `shell` and MCP servers confined via bubblewrap or docker; no network by default |
+| Sandbox | `shell` and MCP servers confined via bubblewrap, docker, or landlock (no-privilege file confinement; never narrows `external_send` — UDP is unrestrictable, and the preflight plants a home file and requires the confined read to fail) |
 | Budgets | `max_turns`, `max_output_tokens`, `max_cost_usd`, cost accounting |
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
-| Context | Two-pass compaction: thin tool results, then summarise. Taint preserved, and a tool's own state (the todo list) crosses verbatim |
+| Context | Two-pass compaction: thin tool results, then summarise. Taint preserved, a tool's own state (the todo list) crosses verbatim, the states a mid-run rewrite replaced ride `Conversation::rewritten` into the session record, and a per-run cache lens watches whether the cached prefix is actually reused (warns only on unexplained re-payment) |
 | Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep, and `slack` for the remote control |
 | TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/outbox` and `/frontdoor` modals drive the CLI like `/triggers` does, the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
 | Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`. **Merged 2026-08-09 (PR #25) and running as `mecha-slack.service`** |
@@ -148,21 +151,21 @@ A working agent harness, used and measured rather than just compiled.
 | Front door | `mecha frontdoor` list/show/extract/next/**triage**/**needs-info**/**close** over `~/.mecha/requests/` — the quarantine between a stranger's request and a run with tools, and the state machine that lets one reach an answer. The extractor is issued no tools and no history; `Record::for_privileged_run` has no argument that returns the prose; an extraction failure routes to a human. `triage` drafts into the outbox and refuses to run unrouted; `reconcile` closes the loop from released items on its own, with no verb to remember. `mecha-factory-publish drain` fills the directory |
 | Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, **the daemon is installed and running here**; a failed `notify` is recorded on the run |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B) |
-| Eval | 36 cases, 15 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `graph-cases.jsonl` — 8 memory/interlock cases against fixture MCP servers (`--mcp-file`) |
+| Eval | 36 cases, 15 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `graph-cases.jsonl` — 10 memory/interlock cases against fixture MCP servers (`--mcp-file`), renamed with the graph and expecting the bare `kg_*` names production serves (scorecards across the rename are not comparable) |
 
 `cargo clippy --all-targets` is clean and should stay that way.
 
 ## Environment as left
 
 Running on the DGX Spark (GB10, aarch64, 128GB unified). **Re-verified
-2026-08-08 night** (8080 answering with `total_slots=1`; 8082 down; the mecha
-units enabled as listed below — 8081 and the binary dates carried forward
-from the afternoon pass, not re-checked):
+2026-08-16 night** (8080 and 8083 answering with `total_slots=1`; 8081 and
+8082 down; SearXNG up; installed binaries at 0.1.6 same evening):
 
 | Port | Model | State |
 |---|---|---|
 | 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, **`-c 262144`** — the model's whole trained window (`qwen35moe.context_length`), raised from 32768 on 2026-08-10 after re-measuring. **`-c` costs nothing in speed**: 32k/64k/128k/256k are within noise of each other (~92 tok/s at a 1k prompt, ~80 at 30k), and the 50x slowdown recorded on 2026-08-07 was that day's OOM, not the flag. It costs memory as a startup *reservation* — 21.4 GB at 32k to 28.5 GB at 256k, i.e. weights ~20.7 GB plus ~32 KiB/token. **The full tables, the needle test at 188k, the `-np` trade-off and the two traps live in `scripts/start-moe-mtp.sh`** — read it before touching any of this. **`--reasoning-budget 4096`** (2026-08-07) was believed to be the mitigation for this model's "non-terminating reasoning" — **that diagnosis was wrong and is retired as of 2026-08-10 evening**: the empty turns were tool calls emitted before `</think>` closed, one of them 120 characters long, so no token budget was ever involved. The flag is harmless and stays; the real cause and fix are in `CHANGELOG.md` under 0.1.2. The nudge-retry allowance still resets on productive turns, which remains correct for its own reasons. `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` (= `-c`) and `max_tokens` (**above** the budget; 8192) — four numbers that move together. `-np 1` means every fan-out serializes. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **A transient unit** (`systemctl --user status llama-qwen`), not a tmux pane — see below |
 | 8081 | gemma-4-E4B | down; nothing currently depends on it |
+| 8083 | Qwen3.8-27B | up, `total_slots=1`, `-c 262144`, draft-MTP — brought up since the last pass; nothing in config depends on it yet (verified 2026-08-16) |
 | 8082 | gemma-4-26B-A4B | **down — restart it before any judged run.** The eval judge and nightly validate's judge both point here, so `mecha eval` with a `judge` rubric and the nightly validate will fail without it. `scripts/start-gemma26.sh` |
 | 8888 | SearXNG | up (docker, JSON format enabled) |
 
@@ -283,7 +286,7 @@ is exactly the set holding a long-lived process.
     was restarted; a fresh `mecha chat` / `tui` / `run` spawns a new server and
     sees all fifteen immediately. It has now been restarted, though
     `[slack] tools` was emptied the same day, so a Slack thread now carries the
-    same surface as `chat` and `tui` — including `mail__*` and `pkg`.
+    same surface as `chat` and `tui` — including `mail__*` and the graph.
 - The learning store (`~/.mecha/learning`) holds **zero live rules** — the one
   early rule was reverted with its poisoned reflection — so everything from here
   accumulates from real usage through the gate.
@@ -379,11 +382,23 @@ tested, but has never been exercised against the real box by a person:
 
 Everything else below is independent of that.
 
-Every item below was verified against source on 2026-08-10 night to still be
+**The signup door is built but not deployed — the cheapest visible win on
+the board.** `mecha-factory` main carries two unreleased commits: `d11cf10`
+("Anyone may ask for an account") adds `/signup` → token → form, and
+`9823f26` gives redirect hosts their own certificates. The box serves
+v0.2.4 (verified live 2026-08-16; `https://gate.mecha-factory.ai/signup`
+404s today). Shipping it is: tag v0.2.5, let the release workflow build the
+x86 artifact, `factory-deploy v0.2.5` over SSH, verify `/signup` answers.
+Deliberately not done during the 08-16 update pass — the droplet is
+production serving strangers, and deploying it is a decision, not a side
+effect of "update everything".
+
+Every item below was verified against source on 2026-08-16 night to still be
 unbuilt — MCP resources and HTTP/SSE transports, the subagent workspace field,
-per-command approval, the Landlock backend, `Rule`'s missing scope, the raw
-reflection window, a task store, file watchers and a TUI export are each still
-absent from the file the item names. One item was struck the same pass:
+per-command approval, the seccomp half of the sandbox item, `Rule`'s missing
+scope, the raw reflection window, a task store, file watchers and a TUI export
+are each still absent from the file the item names. (The Landlock backend
+itself shipped 2026-08-16 — its item below now describes only the remainder.) One item was struck the same pass:
 `decode_usage` now reads `prompt_tokens_details.cached_tokens`
 (`mecha-core/src/provider/openai.rs:309`), shipped with the reasoning arc, and
 has moved to [`HISTORY.md`](HISTORY.md).
@@ -525,10 +540,14 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
 - **Structured output has no provider abstraction.** The `Provider` trait exposes
   only `id`/`default_model`/`complete`. GBNF, `guided_json` and
   `output_config.format` are all spellings of the same idea and none is reachable.
-- **A Landlock + seccomp sandbox backend.** `Backend` is `None`/`Bwrap`/`Docker`.
-  The sandbox research measured Landlock at ~1.28 ms and it works on this box,
-  where bwrap does not — so the measured winner is the one that is unimplemented,
-  and docker remains the only working option here.
+- **A seccomp layer on the sandbox.** Landlock itself shipped 2026-08-16
+  (`Backend::Landlock`, `sandbox.rs` — no-privilege file confinement, hard
+  ABI-3 floor, a preflight that plants a home file and requires the confined
+  read to fail, and deliberately no `external_send` narrowing because UDP is
+  unrestrictable). What the research scoped and remains unbuilt is syscall
+  filtering: no `seccomp` anywhere in `mecha-core/src/`. Also note this box
+  stays on docker for `shell` anyway — docker's `network = false` earns the
+  interlock relaxation that Landlock, honestly, cannot.
 - **In-run verification / a convergence primitive.** Nothing in `agent.rs` tests
   a post-condition; there is no runtime "is it done yet". The research's own
   answer is the starting point: it has to be a command's exit code, not a
@@ -609,6 +628,29 @@ The arc is complete and running nightly. What is missing is refinement:
   colours inline; there is no semantic colour table.
 - **No keymap configuration.**
 
+### The graph, now a sibling
+
+mecha-graph shipped 2026-08-16 (repo public, three crates at 0.1.0, tools
+unprefixed, store at `~/.mecha-graph/`). What that arc left open:
+
+- **No release workflow.** The three crates were hand-published; the repo has
+  no CI at all. mecha's tag-driven workflow with Trusted Publishing is the
+  template, and the half-published-workspace trap it documents applies
+  verbatim to a three-crate workspace with an internal dependency.
+- **The dependency inversion is scoped and unstarted.** `vet`, `gossip`, and
+  `corroborate` are graph-curation agents squatting in mecha-cli — the
+  2026-08-16 gossip work needed paired commits across the two repos, which is
+  the friction the move ends. The sorting rule: a command belongs to the repo
+  whose store it curates; `distill` stays (it reads mecha's sessions and is
+  the bridge). Move `gossip` first; it builds on published `mecha-core`.
+- **A stranger-facing README pass.** The public README still reads like the
+  private repo's; nothing in it walks a person from `cargo install
+  mecha-graph` to a populated graph.
+- **Cosmetic**: the private checkout still lives at
+  `~/Github/personalized_knowledge_graph` (paths baked into mecha's config
+  `command =`, two crontab lines, and the gitignored OPERATIONS.md), and
+  mecha's CLAUDE.md still says "pkg" in narrative spots.
+
 ### Larger, and deliberately not started
 
 - **`mecha-factory` — the public surface. It is deployed, it sends mail, and
@@ -633,7 +675,10 @@ The arc is complete and running nightly. What is missing is refinement:
   it here. One local fact worth keeping in view: `sandbox = true` is
   deliberately **not** set on the factory MCP server — bwrap does not work on
   this box, docker cannot confine the notebook render subprocess, and the
-  config says why at length.
+  config says why at length. Half the premise aged out 2026-08-16: the
+  Landlock backend now confines without privilege on exactly this box, with a
+  per-server `network` override for the vendor-Pyodide fetch — the decision
+  deserves a revisit, and the config comment predates the option.
 
   **A second client is verified and documented (2026-08-07 evening).** The MCP
   surface was driven from a Claude Code session over raw stdio — handshake,
@@ -675,11 +720,10 @@ The arc is complete and running nightly. What is missing is refinement:
     dropping visibility from the local store; it was left out of a URL change
     on purpose.
 
-  **The personal public surface is built and open as a PR (2026-08-10
-  night), not merged and not deployed.** `feat/switchboard-inventory` in the
-  factory repo — [ljchang/mecha-factory#13](https://github.com/ljchang/mecha-factory/pull/13),
-  eight commits, 453 tests where `main` has 384 — adds two pages a stranger
-  sees: the **hangar** at `gate…/@<handle>`, which lists everything that
+  **The personal public surface is merged and deployed** (verified against
+  `main` 2026-08-16: switchboard `6fbd2c0`, cockpit records `ff91bfa`, the
+  ten review findings `85be8b4` all on `main`; the box serves 0.2.4, which
+  contains them). It adds two pages a stranger sees: the **hangar** at `gate…/@<handle>`, which lists everything that
   person has made public, and a **switchboard** at `gate…/@<handle>/<slug>`,
   a hand-patched page of lines meant for an email signature. The design is
   [`SWITCHBOARD-DESIGN.md`](SWITCHBOARD-DESIGN.md) (open here as
@@ -767,11 +811,10 @@ The arc is complete and running nightly. What is missing is refinement:
     surface by eight. That argues for narrowing per surface (`[slack] tools`,
     `[tools] enabled`) rather than for exposing less.
 
-    **The box runs v0.2.1 as of 2026-08-10**, so the poll UI work is live:
-    `factory-deploy v0.2.1` downloaded, checksummed, proved the binary and the
-    config while the old one was still serving, swapped, and health-checked —
-    the whole procedure exercised end to end for the first time on a real
-    release. The served stylesheet went from 23,397 to 30,939 bytes and now
+    **The box runs v0.2.4 (verified live 2026-08-16; active since
+    2026-08-12)** — three releases past the v0.2.1 that first exercised
+    `factory-deploy` end to end (download, checksum, prove, swap,
+    health-check). The served stylesheet went from 23,397 to 30,939 bytes and now
     carries the rank counters, the card-select rules and the VAS anchors.
     Worth remembering that `poll_render.rs` lives in `mecha-manifest`, which
     the *box* links: a rendering change is a box deploy, not a home reinstall.
@@ -850,13 +893,12 @@ The arc is complete and running nightly. What is missing is refinement:
     threads is not there, and closing it is the same fix as above.
   - **The outbox review cards have not been exercised live.** Built and unit
     tested; no run has yet staged a draft while the connector was watching.
-  - **It is installed and running** (2026-08-09). `mecha-slack.service` is
-    enabled with linger, `~/.cargo/bin/mecha` carries the merged binary, and
-    `[slack] tools` is set — workspace tools, `web_search` + `http_fetch`
-    (which the `research` subagent needs, and whose absence silently
-    unregisters it), and the factory bundle tools. `mail__*` and `pkg` are
-    deliberately out: largest schemas, most private surface, one line to add
-    when inbox work from a phone is actually wanted. The connector answers a
+  - **It is installed and running** (re-verified 2026-08-16, on 0.1.6).
+    `mecha-slack.service` is enabled with linger, and `[slack] tools` is now
+    `[]` — the whole surface, **including `mail__*` and the graph's `kg_*`**
+    (re-measured 2026-08-10; the rationale comment sits above the line in
+    `~/.mecha/config.toml`). The earlier stance that mail and the graph were
+    "deliberately out" is reversed and this bullet is the record of that. The connector answers a
     **shared lab workspace** (`cosanlab`) rather than the personal one §11.1
     of the design chose — safe, since non-owners are ignored by construction,
     but the app is visible to its members.
@@ -873,60 +915,22 @@ The arc is complete and running nightly. What is missing is refinement:
   the **oracle arm64 sweep is complete** (2026-08-05, 14.4h): 75 of 89 tasks
   have a reference solution that passes on aarch64, and those 75 are the only
   comparable set — `bench/oracle-arm64-excluded.txt` holds the other 14.
-  `bench/run-subset.sh` runs the calibrated subset. **No complete scorecard
-  exists yet**, and there have now been three incomplete attempts. The
-  2026-08-07 05:22 launch was voided by the glibc trap; the 11:18 relaunch was
-  stopped by hand ~4h in; and the **2026-08-10 03:39 launch at the 262k
-  window** (`max_turns` 80, `--agent-timeout-multiplier 2.0`, k=1, preflighted
-  with `check-subset.py`) was **killed deliberately at 28/75 that evening**,
-  because the reasoning round-trip bug found mid-run meant it was measuring a
-  defect that was by then fixed. Its numbers, for whatever they are worth as a
-  before: 13 passes of 28 (46%), five `AgentTimeoutError`, one trial lost to
-  the dash-prompt crash, ~930 output tokens per turn. Do not treat it as a
-  baseline — three known defects are baked into it (stripped reasoning causing
-  empty turns, the argv crash, and a timeout tail), and the reasoning fix
-  changes per-turn context. Its artifacts are kept at
-  `.claude/worktrees/bench-run-262k/jobs/` — that checkout exists only to hold
-  them, because those transcripts are the evidence the 0.1.2 diagnosis rests
-  on and benchmark artifacts are gitignored.
-  **The relaunch is `mecha-arm64-subset-2026-08-10__14-15-05`**, launched
-  14:15 from `.claude/worktrees/bench-run-v012` (detached at `v0.1.2`), same
-  parameters, `check-subset.py` green on exactly the 75. Judge it on four
-  falsifiable things rather than on the score, none of which need the old run
-  as a baseline: empty-turn nudges should approach zero (`grep "turn produced
-  no content"` across the trials' `stderr.log`), the dash-prompt crash should
-  not recur, the timeout tail should shrink from 5-in-28, and **compaction
-  counts should not jump** — that last one is what settles whether replayed
-  reasoning stays unbounded. The 2026-08-07 fragment was separately
-  **diagnosed trial by trial** (2026-08-09 — the write-up is in
-  `docs/BENCHMARK-RESEARCH.md`, "The 2026-08-07 subset run, diagnosed"): of
-  13 failures, 5 were the model and 8 involved harness defects, all five of
-  which are fixed with regression tests (PR #21 — overflow-recovery
-  poisoning, cumulative empty-turn allowance, exit-3-on-exhausted read as an
-  agent crash, transcripts lost on crash or corrupted by compaction, and a
-  flat output budget bigger than the threshold-to-window gap). Every one of
-  those trials also ran against a 32k window that never needed to be 32k
-  (2026-08-10 — see "Environment as left"), so compaction pressure was a live
-  variable there and is largely gone at 262,144: the fragment is not a
-  baseline for anything current either.
-  **Budget the wall clock honestly.** The ~15h figure quoted here for months
-  was never measured; the 08-10 run's own trials averaged 34 minutes and
-  projected **~29h at k=1**, because `--n-concurrent-agents 1` serialises every
-  agent phase against the single `-np 1` slot. Timeouts dominate the tail — a
-  runaway spends the full multiplied cap (2.0x meant two hours for one trial).
-  If that is too long, `-np 4` with `-c` raised to match is the measured
-  trade (12% of single-stream speed for 1.6x aggregate; see
-  `scripts/start-moe-mtp.sh`), and it needs `context_window` in
-  `bench/mecha_agent.py` moved to the per-slot figure in the same change.
-  Rebuild the portable
-  binary (`bench/build-portable.sh`) from the merged branch first — the
-  installed one predates every fix, and `bench/run.sh` resolves
-  `$(pwd)/target-musl/release/mecha`, so the binary scored is whichever
-  checkout you launch from. Consider `--agent-timeout-multiplier` too: the
-  two timeout deaths were 12.5- and 15-minute per-task caps against local
-  inference, tight even with the empty-turn waste fixed. Read any job with
-  `bench/check-subset.py <job>` first — a harbor `-x` that matches nothing is
-  silent, and two earlier runs scored all 89 while claiming to be a subset.
+  `bench/run-subset.sh` runs the calibrated subset.
+
+  **A complete scorecard exists as of 2026-08-11**:
+  `jobs/mecha-arm64-subset/mecha-arm64-subset-2026-08-11__02-11-55/` (in the
+  `bench-run-v012` worktree checkout) finished all 75 trials — **mean reward
+  0.4533 (34/75), 8 errored trials, k=1, v0.1.2 binary, 262k window,
+  `max_turns` 80, timeout multiplier 2.0**, `scorecard.html` beside
+  `result.json`. The four falsifiable checks it was launched to answer came
+  back: empty-turn nudges fell to 4 across the whole run (from a rate that
+  poisoned the 08-07 fragment), and the dash-prompt crash did not recur.
+  Treat it as the k=1 baseline for the 0.1.2 harness; the 08-10 28-trial
+  fragment and the 08-07 attempt stay in their worktrees as diagnosis
+  evidence, not baselines. Two earlier lessons still stand when launching:
+  rebuild the portable binary first (`bench/run.sh` scores whichever
+  checkout you launch from — it is at 0.1.6 as of 2026-08-16), and read any
+  job with `bench/check-subset.py` before believing it is a subset.
   k=5 for a leaderboard-comparable number is the follow-up, ~74h.
   AgentDojo (for the interlock) and a SWE-bench Bash Only control are named in
   the research and unstarted.
