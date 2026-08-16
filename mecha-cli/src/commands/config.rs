@@ -159,7 +159,7 @@ mark_untrusted_output = true
 
 # MCP servers. Their tools appear as `<name>__<tool>`.
 # [[mcp]]
-# name = "pkg"
+# name = "graph"
 # command = "/path/to/pkg-mcp"
 # args = []
 "#;

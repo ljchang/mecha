@@ -34,7 +34,7 @@ pub struct Args {
     pub limit: Option<usize>,
 
     /// The `[[mcp]]` server holding the knowledge graph.
-    #[arg(long, default_value = "pkg")]
+    #[arg(long, default_value = "graph")]
     pub server: String,
 }
 

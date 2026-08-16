@@ -44,7 +44,7 @@ pub struct CorroborateArgs {
     /// the world having moved is the signal.)
     #[arg(long, default_value = "2024-01-01")]
     pub since: String,
-    #[arg(long, default_value = "pkg")]
+    #[arg(long, default_value = "graph")]
     pub server: String,
     /// Minimum episodes a source needs before it can be a vantage.
     #[arg(long, default_value_t = 3)]
