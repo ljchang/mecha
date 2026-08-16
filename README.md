@@ -79,6 +79,8 @@ because a person clicking "yes" is what an injection is trying to engineer.
 ```bash
 cargo install mecha-cli --locked          # installs the `mecha` binary
 cargo install mecha-mail --locked         # optional: mail + calendar MCP servers
+cargo install mecha-graph-mcp --locked    # optional: personal knowledge graph (MCP)
+cargo install mecha-graph --locked        # optional: the graph's own CLI
 ```
 
 Or from source:
@@ -193,8 +195,10 @@ network = false                       # no network means `shell` cannot exfiltra
 tools = ["mail__mail_send"]
 
 [[mcp]]
-name = "pkg"
-command = "pkg-mcp"
+name = "graph"
+command = "mecha-graph-mcp"
+# Its kg_* tools carry their own namespace; skip the graph__ prefix.
+prefix_tools = false
 
 [[hook]]
 event = "pre_tool"                    # pre_tool | post_tool | session_end
