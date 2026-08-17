@@ -1046,6 +1046,21 @@ certificates — are serving. Verified live: `factory --version` 0.2.5,
 pass, deployed on the owner's word an hour later — which is the handoff doc
 doing its job.
 
+**2026-08-17 — the operator gets the door back, with the arithmetic in
+view.** v0.2.6, designed and deployed the same night on the owner's call:
+an ask now files a `signup_asks` row (schema 15) and nothing else — the
+certificate budget is spent at *approval*, on the panel, where a new
+Signups section shows committed-of-40 split into accounts and pending
+invites, the free count, and the hour the oldest slot returns, computed by
+the same function the approval handler enforces so the panel can never
+disagree with the refusal. Approve mints and mails through the one
+definition every mint uses; Deny closes silently, which is what the ask
+page now promises; a spent week queues instead of pausing — the
+forty-burner-addresses attack that used to spend the week's certificates
+now fills a queue the operator bulk-denies, and the budget never moves.
+Same bytes for every address, still. 486 tests, the approval journey
+end-to-end among them.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
