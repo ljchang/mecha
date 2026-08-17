@@ -1,6 +1,6 @@
 ---
 title: Evaluation
-sidebar_position: 16
+sidebar_position: 17
 description: The eval rig — grading the tool-call trace and the artifact rather than what the model says about its own work.
 ---
 
