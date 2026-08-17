@@ -383,6 +383,35 @@ conversation, compacted or not. See
 [Sessions and replay](/docs/features/sessions-and-replay) and
 [Security](/docs/features/security).
 
+## What a rewrite replaced is still recorded
+
+Compaction (and eviction, and thinning) rewrite the message list in place,
+and the front-end records a run only when it finishes — so for a long time a
+run that compacted *itself* lost its own head: the rewrite record carried
+only what survived. The states a rewrite replaces now ride on the
+`Conversation` (`rewritten`, cleared at run start), and the session
+recording walks them before the final state. A run long enough to compact
+itself still gets its whole history into the file, where the `recall` tool
+can search it — see [Sessions and replay](/docs/features/sessions-and-replay).
+
+## The cache lens
+
+Prompt caching is a prefix match, and everything protecting the prefix is an
+invariant somewhere else: the registry's ordering, the append-only
+transcript, the fixed system prompt. A regression in any of them presents as
+nothing at all — requests succeed, answers arrive, and every turn quietly
+re-pays for the whole history. The bill is the only symptom.
+
+So each run carries a pure observer: it fingerprints every request as
+actually sent, compares it with the one before, and names the reason when
+cache reuse legitimately breaks (tool surface changed, transcript rewritten
+by compaction). The one remaining shape — a large re-payment with nothing
+changed — is a warning in the logs. Two honesty rules keep the warnings
+believable: a provider that has never reported a cache figure is never
+accused (zeros are silence, not a miss), and small re-payments stay below
+the alarm. Verdicts go to tracing only; the model and the loop never see
+them.
+
 ## When a compaction fails
 
 A failed summary is not a reason to abandon the run — the oversized request

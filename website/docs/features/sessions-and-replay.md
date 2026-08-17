@@ -29,15 +29,26 @@ so a crashed run still leaves a readable transcript. Ids are
 `20260805T091500-3f2a1b7c` — sortable by name, and still unique when two runs
 start in the same second.
 
-Five record kinds:
+Six record kinds:
 
 ```json
 {"record":"meta","id":"20260805T091500-3f2a1b7c","created_at":"...","provider":"anthropic","model":"claude-opus-5","workspace":"/home/you/project","title":"summarize what changed"}
 {"record":"config", ...}
 {"record":"message","role":"user","content":[{"type":"text","text":"..."}]}
 {"record":"taint","private":true,"untrusted":false}
+{"record":"rewrite","messages":[...]}
 {"record":"summary","usage":{...},"turns":4}
 ```
+
+The `rewrite` record is how an append-only file expresses an in-place edit:
+compaction, eviction, and thinning all rewrite earlier messages, and slicing
+"what the run added" off a rewritten list would record a lie — the stale
+head kept, the rebuilt one lost. The record carries the whole current list,
+and loading replaces what was accumulated so far. The states a rewrite
+*replaced* are recorded too: the loop keeps each pre-rewrite message list on
+the conversation, and the end-of-run recording walks them before the final
+state — so a run long enough to compact itself still gets its whole head
+into the file.
 
 `load` skips unparseable lines rather than failing — a truncated final line is
 the normal result of a killed process. A file whose first record is not a
@@ -47,6 +58,24 @@ Listing goes through `peek_meta`, which reads only the first line. That keeps
 `mecha sessions list` at O(number of sessions) rather than O(total transcript
 bytes); with reflect-on-close recording every interaction, a full parse re-read
 the whole store to print one line per file.
+
+### recall: the record is searchable
+
+Sessions recorded by `chat`, the TUI, and resumed runs register a `recall`
+tool: a case-insensitive search over the *union* of everything the
+transcript ever recorded — including the messages a compaction rewrite
+replaced. When a summary drops the one detail the run later needs, the
+model looks it up instead of re-running tools or re-living the stretch.
+
+Two properties make it safe to hand to the model. It is **taint-neutral by
+construction**: everything it can return entered this conversation once,
+and that arrival is what armed the interlock — taint never un-arms, so
+re-surfacing recorded content changes nothing the interlock knows. And the
+**transcript path is fixed at registration**, never taken from model input,
+so no other conversation's content is reachable. It is deliberately absent
+from Slack (one shared registry serves every thread; a per-run insert would
+point one thread's recall at another's transcript) and from fresh one-shots
+and triggers, whose per-run record is empty until the run ends.
 
 ### The taint record
 

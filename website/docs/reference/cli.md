@@ -229,7 +229,7 @@ mecha eval --compare results/*.json
 
 mecha eval --tag chaining --failures            # one slice, with reasons
 mecha eval -k 5 -o results/qwen-k5.json         # pass^5 beside pass@5
-mecha eval eval/pkg-cases.jsonl --mcp-file eval/mcp.toml
+mecha eval eval/graph-cases.jsonl --mcp-file eval/mcp.toml
 ```
 
 ## `tools`
@@ -758,7 +758,7 @@ mecha distill [OPTIONS]
 | Flag | Description |
 |---|---|
 | `--sessions-dir <DIR>` | Directory of session transcripts. Defaults to the standard location. |
-| `--server <SERVER>` | The `[[mcp]]` server holding the knowledge graph. Default `pkg`. |
+| `--server <SERVER>` | The `[[mcp]]` server holding the knowledge graph. Default `graph`. |
 | `--dry-run` | List what would be distilled without calling a model or writing. |
 | `--limit <N>` | Distill at most this many sessions this run. |
 
@@ -770,7 +770,7 @@ on the episode's metadata instead. Idempotent at both ends.
 
 ```bash
 mecha distill --dry-run
-mecha distill -p local --limit 10 --server pkg
+mecha distill -p local --limit 10 --server graph
 ```
 
 ## `config`

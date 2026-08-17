@@ -15,14 +15,14 @@ over MCP through that server's `kg_upsert` tool.
 mecha distill                      # every session not yet in the ledger
 mecha distill --dry-run            # what would be distilled; no model call, no writes
 mecha distill --limit 10
-mecha distill --server pkg         # the [[mcp]] server holding the graph (default: pkg)
+mecha distill --server graph       # the [[mcp]] server holding the graph (default: graph)
 ```
 
 The named server must exist in config, and its absence is fatal rather than a
 warning:
 
 ```
-no [[mcp]] server named 'pkg' in config — distillation stages episodes
+no [[mcp]] server named 'graph' in config — distillation stages episodes
 through the knowledge graph server and cannot run without it
 ```
 
@@ -113,8 +113,9 @@ The read-back marking is one line of config, and it only ever widens — a
 
 ```toml
 [[mcp]]
-name = "pkg"
-command = "pkg-mcp"                    # or an absolute path to the binary
+name = "graph"
+command = "mecha-graph-mcp"            # or an absolute path to the binary
+prefix_tools = false                   # its kg_* tools carry their own namespace
 
 [mcp.capabilities]
 untrusted_input = true

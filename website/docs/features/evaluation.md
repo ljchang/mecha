@@ -315,14 +315,14 @@ A gold answer typed by hand is a guess, and a wrong one measures nothing — one
 shipped case once asserted `$2,450` for a total that was actually `$1,750`,
 because a base rate got double-counted.
 
-## `eval/pkg-cases.jsonl` and the fixture MCP servers
+## `eval/graph-cases.jsonl` and the fixture MCP servers
 
 A second case set, deliberately kept out of `cases.jsonl`: it needs MCP tools in
 the surface, and changing the main set's tool surface would invalidate scorecard
 comparisons across the boundary.
 
 ```bash
-mecha eval eval/pkg-cases.jsonl --mcp-file eval/mcp.toml --judge-provider gemma26
+mecha eval eval/graph-cases.jsonl --mcp-file eval/mcp.toml --judge-provider gemma26
 ```
 
 It runs against **fixture servers** (`eval/fixtures/pkg_server.py`, declared in
@@ -336,7 +336,7 @@ not start would silently change what the case set is measuring.
 The file's `web` persona exposes a `fetch` tool marked `openWorldHint`, which is
 what lets `interlock-blocked` grade the [trifecta interlock](/docs/features/security)
 end to end, offline: the memory read arms both taint legs, the fetch is refused
-by the harness, and `expect.blocked_sends` counts it. The `pkg` persona carries
+by the harness, and `expect.blocked_sends` counts it. The `graph` persona carries
 `[mcp.capabilities] untrusted_input = true`, because neither the fixture nor the
 real server declares `openWorldHint` on its read tools, and without the override
 the graph would count as private-but-trusted.
