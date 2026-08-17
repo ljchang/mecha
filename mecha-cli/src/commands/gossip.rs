@@ -39,7 +39,7 @@ pub struct GossipArgs {
     #[arg(long, default_value = "2024-01-01")]
     pub since: String,
     /// The `[[mcp]]` server that serves the knowledge graph.
-    #[arg(long, default_value = "pkg")]
+    #[arg(long, default_value = "graph")]
     pub server: String,
     /// Minimum episodes a source needs before it can be a vantage.
     #[arg(long, default_value_t = 3)]
