@@ -1,6 +1,6 @@
 ---
 title: Slack
-sidebar_position: 18
+sidebar_position: 19
 description: Driving mecha from a phone — Socket Mode from home, an owner bound by a locally printed code, a thread as a conversation, and approvals and outbox review as cards.
 ---
 
