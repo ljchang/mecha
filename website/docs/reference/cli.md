@@ -773,6 +773,85 @@ mecha distill --dry-run
 mecha distill -p local --limit 10 --server graph
 ```
 
+## `doctor`
+
+Read every store — no network, no model, no tokens — and report what is
+silently wrong: dead mail logins, stuck outbox drafts, stalled frontdoor
+requests, triggers whose slots stopped advancing, failed `mecha-*` units.
+
+```
+mecha doctor [--json]
+```
+
+| Flag | Description |
+|---|---|
+| `--json` | Machine output: the findings as JSON. Never prompts, even on a TTY. |
+
+On a terminal, each finding offers its remedy through an existing command —
+one at a time, EOF is no. Piped or `--json`, it only reports. Exit 0 is
+healthy; 1 means findings. Findings propose; a human disposes — there is
+deliberately no `--yes`.
+
+## `vet`
+
+Judge queued knowledge-graph claims against the evidence they were extracted
+from, and file the verdicts beside them.
+
+```
+mecha vet [OPTIONS]
+```
+
+| Flag | Description |
+|---|---|
+| `--proposer <P>` | Proposer of the class to work, e.g. `llm`. Default `llm`. |
+| `--predicate <P>` | Predicate of the class to work, e.g. `has`. Default `has`. |
+| `--limit <N>` | Candidates to judge, oldest first. Default 10. |
+| `--record` | File the verdicts beside their candidates (mechanism `verification`). |
+| `--server <S>` | The `[[mcp]]` server holding the graph. Default `graph`. |
+| `--out <PATH>` | Write the judgements to a file as well. |
+
+A verdict is an opinion filed beside a candidate that stays pending — the
+graph's own review remains the door. The per-class verdict history is what
+its autonomy ladder promotes on.
+
+## `corroborate`
+
+Judge whether queued generalisations hold beyond their one source.
+
+```
+mecha corroborate [OPTIONS]
+```
+
+| Flag | Description |
+|---|---|
+| `--proposer <P>` / `--predicate <P>` / `--limit <N>` / `--server <S>` | As in `vet`. |
+| `--since <DATE>` | Evidence on/after this date. |
+| `--min-coverage <N>` | Minimum episodes a source needs before it counts. |
+
+## `gossip`
+
+Two readers with different sources ask each other about one entity —
+disagreement between them is the finding, not a failure to converge.
+
+```
+mecha gossip --entity <ENTITY> [OPTIONS]
+```
+
+| Flag | Description |
+|---|---|
+| `--entity <E>` | The person or project to gossip about — a name, alias, or id. |
+| `--rounds <N>` | Rounds of question-and-answer. Bounded on purpose: a preserved disagreement is a finding. |
+| `--since <DATE>` | Evidence on/after this date — both readers get the same window, so a difference must be the *sources* disagreeing, not the world having moved. |
+| `--min-coverage <N>` | Minimum episodes a source needs before it can be a vantage. Default 3. |
+| `--verify <N>` | Claims to audit after the exchange; 0 skips the audit. |
+| `--adjudicate <N>` | Pending claims *about this entity* to adjudicate after the exchange; 0 skips it. |
+| `--server <S>` | The `[[mcp]]` server holding the graph. Default `graph`. |
+
+After building context on the entity, the run judges that entity's pending
+claims — the one output that makes the review backlog smaller rather than
+larger. Each reader's own searches are marked as instrumentation, so a probe
+cannot manufacture its own demand signal.
+
 ## `config`
 
 Show or create configuration. Requires a subcommand.
