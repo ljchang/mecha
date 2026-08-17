@@ -31,8 +31,10 @@ knowledge graph served over MCP to any client, published on crates.io and
 usable without mecha. Your mail, calendar, notes, and messages import as
 **episodes** (append-only evidence); linkers wire them to **entities**; and
 **facts** — bi-temporal claims, each carrying its evidence — are what
-retrieval builds context packs from. Its own README and architecture doc
-cover the internals; this page covers the mecha side of the seam.
+retrieval builds context packs from. It has its own
+[section of this site](/docs/graph/overview) — architecture, integrations,
+the self-improvement design, and its changelog, synced from the repository
+at every build; this page covers the mecha side of the seam.
 
 ### Wiring
 
