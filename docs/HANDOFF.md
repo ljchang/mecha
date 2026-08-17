@@ -800,8 +800,7 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
     surface by eight. That argues for narrowing per surface (`[slack] tools`,
     `[tools] enabled`) rather than for exposing less.
 
-    **The box runs v0.2.4 (verified live 2026-08-16; active since
-    2026-08-12)** — three releases past the v0.2.1 that first exercised
+    **The box runs v0.2.6 (deployed and verified live 2026-08-17)** — three releases past the v0.2.1 that first exercised
     `factory-deploy` end to end (download, checksum, prove, swap,
     health-check). The served stylesheet went from 23,397 to 30,939 bytes and now
     carries the rank counters, the card-select rules and the VAS anchors.
