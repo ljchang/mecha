@@ -50,6 +50,22 @@ const FILES = [
       'The doctrine, the gossip roles, the mechanism catalog, and the build order.',
   },
   {
+    src: 'docs/CLI.md',
+    out: 'cli.md',
+    title: 'CLI',
+    position: 5,
+    description:
+      'The forty-odd subcommands, grouped by the job being done — feed, ask, curate, maintain.',
+  },
+  {
+    src: 'docs/TUI.md',
+    out: 'tui.md',
+    title: 'TUI',
+    position: 6,
+    description:
+      'The seven screens and their keys: review triage, merge, search, capture, entities, tasks, stats.',
+  },
+  {
     src: 'CHANGELOG.md',
     out: 'changelog.md',
     title: 'Changelog',
@@ -65,6 +81,8 @@ function rewriteLinks(text) {
     .replaceAll('docs/ARCHITECTURE.md', './architecture')
     .replaceAll('docs/INTEGRATIONS.md', './integrations')
     .replaceAll('docs/PLAN.md', './self-improvement')
+    .replaceAll('CLI.md', './cli')
+    .replaceAll('TUI.md', './tui')
     .replaceAll('README.md', 'https://github.com/ljchang/mecha-graph');
 }
 
@@ -86,9 +104,9 @@ for (const file of FILES) {
     text = rewriteLinks(text);
     const front = [
       '---',
-      `title: ${file.title}`,
+      `title: ${JSON.stringify(file.title)}`,
       `sidebar_position: ${file.position}`,
-      `description: ${file.description}`,
+      `description: ${JSON.stringify(file.description)}`,
       '---',
       '',
       `{/* Synced from mecha-graph (${file.src}) at build time. Do not edit here. */}`,
