@@ -27,7 +27,7 @@ body = body.replace(/^#\s+Changelog\s*\n+/, '');
 const frontMatter = [
   '---',
   'title: Changelog',
-  'sidebar_position: 7',
+  'sidebar_position: 8',
   'description: Release history for mecha, following Keep a Changelog and Semantic Versioning.',
   '---',
   '',
