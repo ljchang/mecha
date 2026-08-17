@@ -901,7 +901,9 @@ default through the layer to catch it.
 pass — no network, no model, no tokens — and reports what is silently wrong:
 dead auth markers, releases that errored, drafts and requests waiting on you
 past a threshold, triggers whose slots stopped advancing, failed `mecha-*`
-units. It exists because of 2026-08-11: a revoked OAuth token took scheduling
+units, and graph nightlies that stopped writing their daily log (cron exec
+failures die before the script's own logging starts, and cron mails the
+error to an MTA that isn't there — 2026-08-17's missing execute bit). It exists because of 2026-08-11: a revoked OAuth token took scheduling
 down for three days while five stores each recorded the distress correctly
 and nothing read across them. Error handling here is deliberately a
 *convention plus an aggregator*, not a shared type — each boundary keeps its

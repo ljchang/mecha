@@ -114,6 +114,12 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_outbox(&home.join("outbox"), now));
     findings.extend(check_frontdoor(&home.join("requests"), now));
     findings.extend(check_triggers(&home.join("triggers"), now));
+    // The graph store is `~/.mecha-graph`, a hidden sibling of the mecha home
+    // by that store's own convention — resolved relative to `home` so a test
+    // (or a relocated home) carries its sibling with it.
+    if let Some(parent) = home.parent() {
+        findings.extend(check_graph_nightly(&parent.join(".mecha-graph"), now));
+    }
     sort(&mut findings);
     findings
 }
@@ -698,6 +704,90 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
                 // No argv on purpose: running the trigger by hand would not
                 // restart whatever stopped ticking.
                 remedy: None,
+            });
+        }
+    }
+    out
+}
+
+// --- graph nightly silence --------------------------------------------------
+
+/// The two daily jobs that keep the knowledge graph current, each of which
+/// writes `<prefix>YYYYMMDD.log` on *every* run — a deferred night says so in
+/// the log — so a day with no file means the script never started. That is
+/// exactly the failure cron cannot report: no MTA, and the script's own
+/// logging begins after the point where an exec failure kills it (measured
+/// 2026-08-17, when a missing execute bit cost a night of vet and gossip and
+/// nothing anywhere said so).
+const GRAPH_NIGHTLIES: &[(&str, &str)] = &[
+    ("nightly-", "the graph's own sweep (ingest, extract, decay)"),
+    ("mecha-nightly-", "the mecha half (vet, precheck, gossip)"),
+];
+
+/// Scan `<graph store>/logs` for each nightly family's newest dated log.
+///
+/// Quiet when the store, the logs directory, or a family has never existed —
+/// absence is "not installed", which is not a finding. The bar is "newer than
+/// the day before yesterday": today's file legitimately does not exist before
+/// that job's cron slot, so yesterday's is the newest a healthy quiet morning
+/// can show.
+fn check_graph_nightly(store: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let logs = store.join("logs");
+    if !logs.is_dir() {
+        return out;
+    }
+    let names: Vec<String> = match std::fs::read_dir(&logs) {
+        Ok(entries) => entries
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(String::from))
+            .collect(),
+        Err(e) => {
+            out.push(Finding::unreadable(
+                "graph",
+                "the graph nightly logs",
+                format!("{}: {e}", logs.display()),
+            ));
+            return out;
+        }
+    };
+
+    for (prefix, what) in GRAPH_NIGHTLIES {
+        let newest = names
+            .iter()
+            .filter_map(|n| {
+                n.strip_prefix(prefix)?
+                    .strip_suffix(".log")
+                    .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y%m%d").ok())
+            })
+            .max();
+        // Never ran at all: indistinguishable from "this half is not set up",
+        // and a doctor that guesses teaches people to ignore it.
+        let Some(newest) = newest else { continue };
+        let days_quiet = (now.date_naive() - newest).num_days();
+        if days_quiet > 1 {
+            out.push(Finding {
+                component: "graph".to_string(),
+                severity: Severity::Attention,
+                summary: format!(
+                    "the graph nightly ({}) has not run for {days_quiet} days",
+                    prefix.trim_end_matches('-'),
+                ),
+                detail: format!(
+                    "{what} last wrote {}{}.log under {}; it logs every \
+                     run including deferred ones, so a missing day means the \
+                     script never started — cron reports that nowhere",
+                    prefix,
+                    newest.format("%Y%m%d"),
+                    logs.display(),
+                ),
+                remedy: Some(Remedy {
+                    description: "list the cron entries that fire the graph nightlies, \
+                                  then run the silent one by hand and read its error"
+                        .to_string(),
+                    argv: vec!["crontab".into(), "-l".into()],
+                    needs_terminal: false,
+                }),
             });
         }
     }
@@ -1390,5 +1480,114 @@ mod tests {
         let home = home("empty");
         assert!(examine(&home, utc(NOW)).is_empty());
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    // --- graph nightly silence ---
+
+    /// A graph store nested inside a unique scratch dir, so no test plants a
+    /// `.mecha-graph` beside another test's home in the shared temp dir.
+    fn graph_store(name: &str) -> PathBuf {
+        let store = home(name).join(".mecha-graph");
+        std::fs::create_dir_all(store.join("logs")).unwrap();
+        store
+    }
+
+    fn nightly_log(store: &Path, file: &str) {
+        std::fs::write(store.join("logs").join(file), "ran\n").unwrap();
+    }
+
+    // NOW is 2026-08-14: a 08-12 log is two days quiet (stale), 08-13 is
+    // yesterday (the newest a healthy quiet morning can show).
+
+    #[test]
+    fn a_graph_nightly_that_stopped_writing_logs_is_a_finding() {
+        let store = graph_store("graph-stale");
+        nightly_log(&store, "nightly-20260812.log");
+        let findings = check_graph_nightly(&store, utc(NOW));
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].component, "graph");
+        assert_eq!(findings[0].severity, Severity::Attention);
+        assert!(
+            findings[0].summary.contains("2 days"),
+            "{}",
+            findings[0].summary
+        );
+        assert!(
+            findings[0].detail.contains("nightly-20260812.log"),
+            "{}",
+            findings[0].detail
+        );
+    }
+
+    #[test]
+    fn yesterdays_log_is_healthy_because_todays_slot_may_not_have_fired() {
+        let store = graph_store("graph-yesterday");
+        nightly_log(&store, "nightly-20260813.log");
+        nightly_log(&store, "mecha-nightly-20260813.log");
+        assert!(check_graph_nightly(&store, utc(NOW)).is_empty());
+    }
+
+    /// The two families age independently: the sweep running every night must
+    /// not vouch for the vet/gossip half — that is exactly how 2026-08-17
+    /// stayed invisible.
+    #[test]
+    fn each_nightly_family_is_judged_alone() {
+        let store = graph_store("graph-split");
+        nightly_log(&store, "nightly-20260814.log");
+        nightly_log(&store, "mecha-nightly-20260811.log");
+        let findings = check_graph_nightly(&store, utc(NOW));
+        assert_eq!(findings.len(), 1);
+        assert!(
+            findings[0].summary.contains("mecha-nightly"),
+            "{}",
+            findings[0].summary
+        );
+    }
+
+    /// The `nightly-` scan must not claim `mecha-nightly-` files as its own:
+    /// a fresh mecha-nightly log would otherwise hide a dead sweep.
+    #[test]
+    fn the_shorter_prefix_does_not_claim_the_longer_familys_logs() {
+        let store = graph_store("graph-prefix");
+        nightly_log(&store, "mecha-nightly-20260814.log");
+        nightly_log(&store, "nightly-20260810.log");
+        let findings = check_graph_nightly(&store, utc(NOW));
+        assert_eq!(findings.len(), 1);
+        assert!(
+            findings[0].detail.contains("nightly-20260810.log"),
+            "{}",
+            findings[0].detail
+        );
+    }
+
+    /// Absence is "not installed", never a finding — a missing store, an
+    /// empty log directory, and names that parse to no date all stay quiet.
+    #[test]
+    fn a_graph_that_never_ran_is_not_a_finding() {
+        let missing = home("graph-missing").join(".mecha-graph");
+        assert!(check_graph_nightly(&missing, utc(NOW)).is_empty());
+
+        let empty = graph_store("graph-empty");
+        assert!(check_graph_nightly(&empty, utc(NOW)).is_empty());
+
+        let odd = graph_store("graph-odd-names");
+        nightly_log(&odd, "nightly-garbage.log");
+        nightly_log(&odd, "gossip-20260812.jsonl");
+        assert!(check_graph_nightly(&odd, utc(NOW)).is_empty());
+    }
+
+    /// The examine wiring: the store is found as the home's hidden sibling.
+    #[test]
+    fn examine_reads_the_graph_store_beside_the_home() {
+        let scratch = home("graph-sibling");
+        let mecha_home = scratch.join(".mecha");
+        std::fs::create_dir_all(&mecha_home).unwrap();
+        let store = scratch.join(".mecha-graph");
+        std::fs::create_dir_all(store.join("logs")).unwrap();
+        nightly_log(&store, "nightly-20260810.log");
+        let findings = examine(&mecha_home, utc(NOW));
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].component, "graph");
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 }
