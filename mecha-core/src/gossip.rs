@@ -544,14 +544,16 @@ pub fn asker(
     });
     let mut cfg = agent_cfg;
     cfg.system_prompt = Some(FOLLOWUP_SYS.to_string());
-    Agent::new(
+    let mut agent = Agent::new(
         provider,
         crate::tool::Registry::new(),
         approver,
         tool_ctx,
         cfg,
         model,
-    )
+    )?;
+    agent.set_cache_contended();
+    Ok(agent)
 }
 
 /// Build the claim EXTRACTOR: no tools, for the same reason the asker has
@@ -569,14 +571,16 @@ pub fn extractor(
     });
     let mut cfg = agent_cfg;
     cfg.system_prompt = Some(EXTRACT_SYS.to_string());
-    Agent::new(
+    let mut agent = Agent::new(
         provider,
         crate::tool::Registry::new(),
         approver,
         tool_ctx,
         cfg,
         model,
-    )
+    )?;
+    agent.set_cache_contended();
+    Ok(agent)
 }
 
 /// Build the VERIFIER: the whole graph, and still no way to send.
@@ -607,7 +611,15 @@ pub fn verifier(
     registry.insert(Arc::new(GraphTool::search_everything(client)));
     let mut cfg = agent_cfg;
     cfg.system_prompt = Some(VERIFY_SYS.to_string());
-    Agent::new(provider, registry, approver, tool_ctx, cfg, model)
+    let mut agent = Agent::new(provider, registry, approver, tool_ctx, cfg, model)?;
+    // The whole ensemble — readers, askers, extractor, verifier — interleaves
+    // turns on one provider, and on a single-slot server (`-np 1`, the
+    // measured right call for unified memory) each participant's request
+    // evicts the others' prefix. The cache lens would read that as the
+    // invariant failure it exists to catch; marking the agents keeps the
+    // verdict and demotes the alarm.
+    agent.set_cache_contended();
+    Ok(agent)
 }
 
 /// One reader's vantage point.
@@ -666,7 +678,9 @@ pub fn reader(provider: Box<dyn crate::provider::Provider>, setup: ReaderSetup) 
 
     let mut cfg = agent_cfg;
     cfg.system_prompt = Some(system_prompt);
-    Agent::new(provider, registry, approver, tool_ctx, cfg, model)
+    let mut agent = Agent::new(provider, registry, approver, tool_ctx, cfg, model)?;
+    agent.set_cache_contended();
+    Ok(agent)
 }
 
 /// What one round produced.
