@@ -1,7 +1,7 @@
 ---
 title: Sandbox
 sidebar_position: 5
-description: Confining shell with bwrap or docker, and the three rules that make the confinement mean something.
+description: Confining shell with bwrap, docker, or landlock, and the three rules that make the confinement mean something.
 ---
 
 # Sandbox
@@ -20,7 +20,7 @@ enforcing it. `sandbox.rs` is the enforcement.
 
 ```toml
 [sandbox]
-kind = "bwrap"              # none | bwrap | docker
+kind = "bwrap"              # none | bwrap | docker | landlock
 network = false             # confined commands reach the network
 writable = []               # extra paths mounted read-write
 readable = ["/opt/toolchain"]   # extra paths mounted read-only
@@ -35,9 +35,25 @@ cpus = 2.0                  # docker only
 | `none` | The default. Commands run directly, as you, with your credentials. The only sane default for a supervised CLI on a machine where the alternatives may not be installed. |
 | `bwrap` | User namespaces via `bwrap`. Cheap — no daemon, a few milliseconds per command. |
 | `docker` | A throwaway container (`--rm`). Works where user namespaces are locked down; costs a container start per command. |
+| `landlock` | Landlock LSM rules applied in the child between fork and exec. Needs no privilege at all, so it works where bwrap fails even installed (Ubuntu 23.10+'s AppArmor userns switch). Kernel 6.2+ required — older ABIs cannot restrict truncation, and half-confinement is refused rather than served. |
 
 `mecha tools` prints the active sandbox, including whether the network is on
 and whether reads can leave the workspace.
+
+### What landlock deliberately does not claim
+
+Landlock confines **files**: workspace writable, system read-only, your home
+directory denied wholesale. It cannot close the network — TCP is denied on
+6.7+ kernels as defense in depth, but UDP is unrestrictable at any ABI, and
+`echo x > /dev/udp/host/port` works in bash alone. So a landlocked `shell`
+**never earns the trifecta interlock's relaxation**: it stays an
+`external_send` sink whatever `network` is set to, and the denial message
+says so rather than pointing at a setting that would not help. Its preflight
+proves the denial, not just the apply: it plants a file in your real home
+and requires the confined read to *fail* — "confined" with nothing denied is
+the state the preflight exists to forbid. Three known ways it is weaker than
+bwrap: `/tmp` is shared rather than private, `/proc` shows every process,
+and there is no PID/IPC isolation.
 
 ## What a confined command gets
 

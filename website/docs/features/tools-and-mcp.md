@@ -297,16 +297,23 @@ implementations.
 
 ```toml
 [[mcp]]
-name = "pkg"
-command = "pkg-mcp"                    # or an absolute path to the binary
-env_passthrough = ["PKG_DB"]
+name = "graph"
+command = "mecha-graph-mcp"            # or an absolute path to the binary
+prefix_tools = false                   # its kg_* tools carry their own namespace
+env_passthrough = ["MECHA_GRAPH_DB"]
 env = { MECHA_TZ = "America/New_York" }
 sandbox = true
 network = false
 ```
 
-Tools are namespaced `<server>__<tool>`, so two servers can both expose a
-`search`. Protocol version `2025-06-18`; each request has a 120s timeout.
+Tools are namespaced `<server>__<tool>` by default, so two servers can both
+expose a `search`. A server whose tools already carry their own namespace —
+[mecha-graph](https://github.com/ljchang/mecha-graph)'s `kg_*` family — can
+set `prefix_tools = false` and register them under their raw names. That
+setting is a promise of distinct names, and the promise is enforced: an
+unprefixed tool that collides with anything already registered fails startup
+loudly rather than shadowing it. Protocol version `2025-06-18`; each request
+has a 120s timeout.
 
 Details that cost something to get right:
 
@@ -387,7 +394,7 @@ never about one variable.
 ### `sandbox = true` that cannot be honoured is an error
 
 ```
-MCP server `pkg` is configured with `sandbox = true`, but no sandbox backend
+MCP server `graph` is configured with `sandbox = true`, but no sandbox backend
 is set. Set [sandbox] kind = "bwrap" or "docker", or drop `sandbox = true` to
 accept that it runs unconfined.
 ```

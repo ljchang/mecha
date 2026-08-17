@@ -587,8 +587,11 @@ command = "nohup mecha reflect -p local >/dev/null 2>&1 &"
 # ---------------------------------------------------------------------- mcp --
 
 [[mcp]]
-name = "pkg"                       # tools appear as pkg__kg_search, etc.
-command = "/home/me/bin/pkg-mcp"
+name = "graph"                     # tools appear as graph__kg_search, etc.
+command = "/home/me/bin/mecha-graph-mcp"
+# prefix_tools = false             # register tools under their raw names
+#                                  # (kg_search) — a promise of distinct
+#                                  # names, enforced loudly on collision
 args = []
 env = { MECHA_TZ = "America/New_York" }
 env_passthrough = []               # an allowlist; empty is the safe default

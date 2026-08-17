@@ -79,7 +79,7 @@ provenance rules on learning are all consequences of taking it seriously. See
    CONTEXT          │                                         │
  ┌────────────┐     │   the loop · tools · MCP client          │   ┌──────────────┐
  │ knowledge  │     │   taint tracking · path jail             │   │ mecha-factory│
- │ graph (pkg)│────▶│   sandbox · budgets · compaction         │──▶│ published    │
+ │ mecha-graph│────▶│   sandbox · budgets · compaction         │──▶│ published    │
  │ mail       │     │   sessions · learning · triggers         │   │ artifacts    │
  │ calendar   │     │                                          │   │              │
  │ files      │     │            ▲              │              │◀──│ typed        │

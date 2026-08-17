@@ -178,7 +178,7 @@ this case set was wrong because a base rate got double-counted. A wrong gold
 answer measures nothing — every model fails it, and the failure means nothing.
 
 Python 3 is also what runs the fixture MCP servers used by
-`eval/pkg-cases.jsonl` (`eval/fixtures/pkg_server.py`), a frozen fake of a
+`eval/graph-cases.jsonl` (`eval/fixtures/graph_server.py`), a frozen fake of a
 knowledge graph. The real one answers from live machine-local data, and a case
 graded against that measures nothing repeatable. See
 [Evaluation](/docs/features/evaluation).

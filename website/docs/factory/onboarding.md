@@ -13,15 +13,30 @@ machine reaches the factory afterwards.
 
 The whole sequence is a few minutes and happens once per machine.
 
-## 1. Claim a handle
+## 1. Ask, or be invited — then claim a handle
 
-An account starts from an **invite**. Open the signup page the invite points at,
-choose a handle, and confirm the address — the handle names you in both of the
-URLs an artifact gets, the bytes on their own origin
+There are two ways in, and they end at the same claim form:
+
+- **Ask.** [gate.mecha-factory.ai/signup](https://gate.mecha-factory.ai/signup)
+  takes an email address. Requests are **reviewed by a person**; if yours is
+  approved, a link arrives by email — it works once, and it expires. There
+  is nothing to do until then, and no password ever.
+- **Be invited.** The operator can mail an invite directly, which skips the
+  queue. Either way, what arrives is the same single-use link.
+
+Open the link, choose a handle, and the address the link arrived at becomes
+the account's — the handle names you in both of the URLs an artifact gets,
+the bytes on their own origin
 (`https://<handle>.art.mecha-factory.ai/…`) and the page you send a person
 (`https://gate.mecha-factory.ai/view/<handle>/…`; see
-[Artifacts](/docs/factory/artifacts#two-urls-and-which-one-to-send)). So it is
-worth a moment's thought, and it is not casually changed afterwards.
+[Artifacts](/docs/factory/artifacts#two-urls-and-which-one-to-send)). So it
+is worth a moment's thought, and it is not casually changed afterwards.
+
+(Why reviewed: every account costs one of the certificate authority's fixed
+weekly issuances for its hostnames. Approval is where that budget is spent,
+with the arithmetic in front of the person spending it — so asking costs
+nothing, a busy week queues rather than refuses, and nobody is handed a
+handle whose URLs cannot be issued.)
 
 What you get back is a **pairing code**. It is short-lived and single-use, and it
 is the only thing that crosses from the browser to your terminal.
@@ -61,7 +76,7 @@ and pairing installs exactly two of them:
 | `drain` | `drain.key` | Collect what strangers submitted | **yes** |
 | `release` | `release.key` | Move what a share URL resolves to; serve a public form | no |
 | `slots` | `slots.key` | Push availability, create and read polls | no |
-| `operate` | `operate.key` | The admin panel: accounts, invites, keys | **never** |
+| `operate` | `operate.key` | The admin panel: accounts, signup requests, invites, keys | **never** |
 
 **So a paired machine has no release key at all**, and that is the whole point.
 Publishing a version puts bytes on the box; releasing decides what the world
