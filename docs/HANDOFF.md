@@ -382,17 +382,6 @@ tested, but has never been exercised against the real box by a person:
 
 Everything else below is independent of that.
 
-**The signup door is built but not deployed — the cheapest visible win on
-the board.** `mecha-factory` main carries two unreleased commits: `d11cf10`
-("Anyone may ask for an account") adds `/signup` → token → form, and
-`9823f26` gives redirect hosts their own certificates. The box serves
-v0.2.4 (verified live 2026-08-16; `https://gate.mecha-factory.ai/signup`
-404s today). Shipping it is: tag v0.2.5, let the release workflow build the
-x86 artifact, `factory-deploy v0.2.5` over SSH, verify `/signup` answers.
-Deliberately not done during the 08-16 update pass — the droplet is
-production serving strangers, and deploying it is a decision, not a side
-effect of "update everything".
-
 Every item below was verified against source on 2026-08-16 night to still be
 unbuilt — MCP resources and HTTP/SSE transports, the subagent workspace field,
 per-command approval, the seccomp half of the sandbox item, `Rule`'s missing

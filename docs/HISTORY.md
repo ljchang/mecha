@@ -1036,6 +1036,16 @@ run's workspace. v0.1.6 tagged, published, deployed, and the graph now
 installs with mecha (`~/.cargo/bin/mecha-graph-mcp` in the config, the
 update skill's step 1, and the README's install block).
 
+**2026-08-17 (small hours) — the signup door opens.** mecha-factory v0.2.5
+tagged and deployed via `factory-deploy` (download, checksum, prove, swap,
+health-check; `factory.prev` kept): the two commits that had sat unreleased
+on main — `d11cf10`, anyone may ask for an account at
+`gate.mecha-factory.ai/signup`, and `9823f26`, redirect hosts get their own
+certificates — are serving. Verified live: `factory --version` 0.2.5,
+`/signup` answers 200 with "Create an account". Found during the handoff
+pass, deployed on the owner's word an hour later — which is the handoff doc
+doing its job.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
