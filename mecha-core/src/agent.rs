@@ -681,6 +681,12 @@ pub struct Agent {
     /// says. Drives the derived compaction threshold and the CLI's
     /// "how much room is left" line.
     context_window: Option<u64>,
+    /// This agent knowingly shares its server's cache slots with other
+    /// concurrent conversations (a gossip ensemble interleaving turns on a
+    /// single-slot llama-server), so a dropped prefix is the workload's
+    /// designed cost, not an anomaly. Demotes the cache lens's warning to
+    /// info; the verdict itself is unchanged.
+    cache_contended: bool,
 }
 
 impl Agent {
@@ -703,6 +709,7 @@ impl Agent {
             system,
             pricing: None,
             context_window: None,
+            cache_contended: false,
         })
     }
 
@@ -802,6 +809,15 @@ impl Agent {
     /// Copy-on-write, like [`Agent::set_hooks`].
     pub fn set_mailbox(&mut self, route: Arc<crate::mailbox::MailboxRoute>) {
         Arc::make_mut(&mut self.cx).mailbox = Some(route);
+    }
+
+    /// Declare that this agent's requests interleave with other conversations
+    /// on the same server, so prefix-cache eviction is expected rather than a
+    /// regression. Set by drivers that build several agents over one provider
+    /// (the gossip ensemble); everywhere else the sharp warning stays, because
+    /// there a drop really does mean an invariant failed.
+    pub fn set_cache_contended(&mut self) {
+        self.cache_contended = true;
     }
 
     /// Swap the approver the agent's own context uses.
@@ -1231,6 +1247,16 @@ impl Agent {
             if self.cfg.cache_prompt {
                 use crate::cache_lens::Verdict;
                 match cache_lens.observe(&request, &response.usage) {
+                    Verdict::Drop {
+                        uncached,
+                        prev_total,
+                    } if self.cache_contended => tracing::info!(
+                        uncached,
+                        prev_total,
+                        "prompt cache reuse dropped: expected here — this agent shares \
+                         the server's cache slots with interleaved conversations, and \
+                         each evicts the others' prefix"
+                    ),
                     Verdict::Drop {
                         uncached,
                         prev_total,
