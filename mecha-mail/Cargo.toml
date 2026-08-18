@@ -23,6 +23,14 @@ path = "src/bin/mecha-outlook.rs"
 name = "mecha-mail"
 path = "src/bin/mecha-mail.rs"
 
+# Documents are a fourth surface rather than a fourth crate: a crate here
+# exists to make an invariant checkable in Cargo.toml, and this one would
+# enforce none while needing token.rs's refresh lifecycle. See
+# docs/DOCS-RESEARCH.md section 7.
+[[bin]]
+name = "mecha-docs"
+path = "src/bin/mecha-docs.rs"
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
