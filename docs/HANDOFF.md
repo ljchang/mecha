@@ -93,8 +93,9 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **888 tests**, no failures — re-measured 2026-08-16 night at
-v0.1.6. The growth from 707 (2026-08-10) spans the 0.1.3–0.1.6 arcs; each
+Expect **904 tests**, no failures — re-measured 2026-08-18 on the
+`mail-triage-and-rule-budget` branch. The growth from 707 (2026-08-10) spans
+the 0.1.3–0.1.6 arcs; each
 release's CHANGELOG entry names what its tests pin. One flake was seen once
 in `mecha-core` on 2026-08-08 and never reproduced — unidentified, worth an
 eye.
@@ -147,10 +148,10 @@ A working agent harness, used and measured rather than just compiled.
 | Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/**review**/send/reject, several ids or `--all` narrowed by `--kind`/`--via`; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner — and the jail they were drafted under, so a release resolves paths against the agent's workspace rather than the reviewer's |
 | Messaging | `[messages]` + `mecha msg send/list/show/dismiss/agents` — a file mailbox between this machine's sessions (`~/.mecha/messages/<recipient>/`, producer-name addressing, per-session liveness registry). Delivery folds in at the steering point with the sender's harness-stamped taint merged first, so a hop launders nothing; attended surfaces hold with a notice, unattended accept; global config only; full mailboxes refuse, identical pending sends dedup. `docs/MESSAGING-RESEARCH.md` is the design record; phase 2 (TUI modal/badge) is scoped there |
 | Workspaces | `~/.mecha/work/<producer>/` is a run's workspace and its output directory; `mecha work list/path/clean`, retention nightly. A workspace containing the mecha home is refused |
-| Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed |
+| Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed. **`mail_triage`** (2026-08-18) adds archive/read/unread/spam/trash as a closed `TriageAction` enum, thread-level, in a third capability quadrant — `destructive` but *not* `external_send`, so it never routes through the outbox and a read-only run cannot reach it. Tagging is deliberately absent: a tag is mecha's own, on the triage record, not a Gmail label or a Graph category |
 | Front door | `mecha frontdoor` list/show/extract/next/**triage**/**needs-info**/**close** over `~/.mecha/requests/` — the quarantine between a stranger's request and a run with tools, and the state machine that lets one reach an answer. The extractor is issued no tools and no history; `Record::for_privileged_run` has no argument that returns the prose; an extraction failure routes to a human. `triage` drafts into the outbox and refuses to run unrouted; `reconcile` closes the loop from released items on its own, with no verb to remember. `mecha-factory-publish drain` fills the directory |
 | Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, **the daemon is installed and running here**; a failed `notify` is recorded on the run |
-| Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B) |
+| Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B). Budget is 25 active rules and 2600 chars **per domain**, and a run carries only `RUN_DOMAINS` (`behavior` + `writing`) — new domains are opt-in and `unrouted_domains` warns at startup on any that ride in no prompt |
 | Eval | 36 cases, 15 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `graph-cases.jsonl` — 10 memory/interlock cases against fixture MCP servers (`--mcp-file`), renamed with the graph and expecting the bare `kg_*` names production serves (scorecards across the rename are not comparable) |
 
 `cargo clippy --all-targets` is clean and should stay that way.
@@ -322,6 +323,29 @@ specific to this machine:
 - **Take the *last* match, not the first**, when grepping a profile for an
   export. A placeholder above the real key meant `grep -m1` silently found the
   placeholder and produced a `401 invalid x-api-key` that looked like a bad key.
+
+**Mail OAuth grants, re-consented 2026-08-18** (both were re-issued that day
+because the triage scopes widened, and both are recorded in each account's
+`oauth.json` under `granted_scopes`):
+
+| Account | Provider | Grant | Expiry |
+|---|---|---|---|
+| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | **7 days from consent — next ≈2026-08-25** |
+| `dartmouth` | Outlook | `Mail.ReadWrite`, `Mail.Read`, `Mail.Send`, `Calendars.ReadWrite` | none — permanent |
+
+The Google client (Cloud project **FlowMail**, the same registration the old
+app used) is in **Testing** publishing status with User type External, and
+Google expires a Testing app's refresh token exactly 7 days after consent —
+refreshing does not extend it. Moving to production would fix that but needs
+verification plus a CASA security assessment, because `gmail.modify` is a
+restricted scope. **That decision is open.** Meanwhile
+`~/.mecha/mail/accounts.toml` declares `grant_lifetime_days = 7` on `personal`
+so `mecha doctor` warns two days out; that file is in no git repository, so a
+fresh clone will not have it.
+
+Dartmouth's Entra registration (also named FlowMail, client
+`bc6a1e19-…`) already had `Mail.ReadWrite` **Delegated** granted tenant-wide,
+so no ITC request was needed — the opposite of what was expected.
 
 **No prices are configured**, so `cost_usd` is `None` and `--max-cost` silently
 never fires on a paid provider. For `[providers.anthropic]`:
@@ -553,8 +577,11 @@ The arc is complete and running nightly. What is missing is refinement:
 - **The sliding window of recent raw reflections never shipped.** Prompt assembly
   chains user rules then consolidated rules; the third leg — a window of recent
   unconsolidated reflections — was designed and not built.
-- **Rules are scoped by domain, not by tool.** `Rule` has no `scope` field, and
-  nothing injects rules into a tool's own block.
+- **Rules are scoped by domain and by run, but not by tool.** A run now selects
+  which domains it carries (`RUN_DOMAINS`, 2026-08-18), so a domain no longer
+  rides in every prefix by default. What is still missing is the finer grain:
+  `Rule` has no `scope` field, and nothing injects rules into a tool's own
+  block.
 - **Rules that are facts should graduate to pkg.** No classifier routes
   fact-shaped rules into `kg_upsert` as staged candidates; `distill.rs` pushes
   episodes only.
@@ -606,6 +633,54 @@ The arc is complete and running nightly. What is missing is refinement:
   a webhook receiver is now just another writer into a mailbox with taint
   pre-set untrusted. What remains is only the listener itself and its
   authentication.
+
+### Mail as a surface you work, not just a tool the model calls
+
+`docs/MAIL-UX-RESEARCH.md` (2026-08-17) is the survey and the phase plan.
+Phase 1 — the triage verbs and the OAuth scopes behind them — shipped
+2026-08-18. What is left, in the order the doc argues:
+
+- **The triage store and the quarantined classifier** (phase 2, the next
+  piece). `~/.mecha/mail-triage/`, one typed record per thread, written by a
+  tool-less history-less pass on the front door's extractor construction, so
+  the prose never reaches a privileged run and the list view renders typed
+  fields. Self-contained and useful alone: the `morning` trigger currently
+  re-reads the inbox from scratch every day and could read verdicts instead.
+- **`mecha mail list/show/classify/…`** (phase 3). The CLI does everything
+  first; the modal drives the CLI, per the front door's rule.
+- **Front-door routing** (phase 4), and the reason to do it before the TUI.
+  Four of the five mail categories already have manifests in
+  `mecha-manifest/types/` — `letter`, `lab-application`, `meeting`,
+  `speaking` — so an email asking for a letter is a `letter` request that
+  arrived untyped through the wrong door. Recognising `request_type` and
+  promoting it into `~/.mecha/requests/` reuses extraction, `needs-info`,
+  draft-into-outbox and `reconcile` unchanged.
+- **`/mail`** (phase 5), a sixth modal on the `/outbox` pattern, with a closed
+  action enum. It proposes; the outbox still releases. There is exactly one
+  approval surface and this is not it.
+- **The correction loop** (phase 6) — a `triage` domain kept distinct from
+  learned rules, since a few-shot pool for a tool-less classifier has a far
+  smaller blast radius than a rule in every prefix.
+
+Two decisions the doc records rather than leaves open: tags are mecha's own
+and never provider labels, and no mail parser belongs in mecha — pkg already
+ingests `email.thread` episodes (`sources/mbox.rs`) with the bulk filter and
+the `NEVER_AUTO` guard, so the live path pushes evidence through `kg_upsert`
+on the `distill.rs` pattern and lets pkg extract. Push only `respond`/`notify`
+buckets; the classifier is a better filter than the `List-Unsubscribe`
+heuristic and runs anyway.
+
+### Skills
+
+`docs/SKILLS-RESEARCH.md` (2026-08-17). mecha has no skill mechanism; the
+`.claude/skills/` directories are Claude Code's and the agent cannot see them.
+The nearest thing is `[[subagent]]`, which is the *delegate* shape where a
+skill is the *instruct* shape. Wanted before the mail phases above, because
+`handle-rec-letter` and `expense-forward` want to be editable files rather
+than branches in a triage prompt. Take the `SKILL.md` format (a real
+cross-vendor standard) and refuse the ecosystem: no install path, no
+project-layer skills, no remote bodies, loading is an explicit tool call so a
+`pre_tool` hook can gate it. Needs a design doc first.
 
 ### TUI polish
 

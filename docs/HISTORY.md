@@ -1061,6 +1061,40 @@ now fills a queue the operator bulk-denies, and the budget never moves.
 Same bytes for every address, still. 486 tests, the approval journey
 end-to-end among them.
 
+**2026-08-18 — mail learns to triage, and the rules budget stops being one
+number.** `mecha-mail` could read, send and write the calendar but not
+archive; the whole write surface was send/reply plus calendar CRUD, so any
+triage UI over it could move a cursor and draft and never empty an inbox.
+`mail_triage` adds archive/read/unread/spam/trash as a closed `TriageAction`
+enum, thread-level, landing in a capability quadrant the surface did not have:
+`destructive` but not `external_send`, because it mutates the user's own
+mailbox and reaches nobody — so it must never sit in `[outbox] tools` (staging
+it would make the loop review a queue in order to fill another queue) and must
+not be `readOnlyHint` either, or a read-only trigger could empty the inbox at
+07:00. `assert_tool_surface` grew a third slice asserting both negatives.
+Tagging was deliberately left out of the provider entirely: Gmail labels and
+Graph categories are different objects, a tag meaning different things per
+account fails at the one job tags have, and a mecha tag costs no scope at all.
+
+The scopes moved with it — `gmail.modify` (stopping short of
+`https://mail.google.com/`, whose only addition over it is irreversible
+deletion) and `Mail.ReadWrite` — and both accounts re-consented the same day.
+The expectation going in was that Dartmouth would be blocked on IT and Google
+would be easy; it was the exact reverse. Dartmouth's Entra registration
+already had `Mail.ReadWrite` Delegated granted tenant-wide, while the Google
+client turned out to be in Testing publishing status, which caps its refresh
+tokens at seven days and needs a CASA security assessment to escape.
+
+The same pass raised the learned-rules cap 15 → 25 with `RULES_CHAR_BUDGET`
+1600 → 2600 beside it, and — because that made the cost of the existing leak
+visible — stopped every domain riding in every run's prefix.
+`rules_prompt_block_for(RUN_DOMAINS)` gives a run `behavior` + `writing` and
+nothing else, new domains are opt-in, and `unrouted_domains` warns at startup
+about any domain holding rules no run carries. Everything reconstructing "what
+a run sees" moved with it, because the validation ledger is keyed to the rule
+set measured. Two research docs landed alongside: `MAIL-UX-RESEARCH.md` and
+`SKILLS-RESEARCH.md`. 904 tests.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -1556,6 +1590,36 @@ All found by pre-push review or by running it.
   returned an empty string — which graded as a model failure and was a harness
   failure. Any turn containing tool_use blocks is now a tool turn regardless.
   Assume the same class of bug exists for other local servers.
+
+- **A refresh must never ask for a scope the grant may not have.** Entra's
+  `refresh_token` sent the whole `SCOPES` list on every refresh; Google's
+  never did. The moment that list widened — `Mail.Read` becoming
+  `Mail.ReadWrite` on 2026-08-18 — every refresh asked Entra for a *superset*
+  of what the stored grant had consented to, which it refuses with
+  `invalid_grant`, which the classifier correctly reads as permanent and
+  reports as a dead login. Every already-working account would have gone dark
+  about an hour after the new binary was installed, reporting a revocation
+  that had not happened. RFC 6749 §6 makes `scope` optional on a refresh and
+  defaults it to the original grant. **A credential widening is a two-sided
+  change: the request that mints the grant and every request that renews it
+  disagree about what the grant contains, and only one of them was written by
+  the person doing the widening.** Found by reading the refresh path while
+  answering an unrelated question, not by a test.
+
+- **Two different failures can be the same error string, and the recurring one
+  wins on priors.** Google expires the refresh token of an OAuth client in
+  *Testing* publishing status exactly 7 days after consent, and returns
+  `invalid_grant` — "Token has been expired or revoked" — which is
+  indistinguishable from a real revocation. The 2026-08-11 outage that
+  motivated `mecha doctor` was recorded as a revoked token; it was six days
+  after the grant, and the client was in Testing. Doctor was built to *report*
+  it and does so correctly, but a marker written on failure can only ever
+  describe an outage that already started. The fix is a `granted_at` stamp
+  never touched by a refresh, a `grant_lifetime_days` the user declares
+  (no API reports publishing status, so inferring it would either nag every
+  verified app or stay silent on every Testing one), and a warning two days
+  out. **When a failure recurs on a schedule, the store has to know the
+  schedule — otherwise every instance looks like the first one.**
 
 ### Containment and state
 
