@@ -48,6 +48,9 @@ pub const SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const DRIVE_API: &str = "https://www.googleapis.com/drive/v3";
+const DOCS_API: &str = "https://docs.googleapis.com/v1";
+const SHEETS_API: &str = "https://sheets.googleapis.com/v4";
+const SLIDES_API: &str = "https://slides.googleapis.com/v1";
 
 /// Loopback port for the picker redirect. Desktop-app clients accept any
 /// loopback port without registering it, which is what lets this be a
@@ -419,8 +422,13 @@ impl DocsClient {
     /// drift out of date. That is why no `picked.json` exists: the grant is
     /// the record, and a second copy could disagree with it.
     pub async fn list_scope(&self) -> Result<Vec<DriveFile>, MailError> {
+        // `trashed=false` is load-bearing, not tidiness: Drive lists trashed
+        // items by default, so without it a file `docs_trash` just removed
+        // still reads as live — and the model either concludes the trash
+        // failed or goes on editing a document in the bin. Found by running
+        // the surface end to end; every unit test passed without it.
         let url = format!(
-            "{DRIVE_API}/files?pageSize=200&orderBy=modifiedTime desc\
+            "{DRIVE_API}/files?pageSize=200&orderBy=modifiedTime desc&q=trashed=false\
              &fields=files(id,name,mimeType,modifiedTime)\
              &supportsAllDrives=true&includeItemsFromAllDrives=true"
         );
@@ -456,6 +464,293 @@ impl DocsClient {
         let json = self.get_json(&url).await?;
         serde_json::from_value(json).map_err(|e| MailError::ParseError(e.to_string()))
     }
+
+    async fn send_json(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, MailError> {
+        let token = self
+            .manager
+            .access_token()
+            .await
+            .map_err(|e| MailError::AuthError(e.to_string()))?;
+        let resp = crate::http::send_with_retry(
+            crate::http::client()
+                .request(method, url)
+                .bearer_auth(&token)
+                .json(&body),
+        )
+        .await?;
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        if status >= 400 {
+            // The scope's own narrowness shows up here as a 404, not a 403:
+            // a file outside the grant does not exist as far as this token is
+            // concerned. Saying so beats leaving the model to conclude the
+            // document was deleted.
+            let hint = if status == 404 {
+                " (either the file is not in scope — it must have been created by \
+                  mecha or added with `mecha-docs pick` — or the id names a \
+                  different kind of file than this verb edits)"
+            } else {
+                ""
+            };
+            return Err(MailError::ApiError {
+                status,
+                message: format!("{text}{hint}"),
+            });
+        }
+        if text.is_empty() {
+            return Ok(serde_json::Value::Null);
+        }
+        serde_json::from_str(&text).map_err(|e| MailError::ParseError(e.to_string()))
+    }
+
+    /// A document's text, flattened.
+    ///
+    /// Structure is dropped on purpose: the model edits by anchor text
+    /// (`replace_text`), never by index, so paragraph offsets it cannot act
+    /// on are tokens spent for nothing.
+    pub async fn read_document(&self, id: &str) -> Result<(String, String), MailError> {
+        let json = self.get_json(&format!("{DOCS_API}/documents/{id}")).await?;
+        let title = json["title"].as_str().unwrap_or_default().to_string();
+        let mut out = String::new();
+        if let Some(content) = json["body"]["content"].as_array() {
+            for element in content {
+                if let Some(runs) = element["paragraph"]["elements"].as_array() {
+                    for run in runs {
+                        if let Some(text) = run["textRun"]["content"].as_str() {
+                            out.push_str(text);
+                        }
+                    }
+                }
+                // Tables flatten cell-by-cell rather than vanishing: a table
+                // that reads as absent is worse than one that reads as prose.
+                if let Some(rows) = element["table"]["tableRows"].as_array() {
+                    for row in rows {
+                        let cells: Vec<String> = row["tableCells"]
+                            .as_array()
+                            .map(|cs| {
+                                cs.iter()
+                                    .map(|c| collect_text(&c["content"]).trim().to_string())
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        out.push_str(&cells.join(" | "));
+                        out.push('\n');
+                    }
+                }
+            }
+        }
+        Ok((title, out))
+    }
+
+    /// Create a document. It is in scope permanently the moment it exists —
+    /// no picking, because the app created it.
+    pub async fn create_document(&self, title: &str) -> Result<String, MailError> {
+        let json = self
+            .send_json(
+                reqwest::Method::POST,
+                &format!("{DOCS_API}/documents"),
+                serde_json::json!({"title": title}),
+            )
+            .await?;
+        json["documentId"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| MailError::ParseError("no documentId in response".into()))
+    }
+
+    /// Append text at the end of a document.
+    pub async fn append_text(&self, id: &str, text: &str) -> Result<(), MailError> {
+        // `endOfSegmentLocation` with an empty segment id means "end of body",
+        // which avoids reading the document just to learn its length — and
+        // avoids the race where it changed between the read and the write.
+        let body = serde_json::json!({
+            "requests": [{
+                "insertText": {"endOfSegmentLocation": {}, "text": text}
+            }]
+        });
+        self.send_json(
+            reqwest::Method::POST,
+            &format!("{DOCS_API}/documents/{id}:batchUpdate"),
+            body,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Replace every occurrence of `find` with `replace`. Returns how many
+    /// were changed, which is the only honest confirmation: zero means the
+    /// anchor was wrong, and reporting success there is how a model concludes
+    /// it edited a document it did not touch.
+    pub async fn replace_text(
+        &self,
+        id: &str,
+        find: &str,
+        replace: &str,
+        match_case: bool,
+    ) -> Result<i64, MailError> {
+        let body = serde_json::json!({
+            "requests": [{
+                "replaceAllText": {
+                    "containsText": {"text": find, "matchCase": match_case},
+                    "replaceText": replace
+                }
+            }]
+        });
+        let json = self
+            .send_json(
+                reqwest::Method::POST,
+                &format!("{DOCS_API}/documents/{id}:batchUpdate"),
+                body,
+            )
+            .await?;
+        Ok(json["replies"][0]["replaceAllText"]["occurrencesChanged"]
+            .as_i64()
+            .unwrap_or(0))
+    }
+
+    /// Read a range of a spreadsheet as rows of strings.
+    pub async fn read_sheet(&self, id: &str, range: &str) -> Result<Vec<Vec<String>>, MailError> {
+        let encoded = urlencode(range);
+        let json = self
+            .get_json(&format!("{SHEETS_API}/spreadsheets/{id}/values/{encoded}"))
+            .await?;
+        let rows = json["values"].as_array().cloned().unwrap_or_default();
+        Ok(rows
+            .iter()
+            .map(|row| {
+                row.as_array()
+                    .map(|cells| {
+                        cells
+                            .iter()
+                            .map(|c| {
+                                c.as_str()
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| c.to_string())
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect())
+    }
+
+    /// Write rows into a spreadsheet range.
+    pub async fn write_sheet(
+        &self,
+        id: &str,
+        range: &str,
+        values: serde_json::Value,
+    ) -> Result<i64, MailError> {
+        let encoded = urlencode(range);
+        // USER_ENTERED so "=SUM(A1:A9)" becomes a formula and "5" a number,
+        // which is what someone dictating a spreadsheet edit means.
+        let url = format!(
+            "{SHEETS_API}/spreadsheets/{id}/values/{encoded}?valueInputOption=USER_ENTERED"
+        );
+        let json = self
+            .send_json(
+                reqwest::Method::PUT,
+                &url,
+                serde_json::json!({"values": values}),
+            )
+            .await?;
+        Ok(json["updatedCells"].as_i64().unwrap_or(0))
+    }
+
+    /// Create a spreadsheet.
+    pub async fn create_sheet(&self, title: &str) -> Result<String, MailError> {
+        let json = self
+            .send_json(
+                reqwest::Method::POST,
+                &format!("{SHEETS_API}/spreadsheets"),
+                serde_json::json!({"properties": {"title": title}}),
+            )
+            .await?;
+        json["spreadsheetId"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| MailError::ParseError("no spreadsheetId in response".into()))
+    }
+
+    /// A presentation's text, slide by slide.
+    pub async fn read_presentation(&self, id: &str) -> Result<(String, String), MailError> {
+        let json = self
+            .get_json(&format!("{SLIDES_API}/presentations/{id}"))
+            .await?;
+        let title = json["title"].as_str().unwrap_or_default().to_string();
+        let mut out = String::new();
+        for (i, slide) in json["slides"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .enumerate()
+        {
+            out.push_str(&format!("--- slide {} ---\n", i + 1));
+            for element in slide["pageElements"].as_array().unwrap_or(&vec![]) {
+                if let Some(runs) = element["shape"]["text"]["textElements"].as_array() {
+                    for run in runs {
+                        if let Some(text) = run["textRun"]["content"].as_str() {
+                            out.push_str(text);
+                        }
+                    }
+                }
+            }
+            out.push('\n');
+        }
+        Ok((title, out))
+    }
+
+    /// Create a presentation.
+    pub async fn create_presentation(&self, title: &str) -> Result<String, MailError> {
+        let json = self
+            .send_json(
+                reqwest::Method::POST,
+                &format!("{SLIDES_API}/presentations"),
+                serde_json::json!({"title": title}),
+            )
+            .await?;
+        json["presentationId"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| MailError::ParseError("no presentationId in response".into()))
+    }
+
+    /// Move a file to the trash.
+    ///
+    /// **Trash, never `files.delete`.** The difference is exactly one
+    /// capability — permanent, irreversible destruction — and a verb with no
+    /// undo is not one a model should hold. Same reasoning as `gmail.modify`
+    /// stopping short of `https://mail.google.com/`.
+    pub async fn trash(&self, id: &str) -> Result<(), MailError> {
+        self.send_json(
+            reqwest::Method::PATCH,
+            &format!("{DRIVE_API}/files/{id}?supportsAllDrives=true"),
+            serde_json::json!({"trashed": true}),
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+/// Flatten a Docs `content` array to plain text. Used for table cells, which
+/// nest the same structure as the body.
+fn collect_text(content: &serde_json::Value) -> String {
+    let mut out = String::new();
+    for element in content.as_array().unwrap_or(&vec![]) {
+        if let Some(runs) = element["paragraph"]["elements"].as_array() {
+            for run in runs {
+                if let Some(text) = run["textRun"]["content"].as_str() {
+                    out.push_str(text);
+                }
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
