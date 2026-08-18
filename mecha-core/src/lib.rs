@@ -59,6 +59,7 @@ pub mod frontdoor;
 pub mod gossip;
 pub mod hooks;
 pub mod learning;
+pub mod mail_triage;
 pub mod mailbox;
 pub mod mcp;
 pub mod message;
