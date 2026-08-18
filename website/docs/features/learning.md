@@ -86,10 +86,17 @@ at consolidation time and cost nothing per turn. `--no-learned-rules` opts out
 anywhere, and `mecha eval` forces it off so a scorecard measures the model
 rather than your accumulated rules.
 
-The always-loaded block has two ceilings. `RULES_CHAR_BUDGET` (1600 characters)
-is the size half; `MAX_ACTIVE_RULES_PER_DOMAIN` (15 active learned rules per
+The always-loaded block has two ceilings. `RULES_CHAR_BUDGET` (2600 characters)
+is the size half; `MAX_ACTIVE_RULES_PER_DOMAIN` (25 active learned rules per
 domain) is the count half, and it is a check that does not depend on the model
-listening to the frame instruction that says the same thing. A candidate set
+listening to the frame instruction that says the same thing — the frame is
+handed the same constant, so the two cannot drift apart.
+
+It is also *per domain*, and a run carries only the domains it asks for
+(`RUN_DOMAINS`: `behavior` and `writing`). A domain is opt-in, so a new one
+joins no prompt until something names it; a domain holding active rules that
+no run carries is reported at startup, because rules that cannot fire look
+exactly like rules being obeyed. A candidate set
 that ends over the cap may land only by *shrinking* an already-over set toward
 it — growth past the cap is refused, which is what forces the next pass to merge
 or retire before it may add. User rules are not counted: they are the user's own
