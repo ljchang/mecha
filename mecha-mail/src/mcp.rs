@@ -97,7 +97,24 @@ pub async fn serve(provider: impl ToolProvider) -> anyhow::Result<()> {
 /// provider cannot ship a mislabelled surface — the annotations are the
 /// security contract the connecting client reads.
 #[cfg(test)]
-pub(crate) fn assert_tool_surface(tools: &[Value], reads: &[&str], writes: &[&str]) {
+/// Assert the three capability quadrants this crate's tools fall into.
+///
+/// - `reads` — `readOnlyHint`, never `openWorldHint`. A search query reaches
+///   only the provider that already custodies the mailbox.
+/// - `writes` — `openWorldHint`. These reach third parties (recipients,
+///   invitees) and are what `[outbox] tools` names so they stage.
+/// - `triage` — **neither**, plus `destructiveHint`. Archive, read-state,
+///   spam and trash mutate the user's own mailbox and reach nobody. Marking
+///   them `openWorldHint` would put them in the outbox's path and make the
+///   triage loop review a queue in order to fill another queue; marking them
+///   `readOnlyHint` would let a read-only unattended run empty the inbox at
+///   seven in the morning. The quadrant exists so neither mistake is silent.
+pub(crate) fn assert_tool_surface(
+    tools: &[Value],
+    reads: &[&str],
+    writes: &[&str],
+    triage: &[&str],
+) {
     let annotation = |name: &str, key: &str| -> bool {
         tools
             .iter()
@@ -122,6 +139,20 @@ pub(crate) fn assert_tool_surface(tools: &[Value], reads: &[&str], writes: &[&st
             "{write} reaches third parties"
         );
         assert!(!annotation(write, "readOnlyHint"), "{write} is a write");
+    }
+    for t in triage {
+        assert!(
+            annotation(t, "destructiveHint"),
+            "{t} mutates the mailbox and must say so"
+        );
+        assert!(
+            !annotation(t, "readOnlyHint"),
+            "{t} is a write — a read-only run must not reach it"
+        );
+        assert!(
+            !annotation(t, "openWorldHint"),
+            "{t} reaches no third party; openWorldHint would route it through the outbox"
+        );
     }
     for tool in tools {
         let name = tool["name"].as_str().unwrap();

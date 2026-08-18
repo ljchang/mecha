@@ -241,6 +241,28 @@ pub fn tool_definitions(names: &[String], default: Option<&str>) -> Vec<Value> {
             "annotations": {"openWorldHint": true}
         },
         {
+            "name": "mail_triage",
+            "description": "Clear a conversation out of the inbox: archive it, mark it read or unread, report it as spam, or move it to the trash. Acts on the WHOLE thread. Pass the thread_id and its `account` (both are in every search row). Nothing here leaves the mailbox or reaches anyone else — archive just drops the thread out of the inbox, and trash is recoverable. Use archive for anything dealt with; use spam only for genuine junk, because it also trains the provider's filter. To tag a thread for later, do not use this — tags are mecha's own and are set on the triage record.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "thread_id": {"type": "string"},
+                    "action": {
+                        "type": "string",
+                        "enum": ["archive", "read", "unread", "spam", "trash"]
+                    },
+                    "account": account("The account the thread lives in; required when several accounts are configured.")
+                },
+                "required": ["thread_id", "action"]
+            },
+            // Neither a read nor a send. It mutates the user's own mailbox and
+            // reaches no third party, which is the whole reason it is safe to
+            // let a triage loop call it without staging — and the whole reason
+            // it must be gated by the approver instead. See the capability
+            // note on `assert_tool_surface`.
+            "annotations": {"destructiveHint": true}
+        },
+        {
             "name": "calendar_list",
             "description": "List the calendars in every configured account (or one, when `account` is given), with write access noted.",
             "inputSchema": {
@@ -391,6 +413,112 @@ async fn thread_one(a: &Account, thread_id: &str) -> Result<Vec<Email>, MailErro
         match a.provider {
             Provider::Google => GmailProvider::new(t).get_thread(thread_id).await,
             Provider::Outlook => OutlookProvider::new(t).get_thread(thread_id).await,
+        }
+    })
+    .await
+}
+
+/// What `mail_triage` may do. A **closed enum**, on the reasoning
+/// `docs/SLACK-ACTIONS-DESIGN.md` §1 already set out for executable actions:
+/// the set is small, every variant is spelled out, and there is deliberately
+/// no escape hatch that takes a provider-native label or folder name. A
+/// free-form `mail_label(["SPAM"])` would let the model reach `spam` through
+/// the argument of a verb that reads as harmless, and would mean every
+/// provider difference leaking into the schema.
+///
+/// Tagging is **not** here. A mecha tag lives on the triage record, costs no
+/// OAuth scope, and works identically on both providers; these five are the
+/// operations that must reach the provider or they have not happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriageAction {
+    /// Out of the inbox, still in the mailbox. The common case by far.
+    Archive,
+    Read,
+    Unread,
+    /// Reports to the provider's filter — the one action with an effect
+    /// outside this mailbox, which is why it is not a label argument.
+    Spam,
+    /// Recoverable. Neither scope this crate holds can delete permanently.
+    Trash,
+}
+
+impl TriageAction {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "archive" => Self::Archive,
+            "read" => Self::Read,
+            "unread" => Self::Unread,
+            "spam" => Self::Spam,
+            "trash" => Self::Trash,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Archive => "archive",
+            Self::Read => "read",
+            Self::Unread => "unread",
+            Self::Spam => "spam",
+            Self::Trash => "trash",
+        }
+    }
+
+    /// Past tense, for the line the model reads back.
+    fn done(self) -> &'static str {
+        match self {
+            Self::Archive => "archived",
+            Self::Read => "marked read",
+            Self::Unread => "marked unread",
+            Self::Spam => "reported as spam and removed from the inbox",
+            Self::Trash => "moved to the trash",
+        }
+    }
+
+    pub const ALL: [Self; 5] = [
+        Self::Archive,
+        Self::Read,
+        Self::Unread,
+        Self::Spam,
+        Self::Trash,
+    ];
+}
+
+/// Apply one triage action to one thread in one account.
+///
+/// Gmail returns nothing on success; Graph returns how many messages of the
+/// conversation it actually touched, because it has no thread resource and
+/// the operation is not atomic (see `graph_mail.rs`). The count is carried
+/// rather than discarded so the caller can say "3 of 5" instead of "done".
+async fn triage_one(
+    a: &Account,
+    thread_id: &str,
+    action: TriageAction,
+) -> Result<Option<usize>, MailError> {
+    with_token(&a.manager, |t| async move {
+        match a.provider {
+            Provider::Google => {
+                let g = GmailProvider::new(t);
+                match action {
+                    TriageAction::Archive => g.archive_thread(thread_id).await,
+                    TriageAction::Read => g.set_thread_read(thread_id, true).await,
+                    TriageAction::Unread => g.set_thread_read(thread_id, false).await,
+                    TriageAction::Spam => g.spam_thread(thread_id).await,
+                    TriageAction::Trash => g.trash_thread(thread_id).await,
+                }
+                .map(|()| None)
+            }
+            Provider::Outlook => {
+                let o = OutlookProvider::new(t);
+                match action {
+                    TriageAction::Archive => o.archive_thread(thread_id).await,
+                    TriageAction::Read => o.set_thread_read(thread_id, true).await,
+                    TriageAction::Unread => o.set_thread_read(thread_id, false).await,
+                    TriageAction::Spam => o.spam_thread(thread_id).await,
+                    TriageAction::Trash => o.trash_thread(thread_id).await,
+                }
+                .map(Some)
+            }
         }
     })
     .await
@@ -926,6 +1054,49 @@ impl MailTools {
                     Err(e) => fail(format!("{e}")),
                 }
             }
+            "mail_triage" => {
+                let Some(thread_id) = str_arg("thread_id") else {
+                    return missing("thread_id");
+                };
+                let Some(raw) = str_arg("action") else {
+                    return missing("action");
+                };
+                let Some(action) = TriageAction::parse(&raw) else {
+                    // Naming the alternatives rather than saying "invalid":
+                    // the model can recover from a list, not from a refusal.
+                    let all: Vec<&str> = TriageAction::ALL.iter().map(|a| a.name()).collect();
+                    return fail(format!(
+                        "unknown action `{raw}`; expected one of: {}",
+                        all.join(", ")
+                    ));
+                };
+                // Mode::Item, like every other id-carrying call: a thread_id
+                // is account-scoped, so this never fans out. Triaging "the
+                // same thread" across every account is not a thing that can
+                // be meant.
+                let account = match self.pick(account_arg.as_deref(), Mode::Item) {
+                    Ok(p) => p[0],
+                    Err(e) => return fail(e),
+                };
+                match triage_one(account, &thread_id, action).await {
+                    Ok(None) => Some((
+                        format!("{}: thread {thread_id} {}", account.name, action.done()),
+                        false,
+                    )),
+                    // Graph's per-message reality, surfaced rather than
+                    // rounded up: a conversation that half-moved says so.
+                    Ok(Some(n)) => Some((
+                        format!(
+                            "{}: thread {thread_id} {} ({n} message{})",
+                            account.name,
+                            action.done(),
+                            if n == 1 { "" } else { "s" }
+                        ),
+                        false,
+                    )),
+                    Err(e) => fail(format!("{e}")),
+                }
+            }
             "mail_send" => {
                 let (Some(to), Some(subject), Some(body_md)) =
                     (str_arg("to"), str_arg("subject"), str_arg("body_markdown"))
@@ -1382,7 +1553,49 @@ mod tests {
                 "calendar_update_event",
                 "calendar_delete_event",
             ],
+            &["mail_triage"],
         );
+    }
+
+    /// The action set is closed, and the closure is what stops `spam` being
+    /// reachable through a label argument on a verb that reads as harmless.
+    #[test]
+    fn the_triage_action_set_is_closed_and_round_trips() {
+        for action in TriageAction::ALL {
+            assert_eq!(TriageAction::parse(action.name()), Some(action));
+            assert!(!action.done().is_empty());
+        }
+        for bogus in ["delete", "label", "SPAM", "", "archive "] {
+            assert_eq!(TriageAction::parse(bogus), None, "{bogus} must not parse");
+        }
+
+        // The schema and the parser must name the same set, or the model is
+        // offered a verb that fails or denied one that works.
+        let defs = tool_definitions(&names(&["a"]), Some("a"));
+        let tool = defs.iter().find(|t| t["name"] == "mail_triage").unwrap();
+        let schema: Vec<&str> = tool["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        let coded: Vec<&str> = TriageAction::ALL.iter().map(|a| a.name()).collect();
+        assert_eq!(schema, coded);
+    }
+
+    /// Tagging must never become a provider operation: it costs an OAuth
+    /// scope, diverges between Gmail labels and Graph categories, and is
+    /// mecha's own concept on the triage record.
+    #[test]
+    fn the_mail_surface_offers_no_tagging_verb() {
+        let defs = tool_definitions(&names(&["a"]), Some("a"));
+        for tool in &defs {
+            let name = tool["name"].as_str().unwrap();
+            assert!(
+                !name.contains("label") && !name.contains("tag") && !name.contains("categor"),
+                "{name} would make a mecha tag a provider write"
+            );
+        }
     }
 
     /// The account enum is the point of building schemas at startup: the
@@ -1471,6 +1684,8 @@ mod tests {
                         refresh_token: "rt".into(),
                         expires_at: 0,
                         account: None,
+                        granted_scopes: None,
+                        granted_at: None,
                     },
                 ),
             })

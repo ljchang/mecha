@@ -1,7 +1,7 @@
 //! The Gmail client, scoped to what an agent doing on-demand work needs:
-//! search, thread reads, and send. There is deliberately no history/sync
-//! machinery, no spam/trash/archive ops, and no local cache; `threads.get`
-//! fetches a conversation directly instead.
+//! search, thread reads, send, and the triage verbs — archive, read-state,
+//! spam, trash. There is deliberately no history/sync machinery and no local
+//! cache; `threads.get` fetches a conversation directly instead.
 
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 use serde_json::Value;
@@ -185,6 +185,97 @@ impl GmailProvider {
         }
         let json: Value = resp.json().await?;
         Ok(json["id"].as_str().unwrap_or_default().to_string())
+    }
+
+    // ── triage ────────────────────────────────────────────────────────────
+    //
+    // All of these operate on a **thread**, not a message, because that is
+    // the unit the model was handed: every search row carries a `thread_id`,
+    // and archiving four of a conversation's five messages is not a state a
+    // person ever wants. Gmail's `threads.modify` applies the label change to
+    // every message in the thread in one call, which is also one quota unit
+    // instead of five.
+    //
+    // Gmail models all four as label arithmetic, which is why there is one
+    // private primitive and four thin verbs over it rather than four
+    // endpoints. The names are Gmail's system label ids.
+
+    /// Add and remove labels across every message in a thread.
+    async fn modify_thread(
+        &self,
+        thread_id: &str,
+        add: &[&str],
+        remove: &[&str],
+    ) -> Result<(), MailError> {
+        let resp = send_with_retry(
+            self.client
+                .post(format!(
+                    "https://gmail.googleapis.com/gmail/v1/users/me/threads/{thread_id}/modify"
+                ))
+                .header("Authorization", self.auth_header())
+                .json(&serde_json::json!({
+                    "addLabelIds": add,
+                    "removeLabelIds": remove,
+                })),
+        )
+        .await?;
+        Self::ok_or_err(resp).await
+    }
+
+    /// Remove the thread from the inbox. Gmail has no archive folder — being
+    /// archived *is* not carrying `INBOX` — so this is a label removal and
+    /// nothing is moved or lost.
+    pub async fn archive_thread(&self, thread_id: &str) -> Result<(), MailError> {
+        self.modify_thread(thread_id, &[], &["INBOX"]).await
+    }
+
+    /// Mark every message in the thread read, or unread.
+    pub async fn set_thread_read(&self, thread_id: &str, read: bool) -> Result<(), MailError> {
+        if read {
+            self.modify_thread(thread_id, &[], &["UNREAD"]).await
+        } else {
+            self.modify_thread(thread_id, &["UNREAD"], &[]).await
+        }
+    }
+
+    /// Report the thread as spam. Removing `INBOX` alongside is what makes it
+    /// leave the inbox rather than sit there labelled — Gmail does not imply
+    /// one from the other. This is the one triage verb with an effect outside
+    /// the mailbox: it trains the provider's filter, which is why it is its
+    /// own verb rather than a label argument someone could pass by accident.
+    pub async fn spam_thread(&self, thread_id: &str) -> Result<(), MailError> {
+        self.modify_thread(thread_id, &["SPAM"], &["INBOX"]).await
+    }
+
+    /// Move the thread to the trash, where the user can retrieve it. Note
+    /// what this is not: `gmail.modify` cannot permanently delete, by
+    /// deliberate choice of scope, so the destructive verb the model can
+    /// reach is the reversible one.
+    pub async fn trash_thread(&self, thread_id: &str) -> Result<(), MailError> {
+        let resp = send_with_retry(
+            self.client
+                .post(format!(
+                    "https://gmail.googleapis.com/gmail/v1/users/me/threads/{thread_id}/trash"
+                ))
+                .header("Authorization", self.auth_header())
+                .header("Content-Length", "0"),
+        )
+        .await?;
+        Self::ok_or_err(resp).await
+    }
+
+    /// Collapse a response into unit-or-error. Triage verbs return nothing
+    /// worth reading on success, and the body on failure is the whole point.
+    async fn ok_or_err(resp: reqwest::Response) -> Result<(), MailError> {
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        Err(MailError::ApiError {
+            status,
+            message: body,
+        })
     }
 
     /// The authenticated account's address — doubles as the auth smoke test.

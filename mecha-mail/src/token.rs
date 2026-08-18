@@ -45,6 +45,60 @@ pub struct StoredCredentials {
     /// The account this authenticated as, for display.
     #[serde(default)]
     pub account: Option<String>,
+    /// The scopes the provider actually granted, verbatim from the token
+    /// response, space-separated.
+    ///
+    /// Recorded because a stored refresh token says nothing about *what it
+    /// can do*: a grant minted before the triage verbs existed refreshes
+    /// cleanly forever and then 403s the first time something tries to
+    /// archive. Without this field the only way to find out is to try, which
+    /// puts the discovery in the middle of a triage run instead of in
+    /// `mecha doctor`.
+    ///
+    /// `#[serde(default)]`, so a credential file written before this field
+    /// loads unchanged — and reads as `None`, which is exactly right:
+    /// every such grant *does* predate the scope change.
+    #[serde(default)]
+    pub granted_scopes: Option<String>,
+    /// When consent was given, RFC 3339. Set by `auth`, and **never touched
+    /// by a refresh** — which is the whole point: Google expires the refresh
+    /// token of an app in *Testing* publishing status exactly 7 days after
+    /// consent, and no amount of successful refreshing resets that clock.
+    /// Stamping this at refresh would hide the very thing it exists to show.
+    ///
+    /// Recorded for every account, not just Google's, because "how old is
+    /// this grant" is worth answering anywhere and costs one string.
+    #[serde(default)]
+    pub granted_at: Option<String>,
+}
+
+/// The scope each provider must have granted for the triage verbs to work.
+///
+/// Checked as a substring of the granted scope string rather than parsed:
+/// providers return these space-separated and sometimes with a URL prefix,
+/// and the question here is only "is this one present".
+pub fn triage_scope_for(provider: &str) -> Option<&'static str> {
+    match provider {
+        "google" => Some("gmail.modify"),
+        "outlook" | "microsoft" => Some("Mail.ReadWrite"),
+        _ => None,
+    }
+}
+
+impl StoredCredentials {
+    /// Whether this grant covers the mail triage verbs — archive, read-state,
+    /// spam, trash.
+    ///
+    /// `None` (an old file) is **not** treated as "probably fine". Fail
+    /// closed: the grant predates the scopes, so it does not cover them.
+    pub fn covers_triage(&self, provider: &str) -> bool {
+        let Some(needed) = triage_scope_for(provider) else {
+            return true;
+        };
+        self.granted_scopes
+            .as_deref()
+            .is_some_and(|g| g.contains(needed))
+    }
 }
 
 /// Where one provider's credentials live: `~/.mecha/<provider>/oauth.json`,
@@ -354,7 +408,51 @@ mod tests {
             refresh_token: "rt".into(),
             expires_at: 1_000,
             account: Some("me@example.edu".into()),
+            granted_scopes: Some("https://www.googleapis.com/auth/gmail.modify".into()),
+            granted_at: None,
         }
+    }
+
+    /// The whole point of recording the grant: a credential file written
+    /// before the triage scopes existed must read as *not covered*, not as
+    /// "probably fine". Fails on the old behaviour, where there was nothing
+    /// to ask and the first archive found out instead.
+    #[test]
+    fn a_grant_predating_the_triage_scopes_reads_as_uncovered() {
+        let mut c = creds();
+        assert!(c.covers_triage("google"));
+
+        c.granted_scopes = None;
+        assert!(!c.covers_triage("google"), "absent is not permission");
+
+        // An old Google grant: readonly and send, no modify.
+        c.granted_scopes = Some(
+            "https://www.googleapis.com/auth/gmail.readonly \
+             https://www.googleapis.com/auth/gmail.send"
+                .into(),
+        );
+        assert!(!c.covers_triage("google"));
+
+        c.granted_scopes = Some("https://graph.microsoft.com/Mail.Read Mail.Send".into());
+        assert!(
+            !c.covers_triage("outlook"),
+            "Mail.Read is not Mail.ReadWrite"
+        );
+        c.granted_scopes = Some("https://graph.microsoft.com/Mail.ReadWrite".into());
+        assert!(c.covers_triage("outlook"));
+
+        // An unknown provider has no scope to demand, so it is never blocked.
+        c.granted_scopes = None;
+        assert!(c.covers_triage("something-else"));
+    }
+
+    /// The store must survive a file written before the field existed.
+    #[test]
+    fn credentials_written_before_the_scope_field_still_load() {
+        let json = r#"{"client_id":"i","access_token":"a","refresh_token":"r","expires_at":1}"#;
+        let c: StoredCredentials = serde_json::from_str(json).expect("old files load");
+        assert_eq!(c.granted_scopes, None);
+        assert!(!c.covers_triage("google"));
     }
 
     #[test]

@@ -445,6 +445,11 @@ mod tests {
                 "calendar_update_event",
                 "calendar_delete_event",
             ],
+            // No triage verbs here on purpose. This is the single-provider
+            // server; `mecha-mail`'s unified surface is the one deployments
+            // wire, and it is where triage lives. Adding the verbs in two
+            // places would mean two schemas to keep honest for one behaviour.
+            &[],
         );
     }
 
