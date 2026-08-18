@@ -21,7 +21,8 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 use mecha_core::mail_triage::{
-    Record, ThreadInput, TriageStore, Verdict, CLASSIFIED, DISMISSED, FAILED,
+    needs_body, Record, ThreadInput, TriageStore, Verdict, BODY_CHARS_MAX, CLASSIFIED, DISMISSED,
+    FAILED,
 };
 
 use crate::{setup, GlobalOpts};
@@ -335,17 +336,62 @@ async fn classify(
     };
     eprintln!("classifying with {model} ({provider_name})");
 
-    let (mut ok, mut failed) = (0u32, 0u32);
+    let get_thread = find_tool(&prepared.registry, "mail_get_thread");
+    let (mut ok, mut failed, mut escalated) = (0u32, 0u32, 0u32);
     for row in todo {
-        let thread = row_to_input(row);
+        let mut thread = row_to_input(row);
         let verdict =
             mecha_core::mail_triage::classify(provider.as_ref(), &model, &thread, &today).await;
+
+        // The second pass. Only where the answer changes what happens — see
+        // `needs_body` — and only when the whole thread can actually be
+        // fetched: a failed read leaves the snippet verdict standing rather
+        // than losing it, because a worse answer beats no answer here.
+        let mut from_bucket = None;
+        let verdict = match (&verdict, &get_thread) {
+            (Ok(v), Some(tool)) if needs_body(v) => {
+                match fetch_body(tool.as_ref(), &ctx, &thread).await {
+                    Ok(body) => {
+                        thread.body = body;
+                        match mecha_core::mail_triage::classify(
+                            provider.as_ref(),
+                            &model,
+                            &thread,
+                            &today,
+                        )
+                        .await
+                        {
+                            Ok(second) => {
+                                escalated += 1;
+                                if second.bucket != v.bucket {
+                                    from_bucket = Some(v.bucket.as_str().to_string());
+                                }
+                                Ok(second)
+                            }
+                            // The body pass failing is not the snippet pass
+                            // being wrong.
+                            Err(e) => {
+                                eprintln!("      (second pass failed, keeping the first: {e:#})");
+                                verdict
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("      (could not read the thread: {e:#})");
+                        verdict
+                    }
+                }
+            }
+            _ => verdict,
+        };
 
         let rec = match verdict {
             Ok(v) => {
                 ok += 1;
-                print_line(&thread, &v);
-                record(&thread, Some(v), None)
+                print_line(&thread, &v, from_bucket.as_deref());
+                let mut r = record(&thread, Some(v), None);
+                r.escalated_from = from_bucket;
+                r
             }
             // A failure is a row and a human's problem. It never falls back to
             // handing the prose on, and it never stops the sweep: one
@@ -358,8 +404,39 @@ async fn classify(
         };
         store.put(&rec)?;
     }
-    println!("\n{ok} classified, {failed} failed");
+    println!("\n{ok} classified ({escalated} read in full), {failed} failed");
     Ok(())
+}
+
+/// The whole conversation, as text, for the second pass.
+///
+/// Capped at [`BODY_CHARS_MAX`] from the *end*, because `mail_get_thread`
+/// renders oldest-first and the newest message is the one asking for
+/// something — truncating the front of a long thread keeps the part a reply
+/// would answer.
+async fn fetch_body(
+    tool: &dyn mecha_core::tool::Tool,
+    ctx: &mecha_core::tool::ToolCtx,
+    t: &ThreadInput,
+) -> Result<String> {
+    let out = tool
+        .call(
+            json!({ "thread_id": t.thread_id, "account": t.account }),
+            ctx,
+        )
+        .await?;
+    if out.is_error {
+        bail!("{}", out.content);
+    }
+    let text = out.content;
+    if text.chars().count() <= BODY_CHARS_MAX {
+        return Ok(text);
+    }
+    let skip = text.chars().count() - BODY_CHARS_MAX;
+    Ok(format!(
+        "[earlier messages omitted]\n{}",
+        text.chars().skip(skip).collect::<String>()
+    ))
 }
 
 fn row_to_input(row: &Value) -> ThreadInput {
@@ -404,18 +481,22 @@ fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> R
         verdict,
         error,
         classified_at: chrono::Utc::now().to_rfc3339(),
+        escalated_from: None,
         acted: None,
         acted_at: None,
         rest: Default::default(),
     }
 }
 
-fn print_line(t: &ThreadInput, v: &Verdict) {
+fn print_line(t: &ThreadInput, v: &Verdict, escalated_from: Option<&str>) {
     println!(
-        "  {:<7} {:<8} {} — {}",
+        "  {:<7} {:<8} {} — {}{}",
         v.urgency.as_str(),
         v.bucket.as_str(),
         t.from,
-        v.one_line
+        v.one_line,
+        escalated_from
+            .map(|b| format!("  [was {b} on the snippet]"))
+            .unwrap_or_default()
     );
 }
