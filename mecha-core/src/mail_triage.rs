@@ -175,6 +175,41 @@ pub struct Verdict {
     pub request_type: Option<String>,
 }
 
+/// How much of a thread the second pass is allowed to read.
+///
+/// A fifty-message conversation would otherwise be handed to a model whose
+/// context this module does not know, and truncating at the *front* is right:
+/// the newest message is the one that asks for something.
+pub const BODY_CHARS_MAX: usize = 8_000;
+
+/// Whether this verdict is worth a second pass over the full body.
+///
+/// Snippet-first is the cheap default and it is right for the bulk — measured
+/// 2026-08-18 on a real mailbox, four of five threads were newsletters and
+/// notices a snippet classified correctly. The fifth was a cold email the
+/// classifier read as `respond` while saying, in its own reasoning, that the
+/// *message cuts off*. That is the shape of the miss: the cases where the
+/// answer changes what happens are the cases a snippet cannot settle.
+///
+/// So escalate on exactly two signals, and deliberately **not** on snippet
+/// length. A provider caps its snippet at a couple of hundred characters, so
+/// nearly every real email looks truncated — escalating on that would escalate
+/// everything and turn the cheap default into the expensive one wearing a
+/// condition.
+///
+/// - `respond` — we may end up drafting an answer, and the body is what an
+///   answer is written from.
+/// - a claimed `request_type` — this is about to be routed at the front door,
+///   which is the highest-consequence thing a verdict can say, so it is
+///   confirmed against the whole message rather than a preview.
+///
+/// A `lab-application` too short to recognise from a snippet is not a third
+/// signal: someone asking to join the lab wants an answer, so it lands in
+/// `respond` and escalates anyway.
+pub fn needs_body(v: &Verdict) -> bool {
+    v.bucket == Bucket::Respond || v.request_type.is_some()
+}
+
 /// The tag vocabulary. Closed, and small on purpose.
 pub const TAGS: &[&str] = &[
     "expense",
@@ -227,6 +262,16 @@ pub struct Record {
     pub error: Option<String>,
     #[serde(default)]
     pub classified_at: String,
+    /// What the snippet pass said, when a second pass over the full body
+    /// replaced it.
+    ///
+    /// Recorded so the escalation rule can be **graded rather than believed**:
+    /// if this is almost always the same bucket the body pass reached, the
+    /// rule is spending a second model call to confirm what one already knew,
+    /// and it should narrow. There is no other way to find that out — a rule
+    /// that only ever fires and never reports cannot be wrong out loud.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalated_from: Option<String>,
     /// What a human did about it, and when.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acted: Option<String>,
@@ -363,6 +408,7 @@ impl TriageStore {
             verdict: None,
             error: None,
             classified_at: String::new(),
+            escalated_from: None,
             acted: None,
             acted_at: None,
             rest: Default::default(),
@@ -437,6 +483,7 @@ mod tests {
             }),
             error: None,
             classified_at: "2026-08-18T09:05:00Z".into(),
+            escalated_from: None,
             acted: None,
             acted_at: None,
             rest: Default::default(),
@@ -632,6 +679,57 @@ mod tests {
         for t in REQUEST_TYPES {
             assert!(p.contains(t), "{t} missing from the prompt");
         }
+    }
+
+    fn verdict(bucket: Bucket, request_type: Option<&str>) -> Verdict {
+        Verdict {
+            reasoning: String::new(),
+            bucket,
+            urgency: Urgency::None,
+            one_line: String::new(),
+            tags: vec![],
+            proposed: Proposed::None,
+            deadline: None,
+            request_type: request_type.map(str::to_string),
+        }
+    }
+
+    /// The escalation rule fires on consequence, never on length. Escalating
+    /// on a short snippet would escalate everything — a provider caps its
+    /// preview at a couple of hundred characters, so nearly every real email
+    /// looks truncated — and the cheap default would become the expensive one
+    /// wearing a condition.
+    #[test]
+    fn only_a_verdict_that_changes_something_earns_a_second_pass() {
+        // The measured mix from 2026-08-18: newsletters and notices settle on
+        // the snippet, whatever their length.
+        assert!(!needs_body(&verdict(Bucket::Ignore, None)));
+        assert!(!needs_body(&verdict(Bucket::Notify, None)));
+
+        // A thread we may answer, and one about to be routed at the front
+        // door — the highest-consequence thing a verdict can claim.
+        assert!(needs_body(&verdict(Bucket::Respond, None)));
+        assert!(needs_body(&verdict(Bucket::Notify, Some("letter"))));
+        assert!(needs_body(&verdict(
+            Bucket::Ignore,
+            Some("lab-application")
+        )));
+    }
+
+    /// The rule has to be gradeable or it cannot be found to be wrong.
+    #[test]
+    fn an_escalation_that_changed_the_verdict_records_what_it_replaced() {
+        let store = temp_store("escalate");
+        let mut r = rec("dartmouth", "t1", Bucket::Respond);
+        r.escalated_from = Some("notify".into());
+        store.put(&r).unwrap();
+
+        let got = store.get("dartmouth", "t1").unwrap();
+        assert_eq!(got.escalated_from.as_deref(), Some("notify"));
+        // And it stays behind the boundary: what a snippet pass guessed is
+        // still a reading of a stranger's prose.
+        let blob = serde_json::to_string(&got.for_privileged_run()).unwrap();
+        assert!(!blob.contains("escalated_from"), "{blob}");
     }
 
     /// The seam is a directory of JSON, so a field this writer does not know
