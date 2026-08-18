@@ -18,7 +18,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use mecha_mail::google::docs;
+use mecha_mail::google::{docs, docs_server};
 use mecha_mail::token;
 
 #[derive(Parser, Debug)]
@@ -32,7 +32,7 @@ struct Cli {
     account: String,
 
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -58,6 +58,8 @@ enum Command {
     },
     /// List every file this grant can reach.
     List,
+    /// Serve MCP over stdio (the default when no subcommand is given).
+    Serve,
 }
 
 /// How the redirect gets back here.
@@ -80,16 +82,16 @@ async fn main() -> Result<()> {
     mecha_mail::init_tracing();
     let cli = Cli::parse();
     match cli.command {
-        Command::Auth {
+        Some(Command::Auth {
             client_id,
             client_secret,
             client_json,
             capture,
-        } => {
+        }) => {
             let (id, secret) = resolve_client(&cli.account, client_id, client_secret, client_json)?;
             consent(&cli.account, id, secret, false, &capture).await
         }
-        Command::Pick { capture } => {
+        Some(Command::Pick { capture }) => {
             let stored = token::load(&docs::store_path(&cli.account)?).with_context(|| {
                 format!(
                     "no grant for account {:?} — run `mecha-docs auth` first",
@@ -105,7 +107,17 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::List => list(&cli.account).await,
+        Some(Command::List) => list(&cli.account).await,
+        Some(Command::Serve) | None => {
+            let path = docs::store_path(&cli.account)?;
+            anyhow::ensure!(
+                path.exists(),
+                "no grant for account {:?} — run `mecha-docs auth` first",
+                cli.account
+            );
+            let manager = token::TokenManager::load(path)?;
+            mecha_mail::mcp::serve(docs_server::DocsTools::new(manager)).await
+        }
     }
 }
 

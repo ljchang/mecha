@@ -4,5 +4,6 @@
 pub mod auth;
 pub mod calendar;
 pub mod docs;
+pub mod docs_server;
 pub mod gmail;
 pub mod server;
