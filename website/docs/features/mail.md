@@ -1,7 +1,7 @@
 ---
 title: Mail and calendar
 sidebar_position: 18
-description: mecha-mail — every Gmail and Outlook account behind one provider-neutral MCP surface, where the model names an account and never a provider.
+description: mecha-mail — every Gmail and Outlook account behind one provider-neutral MCP surface, where the model names an account and never a provider, plus the triage queue over it.
 ---
 
 # Mail and calendar
@@ -216,6 +216,21 @@ they carry `openWorldHint`, and `calendar_update_event` / `calendar_delete_event
 add `destructiveHint`. Those names go in `[outbox] tools`, so they **stage
 rather than deliver**. See [the outbox](/docs/features/outbox).
 
+**And there is a third quadrant, which is neither.** `mail_triage` — archive,
+mark read or unread, report spam, trash — mutates your own mailbox and reaches
+nobody. It carries `destructiveHint` alone:
+
+- Not `openWorldHint`, so it must never appear in `[outbox] tools`. Staging it
+  would make triage circular — you would review a queue in order to fill
+  another queue.
+- Not `readOnlyHint`, or an unattended run under
+  `permission_mode = "read-only"` could empty your inbox at seven in the
+  morning.
+
+The shared surface test takes a third slice that asserts exactly that pair of
+negatives, so neither mistake can ship quietly. [Documents](/docs/features/documents)
+land `docs_trash` in the same quadrant, from the other direction.
+
 A shared test runs against each provider's tool list and asserts all of it:
 every read is `readOnlyHint` and is *not* `openWorldHint` ("reaches only the
 provider that already custodies this data — not a send sink"), every write is
@@ -224,6 +239,100 @@ and a description worth reading. A new provider cannot ship a mislabelled
 surface. Unification did not weaken this: the same annotations ride on the
 unified tools, and one send name in the outbox list now covers every account it
 could send from.
+
+## Triage: the queue over the mailbox
+
+`mail_triage` is the verb. `mecha mail` is the surface you actually use, and it
+exists because an inbox is not a thing you read once — it is a queue you work.
+
+```bash
+mecha mail classify --account dartmouth   # read recent mail, decide what each thread is
+mecha mail list                           # what needs you, newest first
+mecha mail show <thread_id>               # read one, in full
+mecha mail dismiss <thread_id>            # drop it from the queue without acting
+```
+
+`classify` writes one typed verdict per thread to `~/.mecha/mail-triage/`: a
+bucket (`respond` / `notify` / `ignore`), an urgency, a proposed action, tags
+from a closed vocabulary, a deadline if the thread implies one, and the kind of
+standard request it is if it recognises one. On a fifty-thread sample of real
+academic mail, twenty-eight were archivable and twenty-two needed attention.
+
+**The store is an index, not a copy of your mailbox.** It holds ids, envelope
+metadata and the verdict. Bodies are fetched on demand and never written there,
+so the retention question stays with your provider and there is no second place
+for mail to leak from.
+
+### The classifier never talks to a run that has tools
+
+This is the whole design, and it is the [front door's](/docs/features/frontdoor)
+shape applied one directory over:
+
+> **The privileged run sees the extraction, never the prose.**
+
+Reading mail arms `untrusted_input`. A loop that reads fifty threads into one
+conversation therefore arms the interlock for all fifty, and every draft it
+stages comes out tainted — correct, and useless, because a warning that fires on
+everything has stopped being a warning.
+
+So the prose goes to a classifier issued **no tools, no history, no system
+prompt and no shared cache prefix**. It is a fresh one-shot call per thread, and
+only its typed output travels. What a run with tools is given is the verdict and
+the sender's address; what stays behind is the subject, the sender's chosen
+display name, the classifier's reasoning, and its one-line summary. That last
+one is the tempting one to pass — it is short, and it is exactly what a summary
+line wants — but it is model prose derived from prose a stranger wrote, and
+paraphrasing an injection does not remove it. A run that genuinely needs to know
+what a thread says calls `mail_get_thread` and takes the taint honestly.
+
+`mecha mail show` prints the prose, deliberately. A person reading their own
+mail in a terminal is the safe context: you cannot be prompt-injected into
+mailing your own calendar somewhere. `mecha mail list --json` serves the typed
+view instead, because a script has no human's excuse.
+
+### Snippet first, body only where it matters
+
+A preview settles the newsletters. The full message is read only when the
+verdict is `respond` or names a request kind — the cases where the answer
+changes what happens next. Roughly a quarter of threads escalate.
+
+It is deliberately **not** triggered by how short the snippet looks. A provider
+caps its preview at a couple of hundred characters, so nearly every real email
+appears truncated, and escalating on that would escalate everything.
+
+### Tags are mecha's own
+
+Not a Gmail label, not a Graph category. Those are different objects, and a tag
+that means something subtly different per account fails at the one job a tag
+has. Keeping them internal costs no OAuth scope and works identically on both
+providers. The cost, stated plainly: **tags are invisible in Gmail, Outlook and
+on your phone.** Mail triaged by mecha looks untouched in every other client.
+
+### Recognising a request is not routing it
+
+If a thread is really a standard request arriving as an email — a
+recommendation letter, someone asking to join the lab — the classifier names the
+kind. Whether it can then be handed to the front door is a separate question,
+answered by whether a form for that kind actually exists. A kind with no form
+keeps its name, because that is evidence about what your mail actually contains,
+and loses only a promotion there would be nothing behind.
+
+### Running it nightly
+
+`scripts/mecha-mail-classify.{service,timer}` sweeps at 05:30 UTC:
+
+```bash
+cp scripts/mecha-mail-classify.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now mecha-mail-classify.timer
+```
+
+A timer rather than a [trigger](/docs/features/triggers), because a trigger's
+action is a *prompt* on purpose and this is a deterministic command. The unit
+names its workspace explicitly: a user unit without one runs in `$HOME`, which
+contains `~/.mecha`, and a workspace the mecha home sits under is refused.
+Failures need no special handling — `mecha doctor` already watches every
+`mecha-*` unit.
 
 ## Microsoft signs in with device code
 
