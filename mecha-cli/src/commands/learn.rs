@@ -288,7 +288,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     .into_iter()
                     .collect(),
             );
-            let current_block = store.rules_prompt_block()?;
+            // The before-arm of the counterfactual: the domains a probe
+            // exercising this one would carry, so the two arms differ in the
+            // candidate and nothing else.
+            let current_block = store
+                .rules_prompt_block_for(&mecha_core::learning::run_domains_including(domain))?;
 
             let mut lines = Vec::new();
             let (mut improved, mut regressed, mut unchanged, mut inconclusive) =

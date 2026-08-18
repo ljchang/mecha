@@ -392,7 +392,19 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
                     mecha_core::learning::MAX_ACTIVE_RULES_PER_DOMAIN
                 );
             }
-            if let Some(block) = store.rules_prompt_block()? {
+            // A domain holding rules that ride in no prompt is silent by
+            // construction — same shape as a routed outbox name matching no
+            // tool, and said at the same moment for the same reason.
+            for domain in store
+                .unrouted_domains(mecha_core::learning::RUN_DOMAINS)
+                .unwrap_or_default()
+            {
+                eprintln!(
+                    "mecha: rules for `{domain}` are never loaded — no run carries that \
+                     domain, so they cannot fire. Check the filename, or add it to RUN_DOMAINS."
+                );
+            }
+            if let Some(block) = store.rules_prompt_block_for(mecha_core::learning::RUN_DOMAINS)? {
                 let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
                 cfg.agent.system_prompt = Some(if base.is_empty() {
                     block

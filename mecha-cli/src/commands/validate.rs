@@ -186,7 +186,10 @@ async fn attribute_regression(
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let store = LearningStore::open(LearningStore::default_root()?)?;
-    let rules_block = store.rules_prompt_block()?;
+    // What a run actually carries, not what the store holds: the ledger is
+    // keyed to the rule set measured, so measuring a set no run has makes
+    // every attribution point at the wrong thing.
+    let rules_block = store.rules_prompt_block_for(mecha_core::learning::RUN_DOMAINS)?;
     let Some(rules_block) = rules_block else {
         println!("no rules to validate — run `mecha learn` first");
         return Ok(());

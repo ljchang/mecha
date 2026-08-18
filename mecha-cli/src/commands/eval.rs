@@ -458,7 +458,11 @@ async fn ab_rules(
     // Fail before an hour of inference, not after: the treatment arm needs
     // rules to measure.
     let has_rules = mecha_core::learning::LearningStore::open_existing_default()
-        .and_then(|s| s.rules_prompt_block().ok().flatten())
+        .and_then(|s| {
+            s.rules_prompt_block_for(mecha_core::learning::RUN_DOMAINS)
+                .ok()
+                .flatten()
+        })
         .is_some();
     anyhow::ensure!(
         has_rules,
