@@ -14,7 +14,9 @@ Four crates:
 
 - `mecha-core/` — the library. Knows nothing about any CLI or application.
 - `mecha-cli/` — the `mecha` binary. Thin; all logic belongs in core.
-- `mecha-mail/` — mail and calendar behind one provider-neutral MCP surface.
+- `mecha-mail/` — mail, calendar and documents. Mail and calendar sit
+  behind one provider-neutral MCP surface; `mecha-docs` is a fourth binary
+  on the same library, sharing its OAuth and token lifecycle.
 - `mecha-slack/` — the Slack transport. No `mecha-core` dependency, ever.
 
 Interfaces: `mecha run` (one-shot), `mecha chat` (readline REPL), `mecha tui`
@@ -481,7 +483,7 @@ snippets: it was written from the same pages.
 
 ## mecha-mail
 
-`mecha-mail/` is a **library plus three thin MCP binaries**, and it is how
+`mecha-mail/` is a **library plus four thin MCP binaries**, and it is how
 personal context gets in: an assistant that cannot see your mail or your
 calendar cannot do most of the work this project exists to absorb. The library
 (Gmail + Google Calendar v3, Outlook
@@ -583,6 +585,65 @@ reading `None` as *not covered* is the point, since every such grant predates
 the change. `mecha doctor` reports an account that cannot triage as
 `Attention` with the re-auth remedy, so the discovery happens there rather
 than mid-run on a 403.
+
+## Documents
+
+`mecha-docs` is the fourth binary on `mecha-mail`, and **the scope is the
+whole design**. `drive.file` is the one *non-sensitive* scope in the family —
+no verification, no annual CASA assessment, and on a published project no
+seven-day refresh-token expiry — but the reason to want it is what it cannot
+do: it covers only files the app **created** or the user **explicitly handed
+it**. A document nobody gave mecha is unreachable, and no instruction inside a
+run can widen that, because the choosing happens in Google's own file chooser
+outside the model's context. It is the path jail applied to Drive: provable by
+reading a scope string rather than by reviewing every future diff. The
+alternatives were priced and refused — `documents`/`spreadsheets`/
+`presentations` are *sensitive* (review, and no publishing until it passes),
+`drive` is *restricted* (annual paid assessment). `docs/DOCS-RESEARCH.md`
+carries the measurements.
+
+**Not a fifth crate.** A crate here exists to make an invariant checkable in
+`Cargo.toml` (the `mecha-slack` rule); this one would enforce none while
+needing `token.rs`'s refresh lifecycle, which it reuses untouched. The cost is
+that the crate name no longer describes its contents, which is naming debt and
+is why the crate list above says so.
+
+**There is no device-code flow, and the reason is not in the documentation.**
+`drive.file` *is* one of six scopes Google's limited-input flow permits, but
+that flow refuses a Desktop-app client (`401 invalid_client`), and
+`trigger_onepick` — the parameter that opens the file chooser — is accepted
+for no other client type. Two client ids do not resolve it either: a
+`drive.file` grant is per *(user, client)*, so files picked under one are
+invisible to the other and the two would hold disjoint scopes. One client must
+do both. `--paste` covers the headless case instead and covers it better: the
+browser displays the whole redirect even when nothing is listening, so no
+tunnel, no forwarded port, and no browser on the machine holding the grant.
+
+**Three quadrants again, and the third is the one to get right.** Reads are
+`readOnlyHint` and never `openWorldHint` — a fetch reaches only Google, which
+already holds the file — while config forces `untrusted_input`, because a
+shared document is other people's words and a *comment* is an injection vector
+invisible in the rendered page. Writes carry `openWorldHint` and are
+outbox-routed, on the argument that **writing into a document a third party
+can read is exfiltration**: it looks like a local edit and it is a publish,
+with far more bandwidth than `http_fetch`'s query string. `docs_trash` is
+neither — it reaches nobody, so staging it would make review circular, and it
+is not read-only, or an unattended read-only run could empty a folder at 7am.
+`destructiveHint` alone, beside `mail_triage`. There is **no permanent-delete
+verb and no sharing verb**; the scope would permit both, so the boundary is
+the tool surface and tests assert the absences.
+
+Smaller things that cost something to learn. The grant lives at
+`~/.mecha/docs/<account>/oauth.json` — same `StoredCredentials`, **own root**,
+because doctor globs `~/.mecha/mail/*/` and reads each `oauth.json` *as* a
+mail grant, so a documents credential there is reported as a broken mail
+account: share the type, never the namespace. `docs_list` filters
+`trashed=false`, or a file `docs_trash` just removed still reads as live.
+`docs_replace` reports zero matches as a failure, because a model told "ok"
+there describes an edit that never happened. And no local index of picked ids
+exists: a listing under `drive.file` returns exactly the in-scope files, so
+Google is the record and a second copy could only drift.
+
 
 ## mecha-slack
 
