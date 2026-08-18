@@ -337,8 +337,24 @@ The Google client (Cloud project **FlowMail**, the same registration the old
 app used) is in **Testing** publishing status with User type External, and
 Google expires a Testing app's refresh token exactly 7 days after consent —
 refreshing does not extend it. Moving to production would fix that but needs
-verification plus a CASA security assessment, because `gmail.modify` is a
-restricted scope. **That decision is open.** Meanwhile
+verification plus a CASA security assessment (~$540/yr), because
+`gmail.modify` is a restricted scope. **Decided 2026-08-18: stay in Testing,
+and revisit CASA once the main development features are done** — so this is
+deferred rather than open, and should not be re-litigated as though it were
+undecided.
+
+Two things to carry into that revisit, both measured on 2026-08-18 by the
+parallel documents work (`docs/DOCS-RESEARCH.md` §6.2): the console
+distinguishes **brand verification** from **scope verification** and only the
+second is the expensive one — a banner reading "your app requires
+verification" appeared on a project with no sensitive or restricted scopes at
+all and turned out to be branding, which blocks nothing and must not be
+answered by submitting for review. Check the Verification Center's two cards,
+never the banner. And a Google grant is per (user, client), not per scope, so
+anything added to the FlowMail client shares mail's fate in both directions —
+which is why the documents work took its own project rather than this one.
+
+Meanwhile
 `~/.mecha/mail/accounts.toml` declares `grant_lifetime_days = 7` on `personal`
 so `mecha doctor` warns two days out; that file is in no git repository, so a
 fresh clone will not have it.
@@ -669,6 +685,28 @@ the `NEVER_AUTO` guard, so the live path pushes evidence through `kg_upsert`
 on the `distill.rs` pattern and lets pkg extract. Push only `respond`/`notify`
 buckets; the classifier is a better filter than the `List-Unsubscribe`
 heuristic and runs anyway.
+
+### Google Docs/Sheets/Slides write access — researched and validated, not built
+
+*2026-08-18, from the parallel session that did this work; `docs/DOCS-RESEARCH.md`
+is the authority and §6 is measured rather than cited.*
+
+A second Cloud project `mecha-docs` now exists, **published to In production**,
+carrying `drive.file` and nothing else — non-sensitive, so no verification, no
+CASA, and no seven-day token expiry, which is the whole reason it is not in
+FlowMail. Measured on the day: Google's desktop Picker
+(`trigger_onepick=true`) renders a real chooser and returns file ids to a
+loopback redirect on the headless workstation through an SSH tunnel; the code
+exchanges for a token carrying a refresh token; picked Docs, Sheets and folders
+all read back. Plan is native Rust in `mecha-mail` reusing the OAuth and token
+machinery, with the grant at `~/.mecha/docs/<account>/oauth.json` — own root,
+same `StoredCredentials` type, deliberately *not* a sibling under
+`mail/<account>/`, because doctor's two mail checks glob `mail/*/oauth.json`
+and would report a `drive.file` grant as a broken mail account. **No code
+written.** Left open: whether a folder pick reaches the folder's contents (two
+runs say no; the folder-emptiness confound is named in §6.1c), and
+`documents.get` not yet exercised. The client secret is at
+`~/.mecha/docs/client_secret.json`, 0600, in no repository.
 
 ### Skills
 
