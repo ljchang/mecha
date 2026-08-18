@@ -210,6 +210,37 @@ pub fn needs_body(v: &Verdict) -> bool {
     v.bucket == Bucket::Respond || v.request_type.is_some()
 }
 
+/// Which fields differ between two readings of the same thread.
+///
+/// `reasoning` is deliberately excluded: it is free prose and differs on every
+/// re-read, so including it would make every escalation look like a change and
+/// destroy the measurement it exists to serve.
+pub fn changed_fields(before: &Verdict, after: &Verdict) -> Vec<String> {
+    let mut out = Vec::new();
+    if before.bucket != after.bucket {
+        out.push("bucket".into());
+    }
+    if before.urgency != after.urgency {
+        out.push("urgency".into());
+    }
+    if before.proposed != after.proposed {
+        out.push("proposed".into());
+    }
+    if before.request_type != after.request_type {
+        out.push("request_type".into());
+    }
+    if before.deadline != after.deadline {
+        out.push("deadline".into());
+    }
+    if before.tags != after.tags {
+        out.push("tags".into());
+    }
+    if before.one_line != after.one_line {
+        out.push("one_line".into());
+    }
+    out
+}
+
 /// The tag vocabulary. Closed, and small on purpose.
 pub const TAGS: &[&str] = &[
     "expense",
@@ -323,6 +354,19 @@ pub struct Record {
     /// first real sweep and being unable to compute it.
     #[serde(default)]
     pub escalated: bool,
+    /// Which fields the second pass actually changed.
+    ///
+    /// [`Self::escalated`] is the denominator and this is the numerator, and
+    /// it has to be field-level because the first measurement was misleading
+    /// without it: 13 of 51 threads escalated and only one moved a *bucket*,
+    /// which by the stated criterion said the rule was wasteful. But a second
+    /// pass that leaves the bucket alone while fixing `request_type` — the
+    /// input front-door routing runs on — or a `deadline`, or a `one_line`
+    /// that read "message cuts off", has earned its call and registered as
+    /// nothing. Grading the wrong axis is worse than not grading, because it
+    /// produces a number.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub escalated_changed: Vec<String>,
     /// What the snippet pass said, when a second pass over the full body
     /// replaced it.
     ///
@@ -470,6 +514,7 @@ impl TriageStore {
             error: None,
             classified_at: String::new(),
             escalated: false,
+            escalated_changed: Vec::new(),
             escalated_from: None,
             acted: None,
             acted_at: None,
@@ -546,6 +591,7 @@ mod tests {
             error: None,
             classified_at: "2026-08-18T09:05:00Z".into(),
             escalated: false,
+            escalated_changed: Vec::new(),
             escalated_from: None,
             acted: None,
             acted_at: None,
@@ -744,6 +790,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::redundant_clone)]
     fn verdict(bucket: Bucket, request_type: Option<&str>) -> Verdict {
         Verdict {
             reasoning: String::new(),
@@ -884,6 +931,45 @@ mod tests {
             assert!(REQUEST_TYPES.contains(&t));
             assert!(!is_routable(t), "{t} has no manifest yet");
         }
+    }
+
+    /// The measurement has to see every axis the second pass can move, or it
+    /// produces a confident number about the wrong thing. Fails on the
+    /// bucket-only instrument, which called a `request_type` correction —
+    /// the input front-door routing runs on — "no change".
+    #[test]
+    fn a_second_pass_is_graded_on_every_field_it_can_move() {
+        let base = verdict(Bucket::Respond, None);
+        assert!(changed_fields(&base, &base).is_empty());
+
+        // The case the old instrument missed entirely.
+        let mut typed = base.clone();
+        typed.request_type = Some("letter".into());
+        assert_eq!(changed_fields(&base, &typed), vec!["request_type"]);
+
+        // And the one it did catch.
+        let mut moved = base.clone();
+        moved.bucket = Bucket::Notify;
+        assert_eq!(changed_fields(&base, &moved), vec!["bucket"]);
+
+        // Several at once, in a stable order.
+        let mut lots = base.clone();
+        lots.urgency = Urgency::Today;
+        lots.deadline = Some("2026-09-01".into());
+        lots.one_line = "clearer now".into();
+        assert_eq!(
+            changed_fields(&base, &lots),
+            vec!["urgency", "deadline", "one_line"]
+        );
+
+        // reasoning is excluded: it is prose and differs on every re-read, so
+        // counting it would make every escalation look like a change.
+        let mut reasoned = base.clone();
+        reasoned.reasoning = "entirely different words".into();
+        assert!(
+            changed_fields(&base, &reasoned).is_empty(),
+            "reasoning must not count as a change"
+        );
     }
 
     /// The seam is a directory of JSON, so a field this writer does not know

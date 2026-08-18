@@ -21,8 +21,8 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 use mecha_core::mail_triage::{
-    needs_body, Record, ThreadInput, TriageStore, Verdict, BODY_CHARS_MAX, CLASSIFIED, DISMISSED,
-    FAILED,
+    changed_fields, needs_body, Record, ThreadInput, TriageStore, Verdict, BODY_CHARS_MAX,
+    CLASSIFIED, DISMISSED, FAILED,
 };
 
 use crate::{setup, GlobalOpts};
@@ -349,6 +349,7 @@ async fn classify(
         // than losing it, because a worse answer beats no answer here.
         let mut from_bucket = None;
         let mut did_escalate = false;
+        let mut changed: Vec<String> = Vec::new();
         let verdict = match (&verdict, &get_thread) {
             (Ok(v), Some(tool)) if needs_body(v) => {
                 match fetch_body(tool.as_ref(), &ctx, &thread).await {
@@ -365,6 +366,7 @@ async fn classify(
                             Ok(second) => {
                                 escalated += 1;
                                 did_escalate = true;
+                                changed = changed_fields(v, &second);
                                 if second.bucket != v.bucket {
                                     from_bucket = Some(v.bucket.as_str().to_string());
                                 }
@@ -393,6 +395,7 @@ async fn classify(
                 print_line(&thread, &v, from_bucket.as_deref());
                 let mut r = record(&thread, Some(v), None);
                 r.escalated = did_escalate;
+                r.escalated_changed = changed;
                 r.escalated_from = from_bucket;
                 r
             }
@@ -485,6 +488,7 @@ fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> R
         error,
         classified_at: chrono::Utc::now().to_rfc3339(),
         escalated: false,
+        escalated_changed: Vec::new(),
         escalated_from: None,
         acted: None,
         acted_at: None,
