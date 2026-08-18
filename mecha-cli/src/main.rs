@@ -206,6 +206,9 @@ pub enum Command {
     /// they pass through before any run with tools is told about them.
     /// `factory-publish drain` fetches them; this is what happens next.
     Frontdoor(commands::frontdoor::Args),
+
+    /// Triage the inbox: classify, read, dismiss.
+    Mail(commands::mail::Args),
     /// Two readers with different sources ask each other about one entity.
     Gossip(commands::gossip::GossipArgs),
     /// Judge whether queued generalisations hold beyond their one source.
@@ -281,6 +284,7 @@ async fn dispatch() -> Result<()> {
         Command::Work(args) => commands::work::execute(args).await,
         Command::Doctor(args) => commands::doctor::execute(args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
+        Command::Mail(args) => commands::mail::run(&cli.global, args).await,
         Command::Gossip(args) => commands::gossip::run(&cli.global, &args).await,
         Command::Corroborate(args) => commands::corroborate::run(&cli.global, &args).await,
         Command::Vet(args) => commands::vet::run(&cli.global, &args).await,
