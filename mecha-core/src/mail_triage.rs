@@ -262,6 +262,17 @@ pub struct Record {
     pub error: Option<String>,
     #[serde(default)]
     pub classified_at: String,
+    /// Whether a second pass over the full body ran at all.
+    ///
+    /// The denominator, and it has to be stored separately from
+    /// [`Self::escalated_from`] or the question the escalation rule exists to
+    /// answer cannot be asked. `escalated_from` alone records only the passes
+    /// that *changed* something, which makes "escalated and confirmed the
+    /// first reading" indistinguishable from "never escalated" — and the
+    /// ratio between those two is the whole measurement. Found by running the
+    /// first real sweep and being unable to compute it.
+    #[serde(default)]
+    pub escalated: bool,
     /// What the snippet pass said, when a second pass over the full body
     /// replaced it.
     ///
@@ -408,6 +419,7 @@ impl TriageStore {
             verdict: None,
             error: None,
             classified_at: String::new(),
+            escalated: false,
             escalated_from: None,
             acted: None,
             acted_at: None,
@@ -483,6 +495,7 @@ mod tests {
             }),
             error: None,
             classified_at: "2026-08-18T09:05:00Z".into(),
+            escalated: false,
             escalated_from: None,
             acted: None,
             acted_at: None,
@@ -721,11 +734,22 @@ mod tests {
     fn an_escalation_that_changed_the_verdict_records_what_it_replaced() {
         let store = temp_store("escalate");
         let mut r = rec("dartmouth", "t1", Bucket::Respond);
+        r.escalated = true;
         r.escalated_from = Some("notify".into());
         store.put(&r).unwrap();
 
         let got = store.get("dartmouth", "t1").unwrap();
+        assert!(got.escalated, "the denominator must survive a round trip");
         assert_eq!(got.escalated_from.as_deref(), Some("notify"));
+
+        // The rule is only gradeable if "escalated and confirmed" is
+        // distinguishable from "never escalated" — the flaw the first real
+        // sweep exposed, where only changes were recorded.
+        let mut confirmed = rec("dartmouth", "t2", Bucket::Respond);
+        confirmed.escalated = true;
+        store.put(&confirmed).unwrap();
+        let got = store.get("dartmouth", "t2").unwrap();
+        assert!(got.escalated && got.escalated_from.is_none());
         // And it stays behind the boundary: what a snippet pass guessed is
         // still a reading of a stranger's prose.
         let blob = serde_json::to_string(&got.for_privileged_run()).unwrap();

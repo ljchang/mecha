@@ -1,0 +1,59 @@
+# Install: cp scripts/mecha-mail-classify.{service,timer} ~/.config/systemd/user/
+#          systemctl --user daemon-reload
+#          systemctl --user enable --now mecha-mail-classify.timer
+#          loginctl enable-linger "$USER"
+#
+# The workspace is named explicitly, and it has to be. A user unit with no
+# WorkingDirectory runs in `$HOME`, which *contains* `~/.mecha`, and
+# `setup::prepare_tools` refuses a workspace the mecha home sits under — it
+# would put the mail tokens, every session transcript and the learning store
+# inside the path jail. This unit failed exactly that way on first run
+# (2026-08-18) before the flag was added; the ruminate unit dodges it by
+# resolving its own directory in a wrapper script, and this one has no wrapper.
+#
+# Note the direction of the check: a workspace *inside* the mecha home is fine
+# and is the default for any producer. What is refused is one the mecha home
+# sits under. `~/.mecha/work/mail-classify/` is the ordinary producer directory
+# every other unattended run gets, and ExecStartPre creates it because a
+# workspace that does not exist is not one either.
+#
+# Do not point this at a checkout. An unattended run must not be handed a
+# project's `mecha.toml`, which is the same reason the triggers unit stays out
+# of one.
+#
+# **Why this is a timer and not a `mecha trigger`.** A trigger's action is a
+# *prompt*, on purpose — scheduled commands are what cron is for, and giving
+# one a home there would mean re-answering how it gets confined and which
+# environment it sees. This is a command: a deterministic sweep with no model
+# decisions in the driver. Asking a model to call a tool to do what a CLI does
+# exactly would be re-answering a settled question badly.
+#
+# **Why `dartmouth` only.** The Google client is pinned in Testing publishing
+# status, so `personal`'s refresh credential expires 7 days after consent and
+# an unattended sweep would spend a third of its life failing on a dead grant
+# (`mecha doctor` warns two days out; `accounts.toml` declares the lifetime).
+# Dartmouth's grant is permanent, and every category this feature was built for
+# — letters, lab applications, department admin — is work mail. `personal`
+# classifies on demand. Widen the `--account` flag if that ever changes; going
+# to production on the Google side needs verification plus an annual CASA
+# assessment, which is a deliberately deferred decision and not a blocker here.
+#
+# A failure needs no log convention of its own: `mecha doctor` globs
+# `mecha-*` for failed units, so this one is already watched.
+
+[Unit]
+Description=mecha nightly mail triage (classify what arrived)
+# Nothing here is worth starting before the network is.
+After=network-online.target
+
+[Service]
+Type=oneshot
+# 50 is the tool's own ceiling. A night that brought fewer costs less; a night
+# that brought more leaves the remainder for the next sweep rather than
+# silently dropping it, because `classify` skips what the store already knows.
+ExecStartPre=/bin/mkdir -p %h/.mecha/work/mail-classify
+ExecStart=%h/.cargo/bin/mecha --workspace %h/.mecha/work/mail-classify mail classify --account dartmouth --limit 50
+# The sweep is model-bound and this host's inference is bandwidth-bound, so a
+# run that has somehow not finished by morning is worse than one that stopped:
+# it would still be competing with the briefing at 07:00.
+TimeoutStartSec=45min
