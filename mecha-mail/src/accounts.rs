@@ -46,6 +46,22 @@ pub struct AccountEntry {
     /// charset so it never needs quoting anywhere it travels.
     pub name: String,
     pub provider: Provider,
+    /// How many days this provider's *refresh* credential lasts, when it is
+    /// known to expire on a fixed schedule. `mecha doctor` uses it to warn
+    /// before the grant dies instead of reporting the outage after.
+    ///
+    /// **Declared, never inferred.** The case this exists for is a Google
+    /// OAuth client in *Testing* publishing status, whose refresh tokens
+    /// expire exactly 7 days after consent — and there is no API that
+    /// reports publishing status, so guessing would either nag every
+    /// verified app forever or stay silent on every Testing one. Config
+    /// declares what code cannot know, the same rule that keeps
+    /// `OutboxKind` out of the tool.
+    ///
+    /// Absent means "no known expiry", which is the right default: it warns
+    /// about nothing until someone says there is something to warn about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_lifetime_days: Option<u32>,
 }
 
 /// `accounts.toml`, whole.
@@ -147,6 +163,7 @@ mod tests {
                 .map(|n| AccountEntry {
                     name: n.to_string(),
                     provider: Provider::Google,
+                    grant_lifetime_days: None,
                 })
                 .collect(),
         }
@@ -160,10 +177,14 @@ mod tests {
                 AccountEntry {
                     name: "dartmouth".into(),
                     provider: Provider::Outlook,
+                    grant_lifetime_days: None,
                 },
                 AccountEntry {
                     name: "personal".into(),
                     provider: Provider::Google,
+                    // Round-trips only when the field survives TOML, which
+                    // is what a Testing-mode Google client depends on.
+                    grant_lifetime_days: Some(7),
                 },
             ],
         };

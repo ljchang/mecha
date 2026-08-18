@@ -246,6 +246,31 @@ runs rules-free then rules-on and the per-case flips are their own artifact,
 never a comparable scorecard. The evidence behind all of this is
 `docs/MEMORY-RESEARCH.md`.
 
+**The budget is per domain, and a run carries only the domains it names.**
+`MAX_ACTIVE_RULES_PER_DOMAIN` (25, raised from 15 on 2026-08-18) is the count
+half and `RULES_CHAR_BUDGET` (2600) the size half; the two move together, and
+`learner_frames` is handed the same constant rather than repeating it as prose,
+because a frame saying "never exceed 15" while the gate admits 25 fails
+silently — it looks like a well-behaved learner, not a stale string. Fifteen
+was never measured here, and raising it is safe precisely because the ledger
+can measure the consequence per rule.
+
+Selection is the other half: `rules_prompt_block_for(RUN_DOMAINS)` builds a
+run's block from `behavior` + `writing` only, because a domain rides in every
+turn's cached prefix and is not universally relevant — a mail-classifier
+`triage` domain is a tool-less pass with one job, and general conduct rules
+are noise to it exactly as its rules would be noise everywhere else. **New
+domains are opt-in**, which fails in the safe direction: the cost of
+forgetting one is rules that do not fire, and `unrouted_domains` warns at
+startup (the routed-name precedent); the cost of the other default is every
+future domain silently joining every prefix, which at 25 apiece is how three
+domains become 75 rules in front of every request. `writing` is in the run set
+because drafting is not a separate run — the model calls `mail_send` mid-turn,
+so voice rules arriving later would arrive too late. Anything reconstructing
+"what a run sees" — validate's probes, eval's arms, learn's counterfactual
+before-arm — must use the same selection, or the ledger is keyed to a rule set
+no run ever had.
+
 **Distillation is not learning, and its provenance rule differs on purpose.**
 `mecha distill` (`distill.rs`) summarises each closed session into an episode
 staged to the knowledge graph through pkg's `kg_upsert` — evidence, not
@@ -527,6 +552,37 @@ stage rather than deliver. Unification did not touch this: the same
 annotations ride on the unified tools (there is a shared
 `assert_tool_surface` test per surface), and one send name in the outbox
 list now covers every account it could send from.
+
+**There is a third quadrant, and it is neither.** `mail_triage` — archive,
+read/unread, spam, trash — mutates the user's own mailbox and reaches nobody:
+no third party learns anything, so it is not `external_send` and **must never
+appear in `[outbox] tools`**. Staging it would make triage circular, reviewing
+a queue in order to fill another queue. It is not `readOnlyHint` either, or a
+`permission_mode = "read-only"` trigger could empty the inbox at 7am. So it
+carries `destructiveHint` alone, sits with the approver rather than the
+interlock, and `assert_tool_surface` takes a third slice that asserts exactly
+that pair of negatives. The action set is a **closed enum** (`TriageAction`),
+on the `SLACK-ACTIONS-DESIGN.md` §1 reasoning: a free-form label argument
+would put `spam` inside a verb that reads as harmless.
+
+**Tagging is deliberately not a provider operation.** Gmail labels and Graph
+categories are different objects, a tag that means something different per
+account fails at the one job tags have, and reaching either costs scope. A
+mecha tag lives on the triage record instead — no consent, no divergence, and
+a test asserts the mail surface offers no `label`/`tag`/`categor*` verb.
+
+The scopes moved on 2026-08-18 to make any of this possible: `gmail.modify`
+(replacing `gmail.readonly`; it stops short of `https://mail.google.com/`,
+whose only addition is irreversible deletion) and `Mail.ReadWrite` (replacing
+`Mail.Read`). **The Microsoft half is not free** — Microsoft's recommended
+consent policy blocks `Mail.ReadWrite` from end-user consent, so on a managed
+tenant an administrator must grant it to the app registration. Both changes
+invalidate existing grants. `StoredCredentials.granted_scopes` records what
+the provider actually granted, defaulted on load so old files parse — and
+reading `None` as *not covered* is the point, since every such grant predates
+the change. `mecha doctor` reports an account that cannot triage as
+`Attention` with the re-auth remedy, so the discovery happens there rather
+than mid-run on a 403.
 
 ## mecha-slack
 

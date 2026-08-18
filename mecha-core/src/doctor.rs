@@ -158,6 +158,11 @@ struct MailAccounts {
 struct MailAccount {
     name: String,
     provider: String,
+    /// Declared lifetime of the refresh credential, in days. See
+    /// `mecha_mail::accounts::AccountEntry::grant_lifetime_days` — absent
+    /// means no known expiry, and no warning.
+    #[serde(default)]
+    grant_lifetime_days: Option<u32>,
 }
 
 /// Scan `<mail>/*/auth_error.json`. Presence means a *permanent* refresh
@@ -171,16 +176,19 @@ fn check_mail(mail: &Path) -> Vec<Finding> {
 
     // Provider per account, best-effort: an unparseable registry costs the
     // `--provider` flag on the remedy, never the finding itself.
-    let providers: BTreeMap<String, String> = std::fs::read_to_string(mail.join("accounts.toml"))
+    let declared: Vec<MailAccount> = std::fs::read_to_string(mail.join("accounts.toml"))
         .ok()
         .and_then(|text| toml::from_str::<MailAccounts>(&text).ok())
-        .map(|file| {
-            file.accounts
-                .into_iter()
-                .map(|a| (a.name, a.provider))
-                .collect()
-        })
+        .map(|file| file.accounts)
         .unwrap_or_default();
+    let providers: BTreeMap<String, String> = declared
+        .iter()
+        .map(|a| (a.name.clone(), a.provider.clone()))
+        .collect();
+    let lifetimes: BTreeMap<String, u32> = declared
+        .iter()
+        .filter_map(|a| a.grant_lifetime_days.map(|d| (a.name.clone(), d)))
+        .collect();
 
     let entries = match std::fs::read_dir(mail) {
         Ok(entries) => entries,
@@ -202,6 +210,18 @@ fn check_mail(mail: &Path) -> Vec<Finding> {
         let Some(account) = dir.file_name().and_then(|n| n.to_str()).map(String::from) else {
             continue;
         };
+        // A grant that predates the triage scopes refreshes cleanly forever
+        // and then 403s the first time something archives. That failure has
+        // no marker — nothing has gone wrong yet — so it is read off the
+        // credential file directly, structurally, like everything else here.
+        out.extend(check_triage_scope(&dir, &account, providers.get(&account)));
+        out.extend(check_grant_age(
+            &dir,
+            &account,
+            providers.get(&account),
+            lifetimes.get(&account).copied(),
+        ));
+
         let marker_path = dir.join("auth_error.json");
         if !marker_path.is_file() {
             continue;
@@ -258,6 +278,253 @@ fn check_mail(mail: &Path) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// The scope a grant was minted with, as `mecha-mail` records it.
+///
+/// Read structurally rather than through `mecha-mail`'s type, for the reason
+/// the whole module gives: doctor takes no dependency on the crates it
+/// examines, and a field it does not know about must not stop it reading the
+/// one it does.
+#[derive(Debug, serde::Deserialize)]
+struct StoredGrant {
+    #[serde(default)]
+    granted_scopes: Option<String>,
+    #[serde(default)]
+    granted_at: Option<String>,
+}
+
+/// How many days before a grant expires to start saying so.
+///
+/// Two, because the remedy is a two-minute re-auth that needs a human at a
+/// terminal — long enough to survive a weekend-adjacent lapse, short enough
+/// that it is not background noise on a 7-day cycle. A warning that fires
+/// for most of the grant's life is a warning nobody reads.
+const GRANT_WARN_WITHIN_DAYS: i64 = 2;
+
+/// Warn before a grant with a known, fixed lifetime expires.
+///
+/// This exists because of the 2026-08-11 outage: Google expires the refresh
+/// token of an app in *Testing* publishing status exactly 7 days after
+/// consent, returns `invalid_grant` when it does — indistinguishable from a
+/// revocation — and scheduling went down for three days. Doctor reported it
+/// correctly *after* the fact. A recurring, dated failure deserves to be
+/// reported before it happens, which is the one thing a marker written on
+/// failure can never do.
+///
+/// Silent unless the lifetime was declared: see
+/// `AccountEntry::grant_lifetime_days` for why this is not inferred.
+fn check_grant_age(
+    dir: &Path,
+    account: &str,
+    provider: Option<&String>,
+    lifetime_days: Option<u32>,
+) -> Vec<Finding> {
+    let Some(lifetime) = lifetime_days.filter(|d| *d > 0) else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(dir.join("oauth.json")) else {
+        return Vec::new();
+    };
+    let Ok(grant) = serde_json::from_str::<StoredGrant>(&text) else {
+        return Vec::new(); // already reported by the scope check
+    };
+    // An un-stamped grant predates the field. Its age is genuinely unknown,
+    // and inventing one would either cry wolf or promise safety — so say
+    // nothing and let the next re-auth start the clock honestly.
+    let Some(granted_at) = grant.granted_at.as_deref() else {
+        return Vec::new();
+    };
+    let Ok(granted) = chrono::DateTime::parse_from_rfc3339(granted_at) else {
+        return Vec::new();
+    };
+    let expires = granted.with_timezone(&chrono::Utc) + chrono::Duration::days(lifetime as i64);
+    // Hours, then round *up* to whole days. `num_days()` truncates toward
+    // zero, so a grant with 47 hours left reports "1 day" — which is both
+    // wrong and the wrong direction, since it makes the warning look more
+    // urgent than it is and then says "1 day" again tomorrow.
+    let hours_left = (expires - chrono::Utc::now()).num_hours();
+    let left = (hours_left as f64 / 24.0).ceil() as i64;
+    if left > GRANT_WARN_WITHIN_DAYS {
+        return Vec::new();
+    }
+    let when = if hours_left < 0 {
+        "has expired".to_string()
+    } else if hours_left < 24 {
+        "expires within a day".to_string()
+    } else {
+        format!("expires in {left} days")
+    };
+    let mut argv = vec![
+        "mecha-mail".to_string(),
+        "auth".to_string(),
+        account.to_string(),
+    ];
+    if let Some(p) = provider {
+        argv.push("--provider".to_string());
+        argv.push(p.clone());
+    }
+    vec![Finding {
+        component: "mail".to_string(),
+        severity: Severity::Attention,
+        summary: format!("`{account}` sign-in {when}"),
+        detail: format!(
+            "this grant lasts {lifetime} days from consent ({granted_at}) and refreshing does \
+             not extend it. Re-authenticate before it lapses — once it does, the failure looks \
+             like a revoked token and every scheduled run using this account stops."
+        ),
+        remedy: Some(Remedy {
+            description: format!("re-authenticate `{account}` now (opens an OAuth flow)"),
+            argv,
+            needs_terminal: true,
+        }),
+    }]
+}
+
+/// Which scope each provider needs before the triage verbs work. Mirrors
+/// `mecha_mail::token::triage_scope_for`; duplicated rather than imported
+/// because the seam here is a directory of JSON, not a crate dependency.
+fn triage_scope_for(provider: &str) -> Option<&'static str> {
+    match provider {
+        "google" => Some("gmail.modify"),
+        "outlook" | "microsoft" => Some("Mail.ReadWrite"),
+        _ => None,
+    }
+}
+
+/// Report an account whose OAuth grant does not cover archive/spam/read-state.
+///
+/// Only reported when the provider is known: guessing which scope a grant
+/// should carry would turn an unrecognised provider into a permanent false
+/// finding, and a doctor that cries wolf stops being read. An **absent**
+/// `granted_scopes` counts as not covered, which is correct rather than
+/// harsh — every grant written before the field existed predates the scopes
+/// too.
+///
+/// `Attention`, not `Broken`: nothing is failing right now — mail reads,
+/// sends and stages drafts exactly as before — but the first archive will
+/// fail, and that is precisely the "silence is the likely explanation"
+/// shape this severity is for. On a managed Microsoft tenant the remedy may
+/// also need an administrator rather than the user, so the detail says so
+/// instead of implying a re-auth alone will fix it.
+fn check_triage_scope(dir: &Path, account: &str, provider: Option<&String>) -> Vec<Finding> {
+    let Some(provider) = provider else {
+        return Vec::new();
+    };
+    let Some(needed) = triage_scope_for(provider) else {
+        return Vec::new();
+    };
+    let path = dir.join("oauth.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        // No credentials is not a scope problem; the account simply is not
+        // signed in, which other checks and the first real call will say.
+        return Vec::new();
+    };
+    let Ok(grant) = serde_json::from_str::<StoredGrant>(&text) else {
+        return vec![Finding::unreadable(
+            "mail",
+            &format!("oauth.json for `{account}` did not parse"),
+            format!("{}", path.display()),
+        )];
+    };
+    if grant
+        .granted_scopes
+        .as_deref()
+        .is_some_and(|g| g.contains(needed))
+    {
+        return Vec::new();
+    }
+    let admin_note = if provider == "outlook" || provider == "microsoft" {
+        " Microsoft blocks `Mail.ReadWrite` from end-user consent under its \
+         recommended policy, so on a managed tenant an administrator has to \
+         grant it to the app registration before this can succeed."
+    } else {
+        ""
+    };
+    vec![Finding {
+        component: "mail".to_string(),
+        severity: Severity::Attention,
+        summary: format!("`{account}` cannot archive, spam or mark mail read"),
+        detail: format!(
+            "the stored grant does not include `{needed}`, so mail_triage will fail on this \
+             account. Reading, sending and calendar work are unaffected.{admin_note}"
+        ),
+        remedy: Some(Remedy {
+            description: format!(
+                "re-authenticate `{account}` to add the triage scope (opens an OAuth flow)"
+            ),
+            argv: vec![
+                "mecha-mail".to_string(),
+                "auth".to_string(),
+                account.to_string(),
+                "--provider".to_string(),
+                provider.clone(),
+            ],
+            needs_terminal: true,
+        }),
+    }]
+}
+
+#[cfg(test)]
+mod grant_age_tests {
+    use super::*;
+
+    fn store(dir: &Path, granted_at: Option<&str>) {
+        std::fs::create_dir_all(dir).unwrap();
+        let stamp = granted_at
+            .map(|g| format!(r#","granted_at":"{g}""#))
+            .unwrap_or_default();
+        std::fs::write(
+            dir.join("oauth.json"),
+            format!(r#"{{"client_id":"i","access_token":"a","refresh_token":"r","expires_at":1{stamp}}}"#),
+        )
+        .unwrap();
+    }
+
+    fn days_ago(n: i64) -> String {
+        (chrono::Utc::now() - chrono::Duration::days(n)).to_rfc3339()
+    }
+
+    /// The 7-day Testing clock, reported before it fires rather than after.
+    #[test]
+    fn a_grant_nearing_its_declared_lifetime_is_reported_early() {
+        let tmp = std::env::temp_dir().join(format!("mecha-grant-{}", std::process::id()));
+        let g = "google".to_string();
+
+        // Fresh: silent. A warning that fires all week is not a warning.
+        store(&tmp, Some(&days_ago(1)));
+        assert!(check_grant_age(&tmp, "personal", Some(&g), Some(7)).is_empty());
+
+        // Day 5 of 7 — two days left, inside the window.
+        store(&tmp, Some(&days_ago(5)));
+        let f = check_grant_age(&tmp, "personal", Some(&g), Some(7));
+        assert_eq!(f.len(), 1, "should warn with 2 days left");
+        assert!(
+            f[0].summary.contains("expires in 2 days"),
+            "{}",
+            f[0].summary
+        );
+        assert!(f[0].remedy.as_ref().unwrap().needs_terminal);
+
+        // Under 24h: worded without a misleading whole-day count.
+        store(&tmp, Some(&days_ago(7)));
+        let f = check_grant_age(&tmp, "personal", Some(&g), Some(7));
+        assert!(f[0].summary.contains("within a day"), "{}", f[0].summary);
+
+        // Past it: still a finding, worded as past.
+        store(&tmp, Some(&days_ago(9)));
+        let f = check_grant_age(&tmp, "personal", Some(&g), Some(7));
+        assert!(f[0].summary.contains("has expired"), "{}", f[0].summary);
+
+        // No declared lifetime: silent however old. Not inferred, ever.
+        assert!(check_grant_age(&tmp, "personal", Some(&g), None).is_empty());
+
+        // Un-stamped grant: age unknown, so no claim either way.
+        store(&tmp, None);
+        assert!(check_grant_age(&tmp, "personal", Some(&g), Some(7)).is_empty());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }
 
 /// The legacy per-provider stores — `<home>/google/oauth.json` and

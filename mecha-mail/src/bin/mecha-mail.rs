@@ -597,9 +597,14 @@ fn register(file: &mut accounts::AccountsFile, name: &str, provider: Provider) -
             existing.provider
         ),
         Some(_) => {}
+        // `grant_lifetime_days` is left unset on purpose: whether this
+        // provider expires the grant on a schedule depends on the OAuth
+        // client's publishing status, which no API reports. The user
+        // declares it if they know it.
         None => file.accounts.push(AccountEntry {
             name: name.to_string(),
             provider,
+            grant_lifetime_days: None,
         }),
     }
     Ok(())

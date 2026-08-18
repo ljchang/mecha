@@ -222,6 +222,162 @@ impl OutlookProvider {
             })
     }
 
+    // ── triage ────────────────────────────────────────────────────────────
+    //
+    // The asymmetry with Gmail lives here and cannot be abstracted away.
+    // Gmail applies a label change to a whole thread in one call; **Graph has
+    // no thread resource at all** — a conversation is every message sharing a
+    // `conversationId`, which is a filter query (see `get_thread`). So every
+    // verb below is: resolve the conversation to message ids, then act on
+    // each.
+    //
+    // Two consequences worth stating rather than discovering. It is N+1
+    // requests where Gmail is one. And it is **not atomic**: a failure
+    // halfway leaves some messages moved and some not. The verbs therefore
+    // report how many they touched and fail only if *every* message failed —
+    // the same convention a fan-out read already uses, for the same reason.
+    // A partly-archived conversation is visibly odd; a silently-half-archived
+    // one reported as success is the failure that costs trust.
+
+    /// The message ids in a conversation. Ids only — the triage verbs never
+    /// need the bodies, and `$select=id` keeps a fifty-message thread cheap.
+    async fn conversation_message_ids(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<String>, MailError> {
+        let filter = format!(
+            "conversationId eq '{}'",
+            conversation_id.replace('\'', "''")
+        );
+        let url = format!(
+            "{GRAPH}/me/messages?$filter={}&$select=id&$top=100",
+            urlencode(&filter)
+        );
+        let json = self.get_json(&url).await?;
+        let ids: Vec<String> = json["value"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m["id"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if ids.is_empty() {
+            return Err(MailError::ApiError {
+                status: 404,
+                message: format!("no messages in conversation {conversation_id}"),
+            });
+        }
+        Ok(ids)
+    }
+
+    /// Apply an operation to every message in a conversation, tolerating
+    /// partial failure. Errors only when nothing succeeded, and then with the
+    /// first real error rather than a count.
+    async fn for_each_message<'a, F, Fut>(
+        &'a self,
+        conversation_id: &str,
+        op: F,
+    ) -> Result<usize, MailError>
+    where
+        F: Fn(&'a Self, String) -> Fut,
+        Fut: std::future::Future<Output = Result<(), MailError>>,
+    {
+        let ids = self.conversation_message_ids(conversation_id).await?;
+        let total = ids.len();
+        let mut first_err = None;
+        let mut ok = 0usize;
+        for id in ids {
+            match op(self, id).await {
+                Ok(()) => ok += 1,
+                Err(e) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+            }
+        }
+        match (ok, first_err) {
+            (0, Some(e)) => Err(e),
+            _ => {
+                if ok < total {
+                    tracing::warn!(
+                        conversation = conversation_id,
+                        touched = ok,
+                        total,
+                        "triage applied to part of the conversation"
+                    );
+                }
+                Ok(ok)
+            }
+        }
+    }
+
+    /// Move one message to a well-known folder.
+    async fn move_message(&self, message_id: &str, folder: &str) -> Result<(), MailError> {
+        let resp = send_with_retry(
+            self.client
+                .post(format!(
+                    "{GRAPH}/me/messages/{}/move",
+                    urlencode(message_id)
+                ))
+                .bearer_auth(&self.access_token)
+                .json(&json!({ "destinationId": folder })),
+        )
+        .await?;
+        self.ok_or_err(resp).await
+    }
+
+    /// Move the conversation to Archive. `archive` is a well-known folder
+    /// name Graph resolves per-mailbox, so this works without knowing the
+    /// user's folder ids or their language.
+    pub async fn archive_thread(&self, conversation_id: &str) -> Result<usize, MailError> {
+        self.for_each_message(conversation_id, |s, id| async move {
+            s.move_message(&id, "archive").await
+        })
+        .await
+    }
+
+    /// Report the conversation as junk. Graph has no "mark as spam" verb —
+    /// moving to the Junk Email folder *is* the report, and is what trains
+    /// the filter.
+    pub async fn spam_thread(&self, conversation_id: &str) -> Result<usize, MailError> {
+        self.for_each_message(conversation_id, |s, id| async move {
+            s.move_message(&id, "junkemail").await
+        })
+        .await
+    }
+
+    /// Move the conversation to Deleted Items — recoverable, like Gmail's
+    /// trash. Nothing here can permanently delete.
+    pub async fn trash_thread(&self, conversation_id: &str) -> Result<usize, MailError> {
+        self.for_each_message(conversation_id, |s, id| async move {
+            s.move_message(&id, "deleteditems").await
+        })
+        .await
+    }
+
+    /// Set read state across the conversation. A PATCH on the message rather
+    /// than a move, so this is the one verb that leaves the message where it
+    /// is.
+    pub async fn set_thread_read(
+        &self,
+        conversation_id: &str,
+        read: bool,
+    ) -> Result<usize, MailError> {
+        self.for_each_message(conversation_id, move |s, id| async move {
+            let resp = send_with_retry(
+                s.client
+                    .patch(format!("{GRAPH}/me/messages/{}", urlencode(&id)))
+                    .bearer_auth(&s.access_token)
+                    .json(&json!({ "isRead": read })),
+            )
+            .await?;
+            s.ok_or_err(resp).await
+        })
+        .await
+    }
+
     async fn ok_or_err(&self, resp: reqwest::Response) -> Result<(), MailError> {
         if resp.status().is_success() {
             return Ok(());

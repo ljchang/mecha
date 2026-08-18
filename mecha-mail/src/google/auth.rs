@@ -38,6 +38,11 @@ pub struct OAuthTokens {
     pub refresh_token: Option<String>,
     pub expires_at: Option<i64>,
     pub token_type: String,
+    /// What the provider granted, space-separated. Both Google and Entra
+    /// return this on the token response; a refresh that omits it keeps
+    /// whatever the original grant recorded.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,7 +73,26 @@ pub fn generate_pkce() -> PkceChallenge {
 }
 
 /// The Google OAuth configuration for this client. Scopes cover Gmail
-/// read/send and Calendar — one consent covers both surfaces.
+/// read/modify/send and Calendar — one consent covers both surfaces.
+///
+/// `gmail.modify` replaced `gmail.readonly` on 2026-08-18, because triage —
+/// archive, mark read, spam, trash — is *by definition* modification, and an
+/// inbox that only empties inside mecha has not been emptied. It subsumes
+/// `gmail.readonly`, so listing both would be noise.
+///
+/// **It stops short of `https://mail.google.com/` deliberately.** That is the
+/// full-access scope, and the difference is exactly one capability: permanent,
+/// irreversible deletion. `gmail.modify` can move a message to the trash,
+/// where the user can get it back, and cannot destroy it. A triage surface
+/// driven by a model should not hold the verb with no undo, so the least
+/// privilege that does the job is the one asked for.
+///
+/// Both `gmail.modify` and `gmail.readonly` are *restricted* scopes in
+/// Google's tiering, so this is not a move into a stricter tier — it is the
+/// same tier, one rung wider. What it does cost is **re-consent**: the stored
+/// refresh token was issued against the old scope set and does not cover the
+/// new one, so every existing account must run `mecha-mail auth <name>` again.
+/// `mecha doctor` reports an account whose grant predates this.
 pub fn google_oauth_config(client_id: String, client_secret: String, port: u16) -> OAuthConfig {
     OAuthConfig {
         client_id,
@@ -77,7 +101,7 @@ pub fn google_oauth_config(client_id: String, client_secret: String, port: u16) 
         auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
         token_url: "https://oauth2.googleapis.com/token".to_string(),
         scopes: vec![
-            "https://www.googleapis.com/auth/gmail.readonly".to_string(),
+            "https://www.googleapis.com/auth/gmail.modify".to_string(),
             "https://www.googleapis.com/auth/gmail.send".to_string(),
             "https://www.googleapis.com/auth/calendar".to_string(),
             "https://www.googleapis.com/auth/calendar.events".to_string(),
@@ -171,6 +195,7 @@ pub fn parse_token_response(json: serde_json::Value, prior_refresh: Option<&str>
             .or_else(|| prior_refresh.map(|s| s.to_string())),
         expires_at: Some(chrono::Utc::now().timestamp() + expires_in),
         token_type: json["token_type"].as_str().unwrap_or("Bearer").to_string(),
+        scope: json["scope"].as_str().map(str::to_string),
     }
 }
 
@@ -323,6 +348,8 @@ pub async fn interactive_flow(
         refresh_token,
         expires_at: tokens.expires_at.unwrap_or_default(),
         account: Some(account),
+        granted_scopes: tokens.scope,
+        granted_at: Some(chrono::Utc::now().to_rfc3339()),
     })
 }
 
@@ -365,14 +392,23 @@ mod tests {
         );
     }
 
+    /// The triage verbs need `gmail.modify`, and nothing needs the full-access
+    /// scope. The negative half is the load-bearing one: `mail.google.com`
+    /// buys exactly one thing over `gmail.modify` — permanent deletion with no
+    /// undo — and a model-driven triage loop must not hold it.
     #[test]
-    fn scopes_cover_mail_and_calendar_but_not_modify() {
+    fn scopes_cover_mail_and_calendar_and_modify_but_never_full_access() {
         let config = google_oauth_config("id".into(), "s".into(), DEFAULT_REDIRECT_PORT);
         let joined = config.scopes.join(" ");
-        assert!(joined.contains("gmail.readonly") && joined.contains("gmail.send"));
+        assert!(joined.contains("gmail.modify"), "triage needs modify");
+        assert!(joined.contains("gmail.send"));
         assert!(joined.contains("auth/calendar"));
-        // Nothing in this crate modifies messages; least privilege wins.
-        assert!(!joined.contains("gmail.modify"));
+        assert!(
+            !joined.contains("https://mail.google.com/"),
+            "full access adds only irreversible delete: {joined}"
+        );
+        // modify subsumes readonly; asking for both is noise on the consent screen.
+        assert!(!joined.contains("gmail.readonly"), "{joined}");
     }
 
     #[test]

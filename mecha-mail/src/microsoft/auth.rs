@@ -22,11 +22,32 @@ use crate::google::auth::OAuthTokens;
 use crate::types::MailError;
 
 /// Graph scopes. `offline_access` is what yields a refresh token; the rest
-/// are the least that read, send and calendar work need. `Mail.ReadWrite` is
-/// deliberately absent — nothing here modifies a message in place, and least
-/// privilege beats a future consent click.
+/// are the least that read, triage, send and calendar work need.
+///
+/// **`Mail.ReadWrite` replaced `Mail.Read` on 2026-08-18, and it is not a
+/// free change.** It subsumes `Mail.Read`, so the surface is one rung wider,
+/// not a different tier — but Microsoft classes it high-impact and its
+/// recommended user-consent policy **blocks it from end-user consent**. In a
+/// managed tenant a non-admin does not see a consent screen at all; they see
+/// *"Need admin approval"*. So on a tenant with that policy this scope needs
+/// an administrator to grant it to the app registration once, and until they
+/// do, `mecha-mail auth` fails at consent rather than at first use.
+///
+/// That cost is real and was weighed: the alternative is triage that works on
+/// Gmail and silently does nothing on Outlook, which is the
+/// silently-degrading-sandbox shape this repository refuses everywhere else.
+/// A verb that cannot work must fail loudly. `mecha doctor` reports an
+/// account whose grant does not cover the triage verbs, so "why did archive
+/// not work on this account" is answerable without reading source.
+///
+/// `User.Read` stays absent for the original reason — `GET /me` is not worth
+/// a consent prompt when Sent Items answers the same question.
+///
+/// Note for later: from 2026-12-31 Microsoft moves modification of *sensitive*
+/// mail properties behind a further `Mail-Advanced.ReadWrite`. Nothing here
+/// touches those properties today, so this list stands — but the ledge moves.
 pub const SCOPES: &[&str] = &[
-    "https://graph.microsoft.com/Mail.Read",
+    "https://graph.microsoft.com/Mail.ReadWrite",
     "https://graph.microsoft.com/Mail.Send",
     "https://graph.microsoft.com/Calendars.ReadWrite",
     "offline_access",
@@ -169,19 +190,42 @@ pub async fn poll_for_token(
 }
 
 /// Refresh a Microsoft access token. Public-client shaped: no secret.
+/// The form body of a refresh request. Pure, so the absence of `scope` is a
+/// property a test can assert rather than a line someone has to keep noticing.
+fn refresh_form_params<'a>(
+    client_id: &'a str,
+    refresh_tok: &'a str,
+) -> [(&'static str, &'a str); 3] {
+    [
+        ("grant_type", "refresh_token"),
+        ("client_id", client_id),
+        ("refresh_token", refresh_tok),
+    ]
+}
+
 pub async fn refresh_token(
     tenant: &str,
     client_id: &str,
     refresh_tok: &str,
     client: &reqwest::Client,
 ) -> Result<OAuthTokens, MailError> {
-    let scope = SCOPES.join(" ");
-    let params = [
-        ("grant_type", "refresh_token"),
-        ("client_id", client_id),
-        ("refresh_token", refresh_tok),
-        ("scope", scope.as_str()),
-    ];
+    // **No `scope` on a refresh.** RFC 6749 §6 makes it optional and defaults
+    // it to the original grant, and Entra is explicit that a refresh's scopes
+    // must be "equivalent to or a subset of" what was originally consented.
+    // Sending `SCOPES` here sends a *superset* the moment this list grows —
+    // which is exactly what happened on 2026-08-18 when `Mail.ReadWrite`
+    // replaced `Mail.Read`: every already-working account would have had its
+    // next refresh refused with `invalid_grant`, which
+    // `classify_refresh_failure` correctly reads as permanent and reports as a
+    // dead login. A scope widening would have taken down the accounts that had
+    // not re-consented yet, an hour later, looking exactly like a revocation.
+    //
+    // Omitting it makes refresh scope-agnostic: an old grant keeps working at
+    // its old privileges until the user re-consents, and a new grant refreshes
+    // at the new ones. It also matches the Google path, which never sent
+    // scope here. All scopes in `SCOPES` target Graph, so there is no
+    // multi-resource ambiguity for Entra to resolve.
+    let params = refresh_form_params(client_id, refresh_tok);
 
     let resp = client.post(token_url(tenant)).form(&params).send().await?;
     if !resp.status().is_success() {
@@ -278,6 +322,8 @@ pub async fn device_flow(
         refresh_token,
         expires_at: tokens.expires_at.unwrap_or_default(),
         account,
+        granted_scopes: tokens.scope,
+        granted_at: Some(chrono::Utc::now().to_rfc3339()),
     })
 }
 
@@ -383,19 +429,45 @@ mod tests {
         ));
     }
 
+    /// The triage verbs need `Mail.ReadWrite`, which subsumes `Mail.Read`.
+    /// `User.Read` stays out: `GET /me` is not worth a consent prompt when
+    /// Sent Items answers the same question, and in a managed tenant every
+    /// extra scope is another thing an administrator has to agree to.
     #[test]
-    fn scopes_request_offline_access_and_no_readwrite() {
+    fn scopes_request_offline_access_and_readwrite_but_not_the_directory() {
         let joined = SCOPES.join(" ");
         assert!(
             joined.contains("offline_access"),
             "no refresh token without it"
         );
-        assert!(joined.contains("Mail.Read") && joined.contains("Mail.Send"));
-        assert!(joined.contains("Calendars.ReadWrite"));
         assert!(
-            !joined.contains("Mail.ReadWrite"),
-            "nothing here modifies a message"
+            joined.contains("Mail.ReadWrite"),
+            "triage modifies messages in place: {joined}"
         );
+        assert!(joined.contains("Mail.Send"));
+        assert!(joined.contains("Calendars.ReadWrite"));
+        assert!(!joined.contains("User.Read"), "{joined}");
+    }
+
+    /// A refresh must never request scopes the grant may not have.
+    ///
+    /// Fails on the behaviour shipped until 2026-08-18, where the refresh body
+    /// carried `SCOPES`. Widening that list then asked Entra for a superset of
+    /// what the stored grant consented to, which it refuses with
+    /// `invalid_grant` — indistinguishable from a revocation, and classified
+    /// as permanent. The consequence was an outage on every account that had
+    /// not re-consented, roughly an hour after the new binary was installed.
+    #[test]
+    fn a_refresh_requests_no_scopes_at_all() {
+        let body = refresh_form_params("client", "refresh-tok");
+        let keys: Vec<&str> = body.iter().map(|(k, _)| *k).collect();
+        assert!(
+            !keys.contains(&"scope"),
+            "a refresh inherits the grant's scopes; asking widens it: {keys:?}"
+        );
+        assert!(keys.contains(&"grant_type"));
+        assert!(keys.contains(&"refresh_token"));
+        assert!(keys.contains(&"client_id"));
     }
 
     /// Entra reports a dead refresh credential as `invalid_grant` with an
