@@ -16,6 +16,14 @@ that mail quarantined so a subject line cannot reach a run holding the
 calendar. Both landed a verb in the same new capability quadrant, from
 opposite directions.
 
+### Upgrading
+
+**Both mail accounts must re-authenticate.** The Google and Microsoft scopes
+widened so mail can be filed rather than only read, and a widened scope does
+not cover a grant issued under the old one. Run `mecha-mail auth <account>`
+for each; `mecha doctor` names any account that cannot triage, with the
+remedy. Nothing else in this release requires action.
+
 ### Added
 
 - **Mail triage.** `mecha-mail` gained `mail_triage` — archive, read, unread,
