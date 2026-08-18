@@ -222,10 +222,60 @@ pub const TAGS: &[&str] = &[
     "personal",
 ];
 
-/// The manifest types a thread can be recognised as. Mirrors
-/// `mecha-manifest/types/` — a directory in another repository, so this is a
-/// list rather than an import, and an unknown value simply fails to match.
-pub const REQUEST_TYPES: &[&str] = &["letter", "lab-application", "meeting", "speaking", "book"];
+/// The request kinds a thread can be recognised as.
+///
+/// **Recognition is not routing, and the two were fused until 2026-08-18.**
+/// This list started as a mirror of `mecha-manifest/types/` and every name on
+/// it implied `proposed: frontdoor`. Decoupling them is what lets the
+/// vocabulary grow from what actually arrives: a kind can be recognised,
+/// tagged and counted here long before anyone writes a form for it, and the
+/// evidence this store accumulates is the honest input to deciding which
+/// forms are worth writing. Building the manifest first would be guessing at
+/// the distribution.
+///
+/// So a name here means "this store knows what this kind of request is".
+/// Whether it can be *handed to the front door* is [`ROUTABLE_TYPES`], which
+/// is the subset a manifest exists for.
+pub const REQUEST_TYPES: &[&str] = &[
+    "letter",
+    "lab-application",
+    "meeting",
+    "speaking",
+    "book",
+    // Added from the first real sweep (2026-08-18) and from what the mail
+    // actually contains, each because a standard set of things has to be
+    // known before it can be answered — the test for a type rather than a tag.
+    //
+    // A peer review invitation: journal, manuscript, deadline, and an
+    // accept-or-decline. One appeared in the first fifty threads, correctly
+    // read as `today`/`respond`.
+    "review",
+    // A letter of support for someone else's proposal. Distinct from `letter`
+    // and currently collides with it: the agency, the mechanism, the deadline
+    // and what is being committed are all different questions from the ones a
+    // recommendation needs.
+    "grant-support",
+    // Someone wants data, code or materials from a published paper. Which
+    // paper, what exactly, what for, and what agreement covers it.
+    "data-request",
+];
+
+/// The subset of [`REQUEST_TYPES`] a manifest exists for in
+/// `mecha-manifest/types/`, and therefore the only kinds that can actually be
+/// promoted into `~/.mecha/requests/`.
+///
+/// A list rather than an import, because that directory is in another
+/// repository — nothing enforces the two agree, which is exactly why routing
+/// checks this and never `REQUEST_TYPES`. Promoting a thread whose type has no
+/// manifest would route it at a door with nothing behind it: the front door's
+/// extractor is manifest-independent and would extract happily, and then
+/// `needs-info` would have no fields to ask for.
+pub const ROUTABLE_TYPES: &[&str] = &["letter", "lab-application", "meeting", "speaking", "book"];
+
+/// Whether a recognised kind can be handed to the front door today.
+pub fn is_routable(request_type: &str) -> bool {
+    ROUTABLE_TYPES.contains(&request_type)
+}
 
 /// One thread, as the classifier left it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -756,6 +806,86 @@ mod tests {
         assert!(!blob.contains("escalated_from"), "{blob}");
     }
 
+    /// A confirmed misclassification from the 2026-08-18 sweep: a high school
+    /// student asking to work in the lab, who also proposed a brief call, came
+    /// back as `meeting`. The mechanism a sender offers is not the thing they
+    /// are asking for, and `meeting` is the type most likely to absorb every
+    /// other one, because almost every request can be discussed in a meeting.
+    #[test]
+    fn the_prompt_disambiguates_a_request_from_the_mechanism_offered() {
+        let p = classifier_prompt(&input(), "2026-08-18");
+        assert!(
+            p.contains("what the sender ultimately WANTS"),
+            "the rule must be stated, not implied"
+        );
+        assert!(
+            p.contains("`lab-application`, not `meeting`"),
+            "the worked example is the part a model actually follows"
+        );
+        // And it must land inside the instructions, never after the data —
+        // an instruction the payload has already argued against is not one.
+        let begin = p.find("BEGIN MESSAGE DATA").unwrap();
+        assert!(p.find("ultimately WANTS").unwrap() < begin);
+    }
+
+    /// Recognition and routing are separate, and the separation is enforced
+    /// in code rather than asked of the model. A kind with no manifest keeps
+    /// its name — that is the evidence the store exists to collect — and
+    /// loses only the promotion there is nothing behind.
+    #[test]
+    fn a_recognised_kind_with_no_manifest_is_kept_but_not_routed() {
+        // Routable: the proposal stands.
+        let v = parse_verdict(
+            r#"{"reasoning":"r","bucket":"respond","urgency":"week","one_line":"x",
+                "tags":[],"proposed":"frontdoor","request_type":"letter"}"#,
+        )
+        .unwrap();
+        assert_eq!(v.request_type.as_deref(), Some("letter"));
+        assert_eq!(v.proposed, Proposed::Frontdoor);
+
+        // Recognised but not routable: the name survives, the routing does not.
+        let v = parse_verdict(
+            r#"{"reasoning":"r","bucket":"respond","urgency":"today","one_line":"x",
+                "tags":[],"proposed":"frontdoor","request_type":"review"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            v.request_type.as_deref(),
+            Some("review"),
+            "the kind is evidence"
+        );
+        assert_eq!(
+            v.proposed,
+            Proposed::Reply,
+            "a respond-bucket thread still wants an answer"
+        );
+
+        // No type at all, but the model asked for the front door anyway.
+        let v = parse_verdict(
+            r#"{"reasoning":"r","bucket":"notify","urgency":"none","one_line":"x",
+                "tags":[],"proposed":"frontdoor"}"#,
+        )
+        .unwrap();
+        assert_eq!(v.proposed, Proposed::None);
+    }
+
+    /// Every routable kind must be a recognised one, or routing keys on a
+    /// name the classifier can never produce.
+    #[test]
+    fn the_routable_set_is_a_subset_of_what_can_be_recognised() {
+        for t in ROUTABLE_TYPES {
+            assert!(
+                REQUEST_TYPES.contains(t),
+                "{t} is routable but unrecognisable"
+            );
+            assert!(is_routable(t));
+        }
+        for t in ["review", "grant-support", "data-request"] {
+            assert!(REQUEST_TYPES.contains(&t));
+            assert!(!is_routable(t), "{t} has no manifest yet");
+        }
+    }
+
     /// The seam is a directory of JSON, so a field this writer does not know
     /// must survive a read-modify-write rather than being dropped.
     #[test]
@@ -829,8 +959,15 @@ fn classifier_prompt(t: &ThreadInput, today: &str) -> String {
          - deadline: YYYY-MM-DD if the thread implies one, else null.\n\
          - request_type: if this is really one of these standard requests \
          arriving as an email, name it: {types}. Otherwise null. Do not invent \
-         a type that is not on that list. When you name one, `proposed` should \
-         be `frontdoor`.\n\
+         a type that is not on that list. Naming one is worth doing whether or \
+         not anything can be done with it automatically — say what the request \
+         IS and let the rest be decided elsewhere.\n\
+         Name the type by what the sender ultimately WANTS, not by the \
+         mechanism they suggest for getting it. Someone asking to join the lab \
+         who proposes a call is `lab-application`, not `meeting`; someone \
+         asking for a letter who offers to meet first is `letter`. Use \
+         `meeting` only when meeting IS the request and nothing else is being \
+         asked for.\n\
          \n\
          Reply with one JSON object and nothing else. Reason first:\n\
          {{\"reasoning\": \"<why>\", \"bucket\": \"...\", \"urgency\": \"...\", \
@@ -885,6 +1022,18 @@ fn parse_verdict(text: &str) -> Result<Verdict> {
         if !REQUEST_TYPES.contains(&rt.as_str()) {
             v.request_type = None;
         }
+    }
+    // Routing is decided here, not by the model. The classifier has one job —
+    // name the kind — and asking it to also track which kinds have a manifest
+    // would be asking it to hold a second list it cannot check. A recognised
+    // kind with no manifest keeps its name (that is the evidence this store
+    // exists to collect) and loses only the promotion it cannot have.
+    if v.proposed == Proposed::Frontdoor && !v.request_type.as_deref().is_some_and(is_routable) {
+        v.proposed = if v.bucket == Bucket::Respond {
+            Proposed::Reply
+        } else {
+            Proposed::None
+        };
     }
     // A deadline that is not a date is not a deadline. Anything downstream
     // would hand it to `kg_task_create`, which takes YYYY-MM-DD.
