@@ -8,6 +8,7 @@ pub mod eval;
 pub mod frontdoor;
 pub mod gossip;
 pub mod learn;
+pub mod mail;
 pub mod msg;
 pub mod outbox;
 pub mod proposals;
