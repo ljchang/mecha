@@ -93,8 +93,8 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **904 tests**, no failures — re-measured 2026-08-18 on the
-`mail-triage-and-rule-budget` branch. The growth from 707 (2026-08-10) spans
+Expect **936 tests**, no failures — re-measured 2026-08-18 on `main`
+after the mail-triage and documents work merged (16 commits unpushed). The growth from 707 (2026-08-10) spans
 the 0.1.3–0.1.6 arcs; each
 release's CHANGELOG entry names what its tests pin. One flake was seen once
 in `mecha-core` on 2026-08-08 and never reproduced — unidentified, worth an
@@ -650,41 +650,62 @@ The arc is complete and running nightly. What is missing is refinement:
   pre-set untrusted. What remains is only the listener itself and its
   authentication.
 
-### Mail as a surface you work, not just a tool the model calls
+### Mail as a surface you work — phases 4-6 remain
 
-`docs/MAIL-UX-RESEARCH.md` (2026-08-17) is the survey and the phase plan.
-Phase 1 — the triage verbs and the OAuth scopes behind them — shipped
-2026-08-18. What is left, in the order the doc argues:
+**`docs/MAIL-UX-DESIGN.md` (2026-08-18) is the authority for what is left**;
+`MAIL-UX-RESEARCH.md` is the survey it argues from, and where the two disagree
+the design doc is later and wins. **The 0.1.7 release is held until this is
+complete** — Luke's decision 2026-08-18, scope confirmed as *everything
+through phase 6*.
 
-- **The triage store and the quarantined classifier** (phase 2, the next
-  piece). `~/.mecha/mail-triage/`, one typed record per thread, written by a
-  tool-less history-less pass on the front door's extractor construction, so
-  the prose never reaches a privileged run and the list view renders typed
-  fields. Self-contained and useful alone: the `morning` trigger currently
-  re-reads the inbox from scratch every day and could read verdicts instead.
-- **`mecha mail list/show/classify/…`** (phase 3). The CLI does everything
-  first; the modal drives the CLI, per the front door's rule.
-- **Front-door routing** (phase 4), and the reason to do it before the TUI.
-  Four of the five mail categories already have manifests in
-  `mecha-manifest/types/` — `letter`, `lab-application`, `meeting`,
-  `speaking` — so an email asking for a letter is a `letter` request that
-  arrived untyped through the wrong door. Recognising `request_type` and
-  promoting it into `~/.mecha/requests/` reuses extraction, `needs-info`,
-  draft-into-outbox and `reconcile` unchanged.
-- **`/mail`** (phase 5), a sixth modal on the `/outbox` pattern, with a closed
-  action enum. It proposes; the outbox still releases. There is exactly one
-  approval surface and this is not it.
-- **The correction loop** (phase 6) — a `triage` domain kept distinct from
-  learned rules, since a few-shot pool for a tool-less classifier has a far
-  smaller blast radius than a rule in every prefix.
+Phases 1-3 shipped 2026-08-18: `mail_triage` (archive/read/unread/spam/trash,
+closed enum, both providers), `~/.mecha/mail-triage/` holding one typed verdict
+per thread, the quarantined classifier, `mecha mail
+classify/list/show/dismiss`, the snippet-first escalation rule, and the
+`mecha-mail-classify` timer (05:30 UTC, Dartmouth only, installed and running).
+Measured on 51 real threads: 30 `ignore`, 9 `notify`, 12 `respond`, five
+request kinds recognised.
 
-Two decisions the doc records rather than leaves open: tags are mecha's own
-and never provider labels, and no mail parser belongs in mecha — pkg already
-ingests `email.thread` episodes (`sources/mbox.rs`) with the bulk filter and
-the `NEVER_AUTO` guard, so the live path pushes evidence through `kg_upsert`
-on the `distill.rs` pattern and lets pkg extract. Push only `respond`/`notify`
+What is left:
+
+- **Phase 4 — front-door routing.** Promote a recognised, *routable* thread
+  into `~/.mecha/requests/` as a record whose `values` are nearly empty, which
+  is what makes `needs-info` the primary path rather than a fallback: the reply
+  asks for the fields the form would have collected. `frontdoor.rs`'s
+  extractor is manifest-independent (`extractor_prompt` never reads one), so
+  the manifest matters only for knowing what is missing. **A keystroke, never
+  automatic** — auto-promotion lets a classifier decide what enters the
+  privileged request queue. Needs a new `origin` field on the front door's
+  record as the join back to the thread.
+- **Phase 5 — `/mail`**, a sixth modal on the `/outbox` pattern with a closed
+  key set. `r`/`e`/`f` are detached agent runs; `a`/`s`/`t`/`g` are single
+  calls. Replies land in `/outbox`, which stays the only approval surface.
+- **Phase 6 — the correction loop.** `!` records a field-level correction,
+  which feeds a classifier few-shot pool *and* a `triage`-domain reflection on
+  the ordinary learning path. The pool is deliberately not a learned rule —
+  `triage` is not in `RUN_DOMAINS`, which is why domain selection was built
+  before this phase existed.
+
+Five open questions are in the design doc's §4, none blocking. The sharpest:
+whether `r` hands the drafting run the thread (taint honestly, red draft) or
+the verdict; and whether `meeting` earns its place as a request kind, being
+structurally the greediest label since almost any request can be discussed in
+a meeting.
+
+Two decisions recorded rather than left open: tags are mecha's own and never
+provider labels, and no mail parser belongs in mecha — pkg already ingests
+`email.thread` episodes (`sources/mbox.rs`) with the bulk filter and the
+`NEVER_AUTO` guard, so the live path pushes evidence through `kg_upsert` on the
+`distill.rs` pattern and lets pkg extract. Push only `respond`/`notify`
 buckets; the classifier is a better filter than the `List-Unsubscribe`
 heuristic and runs anyway.
+
+**Local state in no repository**, and the next session will want it: the
+classify timer is installed at `~/.config/systemd/user/`, and
+`~/.mecha/mail-triage/` holds 51 records classified across three binary
+generations — so `request_type` is not consistent across the store and it
+wants one `mecha mail classify --account dartmouth --limit 50 --force` sweep
+(~25 min) before any measurement is taken from it.
 
 ### Google Docs/Sheets/Slides write access — researched and validated, not built
 
