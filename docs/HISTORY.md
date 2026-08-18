@@ -1095,6 +1095,19 @@ a run sees" moved with it, because the validation ledger is keyed to the rule
 set measured. Two research docs landed alongside: `MAIL-UX-RESEARCH.md` and
 `SKILLS-RESEARCH.md`. 904 tests.
 
+**2026-08-18 (afternoon) — mail learns to be a queue, and the release waits
+for it.** Phases 1-3 of `MAIL-UX-RESEARCH.md` landed: the triage store, the
+quarantined classifier, `mecha mail`, the escalation rule and a nightly timer.
+The classifier is the front door's construction one directory over — no tools,
+no history, no system prompt, no shared cache prefix, one isolated call per
+thread — and `Record::for_privileged_run` is a function with no argument that
+returns the prose. `one_line` stays behind it, which is the judgement call:
+short, exactly what a summary wants, and model prose derived from attacker
+prose, which is the laundering path the front door withholds `reading` to
+close. Verified on 51 real Dartmouth threads. The documents work merged the
+same day from a parallel session, and Luke then held 0.1.7 until the mail
+feature is complete through phase 6.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -1620,6 +1633,29 @@ All found by pre-push review or by running it.
   verified app or stay silent on every Testing one), and a warning two days
   out. **When a failure recurs on a schedule, the store has to know the
   schedule — otherwise every instance looks like the first one.**
+
+- **Grading the wrong axis is worse than not grading.** The mail classifier's
+  escalation rule was instrumented to record when a second pass over the full
+  body *changed the bucket*. The first real measurement said 13 of 51 threads
+  escalated and one bucket moved — which, by the criterion written into the
+  field's own doc comment, said the rule was wasteful and should narrow. It
+  was measuring the wrong thing: a second pass that leaves the bucket alone
+  while fixing `request_type` (the input front-door routing runs on), a
+  deadline, or a `one_line` that read "message cuts off" has earned its call
+  and registered as nothing. **An instrument that reports one axis of a
+  multi-axis change does not produce a weak signal, it produces a confident
+  wrong one** — and a number gets acted on where a gap gets investigated. Fixed
+  by recording which fields differed, with `reasoning` excluded because prose
+  differs on every re-read and would make every escalation look like a change.
+
+- **`systemctl is-active` exits non-zero for `activating`**, so
+  `until ! systemctl is-active <unit>` returns immediately on a oneshot that
+  is still starting. A wait loop built on it reported a 25-minute sweep as
+  finished within seconds, and the run was confirmed "clean" twice before
+  anyone noticed it was still going. Poll `SubState` against `start`/`start-pre`
+  instead. The general shape: **an exit code that distinguishes "no" from "not
+  yet" cannot be used as a boolean**, and the failure is silent because the
+  wrong answer is the one you were hoping for.
 
 ### Containment and state
 
