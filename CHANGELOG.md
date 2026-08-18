@@ -7,6 +7,161 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-18
+
+Two releases in one day, and they rhyme. mecha got a writable seat at the
+user's documents — with the grant chosen so a document nobody handed over is
+not reachable by any prompt — and it learned to file mail, with the reading of
+that mail quarantined so a subject line cannot reach a run holding the
+calendar. Both landed a verb in the same new capability quadrant, from
+opposite directions.
+
+### Added
+
+- **Mail triage.** `mecha-mail` gained `mail_triage` — archive, read, unread,
+  spam, trash — as a closed action enum over a whole thread. The write surface
+  was previously send, reply and calendar CRUD, so a mailbox could be read and
+  answered but never emptied. Gmail does all five as label arithmetic in one
+  call; Graph has no thread resource at all, so each verb resolves the
+  conversation to message ids and acts on each, reports how many it touched,
+  and fails only if every message failed.
+
+- **`mecha mail`** — `classify`, `list`, `show`, `dismiss` — over a new store
+  at `~/.mecha/mail-triage/`, one typed verdict per thread. `classify` reads
+  recent mail through the MCP surface and hands each thread to a classifier
+  with no tools, no history and no shared cache prefix, which returns a
+  bucket (`respond`/`notify`/`ignore`), an urgency, a proposal, tags from a
+  closed vocabulary, a deadline, and the request kind if it recognises one.
+  Verified on fifty real threads: twenty-eight archivable, twenty-two needing
+  attention, four request kinds recognised.
+
+- **A snippet-first pass with escalation.** A preview settles the newsletters;
+  the full body is read only when the verdict is `respond` or names a request
+  kind — the cases where the answer changes what happens. Measured at 25% of
+  threads escalating. Deliberately not triggered by snippet length: a provider
+  caps its preview, so nearly every real email looks truncated and escalating
+  on that would escalate everything.
+
+- **A nightly sweep**, `scripts/mecha-mail-classify.{service,timer}`, 05:30
+  UTC and Dartmouth-only. A timer rather than a `mecha trigger`, because a
+  trigger's action is a prompt on purpose and this is a deterministic command.
+
+- **Google Docs, Sheets and Slides**, as a fourth binary on `mecha-mail`.
+  `mecha-docs auth` consents once; `mecha-docs pick` opens Google's real file
+  chooser to adopt a document that already existed; `mecha-docs list` reads
+  the reachable set back from Drive rather than from a local index, since a
+  listing under this scope returns exactly the in-scope files and a second
+  copy could only disagree. `mecha-docs serve` is the MCP face.
+
+- **Eleven tools**: `docs_list`, `docs_read`, `sheets_read`, `slides_read`,
+  `docs_create`, `docs_append`, `docs_replace`, `sheets_create`,
+  `sheets_write`, `slides_create`, `docs_trash`. `docs_replace` is the
+  surgical edit — quote the text to change rather than index into it — and
+  reports zero matches as a failure, because a model told "ok" there goes on
+  to describe an edit that never happened.
+
+- **`--paste`, for a machine with no reachable browser.** It prints the
+  authorization URL and takes back the `127.0.0.1` address the browser lands
+  on, which is displayed in full even though nothing is listening. No tunnel
+  and no forwarded port. There is deliberately no device-code flow: Google's
+  device flow refuses the client type the file chooser requires, and two
+  clients cannot substitute, because a per-file grant belongs to a
+  *(user, client)* pair and the two would hold disjoint sets of files.
+
+### Security
+
+- **The mail classifier sees the prose; nothing else does.** Reading mail arms
+  `untrusted_input`, so a loop that reads fifty threads into one conversation
+  arms the trifecta for all fifty and stages fifty tainted drafts — correct,
+  and useless, because a warning that fires on everything has stopped being a
+  warning. The front door's shape applies one directory over:
+  `Record::for_privileged_run` returns the typed verdict and the sender's
+  address, and there is deliberately no argument that returns the subject, the
+  sender's chosen display name, the classifier's own reasoning, or its
+  one-line summary. That last one is the judgement call — short, and exactly
+  what a summary wants — but it is model prose derived from attacker prose,
+  which is the laundering path the front door withholds `reading` to close.
+
+- **`mail_triage` carries `destructiveHint` alone.** It mutates the user's own
+  mailbox and reaches nobody, so it is not `external_send` and must never
+  appear in `[outbox] tools` — staging it would make triage review a queue in
+  order to fill another queue. It is not `readOnlyHint` either, or a
+  `permission_mode = "read-only"` trigger could empty an inbox unattended.
+  `assert_tool_surface` takes a third slice asserting both negatives. This is
+  the quadrant `docs_trash` also lands in.
+
+- **Tagging is not a provider operation.** Gmail labels and Graph categories
+  are different objects and a tag meaning different things per account fails
+  at the one job tags have. A mecha tag lives on the triage record, costs no
+  OAuth scope, and works identically on both providers; a test asserts the
+  mail surface offers no `label`/`tag`/`categor*` verb.
+
+- **Recognising a request kind is not routing it.** `REQUEST_TYPES` is what
+  the classifier can name; `ROUTABLE_TYPES` is the subset a manifest exists
+  for, and only that subset can be promoted to the front door. A recognised
+  kind with no manifest keeps its name as evidence and loses only the
+  promotion there would be nothing behind. Enforced in code, not asked of the
+  model.
+
+- **The scope is the boundary.** `drive.file` is the one non-sensitive scope
+  in the family: no verification, no annual security assessment, and — on a
+  published project — no seven-day token expiry. It also cannot reach a
+  document that was not created by mecha or explicitly handed to it, which is
+  a stronger guarantee than any of the wider scopes could be made to give.
+
+- **Writing a document counts as sending.** Writing into a document a third
+  party can read is exfiltration; it looks like a local edit and it is a
+  publish. Every write carries `openWorldHint` and belongs in
+  `[outbox] tools`, so it stages for review rather than executing. Reads are
+  `readOnlyHint` and not `openWorldHint`, with `untrusted_input` forced by
+  config the way mail and the graph already are — a document comment is an
+  injection vector invisible in the rendered page.
+
+- **`docs_trash` is in neither quadrant**, carrying `destructiveHint` alone:
+  it reaches no third party, so staging it would make review circular, and it
+  is not read-only, so an unattended read-only run must not reach it. The same
+  quadrant `mail_triage` occupies. There is no permanent-delete verb and no
+  sharing or permissions verb; the scope would permit both, so the boundary is
+  the tool surface and a test asserts the absence.
+
+- **Mail OAuth scopes widened, and a refresh stopped over-asking.**
+  `gmail.modify` replaced `gmail.readonly` (stopping short of
+  `https://mail.google.com/`, whose only addition is irreversible deletion)
+  and `Mail.ReadWrite` replaced `Mail.Read`. Both invalidate existing grants.
+  Separately: Entra's refresh sent the whole scope list on every renewal, so
+  widening it asked for a superset of what the stored grant consented to —
+  refused as `invalid_grant`, indistinguishable from a revocation, and
+  classified as permanent. Every working Outlook account would have gone dark
+  about an hour after install. A refresh now sends no scope at all, per
+  RFC 6749 §6, and a test asserts the absence.
+
+- **A grant now says what it can do, and when it dies.** `StoredCredentials`
+  records `granted_scopes` verbatim and `granted_at` (stamped at consent,
+  never touched by a refresh). `mecha doctor` reports an account whose grant
+  cannot support the triage verbs, and warns two days before a declared
+  `grant_lifetime_days` expires — the Google Testing-mode seven-day clock that
+  a marker written on failure could only ever report after the outage began.
+  Absent reads as *not covered* and as *unknown*, never as safe.
+
+- **The grant lives under its own root** (`~/.mecha/docs/<account>/`), sharing
+  the credential type with mail but not its namespace: `mecha doctor` reads
+  every `oauth.json` under `~/.mecha/mail/` as a mail grant, so a documents
+  credential there would be reported as a broken mail account — a finding
+  naming the wrong subsystem.
+
+### Changed
+
+- **The learned-rules budget is per domain, and a run carries only the domains
+  it names.** `MAX_ACTIVE_RULES_PER_DOMAIN` 15 → 25 with `RULES_CHAR_BUDGET`
+  1600 → 2600 beside it, and the learner frames are handed the same constant
+  rather than repeating it as prose — a frame saying "never exceed 15" while
+  the gate admits 25 fails silently, because an over-consolidating learner
+  looks like a well-behaved one. `rules_prompt_block_for(RUN_DOMAINS)` gives a
+  run `behavior` + `writing` and nothing else; new domains are opt-in and
+  `unrouted_domains` warns at startup about any holding rules no run carries.
+  Everything reconstructing "what a run sees" moved with it, or the validation
+  ledger would be keyed to a rule set no run ever had.
+
 ## [0.1.6] - 2026-08-16
 
 The release where the knowledge graph became a sibling product: pkg went

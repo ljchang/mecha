@@ -25,6 +25,15 @@ asked to follow but a function every tool has to call, and containment is proven
 after canonicalization rather than checked before it, because a symlink inside
 the workspace is otherwise a way out of it.
 
+The documents surface is the same move made outside mecha's own code. Google
+sells several ways to reach a Doc; mecha asks for the one that covers *only
+files it created or you handed it*, so a document nobody gave it is not
+reachable — not because a rule forbids it, but because no token in the process
+can name it. The choosing happens in Google's file chooser, outside the
+model's context window, so nothing a document says can widen what the next run
+can touch. A boundary you verify by reading a scope string does not have to
+keep being true in every future diff.
+
 ## 2. Fail closed, and fail loudly
 
 A security control that stops working must stop the run, not quietly stop
