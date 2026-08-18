@@ -1,0 +1,34 @@
+# Install: cp scripts/mecha-mail-classify.{service,timer} ~/.config/systemd/user/
+#          systemctl --user daemon-reload
+#          systemctl --user enable --now mecha-mail-classify.timer
+#          loginctl enable-linger "$USER"
+
+[Unit]
+Description=Classify overnight mail, catching up if the night was missed
+
+[Timer]
+# 05:30, chosen against the other two things this machine does at night rather
+# than for its own sake. **These are UTC** — the host runs UTC and a systemd
+# OnCalendar with no zone follows it, which is not the same clock the briefing
+# is scheduled on. Laid out on one timeline:
+#
+#   03:30 UTC  mecha-ruminate      (also model-bound)
+#   05:30 UTC  this sweep          (~10-15 min at --limit 50)
+#   11:00 UTC  the `morning` trigger — its cron says 07:00, but a trigger
+#              resolves in its own IANA zone (America/New_York), so in EDT
+#              that is 11:00 UTC and in EST it is 12:00.
+#
+# Inference here is bandwidth-bound, so two model-bound jobs at once starves
+# both — hence the two-hour gap after rumination. The five and a half hours
+# before the briefing are what make it safe for the briefing to eventually read
+# verdicts instead of re-reading the inbox.
+OnCalendar=*-*-* 05:30
+# A laptop closed overnight wakes owing one sweep, not one per missed night —
+# `classify` skips what the store already knows, so a catch-up run costs only
+# what actually arrived.
+Persistent=true
+# The exact minute means nothing and every machine firing at :30 does.
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

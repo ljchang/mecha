@@ -348,6 +348,7 @@ async fn classify(
         // fetched: a failed read leaves the snippet verdict standing rather
         // than losing it, because a worse answer beats no answer here.
         let mut from_bucket = None;
+        let mut did_escalate = false;
         let verdict = match (&verdict, &get_thread) {
             (Ok(v), Some(tool)) if needs_body(v) => {
                 match fetch_body(tool.as_ref(), &ctx, &thread).await {
@@ -363,6 +364,7 @@ async fn classify(
                         {
                             Ok(second) => {
                                 escalated += 1;
+                                did_escalate = true;
                                 if second.bucket != v.bucket {
                                     from_bucket = Some(v.bucket.as_str().to_string());
                                 }
@@ -390,6 +392,7 @@ async fn classify(
                 ok += 1;
                 print_line(&thread, &v, from_bucket.as_deref());
                 let mut r = record(&thread, Some(v), None);
+                r.escalated = did_escalate;
                 r.escalated_from = from_bucket;
                 r
             }
@@ -481,6 +484,7 @@ fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> R
         verdict,
         error,
         classified_at: chrono::Utc::now().to_rfc3339(),
+        escalated: false,
         escalated_from: None,
         acted: None,
         acted_at: None,
