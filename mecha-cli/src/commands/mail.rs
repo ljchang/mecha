@@ -102,6 +102,41 @@ pub enum Cmd {
         #[arg(long)]
         deadline: Option<String>,
     },
+    /// Score the *live* triage store against what actually happened.
+    ///
+    /// The ledger triage rules are judged against, and the reason ungated
+    /// learning is safe in this domain: a rule that starts burying answered
+    /// mail regresses a number here rather than waiting for someone to notice.
+    ///
+    /// **Reply evidence comes from a corpus window, not from `mail_get_thread`.**
+    /// That tool renders prose for a model to read, and a measurement keyed on
+    /// a display format breaks silently the day the format changes. The corpus
+    /// walks all folders including Sent and writes structured rows, so the join
+    /// is on `thread_id` against data that was never formatted for anybody.
+    /// Refresh it first:
+    ///
+    /// ```text
+    /// mecha-mail corpus --since $(date -d '30 days ago' +%F) --account dartmouth
+    /// mecha mail score
+    /// ```
+    Score {
+        #[arg(long, default_value = "dartmouth")]
+        account: String,
+        /// Only score threads at least this many hours old.
+        ///
+        /// **A thread younger than this has no outcome yet, and counting it as
+        /// unanswered would be manufacturing evidence.** The day-one cliff
+        /// (`MAIL-CORPUS-RESEARCH.md` §3) puts 59% of every reply that ever
+        /// happens inside the first day, so 48 hours is comfortably past the
+        /// point where silence means something. Scoring same-day threads
+        /// reports a reply rate of nearly zero and would punish every rule
+        /// equally for the passage of time.
+        #[arg(long, default_value_t = 48)]
+        min_age_hours: i64,
+        /// Machine output.
+        #[arg(long)]
+        json: bool,
+    },
     /// Grade the classifier against a corpus of mail whose outcome is known.
     ///
     /// **The ground truth is one-sided and the output says so.** A thread the
@@ -179,6 +214,11 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             request_type.as_deref(),
             deadline.as_deref(),
         ),
+        Cmd::Score {
+            account,
+            min_age_hours,
+            json,
+        } => score(&account, min_age_hours, json),
         Cmd::Eval {
             account,
             sample,
@@ -1153,4 +1193,138 @@ fn resolve_account(store: &TriageStore, thread_id: &str, given: Option<&str>) ->
                 .join(", ")
         ),
     }
+}
+
+/// Score the live store against a corpus window.
+///
+/// Two kinds of evidence, reported apart because they are not the same claim.
+///
+/// **A reply is behaviour**, and it is one-sided in the way §3 of
+/// `MAIL-CORPUS-RESEARCH.md` describes: answering proves the thread mattered,
+/// silence proves nothing.
+///
+/// **A correction is testimony** — the user saying outright that a field was
+/// wrong. It is the stronger signal and it is symmetric, so it is the one a
+/// `triage` rule should ultimately be judged on. It is reported separately
+/// rather than folded in, because merging a hundred behavioural samples with
+/// three explicit corrections would let volume drown the better evidence.
+fn score(account: &str, min_age_hours: i64, json_out: bool) -> Result<()> {
+    let store = TriageStore::open(TriageStore::default_root()?)?;
+    let records: Vec<Record> = store
+        .list()?
+        .into_iter()
+        .filter(|r| r.account == account && r.verdict.is_some() && r.state != DISMISSED)
+        .collect();
+    if records.is_empty() {
+        bail!("no classified threads for account `{account}` in the triage store");
+    }
+
+    let path = mecha_core::work::mecha_home()?
+        .join("mail-corpus")
+        .join(format!("{account}.jsonl"));
+    let me = guess_self(&path)?;
+    let corpus = corpus_threads(&path, &me)?;
+    let by_id: std::collections::HashMap<&str, &CorpusThread> = corpus
+        .iter()
+        .map(|t| (t.input.thread_id.as_str(), t))
+        .collect();
+
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(min_age_hours);
+    let mut graded = Vec::new();
+    let mut unseen = 0usize;
+    let mut too_young = 0usize;
+    for r in &records {
+        // Too recent to have an outcome. Excluded rather than counted as
+        // unanswered: the passage of time is not evidence about a verdict.
+        let settled = chrono::DateTime::parse_from_rfc3339(&r.date)
+            .map(|d| d.with_timezone(&chrono::Utc) <= cutoff)
+            .unwrap_or(true);
+        if !settled {
+            too_young += 1;
+            continue;
+        }
+        match by_id.get(r.thread_id.as_str()) {
+            // Not in the window: no evidence either way. Counting it as
+            // unanswered would manufacture ground truth out of a gap in the
+            // corpus, which is the failure this whole file is careful about.
+            None => unseen += 1,
+            Some(t) => graded.push(Graded {
+                replied: t.replied,
+                verdict: r.verdict.clone(),
+                prefiltered: None,
+            }),
+        }
+    }
+
+    let corrected: Vec<&Record> = records
+        .iter()
+        .filter(|r| !r.corrections.is_empty())
+        .collect();
+    let mut by_field: std::collections::BTreeMap<&str, usize> = Default::default();
+    for r in &corrected {
+        for c in &r.corrections {
+            *by_field.entry(c.field.as_str()).or_default() += 1;
+        }
+    }
+
+    let s = Scorecard::of(&graded);
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "account": account,
+                "records": records.len(),
+                "with_reply_evidence": graded.len(),
+                "outside_corpus_window": unseen,
+                "too_young_to_score": too_young,
+                "min_age_hours": min_age_hours,
+                "answered": {"n": s.replied, "buried": s.replied_final_ignore,
+                             "false_ignore_rate": s.false_ignore_rate()},
+                "unanswered": {"n": s.unreplied, "surfaced": s.unreplied_surfaced,
+                               "respond": s.unreplied_buckets[0]},
+                "corrections": {"threads": corrected.len(),
+                                "by_field": by_field},
+                "caveat": Scorecard::caveat(),
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "triage store · {account} · {} classified thread(s)",
+        records.len()
+    );
+    println!(
+        "  scored {} · {too_young} too recent (<{min_age_hours}h, no outcome yet) \
+         · {unseen} outside the corpus window (refresh with `mecha-mail corpus`)",
+        graded.len()
+    );
+    println!("\n── behaviour: did a reply go out ──");
+    println!("  answered:   {}", s.replied);
+    match s.false_ignore_rate() {
+        Some(r) => println!(
+            "    buried as `ignore`: {} ({:.1}%)",
+            s.replied_final_ignore,
+            100.0 * r
+        ),
+        None => println!("    buried as `ignore`: n/a — no answered threads in the window"),
+    }
+    println!("  unanswered: {}", s.unreplied);
+    println!(
+        "    `respond`: {} — what day two would surface",
+        s.unreplied_buckets[0]
+    );
+    println!("  {}", Scorecard::caveat());
+
+    println!("\n── testimony: what you said was wrong ──");
+    if corrected.is_empty() {
+        println!("  no corrections yet — `mecha mail correct <thread>` records one.");
+        println!("  This is the stronger signal and the one a triage rule should be judged on.");
+    } else {
+        println!("  {} thread(s) corrected", corrected.len());
+        for (f, n) in &by_field {
+            println!("    {f}: {n}");
+        }
+    }
+    Ok(())
 }
