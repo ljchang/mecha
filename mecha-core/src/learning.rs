@@ -207,6 +207,35 @@ impl Default for Rule {
 /// reflexion ids as sources. Retired rules in `previous` are carried into
 /// the result untouched, so a consolidation can never silently resurrect or
 /// erase what retirement recorded.
+/// A rule's text reduced to what two wordings of the *same* rule share:
+/// case, punctuation, spacing, and the one spelling axis that actually varies
+/// in practice (`-ise`/`-ize`, which a model flips between runs).
+///
+/// **Deliberately conservative, because a false match here is worse than the
+/// miss it prevents.** Inheriting retirement wrongly would silently kill a
+/// good new rule with no human reading proposals to notice; failing to catch a
+/// paraphrase costs a measurable regression that the ledger retires again.
+/// Given that asymmetry this normalises spelling and nothing else — no
+/// stemming, no stopword removal, no synonym table.
+fn normalized_rule_key(text: &str) -> String {
+    let lowered = text
+        .to_lowercase()
+        .replace("ise", "ize")
+        .replace("isation", "ization");
+    let mut out = String::with_capacity(lowered.len());
+    let mut last_space = true;
+    for c in lowered.chars() {
+        if c.is_alphanumeric() {
+            out.push(c);
+            last_space = false;
+        } else if !last_space {
+            out.push(' ');
+            last_space = true;
+        }
+    }
+    out.trim_end().to_string()
+}
+
 pub fn finalize_rules(
     new_rules: Vec<Rule>,
     previous: &[Rule],
@@ -224,6 +253,27 @@ pub fn finalize_rules(
                 }
                 r.retired_at = prev.retired_at.clone();
                 r.retired_reason = prev.retired_reason.clone();
+            }
+            // Retirement survives a reworded re-derivation, which exact text
+            // equality above does not catch. Checked only against *retired*
+            // rules and only for retirement — identity carry-forward stays on
+            // exact text, so two genuinely distinct rules cannot be merged by
+            // a normalisation accident.
+            //
+            // This is the brake ungated learning leans on: with nobody reading
+            // proposals, a re-derived harmful rule would otherwise go straight
+            // back into every prompt of its domain.
+            if r.retired_at.is_none() {
+                let key = normalized_rule_key(&r.text);
+                if let Some(prev) = previous
+                    .iter()
+                    .find(|p| p.retired_at.is_some() && normalized_rule_key(&p.text) == key)
+                {
+                    r.retired_at = prev.retired_at.clone();
+                    r.retired_reason = prev.retired_reason.clone();
+                    r.id = prev.id.clone();
+                    r.created_at = prev.created_at.clone();
+                }
             }
             if r.id.is_none() {
                 r.id = Some(mint_rule_id());
@@ -2466,16 +2516,19 @@ mod tests {
         assert!(domain_rules_section("behavior", &[], &out).is_none());
     }
 
-    /// **A known gap, asserted so it is a decision rather than a surprise.**
-    /// Retirement is carried by text match, so a learner that re-derives the
-    /// same *idea* in different words produces a fresh rule with a new id and
-    /// no retirement, and under ungated learning it goes live with nothing in
-    /// front of it. Under the proposal gate a person reading the proposal
-    /// would have recognised it; nothing does now.
+    /// Retirement survives a re-derivation that only changed spelling, case,
+    /// punctuation or spacing — the variants a learner actually produces
+    /// between runs. Fails on exact-text matching alone.
     ///
-    /// Flip this test when that is fixed. `LEARNING-AUTONOMY-DESIGN.md` §5.
+    /// **And the deliberate limit, asserted in the same test**: a genuine
+    /// paraphrase is *not* caught, and must not be. Closing that needs either
+    /// a judge or per-rule source attribution, and both put a model in charge
+    /// of whether a rule may live — which this project refuses everywhere
+    /// else. The residual risk is bounded instead: a paraphrased harmful rule
+    /// regresses and is retired again, at two regressions in `triage`.
+    /// `LEARNING-AUTONOMY-DESIGN.md` §5.
     #[test]
-    fn a_reworded_retired_rule_is_not_caught_by_text_match() {
+    fn retirement_survives_rewording_but_not_paraphrase() {
         let retired = Rule {
             text: "Always summarize every file first.".into(),
             id: Some("r-bad".into()),
@@ -2483,9 +2536,34 @@ mod tests {
             retired_reason: Some("2 attributed regressions".into()),
             ..Default::default()
         };
+        for variant in [
+            "always summarize every file first",
+            "Always summarise every file first!",
+            "Always   summarize  every file first.",
+        ] {
+            let out = finalize_rules(
+                vec![Rule {
+                    text: variant.into(),
+                    enabled: true,
+                    ..Default::default()
+                }],
+                std::slice::from_ref(&retired),
+                &["refl-new".into()],
+                "2026-09-01T00:00:00Z",
+            );
+            let again = out.iter().find(|r| r.text == variant).unwrap();
+            assert!(!again.active(), "{variant} came back live");
+            assert_eq!(
+                again.id.as_deref(),
+                Some("r-bad"),
+                "{variant} lost identity"
+            );
+        }
+
+        // A real paraphrase is a different string and stays live. Documented,
+        // not a bug: see the doc comment.
         let out = finalize_rules(
             vec![Rule {
-                // Same instruction, different words.
                 text: "Summarise each file before acting on it.".into(),
                 enabled: true,
                 ..Default::default()
@@ -2494,15 +2572,35 @@ mod tests {
             &["refl-new".into()],
             "2026-09-01T00:00:00Z",
         );
-        let reworded = out
+        assert!(out
             .iter()
             .find(|r| r.text.starts_with("Summarise each file"))
-            .unwrap();
-        assert!(
-            reworded.active(),
-            "documents the gap: a reworded retirement is live, and this              assertion should be inverted when that is closed"
+            .unwrap()
+            .active());
+    }
+
+    /// Normalisation must never merge two rules that genuinely differ: a false
+    /// match silently retires a good rule, and nobody is reading proposals.
+    #[test]
+    fn normalisation_does_not_collide_distinct_rules() {
+        for (a, b) in [
+            (
+                "Never delete a file without asking.",
+                "Always delete a file without asking.",
+            ),
+            ("Prefer ripgrep over grep.", "Prefer grep over ripgrep."),
+            ("Summarize the diff.", "Summarize the design."),
+        ] {
+            assert_ne!(
+                normalized_rule_key(a),
+                normalized_rule_key(b),
+                "{a} and {b} must stay distinct"
+            );
+        }
+        assert_eq!(
+            normalized_rule_key("Always summarize every file first."),
+            normalized_rule_key("always   SUMMARISE every file first!!")
         );
-        assert!(reworded.retired_at.is_none());
     }
 
     #[test]
