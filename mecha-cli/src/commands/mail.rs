@@ -103,6 +103,17 @@ pub enum Cmd {
         /// Machine output.
         #[arg(long)]
         json: bool,
+        /// Write every graded thread here as JSONL — the verdict, the bucket,
+        /// and whether it was answered.
+        ///
+        /// **A measurement that discards its evidence has to be re-run to be
+        /// re-read.** The first run of this eval reported a merged "surfaced"
+        /// figure and threw away the 120 judgements behind it, so splitting
+        /// `respond` from `notify` afterwards cost another hour of inference
+        /// rather than a `grep`. Grading the artifact is this project's rule
+        /// for models; it applies to its own instruments too.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
     },
 }
 
@@ -126,7 +137,8 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             seed,
             prefilter_only,
             json,
-        } => eval(global, &account, sample, seed, prefilter_only, json).await,
+            out,
+        } => eval(global, &account, sample, seed, prefilter_only, json, out).await,
     }
 }
 
@@ -695,6 +707,7 @@ async fn eval(
     seed: u64,
     prefilter_only: bool,
     json_out: bool,
+    out_path: Option<std::path::PathBuf>,
 ) -> Result<()> {
     // Via `mecha_home` rather than `$HOME` directly, so `MECHA_HOME` moves
     // the corpus with every other store.
@@ -767,17 +780,31 @@ async fn eval(
     );
 
     let mut graded = Vec::new();
+    let mut rows: Vec<Value> = Vec::new();
     let mut failed = 0u32;
     for (i, t) in chosen.iter().enumerate() {
         // Judged as of the day it arrived. Grading a year-old deadline against
         // today would score every one of them as passed.
         let today = t.input.date.get(..10).unwrap_or("1970-01-01");
         match mecha_core::mail_triage::classify(provider.as_ref(), &model, &t.input, today).await {
-            Ok(v) => graded.push(Graded {
-                replied: t.replied,
-                verdict: Some(v),
-                prefiltered: None,
-            }),
+            Ok(v) => {
+                rows.push(json!({
+                    "thread_id": t.input.thread_id,
+                    "date": t.input.date,
+                    "replied": t.replied,
+                    "bucket": v.bucket.as_str(),
+                    "urgency": v.urgency.as_str(),
+                    "proposed": v.proposed.as_str(),
+                    "request_type": v.request_type,
+                    "deadline": v.deadline,
+                    "escalates": mecha_core::mail_triage::needs_body(&v),
+                }));
+                graded.push(Graded {
+                    replied: t.replied,
+                    verdict: Some(v),
+                    prefiltered: None,
+                });
+            }
             Err(e) => {
                 failed += 1;
                 eprintln!("  ! {} — {e}", t.input.thread_id);
@@ -789,6 +816,22 @@ async fn eval(
     }
     eprintln!();
 
+    // Written before the scorecard is printed: if anything below panics or the
+    // terminal scrolls away, an hour of inference is still on disk.
+    //
+    // Thread ids and dates only — no subject, sender or snippet. The corpus is
+    // real correspondence and this file is a measurement artefact, not a copy
+    // of the mailbox; anything needing the prose can join back on the id.
+    if let Some(p) = &out_path {
+        let body: String = rows
+            .iter()
+            .map(|r| format!("{r}\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        std::fs::write(p, body).with_context(|| format!("writing {}", p.display()))?;
+        eprintln!("graded verdicts → {}", p.display());
+    }
+
     let s = Scorecard::of(&graded);
     if json_out {
         println!(
@@ -799,8 +842,14 @@ async fn eval(
                 "prefilter": {"disposed": pf_caught, "disposed_but_answered": pf_caught_replied},
                 "sampled": graded.len(), "failed": failed,
                 "answered": {"n": s.replied, "buried": s.replied_final_ignore,
-                             "false_ignore_rate": s.false_ignore_rate()},
-                "unanswered": {"n": s.unreplied, "surfaced": s.unreplied_surfaced},
+                             "false_ignore_rate": s.false_ignore_rate(),
+                             "respond": s.replied_buckets[0],
+                             "notify": s.replied_buckets[1],
+                             "ignore": s.replied_buckets[2]},
+                "unanswered": {"n": s.unreplied, "surfaced": s.unreplied_surfaced,
+                               "respond": s.unreplied_buckets[0],
+                               "notify": s.unreplied_buckets[1],
+                               "ignore": s.unreplied_buckets[2]},
                 "caveat": Scorecard::caveat(),
             }))?
         );
@@ -816,14 +865,33 @@ async fn eval(
         ),
         None => println!("  buried as `ignore`: n/a — no answered threads in the sample"),
     }
+    let pct = |n: usize, d: usize| 100.0 * n as f64 / d.max(1) as f64;
+    println!(
+        "  buckets:            respond {} ({:.0}%) · notify {} · ignore {}",
+        s.replied_buckets[0],
+        pct(s.replied_buckets[0], s.replied),
+        s.replied_buckets[1],
+        s.replied_buckets[2]
+    );
     println!("\n── unanswered threads — no ground truth ──");
     println!("  graded:            {}", s.unreplied);
     println!(
-        "  surfaced as needing you: {} ({:.1}%)",
+        "  buckets:            respond {} ({:.0}%) · notify {} · ignore {}",
+        s.unreplied_buckets[0],
+        pct(s.unreplied_buckets[0], s.unreplied),
+        s.unreplied_buckets[1],
+        s.unreplied_buckets[2]
+    );
+    println!(
+        "  surfaced at all (respond+notify): {} ({:.1}%)",
         s.unreplied_surfaced,
-        100.0 * s.unreplied_surfaced as f64 / s.unreplied.max(1) as f64
+        pct(s.unreplied_surfaced, s.unreplied)
     );
     println!("  {}", Scorecard::caveat());
+    println!(
+        "  `respond` is what day-two resurfacing would key on — {} of {} here.",
+        s.unreplied_buckets[0], s.unreplied
+    );
     if failed > 0 {
         println!("\n{failed} thread(s) failed to classify and are excluded.");
     }

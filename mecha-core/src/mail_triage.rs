@@ -421,17 +421,35 @@ pub struct Scorecard {
     pub replied_prefiltered: usize,
     /// Threads the user never answered.
     pub unreplied: usize,
-    /// Of those, ones surfaced as needing an answer. **Not an error**: see
-    /// [`Scorecard::caveat`].
+    /// Of those, ones surfaced at all — `respond` or `notify`. **Not an
+    /// error**: see [`Scorecard::caveat`].
     pub unreplied_surfaced: usize,
+    /// Bucket counts per stratum, `[respond, notify, ignore]`.
+    ///
+    /// **`respond` and `notify` are different questions and lumping them
+    /// answers neither.** `notify` is worth knowing; `respond` is a claim that
+    /// the user personally owes an answer, and it is the bucket day-two
+    /// resurfacing keys on. A "surfaced" figure that merges them overstates
+    /// what would actually resurface, by an amount nobody can recover after
+    /// the fact — which is exactly what the first run of this eval did.
+    pub replied_buckets: [usize; 3],
+    pub unreplied_buckets: [usize; 3],
 }
 
 impl Scorecard {
     pub fn of(graded: &[Graded]) -> Self {
         let mut s = Self::default();
         for g in graded {
+            let slot = match g.verdict.as_ref().map(|v| v.bucket) {
+                Some(Bucket::Respond) => 0,
+                Some(Bucket::Notify) => 1,
+                // A pre-filtered thread has no verdict and is an `ignore` by
+                // construction.
+                Some(Bucket::Ignore) | None => 2,
+            };
             if g.replied {
                 s.replied += 1;
+                s.replied_buckets[slot] += 1;
                 if g.is_final_ignore() {
                     s.replied_final_ignore += 1;
                 }
@@ -440,6 +458,7 @@ impl Scorecard {
                 }
             } else {
                 s.unreplied += 1;
+                s.unreplied_buckets[slot] += 1;
                 if !g.is_final_ignore() {
                     s.unreplied_surfaced += 1;
                 }
@@ -1338,10 +1357,17 @@ mod tests {
             graded(false, Bucket::Notify, None),
         ];
         let s = Scorecard::of(&g);
+        // respond / notify / ignore, kept apart because day two keys on the
+        // first one alone and a merged figure cannot be split afterwards.
+        assert_eq!(s.replied_buckets, [1, 0, 1]);
+        assert_eq!(s.unreplied_buckets, [1, 1, 1]);
+        assert_eq!(
+            s.unreplied_surfaced, 2,
+            "surfaced is respond + notify, which is why the split is reported beside it"
+        );
         assert_eq!(s.replied, 2);
         assert_eq!(s.replied_final_ignore, 1);
         assert_eq!(s.unreplied, 3);
-        assert_eq!(s.unreplied_surfaced, 2, "notify is a surfacing too");
         assert_eq!(s.false_ignore_rate(), Some(0.5));
 
         // The rate is defined only where ground truth exists.
