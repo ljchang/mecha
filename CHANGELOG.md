@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.7] - unreleased
+## [0.1.7] - 2026-08-19
 
 Two releases in one day, and they rhyme. mecha got a writable seat at the
 user's documents — with the grant chosen so a document nobody handed over is
