@@ -43,6 +43,17 @@ is about making that load-bearing.
   `["behavior", "writing"]`; `triage` rides in the classifier's own frame and
   nowhere else, so nothing here can leak one domain's rules into another's
   prompt. `MAX_ACTIVE_RULES_PER_DOMAIN` and `RULES_CHAR_BUDGET` are unchanged.
+
+  **"Routed" had to grow a second meaning for that to work.** Startup warns
+  about a domain holding active rules that rides in no prompt — a real check,
+  since a typo'd filename produces rules nobody reads and that is
+  indistinguishable from rules being obeyed. Measured against `RUN_DOMAINS`
+  alone, `triage` trips it permanently from its first learned rule, with a
+  message that is simply false. So `PASS_DOMAINS` names domains a *named pass*
+  loads, `routed_domains()` is the union, and the warning is measured against
+  that. The cost of getting this wrong is not noise: **a permanent false
+  positive is where a real unrouted domain hides**, which is the same failure
+  as a threshold silent on zero, pointed the other way.
 - **User rules are not on trial.** They ride in every arm and a regression they
   cause alone attributes to nothing.
 

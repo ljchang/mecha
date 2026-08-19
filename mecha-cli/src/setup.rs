@@ -395,13 +395,15 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             // A domain holding rules that ride in no prompt is silent by
             // construction — same shape as a routed outbox name matching no
             // tool, and said at the same moment for the same reason.
-            for domain in store
-                .unrouted_domains(mecha_core::learning::RUN_DOMAINS)
-                .unwrap_or_default()
-            {
+            // Measured against every domain something loads, not just what a
+            // *run* carries: `triage` is read by the mail classifier's own
+            // pass, so warning about it would be false, permanent, and — worse
+            // — the place a genuinely unrouted domain would hide.
+            let routed = mecha_core::learning::routed_domains();
+            for domain in store.unrouted_domains(&routed).unwrap_or_default() {
                 eprintln!(
-                    "mecha: rules for `{domain}` are never loaded — no run carries that \
-                     domain, so they cannot fire. Check the filename, or add it to RUN_DOMAINS."
+                    "mecha: rules for `{domain}` are never loaded — nothing carries that \
+                     domain, so they cannot fire. Check the filename, or route it."
                 );
             }
             if let Some(block) = store.rules_prompt_block_for(mecha_core::learning::RUN_DOMAINS)? {
