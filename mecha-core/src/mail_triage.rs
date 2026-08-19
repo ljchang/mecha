@@ -2032,6 +2032,7 @@ impl FewShot {
     }
 }
 
+#[cfg(test)]
 fn classifier_prompt(t: &ThreadInput, today: &str) -> String {
     classifier_prompt_with(t, today, "")
 }
