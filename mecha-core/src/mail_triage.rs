@@ -767,6 +767,56 @@ pub const PARKED: &str = "parked";
 /// What a parked thread is waiting for. Free text, the user's own words.
 pub const PARKED_FOR: &str = "parked_for";
 
+/// When day two put this thread back in front of the user.
+///
+/// Recorded so it happens **once**. A second reminder for the same thread is
+/// how a resurfacing surface becomes another queue nobody opens, and the whole
+/// point of day two is reaching a person who has stopped looking.
+pub const SURFACED_AT: &str = "surfaced_at";
+
+impl Record {
+    /// Whether day two should put this thread back in front of the user.
+    ///
+    /// **Keys on the `respond` bucket, never on silence.** Most unanswered
+    /// mail correctly needed no reply, so a rule built on "no answer yet"
+    /// nags about FYIs — and a nudge that fires on everything has stopped
+    /// being a nudge. Silence is the symptom; the bucket is the criterion.
+    ///
+    /// A thread the user has already acted on, dismissed or parked is done
+    /// with — parking especially, since "I have asked and cannot proceed" is
+    /// not something a reminder helps. And a thread already surfaced is not
+    /// surfaced again.
+    ///
+    /// The age is the caller's, because the right threshold is a working day
+    /// rather than a fixed twenty-four hours and only the caller knows the
+    /// clock. `MAIL-CORPUS-RESEARCH.md` §3 is why the number is small: most
+    /// replies that ever happen land on the first day.
+    pub fn day_two_candidate(&self, now: &str, min_age_hours: i64) -> bool {
+        if self.state != CLASSIFIED || self.rest.contains_key(SURFACED_AT) {
+            return false;
+        }
+        if !self
+            .verdict
+            .as_ref()
+            .is_some_and(|v| v.bucket == Bucket::Respond)
+        {
+            return false;
+        }
+        hours_between(&self.date, now).is_some_and(|h| h >= min_age_hours)
+    }
+}
+
+/// Whole hours from `then` to `now`, or `None` if either is unparseable.
+///
+/// Unparseable means **not a candidate**: a thread whose date cannot be read
+/// should not be resurfaced on a guess, and the failure is visible as a thread
+/// that never appears rather than one that appears wrongly every morning.
+fn hours_between(then: &str, now: &str) -> Option<i64> {
+    let a = chrono::DateTime::parse_from_rfc3339(then).ok()?;
+    let b = chrono::DateTime::parse_from_rfc3339(now).ok()?;
+    Some((b - a).num_hours())
+}
+
 impl Record {
     /// What a run with tools is allowed to see.
     ///
@@ -1891,6 +1941,55 @@ mod tests {
         assert_eq!(reflector_context(&bare), "(no summary recorded)");
         bare.verdict = Some(verdict_with(Bucket::Ignore, None));
         assert_eq!(reflector_context(&bare), "(no summary recorded)");
+    }
+
+    /// Day two keys on the bucket and never on silence, and every state that
+    /// means "handled" excludes a thread — including `parked`, since "I have
+    /// asked and cannot proceed" is not something a reminder helps.
+    #[test]
+    fn day_two_surfaces_unanswered_respond_threads_once_and_nothing_else() {
+        let now = "2026-08-21T00:00:00Z";
+        let old = |b: Bucket| {
+            let mut r = rec("dartmouth", "t", b);
+            r.date = "2026-08-19T00:00:00Z".into(); // 48h before `now`
+            r
+        };
+
+        assert!(old(Bucket::Respond).day_two_candidate(now, 24));
+        // The other buckets are not day two's business at any age.
+        assert!(!old(Bucket::Notify).day_two_candidate(now, 24));
+        assert!(!old(Bucket::Ignore).day_two_candidate(now, 24));
+
+        // Too young: the passage of time is the whole signal, so a thread
+        // inside the window is not yet evidence of anything.
+        assert!(!old(Bucket::Respond).day_two_candidate(now, 72));
+
+        // Every "handled" state excludes it.
+        for state in [ACTED, DISMISSED, PARKED, FAILED] {
+            let mut r = old(Bucket::Respond);
+            r.state = state.into();
+            assert!(!r.day_two_candidate(now, 24), "{state} must not resurface");
+        }
+
+        // Once, not repeatedly — a second reminder is how this becomes another
+        // queue nobody opens.
+        let mut surfaced = old(Bucket::Respond);
+        surfaced
+            .rest
+            .insert(SURFACED_AT.into(), serde_json::json!(now));
+        assert!(!surfaced.day_two_candidate(now, 24));
+
+        // A date nothing can parse is not a candidate: better a thread that
+        // never appears than one that appears wrongly every morning.
+        let mut broken = old(Bucket::Respond);
+        broken.date = "not a date".into();
+        assert!(!broken.day_two_candidate(now, 24));
+
+        // A verdict-less record (classification failed) is not a candidate
+        // either — there is no bucket to key on.
+        let mut bare = old(Bucket::Respond);
+        bare.verdict = None;
+        assert!(!bare.day_two_candidate(now, 24));
     }
 
     /// The vocabulary is measured, not proposed
