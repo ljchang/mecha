@@ -1046,7 +1046,14 @@ past a threshold, triggers whose slots stopped advancing, triggers quietly
 failing a large share of their tool calls (an unattended run has nobody
 watching it fail: the briefing still arrives and the ledger still says `ok`,
 so the only evidence is the call counts the record now carries — silent below
-ten calls in five runs, because a rate over three of them is noise), failed
+ten calls in five runs, because a rate over three of them is noise), triggers
+whose most recent run succeeded having done *nothing* (the rate check cannot
+see that one: a rate over zero calls is undefined rather than bad, so a
+trigger that made thirty calls a morning and now makes none is silent in every
+other signal — measured against the trigger's own earlier runs and never an
+absolute floor, or a prompt that legitimately needs no tools would read as the
+broken one, and suppressed when the run also errored, because that already has
+a finding), failed
 `mecha-*` units, and graph nightlies that stopped writing their daily log (cron exec
 failures die before the script's own logging starts, and cron mails the
 error to an MTA that isn't there — 2026-08-17's missing execute bit). It exists because of 2026-08-11: a revoked OAuth token took scheduling

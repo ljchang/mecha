@@ -316,7 +316,12 @@ budgets derived from the window.
 3. ~~**Unattended runs' reliability is invisible.**~~ **Built 2026-08-19**:
    `RunRecord` carries `tool_calls` / `tool_errors` / `ended_on_failed_call`,
    and `mecha doctor` reports a trigger failing a third of its calls across its
-   last five runs. The numbers exist per run and
+   last five runs — plus the null-run case that check cannot see, where a
+   trigger's newest run succeeds having made no calls at all against a history
+   of many. The second came from a sibling arc hitting the same shape one layer
+   down (`mecha mail classify` returning success having classified 0 of 16) and
+   is worth generalising: **a threshold that is silent on zero looks like
+   coverage and is not.** The numbers exist per run and
    are aggregated only by `eval`. §5's compounding result says a trigger
    quietly erroring on a third of its calls is a degrading harness, and today
    nothing reads it. This is a marker plus a doctor check — the shape doctor

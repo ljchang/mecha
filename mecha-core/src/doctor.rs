@@ -1005,6 +1005,56 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             });
         }
 
+        // The null run: it fired, it succeeded, and it did nothing. The rate
+        // check above cannot see this one — a rate over zero calls is
+        // undefined rather than bad — so a trigger that made thirty calls a
+        // morning and now makes none is silent in every signal the ledger
+        // carries. Found by a sibling arc hitting the same shape one layer
+        // down, where `mecha mail classify` returned success having classified
+        // 0 of 16.
+        //
+        // Measured against the trigger's *own* history, never an absolute
+        // floor: a prompt that legitimately needs no tools makes zero calls
+        // every morning, and a check that called that broken would be wrong
+        // about the healthiest trigger on the machine. So the earlier runs in
+        // the window have to show the work that stopped.
+        if let Some(window) = window {
+            let newest = window.last();
+            let before: u32 = window[..window.len().saturating_sub(1)]
+                .iter()
+                .map(|r| r.tool_calls)
+                .sum();
+            // Only an `ok` run: an errored one already has a finding above,
+            // and two findings for one fact leave neither meaning anything.
+            let stopped = newest
+                .is_some_and(|r| r.tool_calls == 0 && r.status == crate::trigger::RunStatus::Ok)
+                && before >= HEALTH_MIN_CALLS;
+            if stopped {
+                out.push(Finding {
+                    component: "triggers".to_string(),
+                    severity: Severity::Attention,
+                    summary: format!(
+                        "trigger `{}`'s most recent run did no work",
+                        trigger.name
+                    ),
+                    detail: format!(
+                        "it succeeded having made no tool calls, where its previous                          {} run(s) made {before}. A run that does nothing and reports                          success is indistinguishable from a healthy one in every other                          signal — the status is `ok`, the schedule advanced, and the                          answer arrived.",
+                        window.len() - 1
+                    ),
+                    remedy: Some(Remedy {
+                        description: format!("read `{}`'s recent runs", trigger.name),
+                        argv: vec![
+                            "mecha".into(),
+                            "trigger".into(),
+                            "show".into(),
+                            trigger.name.clone(),
+                        ],
+                        needs_terminal: false,
+                    }),
+                });
+            }
+        }
+
         // A catch-up-always trigger whose accounted slots stopped advancing:
         // a healthy daemon fires the most recent slot every tick, so more
         // than two slots newer than the last accounted one means nothing is
@@ -1726,6 +1776,121 @@ mod tests {
             }),
         );
         assert!(of(&examine(&home, utc(NOW)), "triggers").is_empty());
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_trigger_that_stopped_doing_anything_is_reported() {
+        // The null run. Status `ok`, schedule advanced, answer delivered, and
+        // no work done — invisible in every signal the ledger carried before.
+        let home = home("trigger-stopped-working");
+        trigger_file(&home, "morning", "");
+        for day in 10..14 {
+            ledger_row(
+                &home,
+                &json!({
+                    "trigger": "morning",
+                    "slot": format!("2026-08-{day}T07:00:00Z"),
+                    "started_at": format!("2026-08-{day}T07:00:01Z"),
+                    "status": "ok",
+                    "tool_calls": 8,
+                    "tool_errors": 0,
+                }),
+            );
+        }
+        ledger_row(
+            &home,
+            &json!({
+                "trigger": "morning",
+                "slot": "2026-08-14T07:00:00Z",
+                "started_at": "2026-08-14T07:00:01Z",
+                "status": "ok",
+                "summary": "nothing to report",
+                "tool_calls": 0,
+                "tool_errors": 0,
+            }),
+        );
+
+        let findings = examine(&home, utc(NOW));
+        let triggers = of(&findings, "triggers");
+        assert_eq!(triggers.len(), 1, "{findings:#?}");
+        assert!(
+            triggers[0].summary.contains("did no work"),
+            "{}",
+            triggers[0].summary
+        );
+        assert!(triggers[0].detail.contains("made 32"));
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_trigger_that_never_needed_tools_is_not_broken_for_not_using_them() {
+        // The reason this is measured against the trigger's own history and
+        // never an absolute floor: a prompt that needs no tools makes zero
+        // calls every morning, and calling that broken would be wrong about
+        // the healthiest trigger on the machine.
+        let home = home("trigger-never-used-tools");
+        trigger_file(&home, "haiku", "");
+        for day in 10..15 {
+            ledger_row(
+                &home,
+                &json!({
+                    "trigger": "haiku",
+                    "slot": format!("2026-08-{day}T07:00:00Z"),
+                    "started_at": format!("2026-08-{day}T07:00:01Z"),
+                    "status": "ok",
+                    "tool_calls": 0,
+                    "tool_errors": 0,
+                }),
+            );
+        }
+        assert!(of(&examine(&home, utc(NOW)), "triggers").is_empty());
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_failed_run_that_did_no_work_is_reported_once_not_twice() {
+        // An errored run already has a finding naming the error. Reporting the
+        // absence of work on top of it would be two findings for one fact,
+        // and a reader who has to decide which of two rows is the real one is
+        // reading a worse report than one row.
+        let home = home("trigger-failed-no-work");
+        trigger_file(&home, "morning", "");
+        for day in 10..14 {
+            ledger_row(
+                &home,
+                &json!({
+                    "trigger": "morning",
+                    "slot": format!("2026-08-{day}T07:00:00Z"),
+                    "started_at": format!("2026-08-{day}T07:00:01Z"),
+                    "status": "ok",
+                    "tool_calls": 8,
+                    "tool_errors": 0,
+                }),
+            );
+        }
+        ledger_row(
+            &home,
+            &json!({
+                "trigger": "morning",
+                "slot": "2026-08-14T07:00:00Z",
+                "started_at": "2026-08-14T07:00:01Z",
+                "status": "error",
+                "error": "provider unreachable",
+                "tool_calls": 0,
+                "tool_errors": 0,
+            }),
+        );
+
+        let triggers = of(&examine(&home, utc(NOW)), "triggers")
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(triggers.len(), 1, "{triggers:#?}");
+        assert!(triggers[0].detail.contains("provider unreachable"));
 
         let _ = std::fs::remove_dir_all(&home);
     }
