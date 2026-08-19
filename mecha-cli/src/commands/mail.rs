@@ -704,6 +704,20 @@ async fn classify(
     // this rides on every classification of every thread — the cheap half of
     // the correction loop only stays cheap if it stays small.
     let examples = mecha_core::mail_triage::select_examples(&store.list()?);
+    // **The rules the triage domain learns have to reach the classifier, or
+    // the whole loop writes into a file nothing reads.** `PASS_DOMAINS` claims
+    // this domain is routed; this is the load site that makes the claim true,
+    // and `Reflexion::learnable`'s exemption rests on it — triage rules are
+    // safe to learn from mail precisely because they arrive *here*, in a
+    // tool-less pass, and nowhere else.
+    let learned = mecha_core::learning::LearningStore::open_existing_default().and_then(|s| {
+        s.rules_prompt_block_for(&[mecha_core::learning::TRIAGE_DOMAIN])
+            .ok()
+            .flatten()
+    });
+    if learned.is_some() {
+        eprintln!("triage rules in the classifier's prompt");
+    }
     if !examples.is_empty() {
         eprintln!(
             "{} correction(s) in the classifier's prompt",
@@ -744,6 +758,7 @@ async fn classify(
             &thread,
             &today,
             &examples,
+            learned.as_deref(),
         )
         .await;
 
@@ -759,11 +774,20 @@ async fn classify(
                 match fetch_body(tool.as_ref(), &ctx, &thread).await {
                     Ok(body) => {
                         thread.body = body;
-                        match mecha_core::mail_triage::classify(
+                        // The same corrections and rules as the first pass.
+                        // Escalation fires on `respond` or a named request
+                        // kind — the threads the user cares most about — so a
+                        // body pass without them would produce the *stored*
+                        // verdict from a prompt that had never seen a single
+                        // correction, including one made about this very kind
+                        // of mail.
+                        match mecha_core::mail_triage::classify_with(
                             provider.as_ref(),
                             &model,
                             &thread,
                             &today,
+                            &examples,
+                            learned.as_deref(),
                         )
                         .await
                         {
@@ -1024,6 +1048,12 @@ fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>>
             replied,
         });
     }
+    // **Sorted before it leaves, or `--seed` is a lie.** `by` is a HashMap and
+    // its iteration order is randomised per process, so a Fisher–Yates over it
+    // shuffles an already-random order: two runs with the same seed graded
+    // different samples, while the flag documented itself as making a
+    // scorecard reproducible.
+    out.sort_by(|a: &CorpusThread, b: &CorpusThread| a.input.thread_id.cmp(&b.input.thread_id));
     Ok(out)
 }
 
@@ -1225,7 +1255,7 @@ async fn eval(
         s.unreplied_buckets[2]
     );
     println!(
-        "  surfaced at all (respond+notify): {} ({:.1}%)",
+        "  would be revisited (not buried): {} ({:.1}%)",
         s.unreplied_surfaced,
         pct(s.unreplied_surfaced, s.unreplied)
     );
@@ -1429,9 +1459,12 @@ fn score(account: &str, min_age_hours: i64, json_out: bool) -> Result<()> {
     for r in &records {
         // Too recent to have an outcome. Excluded rather than counted as
         // unanswered: the passage of time is not evidence about a verdict.
+        // Fail closed, matching `day_two_candidate`: a date nothing can parse
+        // is not evidence that an outcome exists, so it is counted as too
+        // young rather than graded on a guess.
         let settled = chrono::DateTime::parse_from_rfc3339(&r.date)
             .map(|d| d.with_timezone(&chrono::Utc) <= cutoff)
-            .unwrap_or(true);
+            .unwrap_or(false);
         if !settled {
             too_young += 1;
             continue;
@@ -1441,9 +1474,12 @@ fn score(account: &str, min_age_hours: i64, json_out: bool) -> Result<()> {
             // unanswered would manufacture ground truth out of a gap in the
             // corpus, which is the failure this whole file is careful about.
             None => unseen += 1,
+            // The verdict the *classifier* produced, not the one a human
+            // fixed — otherwise a correction subtracts the very error it
+            // reports and the ledger improves on its own.
             Some(t) => graded.push(Graded {
                 replied: t.replied,
-                verdict: r.verdict.clone(),
+                verdict: r.verdict_as_classified(),
                 prefiltered: None,
             }),
         }

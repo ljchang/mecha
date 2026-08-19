@@ -46,7 +46,6 @@ pub struct MailRow {
 pub struct MailModal {
     pub rows: Vec<MailRow>,
     pub selected: usize,
-    pub detail: bool,
     /// A reason being typed — a needs-info note or a correction. Takes the
     /// keyboard while it is up.
     pub input: Option<MailInput>,
@@ -66,7 +65,6 @@ impl MailModal {
         MailModal {
             rows,
             selected: 0,
-            detail: false,
             input: None,
             confirm: None,
             status: None,
@@ -155,7 +153,6 @@ pub enum Action {
     Prompt(&'static str, &'static str),
     /// A whole agent run: spawns detached, watched by polling the store.
     Detached(&'static str),
-    Detail,
     Close,
 }
 
@@ -177,7 +174,6 @@ pub fn action_for(key: char) -> Option<Action> {
         'f' => Action::Detached("forward"),
         'e' => Action::Detached("schedule"),
         'q' => Action::Close,
-        '\n' => Action::Detail,
         _ => return None,
     })
 }
@@ -200,6 +196,17 @@ impl MailModal {
         format!(
             " mail — {need} need you · {parked} parked · a archive · s spam · t task · n needs-info · ! wrong · esc "
         )
+    }
+
+    /// Keep the selection on screen.
+    ///
+    /// **Without this the highlight walks off the bottom and keeps going** —
+    /// `load()` returns every record in the store, which grows nightly, so a
+    /// person pressing `j` past the last visible row would archive or spam a
+    /// thread they cannot see. Same helper the sibling modals use.
+    fn list_scroll(&self, visible: u16) -> u16 {
+        let visible = visible.max(1) as usize;
+        (self.selected + 1).saturating_sub(visible) as u16
     }
 
     pub fn draw(&self, frame: &mut Frame) {
@@ -250,12 +257,14 @@ impl MailModal {
         let area = super::centered(frame.area(), 120, height);
         frame.render_widget(Clear, area);
         frame.render_widget(
-            Paragraph::new(body).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::new().fg(Color::Cyan))
-                    .title(self.title()),
-            ),
+            Paragraph::new(body)
+                .scroll((self.list_scroll(area.height.saturating_sub(2)), 0))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::new().fg(Color::Cyan))
+                        .title(self.title()),
+                ),
             area,
         );
     }

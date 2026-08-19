@@ -4017,7 +4017,25 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Up | KeyCode::Char('k') => modal.move_by(-1),
         KeyCode::Down | KeyCode::Char('j') => modal.move_by(1),
-        KeyCode::Enter => modal.detail = !modal.detail,
+        // Enter reads the thread in full, which is a whole mail fetch — so it
+        // goes through the CLI like every other action rather than being a
+        // second renderer of the same record.
+        KeyCode::Enter => {
+            let Some(row) = modal.rows.get(modal.selected) else {
+                return Ok(());
+            };
+            let (thread, account) = (row.thread_id.clone(), row.account.clone());
+            modal.status = Some(
+                match self_cli(&["mail", "show", &thread, "--account", &account]) {
+                    Ok(o) => o
+                        .lines()
+                        .find(|l| l.starts_with("subject:"))
+                        .unwrap_or("read")
+                        .to_string(),
+                    Err(e) => format!("{e:#}"),
+                },
+            );
+        }
         KeyCode::Char(c) => {
             let Some(action) = mail::action_for(c) else {
                 return Ok(());
@@ -4028,7 +4046,6 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
             let (thread, account) = (row.thread_id.clone(), row.account.clone());
             match action {
                 mail::Action::Close => app.mail = None,
-                mail::Action::Detail => modal.detail = !modal.detail,
                 mail::Action::Confirm(verb) => {
                     // Spam is the one triage action with an effect outside the
                     // user's own mailbox: it trains the provider's filter.
@@ -4042,6 +4059,16 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     });
                 }
                 mail::Action::Now(verb) => {
+                    // **These block the event loop**, and only `dismiss` is
+                    // genuinely local — `archive`, `spam` and `task` each
+                    // start an MCP server and make a network call, so the
+                    // interface is frozen for a second or two with no redraw.
+                    // That contradicts this module's own rule about slow work
+                    // spawning detached, and the honest fix is to watch them
+                    // like `/outbox` watches a release rather than to hide the
+                    // pause. Until then the status line says what is happening
+                    // so a freeze is legible rather than mysterious.
+                    modal.status = Some(format!("{verb}…"));
                     let out = self_cli(&["mail", verb, &thread, "--account", &account]);
                     modal.status = Some(match out {
                         Ok(o) => o.lines().next().unwrap_or("done").to_string(),

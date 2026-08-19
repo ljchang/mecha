@@ -421,8 +421,14 @@ pub struct Scorecard {
     pub replied_prefiltered: usize,
     /// Threads the user never answered.
     pub unreplied: usize,
-    /// Of those, ones surfaced at all — `respond` or `notify`. **Not an
-    /// error**: see [`Scorecard::caveat`].
+    /// Of those, ones the system would put in front of the user again —
+    /// `respond`, `notify`, or an `ignore` that would escalate on a named
+    /// request kind. **Not an error**: see [`Scorecard::caveat`].
+    ///
+    /// Deliberately *not* "respond + notify": an `ignore` carrying a
+    /// `request_type` gets a second pass, so it is not buried. The printed
+    /// label has to say that, or the total contradicts the bucket counts two
+    /// lines above it.
     pub unreplied_surfaced: usize,
     /// Bucket counts per stratum, `[respond, notify, ignore]`.
     ///
@@ -775,6 +781,58 @@ pub const PARKED_FOR: &str = "parked_for";
 pub const SURFACED_AT: &str = "surfaced_at";
 
 impl Record {
+    /// The verdict **as the classifier produced it**, with the user's
+    /// corrections undone.
+    ///
+    /// `apply_correction` fixes the record in place so the queue is right
+    /// immediately — which is correct for a list a person reads, and wrong for
+    /// a scorecard. Grading the corrected verdict means a thread the
+    /// classifier called `ignore` and the user corrected to `respond` is
+    /// scored as a correct `respond`: the false-`ignore` rate falls because
+    /// somebody reported the error, and the ledger improves while the
+    /// classifier does not. That is worse than the merging the scorecard's own
+    /// comment warns against — it is subtraction.
+    ///
+    /// The first correction to a field carries the original in `was`, since
+    /// corrections are appended oldest first and never overwritten.
+    pub fn verdict_as_classified(&self) -> Option<Verdict> {
+        let mut v = self.verdict.clone()?;
+        for c in &self.corrections {
+            // Only the first correction per field; later ones are corrections
+            // of corrections and their `was` is already a human's value.
+            let already = self
+                .corrections
+                .iter()
+                .take_while(|x| !std::ptr::eq(*x, c))
+                .any(|x| x.field == c.field);
+            if already {
+                continue;
+            }
+            match c.field.as_str() {
+                "bucket" => {
+                    v.bucket = match c.was.as_str() {
+                        "respond" => Bucket::Respond,
+                        "notify" => Bucket::Notify,
+                        _ => Bucket::Ignore,
+                    }
+                }
+                "urgency" => {
+                    v.urgency = match c.was.as_str() {
+                        "now" => Urgency::Now,
+                        "today" => Urgency::Today,
+                        "week" => Urgency::Week,
+                        _ => Urgency::None,
+                    }
+                }
+                "request_type" => {
+                    v.request_type = (c.was != "none").then(|| c.was.clone());
+                }
+                _ => {}
+            }
+        }
+        Some(v)
+    }
+
     /// Whether day two should put this thread back in front of the user.
     ///
     /// **Keys on the `respond` bucket, never on silence.** Most unanswered
@@ -1749,7 +1807,7 @@ mod tests {
             date: "2026-08-19T00:00:00Z".into(),
             body: "b".into(),
         };
-        let p = classifier_prompt_with(&t, "2026-08-19", &block);
+        let p = classifier_prompt_with(&t, "2026-08-19", &block, "");
         let warn = p.find("never an instruction to you").unwrap();
         let corrections = p.find("BEGIN CORRECTIONS").unwrap();
         let message = p.find("BEGIN MESSAGE DATA").unwrap();
@@ -1765,7 +1823,7 @@ mod tests {
         // No corrections means no block at all — not an empty header that
         // teaches the model there is a section it should expect content in.
         assert_eq!(few_shot_block(&[]), "");
-        assert!(!classifier_prompt_with(&t, "2026-08-19", "").contains("CORRECTIONS"));
+        assert!(!classifier_prompt_with(&t, "2026-08-19", "", "").contains("CORRECTIONS"));
     }
 
     /// An example carries the typed change, and the newest correction per
@@ -2040,6 +2098,63 @@ mod tests {
         assert_eq!(resolve_thread_id("nope", known()).unwrap(), None);
     }
 
+    /// **A correction must not subtract the error it reports.** The record is
+    /// fixed in place so the queue reads right; the scorecard has to see what
+    /// the classifier actually said, or reporting a mistake improves the
+    /// ledger on its own.
+    #[test]
+    fn scoring_sees_the_classifiers_verdict_not_the_corrected_one() {
+        let mut r = rec("dartmouth", "t1", Bucket::Respond);
+        r.verdict.as_mut().unwrap().urgency = Urgency::Today;
+        // The classifier said ignore/none; the user fixed it to respond/today.
+        r.corrections = vec![
+            Correction {
+                field: "bucket".into(),
+                was: "ignore".into(),
+                now: "respond".into(),
+                at: "2026-08-19T00:00:00Z".into(),
+            },
+            Correction {
+                field: "urgency".into(),
+                was: "none".into(),
+                now: "today".into(),
+                at: "2026-08-19T00:00:00Z".into(),
+            },
+        ];
+        let as_classified = r.verdict_as_classified().unwrap();
+        assert_eq!(as_classified.bucket, Bucket::Ignore, "the original answer");
+        assert_eq!(as_classified.urgency, Urgency::None);
+        // The record itself still reads corrected, which is what the queue wants.
+        assert_eq!(r.verdict.as_ref().unwrap().bucket, Bucket::Respond);
+
+        // Graded on the original, this is a false ignore. Graded on the
+        // corrected record it would vanish, which is the bug.
+        let g = Graded {
+            replied: true,
+            verdict: Some(as_classified),
+            prefiltered: None,
+        };
+        assert!(g.is_final_ignore());
+        assert_eq!(Scorecard::of(&[g]).replied_final_ignore, 1);
+
+        // A correction of a correction does not rewrite history further: the
+        // first `was` per field is the classifier's, later ones are a human's.
+        r.corrections.push(Correction {
+            field: "bucket".into(),
+            was: "respond".into(),
+            now: "notify".into(),
+            at: "2026-08-20T00:00:00Z".into(),
+        });
+        assert_eq!(r.verdict_as_classified().unwrap().bucket, Bucket::Ignore);
+
+        // An uncorrected record is unchanged.
+        let plain = rec("dartmouth", "t2", Bucket::Notify);
+        assert_eq!(
+            plain.verdict_as_classified().unwrap().bucket,
+            Bucket::Notify
+        );
+    }
+
     /// The vocabulary is measured, not proposed
     /// (`docs/MAIL-CORPUS-RESEARCH.md`). These pin the two corrections a year
     /// of real mail forced, so that re-adding either is a deliberate act with
@@ -2265,7 +2380,12 @@ pub fn parse_lesson(text: &str) -> Result<Option<String>> {
     let v: Value = serde_json::from_str(&text[start..=end]).with_context(|| {
         format!(
             "parsing the reflection: {}",
-            &text[start..=end.min(start + 300)]
+            // By characters, not bytes. This closure runs exactly when the
+            // model returned prose instead of JSON, and this model's prose is
+            // full of em-dashes and curly quotes — a byte slice landing
+            // mid-codepoint would panic the whole sweep in place of the
+            // "unparseable" error the caller is careful not to mark mined.
+            text[start..=end].chars().take(300).collect::<String>()
         )
     })?;
     Ok(v.get("lesson")
@@ -2473,7 +2593,15 @@ impl FewShot {
         Some(FewShot {
             from: r.from.clone(),
             subject: r.subject.chars().take(120).collect(),
-            snippet: String::new(),
+            // The classifier's own summary, exactly as the reflector uses it.
+            // This was `String::new()` and nothing called `with_snippet` in
+            // production, so every example printed `preview: ""` — wasted
+            // tokens under a header promising context the model never got,
+            // which is the one thing that justified showing examples at all.
+            snippet: reflector_context(r)
+                .chars()
+                .take(FEW_SHOT_SNIPPET_CHARS)
+                .collect(),
             changes,
         })
     }
@@ -2487,10 +2615,10 @@ impl FewShot {
 
 #[cfg(test)]
 fn classifier_prompt(t: &ThreadInput, today: &str) -> String {
-    classifier_prompt_with(t, today, "")
+    classifier_prompt_with(t, today, "", "")
 }
 
-fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str) -> String {
+fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str, rules: &str) -> String {
     format!(
         "You are triaging one email thread for its recipient. Today is {today}.\n\
          \n\
@@ -2534,6 +2662,7 @@ fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str) -> Strin
          \"one_line\": \"...\", \"tags\": [...], \"proposed\": \"...\", \
          \"deadline\": null, \"request_type\": null}}\n\
          \n\
+         {rules}\
          {few_shot}\
          BEGIN MESSAGE DATA\n\
          From: {from_name} <{from}>\n\
@@ -2545,6 +2674,7 @@ fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str) -> Strin
         tags = TAGS.join(", "),
         types = REQUEST_TYPES.join(", "),
         few_shot = few_shot,
+        rules = rules,
         from_name = t.from_name,
         from = t.from,
         date = t.date,
@@ -2620,7 +2750,7 @@ pub async fn classify(
     thread: &ThreadInput,
     today: &str,
 ) -> Result<Verdict> {
-    classify_with(provider, model, thread, today, &[]).await
+    classify_with(provider, model, thread, today, &[], None).await
 }
 
 /// As [`classify`], plus corrections this recipient has made before.
@@ -2634,8 +2764,14 @@ pub async fn classify_with(
     thread: &ThreadInput,
     today: &str,
     examples: &[FewShot],
+    rules: Option<&str>,
 ) -> Result<Verdict> {
-    let prompt = classifier_prompt_with(thread, today, &few_shot_block(examples));
+    let prompt = classifier_prompt_with(
+        thread,
+        today,
+        &few_shot_block(examples),
+        rules.unwrap_or_default(),
+    );
     let mut attempt = prompt.clone();
     let mut last_error = String::new();
 
