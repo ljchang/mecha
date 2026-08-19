@@ -143,11 +143,37 @@ measurement, and re-derived the next night from the same corrections that
 produced it the first time. Under a human gate somebody would have noticed. Now
 nothing would, except the inference bill.
 
-`retired_at` plus the learner being shown retired rules as *measured harmful,
-never re-derive* is the mechanism that prevents it, and it was written when a
-human was also in the loop. **It needs a test that a retired rule is never
-re-proposed from the same evidence**, and that test is a prerequisite for
-shipping this rather than a follow-up.
+Two mechanisms exist and one of them is stronger than expected.
+
+**The prompt asks.** The learner's input carries a `## Retired rules
+(IMMUTABLE, measured harmful — never restate or re-derive these)` section.
+That is an instruction, and instructions are what a model may ignore.
+
+**`finalize_rules` enforces.** A rewritten rule whose text matches a previous
+one inherits `retired_at` and `retired_reason`, so a re-derived retirement
+comes back *already retired* and never renders. This does not depend on the
+model listening, which is the same principle as the count cap. Pinned by
+`a_re_derived_retired_rule_comes_back_already_retired`.
+
+**The gap is that the match is exact text.** A learner that re-derives the same
+idea in different words — "Always summarize every file first" becoming
+"Summarise each file before acting" — produces a fresh rule with a new id, no
+inherited retirement, and under ungated learning it goes live with nothing in
+front of it. Under the gate a person reading the proposal would have recognised
+it. Nothing does now.
+
+`a_reworded_retired_rule_is_not_caught_by_text_match` asserts the current
+behaviour so this is a recorded decision rather than a surprise; the assertion
+inverts when it is closed.
+
+**How to close it, and what to avoid.** The cheap deterministic option is
+`sources`: a rule already records which reflections produced it, so a new rule
+drawing on the same reflections as a retired one is a re-derivation candidate,
+found with a set intersection and no model. The expensive option is semantic
+similarity, which means embeddings or a judge — and a judge deciding whether a
+rule may live is a model-rated policy, which this project refuses everywhere
+else. Prefer the deterministic one; if it proves insufficient, the honest
+fallback is to surface the collision rather than to have a model rule on it.
 
 ## 6. Deliberately not being built
 
