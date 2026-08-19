@@ -17,7 +17,7 @@
 //! editing neither the draft nor anything a reader sees.
 
 use anyhow::{bail, Context, Result};
-use mecha_core::outbox::{OutboxItem, OutboxKind, OutboxLock, OutboxStore};
+use mecha_core::outbox::{DraftView, OutboxItem, OutboxKind, OutboxLock, OutboxStore};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -65,12 +65,24 @@ pub enum Cmd {
         #[arg(long)]
         via: Option<String>,
     },
-    /// Show one item: the exact arguments a release would execute, its
-    /// provenance, and the edit diff if there is one.
-    Show { id: String },
-    /// Open the item's arguments in $EDITOR. What you save is what `send`
-    /// executes; the original draft is kept for the learning capture.
-    Edit { id: String },
+    /// Show one item: the draft as it would be read, its provenance, and the
+    /// edit diff if there is one.
+    Show {
+        id: String,
+        /// The exact arguments as JSON, instead of the readable draft.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Open the draft's text in $EDITOR. What you save is what `send` sends;
+    /// the original draft is kept for the learning capture.
+    Edit {
+        id: String,
+        /// Edit the whole arguments as JSON instead of just the prose. What
+        /// this always did — kept for the drafts that are not prose, and for
+        /// changing a recipient.
+        #[arg(long)]
+        json: bool,
+    },
     /// Walk the pending items one at a time, deciding each.
     ///
     /// The morning routine: one invocation, one decision per draft, and the
@@ -108,8 +120,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         via: None,
     }) {
         Cmd::List { kind, via } => list(&store, kind.as_deref(), via.as_deref()),
-        Cmd::Show { id } => show(&store, &id),
-        Cmd::Edit { id } => edit(&store, &id),
+        Cmd::Show { id, json } => show(&store, &id, json),
+        Cmd::Edit { id, json } => edit(&store, &id, json),
         Cmd::Review { selection } => review(global, &store, &selection).await,
         Cmd::Send { selection, yes } => send(global, &store, &selection, yes).await,
         Cmd::Reject { selection, reason } => reject(&store, &selection, reason),
@@ -299,44 +311,50 @@ fn line(item: &OutboxItem) -> String {
     )
 }
 
-fn show(store: &OutboxStore, id: &str) -> Result<()> {
+/// Print one item for a person.
+///
+/// **A message leads with the message.** The arguments *are* the draft, which
+/// is true and was taken to mean "print the JSON" — so a reviewer deciding
+/// whether to send a letter in their own name read
+/// `{"body_markdown": "Dear Dirk,\n\nThank…"}` and had to decode escape
+/// sequences to find out what it said. The reviewable object is the letter,
+/// exactly as a publish's is the rendered page; `--json` still prints the
+/// exact bytes, so nothing is unavailable, only reordered by what the reader
+/// is actually deciding.
+fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
     let item = store.item(id)?;
-    println!(
-        "outbox item {} · {} · {} · {}",
-        item.id,
-        item.kind.as_str(),
-        item.tool,
-        item.status
-    );
-    println!("created {}", item.created_at);
-    if let Some(session) = &item.session_id {
-        println!("drafted by session {session}");
-    }
+    // Above everything, both of them: a warning that arrives after the draft
+    // arrives after the decision.
     if item.taint.trifecta_armed() {
         println!(
             "⚠ drafted in a conversation holding private data AND third-party \
-             content — review these arguments as possibly an attacker's words, \
-             not the assistant's."
+             content — read this as possibly an attacker's words, not the \
+             assistant's."
         );
-    }
-    if let Some(resolved) = &item.resolved_at {
-        println!(
-            "resolved {resolved}{}",
-            item.reason
-                .as_deref()
-                .map(|r| format!(" — {r}"))
-                .unwrap_or_default()
-        );
+        println!();
     }
     if let Some(error) = &item.error {
-        println!("last send attempt failed: {error}");
+        println!("last send attempt failed: {error}\n");
     }
     match item.kind {
-        // For a message the arguments *are* the draft, so print them and the
-        // diff that a release would carry.
-        OutboxKind::Message => {
-            println!("\narguments a release would execute:");
+        OutboxKind::Message if json => {
+            println!("arguments a release would execute:");
             println!("{}", indent(&pretty(&item.args)));
+        }
+        OutboxKind::Message => {
+            let view = DraftView::of(&item.args);
+            for (name, value) in &view.headers {
+                println!("{name:<9} {value}");
+            }
+            if let Some(body) = &view.body {
+                println!("\n{body}");
+            }
+            if !view.other.is_empty() {
+                println!("\nother arguments:");
+                for (name, value) in &view.other {
+                    println!("  {name:<9} {value}");
+                }
+            }
             if item.edited() {
                 println!("\nedited since drafting:");
                 println!(
@@ -365,6 +383,34 @@ fn show(store: &OutboxStore, id: &str) -> Result<()> {
             println!("\nwhat a release would publish:");
             println!("{}", indent(&pretty(&item.args)));
         }
+    }
+
+    // Where it came from: true, kept, and not the question being answered.
+    println!(
+        "\noutbox item {} · {} · {} · {}",
+        item.id,
+        item.kind.as_str(),
+        item.tool,
+        item.status
+    );
+    println!("created {}", item.created_at);
+    if let Some(session) = &item.session_id {
+        println!("drafted by session {session}");
+    }
+    if let Some(resolved) = &item.resolved_at {
+        println!(
+            "resolved {resolved}{}",
+            item.reason
+                .as_deref()
+                .map(|r| format!(" — {r}"))
+                .unwrap_or_default()
+        );
+    }
+    if item.kind == OutboxKind::Message && !json {
+        println!(
+            "`mecha outbox show {} --json` prints the exact arguments",
+            item.id
+        );
     }
     if item.status == "pending" {
         match item.kind {
@@ -450,7 +496,24 @@ pub(crate) fn entry_point(path: &std::path::Path) -> Option<std::path::PathBuf> 
         .find(|candidate| candidate.is_file())
 }
 
-fn edit(store: &OutboxStore, id: &str) -> Result<()> {
+/// Open the draft in `$EDITOR`.
+///
+/// **The prose by default, the JSON on `--json`.** Editing a letter inside a
+/// JSON string literal means typing `\n` for a paragraph break and escaping
+/// every quote, in a file where one slip is a parse error that throws the
+/// whole edit away — for the one action here whose entire purpose is changing
+/// the words. So the scratch file is the words: a `.md` file holding the body
+/// and nothing else, written back to the key it came from
+/// ([`mecha_core::outbox::with_body`], which is where that decision lives so
+/// it is made once).
+///
+/// The learning capture is untouched by this: `args_before` still holds the
+/// draft, `args` still holds what will be sent, and `mecha reflect` still
+/// mines the difference. What changed is only which bytes a human is shown.
+///
+/// A draft with no prose — a calendar RSVP, a reaction — falls back to the
+/// arguments rather than opening an empty file, and says so.
+fn edit(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
     // Resolve before the editor so a bad id fails in milliseconds, but take
     // the lock only *after* the editor exits — holding it across a human's
     // editing session would wedge every concurrent pass that wants it.
@@ -474,21 +537,42 @@ fn edit(store: &OutboxStore, id: &str) -> Result<()> {
         );
     }
 
-    let text = crate::editor::edit_text(
-        &pretty(&item.args),
-        &format!("mecha-outbox-edit-{}.json", item.id),
-    )
-    .context("the item is unchanged")?;
-    // A parse failure keeps the original: better to make the user re-edit
-    // than to stage arguments that are not what they meant.
-    let args: Value = serde_json::from_str(&text)
-        .context("the edited file is not valid JSON; the item is unchanged")?;
+    let body = if json {
+        None
+    } else {
+        mecha_core::outbox::DraftView::of(&item.args).body
+    };
+    let args = match body {
+        Some(body) => {
+            let text =
+                crate::editor::edit_text(&body, &format!("mecha-outbox-edit-{}.md", item.id))
+                    .context("the item is unchanged")?;
+            // Trailing newline: an editor adds one, and it is not an edit.
+            let text = text.strip_suffix('\n').unwrap_or(&text).to_string();
+            mecha_core::outbox::with_body(&item.args, &text)
+                .context("the draft's body field went missing; the item is unchanged")?
+        }
+        None => {
+            if !json {
+                println!("no prose in this draft — opening its arguments instead");
+            }
+            let text = crate::editor::edit_text(
+                &pretty(&item.args),
+                &format!("mecha-outbox-edit-{}.json", item.id),
+            )
+            .context("the item is unchanged")?;
+            // A parse failure keeps the original: better to make the user
+            // re-edit than to stage arguments that are not what they meant.
+            serde_json::from_str(&text)
+                .context("the edited file is not valid JSON; the item is unchanged")?
+        }
+    };
 
     let _lock = store.lock()?;
     let updated = store.update_args(&item.id, args)?;
     if updated.edited() {
         println!(
-            "edited; `send` will use the new arguments, and `mecha reflect` \
+            "edited; `send` will use the new text, and `mecha reflect` \
                   will mine the diff as a writing lesson once sent"
         );
     } else {
@@ -822,7 +906,7 @@ async fn review(global: &GlobalOpts, store: &OutboxStore, selection: &Selection)
         }
         loop {
             println!("\n─── {} of {} ───", i + 1, pending.len());
-            show(store, &current.id)?;
+            show(store, &current.id, false)?;
             print!("\n[s]end  [e]dit  [r]eject  [k]eep  [q]uit > ");
             use std::io::Write;
             std::io::stdout().flush()?;
@@ -870,7 +954,7 @@ async fn review(global: &GlobalOpts, store: &OutboxStore, selection: &Selection)
                     break;
                 }
                 "e" | "edit" => {
-                    if let Err(e) = edit(store, &current.id) {
+                    if let Err(e) = edit(store, &current.id, false) {
                         eprintln!("{e:#}");
                     }
                     // Round again with what the edit produced, so the thing
