@@ -202,6 +202,15 @@ pub enum Command {
     /// anything.
     Doctor(commands::doctor::Args),
 
+    /// Read the run corpus and propose one change to try.
+    ///
+    /// The stage between `doctor` saying something is wrong and
+    /// `eval --ab-config` saying whether a fix helped. It proposes; it does
+    /// not measure and does not apply, because a diagnosis is right about
+    /// which step failed roughly one time in seven and the whole design is
+    /// arranged so that being wrong costs one measurement.
+    Diagnose(commands::diagnose::Args),
+
     /// Requests that arrived through the public surface, and the quarantine
     /// they pass through before any run with tools is told about them.
     /// `factory-publish drain` fetches them; this is what happens next.
@@ -283,6 +292,7 @@ async fn dispatch() -> Result<()> {
         Command::Msg(args) => commands::msg::execute(args).await,
         Command::Work(args) => commands::work::execute(args).await,
         Command::Doctor(args) => commands::doctor::execute(args).await,
+        Command::Diagnose(args) => commands::diagnose::execute(&cli.global, args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
         Command::Mail(args) => commands::mail::run(&cli.global, args).await,
         Command::Gossip(args) => commands::gossip::run(&cli.global, &args).await,

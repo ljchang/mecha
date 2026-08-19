@@ -984,7 +984,7 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
                     trigger.name
                 ),
                 detail: format!(
-                    "across its last {runs} run(s){}. A run's answer arrives either way, so                      this is invisible in the ledger's status — and per-step reliability is                      what decides how long a task the run can finish, so a third of the                      calls failing is not a third of the work lost.",
+                    "across its last {runs} run(s){}. A run's answer arrives either way, so this is invisible in the ledger's status — and per-step reliability is what decides how long a task the run can finish, so a third of the calls failing is not a third of the work lost.",
                     if window.is_some_and(|w| w.last().is_some_and(|r| r.ended_on_failed_call)) {
                         ", and the most recent run answered with its last call failed"
                     } else {
@@ -1039,7 +1039,7 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
                         trigger.name
                     ),
                     detail: format!(
-                        "it succeeded having made no tool calls, where its previous                          {} run(s) made {before}. A run that does nothing and reports                          success is indistinguishable from a healthy one in every other                          signal — the status is `ok`, the schedule advanced, and the                          answer arrived.",
+                        "it succeeded having made no tool calls, where its previous {} run(s) made {before}. A run that does nothing and reports success is indistinguishable from a healthy one in every other signal — the status is `ok`, the schedule advanced, and the answer arrived.",
                         window.len() - 1
                     ),
                     remedy: Some(Remedy {
@@ -1205,7 +1205,7 @@ fn check_runs(sessions: &Path) -> Vec<Finding> {
                         rate * 100.0
                     ),
                     detail: format!(
-                        "{} of {n} recent run(s). The model stopped of its own accord with                          its last call failed, and the answer it wrote may report success                          over it — which nothing in the text or the stop reason can show.",
+                        "{} of {n} recent run(s). The model stopped of its own accord with its last call failed, and the answer it wrote may report success over it — which nothing in the text or the stop reason can show.",
                         runs.ended_on_failed_call()
                     ),
                     remedy: remedy("which runs, and what failed"),
@@ -1223,7 +1223,7 @@ fn check_runs(sessions: &Path) -> Vec<Finding> {
                         rate * 100.0
                     ),
                     detail: format!(
-                        "{} of {} call(s) across {n} run(s) were refused by the environment.                          Errors are how a run learns where it is, so some are healthy — a                          quarter of them says something moved: a renamed path, a revoked                          grant, a tool whose schema the model keeps mis-filling.",
+                        "{} of {} call(s) across {n} run(s) were refused by the environment. Errors are how a run learns where it is, so some are healthy — a quarter of them says something moved: a renamed path, a revoked grant, a tool whose schema the model keeps mis-filling.",
                         runs.tool_errors(),
                         runs.tool_calls()
                     ),
@@ -1234,6 +1234,7 @@ fn check_runs(sessions: &Path) -> Vec<Finding> {
 
         if let Some(rate) = runs.rate_of(|r| cut_short(&r.stats)) {
             if rate >= CUT_SHORT_RATE {
+                let cut = runs.rows.iter().filter(|r| cut_short(&r.stats)).count();
                 out.push(Finding {
                     component: "runs".to_string(),
                     severity: Severity::Attention,
@@ -1242,7 +1243,7 @@ fn check_runs(sessions: &Path) -> Vec<Finding> {
                         rate * 100.0
                     ),
                     detail: format!(
-                        "{n} recent run(s) hit a turn, token or cost ceiling, or tripped the                          loop guard. A budget that stops a quarter of runs is measuring the                          budget rather than the work — the answers are truncated and say so                          only in `stop_cause`. Cancellations are not counted here.",
+                        "{cut} of {n} recent run(s) hit a turn, token or cost ceiling, or tripped the loop guard. A budget that stops a quarter of runs is measuring the budget rather than the work — the answers are truncated and say so only in `stop_cause`. Cancellations are not counted here.",
                     ),
                     remedy: remedy("which ceiling, and how often"),
                 });

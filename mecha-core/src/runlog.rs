@@ -188,6 +188,12 @@ impl Corpus {
         for row in &self.rows {
             let bucket = out.entry(row.model.clone()).or_default();
             bucket.rows.push(row.clone());
+            // The scan's denominator, not the slice's: `sessions_read`
+            // describes how much of the store was looked at, which is the
+            // same for every bucket. Left at zero it reads as "from 0
+            // sessions", which is a lie in the one direction that matters —
+            // it makes a well-sampled rate look like it came from nowhere.
+            bucket.sessions_read = self.sessions_read;
         }
         out
     }
