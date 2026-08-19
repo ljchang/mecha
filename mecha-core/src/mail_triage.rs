@@ -375,6 +375,98 @@ pub fn prefilter(t: &ThreadInput, bulk: bool) -> Option<(Verdict, PrefilterRule)
     ))
 }
 
+/// One graded thread: what the classifier said, and what actually happened.
+#[derive(Debug, Clone)]
+pub struct Graded {
+    /// **The ground truth, and it is one-sided.** True iff the user sent a
+    /// message into this thread after receiving it.
+    pub replied: bool,
+    /// `None` when the pre-filter disposed of it before any model ran.
+    pub verdict: Option<Verdict>,
+    pub prefiltered: Option<PrefilterRule>,
+}
+
+impl Graded {
+    /// Whether this thread was called `ignore` in a way the live system would
+    /// never revisit.
+    ///
+    /// The distinction is what makes a snippet-only corpus sufficient to grade
+    /// a classifier that escalates: [`needs_body`] escalates on `respond` or a
+    /// named `request_type`, so an `ignore` carrying neither is **final**. A
+    /// false `ignore` measured here is a false `ignore` in production, not an
+    /// artefact of grading without bodies.
+    pub fn is_final_ignore(&self) -> bool {
+        if self.prefiltered.is_some() {
+            return true;
+        }
+        self.verdict
+            .as_ref()
+            .is_some_and(|v| v.bucket == Bucket::Ignore && !needs_body(v))
+    }
+}
+
+/// The scorecard. **Reported per stratum and never blended**, because the two
+/// strata are sampled at different rates: a combined "accuracy" would move
+/// when the sampling ratio moved and would describe the sample rather than the
+/// classifier.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Scorecard {
+    /// Threads the user answered. The only stratum with usable ground truth.
+    pub replied: usize,
+    /// Of those, ones dropped in a way nothing would revisit. **This is the
+    /// number the eval exists to produce.**
+    pub replied_final_ignore: usize,
+    /// Of those, ones the pre-filter dropped — a deterministic error, and the
+    /// most serious kind, since no model was even consulted.
+    pub replied_prefiltered: usize,
+    /// Threads the user never answered.
+    pub unreplied: usize,
+    /// Of those, ones surfaced as needing an answer. **Not an error**: see
+    /// [`Scorecard::caveat`].
+    pub unreplied_surfaced: usize,
+}
+
+impl Scorecard {
+    pub fn of(graded: &[Graded]) -> Self {
+        let mut s = Self::default();
+        for g in graded {
+            if g.replied {
+                s.replied += 1;
+                if g.is_final_ignore() {
+                    s.replied_final_ignore += 1;
+                }
+                if g.prefiltered.is_some() {
+                    s.replied_prefiltered += 1;
+                }
+            } else {
+                s.unreplied += 1;
+                if !g.is_final_ignore() {
+                    s.unreplied_surfaced += 1;
+                }
+            }
+        }
+        s
+    }
+
+    /// Of the threads that got an answer, the share the system would have
+    /// buried. Lower is better and zero is the target.
+    pub fn false_ignore_rate(&self) -> Option<f64> {
+        (self.replied > 0).then(|| self.replied_final_ignore as f64 / self.replied as f64)
+    }
+
+    /// **Why the unreplied stratum is not an error rate.** A reply proves the
+    /// thread mattered; silence proves nothing — most unanswered mail
+    /// correctly needed no answer, and some was settled in a meeting, over
+    /// chat, or by somebody else. So a thread surfaced and never answered may
+    /// be a false positive or may be the system working and the user not
+    /// acting, and nothing in the record can tell them apart. It is reported
+    /// as a *volume* — how much this would put in front of someone — and must
+    /// never be printed as precision.
+    pub const fn caveat() -> &'static str {
+        "unreplied threads have no ground truth: silence is not evidence of a wrong call"
+    }
+}
+
 /// The tag vocabulary. Closed, and small on purpose.
 pub const TAGS: &[&str] = &[
     "expense",
@@ -1161,6 +1253,83 @@ mod tests {
         let mut with_body = hostile.clone();
         with_body.body = "no-reply noreply automated bounce listserv".into();
         assert!(prefilter(&with_body, false).is_none(), "nor in the body");
+    }
+
+    fn graded(replied: bool, bucket: Bucket, rt: Option<&str>) -> Graded {
+        Graded {
+            replied,
+            verdict: Some(verdict_with(bucket, rt)),
+            prefiltered: None,
+        }
+    }
+    fn verdict_with(bucket: Bucket, rt: Option<&str>) -> Verdict {
+        Verdict {
+            reasoning: String::new(),
+            bucket,
+            urgency: Urgency::None,
+            one_line: String::new(),
+            tags: vec![],
+            proposed: Proposed::None,
+            deadline: None,
+            request_type: rt.map(str::to_string),
+        }
+    }
+
+    /// **An `ignore` that would have escalated is not a final `ignore`**, and
+    /// the distinction is what lets a snippet-only corpus grade a classifier
+    /// that reads bodies. `needs_body` escalates on `respond` or a named
+    /// request type, so those verdicts get a second look in production and
+    /// must not be counted as buried here.
+    #[test]
+    fn only_an_ignore_nothing_would_revisit_counts_against_the_classifier() {
+        assert!(graded(true, Bucket::Ignore, None).is_final_ignore());
+        assert!(
+            !graded(true, Bucket::Ignore, Some("letter")).is_final_ignore(),
+            "a claimed request type escalates, so this verdict is not final"
+        );
+        assert!(!graded(true, Bucket::Respond, None).is_final_ignore());
+        assert!(!graded(true, Bucket::Notify, None).is_final_ignore());
+
+        // The pre-filter never escalates, so anything it drops is final by
+        // construction — and is the most serious error available, because no
+        // model was consulted at all.
+        let pf = Graded {
+            replied: true,
+            verdict: None,
+            prefiltered: Some(PrefilterRule::Bulk),
+        };
+        assert!(pf.is_final_ignore());
+        let s = Scorecard::of(&[pf]);
+        assert_eq!(s.replied_prefiltered, 1);
+        assert_eq!(s.replied_final_ignore, 1);
+    }
+
+    /// The scorecard keeps the two strata apart. Blending them would produce a
+    /// number that moves with the sampling ratio and describes the sample
+    /// rather than the classifier.
+    #[test]
+    fn the_scorecard_never_blends_the_strata() {
+        let g = vec![
+            graded(true, Bucket::Respond, None), // answered, surfaced   — right
+            graded(true, Bucket::Ignore, None),  // answered, buried     — WRONG
+            graded(false, Bucket::Ignore, None), // unanswered, buried   — no truth
+            graded(false, Bucket::Respond, None), // unanswered, surfaced — no truth
+            graded(false, Bucket::Notify, None),
+        ];
+        let s = Scorecard::of(&g);
+        assert_eq!(s.replied, 2);
+        assert_eq!(s.replied_final_ignore, 1);
+        assert_eq!(s.unreplied, 3);
+        assert_eq!(s.unreplied_surfaced, 2, "notify is a surfacing too");
+        assert_eq!(s.false_ignore_rate(), Some(0.5));
+
+        // The rate is defined only where ground truth exists.
+        assert_eq!(Scorecard::of(&[]).false_ignore_rate(), None);
+        assert_eq!(
+            Scorecard::of(&[graded(false, Bucket::Ignore, None)]).false_ignore_rate(),
+            None,
+            "a sample with no replies can produce no error rate, not a rate of zero"
+        );
     }
 
     /// The vocabulary is measured, not proposed
