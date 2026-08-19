@@ -985,11 +985,14 @@ async fn run_agent(
     record.tool_calls = outcome.tool_calls.len() as u32;
     // `unknown` counts: naming a tool that does not exist is the environment
     // refusing the call, and it costs the same turn. A denial does not — a
-    // policy said no, which is the harness working.
+    // policy said no, which is the harness working — and that exclusion must
+    // be written out, because a denied trace sets `is_error` as well. Without
+    // it the shipped read-only `morning` trigger, which denies every call
+    // outside its allowlist, raises a doctor finding for behaving correctly.
     record.tool_errors = outcome
         .tool_calls
         .iter()
-        .filter(|c| c.is_error || c.unknown)
+        .filter(|c| c.unknown || (c.is_error && !c.denied))
         .count() as u32;
     record.ended_on_failed_call = outcome.ended_on_failed_call;
     record.taint = outcome.taint;

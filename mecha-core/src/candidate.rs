@@ -74,10 +74,10 @@ impl Metric {
                     f64::from(s.tool_errors) / f64::from(s.tool_calls)
                 }
             }
-            Metric::CutShort => f64::from(u8::from(
-                s.stop_cause
-                    .is_some_and(|c| c != crate::agent::StopCause::Completed),
-            )),
+            // The harness ending the run, not a person cancelling it — the
+            // same predicate `doctor` reads. Counting `Interrupted` here made
+            // a cancelled arm a loss on the metric it was predicting.
+            Metric::CutShort => f64::from(u8::from(s.stop_cause.is_some_and(|c| c.cut_short()))),
             Metric::Compactions => f64::from(s.compactions),
             Metric::Turns => f64::from(s.turns),
             Metric::MalformedArgs => f64::from(s.malformed_tool_args),
@@ -197,10 +197,20 @@ pub const WORK_FLOOR: f64 = 0.75;
 /// holdout, and "confirmed on unseen episodes" stops meaning anything. Pure,
 /// so the split is unit-testable.
 pub fn is_holdout(episode: &str, holdout_in: u64) -> bool {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    episode.hash(&mut h);
-    h.finish().is_multiple_of(holdout_in)
+    // FNV-1a, written out rather than `DefaultHasher`. std explicitly does not
+    // guarantee `DefaultHasher`'s algorithm across releases, so a toolchain
+    // upgrade would re-partition selection and holdout with nothing visible
+    // changing — and "confirmed on episodes it was never chosen on" would
+    // quietly stop being true. The invariant this function exists for is
+    // stability, so the hash has to be one this file owns.
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x100_0000_01b3;
+    let mut h = OFFSET;
+    for byte in episode.as_bytes() {
+        h ^= u64::from(*byte);
+        h = h.wrapping_mul(PRIME);
+    }
+    h.is_multiple_of(holdout_in)
 }
 
 /// Grade a candidate against its own prediction.

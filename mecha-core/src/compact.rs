@@ -429,6 +429,33 @@ pub fn evict_superseded_results(messages: &mut [Message]) -> usize {
 /// fourth time.
 pub const REPEAT_MARKER: &str = "[repeat:";
 
+/// The refusals this pass must never touch.
+///
+/// A denied call carries `is_error: true` like any failure, so keying the
+/// collapse on that flag alone would fold a *human's* refusals together — and
+/// these exact prefixes are what `learning.rs` and `counterfactual.rs` strip
+/// to mine a correction. Three "no"s to the same command would then reach the
+/// miner as one, and the transcript that recorded them is rewritten in place,
+/// so the evidence is gone rather than merely uncounted.
+///
+/// Matched on the result text because that is all a `tool_result` carries —
+/// the `denied` flag lives on the trace, which compaction never sees. The
+/// strings are the loop's own (`agent.rs`), which is what makes this a
+/// duplication worth a test on both sides rather than a shared constant: the
+/// loop chooses the label from the `Decision` variant, and this pass must
+/// follow whatever it chose.
+const REFUSAL_PREFIXES: &[&str] = &[
+    "Denied by the user:",
+    "Blocked by policy:",
+    "Blocked by a hook:",
+];
+
+/// Is this result a person or a policy saying no, rather than the environment
+/// failing?
+fn is_refusal(content: &str) -> bool {
+    REFUSAL_PREFIXES.iter().any(|p| content.starts_with(p))
+}
+
 /// Collapse a pile of identical failures down to its newest member.
 ///
 /// Errors are exempt from [`evict_superseded_results`] on purpose: a failed
@@ -477,7 +504,7 @@ pub fn collapse_repeated_failures(messages: &mut [Message]) -> usize {
     // write wins — and the last write is the one kept whole.
     let mut newest: std::collections::HashMap<(String, String), String> = Default::default();
     let key_of = |tool_use_id: &String, content: &String, is_error: bool| {
-        if !is_error || content.starts_with(REPEAT_MARKER) {
+        if !is_error || content.starts_with(REPEAT_MARKER) || is_refusal(content) {
             return None;
         }
         let target = target_of_call.get(tool_use_id)?;
@@ -842,6 +869,54 @@ mod tests {
             "the newest failure must survive whole — it is the diagnosis that \
              stops the call being retried"
         );
+    }
+
+    #[test]
+    fn a_persons_repeated_refusals_are_never_collapsed() {
+        // The learning miner strips "Denied by the user:" to build a
+        // correction, and compaction rewrites the transcript in place — so
+        // folding three denials into one marker does not merely undercount
+        // them, it destroys the evidence. A denied call carries `is_error`
+        // like any failure, which is exactly why this needs its own rule.
+        let mut m = vec![Message::user("go")];
+        for i in 0..3 {
+            m.push(call(&format!("t{i}"), "secrets.env"));
+            m.push(err_result(
+                &format!("t{i}"),
+                "Denied by the user: not that file",
+            ));
+        }
+        assert_eq!(collapse_repeated_failures(&mut m), 0);
+        for i in 0..3 {
+            assert_eq!(
+                body_of(&m[2 + i * 2]),
+                "Denied by the user: not that file",
+                "a refusal the miner reads was overwritten"
+            );
+        }
+
+        // The machine's own refusals are equally untouched: they are not
+        // environment failures either, and one of them being mistaken for a
+        // user correction is the mistake this project has a test for already.
+        for prefix in ["Blocked by policy:", "Blocked by a hook:"] {
+            let mut m = vec![Message::user("go")];
+            for i in 0..3 {
+                m.push(call(&format!("t{i}"), "a.md"));
+                m.push(err_result(&format!("t{i}"), &format!("{prefix} no")));
+            }
+            assert_eq!(collapse_repeated_failures(&mut m), 0, "{prefix}");
+        }
+
+        // And the pass still does its job beside them: an environment failure
+        // repeated three times in the same transcript still collapses.
+        let mut m = vec![Message::user("go")];
+        for i in 0..3 {
+            m.push(call(&format!("d{i}"), "denied.md"));
+            m.push(err_result(&format!("d{i}"), "Denied by the user: no"));
+            m.push(call(&format!("e{i}"), "gone.md"));
+            m.push(err_result(&format!("e{i}"), "no such file"));
+        }
+        assert_eq!(collapse_repeated_failures(&mut m), 2);
     }
 
     #[test]

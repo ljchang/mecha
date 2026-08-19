@@ -533,6 +533,29 @@ impl StopCause {
         !matches!(self, StopCause::Completed)
     }
 
+    /// True when the *harness* ended the run, as distinct from the model
+    /// finishing or a person stopping it. Narrower than [`Self::is_early`].
+    ///
+    /// One definition because there were two, and they disagreed: doctor
+    /// excluded `Interrupted` on the grounds that a person pressing Ctrl-C is
+    /// the system working, while the candidate gate's `CutShort` metric
+    /// counted everything that was not `Completed` — so a cancelled arm
+    /// scored as a loss on the metric it was predicting. `NoOutput` belongs
+    /// on this side: a run that produced nothing and did not recover was
+    /// ended by the harness, and it is the failure mode that took 15 of 28
+    /// trials in one benchmark, so a check blind to it is blind to the thing
+    /// most worth seeing.
+    pub fn cut_short(self) -> bool {
+        matches!(
+            self,
+            StopCause::MaxTurns
+                | StopCause::OutputTokenBudget
+                | StopCause::CostBudget
+                | StopCause::Loop
+                | StopCause::NoOutput
+        )
+    }
+
     pub fn describe(self) -> &'static str {
         match self {
             StopCause::Completed => "completed",
@@ -1793,10 +1816,31 @@ impl Agent {
             text
         };
 
-        // A denial is excluded: a human or a policy said no, the model was
-        // told so in those words, and the refusal is already visible to
-        // whoever issued it. What this looks for is the environment saying no.
-        let ended_on_failed_call = tool_calls.last().is_some_and(|c| c.is_error || c.unknown);
+        // The last call the model actually *executed*, and whether the
+        // environment refused it. A denial is excluded — a human or a policy
+        // said no, in those words, to someone who can see it — and two things
+        // the obvious spelling gets wrong, both found in review.
+        //
+        // A denied trace carries `is_error: true` as well as `denied: true`,
+        // so filtering on `is_error` alone counts every approver, hook and
+        // interlock refusal: a read-only trigger whose last act is a denied
+        // write would report finishing over a failure while the harness
+        // worked exactly as designed. And the trace is not in call order
+        // within a turn — denied, unknown and staged traces are pushed during
+        // the approval scan while executed ones are appended after the join,
+        // so `last()` is the last *executed* call whenever a turn mixed the
+        // two. Scanning backwards past what never ran answers both at once.
+        //
+        // `a_denied_last_call_is_the_harness_working_not_a_failed_run` covers
+        // the skip. The ordering half is only *separately* observable when the
+        // trailing entry is a staged call, which needs an outbox route to
+        // build, so it is not tested on its own — said here rather than
+        // implied by a test that would pass for a different reason.
+        let ended_on_failed_call = tool_calls
+            .iter()
+            .rev()
+            .find(|c| !c.denied && !c.staged)
+            .is_some_and(|c| c.is_error || c.unknown);
         if ended_on_failed_call {
             tracing::warn!(
                 "the run finished on a failed tool call; its answer may report \
@@ -4012,6 +4056,48 @@ mod tests {
             outcome.ended_on_failed_call,
             "the run declared itself done with its last act failed, and nothing \
              else in the outcome can say so"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_denied_last_call_is_the_harness_working_not_a_failed_run() {
+        // A denied trace carries `is_error: true` as well as `denied: true`,
+        // so the obvious spelling of this flag fires on every approver, hook
+        // and interlock refusal. A read-only run whose last act is a refused
+        // write, after which the model explains itself, is the harness working
+        // exactly as designed — and reporting it inflates doctor's thresholds,
+        // the diagnose brief, and any case asserting the flag is false.
+        let turns = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t0".into(),
+                    name: "fs_write".into(),
+                    input: json!({"path": "a.rs"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(
+                vec![Block::text(
+                    "I can't write that — here is the diff instead.",
+                )],
+                StopReason::EndTurn,
+            ),
+        ];
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(WriteTool)], PermissionMode::ReadOnly);
+        agent.cfg.force_final_answer = false;
+
+        let mut convo = Conversation::user("write the file");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert!(
+            outcome.tool_calls.iter().any(|c| c.denied && c.is_error),
+            "the fixture must actually have been denied, and denials must \
+             still carry is_error, or this proves nothing"
+        );
+        assert!(
+            !outcome.ended_on_failed_call,
+            "a refusal is not the environment failing"
         );
     }
 
