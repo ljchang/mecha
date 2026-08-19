@@ -1550,6 +1550,17 @@ matters is the general shape.
 
 All found by pre-push review or by running it.
 
+- **Suppressing an alarm is a claim that needs its own evidence.** Startup
+  warned that `triage` rules could never fire. Two readings were equally
+  consistent with what anyone knew: the warning is a false positive because
+  the domain is loaded by a named pass, or the warning is *correct* and the
+  feature is incomplete. `PASS_DOMAINS` was added on the first reading, by two
+  sessions who agreed with each other and tested neither — and the second was
+  true: nothing loaded triage rules at all, so the loop wrote into a file no
+  reader existed for, with the alarm muted by the same hand. Before silencing
+  a check, verify the thing it is complaining about, not the reason you think
+  it is complaining.
+
 - **The "edit-distance gate" was never code, and the handoff carried it as an
   open item for weeks.** It was described as observed working live; a
   verification sweep on 2026-08-09 found no threshold, no `levenshtein`, and
