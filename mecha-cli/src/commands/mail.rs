@@ -338,8 +338,30 @@ async fn classify(
 
     let get_thread = find_tool(&prepared.registry, "mail_get_thread");
     let (mut ok, mut failed, mut escalated) = (0u32, 0u32, 0u32);
+    let mut prefiltered = 0u32;
     for row in todo {
         let mut thread = row_to_input(row);
+
+        // Ahead of the model, never instead of it for anything in doubt.
+        // About half a real mailbox is bulk or an automated sender, and
+        // spending a classifier call on a shipping notification is the cost
+        // this removes. The rule only ever produces `ignore` and reads only
+        // the envelope — see `mail_triage::prefilter`.
+        if let Some((v, rule)) =
+            mecha_core::mail_triage::prefilter(&thread, row["bulk"].as_bool().unwrap_or(false))
+        {
+            if let Err(e) = store.put(&record(&thread, Some(v), None)) {
+                eprintln!("  ! {} — {e}", thread.thread_id);
+                failed += 1;
+            } else {
+                prefiltered += 1;
+                if global.verbose {
+                    println!("  · {} — {} (no model)", thread.subject, rule.as_str());
+                }
+            }
+            continue;
+        }
+
         let verdict =
             mecha_core::mail_triage::classify(provider.as_ref(), &model, &thread, &today).await;
 
@@ -410,7 +432,14 @@ async fn classify(
         };
         store.put(&rec)?;
     }
-    println!("\n{ok} classified ({escalated} read in full), {failed} failed");
+    // The pre-filtered count is reported rather than folded into `ok`,
+    // because "how much is the cheap rule taking" is the question that decides
+    // whether it is too aggressive — and a number nobody can see is a rule
+    // nobody can grade.
+    println!(
+        "\n{ok} classified ({escalated} read in full), \
+         {prefiltered} disposed without a model, {failed} failed"
+    );
     Ok(())
 }
 
