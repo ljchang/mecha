@@ -2419,6 +2419,92 @@ mod tests {
         assert_ne!(out[0].id, out[1].id);
     }
 
+    /// **Ungated learning makes this the only brake, so it is pinned here.**
+    /// With no human reading proposals, a learner that re-derives a retired
+    /// rule would put it straight back into every prompt. `finalize_rules`
+    /// prevents that structurally rather than by asking: a rewritten rule
+    /// whose text matches a retired one inherits `retired_at`, so it returns
+    /// already retired and never renders.
+    ///
+    /// The limit is that the match is on exact text — see
+    /// `a_reworded_retired_rule_is_not_caught_by_text_match`, which documents
+    /// the case this does not cover.
+    #[test]
+    fn a_re_derived_retired_rule_comes_back_already_retired() {
+        let retired = Rule {
+            text: "Always summarize every file first.".into(),
+            enabled: true,
+            id: Some("r-bad".into()),
+            retired_at: Some("2026-08-05T00:00:00Z".into()),
+            retired_reason: Some("2 attributed regressions".into()),
+            ..Default::default()
+        };
+        // The learner ignores its instruction and proposes the rule again.
+        let out = finalize_rules(
+            vec![Rule {
+                text: "Always summarize every file first.".into(),
+                enabled: true,
+                ..Default::default()
+            }],
+            std::slice::from_ref(&retired),
+            &["refl-new".into()],
+            "2026-09-01T00:00:00Z",
+        );
+        let again = out
+            .iter()
+            .find(|r| r.text == "Always summarize every file first.")
+            .expect("the rule is present");
+        assert!(
+            !again.active(),
+            "a re-derived retired rule must not become active again"
+        );
+        assert_eq!(
+            again.retired_reason.as_deref(),
+            Some("2 attributed regressions")
+        );
+        assert_eq!(again.id.as_deref(), Some("r-bad"), "identity is preserved");
+        assert!(domain_rules_section("behavior", &[], &out).is_none());
+    }
+
+    /// **A known gap, asserted so it is a decision rather than a surprise.**
+    /// Retirement is carried by text match, so a learner that re-derives the
+    /// same *idea* in different words produces a fresh rule with a new id and
+    /// no retirement, and under ungated learning it goes live with nothing in
+    /// front of it. Under the proposal gate a person reading the proposal
+    /// would have recognised it; nothing does now.
+    ///
+    /// Flip this test when that is fixed. `LEARNING-AUTONOMY-DESIGN.md` §5.
+    #[test]
+    fn a_reworded_retired_rule_is_not_caught_by_text_match() {
+        let retired = Rule {
+            text: "Always summarize every file first.".into(),
+            id: Some("r-bad".into()),
+            retired_at: Some("2026-08-05T00:00:00Z".into()),
+            retired_reason: Some("2 attributed regressions".into()),
+            ..Default::default()
+        };
+        let out = finalize_rules(
+            vec![Rule {
+                // Same instruction, different words.
+                text: "Summarise each file before acting on it.".into(),
+                enabled: true,
+                ..Default::default()
+            }],
+            std::slice::from_ref(&retired),
+            &["refl-new".into()],
+            "2026-09-01T00:00:00Z",
+        );
+        let reworded = out
+            .iter()
+            .find(|r| r.text.starts_with("Summarise each file"))
+            .unwrap();
+        assert!(
+            reworded.active(),
+            "documents the gap: a reworded retirement is live, and this              assertion should be inverted when that is closed"
+        );
+        assert!(reworded.retired_at.is_none());
+    }
+
     #[test]
     fn a_retired_rule_survives_consolidation_and_never_renders() {
         let retired = Rule {
