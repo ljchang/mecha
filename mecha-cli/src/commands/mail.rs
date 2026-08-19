@@ -439,6 +439,25 @@ fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) ->
             "{} thread(s) you meant to answer and have not, {aged_hours}h+ old:\n",
             rows.len()
         );
+        // Compact by construction: this list is read in a briefing, and a
+        // seventy-six-character id twice a thread is most of the section. The
+        // handle is enough for every verb — they resolve a unique suffix — and
+        // `--json` still carries the whole id for anything mechanical.
+        for r in &rows {
+            let v = r.verdict.as_ref();
+            println!(
+                "  {:<9} {:<8} {}",
+                v.map(|v| v.urgency.as_str()).unwrap_or(""),
+                mecha_core::mail_triage::handle(&r.thread_id),
+                v.map(|v| v.one_line.as_str()).unwrap_or(&r.subject),
+            );
+            println!("             {:<8} {}", "", r.from);
+        }
+        println!(
+            "\n`mecha mail show <handle>` reads one · `reply`, `task`, `needs-info` \
+             and `correct` all take a handle too."
+        );
+        return Ok(());
     }
     for r in &rows {
         match (&r.verdict, r.state.as_str()) {
@@ -489,6 +508,13 @@ fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) ->
 
 /// Print the prose. The one verb that does, and it is for a person.
 async fn show(global: &GlobalOpts, thread_id: &str, account: Option<&str>) -> Result<()> {
+    // A handle from a briefing has to work here too, and the failure without
+    // this is not local: the handle goes to the provider, which answers
+    // `ErrorInvalidIdMalformed` — an API error for what is really a typo.
+    let thread_id = &match TriageStore::open_existing_default() {
+        Some(store) => resolve_thread_lenient(&store, thread_id)?,
+        None => thread_id.to_string(),
+    };
     let store = TriageStore::open_existing_default();
     let rec = store
         .as_ref()
@@ -547,6 +573,7 @@ fn dismiss(thread_id: &str, account: Option<&str>) -> Result<()> {
     let Some(store) = TriageStore::open_existing_default() else {
         bail!("nothing classified yet");
     };
+    let thread_id = &resolve_thread(&store, thread_id)?;
     let account = match account {
         Some(a) => a.to_string(),
         None => {
@@ -554,7 +581,7 @@ fn dismiss(thread_id: &str, account: Option<&str>) -> Result<()> {
             let hits: Vec<Record> = store
                 .list()?
                 .into_iter()
-                .filter(|r| r.thread_id == thread_id)
+                .filter(|r| r.thread_id == *thread_id)
                 .collect();
             match hits.len() {
                 1 => hits[0].account.clone(),
@@ -1340,6 +1367,7 @@ fn correct(
     }
 
     let store = TriageStore::open(TriageStore::default_root()?)?;
+    let thread_id = &resolve_thread(&store, thread_id)?;
     let account = resolve_account(&store, thread_id, account)?;
     let at = chrono::Utc::now().to_rfc3339();
     match store.correct(&account, thread_id, &c, &at)? {
@@ -1659,6 +1687,7 @@ async fn task(
     project: Option<&str>,
 ) -> Result<()> {
     let store = TriageStore::open(TriageStore::default_root()?)?;
+    let thread_id = &resolve_thread(&store, thread_id)?;
     let account = resolve_account(&store, thread_id, account)?;
     let rec = store
         .get(&account, thread_id)
@@ -1736,6 +1765,7 @@ fn needs_info(thread_id: &str, account: Option<&str>, missing: &str) -> Result<(
         bail!("say what is missing — parking a thread without naming what it waits for is dismissing it slowly");
     }
     let store = TriageStore::open(TriageStore::default_root()?)?;
+    let thread_id = &resolve_thread(&store, thread_id)?;
     let account = resolve_account(&store, thread_id, account)?;
     let mut rec = store
         .get(&account, thread_id)
@@ -1757,4 +1787,26 @@ fn needs_info(thread_id: &str, account: Option<&str>, missing: &str) -> Result<(
     println!("  waiting for: {missing}");
     println!("  still yours — `mecha mail list --all` shows it; dismiss drops it instead");
     Ok(())
+}
+
+/// Turn whatever a person typed into a real thread id.
+///
+/// Briefings print an eight-character handle rather than a seventy-six
+/// character id, so every verb that takes a thread has to accept one back.
+fn resolve_thread(store: &TriageStore, given: &str) -> Result<String> {
+    let ids: Vec<String> = store.list()?.into_iter().map(|r| r.thread_id).collect();
+    mecha_core::mail_triage::resolve_thread_id(given, ids.iter().map(String::as_str))?
+        .with_context(|| format!("no thread in the triage store matches `{given}`"))
+}
+
+/// As [`resolve_thread`], but tolerating an id the store has never seen — a
+/// verb may legitimately be handed one from a search. **Ambiguity still
+/// fails**: passing an ambiguous handle through would ask the provider to
+/// explain it, and it answers `400 ErrorInvalidIdMalformed`.
+fn resolve_thread_lenient(store: &TriageStore, given: &str) -> Result<String> {
+    let ids: Vec<String> = store.list()?.into_iter().map(|r| r.thread_id).collect();
+    Ok(
+        mecha_core::mail_triage::resolve_thread_id(given, ids.iter().map(String::as_str))?
+            .unwrap_or_else(|| given.to_string()),
+    )
 }

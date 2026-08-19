@@ -1992,6 +1992,54 @@ mod tests {
         assert!(!bare.day_two_candidate(now, 24));
     }
 
+    /// **A prefix handle would identify nothing here.** Outlook conversation
+    /// ids share a 57-character common prefix, so every thread in a real store
+    /// has the same first eight characters. Measured on 68 live records: one
+    /// distinct value by prefix, sixty-eight by suffix.
+    #[test]
+    fn handles_are_suffixes_because_provider_ids_share_a_prefix() {
+        let a = "AAQkADFiNjVjOWI1LTlkNGEtNDcxMi04ZDVmLWM3N2ViOGMyNTRmOAAQAKfCLXZ8F6dJgQ5jZk1fNRI=";
+        let b = "AAQkADFiNjVjOWI1LTlkNGEtNDcxMi04ZDVmLWM3N2ViOGMyNTRmOAAQAHdRVrF9JJxEnBWsXuIeZCk=";
+        assert_eq!(a[..HANDLE_CHARS], b[..HANDLE_CHARS], "prefixes collide");
+        assert_ne!(handle(a), handle(b), "suffixes do not");
+        assert_eq!(handle(a).chars().count(), HANDLE_CHARS);
+        // A short id is its own handle rather than a panic.
+        assert_eq!(handle("abc"), "abc");
+    }
+
+    /// Resolution takes the whole id or a unique suffix, and refuses to guess.
+    #[test]
+    fn a_thread_resolves_by_handle_and_ambiguity_is_an_error() {
+        let ids = [
+            "AAQkAAAAlongidENDONE",
+            "AAQkAAAAlongidENDTWO",
+            "AAQkAAAAotheridENDTWO",
+        ];
+        let known = || ids.iter().copied();
+
+        // The whole id always wins, even when it is also a suffix of nothing.
+        assert_eq!(
+            resolve_thread_id("AAQkAAAAlongidENDONE", known())
+                .unwrap()
+                .as_deref(),
+            Some("AAQkAAAAlongidENDONE")
+        );
+        // A unique suffix resolves.
+        assert_eq!(
+            resolve_thread_id("ENDONE", known()).unwrap().as_deref(),
+            Some("AAQkAAAAlongidENDONE")
+        );
+        // An ambiguous one is an error, never a guess: acting on the wrong
+        // thread is silent, and for `mail_triage` it is irreversible.
+        let err = resolve_thread_id("ENDTWO", known())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("matches 2 threads"), "{err}");
+        // Unknown is `None` rather than an error: a caller may legitimately
+        // hold an id the store has never classified.
+        assert_eq!(resolve_thread_id("nope", known()).unwrap(), None);
+    }
+
     /// The vocabulary is measured, not proposed
     /// (`docs/MAIL-CORPUS-RESEARCH.md`). These pin the two corrections a year
     /// of real mail forced, so that re-adding either is a deliberate act with
@@ -2225,6 +2273,61 @@ pub fn parse_lesson(text: &str) -> Result<Option<String>> {
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.eq_ignore_ascii_case("null"))
         .map(str::to_string))
+}
+
+/// How many trailing characters of a thread id make a human-sized handle.
+///
+/// **A suffix, not a prefix, and that is not a style choice.** Outlook
+/// conversation ids share a 57-character common prefix — every thread in a
+/// real 68-record store collapses to the *same* eight-character prefix, so a
+/// prefix handle identifies nothing. The last six characters were unique
+/// across all 68; eight is that with margin.
+pub const HANDLE_CHARS: usize = 8;
+
+/// A short handle for a thread id, for display where the full id is noise.
+pub fn handle(thread_id: &str) -> String {
+    let n = thread_id.chars().count();
+    thread_id
+        .chars()
+        .skip(n.saturating_sub(HANDLE_CHARS))
+        .collect()
+}
+
+/// Resolve what a person typed to exactly one thread id.
+///
+/// Accepts the full id or any unique **suffix** of one, so a handle copied
+/// from a briefing works. Ambiguity is an error rather than a guess: acting on
+/// the wrong thread is silent and, for `mail_triage`, irreversible.
+/// Three outcomes, not two, because a caller needs to tell them apart.
+///
+/// `Ok(None)` is "the store has never seen this", which is fine for a verb
+/// that can also take an id straight from a search. `Err` is "this matches
+/// several", which must never be treated as not-found: falling back to the raw
+/// string there hands an ambiguous handle to the provider, and a
+/// `400 ErrorInvalidIdMalformed` is a rotten way to say "be more specific".
+pub fn resolve_thread_id<'a>(
+    given: &str,
+    known: impl Iterator<Item = &'a str>,
+) -> Result<Option<String>> {
+    let mut exact = None;
+    let mut suffixes: Vec<&str> = Vec::new();
+    for id in known {
+        if id == given {
+            exact = Some(id.to_string());
+            break;
+        }
+        if id.ends_with(given) {
+            suffixes.push(id);
+        }
+    }
+    if let Some(id) = exact {
+        return Ok(Some(id));
+    }
+    match suffixes.len() {
+        1 => Ok(Some(suffixes[0].to_string())),
+        0 => Ok(None),
+        n => anyhow::bail!("`{given}` matches {n} threads — use more of the id, or the whole one"),
+    }
 }
 
 /// A stable key for one correction, for the mining ledger.
