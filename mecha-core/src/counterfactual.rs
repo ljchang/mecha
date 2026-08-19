@@ -247,6 +247,7 @@ mod tests {
             turns: 1,
             stopped_early: false,
             final_text: String::new(),
+            stats: Default::default(),
         }
     }
 
