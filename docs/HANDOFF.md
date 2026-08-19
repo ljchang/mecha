@@ -394,6 +394,17 @@ Everything a judge touched — `ambiguity` and `synthesis` — is worth reading 
 answer for rather than trusting the verdict, because judges disagree with
 themselves across runs.
 
+**A second instrument arrived 2026-08-19 and has its own caveat**: a year of
+real mail at `~/.mecha/mail-corpus/`, which can grade the mail classifier
+offline with no human in the loop, because the corpus records whether a reply
+went out. **The ground truth is asymmetric and must be quoted that way** — a
+reply proves the thread mattered, so classifying it `ignore` is a countable
+error; *no* reply proves nothing at all, since most unanswered mail correctly
+needed no answer and some was settled in a meeting. It measures false-`ignore`
+and is silent on false-`respond`. A scorecard from it that claims precision is
+reading the instrument wrong. `docs/MAIL-CORPUS-RESEARCH.md` §3 has the two
+caveats in full.
+
 ---
 
 ## What to do next
@@ -650,62 +661,123 @@ The arc is complete and running nightly. What is missing is refinement:
   pre-set untrusted. What remains is only the listener itself and its
   authentication.
 
-### Mail as a surface you work — phases 4-6 remain
+### Mail as a surface you work — four phases remain, reordered by measurement
 
-**`docs/MAIL-UX-DESIGN.md` (2026-08-18) is the authority for what is left**;
-`MAIL-UX-RESEARCH.md` is the survey it argues from, and where the two disagree
-the design doc is later and wins. **The 0.1.7 release is held until this is
-complete** — Luke's decision 2026-08-18, scope confirmed as *everything
-through phase 6*.
+**`docs/MAIL-UX-DESIGN.md` is the authority for what is left** and
+**`docs/MAIL-CORPUS-RESEARCH.md` (2026-08-19) is the measurement that reordered
+it**; `MAIL-UX-RESEARCH.md` is the original survey. Where they disagree the
+later one wins, and the corpus is the latest. **The 0.1.7 release is held until
+this is complete** — Luke's decision 2026-08-18, scope confirmed as everything
+through the correction loop.
 
 Phases 1-3 shipped 2026-08-18: `mail_triage` (archive/read/unread/spam/trash,
 closed enum, both providers), `~/.mecha/mail-triage/` holding one typed verdict
 per thread, the quarantined classifier, `mecha mail
 classify/list/show/dismiss`, the snippet-first escalation rule, and the
 `mecha-mail-classify` timer (05:30 UTC, Dartmouth only, installed and running).
-Measured on 51 real threads: 30 `ignore`, 9 `notify`, 12 `respond`, five
-request kinds recognised.
 
-What is left:
+**Front-door routing was the original phase 4 and is deleted** (2026-08-19),
+along with `ROUTABLE_TYPES`, `is_routable` and `Proposed::Frontdoor`. Do not
+rebuild it: `MAIL-UX-DESIGN.md` §1 has the five reasons, the sharpest being
+that the front door's `[verification]` block exists to prove a stranger
+controls an email address and an email *arrived from* one. Mail keeps its own
+request kinds and gets its own `needs-info`.
 
-- **Phase 4 — front-door routing.** Promote a recognised, *routable* thread
-  into `~/.mecha/requests/` as a record whose `values` are nearly empty, which
-  is what makes `needs-info` the primary path rather than a fallback: the reply
-  asks for the fields the form would have collected. `frontdoor.rs`'s
-  extractor is manifest-independent (`extractor_prompt` never reads one), so
-  the manifest matters only for knowing what is missing. **A keystroke, never
-  automatic** — auto-promotion lets a classifier decide what enters the
-  privileged request queue. Needs a new `origin` field on the front door's
-  record as the join back to the thread.
+#### What the year of mail changed
+
+A year was fetched raw and unclassified (`mecha-mail corpus`, an operator verb
+deliberately absent from the MCP surface). 8,167 Dartmouth threads. Three
+findings, each of which moved the plan rather than confirming it:
+
+- **51.1% of threads need no model at all** — `List-Unsubscribe` plus a
+  sender-address regex, replied to 7 times in ten months. The header alone
+  finds two thirds of it; it catches marketing, which must offer an
+  unsubscribe, and misses every institutional and transactional sender, which
+  need not. **This supersedes the note previously recorded here that "the
+  classifier is a better filter than the `List-Unsubscribe` heuristic and runs
+  anyway."** It is a better filter; it should not be the first one.
+- **The taxonomy was guesswork and wrong in both directions.** Already fixed in
+  code: `student-advising` added (769 threads, 31.5%, the largest category by a
+  factor of three and absent entirely), `advising` added to `TAGS`, `book`
+  removed (2 threads, neither a book request). `finance-admin` was recommended
+  by the analysis and deliberately rejected — nothing has to be gathered before
+  a receipt is forwarded, so it is the `expense` tag and a `forward` action.
+- **The failure is abandonment, not misclassification.** 14.2% of
+  personally-addressed mail is ever answered; 59% of replies that happen
+  happen on day one; **a thread unanswered at 24 hours has a 94% chance of
+  never being answered.** No phase in the old plan operated after day one.
+
+What is left, in the order the measurements argue for:
+
+- **Pre-filter (part of phase 4′, unbuilt).** Bulk + sender-pattern ahead of
+  the classifier. Halves the nightly's model calls, fully specified, and its
+  error rate is measurable against the corpus rather than argued about. The
+  smallest item here and the one that makes everything after it cheaper to
+  iterate on.
+- **Corpus as an offline eval set (new, unbuilt, not yet in the design doc).**
+  For every Dartmouth thread we know whether a reply went out, so a thread that
+  was answered and is classified `ignore` is a countable error with no human
+  grader. **Asymmetric on purpose**: a reply proves the thread mattered, no
+  reply proves nothing — so it measures false-`ignore` and is silent on
+  false-`respond`. That is the error worth catching. All 8,167 is ~68 hours at
+  local speed; after the pre-filter it is 3,995, and a stratified sample of
+  ~400 is one overnight run.
+- **Phase 4″ — tasks and `needs-info`, native to mail.** `t` carries the
+  thread's deadline into `kg_task_create`; `n` parks a thread and names what is
+  missing. This is the half of the front-door idea that survived.
+- **Phase 4‴ — day two.** A `respond` thread aged past ~24 hours with no
+  outbound message since, surfaced once. Needs no new state. Keys on the bucket
+  and never on silence, forgives a thread settled in a meeting, fires once, and
+  must land somewhere already attended. **The one blocking question in the mail
+  work is which surface** — the morning briefing cannot ask, the TUI is not
+  always open, Slack reaches a phone.
 - **Phase 5 — `/mail`**, a sixth modal on the `/outbox` pattern with a closed
   key set. `r`/`e`/`f` are detached agent runs; `a`/`s`/`t`/`g` are single
   calls. Replies land in `/outbox`, which stays the only approval surface.
+  `f` is **forward**, which had no key bound to it before — the
+  receipts-to-the-finance-person case, one of the five that motivated the
+  feature, had no way to happen.
 - **Phase 6 — the correction loop.** `!` records a field-level correction,
-  which feeds a classifier few-shot pool *and* a `triage`-domain reflection on
-  the ordinary learning path. The pool is deliberately not a learned rule —
-  `triage` is not in `RUN_DOMAINS`, which is why domain selection was built
-  before this phase existed.
+  feeding a classifier few-shot pool *and* a `triage`-domain reflection on the
+  ordinary learning path. The pool is deliberately not a learned rule —
+  `triage` is not in `RUN_DOMAINS`.
 
-Five open questions are in the design doc's §4, none blocking. The sharpest:
-whether `r` hands the drafting run the thread (taint honestly, red draft) or
-the verdict; and whether `meeting` earns its place as a request kind, being
-structurally the greediest label since almost any request can be discussed in
-a meeting.
+Six open questions are in the design doc's §7. Only one blocks: where day two
+surfaces. The rest are live but not in the way — whether `r` hands the drafting
+run the thread or the verdict; whether `t` can point back at the thread at all
+given `kg_task_create`'s fields; whether `meeting` earns its place; retention on
+the triage store; and **how `student-advising` is actually answered**, which is
+the biggest single piece of the load at 769 threads and is probably a
+substitution problem — the same handful of questions, which a form or a
+published answer removes rather than something mecha should draft 769 replies
+to.
 
 Two decisions recorded rather than left open: tags are mecha's own and never
-provider labels, and no mail parser belongs in mecha — pkg already ingests
+provider labels, and no mail parser belongs in mecha — the graph already ingests
 `email.thread` episodes (`sources/mbox.rs`) with the bulk filter and the
 `NEVER_AUTO` guard, so the live path pushes evidence through `kg_upsert` on the
-`distill.rs` pattern and lets pkg extract. Push only `respond`/`notify`
-buckets; the classifier is a better filter than the `List-Unsubscribe`
-heuristic and runs anyway.
+`distill.rs` pattern and lets the graph extract. Push only `respond`/`notify`
+buckets.
 
-**Local state in no repository**, and the next session will want it: the
-classify timer is installed at `~/.config/systemd/user/`, and
-`~/.mecha/mail-triage/` holds 51 records classified across three binary
-generations — so `request_type` is not consistent across the store and it
-wants one `mecha mail classify --account dartmouth --limit 50 --force` sweep
-(~25 min) before any measurement is taken from it.
+**Local state in no repository**, and the next session will want it:
+
+- The classify timer is installed at `~/.config/systemd/user/`.
+- `~/.mecha/mail-triage/` holds 51 records classified across **four** binary
+  generations now, so `request_type` is not consistent across the store and the
+  taxonomy changed again on 2026-08-19. It wants one `mecha mail classify
+  --account dartmouth --limit 50 --force` sweep (~25 min) before any
+  measurement is taken from it. Five of those records carried
+  `proposed: frontdoor` and now read as `none` — by design, not by damage.
+- **The corpus is at `~/.mecha/mail-corpus/{dartmouth,personal}.jsonl`**,
+  owner-only, outside the repo, `*.jsonl` gitignored so it cannot be staged.
+  20,153 messages, both accounts complete. Do not re-fetch to re-run an
+  analysis; do re-fetch if the window needs extending. The personal half was
+  fetched twice — the first held 72% because of a 500-per-month cap, now fixed
+  and reported when reached.
+- **The personal account should stay out of the nightly**, and this is now
+  measured rather than assumed: 82.8% deterministically disposable, 15 replies
+  in a year, 124 threads of the 1,029 personally-addressed ones from a human
+  being.
 
 ### Google Docs/Sheets/Slides write access — researched and validated, not built
 

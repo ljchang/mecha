@@ -667,14 +667,46 @@ async fn corpus(since: &str, account: Option<&str>) -> Result<()> {
                 // Gmail's search already paginates, so the corpus walks it a
                 // month at a time: bounded memory, honest progress, and no
                 // second pagination implementation to keep correct.
+                //
+                // Two things the first version got wrong, both the same
+                // mistake in different costumes — a corpus that is quietly
+                // missing mail reads exactly like a corpus of someone who
+                // gets less mail:
+                //
+                // - The cap was 500 a month, which nine months of a real
+                //   year exceeded. Every distribution read off it was then
+                //   wrong in the same direction, understating precisely the
+                //   busy months an analysis is about. The ceiling is now
+                //   high enough to be theoretical, and it is *reported*
+                //   when reached rather than applied in silence.
+                // - A failed month was `unwrap_or_default()`ed into an empty
+                //   one. A hole in the record is not evidence of quiet, and
+                //   the analysis cannot tell the two apart afterwards, so
+                //   the fetch fails instead.
+                const PER_MONTH: u32 = 5_000;
                 let token = entry.manager.access_token().await?;
                 let provider = google::gmail::GmailProvider::new(token);
+                let mut truncated: Vec<String> = Vec::new();
                 for (from, to) in month_windows(since)? {
                     let q = format!("after:{from} before:{to}");
-                    let batch = provider.search(&q, 500).await.unwrap_or_default();
+                    let batch = provider.search(&q, PER_MONTH).await.with_context(|| {
+                        format!("fetching {from} → {to} for account {}", entry.name)
+                    })?;
+                    if batch.len() as u32 >= PER_MONTH {
+                        truncated.push(from.clone());
+                    }
                     written += batch.len();
                     write_corpus_batch(&mut out, &entry.name, &batch)?;
                     eprint!("\r  {from} → {written} messages");
+                }
+                if !truncated.is_empty() {
+                    eprintln!();
+                    eprintln!(
+                        "  warning: {} month(s) hit the {PER_MONTH}-message cap and are \
+                         incomplete — treat counts for these as lower bounds: {}",
+                        truncated.len(),
+                        truncated.join(", ")
+                    );
                 }
             }
         }

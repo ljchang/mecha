@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.7] - 2026-08-18
+## [0.1.7] - unreleased
 
 Two releases in one day, and they rhyme. mecha got a writable seat at the
 user's documents — with the grant chosen so a document nobody handed over is
@@ -75,6 +75,17 @@ remedy. Nothing else in this release requires action.
   device flow refuses the client type the file chooser requires, and two
   clients cannot substitute, because a per-file grant belongs to a
   *(user, client)* pair and the two would hold disjoint sets of files.
+
+- **`mecha-mail corpus`** — download a span of mail for analysis, envelope and
+  snippet only, one JSON object per message. **An operator command,
+  deliberately not an MCP tool**: the model has no business bulk-reading a year
+  of mail, and a corpus verb on the tool surface would be one prompt away from
+  being asked to. Deliberately unclassified, too — running a corpus through the
+  classifier projects the existing tags onto it and confirms them by
+  construction, so the taxonomy has to come from the mail rather than from the
+  labels. Graph needed a new path (`search` caps at 100 with no cursor, and
+  `$search` forbids `$orderby`, so it walks `@odata.nextLink` with `$orderby`
+  alone, as the calendar has all along).
 
 ### Security
 
@@ -169,6 +180,42 @@ remedy. Nothing else in this release requires action.
   `unrouted_domains` warns at startup about any holding rules no run carries.
   Everything reconstructing "what a run sees" moved with it, or the validation
   ledger would be keyed to a rule set no run ever had.
+
+- **The mail taxonomy is measured rather than guessed.** A year of real mail
+  (8,167 threads) said the request kinds were wrong in both directions.
+  `student-advising` joins `REQUEST_TYPES` and `advising` joins `TAGS` — 31.5%
+  of personally-addressed mail, the largest category by a factor of three, and
+  absent because it is the most routine thing that arrives. `book` leaves: two
+  threads in ten months, neither a request to write a book. A name on that list
+  is a claim that the kind arrives.
+
+- **Mail no longer routes to the front door.** `Proposed::Frontdoor`,
+  `ROUTABLE_TYPES` and `is_routable` are removed. The front door's
+  `[verification]` block exists to prove a stranger controls an email address,
+  and an email arrived from one — so the machinery being imported solved a
+  problem mail does not have, while removing threads from the queue whose whole
+  value is being the one place. Mail keeps its own request kinds; the surviving
+  half of the idea becomes mail's own `needs-info`. Recognising a kind was
+  already separate from routing it, which is why nothing else moved.
+
+### Fixed
+
+- **A retired proposal no longer makes a triage record unreadable.**
+  `Proposed`'s derived `Deserialize` failed the whole record on an unknown
+  string, so removing a variant from a type written to an append-only store
+  would have silently truncated it — five records in a live store carried
+  `proposed: frontdoor` on the day it was removed. The hand-rolled impl
+  degrades an unknown proposal to `none`, which is what "a human decides"
+  already meant.
+
+- **`mecha-mail corpus` no longer silently truncates Gmail.** Each month was
+  capped at 500 messages and a failed month was `unwrap_or_default()`ed into an
+  empty one, so a partial corpus and a quiet month were the same value. On a
+  real year, nine of thirteen months hit the cap and the loss grew toward the
+  present as volume grew — which does not add noise to an analysis, it adds a
+  slope, and a slope is indistinguishable from a finding. The ceiling is now
+  high enough to be theoretical, reported on stderr when reached, and errors
+  propagate.
 
 ## [0.1.6] - 2026-08-16
 
