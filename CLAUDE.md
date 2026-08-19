@@ -1042,8 +1042,12 @@ default through the layer to catch it.
 `mecha doctor` (`doctor.rs`, `commands/doctor.rs`) reads every store in one
 pass — no network, no model, no tokens — and reports what is silently wrong:
 dead auth markers, releases that errored, drafts and requests waiting on you
-past a threshold, triggers whose slots stopped advancing, failed `mecha-*`
-units, and graph nightlies that stopped writing their daily log (cron exec
+past a threshold, triggers whose slots stopped advancing, triggers quietly
+failing a large share of their tool calls (an unattended run has nobody
+watching it fail: the briefing still arrives and the ledger still says `ok`,
+so the only evidence is the call counts the record now carries — silent below
+ten calls in five runs, because a rate over three of them is noise), failed
+`mecha-*` units, and graph nightlies that stopped writing their daily log (cron exec
 failures die before the script's own logging starts, and cron mails the
 error to an MTA that isn't there — 2026-08-17's missing execute bit). It exists because of 2026-08-11: a revoked OAuth token took scheduling
 down for three days while five stores each recorded the distress correctly

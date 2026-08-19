@@ -313,7 +313,10 @@ budgets derived from the window.
    `completed_over_failures` flag on `RunOutcome` plus an `expect` check is the
    harness-grading category the eval rig already has slots for
    (`stop_cause`, `taint`, `blocked_sends`).
-3. **Unattended runs' reliability is invisible.** The numbers exist per run and
+3. ~~**Unattended runs' reliability is invisible.**~~ **Built 2026-08-19**:
+   `RunRecord` carries `tool_calls` / `tool_errors` / `ended_on_failed_call`,
+   and `mecha doctor` reports a trigger failing a third of its calls across its
+   last five runs. The numbers exist per run and
    are aggregated only by `eval`. §5's compounding result says a trigger
    quietly erroring on a third of its calls is a degrading harness, and today
    nothing reads it. This is a marker plus a doctor check — the shape doctor

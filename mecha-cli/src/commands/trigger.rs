@@ -981,6 +981,16 @@ async fn run_agent(
     record.cost_usd = outcome.cost_usd;
     record.blocked_sends = outcome.blocked_sends;
     record.staged = outcome.tool_calls.iter().filter(|c| c.staged).count() as u32;
+    record.tool_calls = outcome.tool_calls.len() as u32;
+    // `unknown` counts: naming a tool that does not exist is the environment
+    // refusing the call, and it costs the same turn. A denial does not — a
+    // policy said no, which is the harness working.
+    record.tool_errors = outcome
+        .tool_calls
+        .iter()
+        .filter(|c| c.is_error || c.unknown)
+        .count() as u32;
+    record.ended_on_failed_call = outcome.ended_on_failed_call;
     record.taint = outcome.taint;
     // Recorded only when it is news: `Completed` is the ordinary case, and a
     // field that is always set is a field nobody reads.
