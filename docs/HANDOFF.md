@@ -669,8 +669,11 @@ The arc is complete and running nightly. What is missing is refinement:
 it — gitignored, on `OPERATIONS.md`'s split: the lesson is here, the figures
 are not**; `MAIL-UX-RESEARCH.md` is the original survey. Where they disagree the
 later one wins, and the corpus is the latest. **The 0.1.7 release is held until
-this is complete** — Luke's decision 2026-08-18, scope confirmed as everything
-through the correction loop.
+this is complete** — Luke's decision 2026-08-18, **reaffirmed 2026-08-19 after
+the scope grew**: phase 4 was deleted and three items were added (the corpus
+eval, day two, the third pre-filter rule), and the hold stands for everything
+through the correction loop anyway. So the unpushed backlog keeps growing on
+purpose; it is a known cost, not an oversight.
 
 Phases 1-3 shipped 2026-08-18: `mail_triage` (archive/read/unread/spam/trash,
 closed enum, both providers), `~/.mecha/mail-triage/` holding one typed verdict
@@ -730,12 +733,15 @@ What is left, in the order the measurements argue for:
 - **Phase 4″ — tasks and `needs-info`, native to mail.** `t` carries the
   thread's deadline into `kg_task_create`; `n` parks a thread and names what is
   missing. This is the half of the front-door idea that survived.
-- **Phase 4‴ — day two.** A `respond` thread aged past ~24 hours with no
+- **Phase 4‴ — day two.** A `respond` thread aged past the threshold with no
   outbound message since, surfaced once. Needs no new state. Keys on the bucket
-  and never on silence, forgives a thread settled in a meeting, fires once, and
-  must land somewhere already attended. **The one blocking question in the mail
-  work is which surface** — the morning briefing cannot ask, the TUI is not
-  always open, Slack reaches a phone.
+  and never on silence, forgives a thread settled in a meeting, and fires once.
+  **Surface decided 2026-08-19: the morning briefing**, because it is already
+  read daily and day two is precisely when the user is not looking at mail. A
+  trigger cannot ask, so the briefing lists and acting happens elsewhere —
+  which makes `mecha mail list --aged` the primitive and the briefing one
+  reader of it. Still open: the age itself, likely one working day rather than
+  24 hours, and measurable against the corpus rather than guessed.
 - **Phase 5 — `/mail`**, a sixth modal on the `/outbox` pattern with a closed
   key set. `r`/`e`/`f` are detached agent runs; `a`/`s`/`t`/`g` are single
   calls. Replies land in `/outbox`, which stays the only approval surface.
