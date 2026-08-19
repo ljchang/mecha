@@ -1962,35 +1962,6 @@ fn one_of<T: Copy>(name: &str, given: &str, table: &[(&str, T)]) -> Result<T> {
         })
 }
 
-#[cfg(test)]
-mod classify_exit_tests {
-    use super::run_accomplished_nothing;
-
-    /// 2026-08-19: the nightly classified 0 of 16 and systemd logged SUCCESS,
-    /// because the command returned `Ok(())` whatever happened. Every check
-    /// downstream — `OnFailure=`, `systemctl --failed`, doctor's failed-unit
-    /// scan — reads a unit's exit code, so a broken nightly was invisible to
-    /// all of them at once.
-    #[test]
-    fn a_run_that_did_nothing_fails_and_a_partial_one_does_not() {
-        assert!(run_accomplished_nothing(0, 0, 16), "the incident");
-
-        // Partial failure is a working nightly. Failing the unit here would
-        // train someone to ignore the alarm, which costs more than it buys.
-        assert!(!run_accomplished_nothing(14, 0, 2));
-        assert!(!run_accomplished_nothing(1, 0, 99));
-
-        // Pre-filter disposal is work. A sweep of nothing but bulk mail did
-        // its job without one model call.
-        assert!(!run_accomplished_nothing(0, 12, 0));
-        assert!(!run_accomplished_nothing(0, 12, 3));
-
-        // Nothing to do is not a failure — the common case for a nightly that
-        // already swept an hour ago, and the one false alarm to avoid.
-        assert!(!run_accomplished_nothing(0, 0, 0));
-    }
-}
-
 /// Which kind of draft a run is producing.
 pub enum Draft {
     Reply,
@@ -2202,4 +2173,33 @@ fn draft_prompt(
             .unwrap_or("(no summary)"),
     ));
     p
+}
+
+#[cfg(test)]
+mod classify_exit_tests {
+    use super::run_accomplished_nothing;
+
+    /// 2026-08-19: the nightly classified 0 of 16 and systemd logged SUCCESS,
+    /// because the command returned `Ok(())` whatever happened. Every check
+    /// downstream — `OnFailure=`, `systemctl --failed`, doctor's failed-unit
+    /// scan — reads a unit's exit code, so a broken nightly was invisible to
+    /// all of them at once.
+    #[test]
+    fn a_run_that_did_nothing_fails_and_a_partial_one_does_not() {
+        assert!(run_accomplished_nothing(0, 0, 16), "the incident");
+
+        // Partial failure is a working nightly. Failing the unit here would
+        // train someone to ignore the alarm, which costs more than it buys.
+        assert!(!run_accomplished_nothing(14, 0, 2));
+        assert!(!run_accomplished_nothing(1, 0, 99));
+
+        // Pre-filter disposal is work. A sweep of nothing but bulk mail did
+        // its job without one model call.
+        assert!(!run_accomplished_nothing(0, 12, 0));
+        assert!(!run_accomplished_nothing(0, 12, 3));
+
+        // Nothing to do is not a failure — the common case for a nightly that
+        // already swept an hour ago, and the one false alarm to avoid.
+        assert!(!run_accomplished_nothing(0, 0, 0));
+    }
 }
