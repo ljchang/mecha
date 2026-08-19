@@ -162,13 +162,37 @@ an unanswered one looks like from the outside.
 Promoted from phase 6, because "too many emails and things to do, and I am bad
 at keeping track" is the problem statement rather than a refinement of it.
 
+**Built 2026-08-19** as `mecha mail task` and `mecha mail needs-info`; the
+modal keys in §5 will drive these rather than reimplement them.
+
 - **`t` carries the deadline.** A thread whose verdict names a due date creates
   the task with that date, rather than a task someone has to re-read the mail
-  to schedule.
+  to schedule. The output says whether the date came from the verdict or from
+  the flag, because "it noticed" and "you told it" are different facts about
+  how well the classifier is doing.
+
+  Open question 2 is answered by the tool's own schema: `kg_task_create` takes
+  `name`, `due`, `context` and `project`, so the thread pointer goes in
+  `context` — there is nowhere else. And `project` **must resolve to an
+  existing node**, so it is passed through untouched and never invented from a
+  subject line: a project conjured out of mail is a board that cannot be
+  queried, which is the failure that field exists to prevent.
+
+  The task's `name` defaults to the classifier's `one_line`, which describes
+  the mail rather than the action. That is a real mismatch rather than a
+  rounding error — hence the override flag, and hence saying so here instead of
+  pretending the default is right.
 - **`n` parks a thread and names what is missing** — mail's own `needs-info`,
   the surviving half of the front-door idea. The most useful thing mecha can do
   with "can you write me a letter?" is ask the questions that make a good one
   possible.
+
+  **`parked` is a distinct state from `dismissed`, and collapsing them would
+  lose the threads most likely to go quiet.** Dismissing says "I am not doing
+  this"; parking says "I have asked and cannot proceed yet", and the thread
+  stays the user's problem. A request waiting on an answer is exactly the shape
+  §2 measures as dying on day one. Parking without naming what is waited for is
+  refused, because that is dismissing slowly.
 - **Mecha helping complete the task** is the outbox plus an agent run, both of
   which already exist. Nothing new is required for the approval story.
 

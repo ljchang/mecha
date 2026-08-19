@@ -755,6 +755,18 @@ pub const ACTED: &str = "acted";
 pub const DISMISSED: &str = "dismissed";
 pub const FAILED: &str = "failed";
 
+/// Waiting on somebody else, and **not the same as dismissed**.
+///
+/// `dismissed` is "drop this, I am not doing it". `parked` is "I have asked
+/// for what I need and cannot proceed until it arrives" — the thread is still
+/// the user's problem, it is just not actionable yet. Collapsing them would
+/// lose exactly the threads most likely to go quiet, since a request waiting
+/// on an answer is the shape that dies on day one.
+pub const PARKED: &str = "parked";
+
+/// What a parked thread is waiting for. Free text, the user's own words.
+pub const PARKED_FOR: &str = "parked_for";
+
 impl Record {
     /// What a run with tools is allowed to see.
     ///
