@@ -138,6 +138,17 @@ classifier's prediction and the user's correction.
 - **The outcome is measured.** A rule that starts burying answered mail
   regresses false-`ignore` and is retired. No other domain can say that.
 
+**One residual, and nothing enforces it.** The exemption is implemented as
+`domain == "triage" && !RUN_DOMAINS.contains("triage")` — which keys on a
+*proxy* for the consumer rather than on the consumer. It catches someone
+routing `triage` into ordinary runs. It does not catch a future caller that has
+tools reading `triage` rules directly, and the check would go on answering
+"safe" while the premise had stopped holding. Rust cannot cheaply say "this
+domain has exactly one load site", and a registry would cost more than it
+protects, so the rule is written where someone will meet it instead: a
+tool-having consumer of `triage` rules makes this exemption unsound and it must
+be argued again rather than inherited.
+
 Two constraints that stay:
 
 1. **The rule text is the reflector's generalisation, never quoted prose.**
