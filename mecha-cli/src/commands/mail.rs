@@ -21,9 +21,9 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 use mecha_core::mail_triage::{
-    changed_fields, needs_body, prefilter, Bucket, Correcting, FewShot, Graded, Proposed, Record,
-    Scorecard, ThreadInput, TriageStore, Urgency, Verdict, BODY_CHARS_MAX, CLASSIFIED, DISMISSED,
-    FAILED, FEW_SHOT_MAX, REQUEST_TYPES,
+    changed_fields, needs_body, prefilter, Bucket, Correcting, Graded, Proposed, Record, Scorecard,
+    ThreadInput, TriageStore, Urgency, Verdict, BODY_CHARS_MAX, CLASSIFIED, DISMISSED, FAILED,
+    REQUEST_TYPES,
 };
 
 use crate::{setup, GlobalOpts};
