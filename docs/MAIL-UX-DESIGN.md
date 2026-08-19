@@ -306,7 +306,19 @@ design:
    store. Free, deterministic, and immediately useful to the list.
 2. **The pair joins a few-shot pool** the classifier's prompt draws from.
    Cheap, fast-acting, small blast radius: it steers a tool-less pass that
-   emits a fixed schema.
+   emits a fixed schema. **Built 2026-08-19.** Bounded at `FEW_SHOT_MAX`
+   examples, chosen by recency rather than relevance — picking the most
+   *similar* examples would need a similarity measure over mail the classifier
+   has not read yet, which is expensive and is a second place for a scoring
+   function to be quietly wrong.
+
+   It is also **the one place a thread influences another thread's verdict**,
+   and that is worth stating because the rest of the classifier maintains the
+   opposite: one call, no history, nothing an email says can reach the verdict
+   on a different email. Three things keep the exception narrow — a human must
+   have corrected the thread for it to appear at all, the examples are fenced
+   as data with the warning *before* them, and the typed change is the payload
+   while the prose is only enough to say what kind of mail it was.
 3. **A `triage`-domain reflection** goes to the learning store, on the ordinary
    path — provenance gating, the proposal gate, the validation ledger.
 

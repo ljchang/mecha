@@ -21,9 +21,9 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 use mecha_core::mail_triage::{
-    changed_fields, needs_body, prefilter, Bucket, Correcting, Graded, Proposed, Record, Scorecard,
-    ThreadInput, TriageStore, Urgency, Verdict, BODY_CHARS_MAX, CLASSIFIED, DISMISSED, FAILED,
-    REQUEST_TYPES,
+    changed_fields, needs_body, prefilter, Bucket, Correcting, FewShot, Graded, Proposed, Record,
+    Scorecard, ThreadInput, TriageStore, Urgency, Verdict, BODY_CHARS_MAX, CLASSIFIED, DISMISSED,
+    FAILED, FEW_SHOT_MAX, REQUEST_TYPES,
 };
 
 use crate::{setup, GlobalOpts};
@@ -477,6 +477,16 @@ async fn classify(
             .to_string(),
         None => chrono::Local::now().format("%Y-%m-%d").to_string(),
     };
+    // What this recipient has corrected before, newest first. Bounded, because
+    // this rides on every classification of every thread — the cheap half of
+    // the correction loop only stays cheap if it stays small.
+    let examples = mecha_core::mail_triage::select_examples(&store.list()?);
+    if !examples.is_empty() {
+        eprintln!(
+            "{} correction(s) in the classifier's prompt",
+            examples.len()
+        );
+    }
     eprintln!("classifying with {model} ({provider_name})");
 
     let get_thread = find_tool(&prepared.registry, "mail_get_thread");
@@ -505,8 +515,14 @@ async fn classify(
             continue;
         }
 
-        let verdict =
-            mecha_core::mail_triage::classify(provider.as_ref(), &model, &thread, &today).await;
+        let verdict = mecha_core::mail_triage::classify_with(
+            provider.as_ref(),
+            &model,
+            &thread,
+            &today,
+            &examples,
+        )
+        .await;
 
         // The second pass. Only where the answer changes what happens — see
         // `needs_body` — and only when the whole thread can actually be
