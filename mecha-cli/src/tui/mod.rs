@@ -3952,6 +3952,15 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     return Ok(());
                 }
                 let (thread, account) = (row.thread_id.clone(), row.account.clone());
+                if input.verb == "forward" {
+                    let to = input.buffer.trim().trim_end_matches(',').to_string();
+                    if to.is_empty() {
+                        modal.status = Some("no recipient — cancelled".into());
+                        return Ok(());
+                    }
+                    spawn_draft(app, "forward", &thread, &account, Some(&to));
+                    return Ok(());
+                }
                 let result = match input.verb {
                     "needs-info" => self_cli(&[
                         "mail",
@@ -3980,10 +3989,39 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 });
                 refresh_mail(app);
             }
-            KeyCode::Backspace => {
-                input.buffer.pop();
+            KeyCode::Backspace => input.backspace(),
+            KeyCode::Left => {
+                input.cursor = input.buffer[..input.cursor]
+                    .chars()
+                    .next_back()
+                    .map(|c| input.cursor - c.len_utf8())
+                    .unwrap_or(0);
             }
-            KeyCode::Char(c) => input.buffer.push(c),
+            KeyCode::Right => {
+                input.cursor = input.buffer[input.cursor..]
+                    .chars()
+                    .next()
+                    .map(|c| input.cursor + c.len_utf8())
+                    .unwrap_or(input.cursor);
+            }
+            // Completion only steers when there is something to steer.
+            KeyCode::Up if !input.contacts.is_empty() => {
+                input.pick = input.pick.saturating_sub(1);
+            }
+            KeyCode::Down if !input.contacts.is_empty() => {
+                let n = input.candidates().len();
+                input.pick = (input.pick + 1).min(n.saturating_sub(1));
+            }
+            KeyCode::Tab => {
+                let chosen = input
+                    .candidates()
+                    .get(input.pick)
+                    .map(|c| c.address.clone());
+                if let Some(a) = chosen {
+                    input.accept(&a);
+                }
+            }
+            KeyCode::Char(c) => input.insert(c),
             _ => {}
         }
         return Ok(());
@@ -4052,11 +4090,7 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     modal.confirm = Some(format!("mark as {verb}? trains the filter — y/N"));
                 }
                 mail::Action::Prompt(verb, label) => {
-                    modal.input = Some(mail::MailInput {
-                        label: label.to_string(),
-                        verb,
-                        buffer: String::new(),
-                    });
+                    modal.input = Some(mail::MailInput::text(label, verb));
                 }
                 mail::Action::Now(verb) => {
                     // **These block the event loop**, and only `dismiss` is
@@ -4076,10 +4110,18 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     });
                     refresh_mail(app);
                 }
+                mail::Action::Recipients(verb) => {
+                    // Candidates from the store, loaded once when the input
+                    // opens — filtering happens locally as they type, so no
+                    // keystroke costs a query.
+                    let mine = mecha_core::mail_triage::TriageStore::open_existing_default()
+                        .and_then(|s| s.list().ok())
+                        .map(|rows| mecha_core::mail_triage::contacts(&rows, &[]))
+                        .unwrap_or_default();
+                    modal.input = Some(mail::MailInput::recipients("forward to", verb, mine));
+                }
                 mail::Action::Detached(verb) => {
-                    modal.status = Some(format!(
-                        "{verb}: not built yet — the run would draft into /outbox"
-                    ));
+                    spawn_draft(app, verb, &thread, &account, None);
                 }
             }
         }
@@ -4482,5 +4524,48 @@ mod tests {
         // arithmetic that ran first.
         let (_, _, rows) = input_layout("abc", 3, 0);
         assert!(rows >= 1);
+    }
+}
+
+/// Start a drafting run and let it go.
+///
+/// **Detached, because it is a whole agent run.** It builds a tool surface,
+/// reads a thread and writes prose — minutes, not milliseconds — and doing
+/// that on the event loop freezes the interface. The result lands in
+/// `/outbox`, which is where it is reviewed; this only reports that the run
+/// started.
+fn spawn_draft(app: &mut App, verb: &str, thread: &str, account: &str, to: Option<&str>) {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => {
+            if let Some(m) = &mut app.mail {
+                m.status = Some(format!("cannot find my own binary: {e}"));
+            }
+            return;
+        }
+    };
+    let mut args: Vec<String> = vec![
+        "mail".into(),
+        verb.into(),
+        thread.into(),
+        "--account".into(),
+        account.into(),
+    ];
+    if let Some(to) = to {
+        args.push("--to".into());
+        args.push(to.into());
+    }
+    let spawned = std::process::Command::new(exe)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Some(m) = &mut app.mail {
+        m.input = None;
+        m.status = Some(match spawned {
+            Ok(_) => format!("{verb} drafting in the background — watch /outbox"),
+            Err(e) => format!("could not start {verb}: {e}"),
+        });
     }
 }
