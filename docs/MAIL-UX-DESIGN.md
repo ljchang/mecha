@@ -2,7 +2,9 @@
 
 *2026-08-18, revised 2026-08-19. What phases 1–3 settled, and what phases 4–6
 will be. `docs/MAIL-UX-RESEARCH.md` is the survey this argues from and
-`docs/MAIL-CORPUS-RESEARCH.md` is the measurement that corrected it; where any
+`docs/MAIL-CORPUS-RESEARCH.md` is the measurement that corrected it — **kept out
+of the repository** (gitignored, like `OPERATIONS.md`) because its figures are
+one person's mailbox rather than a public fact; where any
 of the three disagree, the later one wins. Written for review before 4–6 are
 built, so anything here is still cheap to change.*
 
@@ -29,8 +31,8 @@ Shipped and running, so these are facts rather than proposals:
 | The nightly | `mecha-mail-classify.timer`, 05:30 UTC, Dartmouth only |
 
 Measured on 51 real threads when it shipped: 30 `ignore`, 9 `notify`, 12
-`respond`. That sample is superseded by `MAIL-CORPUS-RESEARCH.md` (8,167
-threads) for anything about *what arrives*; it remains the only measurement of
+`respond`. That sample is superseded by the corpus measurement for anything
+about *what arrives*; it remains the only measurement of
 what the classifier *decides*, and the 51 stored records predate two taxonomy
 changes, so they need a `--force` re-sweep before any number is taken from
 them.
@@ -98,8 +100,8 @@ different sides, not to share a schema.
 
 ## 2. Phase 4′ — the taxonomy, measured
 
-`docs/MAIL-CORPUS-RESEARCH.md` is the full measurement; this is what it
-obligates.
+`docs/MAIL-CORPUS-RESEARCH.md` is the full measurement and is gitignored; this
+is what it obligates, stated so every decision here stands without it.
 
 A year of mail was fetched raw and deliberately unclassified, because running
 it through the current classifier would have projected the eight guessed tags
@@ -107,12 +109,12 @@ onto it and confirmed them by construction. Three findings change the design.
 
 ### The classifier should not see half of what it sees
 
-51.1% of threads — bulk plus a sender-address pattern — are disposable with no
-model at all, and were replied to 7 times in ten months. `List-Unsubscribe`
-alone finds only two thirds of that: it catches marketing, which is obliged to
-offer an unsubscribe, and misses every institutional and transactional sender,
-which is not. A short regex over sender and display name closes the gap with 5
-false negatives in 1,447 threads.
+About half of all threads — bulk plus a sender-address pattern — are disposable
+with no model at all, and across a year the number that were wrongly caught was
+a handful. `List-Unsubscribe` alone finds only two thirds of it: it catches
+marketing, which is obliged to offer an unsubscribe, and misses every
+institutional and transactional sender, which is not. A short regex over sender
+and display name closes the gap at a negligible error rate.
 
 **So a deterministic pre-filter runs ahead of the classifier**, and it is the
 cheapest change available: half the token cost, and the errors it makes are
@@ -120,37 +122,37 @@ measurable against the corpus rather than argued about.
 
 ### The vocabulary was wrong in both directions
 
-| Change | Threads/yr | Why |
-|---|---:|---|
-| **add `student-advising`** | 769 | The largest single category, absent from the list. Major plans, prerequisites, petitions, transfer credit, thesis logistics |
-| ~~add `finance-admin`~~ | 161 | **Rejected on implementation.** The volume is real, but it fails this list's own test: a request kind is one where *a standard set of things must be known before it can be answered*, and nothing has to be gathered before a receipt is forwarded. It is the existing `expense` tag plus `Proposed::Forward` — and the actual gap was that `forward` had no key bound to it, which §4 fixes. Adding a type here would have been the same mistake as `book`, made the same week it was found |
-| **remove `book`** | 2 | Two threads in ten months, and neither is a request to write a book. A name on this list is a claim that the kind arrives |
-| **add `advising` to `TAGS`** | — | `teaching` did not cover it: a prerequisite question, a major plan and a course petition are advising load, not a class being taught |
-| keep the rest | — | `review`, `letter`, `lab-application`, `speaking`, `meeting`, `data-request`, `grant-support` all appear at real volume |
+| Change | Why |
+|---|---|
+| **add `student-advising`** | The largest single category by a wide margin, and absent from the list. Major plans, prerequisites, petitions, transfer credit, thesis logistics |
+| ~~add `finance-admin`~~ | **Rejected on implementation.** The volume is real, but it fails this list's own test: a request kind is one where *a standard set of things must be known before it can be answered*, and nothing has to be gathered before a receipt is forwarded. It is the existing `expense` tag plus `Proposed::Forward` — and the actual gap was that `forward` had no key bound to it, which §4 fixes. Adding a type here would have been the same mistake as `book`, made the same week it was found |
+| **remove `book`** | Two threads in ten months, and neither is a request to write a book. A name on this list is a claim that the kind arrives |
+| **add `advising` to `TAGS`** | `teaching` did not cover it: a prerequisite question, a major plan and a course petition are advising load, not a class being taught |
+| keep the rest | `review`, `letter`, `lab-application`, `speaking`, `meeting`, `data-request`, `grant-support` all appear at real volume |
 
 `student-advising` being invisible to intuition is the finding to remember: it
 is the most routine thing that arrives, and routine things do not come to mind
 when a person lists what their inbox contains. That is the general argument for
 measuring a taxonomy rather than proposing one.
 
-### The metric is reply rate, and the baseline is 14.2%
+### The metric is reply rate, and the baseline lives outside the repository
 
-Personally-addressed mail arrives at 10.5 threads per weekday and 14.2% of it
-gets an answer — 2,094 unanswered threads in ten and a half months.
+The figure is in the gitignored measurement. What matters here is that it is
+**low, and measurable without a human grading anything** — which is what makes
+it the number every change to this feature is judged against.
 
-**The shape is the finding, not the level.** 59% of every reply that ever
-happens happens on the first day, a third of them within four hours, and a
-thread still unanswered at 24 hours has a **94% chance of never being answered
-at all**. There is no slow middle to speed up: mail here is handled or it is
-not, and the decision is made on day one.
+**The shape is the finding, not the level.** Most replies that ever happen
+happen on the first day, and **a thread still unanswered after a day is
+overwhelmingly unlikely ever to be answered**. There is no slow middle to speed
+up: mail is handled or it is not, and the decision is made on day one.
 
 That reorders this document. Every other phase here operates on a thread the
-user is already looking at, which is the 8.4% that already works — so §4 is now
-the highest-leverage item in the plan, and it was an open question until this
-was measured.
+user is already looking at — the small fraction that already works — so §4 is
+now the highest-leverage item in the plan, and it was an open question until
+this was measured.
 
-Peer review is the sharpest case: 219 invitations at a **5% reply rate**, with
-hard deadlines, and the corpus contains the reminder invitations that are what
+Peer review is the sharpest case: real volume at the **lowest reply rate of any
+category**, against hard deadlines, and the corpus contains the reminder invitations that are what
 an unanswered one looks like from the outside.
 
 ---
@@ -175,8 +177,8 @@ at keeping track" is the problem statement rather than a refinement of it.
 ## 4. Phase 4‴ — day two
 
 **The highest-leverage thing in this document, and the only item that reaches
-the 94%.** §2 measures the failure as abandonment on day one rather than
-mishandling; nothing else here operates after the user has stopped looking at
+the threads that die on day one.** §2 measures the failure as abandonment
+rather than mishandling; nothing else here operates after the user has stopped looking at
 the queue.
 
 The mechanism needs no new state. The triage store already holds the verdict,
@@ -188,8 +190,8 @@ and `mail_search` can say whether an outbound message has gone since. So:
 Four things it must get right, three of them from the caveats the measurement
 carries:
 
-- **It keys on the `respond` bucket, never on silence.** 2,094 threads went
-  unanswered and most of them correctly needed no reply. A mechanism built on
+- **It keys on the `respond` bucket, never on silence.** Most unanswered mail
+  correctly needed no reply. A mechanism built on
   "no reply yet" nags about FYIs, and a nudge that fires on everything has
   stopped being a nudge — the same failure as a taint warning that fires on
   every draft.
@@ -251,8 +253,8 @@ Three rules carried from `/outbox`:
   `a`, `s`, `t`, `g` are single calls and run synchronously.
 - **`f` (forward) exists because it was missing.** `Proposed::Forward` was in
   the enum with no key bound to it, so the receipts-to-the-finance-person case —
-  one of the five that motivated this whole feature, and 161 threads a year by
-  §2's measurement — had no way to happen. It took over `f` when routing was
+  one of the five that motivated this whole feature, and real volume by §2's
+  measurement — had no way to happen. It took over `f` when routing was
   dropped, which is its natural owner anyway.
 - **The result of a reply lands in `/outbox`, not here.** There is exactly one
   approval surface and this is not it. `/mail` decides *whether* something
@@ -315,16 +317,15 @@ them teaches the classifier noise.
    open. Slack reaches a phone, which is both the reason to choose it and the
    reason not to. This is the one blocking question in the document.
 4. **`meeting` as a request kind** — still unresolved, and now with a number
-   on it. 98 threads a year and the *highest* reply rate of any category (24%),
-   which cuts both ways: it is real volume, and it is the category needing help
-   least. It remains structurally the greediest label — almost any request can
+   on it: real volume, and the *highest* reply rate of any category, which cuts
+   both ways — it arrives often, and it needs help least. It remains structurally the greediest label — almost any request can
    be discussed in a meeting — and the booking flow may already cover it.
-5. **How is `student-advising` answered?** It is 769 threads a year, the
-   largest category by a factor of three, and the design has said nothing about
-   it because it did not know it existed. Much of it is the same handful of
+5. **How is `student-advising` answered?** It is the largest category by a wide
+   margin and the design had said nothing about it, because it did not know it
+   existed. Much of it is the same handful of
    questions — prerequisites, petitions, transfer credit — which is the profile
    of something a form or a published answer removes rather than something
-   mecha should draft 769 replies to. That is the `mecha-factory` substitution
+   mecha should answer one at a time. That is the `mecha-factory` substitution
    argument from §1 landing on the biggest single piece of the load, and it
    deserves its own pass before any of it is automated.
 6. **Retention.** Nothing prunes `~/.mecha/mail-triage/`. A year of nightlies

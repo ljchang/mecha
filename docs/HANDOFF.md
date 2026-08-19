@@ -403,7 +403,8 @@ error; *no* reply proves nothing at all, since most unanswered mail correctly
 needed no answer and some was settled in a meeting. It measures false-`ignore`
 and is silent on false-`respond`. A scorecard from it that claims precision is
 reading the instrument wrong. `docs/MAIL-CORPUS-RESEARCH.md` §3 has the two
-caveats in full.
+caveats in full — **gitignored, like `OPERATIONS.md`**, because its figures are
+one person's mailbox rather than a public fact.
 
 ---
 
@@ -665,7 +666,8 @@ The arc is complete and running nightly. What is missing is refinement:
 
 **`docs/MAIL-UX-DESIGN.md` is the authority for what is left** and
 **`docs/MAIL-CORPUS-RESEARCH.md` (2026-08-19) is the measurement that reordered
-it**; `MAIL-UX-RESEARCH.md` is the original survey. Where they disagree the
+it — gitignored, on `OPERATIONS.md`'s split: the lesson is here, the figures
+are not**; `MAIL-UX-RESEARCH.md` is the original survey. Where they disagree the
 later one wins, and the corpus is the latest. **The 0.1.7 release is held until
 this is complete** — Luke's decision 2026-08-18, scope confirmed as everything
 through the correction loop.
@@ -686,26 +688,29 @@ request kinds and gets its own `needs-info`.
 #### What the year of mail changed
 
 A year was fetched raw and unclassified (`mecha-mail corpus`, an operator verb
-deliberately absent from the MCP surface). 8,167 Dartmouth threads. Three
-findings, each of which moved the plan rather than confirming it:
+deliberately absent from the MCP surface), then analysed. Three findings, each
+of which moved the plan rather than confirming it. **Figures are in the
+gitignored doc; the conclusions are stated here so nothing below depends on
+having read it.**
 
-- **51.1% of threads need no model at all** — `List-Unsubscribe` plus a
-  sender-address regex, replied to 7 times in ten months. The header alone
-  finds two thirds of it; it catches marketing, which must offer an
+- **About half of all threads need no model at all** — `List-Unsubscribe` plus
+  a sender-address regex, at a negligible error rate over a year. The header
+  alone finds two thirds of it; it catches marketing, which must offer an
   unsubscribe, and misses every institutional and transactional sender, which
   need not. **This supersedes the note previously recorded here that "the
   classifier is a better filter than the `List-Unsubscribe` heuristic and runs
   anyway."** It is a better filter; it should not be the first one.
 - **The taxonomy was guesswork and wrong in both directions.** Already fixed in
-  code: `student-advising` added (769 threads, 31.5%, the largest category by a
-  factor of three and absent entirely), `advising` added to `TAGS`, `book`
-  removed (2 threads, neither a book request). `finance-admin` was recommended
+  code: `student-advising` added (the largest category by a wide margin, and
+  absent entirely), `advising` added to `TAGS`, `book` removed (two threads in
+  ten months, neither a book request). `finance-admin` was recommended
   by the analysis and deliberately rejected — nothing has to be gathered before
   a receipt is forwarded, so it is the `expense` tag and a `forward` action.
-- **The failure is abandonment, not misclassification.** 14.2% of
-  personally-addressed mail is ever answered; 59% of replies that happen
-  happen on day one; **a thread unanswered at 24 hours has a 94% chance of
-  never being answered.** No phase in the old plan operated after day one.
+- **The failure is abandonment, not misclassification.** Only a small fraction
+  of personally-addressed mail is ever answered, most replies that happen
+  happen on day one, and **a thread unanswered after a day is overwhelmingly
+  unlikely ever to be answered.** No phase in the old plan operated after day
+  one.
 
 What is left, in the order the measurements argue for:
 
@@ -719,9 +724,9 @@ What is left, in the order the measurements argue for:
   was answered and is classified `ignore` is a countable error with no human
   grader. **Asymmetric on purpose**: a reply proves the thread mattered, no
   reply proves nothing — so it measures false-`ignore` and is silent on
-  false-`respond`. That is the error worth catching. All 8,167 is ~68 hours at
-  local speed; after the pre-filter it is 3,995, and a stratified sample of
-  ~400 is one overnight run.
+  false-`respond`. That is the error worth catching. Grading the whole corpus
+  is days of local inference; after the pre-filter it is about half that, and a
+  stratified sample of a few hundred threads is one overnight run.
 - **Phase 4″ — tasks and `needs-info`, native to mail.** `t` carries the
   thread's deadline into `kg_task_create`; `n` parks a thread and names what is
   missing. This is the half of the front-door idea that survived.
@@ -747,10 +752,9 @@ surfaces. The rest are live but not in the way — whether `r` hands the draftin
 run the thread or the verdict; whether `t` can point back at the thread at all
 given `kg_task_create`'s fields; whether `meeting` earns its place; retention on
 the triage store; and **how `student-advising` is actually answered**, which is
-the biggest single piece of the load at 769 threads and is probably a
-substitution problem — the same handful of questions, which a form or a
-published answer removes rather than something mecha should draft 769 replies
-to.
+the biggest single piece of the load and is probably a substitution problem —
+the same handful of questions, which a form or a published answer removes
+rather than something mecha should answer one at a time.
 
 Two decisions recorded rather than left open: tags are mecha's own and never
 provider labels, and no mail parser belongs in mecha — the graph already ingests
@@ -770,14 +774,15 @@ buckets.
   `proposed: frontdoor` and now read as `none` — by design, not by damage.
 - **The corpus is at `~/.mecha/mail-corpus/{dartmouth,personal}.jsonl`**,
   owner-only, outside the repo, `*.jsonl` gitignored so it cannot be staged.
-  20,153 messages, both accounts complete. Do not re-fetch to re-run an
+  both accounts complete as of 2026-08-19. Do not re-fetch to re-run an
   analysis; do re-fetch if the window needs extending. The personal half was
-  fetched twice — the first held 72% because of a 500-per-month cap, now fixed
-  and reported when reached.
+  fetched twice — the first was truncated by a 500-per-month cap, now fixed and
+  reported when reached.
 - **The personal account should stay out of the nightly**, and this is now
-  measured rather than assumed: 82.8% deterministically disposable, 15 replies
-  in a year, 124 threads of the 1,029 personally-addressed ones from a human
-  being.
+  measured rather than assumed: it is far more machine-generated than the work
+  account and carries almost no correspondence needing an answer. Adding it
+  would roughly double the thread count for a negligible number of real
+  threads.
 
 ### Google Docs/Sheets/Slides write access — researched and validated, not built
 

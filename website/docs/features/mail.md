@@ -258,12 +258,12 @@ from a closed vocabulary, a deadline if the thread implies one, and the kind of
 standard request it is if it recognises one. On a fifty-thread sample of real
 academic mail, twenty-eight were archivable and twenty-two needed attention.
 
-**Roughly half of a real mailbox never needs a model at all.** Measured over a
-year of one academic account, bulk mail and automated senders were about half
-of all threads. `List-Unsubscribe` finds two thirds of that — marketing is
-obliged to offer an unsubscribe — and misses the institutional and
-transactional senders, which are not obliged and do not. If you are tuning
-this, a sender-address rule is worth more than a better prompt.
+**Roughly half of a real mailbox never needs a model at all.** Bulk mail and
+automated senders are about half of all threads in a working academic account.
+`List-Unsubscribe` finds two thirds of that — marketing is obliged to offer an
+unsubscribe — and misses the institutional and transactional senders, which are
+not obliged and do not. If you are tuning this, a sender-address rule is worth
+more than a better prompt.
 
 **The store is an index, not a copy of your mailbox.** It holds ids, envelope
 metadata and the verdict. Bodies are fetched on demand and never written there,
