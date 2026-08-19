@@ -541,3 +541,104 @@ both sides**: it is handed evidence it did not choose, and its output is
 falsified by a measurement it does not run before anything is accepted. A bad
 diagnosis costs one replay, which is the property that makes having a model
 here safe in a way that having one at the accept gate is not.
+
+---
+
+## 12. Can it invent, or only tune? And how hard is diagnosis really?
+
+### 12.1 Diagnosis is measurably bad, and that decides the design
+
+✅ **Who&When / automated failure attribution**
+([arXiv:2505.00212](https://arxiv.org/abs/2505.00212)) is the number this whole
+stage has to be built around. 127 systems, failure logs annotated with the
+responsible agent and the decisive error step, three attribution strategies
+(all-at-once, binary search, step-by-step). Best result: **53.5% accuracy at
+naming the responsible agent and 14.2% at pinpointing the failing step**, with
+some methods **below random**, and frontier reasoning models failing to reach
+practical usability.
+
+So a diagnostician will usually name the wrong step. That is "superficial
+changes" (§2, failure mode 2) arriving with a confident explanation attached.
+
+**The design consequence is not to make diagnosis better; it is to make being
+wrong cheap.** The falsifiable prediction and the replay test are not polish —
+they are what makes a 14%-accurate diagnostician safe to *use at all*. The
+requirement is never "the diagnosis is right", it is "a wrong diagnosis is
+detected before anything is accepted, and costs one replay". Every proposal
+class that cannot be tested that way inherits the 14% instead, which is the
+real reason the untestable classes (§8's table) must go to a human rather than
+to an auto-gate.
+
+### 12.2 What the loop can invent
+
+HyperAgents' agents added components. This design proposes knobs and prose, so
+the honest answer is that it **tunes within the architecture** — and the
+architecture is wider than "knobs", because mecha has several surfaces that are
+programmable without recompiling.
+
+Mapping HyperAgents' five convergent inventions onto what exists here:
+
+| It invented | mecha's equivalent | Status |
+|---|---|---|
+| persistent memory | learning store, pkg | exists |
+| performance tracking | `RunStats` | exists (2026-08-19) |
+| multi-stage verification | `post_tool` hook, `expect.verify` | **authorable** |
+| decision protocols | learned rules | authorable as prose |
+| retry logic | `provider/retry.rs` + config | authorable as config |
+
+Four of five already exist, which is §1's convergence showing up as
+redundancy rather than as a gap. The genuinely *new-feature* channel is the
+declarative surface: `[[hook]]`, `[[subagent]]`, `[[mcp]]`, triggers, and eval
+cases. Each has a different safety story and they are not interchangeable:
+
+- **A new eval case is the one thing worth allowing near an auto-gate.** It
+  adds a *measurement* and changes no behaviour; `mecha eval` forces MCP, hooks
+  and the outbox off and sandboxes mutating cases, so its blast radius is a
+  scorecard. It is also the closest safe analogue to what HyperAgents' agents
+  actually did — **the loop extending its own verifier**, which is the one kind
+  of self-improvement that makes every subsequent proposal better-tested rather
+  than more autonomous.
+- **A hook is human-reviewed, always.** The dispatch order (interlock → hook →
+  approver) means a hook can narrow policy and never loosen it, and `pre_tool`
+  fails closed — so its worst case *inside the loop* is denial of service,
+  which is loud. But a hook is an arbitrary command with the event on stdin:
+  the "cannot loosen" property bounds its effect on the agent, not its effect
+  on the machine. Machine-authored code gets read by a person before it runs.
+- **A trigger is human-gated absolutely.** It is a scheduled unattended agent
+  run — the same reasoning that keeps triggers out of the layered config.
+- **An MCP server is never proposed.** Third-party code on the machine.
+
+### 12.3 The limit that stays
+
+HyperAgents' distinguishing move is that the *modification procedure itself* is
+editable — metacognitive self-modification. The analogue here is proposing a
+change to the diagnostic prompt, and it is deliberately excluded. Every bound
+in §11 rests on the diagnostician being handed evidence it did not choose and
+being falsified by a measurement it does not run; a loop that can edit that
+procedure can relax both. It is the one edit that removes the human from the
+last position where a human is cheap.
+
+### 12.4 Is diagnosis a research step?
+
+Yes, in two senses, and the second one has a rule attached.
+
+**It should read, not just think.** The strongest form of the stage is not one
+model call over counters — it is an agent with read access to the corpus, the
+source, and this repository's own documentation. That last input is the
+guardrail rather than the context: `CLAUDE.md` and these research documents
+record *why* each mechanism exists and what it cost to learn, which is exactly
+what stops a proposal from "fixing" something load-bearing. A diagnostician
+that reads "errors neither supersede nor get evicted — a failed call says
+nothing about the target" will not propose evicting them; one that sees only
+the counters might. **Repository documentation is a safety input to the
+proposer, not merely a convenience.**
+
+**It may search the web, and the price is fixed in advance.** External
+literature is genuinely useful for diagnosis — most of this document came from
+it. But a web-informed diagnosis has read untrusted text, so by §11 its
+`Origin` is untrusted and its proposal may only become a *number*, never prose
+in the prompt prefix. That is not a restriction on what it may read; it is a
+restriction on what its reading may turn into. A human who reads the proposal
+can always author the rule themselves — which is the correct place for that
+promotion to happen, and the same shape as the front door's split between what
+a person may read and what a privileged run may act on.
