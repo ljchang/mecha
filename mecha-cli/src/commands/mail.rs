@@ -102,6 +102,23 @@ pub enum Cmd {
         #[arg(long)]
         deadline: Option<String>,
     },
+    /// Turn corrections into `triage`-domain reflections for the learner.
+    ///
+    /// One model call per unmined correction, tool-less and history-less like
+    /// the classifier it is reasoning about. Most corrections produce nothing:
+    /// the frame asks for a rule about a *kind* of mail and says outright that
+    /// declining is the common case, because a wrong rule rides in every
+    /// future classification and a missing one costs a single verdict.
+    ///
+    /// Idempotent — each correction is keyed into its own ledger, so a nightly
+    /// pass never re-argues the same one.
+    Reflect {
+        #[arg(long)]
+        account: Option<String>,
+        /// Say what would be reflected on, and spend nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Score the *live* triage store against what actually happened.
     ///
     /// The ledger triage rules are judged against, and the reason ungated
@@ -214,6 +231,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             request_type.as_deref(),
             deadline.as_deref(),
         ),
+        Cmd::Reflect { account, dry_run } => reflect(global, account.as_deref(), dry_run).await,
         Cmd::Score {
             account,
             min_age_hours,
@@ -1341,6 +1359,137 @@ fn score(account: &str, min_age_hours: i64, json_out: bool) -> Result<()> {
         for (f, n) in &by_field {
             println!("    {f}: {n}");
         }
+    }
+    Ok(())
+}
+
+/// Walk unmined corrections through the reflector into the learning store.
+async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> Result<()> {
+    let store = TriageStore::open(TriageStore::default_root()?)?;
+    let learning = mecha_core::learning::LearningStore::open(
+        mecha_core::learning::LearningStore::default_root()?,
+    )?;
+    let mined = learning.mined_corrections()?;
+
+    let mut todo: Vec<(Record, mecha_core::mail_triage::Correction)> = Vec::new();
+    for r in store.list()? {
+        if account.is_some_and(|a| a != r.account) {
+            continue;
+        }
+        for c in &r.corrections {
+            if !mined.contains(&mecha_core::mail_triage::correction_key(
+                &r.account,
+                &r.thread_id,
+                c,
+            )) {
+                todo.push((r.clone(), c.clone()));
+            }
+        }
+    }
+    println!("{} correction(s) to reflect on", todo.len());
+    if todo.is_empty() {
+        println!("  `mecha mail correct <thread>` records one.");
+        return Ok(());
+    }
+    if dry_run {
+        for (r, c) in &todo {
+            println!(
+                "  would reflect: {} — {}: {} → {}",
+                r.subject, c.field, c.was, c.now
+            );
+        }
+        return Ok(());
+    }
+
+    // A provider and nothing else, like the classifier: a reflector with a
+    // tool surface is a reflector that can be talked into using it, and the
+    // mail it reads is the least trusted input in the system.
+    let cwd = std::env::current_dir()?;
+    let cfg = mecha_core::config::Config::load(&cwd)?;
+    let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
+    let provider = mecha_core::provider::build(provider_cfg)?;
+    let model = global
+        .model
+        .clone()
+        .or_else(|| provider_cfg.model.clone())
+        .unwrap_or_else(|| provider.default_model().to_string());
+    eprintln!("reflecting with {model} ({provider_name})");
+
+    let (mut learned, mut declined, mut failed) = (0u32, 0u32, 0u32);
+    for (r, c) in todo {
+        let prompt = mecha_core::mail_triage::correction_reflector_prompt(
+            &r,
+            &c,
+            &mecha_core::mail_triage::reflector_context(&r),
+        );
+        let request = mecha_core::message::CompletionRequest {
+            model: model.clone(),
+            system: None,
+            messages: vec![mecha_core::message::Message::user(prompt)],
+            tools: Vec::new(),
+            max_tokens: 2048,
+            effort: None,
+            thinking: false,
+            cache_prompt: false,
+        };
+        let key = mecha_core::mail_triage::correction_key(&r.account, &r.thread_id, &c);
+        match provider.complete(&request, None).await {
+            Err(e) => {
+                eprintln!("  ! {} — {e}", r.thread_id);
+                failed += 1;
+                // Deliberately not marked mined: a transient provider failure
+                // must not bury a correction, which is the same bug the
+                // classify sweep had with `failed` records.
+                continue;
+            }
+            Ok(resp) => match mecha_core::mail_triage::parse_lesson(&resp.message.text()) {
+                Err(e) => {
+                    eprintln!("  ! {} — {e:#}", r.thread_id);
+                    failed += 1;
+                    continue;
+                }
+                Ok(None) => {
+                    declined += 1;
+                    learning.mark_correction_mined(&key)?;
+                }
+                Ok(Some(lesson)) => {
+                    let refl = mecha_core::learning::Reflexion {
+                        id: format!("triage-{}", &key),
+                        domain: mecha_core::learning::TRIAGE_DOMAIN.to_string(),
+                        // The thread is the session here: there is no
+                        // conversation, and this is what a later reader would
+                        // need to find the evidence again.
+                        session_id: format!("{}/{}", r.account, r.thread_id),
+                        trigger: "correction".into(),
+                        context: format!(
+                            "classifier said {} on mail from {}",
+                            r.verdict.as_ref().map(|v| v.bucket.as_str()).unwrap_or("?"),
+                            r.from
+                        ),
+                        intervention: format!("{}: {} → {}", c.field, c.was, c.now),
+                        reflexion_text: lesson.clone(),
+                        error_type: Some(c.field.clone()),
+                        confidence: None,
+                        is_processed: false,
+                        leap_run_id: None,
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                        // **Honest, not convenient.** This lesson was argued
+                        // from mail, so it is untrusted; `learnable()` admits
+                        // it because triage rules reach only the classifier,
+                        // not because the origin was laundered.
+                        origin: mecha_core::learning::Origin::Untrusted,
+                    };
+                    learning.append_reflexion(&refl)?;
+                    learning.mark_correction_mined(&key)?;
+                    learned += 1;
+                    println!("  + {lesson}");
+                }
+            },
+        }
+    }
+    println!("\n{learned} lesson(s), {declined} declined, {failed} failed");
+    if learned > 0 {
+        println!("`mecha learn --domain triage` consolidates them into rules.");
     }
     Ok(())
 }
