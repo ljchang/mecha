@@ -20,6 +20,7 @@ pub enum Command {
     Outbox,
     /// Inbound requests: read (prose included), extract, triage, park, close.
     Frontdoor,
+    Mail,
     /// Open polls on the gate: tallies, close with an outcome, export.
     Polls,
     /// Every store's distress in one pass, with the way out beside each.
@@ -85,6 +86,9 @@ pub fn parse(line: &str) -> Option<Command> {
         // to see is all of them.
         "triggers" | "trigger" => Command::Triggers,
         "outbox" => Command::Outbox,
+        // Both spellings for the same reason as triggers: the command is
+        // `mecha mail`, the thing you want to see is the queue.
+        "mail" | "inbox" => Command::Mail,
         // "requests" because that is what the store holds; `frontdoor` is the
         // component's name and the CLI's.
         "frontdoor" | "requests" => Command::Frontdoor,

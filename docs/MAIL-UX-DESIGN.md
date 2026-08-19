@@ -276,7 +276,7 @@ escalation ladder. This surfaces to the user and stops.
 
 ## 5. Phase 5 — `/mail`
 
-A sixth modal on the `/outbox` pattern: store read for display, every mutation
+**Built 2026-08-19.** A sixth modal on the `/outbox` pattern: store read for display, every mutation
 a `mecha mail …` child process, slow work spawned detached and watched by
 polling the store rather than the child.
 
@@ -292,12 +292,12 @@ polling the store rather than the child.
 
 | key | action | lands as |
 |---|---|---|
-| `r` | reply | detached agent run → drafts into **`/outbox`** |
+| `r` | reply | detached agent run → drafts into **`/outbox`** *(not yet built)* |
 | `a` | archive | `mail_triage`, immediate |
 | `s` | spam | `mail_triage`, immediate, confirms |
-| `e` | schedule | `calendar_create_event`, staged |
+| `e` | schedule | `calendar_create_event`, staged *(detached run, not yet built)* |
 | `t` | task | `kg_task_create`, immediate |
-| `f` | forward | to a named recipient — staged in **`/outbox`** |
+| `f` | forward | to a named recipient — staged in **`/outbox`** *(detached run, not yet built)* |
 | `g` | tag | edit tags on the record, no model |
 | `n` | needs-info | park it |
 | `!` | wrong | a correction (phase 6) |
