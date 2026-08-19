@@ -466,6 +466,30 @@ impl LearningStore {
         self.append_line("mined_outbox.jsonl", item_id)
     }
 
+    /// Triage corrections already mined for `triage` reflections — a third
+    /// ledger beside sessions and outbox items, for the same reason they are
+    /// separate from each other: an id in one must never satisfy another, and
+    /// a shared ledger makes that an accident waiting to happen.
+    ///
+    /// **Keyed per correction, not per thread.** A thread corrected once and
+    /// then corrected again is two lessons — the second is often the more
+    /// interesting one, since it says the first correction was not enough.
+    pub fn mined_corrections(&self) -> Result<HashSet<String>> {
+        let path = self.root.join("mined_corrections.jsonl");
+        if !path.exists() {
+            return Ok(HashSet::new());
+        }
+        Ok(std::fs::read_to_string(&path)?
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect())
+    }
+
+    pub fn mark_correction_mined(&self, key: &str) -> Result<()> {
+        self.append_line("mined_corrections.jsonl", key)
+    }
+
     /// Sessions already distilled to the knowledge graph — `mecha distill`'s
     /// ledger. Kept in this store, not beside the sessions, for the same
     /// reasons the mining ledgers are: the writer lock covers the
@@ -2471,9 +2495,19 @@ mod tests {
         store.mark_outbox_mined("item-2").unwrap();
         let mined = store.mined_outbox().unwrap();
         assert!(mined.contains("item-1") && mined.contains("item-2"));
-        // Session mining and outbox mining are separate ledgers: an id in one
-        // must never satisfy the other.
+        // Session mining, outbox mining and correction mining are separate
+        // ledgers: an id in one must never satisfy another.
         assert!(!store.mined_sessions().unwrap().contains("item-1"));
+        assert!(store.mined_corrections().unwrap().is_empty());
+        store.mark_correction_mined("t1#bucket@2026-08-19").unwrap();
+        assert!(store
+            .mined_corrections()
+            .unwrap()
+            .contains("t1#bucket@2026-08-19"));
+        assert!(!store
+            .mined_outbox()
+            .unwrap()
+            .contains("t1#bucket@2026-08-19"));
         std::fs::remove_dir_all(store.root()).ok();
     }
 
