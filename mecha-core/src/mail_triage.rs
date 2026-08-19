@@ -2155,6 +2155,55 @@ mod tests {
         );
     }
 
+    /// Contacts rank by how often someone writes, and the user is never a
+    /// candidate — they are the most frequent address in any mailbox that
+    /// records sent items, so offering them would bury everyone else.
+    #[test]
+    fn contacts_rank_by_frequency_and_exclude_the_user() {
+        let mk = |from: &str, name: &str| {
+            let mut r = rec("dartmouth", from, Bucket::Notify);
+            r.from = from.into();
+            r.from_name = name.into();
+            r
+        };
+        let records = vec![
+            mk("lisa@dartmouth.edu", "Lisa Lee"),
+            mk("lisa@dartmouth.edu", "Lisa Lee"),
+            mk("luke@dartmouth.edu", "Luke"),
+            mk("nikki@dartmouth.edu", "Nikki Boyle"),
+            mk("LISA@dartmouth.edu", "Lisa Lee"),
+        ];
+        let cs = contacts(&records, &["luke@dartmouth.edu".into()]);
+        assert_eq!(cs.len(), 2, "the user is not a contact; case folds");
+        assert_eq!(cs[0].address, "lisa@dartmouth.edu");
+        assert_eq!(cs[0].seen, 3);
+        assert_eq!(cs[1].address, "nikki@dartmouth.edu");
+
+        // Name and address both match, because people remember "Lisa" more
+        // reliably than the address behind it.
+        assert_eq!(contact_candidates("lisa", &cs, 5).len(), 1);
+        assert_eq!(contact_candidates("Lisa Lee", &cs, 5).len(), 1);
+        assert_eq!(contact_candidates("nikki@", &cs, 5).len(), 1);
+        // An empty partial offers the most frequent rather than nothing: a
+        // menu that appears only after typing teaches nobody who is there.
+        assert_eq!(contact_candidates("", &cs, 5).len(), 2);
+        assert!(contact_candidates("nobody", &cs, 5).is_empty());
+    }
+
+    /// Completion applies to the recipient under the cursor, not the last one
+    /// typed — otherwise editing an earlier address completes the wrong slot.
+    #[test]
+    fn the_recipient_under_the_cursor_is_the_one_completed() {
+        let line = "lisa@x.edu, nik";
+        assert_eq!(recipient_token(line, line.len()), (11, "nik"));
+        // Cursor inside the first recipient completes that one.
+        assert_eq!(recipient_token(line, 4), (0, "lisa"));
+        // No comma yet: the whole line is the token.
+        assert_eq!(recipient_token("lis", 3), (0, "lis"));
+        // Trailing comma starts an empty token, which offers the frequent list.
+        assert_eq!(recipient_token("a@b.c, ", 7), (6, ""));
+    }
+
     /// The vocabulary is measured, not proposed
     /// (`docs/MAIL-CORPUS-RESEARCH.md`). These pin the two corrections a year
     /// of real mail forced, so that re-adding either is a deliberate act with
@@ -2393,6 +2442,82 @@ pub fn parse_lesson(text: &str) -> Result<Option<String>> {
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.eq_ignore_ascii_case("null"))
         .map(str::to_string))
+}
+
+/// Somebody a forward could go to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Contact {
+    pub address: String,
+    pub name: String,
+    /// How many threads this address sent. Frequency is the ranking, because
+    /// the person you forward to is almost always someone you hear from often.
+    pub seen: usize,
+}
+
+/// Addresses worth completing, most-seen first.
+///
+/// **Built from the triage store rather than the knowledge graph, and that is
+/// a latency decision.** The graph knows people who have never emailed, but
+/// reaching it means spawning an MCP server, which on the TUI's event loop is
+/// the freeze that review finding 8 is about. The store is local JSON and
+/// answers instantly, and the people it holds are exactly the ones who write
+/// to this mailbox — which is the population a forward recipient comes from.
+///
+/// The user's own addresses are excluded: forwarding mail to yourself is not
+/// what the key is for, and offering it first (they are the most frequent
+/// correspondent in any mailbox that records sent items) would bury everyone
+/// else.
+pub fn contacts(records: &[Record], mine: &[String]) -> Vec<Contact> {
+    let mut by: std::collections::HashMap<String, Contact> = Default::default();
+    for r in records {
+        let addr = r.from.trim().to_ascii_lowercase();
+        if addr.is_empty() || mine.iter().any(|m| m.eq_ignore_ascii_case(&addr)) {
+            continue;
+        }
+        let e = by.entry(addr.clone()).or_insert_with(|| Contact {
+            address: addr,
+            name: r.from_name.clone(),
+            seen: 0,
+        });
+        e.seen += 1;
+        if e.name.trim().is_empty() {
+            e.name = r.from_name.clone();
+        }
+    }
+    let mut out: Vec<Contact> = by.into_values().collect();
+    // Frequency, then address — a stable order, so the same partial always
+    // offers the same first candidate and muscle memory works.
+    out.sort_by(|a, b| b.seen.cmp(&a.seen).then(a.address.cmp(&b.address)));
+    out
+}
+
+/// The recipient being typed, and where it starts.
+///
+/// Recipients are comma-separated, so completion applies to the token after
+/// the last comma. Cursor-relative like the `@` mention completer, for the
+/// same reason: someone editing an earlier recipient should complete *that*
+/// one, not the last.
+pub fn recipient_token(input: &str, cursor: usize) -> (usize, &str) {
+    let cursor = cursor.min(input.len());
+    let before = &input[..cursor];
+    let start = before.rfind(',').map(|i| i + 1).unwrap_or(0);
+    (start, before[start..].trim_start())
+}
+
+/// Contacts a partial recipient could still mean.
+///
+/// Matches on address and display name, because people remember "Lisa" more
+/// reliably than the address it maps to. An empty partial offers the most
+/// frequent — a menu that appears only after typing teaches nobody who is
+/// available.
+pub fn contact_candidates<'a>(partial: &str, all: &'a [Contact], limit: usize) -> Vec<&'a Contact> {
+    let p = partial.trim().to_ascii_lowercase();
+    all.iter()
+        .filter(|c| {
+            p.is_empty() || c.address.contains(&p) || c.name.to_ascii_lowercase().contains(&p)
+        })
+        .take(limit)
+        .collect()
 }
 
 /// How many trailing characters of a thread id make a human-sized handle.
