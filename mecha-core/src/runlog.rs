@@ -1,0 +1,460 @@
+//! The run-quality corpus: every recorded outcome, across every session.
+//!
+//! [`crate::session::RunStats`] is written one row per finished run. This is
+//! the reader that puts them side by side, which is the whole point of having
+//! recorded them: one run's counters say almost nothing, and a thousand runs'
+//! counters say what normal looks like and when it stopped.
+//!
+//! ## Why this reads the transcripts instead of keeping a ledger
+//!
+//! A second file would be faster and would be a second source of truth. The
+//! transcript already holds the rows, written by the process that produced
+//! them; a ledger beside it can disagree with it, and then someone has to
+//! decide which is right. Same reasoning as the TUI reading a trigger's last
+//! answer back from the session record rather than caching it.
+//!
+//! The cost is that a scan reads files, so every scan is **bounded** —
+//! newest-first, with a session cap and an optional cutoff. A corpus reader
+//! that must read everything before it answers is one nobody runs
+//! interactively, and doctor runs in one pass with no network and no model.
+//!
+//! ## What it deliberately does not do
+//!
+//! No judgement. Nothing here decides that a rate is bad, because "bad"
+//! depends on what a run was for, and the thresholds belong with the reader
+//! that acts on them. This module counts.
+
+use crate::agent::StopCause;
+use crate::session::{Record, RunStats, Session, SessionMeta};
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use std::collections::BTreeMap;
+use std::path::Path;
+
+/// One finished run, with enough of its session to be identifiable.
+#[derive(Debug, Clone)]
+pub struct RunRow {
+    pub session_id: String,
+    /// When the *session* started. A resumed session's later runs share it;
+    /// the transcript records no per-run stamp, and inventing one from file
+    /// mtime would be a guess dressed as a measurement.
+    pub started_at: DateTime<Utc>,
+    pub provider: String,
+    pub model: String,
+    pub title: Option<String>,
+    /// Which run within the session, 1-based. A resumed session has several.
+    pub run: u32,
+    pub stats: RunStats,
+}
+
+/// Every run the scan looked at, newest session first.
+#[derive(Debug, Clone, Default)]
+pub struct Corpus {
+    pub rows: Vec<RunRow>,
+    /// Sessions read, including those that contributed no rows — the
+    /// denominator for "how much of the store did this answer come from".
+    pub sessions_read: usize,
+}
+
+/// How to bound a scan. Both limits are honest about cost rather than about
+/// relevance: the caller decides how much reading it can afford.
+#[derive(Debug, Clone, Default)]
+pub struct Scan {
+    /// Stop after this many sessions, newest first.
+    pub max_sessions: Option<usize>,
+    /// Skip sessions started before this.
+    pub since: Option<DateTime<Utc>>,
+}
+
+impl Corpus {
+    /// Read outcomes out of the session store.
+    ///
+    /// Best-effort per session, like every other reader over this store: an
+    /// unreadable or torn transcript contributes nothing and does not stop
+    /// the ones after it.
+    pub fn scan(dir: &Path, scan: &Scan) -> Result<Corpus> {
+        let mut out = Corpus::default();
+        for (meta, path) in Session::list(dir)? {
+            if scan.since.is_some_and(|t| meta.created_at < t) {
+                continue;
+            }
+            if scan.max_sessions.is_some_and(|n| out.sessions_read >= n) {
+                break;
+            }
+            out.sessions_read += 1;
+            let Ok(stats) = Session::outcomes(&path) else {
+                continue;
+            };
+            for (i, s) in stats.into_iter().enumerate() {
+                out.rows.push(RunRow::new(&meta, i as u32 + 1, s));
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Keep only the rows a predicate accepts. `sessions_read` is preserved,
+    /// because it describes the scan and not the selection.
+    pub fn filter(&self, keep: impl Fn(&RunRow) -> bool) -> Corpus {
+        Corpus {
+            rows: self.rows.iter().filter(|r| keep(r)).cloned().collect(),
+            sessions_read: self.sessions_read,
+        }
+    }
+
+    pub fn tool_calls(&self) -> u64 {
+        self.rows
+            .iter()
+            .map(|r| u64::from(r.stats.tool_calls))
+            .sum()
+    }
+
+    pub fn tool_errors(&self) -> u64 {
+        self.rows
+            .iter()
+            .map(|r| u64::from(r.stats.tool_errors))
+            .sum()
+    }
+
+    /// Share of attempted calls the environment refused.
+    ///
+    /// `None` when nothing was attempted — the denominator is zero, and a
+    /// rate over no calls is undefined rather than perfect. That distinction
+    /// is the one a threshold silent on zero gets wrong, which is how a
+    /// trigger that stopped working entirely read as healthy.
+    pub fn tool_error_rate(&self) -> Option<f64> {
+        let calls = self.tool_calls();
+        (calls > 0).then(|| self.tool_errors() as f64 / calls as f64)
+    }
+
+    /// Runs that decided they were done with their last call failed.
+    pub fn ended_on_failed_call(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|r| r.stats.ended_on_failed_call)
+            .count()
+    }
+
+    /// Share of runs that did. `None` on an empty corpus, for the reason
+    /// above.
+    pub fn rate_of(&self, of: impl Fn(&RunRow) -> bool) -> Option<f64> {
+        (!self.rows.is_empty())
+            .then(|| self.rows.iter().filter(|r| of(r)).count() as f64 / self.rows.len() as f64)
+    }
+
+    /// How runs ended. Runs recorded before `stop_cause` existed, or written
+    /// by a path that did not set it, count under `None` rather than being
+    /// assumed complete.
+    pub fn stop_causes(&self) -> BTreeMap<Option<StopCause>, usize> {
+        let mut out = BTreeMap::new();
+        for row in &self.rows {
+            *out.entry(row.stats.stop_cause).or_insert(0) += 1;
+        }
+        out
+    }
+
+    pub fn compactions(&self) -> u64 {
+        self.rows
+            .iter()
+            .map(|r| u64::from(r.stats.compactions))
+            .sum()
+    }
+
+    /// Total cost, and how many rows knew theirs. Reported as a pair because
+    /// a total over partial data is a lower bound, and one that does not say
+    /// so is a wrong number.
+    pub fn cost_usd(&self) -> (f64, usize) {
+        let priced: Vec<f64> = self.rows.iter().filter_map(|r| r.stats.cost_usd).collect();
+        // `+ 0.0` normalizes the sign: Rust's `Sum for f64` folds from -0.0 to
+        // preserve the sign of a negative-zero summand, so an empty corpus
+        // otherwise reports a cost of `-0.00`, which reads as a bug in the
+        // price table rather than as an absence of priced runs.
+        let total: f64 = priced.iter().sum::<f64>() + 0.0;
+        (total, priced.len())
+    }
+
+    /// Split by model, so a rate can be read against the thing that produced
+    /// it. A corpus spanning two models has no single error rate worth
+    /// quoting.
+    pub fn by_model(&self) -> BTreeMap<String, Corpus> {
+        let mut out: BTreeMap<String, Corpus> = BTreeMap::new();
+        for row in &self.rows {
+            let bucket = out.entry(row.model.clone()).or_default();
+            bucket.rows.push(row.clone());
+        }
+        out
+    }
+}
+
+impl RunRow {
+    fn new(meta: &SessionMeta, run: u32, stats: RunStats) -> RunRow {
+        RunRow {
+            session_id: meta.id.clone(),
+            started_at: meta.created_at,
+            provider: meta.provider.clone(),
+            model: meta.model.clone(),
+            title: meta.title.clone(),
+            run,
+            stats,
+        }
+    }
+}
+
+/// Every `Record` variant a corpus scan ignores, named so the compiler
+/// complains when a new one appears and nobody decided what it means here.
+#[allow(dead_code)]
+fn exhaustive(record: &Record) {
+    match record {
+        Record::Meta(_)
+        | Record::Message(_)
+        | Record::Summary { .. }
+        | Record::Config(_)
+        | Record::Taint(_)
+        | Record::Rewrite { .. }
+        | Record::Outcome(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::Taint;
+    use crate::message::Usage;
+    use crate::session::SessionMeta;
+    use std::path::PathBuf;
+
+    fn tmpdir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-runlog-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn session_with(dir: &Path, id: &str, model: &str, runs: Vec<RunStats>) -> Session {
+        let s = Session::create(
+            dir,
+            SessionMeta {
+                id: id.to_string(),
+                created_at: DateTime::parse_from_rfc3339("2026-08-01T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                provider: "local".into(),
+                model: model.to_string(),
+                workspace: PathBuf::from("/tmp"),
+                title: None,
+            },
+        )
+        .unwrap();
+        for stats in runs {
+            s.append(&Record::Outcome(stats)).unwrap();
+        }
+        s
+    }
+
+    fn stats(calls: u32, errors: u32, ended_failed: bool, cause: StopCause) -> RunStats {
+        RunStats {
+            turns: 3,
+            usage: Usage::default(),
+            cost_usd: Some(0.25),
+            usage_complete: true,
+            stop_cause: Some(cause),
+            exhausted: false,
+            ended_on_failed_call: ended_failed,
+            tool_calls: calls,
+            tool_errors: errors,
+            tool_denied: 0,
+            tool_staged: 0,
+            malformed_tool_args: 0,
+            blocked_sends: 0,
+            compactions: 1,
+            taint: Taint::default(),
+        }
+    }
+
+    #[test]
+    fn a_scan_collects_every_run_across_every_session() {
+        let dir = tmpdir();
+        session_with(
+            &dir,
+            "20260801T000000-a",
+            "opus",
+            vec![
+                stats(4, 1, false, StopCause::Completed),
+                // A resumed session: several runs, one row each, numbered.
+                stats(6, 0, true, StopCause::MaxTurns),
+            ],
+        );
+        session_with(
+            &dir,
+            "20260801T000001-b",
+            "opus",
+            vec![stats(10, 4, false, StopCause::Completed)],
+        );
+
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(corpus.len(), 3);
+        assert_eq!(corpus.sessions_read, 2);
+        assert_eq!(corpus.tool_calls(), 20);
+        assert_eq!(corpus.tool_errors(), 5);
+        assert_eq!(corpus.compactions(), 3);
+        assert_eq!(corpus.ended_on_failed_call(), 1);
+        assert_eq!(corpus.cost_usd(), (0.75, 3));
+
+        let runs: Vec<u32> = corpus
+            .rows
+            .iter()
+            .filter(|r| r.session_id.ends_with('a'))
+            .map(|r| r.run)
+            .collect();
+        assert_eq!(
+            runs,
+            vec![1, 2],
+            "runs within a session are numbered in order"
+        );
+
+        let causes = corpus.stop_causes();
+        assert_eq!(causes[&Some(StopCause::Completed)], 2);
+        assert_eq!(causes[&Some(StopCause::MaxTurns)], 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rate_over_nothing_is_unknown_rather_than_perfect() {
+        // The distinction a threshold silent on zero gets wrong: no calls is
+        // not a clean record, it is no evidence. An empty corpus and a corpus
+        // of tool-less runs both answer `None`, and a reader that wants to
+        // treat that as healthy has to say so itself.
+        let dir = tmpdir();
+        let empty = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(empty.tool_error_rate(), None);
+        assert_eq!(empty.rate_of(|r| r.stats.ended_on_failed_call), None);
+
+        session_with(
+            &dir,
+            "20260801T000000-c",
+            "opus",
+            vec![stats(0, 0, false, StopCause::Completed)],
+        );
+        let tool_less = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(tool_less.len(), 1);
+        assert_eq!(
+            tool_less.tool_error_rate(),
+            None,
+            "no calls is not a clean record"
+        );
+        // A run-level rate is still defined: there was a run, it just made no
+        // calls. The two denominators are different questions.
+        assert_eq!(
+            tool_less.rate_of(|r| r.stats.ended_on_failed_call),
+            Some(0.0)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_scan_is_bounded_and_says_how_much_it_read() {
+        let dir = tmpdir();
+        for i in 0..5 {
+            session_with(
+                &dir,
+                &format!("20260801T00000{i}-s"),
+                "opus",
+                vec![stats(2, 0, false, StopCause::Completed)],
+            );
+        }
+        let bounded = Corpus::scan(
+            &dir,
+            &Scan {
+                max_sessions: Some(2),
+                since: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(bounded.sessions_read, 2);
+        assert_eq!(bounded.len(), 2);
+
+        // The cutoff is on the session's own stamp, and every fixture here
+        // predates this one, so nothing survives it.
+        let cut = Corpus::scan(
+            &dir,
+            &Scan {
+                max_sessions: None,
+                since: Some(
+                    DateTime::parse_from_rfc3339("2026-08-02T00:00:00Z")
+                        .unwrap()
+                        .with_timezone(&Utc),
+                ),
+            },
+        )
+        .unwrap();
+        assert!(cut.is_empty());
+        assert_eq!(cut.sessions_read, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_with_no_outcomes_is_read_and_contributes_nothing() {
+        // Transcripts written before the record existed, and runs that died
+        // before producing one. They must not read as a run with zero of
+        // everything, which would drag every rate toward a fiction.
+        let dir = tmpdir();
+        let s = session_with(&dir, "20260801T000000-d", "opus", vec![]);
+        s.append_messages(&[crate::message::Message::user("go")])
+            .unwrap();
+        session_with(
+            &dir,
+            "20260801T000001-e",
+            "opus",
+            vec![stats(4, 2, false, StopCause::Completed)],
+        );
+
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(corpus.sessions_read, 2, "both sessions were read");
+        assert_eq!(corpus.len(), 1, "only one contributed a run");
+        assert_eq!(corpus.tool_error_rate(), Some(0.5));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rates_split_by_model_because_a_mixed_corpus_has_no_single_one() {
+        let dir = tmpdir();
+        session_with(
+            &dir,
+            "20260801T000000-f",
+            "opus",
+            vec![stats(10, 1, false, StopCause::Completed)],
+        );
+        session_with(
+            &dir,
+            "20260801T000001-g",
+            "tiny-local",
+            vec![stats(10, 9, false, StopCause::Completed)],
+        );
+
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        // The blended number is true and useless: neither model behaves this
+        // way, and a threshold on it fires for the wrong one.
+        assert_eq!(corpus.tool_error_rate(), Some(0.5));
+        let by_model = corpus.by_model();
+        assert_eq!(by_model["opus"].tool_error_rate(), Some(0.1));
+        assert_eq!(by_model["tiny-local"].tool_error_rate(), Some(0.9));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

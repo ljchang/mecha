@@ -67,6 +67,7 @@ counterfactual.rs  did the rules change the answer at the recorded moment?
 distill.rs   session → episode, staged to the knowledge graph over MCP
 session.rs   append-only JSONL transcripts; a rewrite record when compaction edits history,
              and a `RunStats` outcome record per run — how it went, beside what it said
+runlog.rs    the run-quality corpus: every recorded outcome, read back across sessions
 replay.rs    re-run a transcript against its recorded tool results
 replay_run.rs  the driver behind that, shared with the validation probes
 work.rs      ~/.mecha/work/<producer>/ — a run's workspace, and its retention
@@ -1037,6 +1038,47 @@ error* that kills startup, while every unit test stays green because tests
 build the types directly. That is exactly how hooks shipped unreachable.
 `every_field_of_config_is_reachable_from_a_file` now round-trips a serialised
 default through the layer to catch it.
+
+## The run-quality corpus
+
+`Record::Outcome(RunStats)` is written once per finished run by every
+front-end, and `runlog.rs` reads them back across the whole session store.
+`mecha sessions health` is the human view — stop causes, tool reliability, how
+often a run finished over a failure — deliberately separate from `sessions
+stats`, which answers what runs *cost*: different question, different units,
+different audience.
+
+The design decisions, each of which is a bug if undone:
+
+- **It reads the transcripts; there is no ledger file.** The transcript
+  already holds the rows, written by the process that produced them. A second
+  file would be faster and would be a second source of truth that can disagree
+  with the first — the same reasoning that has the TUI read a trigger's last
+  answer back from the session record instead of caching it.
+- **Every scan is bounded** (`Scan { max_sessions, since }`), because reading
+  the whole store to answer one question is how a reader becomes one nobody
+  runs. Doctor's constraint — one pass, no network, no model — is the bar.
+- **A rate over a zero denominator is `None`, never zero.** "Nothing went
+  wrong" and "nothing happened" are different answers, and printing them the
+  same way is how a component that stopped working reads as healthy — the
+  null-run bug, one layer up. `sessions health` prints `—`.
+- **Rates split by model.** A corpus spanning two models has no single tool
+  error rate worth quoting: the blend is true and useless, and a threshold on
+  it fires for the wrong model.
+- **A session that contributed no outcomes is still counted as read.** It is
+  the denominator for "how much of the store is this answer based on", and
+  transcripts written before the record existed must not read as runs with
+  zero of everything.
+- **The module counts and never judges.** Thresholds live with the reader that
+  acts on them, because what counts as a bad rate depends on what the run was
+  for.
+
+The corpus is the sensor `docs/SELF-IMPROVEMENT-RESEARCH.md` is built around:
+rumination's only input is a human stepping in, so a harness problem produces
+no intervention, no reflection, and nothing downstream ever sees it. Nothing
+acts on these numbers yet, deliberately — §2 there is the finding that agents
+update their harnesses without benefiting, so the next thing to learn is
+whether these findings would have been acted on.
 
 ## The doctor
 
