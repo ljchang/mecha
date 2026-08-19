@@ -596,6 +596,7 @@ fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> R
         escalated: false,
         escalated_changed: Vec::new(),
         escalated_from: None,
+        corrections: Vec::new(),
         acted: None,
         acted_at: None,
         rest: Default::default(),
@@ -661,6 +662,20 @@ fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>>
         let Some(first_in) = msgs.iter().find(|m| !is_me(m)) else {
             continue; // the user's own thread with no inbound message
         };
+        // **A thread the user started is not evidence about replying to mail.**
+        // If they sent before the first inbound message, that message is a
+        // reply *to them*, and anything they send afterwards is the
+        // conversation continuing rather than an answer to an incoming
+        // request. Counting those inflated the answered stratum by ~1% of the
+        // graded pool and put at least one bogus "false ignore" in the first
+        // scorecard — an auto-reply from an office they had emailed first.
+        if msgs.iter().any(|m| {
+            is_me(m)
+                && m["date"].as_str().unwrap_or_default()
+                    < first_in["date"].as_str().unwrap_or_default()
+        }) {
+            continue;
+        }
         let after = first_in["date"].as_str().unwrap_or_default().to_string();
         let replied = msgs
             .iter()
