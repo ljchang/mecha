@@ -337,7 +337,10 @@ async fn classify(
             let (Some(a), Some(t)) = (r["account"].as_str(), r["thread_id"].as_str()) else {
                 return false;
             };
-            force || !store.is_known(a, t)
+            // `needs_classifying`, not `!is_known`: a record left in `failed`
+            // by an outage still needs classifying, and skipping it would
+            // bury the thread permanently.
+            force || store.needs_classifying(a, t)
         })
         .collect();
 
