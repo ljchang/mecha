@@ -319,8 +319,25 @@ design:
    have corrected the thread for it to appear at all, the examples are fenced
    as data with the warning *before* them, and the typed change is the payload
    while the prose is only enough to say what kind of mail it was.
-3. **A `triage`-domain reflection** goes to the learning store, on the ordinary
-   path — provenance gating, the proposal gate, the validation ledger.
+3. **A `triage`-domain reflection** goes to the learning store. **Built
+   2026-08-19**, and two things about the path differ from the ordinary one.
+
+   Provenance: the lesson is argued from mail, so it is recorded
+   `Origin::Untrusted` honestly rather than laundered to `Clean`.
+   `Reflexion::learnable` admits it because triage rules reach only the
+   classifier — see `LEARNING-AUTONOMY-DESIGN.md` §4 — not because the origin
+   was fudged.
+
+   And there is no proposal gate any more; the ledger is `mecha mail score`.
+   A rule that starts burying answered mail regresses a measured number and is
+   retired, which is what makes accepting it without a human safe.
+
+   **Declining is the common case and the frame says so.** Most corrections are
+   judgements about one moment rather than a pattern, and a rule rides in every
+   future classification while a missing rule costs one verdict. A reflector
+   that answers unparseably is a *failure*, not a decline: the correction stays
+   unmined so a later pass retries it, on the same reasoning that stopped a
+   failed classification burying a thread forever.
 
 ### Why the few-shot pool is not a learned rule
 

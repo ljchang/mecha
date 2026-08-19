@@ -1837,6 +1837,50 @@ mod tests {
         );
     }
 
+    /// Declining is the expected answer, so it has to survive every way a
+    /// model spells it. A lesson that arrives as the literal string "null", or
+    /// as whitespace, is a decline — not a rule saying "null".
+    #[test]
+    fn a_declined_lesson_is_not_mistaken_for_a_rule() {
+        for text in [
+            r#"{"reasoning": "one-off", "lesson": null}"#,
+            r#"{"reasoning": "one-off", "lesson": "null"}"#,
+            r#"{"reasoning": "one-off", "lesson": ""}"#,
+            r#"{"reasoning": "one-off", "lesson": "   "}"#,
+            r#"{"reasoning": "one-off"}"#,
+            r#"prose before {"reasoning": "r", "lesson": null} and after"#,
+        ] {
+            assert_eq!(parse_lesson(text).unwrap(), None, "{text}");
+        }
+        assert_eq!(
+            parse_lesson(r#"{"reasoning": "r", "lesson": "Receipts are never urgent."}"#).unwrap(),
+            Some("Receipts are never urgent.".to_string())
+        );
+        // Garbage is an error rather than a silent decline: a reflector that
+        // answered unparseably has not said "no lesson", it has failed, and
+        // marking the correction mined would bury it.
+        assert!(parse_lesson("no json here").is_err());
+        assert!(parse_lesson("}{").is_err());
+    }
+
+    /// The reflector reads the index, so it works offline and after the thread
+    /// is gone — the reason flowmail denormalised context, reached from the
+    /// other direction.
+    #[test]
+    fn reflector_context_comes_from_the_record_not_the_mailbox() {
+        let mut r = rec("dartmouth", "t1", Bucket::Ignore);
+        r.verdict.as_mut().unwrap().one_line = "Conference registration receipt.".into();
+        assert_eq!(reflector_context(&r), "Conference registration receipt.");
+
+        // A record whose classification failed has no summary, and says so
+        // rather than presenting an empty string as context.
+        let mut bare = rec("dartmouth", "t2", Bucket::Ignore);
+        bare.verdict = None;
+        assert_eq!(reflector_context(&bare), "(no summary recorded)");
+        bare.verdict = Some(verdict_with(Bucket::Ignore, None));
+        assert_eq!(reflector_context(&bare), "(no summary recorded)");
+    }
+
     /// The vocabulary is measured, not proposed
     /// (`docs/MAIL-CORPUS-RESEARCH.md`). These pin the two corrections a year
     /// of real mail forced, so that re-adding either is a deliberate act with
@@ -2021,6 +2065,57 @@ pub fn few_shot_block(examples: &[FewShot]) -> String {
     out
 }
 
+/// What a reflector is shown as the thread's content.
+///
+/// **The store, never the mailbox.** A correction can be reflected on weeks
+/// later, offline, and after the thread has been deleted — so the reflector
+/// reads what the index holds rather than re-fetching. That is the same reason
+/// flowmail denormalised context onto its corrections, reached from the other
+/// direction: it copied because its rows could outlive the email, and this
+/// store keeps envelope metadata for every thread anyway.
+///
+/// The classifier's own `one_line` is the body stand-in. It is model prose
+/// about someone else's words, which is exactly why it is fenced with the rest
+/// and why the reflector is a tool-less pass — the same shape as the
+/// classifier that produced it. The alternative, a fresh body fetch, buys
+/// fidelity at the cost of a network call, a dependency on the thread still
+/// existing, and a second place mail bodies are read.
+pub fn reflector_context(r: &Record) -> String {
+    r.verdict
+        .as_ref()
+        .map(|v| v.one_line.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "(no summary recorded)".into())
+}
+
+/// The lesson a reflector returned, if it found one.
+///
+/// `None` is the expected answer and the frame says so: most corrections are
+/// judgements about one moment rather than a pattern, and a wrong rule costs
+/// more than a missing one.
+pub fn parse_lesson(text: &str) -> Result<Option<String>> {
+    let start = text
+        .find('{')
+        .context("the reflector returned no JSON object")?;
+    let end = text
+        .rfind('}')
+        .context("the reflector returned no JSON object")?;
+    if end <= start {
+        anyhow::bail!("the reflector returned no JSON object");
+    }
+    let v: Value = serde_json::from_str(&text[start..=end]).with_context(|| {
+        format!(
+            "parsing the reflection: {}",
+            &text[start..=end.min(start + 300)]
+        )
+    })?;
+    Ok(v.get("lesson")
+        .and_then(|l| l.as_str())
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.eq_ignore_ascii_case("null"))
+        .map(str::to_string))
+}
+
 /// A stable key for one correction, for the mining ledger.
 ///
 /// Thread, field and timestamp. Per *correction* rather than per thread,
@@ -2044,7 +2139,7 @@ pub fn correction_reflector_prompt(r: &Record, c: &Correction, snippet: &str) ->
     out.push_str(&format!("From: {}\n", r.from));
     out.push_str(&format!("Subject: {}\n", r.subject));
     out.push_str(&format!(
-        "Preview: {}\n",
+        "What it was about: {}\n",
         snippet
             .chars()
             .take(FEW_SHOT_SNIPPET_CHARS)
