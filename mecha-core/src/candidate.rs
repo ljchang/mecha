@@ -210,15 +210,54 @@ pub fn judge(
     pairs: &[Pair],
     holdout_in: u64,
 ) -> Judgement {
-    let (holdout, selection): (Vec<&Pair>, Vec<&Pair>) = pairs
-        .iter()
-        .partition(|p| is_holdout(&p.episode, holdout_in));
+    let metric = prediction.metric;
+    judge_with(
+        class,
+        pairs,
+        |p| {
+            (
+                p.episode.as_str(),
+                metric.of(&p.baseline),
+                metric.of(&p.candidate),
+            )
+        },
+        |p| {
+            (
+                u64::from(p.baseline.tool_calls),
+                u64::from(p.candidate.tool_calls),
+            )
+        },
+        holdout_in,
+    )
+}
 
-    let tally = |slice: &[&Pair]| {
+/// The same gate over anything that can name an episode and produce a cost.
+///
+/// Two currencies grade a candidate here and they are not interchangeable.
+/// Replayed sessions are scored on [`RunStats`] — did the *harness* go better
+/// — while eval cases are scored on whether the case **passed**, which is the
+/// content-sensitive arm a prose change needs, because replay holds tool
+/// results fixed and cannot see a change in what the model actually said. One
+/// gate, so the guardrails and the holdout cannot drift apart between them.
+///
+/// `cost` returns `(episode, baseline, candidate)` and lower must be better,
+/// as in [`Metric`]. `work` returns the two arms' work volume for the Goodhart
+/// guardrail.
+pub fn judge_with<T>(
+    class: ChangeClass,
+    pairs: &[T],
+    cost: impl for<'a> Fn(&'a T) -> (&'a str, f64, f64),
+    work: impl Fn(&T) -> (u64, u64),
+    holdout_in: u64,
+) -> Judgement {
+    let (holdout, selection): (Vec<&T>, Vec<&T>) = pairs
+        .iter()
+        .partition(|p| is_holdout(cost(p).0, holdout_in));
+
+    let tally = |slice: &[&T]| {
         let mut t = Tally::default();
         for p in slice {
-            let before = prediction.metric.of(&p.baseline);
-            let after = prediction.metric.of(&p.candidate);
+            let (_, before, after) = cost(p);
             // Every metric is a cost, so down is a win.
             match after.partial_cmp(&before) {
                 Some(std::cmp::Ordering::Less) => t.wins += 1,
@@ -231,11 +270,11 @@ pub fn judge(
     let sel = tally(&selection);
     let hold = tally(&holdout);
 
-    let work = |slice: &[&Pair], pick: fn(&Pair) -> &RunStats| -> u64 {
-        slice.iter().map(|p| u64::from(pick(p).tool_calls)).sum()
+    let sum = |slice: &[&T], pick: fn((u64, u64)) -> u64| -> u64 {
+        slice.iter().map(|p| pick(work(p))).sum()
     };
-    let work_baseline = work(&selection, |p| &p.baseline) + work(&holdout, |p| &p.baseline);
-    let work_candidate = work(&selection, |p| &p.candidate) + work(&holdout, |p| &p.candidate);
+    let work_baseline = sum(&selection, |(b, _)| b) + sum(&holdout, |(b, _)| b);
+    let work_candidate = sum(&selection, |(_, c)| c) + sum(&holdout, |(_, c)| c);
 
     let judgement = |disposition| Judgement {
         disposition,
@@ -489,6 +528,56 @@ mod tests {
         // nothing would pass every test above while measuring nothing.
         let held = first.iter().filter(|h| **h).count();
         assert!((20..80).contains(&held), "{held} of 200 held out");
+    }
+
+    #[test]
+    fn the_generic_gate_grades_case_outcomes_by_the_same_rules() {
+        // The content-sensitive arm: eval cases scored on whether they passed,
+        // which is what a prose change needs, since replay holds tool results
+        // fixed and cannot see a change in what the model said. Same gate, so
+        // the guardrails and the holdout cannot drift between currencies.
+        struct Case {
+            id: String,
+            was: bool,
+            now: bool,
+            calls: u64,
+        }
+        let cases: Vec<Case> = (0..24)
+            .map(|i| Case {
+                id: format!("case-{i}"),
+                was: false,
+                now: true,
+                calls: 6,
+            })
+            .collect();
+
+        // A failure is the cost, so passing is a win. A `fn` rather than a
+        // closure: the gate's `cost` is higher-ranked over the borrow, and an
+        // un-annotated closure infers a single lifetime that will not unify.
+        fn cost(c: &Case) -> (&str, f64, f64) {
+            (
+                c.id.as_str(),
+                f64::from(u8::from(!c.was)),
+                f64::from(u8::from(!c.now)),
+            )
+        }
+        let j = judge_with(ChangeClass::Prose, &cases, cost, |c| (c.calls, c.calls), 3);
+        assert_eq!(j.disposition, Disposition::Accept, "{j:#?}");
+
+        // And the work guardrail applies in this currency too: a prose change
+        // that passes more cases by attempting less is still buying its win.
+        let lazy: Vec<Case> = cases
+            .into_iter()
+            .map(|mut c| {
+                c.calls = 6;
+                c
+            })
+            .collect();
+        let j = judge_with(ChangeClass::Prose, &lazy, cost, |c| (c.calls, 1), 3);
+        match j.disposition {
+            Disposition::Reject(ref why) => assert!(why.contains("attempting less"), "{why}"),
+            other => panic!("the work guardrail did not cross currencies: {other:?}"),
+        }
     }
 
     #[test]
