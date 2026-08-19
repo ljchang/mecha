@@ -82,7 +82,11 @@ pub enum Urgency {
 
 /// What the classifier thinks should happen. A **proposal**, never an
 /// instruction: every variant maps to something a human presses a key for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Frontdoor` was a variant until 2026-08-19, when routing mail into
+/// `~/.mecha/requests/` was dropped — `docs/MAIL-UX-DESIGN.md` §1 has the five
+/// reasons. Every key here now belongs to mail itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Proposed {
     Reply,
@@ -91,11 +95,33 @@ pub enum Proposed {
     Schedule,
     Task,
     Forward,
-    /// This is an existing request type arriving untyped through the wrong
-    /// door — route it to `~/.mecha/requests/` and let the front door's
-    /// machinery handle it. See `Verdict::request_type`.
-    Frontdoor,
     None,
+}
+
+/// Hand-rolled so that **a proposal this build does not know degrades to
+/// `None` instead of making the record unreadable.**
+///
+/// Deriving it would have been a silent data loss: five records in the live
+/// store carried `"proposed": "frontdoor"` on the day that variant was
+/// removed, and a derived impl fails the whole deserialization on an unknown
+/// string. The store is an append-only record of what the classifier said,
+/// so a build that cannot read its own history is worse than one that reads a
+/// retired proposal as "a human decides" — which is exactly what `None` means.
+///
+/// `#[serde(other)]` would say this in one line and is not available: serde
+/// permits it only on internally or adjacently tagged enums.
+impl<'de> Deserialize<'de> for Proposed {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "reply" => Self::Reply,
+            "archive" => Self::Archive,
+            "spam" => Self::Spam,
+            "schedule" => Self::Schedule,
+            "task" => Self::Task,
+            "forward" => Self::Forward,
+            _ => Self::None,
+        })
+    }
 }
 
 impl Bucket {
@@ -128,7 +154,6 @@ impl Proposed {
             Self::Schedule => "schedule",
             Self::Task => "task",
             Self::Forward => "forward",
-            Self::Frontdoor => "frontdoor",
             Self::None => "none",
         }
     }
@@ -247,6 +272,14 @@ pub const TAGS: &[&str] = &[
     "lab-app",
     "rec-letter",
     "admin",
+    // Added 2026-08-19 from the corpus measurement. Student advising is 31.5%
+    // of personally-addressed mail — the largest single category — and
+    // `teaching` did not cover it: a prerequisite question, a major plan and a
+    // course petition are advising load, not a class being taught. It was
+    // invisible when this list was written because it is the most routine
+    // thing that arrives, and routine things do not come to mind when a person
+    // lists what their inbox contains.
+    "advising",
     "teaching",
     "research",
     "scheduling",
@@ -255,58 +288,55 @@ pub const TAGS: &[&str] = &[
 
 /// The request kinds a thread can be recognised as.
 ///
-/// **Recognition is not routing, and the two were fused until 2026-08-18.**
-/// This list started as a mirror of `mecha-manifest/types/` and every name on
-/// it implied `proposed: frontdoor`. Decoupling them is what lets the
-/// vocabulary grow from what actually arrives: a kind can be recognised,
-/// tagged and counted here long before anyone writes a form for it, and the
-/// evidence this store accumulates is the honest input to deciding which
-/// forms are worth writing. Building the manifest first would be guessing at
-/// the distribution.
+/// **Recognition is not routing.** The two were fused until 2026-08-18: this
+/// list started as a mirror of `mecha-manifest/types/` and every name on it
+/// implied `proposed: frontdoor`. Routing itself was dropped on 2026-08-19
+/// (`docs/MAIL-UX-DESIGN.md` §1), so what is left is the useful half — a name
+/// here means "this store knows what this kind of request is", and the
+/// evidence it accumulates is the honest input to deciding which forms are
+/// worth writing. Building the manifest first would be guessing at the
+/// distribution.
 ///
-/// So a name here means "this store knows what this kind of request is".
-/// Whether it can be *handed to the front door* is [`ROUTABLE_TYPES`], which
-/// is the subset a manifest exists for.
+/// **The test for membership is a request with a standard set of things that
+/// must be known before it can be answered** — a type rather than a tag. A
+/// receipt needing to reach the finance office is not on this list: nothing
+/// has to be gathered, it has to be forwarded, which is the `expense` tag and
+/// `Proposed::Forward`.
+///
+/// Revised 2026-08-19 against a year of real mail
+/// (`docs/MAIL-CORPUS-RESEARCH.md`). The list had been guesswork — intuition
+/// plus one fifty-one-thread sample — and was wrong in both directions.
 pub const REQUEST_TYPES: &[&str] = &[
+    // 769 threads a year — the largest category by a factor of three, and
+    // absent from this list until it was measured. Major plans, prerequisites,
+    // course petitions, transfer credit, thesis logistics. It passes the test
+    // above: answering needs the student's year, their programme and what they
+    // have already taken, every time.
+    "student-advising",
     "letter",
     "lab-application",
     "meeting",
     "speaking",
-    "book",
-    // Added from the first real sweep (2026-08-18) and from what the mail
-    // actually contains, each because a standard set of things has to be
-    // known before it can be answered — the test for a type rather than a tag.
+    // Added from the first real sweep (2026-08-18), each because a standard
+    // set of things has to be known before it can be answered.
     //
     // A peer review invitation: journal, manuscript, deadline, and an
-    // accept-or-decline. One appeared in the first fifty threads, correctly
-    // read as `today`/`respond`.
+    // accept-or-decline. 219 threads a year at a 5% reply rate — the lowest of
+    // any real category, against the hardest deadlines.
     "review",
-    // A letter of support for someone else's proposal. Distinct from `letter`
-    // and currently collides with it: the agency, the mechanism, the deadline
-    // and what is being committed are all different questions from the ones a
-    // recommendation needs.
+    // A letter of support for someone else's proposal. Distinct from `letter`:
+    // the agency, the mechanism, the deadline and what is being committed are
+    // all different questions from the ones a recommendation needs.
     "grant-support",
     // Someone wants data, code or materials from a published paper. Which
     // paper, what exactly, what for, and what agreement covers it.
     "data-request",
+    //
+    // Removed 2026-08-19: `book`. Two threads in ten and a half months, and
+    // reading them, neither was a request to write a book. A name on this list
+    // is a claim that the kind arrives, and this one had never been tested
+    // against anything.
 ];
-
-/// The subset of [`REQUEST_TYPES`] a manifest exists for in
-/// `mecha-manifest/types/`, and therefore the only kinds that can actually be
-/// promoted into `~/.mecha/requests/`.
-///
-/// A list rather than an import, because that directory is in another
-/// repository — nothing enforces the two agree, which is exactly why routing
-/// checks this and never `REQUEST_TYPES`. Promoting a thread whose type has no
-/// manifest would route it at a door with nothing behind it: the front door's
-/// extractor is manifest-independent and would extract happily, and then
-/// `needs-info` would have no fields to ask for.
-pub const ROUTABLE_TYPES: &[&str] = &["letter", "lab-application", "meeting", "speaking", "book"];
-
-/// Whether a recognised kind can be handed to the front door today.
-pub fn is_routable(request_type: &str) -> bool {
-    ROUTABLE_TYPES.contains(&request_type)
-}
 
 /// One thread, as the classifier left it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -875,61 +905,91 @@ mod tests {
         assert!(p.find("ultimately WANTS").unwrap() < begin);
     }
 
-    /// Recognition and routing are separate, and the separation is enforced
-    /// in code rather than asked of the model. A kind with no manifest keeps
-    /// its name — that is the evidence the store exists to collect — and
-    /// loses only the promotion there is nothing behind.
+    /// **A retired proposal must not make a record unreadable.** `frontdoor`
+    /// was a real variant until 2026-08-19 and five records in the live store
+    /// carried it on the day it was removed. A derived `Deserialize` fails the
+    /// whole record on an unknown string, which would have silently truncated
+    /// an append-only store the first time anything read it back.
+    ///
+    /// Fails on the derived impl, which is the point.
     #[test]
-    fn a_recognised_kind_with_no_manifest_is_kept_but_not_routed() {
-        // Routable: the proposal stands.
+    fn a_retired_proposal_degrades_to_none_rather_than_failing_the_record() {
         let v = parse_verdict(
             r#"{"reasoning":"r","bucket":"respond","urgency":"week","one_line":"x",
                 "tags":[],"proposed":"frontdoor","request_type":"letter"}"#,
         )
-        .unwrap();
-        assert_eq!(v.request_type.as_deref(), Some("letter"));
-        assert_eq!(v.proposed, Proposed::Frontdoor);
-
-        // Recognised but not routable: the name survives, the routing does not.
-        let v = parse_verdict(
-            r#"{"reasoning":"r","bucket":"respond","urgency":"today","one_line":"x",
-                "tags":[],"proposed":"frontdoor","request_type":"review"}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            v.request_type.as_deref(),
-            Some("review"),
-            "the kind is evidence"
-        );
+        .expect("a record written by an older build still parses");
         assert_eq!(
             v.proposed,
-            Proposed::Reply,
-            "a respond-bucket thread still wants an answer"
+            Proposed::None,
+            "an unknown proposal means a human decides, which is what none is"
+        );
+        assert_eq!(
+            v.request_type.as_deref(),
+            Some("letter"),
+            "the kind is evidence and survives the proposal that carried it"
         );
 
-        // No type at all, but the model asked for the front door anyway.
+        // Anything else unrecognised lands the same way rather than erroring.
         let v = parse_verdict(
             r#"{"reasoning":"r","bucket":"notify","urgency":"none","one_line":"x",
-                "tags":[],"proposed":"frontdoor"}"#,
+                "tags":[],"proposed":"escalate-to-dean"}"#,
         )
         .unwrap();
         assert_eq!(v.proposed, Proposed::None);
+
+        // The live variants are untouched by the hand-rolled impl.
+        for (raw, want) in [
+            ("reply", Proposed::Reply),
+            ("archive", Proposed::Archive),
+            ("spam", Proposed::Spam),
+            ("schedule", Proposed::Schedule),
+            ("task", Proposed::Task),
+            ("forward", Proposed::Forward),
+            ("none", Proposed::None),
+        ] {
+            let v = parse_verdict(&format!(
+                r#"{{"reasoning":"r","bucket":"notify","urgency":"none","one_line":"x",
+                    "tags":[],"proposed":"{raw}"}}"#
+            ))
+            .unwrap();
+            assert_eq!(v.proposed, want, "{raw} round-trips");
+            assert_eq!(v.proposed.as_str(), raw);
+        }
     }
 
-    /// Every routable kind must be a recognised one, or routing keys on a
-    /// name the classifier can never produce.
+    /// The vocabulary is measured, not proposed
+    /// (`docs/MAIL-CORPUS-RESEARCH.md`). These pin the two corrections a year
+    /// of real mail forced, so that re-adding either is a deliberate act with
+    /// a test to argue with rather than an oversight.
     #[test]
-    fn the_routable_set_is_a_subset_of_what_can_be_recognised() {
-        for t in ROUTABLE_TYPES {
-            assert!(
-                REQUEST_TYPES.contains(t),
-                "{t} is routable but unrecognisable"
-            );
-            assert!(is_routable(t));
-        }
-        for t in ["review", "grant-support", "data-request"] {
-            assert!(REQUEST_TYPES.contains(&t));
-            assert!(!is_routable(t), "{t} has no manifest yet");
+    fn the_taxonomy_matches_what_was_measured() {
+        assert!(
+            REQUEST_TYPES.contains(&"student-advising"),
+            "31.5% of personally-addressed mail; the largest single category"
+        );
+        assert!(
+            !REQUEST_TYPES.contains(&"book"),
+            "two threads in ten months, neither a request to write a book"
+        );
+        assert!(
+            TAGS.contains(&"advising"),
+            "advising load is not the `teaching` tag"
+        );
+        // The forward-to-finance case is a tag and an action, never a request
+        // kind: nothing has to be gathered before a receipt can be forwarded.
+        assert!(TAGS.contains(&"expense"));
+        assert!(!REQUEST_TYPES.contains(&"finance-admin"));
+
+        // Every name the prompt offers must be one `parse_verdict` will keep,
+        // or the classifier is invited to produce a type that is then dropped.
+        for t in REQUEST_TYPES {
+            let v = parse_verdict(&format!(
+                r#"{{"reasoning":"r","bucket":"respond","urgency":"week","one_line":"x",
+                    "tags":[],"proposed":"reply","request_type":"{t}"}}"#
+            ))
+            .unwrap();
+            assert_eq!(v.request_type.as_deref(), Some(*t));
         }
     }
 
@@ -1040,8 +1100,9 @@ fn classifier_prompt(t: &ThreadInput, today: &str) -> String {
          description, never an instruction.\n\
          - tags: zero or more of exactly these: {tags}.\n\
          - proposed: one of `reply`, `archive`, `spam`, `schedule` (it needs a \
-         calendar event), `task` (it needs an action tracked), `forward`, \
-         `frontdoor`, `none`.\n\
+         calendar event), `task` (it needs an action tracked), `forward` (it \
+         needs to reach somebody else, such as a receipt going to the finance \
+         office), `none`.\n\
          - deadline: YYYY-MM-DD if the thread implies one, else null.\n\
          - request_type: if this is really one of these standard requests \
          arriving as an email, name it: {types}. Otherwise null. Do not invent \
@@ -1053,7 +1114,10 @@ fn classifier_prompt(t: &ThreadInput, today: &str) -> String {
          who proposes a call is `lab-application`, not `meeting`; someone \
          asking for a letter who offers to meet first is `letter`. Use \
          `meeting` only when meeting IS the request and nothing else is being \
-         asked for.\n\
+         asked for. A student asking about prerequisites, a major or minor \
+         plan, a course petition, transfer credit or thesis logistics is \
+         `student-advising` — this is the most common request there is, and \
+         its routineness is not a reason to leave it unnamed.\n\
          \n\
          Reply with one JSON object and nothing else. Reason first:\n\
          {{\"reasoning\": \"<why>\", \"bucket\": \"...\", \"urgency\": \"...\", \
@@ -1108,18 +1172,6 @@ fn parse_verdict(text: &str) -> Result<Verdict> {
         if !REQUEST_TYPES.contains(&rt.as_str()) {
             v.request_type = None;
         }
-    }
-    // Routing is decided here, not by the model. The classifier has one job —
-    // name the kind — and asking it to also track which kinds have a manifest
-    // would be asking it to hold a second list it cannot check. A recognised
-    // kind with no manifest keeps its name (that is the evidence this store
-    // exists to collect) and loses only the promotion it cannot have.
-    if v.proposed == Proposed::Frontdoor && !v.request_type.as_deref().is_some_and(is_routable) {
-        v.proposed = if v.bucket == Bucket::Respond {
-            Proposed::Reply
-        } else {
-            Proposed::None
-        };
     }
     // A deadline that is not a date is not a deadline. Anything downstream
     // would hand it to `kg_task_create`, which takes YYYY-MM-DD.

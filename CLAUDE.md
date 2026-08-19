@@ -567,6 +567,29 @@ that pair of negatives. The action set is a **closed enum** (`TriageAction`),
 on the `SLACK-ACTIONS-DESIGN.md` §1 reasoning: a free-form label argument
 would put `spam` inside a verb that reads as harmless.
 
+**Bulk reading is an operator verb, never a tool.** `mecha-mail corpus`
+downloads a span of mail for analysis, and it is absent from the MCP surface on
+purpose: the model has no business reading a year of mail, and a corpus verb on
+the tool surface is one prompt away from being asked to. It also stores mail
+*unclassified* — running a corpus through the classifier projects the current
+tags onto it and confirms them by construction, so a taxonomy derived that way
+measures the labels rather than the mail. That is how the vocabulary was wrong
+for a month: `student-advising` is 31.5% of personally-addressed mail and was
+missing, because the most routine thing that arrives is the thing that does not
+come to mind. `docs/MAIL-CORPUS-RESEARCH.md` is the measurement.
+
+**A closed enum written to an append-only store is a wire format, not a type.**
+`Proposed` hand-rolls `Deserialize` so an unknown variant degrades to `None`
+instead of failing the record. Deleting a variant looks like the safest
+refactor there is — the compiler finds every construction site — and the
+compiler cannot find the JSON: five records carried `proposed: frontdoor` on
+the day that variant was removed, and a derived impl would have made every one
+of them unreadable, silently, the first time anything walked the directory.
+`#[serde(other)]` says this in one line and is unavailable, since serde permits
+it only on internally or adjacently tagged enums. The same rule already governs
+`OutboxKind` and the outbox's recorded jail, which default on load for exactly
+this reason.
+
 **Tagging is deliberately not a provider operation.** Gmail labels and Graph
 categories are different objects, a tag that means something different per
 account fails at the one job tags have, and reaching either costs scope. A
