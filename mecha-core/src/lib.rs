@@ -48,6 +48,7 @@
 pub mod agent;
 pub mod batch;
 pub mod cache_lens;
+pub mod candidate;
 pub mod compact;
 pub mod config;
 pub mod counterfactual;
