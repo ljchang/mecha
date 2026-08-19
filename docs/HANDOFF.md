@@ -560,13 +560,23 @@ failure mode is optimizing for update *frequency*. Building the autonomous
 driver before knowing whether these findings are worth acting on is that
 failure mode by name.
 
-**The corpus does not start filling until a build that writes it is
-installed.** Triggers, the Slack service and the nightly all run release
-paths, so every run before the deploy records nothing. As of 2026-08-19 the
-0.1.7 release is held for mail phase 6 (~25% done), and no install has
-happened — so `0 outcomes` is the expected reading for the whole hold and is
-not a bug. The clock on the checks below starts at install, not at the date
-this section was written.
+**Two clocks start at install, not at the date this was written**, and the
+shared trap is that both features look finished and measure nothing. Anyone
+reading `0 rows` a week from now will reasonably assume something broke.
+
+- **The run-quality corpus.** Triggers, the Slack service and the nightly all
+  run release paths, so no build that writes `Record::Outcome` is in service
+  until the deploy and every run before it records nothing.
+- **The mail correction ledger**, per the parallel mail arc, for the same
+  reason plus a second: the loop needs *corrections*, and the button that
+  produces one (`mecha mail correct`) is likewise only in an uninstalled
+  build. Its `mecha mail score` says so in words rather than printing an empty
+  table.
+
+As of 2026-08-19 the 0.1.7 release **and any install** are held for mail phase
+6 (~25% done at that point), chosen deliberately over an install-now-tag-later
+option. So an empty corpus and an empty correction ledger are the expected
+readings for the length of the hold. The checks below begin at install.
 
 **Check as data accumulates, in this order.** Each step is cheap and each one
 can retire the next:
