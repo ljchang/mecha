@@ -1007,13 +1007,19 @@ impl Agent {
                     // What is about to be rewritten, kept for the recording:
                     // the front-end records at run end, so without this the
                     // turns a rewrite replaces were never anyone's to write.
-                    let pre_rewrite = messages.clone();
+                    let mut pre_rewrite = Some(messages.clone());
                     // Cheapest pass first: evict results a later call has
                     // superseded. Lossless — the newest result still says
                     // everything the transcript knows — and it removes the
                     // *stale* copy, which misleads where mere bulk only
                     // costs tokens.
                     let evicted = crate::compact::evict_superseded_results(messages);
+                    // Then collapse a pile of identical failures onto its
+                    // newest member. Same kind of damage as a stale result,
+                    // from the other direction: a model conditions on its own
+                    // errors, so four verbatim copies of one failure make the
+                    // fifth attempt likelier to fail too.
+                    let collapsed = crate::compact::collapse_repeated_failures(messages);
                     // Then shorten old tool *results* and keep the calls.
                     // Costs no request, and it is the half that does not
                     // lose the agent's place — the sequence of calls is what
@@ -1024,9 +1030,16 @@ impl Agent {
                         self.cfg.compact_keep_recent.max(1) * 2,
                         crate::compact::THINNED_RESULT_CHARS,
                     );
-                    if evicted + thinned > 0 {
-                        convo.rewritten.push(pre_rewrite);
-                        tracing::info!(evicted, thinned, "evicted and shortened old tool results");
+                    if evicted + thinned + collapsed > 0 {
+                        if let Some(pre) = pre_rewrite.take() {
+                            convo.rewritten.push(pre);
+                        }
+                        tracing::info!(
+                            evicted,
+                            collapsed,
+                            thinned,
+                            "evicted and shortened old tool results"
+                        );
                         emit(
                             &events,
                             AgentEvent::Compacted {
@@ -1039,14 +1052,26 @@ impl Agent {
                         // summary: the next reported prompt size says whether
                         // this was enough, and a summary is lossy where this is
                         // merely lossy about the middle of a file.
-                        continue;
+                        //
+                        // `collapsed` is recorded above but deliberately not
+                        // counted here: it removes repetition, not bulk, so
+                        // treating it as "freed enough" would spend a turn
+                        // arriving back at the same threshold.
+                        if evicted + thinned > 0 {
+                            continue;
+                        }
                     }
 
                     match self.compact(cx, messages, &events).await {
                         Ok(Some(spent)) => {
                             // `Some` is compact's word that a summary was
-                            // installed — the rewrite happened.
-                            convo.rewritten.push(pre_rewrite);
+                            // installed — the rewrite happened. `take` because
+                            // an earlier pass in this same turn may already
+                            // have recorded the pre-pass state, and two copies
+                            // of it would write two identical rewrite records.
+                            if let Some(pre) = pre_rewrite.take() {
+                                convo.rewritten.push(pre);
+                            }
                             usage.add(&spent);
                             compactions += 1;
                             loop_guard.arm();
@@ -1165,6 +1190,7 @@ impl Agent {
                     // this arm has three mutation points and one exit.
                     let pre_rewrite = messages.clone();
                     crate::compact::evict_superseded_results(messages);
+                    crate::compact::collapse_repeated_failures(messages);
                     // keep_recent 0, unlike the between-turns pass: the
                     // request does not fit, so *something* must shrink, and in
                     // the common shape — a short conversation holding one
@@ -3885,6 +3911,100 @@ mod tests {
         assert!(head.contains("[~] fix the port"), "{head}");
         assert!(head.contains("[ ] run the tests"), "{head}");
         assert!(head.contains(crate::compact::CARRIED_HEADER), "{head}");
+    }
+
+    #[tokio::test]
+    async fn a_run_that_fails_the_same_call_over_and_over_stops_carrying_every_copy() {
+        // The self-conditioning shape, end to end: the model retries one edit
+        // six times and fails identically every time. Before the collapse pass
+        // all six copies rode in every subsequent request — eviction exempts
+        // errors and thinning only truncates long results, so nothing in the
+        // harness touched them. This test fails on that behaviour.
+        struct AlwaysFails;
+        #[async_trait]
+        impl Tool for AlwaysFails {
+            fn name(&self) -> &str {
+                "fs_edit"
+            }
+            fn description(&self) -> &str {
+                "Edit a file."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                false
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::err("`old` does not appear in the file"))
+            }
+        }
+
+        let mut turns: Vec<CompletionResponse> = Vec::new();
+        for i in 0..6 {
+            turns.push(assistant(
+                vec![Block::ToolUse {
+                    id: format!("t{i}"),
+                    name: "fs_edit".into(),
+                    input: json!({"path": "a.rs", "old": "x", "new": "y"}),
+                }],
+                StopReason::ToolUse,
+            ));
+        }
+        turns.push(assistant(vec![Block::text("gave up")], StopReason::EndTurn));
+
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(AlwaysFails)], PermissionMode::Allow);
+        // Over the threshold every turn, but with nothing legal to summarise:
+        // `compact_keep_recent` past the transcript length means `compact`
+        // returns `None`, so this exercises the cheap passes alone.
+        agent.cfg.compact_at_tokens = Some(1);
+        agent.cfg.compact_keep_recent = 50;
+        agent.cfg.max_turns = 10;
+        agent.cfg.force_final_answer = false;
+
+        let mut convo = Conversation::user("fix the call site");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let results: Vec<&String> = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content),
+                _ => None,
+            })
+            .collect();
+
+        let verbatim = results
+            .iter()
+            .filter(|c| c.as_str() == "`old` does not appear in the file")
+            .count();
+        let collapsed = results
+            .iter()
+            .filter(|c| c.starts_with(crate::compact::REPEAT_MARKER))
+            .count();
+
+        assert_eq!(results.len(), 6, "a tool result went missing");
+        assert_eq!(
+            verbatim, 1,
+            "only the newest failure should survive whole; the rest are a \
+             corpus the model wrote about its own incompetence"
+        );
+        assert_eq!(
+            collapsed, 5,
+            "the earlier attempts were left to condition \
+             the next one"
+        );
+        assert!(
+            crate::compact::orphaned_tool_results(&convo.messages).is_empty(),
+            "collapsing must never break the tool_use/tool_result pairing"
+        );
+        assert!(
+            !convo.rewritten.is_empty(),
+            "the pre-collapse state must be recorded, or `recall` cannot read \
+             back what the markers replaced"
+        );
     }
 
     #[tokio::test]

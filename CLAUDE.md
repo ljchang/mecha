@@ -1162,6 +1162,25 @@ The things that decide the design:
   target, and "what failed" is what stops it being retried. If eviction (or
   thinning) freed anything, the summary is deferred a turn to see if it was
   enough.
+- **And a pile of identical failures collapses onto its newest member.**
+  `collapse_repeated_failures` runs beside eviction at both sites. The error
+  exemption above is right for one failure and inverts for eight: a model is
+  measurably likelier to fail a step when the context holds its own earlier
+  errors (self-conditioning, which does not go away with model size), and a
+  repeated failure is the same-target near-miss the distractor literature
+  prices at 25–68%, not the free kind of bulk. The diagnosis the exemption
+  protects is carried by the *newest* failure alone, so that one survives
+  verbatim and the older identical ones become markers. The key is target
+  **and** exact error text, on the loop guard's precedent: "no such file" then
+  "permission denied" on one path are two facts, and collapsing either loses a
+  diagnosis — collapsing too little costs tokens, collapsing too much destroys
+  information, so narrow is the fail-safe direction. Nothing is removed
+  (dropping a `tool_result` block is a 400), and it is deliberately *not*
+  counted toward the "freed enough, defer the summary" decision — it removes
+  repetition rather than bulk, so treating it as freed space would spend a turn
+  arriving back at the same threshold. Distinct from the loop guard, which
+  stops a run that has already gone wrong and only after a compaction; this
+  runs before there is anything to stop.
 - **The cut has to be legal, not convenient.** A `tool_result` whose `tool_use`
   is gone is a 400, and that is the whole run. Tool results arrive in the user
   message right after the assistant turn that asked for them, so the only safe

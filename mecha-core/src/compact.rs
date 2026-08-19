@@ -424,6 +424,112 @@ pub fn evict_superseded_results(messages: &mut [Message]) -> usize {
     evicted
 }
 
+/// Starts every collapsed repeat, so a second pass can tell it has already
+/// been here — and so the model reads a marker instead of its own failure a
+/// fourth time.
+pub const REPEAT_MARKER: &str = "[repeat:";
+
+/// Collapse a pile of identical failures down to its newest member.
+///
+/// Errors are exempt from [`evict_superseded_results`] on purpose: a failed
+/// call says nothing about the target, and *what failed* is what stops it
+/// being retried. That rule is right for one failure and inverts for eight.
+/// A model is measurably more likely to fail a step when the context holds
+/// its own earlier errors — self-conditioning, which does not go away with
+/// model size ("Measuring Long Horizon Execution in LLMs", ICLR 2026) — and a
+/// repeated failure is the same-target near-miss that `CONTEXT-RESEARCH.md`
+/// §1 puts at 25–68% harm, not the free kind of bulk. The diagnosis the
+/// exemption exists to protect is carried by the **newest** failure on its
+/// own; the copies behind it are a corpus the model wrote about its own
+/// incompetence.
+///
+/// So the newest failure per target survives verbatim and the older identical
+/// ones become markers. Three decisions:
+///
+/// - **The key is the target *and* the exact error text**, on the loop
+///   guard's precedent (identical call *and* identical result). Two different
+///   failures on one path — "no such file", then "permission denied" — are two
+///   facts, and folding either into a count loses one. Collapsing too little
+///   costs a few tokens; collapsing too much destroys a diagnosis, so the
+///   narrow key is the fail-safe direction.
+/// - **Nothing is removed.** A `tool_result` whose `tool_use` is gone is a
+///   400, so dropping the block is not available at any price; the content is
+///   replaced in place, exactly as eviction does it. What this pass removes is
+///   the *repetition*, which is the mechanism — not the bytes.
+/// - **It is not the loop guard.** That one stops a run which has already gone
+///   wrong, and only after a compaction. This runs before there is anything to
+///   stop.
+///
+/// Returns how many results were collapsed.
+pub fn collapse_repeated_failures(messages: &mut [Message]) -> usize {
+    // What each call was about, so a result can be keyed by its target rather
+    // than by the id that is unique to the attempt.
+    let mut target_of_call: std::collections::HashMap<String, String> = Default::default();
+    for message in messages.iter() {
+        for block in &message.content {
+            if let Block::ToolUse { id, name, input } = block {
+                target_of_call.insert(id.clone(), target_of(name, input));
+            }
+        }
+    }
+
+    // The newest failure per (target, message). Transcript order, so the last
+    // write wins — and the last write is the one kept whole.
+    let mut newest: std::collections::HashMap<(String, String), String> = Default::default();
+    let key_of = |tool_use_id: &String, content: &String, is_error: bool| {
+        if !is_error || content.starts_with(REPEAT_MARKER) {
+            return None;
+        }
+        let target = target_of_call.get(tool_use_id)?;
+        Some((target.clone(), content.trim().to_string()))
+    };
+    for message in messages.iter() {
+        for block in &message.content {
+            if let Block::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } = block
+            {
+                if let Some(key) = key_of(tool_use_id, content, *is_error) {
+                    newest.insert(key, tool_use_id.clone());
+                }
+            }
+        }
+    }
+
+    let mut collapsed = 0;
+    for message in messages.iter_mut() {
+        for block in &mut message.content {
+            let Block::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } = block
+            else {
+                continue;
+            };
+            let Some(key) = key_of(tool_use_id, content, *is_error) else {
+                continue;
+            };
+            match newest.get(&key) {
+                Some(latest) if latest != tool_use_id => {
+                    // Name what happened and what it means: a marker that only
+                    // says "collapsed" invites the model to try once more to
+                    // see for itself.
+                    *content = format!(
+                        "{REPEAT_MARKER} this call failed again later with the same error, \
+                         which is kept in full below. Repeating it unchanged has not worked.]"
+                    );
+                    collapsed += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    collapsed
+}
+
 /// What a call is *about*, for supersession.
 fn target_of(name: &str, input: &serde_json::Value) -> String {
     match input.get("path").and_then(serde_json::Value::as_str) {
@@ -707,6 +813,118 @@ mod tests {
         assert_eq!(evict_superseded_results(&mut m), 0);
         assert_eq!(body_of(&m[2]), "good contents");
         assert_eq!(body_of(&m[4]), "permission denied");
+    }
+
+    #[test]
+    fn a_pile_of_identical_failures_collapses_to_its_newest_member() {
+        // The self-conditioning shape: the model retries the same call four
+        // times, fails identically every time, and every copy stays in the
+        // context conditioning the next attempt. Before this pass, all four
+        // survived verbatim — eviction skips errors and thinning only
+        // truncates long results outside the recent window, and a failure
+        // message is short.
+        let mut m = vec![Message::user("go")];
+        for i in 0..4 {
+            m.push(call(&format!("t{i}"), "a.md"));
+            m.push(err_result(&format!("t{i}"), "permission denied"));
+        }
+
+        assert_eq!(collapse_repeated_failures(&mut m), 3);
+        for i in 0..3 {
+            assert!(
+                body_of(&m[2 + i * 2]).starts_with(REPEAT_MARKER),
+                "attempt {i} was left to condition the next one"
+            );
+        }
+        assert_eq!(
+            body_of(&m[8]),
+            "permission denied",
+            "the newest failure must survive whole — it is the diagnosis that \
+             stops the call being retried"
+        );
+    }
+
+    #[test]
+    fn two_different_failures_on_one_target_are_two_facts() {
+        // "no such file" and "permission denied" say different things about
+        // a.md. Folding either into a count loses a diagnosis, which is the
+        // damage the error exemption exists to prevent — so the key is the
+        // error text as well as the target.
+        let mut m = vec![
+            Message::user("go"),
+            call("t0", "a.md"),
+            err_result("t0", "no such file"),
+            call("t1", "a.md"),
+            err_result("t1", "permission denied"),
+        ];
+        assert_eq!(collapse_repeated_failures(&mut m), 0);
+        assert_eq!(body_of(&m[2]), "no such file");
+        assert_eq!(body_of(&m[4]), "permission denied");
+    }
+
+    #[test]
+    fn identical_failures_on_different_targets_are_left_alone() {
+        // Same message, different files: two facts about two paths, not a
+        // model repeating itself.
+        let mut m = vec![
+            Message::user("go"),
+            call("t0", "a.md"),
+            err_result("t0", "no such file"),
+            call("t1", "b.md"),
+            err_result("t1", "no such file"),
+        ];
+        assert_eq!(collapse_repeated_failures(&mut m), 0);
+    }
+
+    #[test]
+    fn a_successful_result_is_never_collapsed_by_the_failure_pass() {
+        // Supersession is eviction's job and it has its own rules; this pass
+        // must not quietly become a second, blunter copy of it.
+        let mut m = vec![
+            Message::user("go"),
+            call("t0", "a.md"),
+            result("t0", "contents"),
+            call("t1", "a.md"),
+            result("t1", "contents"),
+        ];
+        assert_eq!(collapse_repeated_failures(&mut m), 0);
+        assert_eq!(body_of(&m[2]), "contents");
+    }
+
+    #[test]
+    fn collapsing_is_idempotent_and_keeps_every_result_block() {
+        // Runs on every compaction, so a second pass must not walk back over
+        // its own markers. And a `tool_result` whose `tool_use` is gone is a
+        // 400: the count of blocks is not allowed to change, ever.
+        let mut m = vec![Message::user("go")];
+        for i in 0..3 {
+            m.push(call(&format!("t{i}"), "a.md"));
+            m.push(err_result(&format!("t{i}"), "permission denied"));
+        }
+        let blocks = m.len();
+
+        assert_eq!(collapse_repeated_failures(&mut m), 2);
+        let after_one: Vec<String> = m.iter().map(|m| format!("{:?}", m.content)).collect();
+
+        assert_eq!(
+            collapse_repeated_failures(&mut m),
+            0,
+            "a second pass collapsed its own markers"
+        );
+        let after_two: Vec<String> = m.iter().map(|m| format!("{:?}", m.content)).collect();
+
+        assert_eq!(after_one, after_two);
+        assert_eq!(m.len(), blocks, "a result block was dropped");
+        assert!(orphaned_tool_results(&m).is_empty());
+        assert!(orphaned_tool_uses(&m).is_empty());
+    }
+
+    fn err_result(id: &str, content: &str) -> Message {
+        Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: id.into(),
+            content: content.into(),
+            is_error: true,
+        }])
     }
 
     #[test]
