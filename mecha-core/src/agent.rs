@@ -492,7 +492,12 @@ pub struct ToolCallTrace {
 
 /// Why the loop stopped. `Completed` is the model deciding it was done;
 /// everything else is the harness cutting it short.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// `Ord` is derived so it can key a map — the declaration order carries no
+/// meaning beyond giving a histogram a stable print order.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum StopCause {
     Completed,

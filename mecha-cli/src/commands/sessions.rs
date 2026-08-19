@@ -30,6 +30,22 @@ pub enum Args {
         id: String,
     },
 
+    /// How past runs went, as distinct from what they cost: stop causes,
+    /// tool reliability, and how often a run finished over a failure.
+    Health {
+        /// Only sessions started in the last N days.
+        #[arg(long)]
+        days: Option<i64>,
+
+        /// Stop after this many sessions, newest first.
+        #[arg(long, short = 'n')]
+        limit: Option<usize>,
+
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Total token usage — and cost, where prices are configured — across
     /// saved sessions, grouped by provider and model.
     Stats {
@@ -47,6 +63,8 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
     let dir = Session::default_dir()?;
 
     match args {
+        Args::Health { days, limit, json } => health(&dir, days, limit, json)?,
+
         Args::List { limit } => {
             let sessions = Session::list(&dir)?;
             if sessions.is_empty() {
@@ -255,5 +273,159 @@ fn first_line(s: &str) -> String {
         format!("{}…", line.chars().take(120).collect::<String>())
     } else {
         line.to_string()
+    }
+}
+
+/// `sessions health` — the run-quality corpus, summarised.
+///
+/// Deliberately separate from `stats`, which answers what runs *cost*. This
+/// answers whether they *worked*, and the two have different audiences and
+/// different units. Every rate here prints `—` where its denominator is zero,
+/// because no evidence is not a clean record.
+fn health(
+    dir: &std::path::Path,
+    days: Option<i64>,
+    limit: Option<usize>,
+    json: bool,
+) -> Result<()> {
+    use mecha_core::runlog::{Corpus, Scan};
+
+    let since = days.map(|d| chrono::Utc::now() - chrono::Duration::days(d));
+    let corpus = Corpus::scan(
+        dir,
+        &Scan {
+            max_sessions: limit,
+            since,
+        },
+    )?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&as_json(&corpus))?);
+        return Ok(());
+    }
+
+    if corpus.is_empty() {
+        println!(
+            "no recorded run outcomes in {} ({} session(s) read)",
+            dir.display(),
+            corpus.sessions_read
+        );
+        println!("outcomes are recorded from v0.1.8 on; older transcripts carry none");
+        return Ok(());
+    }
+
+    println!(
+        "{} run(s) across {} session(s){}\n",
+        corpus.len(),
+        corpus.sessions_read,
+        days.map(|d| format!(", last {d} day(s)"))
+            .unwrap_or_default()
+    );
+
+    let causes: Vec<String> = corpus
+        .stop_causes()
+        .into_iter()
+        .map(|(cause, n)| {
+            let name = cause
+                .map(|c| {
+                    serde_json::to_string(&c)
+                        .unwrap_or_default()
+                        .trim_matches('"')
+                        .to_string()
+                })
+                .unwrap_or_else(|| "unrecorded".into());
+            format!("{name} {n}")
+        })
+        .collect();
+    println!("  stop cause      {}", causes.join(" · "));
+    println!(
+        "  ended on a failed call   {} ({})",
+        corpus.ended_on_failed_call(),
+        pct(corpus.rate_of(|r| r.stats.ended_on_failed_call))
+    );
+    println!(
+        "  tool calls      {} · errors {} ({}) · denied {} · staged {}",
+        corpus.tool_calls(),
+        corpus.tool_errors(),
+        pct(corpus.tool_error_rate()),
+        corpus.rows.iter().map(|r| r.stats.tool_denied).sum::<u32>(),
+        corpus.rows.iter().map(|r| r.stats.tool_staged).sum::<u32>(),
+    );
+    println!(
+        "  malformed args {} · blocked sends {} · compactions {}",
+        corpus
+            .rows
+            .iter()
+            .map(|r| r.stats.malformed_tool_args)
+            .sum::<u32>(),
+        corpus
+            .rows
+            .iter()
+            .map(|r| r.stats.blocked_sends)
+            .sum::<u32>(),
+        corpus.compactions(),
+    );
+
+    let by_model = corpus.by_model();
+    if by_model.len() > 1 {
+        // A blended rate across models is true and useless: neither model
+        // behaves that way, and a threshold on it fires for the wrong one.
+        println!("\nby model");
+        for (model, sub) in &by_model {
+            println!(
+                "  {:<28} {:>4} run(s)   tool errors {:>6}   ended on failure {:>6}",
+                model,
+                sub.len(),
+                pct(sub.tool_error_rate()),
+                pct(sub.rate_of(|r| r.stats.ended_on_failed_call)),
+            );
+        }
+    }
+
+    let (cost, priced) = corpus.cost_usd();
+    if priced > 0 {
+        println!(
+            "\n${cost:.2} across {priced} of {} run(s) — a lower bound where prices are unset",
+            corpus.len()
+        );
+    }
+    Ok(())
+}
+
+fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
+    let (cost, priced) = corpus.cost_usd();
+    serde_json::json!({
+        "runs": corpus.len(),
+        "sessions_read": corpus.sessions_read,
+        "tool_calls": corpus.tool_calls(),
+        "tool_errors": corpus.tool_errors(),
+        "tool_error_rate": corpus.tool_error_rate(),
+        "ended_on_failed_call": corpus.ended_on_failed_call(),
+        "ended_on_failed_call_rate": corpus.rate_of(|r| r.stats.ended_on_failed_call),
+        "compactions": corpus.compactions(),
+        "cost_usd": cost,
+        "runs_priced": priced,
+        "by_model": corpus
+            .by_model()
+            .iter()
+            .map(|(model, sub)| {
+                serde_json::json!({
+                    "model": model,
+                    "runs": sub.len(),
+                    "tool_error_rate": sub.tool_error_rate(),
+                    "ended_on_failed_call_rate": sub.rate_of(|r| r.stats.ended_on_failed_call),
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// A rate as a percentage, or `—` when it has no denominator. Never `0%`:
+/// "nothing went wrong" and "nothing happened" are different answers, and
+/// printing them the same way is how a stopped component reads as healthy.
+fn pct(rate: Option<f64>) -> String {
+    match rate {
+        Some(r) => format!("{:.1}%", r * 100.0),
+        None => "—".into(),
     }
 }
