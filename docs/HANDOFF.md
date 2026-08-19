@@ -93,8 +93,9 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **936 tests**, no failures — re-measured 2026-08-18 on `main`
-after the mail-triage and documents work merged (16 commits unpushed). The growth from 707 (2026-08-10) spans
+Expect **989 tests**, no failures — re-measured 2026-08-19 on
+`repeated-failures-collapse` after the run-quality arc (the 2026-08-18 count
+was 936 on `main`). The growth from 707 (2026-08-10) spans
 the 0.1.3–0.1.6 arcs; each
 release's CHANGELOG entry names what its tests pin. **A flake has now been seen twice and is still unidentified.** Once in
 `mecha-core` on 2026-08-08, and again on 2026-08-19 (`cargo test --workspace`
@@ -160,6 +161,7 @@ A working agent harness, used and measured rather than just compiled.
 | Front door | `mecha frontdoor` list/show/extract/next/**triage**/**needs-info**/**close** over `~/.mecha/requests/` — the quarantine between a stranger's request and a run with tools, and the state machine that lets one reach an answer. The extractor is issued no tools and no history; `Record::for_privileged_run` has no argument that returns the prose; an extraction failure routes to a human. `triage` drafts into the outbox and refuses to run unrouted; `reconcile` closes the loop from released items on its own, with no verb to remember. `mecha-factory-publish drain` fills the directory |
 | Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, **the daemon is installed and running here**; a failed `notify` is recorded on the run |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B). Budget is 25 active rules and 2600 chars **per domain**, and a run carries only `RUN_DOMAINS` (`behavior` + `writing`) — new domains are opt-in and `unrouted_domains` warns at startup on any that ride in no prompt |
+| Run quality | `Record::Outcome(RunStats)` per finished run from every front-end; `runlog.rs` reads the corpus back (`mecha sessions health`, rates split by model, `—` where a denominator is zero); three population checks in `doctor`; `candidate.rs` gates a proposed change on a paired comparison with a deterministic holdout and a work guardrail; `mecha eval --ab-config KEY=VALUE` is the content-sensitive arm; `mecha diagnose` proposes one change from the corpus and prints the command that would falsify it. **Nothing is applied automatically and the corpus was empty at build time** — see below |
 | Eval | 36 cases, 15 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `graph-cases.jsonl` — 10 memory/interlock cases against fixture MCP servers (`--mcp-file`), renamed with the graph and expecting the bare `kg_*` names production serves (scorecards across the rename are not comparable) |
 
 `cargo clippy --all-targets` is clean and should stay that way.
@@ -544,6 +546,62 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
 - **Cosmetic:** `factory-publish type push` prints a `/f/<handle>/<id>` URL
   for booking manifests; a booking's page is `/s/…`.
 
+### The self-improvement loop — built, and waiting on its own data
+
+Every stage exists as tested code and **nothing acts on the numbers**. The
+open item is not code, it is evidence: run outcomes are recorded from this
+version on, so at build time `mecha sessions health` read 178 sessions and
+found 0 outcomes. `docs/SELF-IMPROVEMENT-RESEARCH.md` is the authority and §13
+records decisions already made — do not re-ask them.
+
+The reason to wait rather than to finish it is in that document's §2: agents
+measurably update their harnesses without benefiting, and the fourth named
+failure mode is optimizing for update *frequency*. Building the autonomous
+driver before knowing whether these findings are worth acting on is that
+failure mode by name.
+
+**Check as data accumulates, in this order.** Each step is cheap and each one
+can retire the next:
+
+1. `mecha sessions health --days 30` — does the corpus say anything yet? Is the
+   per-model split meaningful, or is everything one model?
+2. `mecha doctor` — do the three run-quality checks fire? When one does, the
+   question is not whether the number is right but **whether you would have
+   acted on it**. A finding you would ignore is a threshold set wrong, not a
+   problem you have; the thresholds are deliberately high
+   (`ENDED_ON_FAILURE_RATE`, `TOOL_ERROR_RATE`, `CUT_SHORT_RATE` in
+   `doctor.rs`) because rule-based evaluators are measured to over-flag.
+3. `mecha diagnose --dry-run` — is the brief enough to diagnose from, or is it
+   missing a signal that is not being recorded? That answer is worth more than
+   any change the diagnostician would propose, because it is a gap in the
+   sensor rather than in the model.
+4. Only then `mecha diagnose` for real, and `mecha eval --ab-config` on
+   whatever it proposes.
+
+What is genuinely unbuilt, and deliberately so until step 3 answers:
+
+- **No nightly stage.** `scripts/ruminate.sh` does not run any of this. It
+  belongs there eventually, after `validate`, on the same "a skipped night is
+  not a failed night" contract — but a nightly that proposes changes nobody
+  reads is worse than no nightly.
+- **The arms run over eval cases, not over replayed sessions.**
+  `eval --ab-config` is the content-sensitive arm and it is the one that
+  exists. `replay_run::drive` now returns `RunStats`
+  (`mecha-core/src/replay_run.rs`), so the pieces for a session-corpus arm are
+  present and unassembled. Know the limit before building it: replay holds tool
+  results fixed, so it can grade a compaction threshold or a rule but is blind
+  by construction to `output_budget_bytes`, sandbox, retries and failover —
+  §8 of the research has the table.
+- **No auto-accept path.** `candidate::Disposition::Accept` is computed and
+  nothing consumes it. Wiring it means deciding where the applied change is
+  written and how it is reverted, neither of which exists.
+- **Security boundaries are gated, not excluded.** Luke's ruling (§13.2) makes
+  interlock, path jail, sandbox and outbox routing human-gated like any other
+  architecture change. The recommendation on record is that they stay
+  unproposable: a loop that can argue for widening its own confinement will
+  eventually argue well, and the metric agrees with it, because a run that can
+  reach the network fails fewer calls.
+
 ### Cheap, and worth doing first
 
 - **Decide whether replayed reasoning stays unbounded.** As of 0.1.2 the
@@ -616,6 +674,10 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
   a post-condition; there is no runtime "is it done yet". The research's own
   answer is the starting point: it has to be a command's exit code, not a
   model's opinion. `compact_validate` is the only in-run verifier that exists.
+  Narrowed 2026-08-19: `RunOutcome::ended_on_failed_call` (`agent.rs`) now names
+  the *post-hoc* case — a run that stopped of its own accord with its last call
+  failed — which is the silent-failure shape a judge cannot catch. It is a
+  report, not a convergence test; the gap above is unchanged.
 - **Programmatic tool calling** (a `code` tool that calls other tools from inside
   a program). Two hazards to solve first, both named in the research: taint must
   update *within* a running program, and approval for a program that makes

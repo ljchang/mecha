@@ -1108,6 +1108,43 @@ close. Verified on 51 real Dartmouth threads. The documents work merged the
 same day from a parallel session, and Luke then held 0.1.7 until the mail
 feature is complete through phase 6.
 
+**2026-08-19 — the harness learns to watch itself.** A research pass on what
+separates good harnesses (`docs/HARNESS-RESEARCH.md`) found the largest
+measured lever is plumbing rather than cognition — Claw-SWE-Bench moves the
+same backbone from 19.1% to 73.4% purely by making patches apply — and that
+persistence inverts: models self-condition on their own errors, an effect that
+does not go away with model size. Three fixes followed the same day.
+`compact::collapse_repeated_failures` folds a pile of identical failures onto
+its newest member, since eviction exempts errors by construction and thinning
+only truncates long results, so eight failed attempts at one call rode in every
+subsequent request forever. `RunOutcome::ended_on_failed_call` names the run
+that stopped of its own accord with its last call failed — the silent-failure
+shape no judge catches at better than chance — with an `expect` check beside
+it. And doctor learned to see a trigger degrading quietly, then a trigger that
+succeeded having done nothing at all, the second found by a sibling session
+hitting the identical shape one layer down.
+
+**2026-08-19 (afternoon) — the self-improvement loop, built and unstarted.**
+A second pass (`docs/SELF-IMPROVEMENT-RESEARCH.md`, 733 lines) asked whether
+the harness can notice its own problems and fix them; the answer was that
+rumination's only sensor is a human stepping in, so a harness problem produces
+no intervention and nothing downstream ever sees it. Six commits built the
+missing half: `Record::Outcome(RunStats)` written by every front-end,
+`runlog.rs` reading the corpus back with `mecha sessions health`,
+`candidate.rs` as a pure gate (paired comparison, deterministic holdout, a work
+guardrail that rejects a gain bought by attempting less), `RunStats` threaded
+through the replay driver, `mecha eval --ab-config` as the content-sensitive
+arm, three population checks in doctor, and `diagnose.rs` plus `mecha diagnose`
+— the one place a model authors a change, safe there because being wrong costs
+one measurement and unsafe at the accept gate for the same reason. Luke's
+rulings moved the gate from provenance to proof: the diagnostician may search
+the web and its output is not restricted to numbers, architecture changes are
+proposable behind a human gate, everything else auto-accepts on measured
+improvement. Nothing acts on the numbers yet, deliberately — the corpus was
+empty at build time (178 sessions read, 0 outcomes), and the research's own
+finding is that agents update their harnesses without benefiting, so the next
+thing to learn is whether doctor's findings would actually have been acted on.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -1342,6 +1379,12 @@ matters is the general shape.
   budgets tight enough that the model got cut off mid-exploration, so the case
   graded budget exhaustion rather than judgement. Discovering that a request is
   under-specified takes reading; leave room for it.
+- **A fixture can make a test pass for the wrong reason.** The helper seeding
+  two models' runs generated colliding session ids, so the second model's
+  transcripts silently rewrote the first's — and the blended-rate test passed
+  while reporting the *healthy* model as the broken one. It only surfaced
+  because the assertion named which model it expected. Assert on the identity
+  of the thing you found, not only on the count.
 - **Substring grading measures formatting.** `"$2,520"` failed a check for
   `2520`; `"do **not** agree"` failed `not agree`. Both answers were right. The
   `normalize` helper in `mecha-core/src/eval.rs` handles it — extend that, don't
@@ -1846,6 +1889,14 @@ All found by pre-push review or by running it.
   the test has to be repeated on the far side of them.
 
 ### Environment
+
+- **A heredoc can eat a line continuation before the compiler sees it.** Five
+  doctor messages written through a Python heredoc lost their `\`-continuations
+  to the *heredoc's* parser, so the string literals reached the file as plain
+  multi-line text and `cargo fmt` joined them with their indentation intact —
+  twenty-space gaps mid-sentence in everything doctor printed. No test failed;
+  one line of real output made it obvious. Run the thing whose output is prose,
+  and do not trust that what you typed is what landed in the file.
 
 - **`cargo install` will happily install a version older than the one you just
   published**, because the local registry index is cached and nothing warns.
