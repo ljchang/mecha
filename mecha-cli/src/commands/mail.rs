@@ -41,6 +41,31 @@ pub enum Cmd {
         /// Include threads already acted on, and the ones classified `ignore`.
         #[arg(long)]
         all: bool,
+        /// Day two: `respond` threads old enough to have been answered and
+        /// still untouched.
+        ///
+        /// **This is the list the morning briefing reads.** A thread
+        /// unanswered after a day is overwhelmingly unlikely ever to be
+        /// answered (`MAIL-CORPUS-RESEARCH.md` §3), and by then the person has
+        /// stopped looking at mail — so the queue being a pull surface is
+        /// exactly why the threads die. Keys on the bucket and never on
+        /// silence: most unanswered mail correctly needed no reply.
+        #[arg(long)]
+        aged: bool,
+        /// With `--aged`, how old a thread must be. A working day rather than
+        /// a literal 24 hours, so an evening email is not nagged about at
+        /// breakfast.
+        #[arg(long, default_value_t = 30)]
+        aged_hours: i64,
+        /// With `--aged`, record that these were surfaced so they are not
+        /// surfaced again.
+        ///
+        /// **Separate from reading them on purpose.** A list command that
+        /// mutates as a side effect of being run cannot be used to look, and
+        /// looking is most of what anyone does with this. The briefing passes
+        /// it; a person checking what day two would say does not.
+        #[arg(long)]
+        surface: bool,
         /// Machine output.
         #[arg(long)]
         json: bool,
@@ -248,9 +273,18 @@ pub enum Cmd {
 pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     match args.cmd.unwrap_or(Cmd::List {
         all: false,
+        aged: false,
+        aged_hours: 30,
+        surface: false,
         json: false,
     }) {
-        Cmd::List { all, json } => list(all, json),
+        Cmd::List {
+            all,
+            aged,
+            aged_hours,
+            surface,
+            json,
+        } => list(all, aged, aged_hours, surface, json),
         Cmd::Show { thread_id, account } => show(global, &thread_id, account.as_deref()).await,
         Cmd::Classify {
             account,
@@ -333,16 +367,34 @@ fn find_tool<'a>(
         .find(|t| t.name() == bare || t.name().ends_with(&format!("__{bare}")))
 }
 
-fn list(all: bool, as_json: bool) -> Result<()> {
+fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) -> Result<()> {
     let Some(store) = TriageStore::open_existing_default() else {
         println!("nothing classified yet — run `mecha mail classify`");
         return Ok(());
     };
+    let now = chrono::Utc::now().to_rfc3339();
     let rows: Vec<Record> = store
         .list()?
         .into_iter()
-        .filter(|r| all || r.needs_me() || r.state == FAILED)
+        .filter(|r| {
+            if aged {
+                r.day_two_candidate(&now, aged_hours)
+            } else {
+                all || r.needs_me() || r.state == FAILED
+            }
+        })
         .collect();
+
+    // Marking is the caller's explicit request, and it happens before the
+    // display so a broken pipe cannot surface a thread twice.
+    if aged && surface {
+        for r in &rows {
+            let mut r = r.clone();
+            r.rest
+                .insert(mecha_core::mail_triage::SURFACED_AT.to_string(), json!(now));
+            store.put(&r)?;
+        }
+    }
 
     if as_json {
         // The typed view, not the record: `list --json` is what a script or a
@@ -353,8 +405,21 @@ fn list(all: bool, as_json: bool) -> Result<()> {
     }
 
     if rows.is_empty() {
-        println!("nothing needs you");
+        println!(
+            "{}",
+            if aged {
+                "nothing has been waiting — every thread that needed you got dealt with"
+            } else {
+                "nothing needs you"
+            }
+        );
         return Ok(());
+    }
+    if aged {
+        println!(
+            "{} thread(s) you meant to answer and have not, {aged_hours}h+ old:\n",
+            rows.len()
+        );
     }
     for r in &rows {
         match (&r.verdict, r.state.as_str()) {
