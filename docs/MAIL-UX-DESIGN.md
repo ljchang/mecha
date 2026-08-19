@@ -207,10 +207,25 @@ carries:
   arrive somewhere already attended — the morning trigger's briefing, the TUI
   status line, or Slack — rather than being a list that must be remembered.
 
-**Deliberately not decided here**: which of those surfaces it lands on. That is
-a real design question with different costs (a trigger is unattended and cannot
-ask; the TUI is attended but not always open; Slack reaches a phone and is the
-most interrupting). It needs its own pass rather than a sentence.
+**The surface is the morning briefing** (decided 2026-08-19). The TUI is
+attended and can act, but it only reaches you when it is already open — and on
+day two you are by definition not looking at mail, which is the whole failure.
+Slack reaches a phone, which is the argument for it and against it: a daily
+nudge on a phone is the kind of thing people mute, and a muted nudge is worse
+than none. The briefing is already read daily and already runs, so it costs no
+new surface and no new habit.
+
+Its limitation is real and shapes the split: **a trigger is unattended and
+cannot ask**, so the briefing *lists* and acting happens elsewhere. That makes
+the aged set a store-side primitive rather than a feature of the briefing —
+
+> `mecha mail list --aged` — `respond` threads past the age, no outbound
+> message since — deterministic, no model, and the briefing is one reader of it.
+
+Which is the same rule the rest of this surface follows: the store and the CLI
+are the product, and every front-end is a reader. A day-two list that existed
+only inside a trigger's prompt could not be tested, scripted, or read from the
+modal that is coming.
 
 **Deliberately not built**: auto-replying, auto-nudging the sender, or any
 escalation ladder. This surfaces to the user and stops.
@@ -310,12 +325,13 @@ them teaches the classifier noise.
    `kg_task_create` takes `name`, `due`, `context`, `project`. A pointer back
    to the mail would make "why is this on my board" answerable, but there is no
    field for it — it would have to live in the name or need a pkg change.
-3. **Where does day two surface?** The mechanism is settled in §4; the surface
-   is not, and the options have genuinely different costs. The morning
-   trigger's briefing is unattended and reaches the user daily but cannot ask
-   anything. The TUI status line is attended and can ask, but only while it is
-   open. Slack reaches a phone, which is both the reason to choose it and the
-   reason not to. This is the one blocking question in the document.
+3. ~~**Where does day two surface?**~~ **Decided 2026-08-19: the morning
+   briefing**, with the aged set as a store-side primitive so the briefing is
+   one reader rather than the owner. See §4. What is still open underneath it
+   is the *age* — 24 hours is where the cliff falls, but a briefing that fires
+   the morning after an evening email would be nagging about something a
+   working day old. Likely one working day rather than 24 hours, and that is
+   worth measuring against the corpus rather than picking.
 4. **`meeting` as a request kind** — still unresolved, and now with a number
    on it: real volume, and the *highest* reply rate of any category, which cuts
    both ways — it arrives often, and it needs help least. It remains structurally the greediest label — almost any request can
