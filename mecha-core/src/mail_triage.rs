@@ -266,6 +266,115 @@ pub fn changed_fields(before: &Verdict, after: &Verdict) -> Vec<String> {
     out
 }
 
+/// Senders that are systems rather than people, matched on the address and the
+/// display name. Deliberately a substring list rather than a regex: it is read
+/// by people deciding whether a rule is too aggressive, and every entry has to
+/// survive that reading.
+///
+/// **Deliberately portable rather than maximal.** The exploratory pass that
+/// measured this rule also matched site-specific senders — one institution's
+/// document-workflow system, one package registry, one monitoring service —
+/// and scored about five percentage points higher for it. Those are not on
+/// this list. A shipped default tuned to one mailbox is a default that quietly
+/// underperforms in every other, and the five points are recoverable per-site
+/// by the never-replied-sender rule, which learns them from behaviour instead
+/// of hard-coding them.
+const AUTOMATED_MARKERS: &[&str] = &[
+    "no-reply",
+    "noreply",
+    "no_reply",
+    "do-not-reply",
+    "donotreply",
+    "notification",
+    "notifications",
+    "automated",
+    "mailer-daemon",
+    "bounce",
+    "listserv",
+    "postmaster",
+];
+
+/// Why a thread was disposed of without a model call. Recorded on the verdict
+/// so the pre-filter can be **graded rather than believed** — the same reason
+/// `escalated_from` exists. Without it, a thread the pre-filter dropped and a
+/// thread the classifier called `ignore` are indistinguishable afterwards, and
+/// the question "is this rule too aggressive" has no way to be asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefilterRule {
+    /// The message carries a `List-Unsubscribe` header.
+    Bulk,
+    /// The sender address or display name looks like a system.
+    AutomatedSender,
+}
+
+impl PrefilterRule {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bulk => "bulk",
+            Self::AutomatedSender => "automated-sender",
+        }
+    }
+}
+
+/// Decide a thread without a model, or decline to.
+///
+/// **Measured against a year of real mail, with exactly the list below: these
+/// two rules match a little under half of all threads, and across ten and a
+/// half months five of the threads they caught had received a reply — around
+/// one in a thousand.** The classifier is the better judge and that is not in
+/// question here; the point is that it should not be asked about a shipping
+/// notification. `docs/MAIL-CORPUS-RESEARCH.md` holds the figures.
+///
+/// Three properties this has to keep:
+///
+/// - **It only ever produces `ignore`.** A deterministic rule may say "nothing
+///   here"; it may never say "this needs a reply", because the cases it would
+///   have to get right to do that are exactly the ones needing judgement.
+/// - **It reads the envelope, never the body.** The body is where an injection
+///   lives, and a pre-filter that parsed it would be a second place prose gets
+///   interpreted — with none of the classifier's quarantine around it.
+/// - **`List-Unsubscribe` is not enough on its own.** It finds marketing,
+///   which is obliged to offer an unsubscribe, and misses institutional and
+///   transactional senders, which are not obliged and do not. That is why the
+///   second rule exists, and it is worth roughly as much as the first.
+pub fn prefilter(t: &ThreadInput, bulk: bool) -> Option<(Verdict, PrefilterRule)> {
+    let rule = if bulk {
+        PrefilterRule::Bulk
+    } else {
+        let from = t.from.to_ascii_lowercase();
+        let name = t.from_name.to_ascii_lowercase();
+        AUTOMATED_MARKERS
+            .iter()
+            .any(|m| from.contains(m) || name.contains(m))
+            .then_some(PrefilterRule::AutomatedSender)?
+    };
+    Some((
+        Verdict {
+            reasoning: format!(
+                "Disposed without a model: {}. No body was read.",
+                match rule {
+                    PrefilterRule::Bulk => "the message carries a List-Unsubscribe header",
+                    PrefilterRule::AutomatedSender => "the sender is an automated address",
+                }
+            ),
+            bucket: Bucket::Ignore,
+            urgency: Urgency::None,
+            // The store's own rule: a list a human cannot recognise a thread
+            // in is not a list. A pre-filtered thread still appears in
+            // `mecha mail list`, so it needs a line as much as any other.
+            one_line: match rule {
+                PrefilterRule::Bulk => "Bulk mail — carries an unsubscribe link.".into(),
+                PrefilterRule::AutomatedSender => "Automated message from a system address.".into(),
+            },
+            tags: Vec::new(),
+            proposed: Proposed::Archive,
+            deadline: None,
+            request_type: None,
+        },
+        rule,
+    ))
+}
+
 /// The tag vocabulary. Closed, and small on purpose.
 pub const TAGS: &[&str] = &[
     "expense",
@@ -956,6 +1065,102 @@ mod tests {
             assert_eq!(v.proposed, want, "{raw} round-trips");
             assert_eq!(v.proposed.as_str(), raw);
         }
+    }
+
+    fn ti(from: &str, name: &str, subject: &str) -> ThreadInput {
+        ThreadInput {
+            thread_id: "t".into(),
+            account: "a".into(),
+            from: from.into(),
+            from_name: name.into(),
+            subject: subject.into(),
+            date: "2026-08-19T00:00:00Z".into(),
+            body: "body".into(),
+        }
+    }
+
+    /// The pre-filter disposes of about half a real mailbox with no model
+    /// call. These pin the three properties that keep it safe rather than
+    /// merely cheap.
+    #[test]
+    fn the_prefilter_only_ever_says_ignore_and_only_from_the_envelope() {
+        // Rule 1: the header. Nothing about the sender matters.
+        let (v, r) = prefilter(&ti("a.person@example.edu", "A Person", "Newsletter"), true)
+            .expect("List-Unsubscribe is decisive on its own");
+        assert_eq!(r, PrefilterRule::Bulk);
+        assert_eq!(v.bucket, Bucket::Ignore);
+        assert_eq!(v.proposed, Proposed::Archive);
+
+        // Rule 2: the sender, when the header is absent — which is the case
+        // List-Unsubscribe misses, and it is worth as much as rule 1.
+        for (from, name) in [
+            ("no-reply@service.example", "Service"),
+            ("noreply@dept.example.edu", "Dept"),
+            ("bounces@list.example", "List"),
+            ("x@example.com", "GitHub Notifications"),
+        ] {
+            let (v, r) = prefilter(&ti(from, name, "Anything"), false)
+                .unwrap_or_else(|| panic!("{from} / {name} should match"));
+            assert_eq!(r, PrefilterRule::AutomatedSender);
+            assert_eq!(v.bucket, Bucket::Ignore);
+        }
+
+        // **A person is never pre-filtered**, however routine the subject
+        // looks. This is the whole risk of the rule, so it is the assertion
+        // that matters most.
+        for (from, name, subj) in [
+            (
+                "student@dartmouth.edu",
+                "A Student",
+                "Question about prereqs",
+            ),
+            (
+                "editor@journal.example",
+                "An Editor",
+                "Invitation to review",
+            ),
+            (
+                "colleague@uni.example",
+                "A Colleague",
+                "Re: shipment tracking",
+            ),
+            (
+                "chair@dept.example.edu",
+                "The Chair",
+                "Automated systems seminar",
+            ),
+        ] {
+            assert!(
+                prefilter(&ti(from, name, subj), false).is_none(),
+                "{from} must reach the classifier"
+            );
+        }
+
+        // Every pre-filtered thread still has a line a person can recognise
+        // it by, because it appears in the same list as everything else.
+        let (v, _) = prefilter(&ti("noreply@x.example", "", "s"), false).unwrap();
+        assert!(!v.one_line.is_empty());
+        assert!(v.tags.is_empty() && v.request_type.is_none());
+    }
+
+    /// The subject is never consulted, and neither is the body. A rule that
+    /// read prose would be a second place a stranger's text gets interpreted,
+    /// outside the classifier's quarantine — and it would be trivially evaded
+    /// by writing "unsubscribe" into a real email.
+    #[test]
+    fn the_prefilter_cannot_be_talked_into_a_verdict_by_content() {
+        let hostile = ti(
+            "attacker@example.com",
+            "A Person",
+            "no-reply automated notification unsubscribe listserv",
+        );
+        assert!(
+            prefilter(&hostile, false).is_none(),
+            "markers in the subject must not fire the rule"
+        );
+        let mut with_body = hostile.clone();
+        with_body.body = "no-reply noreply automated bounce listserv".into();
+        assert!(prefilter(&with_body, false).is_none(), "nor in the body");
     }
 
     /// The vocabulary is measured, not proposed

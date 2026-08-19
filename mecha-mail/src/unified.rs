@@ -688,6 +688,12 @@ fn render_rows(mut rows: Vec<(Provider, String, Email)>) -> String {
                 "snippet": e.snippet,
                 "unread": !e.is_read,
                 "has_attachments": e.has_attachments,
+                // The deterministic bulk signal, surfaced so the triage
+                // pre-filter can dispose of a thread without a model call.
+                // A property of the message rather than a judgement about it,
+                // which is why it rides on the row rather than being inferred
+                // downstream from the sender.
+                "bulk": e.list_unsubscribe.is_some(),
             })
         })
         .collect();

@@ -26,8 +26,16 @@ const GRAPH: &str = "https://graph.microsoft.com/v1.0";
 
 /// The fields worth asking for. Graph returns everything by default, which is
 /// a lot of bytes per message.
+/// `internetMessageHeaders` is here for one header — `List-Unsubscribe`, which
+/// is the deterministic bulk-mail signal the triage pre-filter keys on. Graph
+/// exposes no bulk flag of its own, and without the header selected the field
+/// parses as `None` for every message: the pre-filter would then hold for Gmail
+/// and silently never fire for Outlook, which is the account the nightly
+/// actually runs on. A rule that is inert on the mailbox it was written for is
+/// worse than no rule, because the config reads as though it were working.
 const SELECT: &str = "id,conversationId,internetMessageId,subject,bodyPreview,body,from,\
-toRecipients,ccRecipients,bccRecipients,receivedDateTime,isRead,hasAttachments,flag";
+toRecipients,ccRecipients,bccRecipients,receivedDateTime,isRead,hasAttachments,flag,\
+internetMessageHeaders";
 
 #[derive(Clone)]
 pub struct OutlookProvider {
