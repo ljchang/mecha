@@ -166,6 +166,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 total.add(&outcome.usage);
                 if let Some(s) = &session {
                     s.record_run(&recorded, &convo)?;
+                    // How the run went, beside what it said. An interactive
+                    // run used to record less than a trigger did.
+                    s.record_outcome(&outcome)?;
                     // Persist what the conversation now knows, or resuming it
                     // launders the taint exactly as a turn boundary used to.
                     s.append(&Record::Taint(convo.taint))?;

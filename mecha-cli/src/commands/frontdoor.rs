@@ -473,6 +473,7 @@ async fn triage(
             continue;
         }
         let outcome = outcome.expect("checked above");
+        session.record_outcome(&outcome)?;
 
         // A run that stopped early did not decide anything, and `Ok` is what
         // cancellation looks like — so without this, Ctrl-C during triage reads

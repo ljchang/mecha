@@ -706,6 +706,11 @@ impl State {
             // Recorded whether it succeeded or not: a failed run is exactly
             // the transcript someone wants afterwards.
             let _ = session_for_task.record_run(&before, &conversation);
+            // Only on success: an errored run has no outcome to describe, and
+            // the transcript above is the part worth keeping either way.
+            if let Ok(o) = &outcome {
+                let _ = session_for_task.record_outcome(o);
+            }
 
             let _ = completion_tx
                 .send(Completion {
