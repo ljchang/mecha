@@ -762,6 +762,27 @@ impl TriageStore {
         self.get(account, thread_id).is_some()
     }
 
+    /// Whether a sweep should classify this thread.
+    ///
+    /// **A failed record is not an answer, and treating it as one buries
+    /// mail.** `is_known` is true for every record the store holds, failures
+    /// included, so a sweep filtering on it skips exactly the threads whose
+    /// classification never happened. On 2026-08-19 the local model server was
+    /// down for a night and 17 threads recorded `failed` — among them a
+    /// manuscript review invitation, which is the category with the lowest
+    /// reply rate and the hardest deadlines. Every later sweep would have
+    /// skipped all 17 forever, because the store had *heard of* them.
+    ///
+    /// A transient outage must not be permanent. `dismissed` is excluded
+    /// because that is a person's decision rather than an accident, and
+    /// `classified` because it is done.
+    pub fn needs_classifying(&self, account: &str, thread_id: &str) -> bool {
+        match self.get(account, thread_id) {
+            None => true,
+            Some(r) => r.state == FAILED,
+        }
+    }
+
     pub fn put(&self, rec: &Record) -> Result<()> {
         let path = self.root.join(rec.file_name());
         let tmp = path.with_extension("json.tmp");
@@ -1330,6 +1351,33 @@ mod tests {
             None,
             "a sample with no replies can produce no error rate, not a rate of zero"
         );
+    }
+
+    /// A failed classification must be retried; anything else must not.
+    /// Fails on `is_known`, which is the call this replaced.
+    #[test]
+    fn a_failed_record_is_retried_and_a_decided_one_is_not() {
+        let store = temp_store("needs-classifying");
+        for (id, state) in [("f", FAILED), ("c", CLASSIFIED), ("d", DISMISSED)] {
+            let mut r = rec("a", id, Bucket::Ignore);
+            r.state = state.into();
+            store.put(&r).unwrap();
+        }
+        assert!(
+            store.needs_classifying("a", "f"),
+            "a transient failure must not be permanent"
+        );
+        assert!(!store.needs_classifying("a", "c"));
+        assert!(
+            !store.needs_classifying("a", "d"),
+            "dismissal is a person's decision, not an accident"
+        );
+        assert!(store.needs_classifying("a", "never-seen"));
+
+        // The old filter could not tell any of these apart, which is the bug.
+        for id in ["f", "c", "d"] {
+            assert!(store.is_known("a", id));
+        }
     }
 
     /// The vocabulary is measured, not proposed
