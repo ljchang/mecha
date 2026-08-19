@@ -7,7 +7,7 @@ use clap::Parser;
 use mecha_mail::accounts::{self, AccountEntry, Provider};
 use mecha_mail::freebusy::{classify_partial, PartialCoverage};
 use mecha_mail::unified::MailTools;
-use mecha_mail::{google, mcp, microsoft, token};
+use mecha_mail::{google, mcp, microsoft, token, types};
 
 /// The exit code for a **permanent** credential failure — a refresh token the
 /// provider says is expired or revoked, which no retry ever fixes. Distinct
@@ -57,6 +57,19 @@ enum Command {
         /// Loopback port for the Google OAuth redirect.
         #[arg(long, default_value_t = google::auth::DEFAULT_REDIRECT_PORT)]
         port: u16,
+    },
+    /// Download a span of mail for analysis — envelope and preview only.
+    ///
+    /// An operator command, deliberately not an MCP tool: the model has no
+    /// business bulk-reading a year of mail, and a corpus verb on the tool
+    /// surface would be one prompt away from being asked to.
+    Corpus {
+        /// Fetch mail received on or after this date, `YYYY-MM-DD`.
+        #[arg(long)]
+        since: String,
+        /// One account. Omit to sweep every configured account.
+        #[arg(long)]
+        account: Option<String>,
     },
     /// Copy an existing mecha-google / mecha-outlook login into the registry.
     Import {
@@ -155,6 +168,7 @@ async fn run(cli: Cli) -> Result<()> {
             tenant,
             port,
         }) => auth(name, provider, client_id, client_secret, tenant, port).await,
+        Some(Command::Corpus { since, account }) => corpus(&since, account.as_deref()).await,
         Some(Command::Import { name, provider }) => import(name, provider),
         Some(Command::Accounts) => list_accounts(),
         Some(Command::Default { name }) => set_default(name),
@@ -574,6 +588,157 @@ async fn freebusy(
         }
     }
     Ok(())
+}
+
+/// Where a downloaded corpus lives: `~/.mecha/mail-corpus/<account>.jsonl`.
+///
+/// Its own root rather than the triage store or `~/.mecha/work/`. Not the
+/// triage store, because a year of mail would drown the queue that store
+/// exists to *be*. Not `work/`, because retention sweeps that and a corpus
+/// is the one mail artefact meant to persist and be re-analysed.
+///
+/// JSONL rather than one file per thread: this is a bulk analytical dataset,
+/// not a queue, and twenty thousand small files is a directory nobody can
+/// open.
+fn corpus_dir() -> Result<std::path::PathBuf> {
+    let dir = accounts::file_path()?
+        .parent()
+        .context("accounts.toml has no parent")?
+        .parent()
+        .context("mail dir has no parent")?
+        .join("mail-corpus");
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(dir)
+}
+
+/// Download mail for analysis.
+///
+/// **Deliberately unclassified.** The point of a corpus is to find out what
+/// kinds of mail actually arrive, and running it through the current
+/// classifier would project the existing eight tags onto it and confirm them
+/// by construction — every message would get a label and we would learn
+/// nothing about whether those are the right labels. The taxonomy has to come
+/// from looking at the mail, so what is stored is what arrived.
+async fn corpus(since: &str, account: Option<&str>) -> Result<()> {
+    let since_ts = format!("{since}T00:00:00Z");
+    let tools = MailTools::load()?;
+    let wanted: Vec<&mecha_mail::unified::Account> = tools
+        .accounts()
+        .iter()
+        .filter(|a| account.is_none_or(|n| a.name == n))
+        .collect();
+    if wanted.is_empty() {
+        bail!("no matching account; `mecha-mail accounts` lists them");
+    }
+
+    for entry in wanted {
+        let out_path = corpus_dir()?.join(format!("{}.jsonl", entry.name));
+        let mut out = std::io::BufWriter::new(std::fs::File::create(&out_path)?);
+        eprintln!(
+            "{} ({}) → {}",
+            entry.name,
+            entry.provider,
+            out_path.display()
+        );
+
+        let mut written = 0usize;
+        match entry.provider {
+            Provider::Outlook => {
+                let token = entry.manager.access_token().await?;
+                let provider = microsoft::graph_mail::OutlookProvider::new(token);
+                let mut seen = 0usize;
+                written = provider
+                    .page_since(&since_ts, |batch| {
+                        write_corpus_batch(&mut out, &entry.name, batch).map_err(|e| {
+                            types::MailError::ParseError(format!("writing the corpus: {e}"))
+                        })?;
+                        seen += batch.len();
+                        eprint!("\r  {seen} messages");
+                        Ok(())
+                    })
+                    .await?;
+            }
+            Provider::Google => {
+                // Gmail's search already paginates, so the corpus walks it a
+                // month at a time: bounded memory, honest progress, and no
+                // second pagination implementation to keep correct.
+                let token = entry.manager.access_token().await?;
+                let provider = google::gmail::GmailProvider::new(token);
+                for (from, to) in month_windows(since)? {
+                    let q = format!("after:{from} before:{to}");
+                    let batch = provider.search(&q, 500).await.unwrap_or_default();
+                    written += batch.len();
+                    write_corpus_batch(&mut out, &entry.name, &batch)?;
+                    eprint!("\r  {from} → {written} messages");
+                }
+            }
+        }
+        use std::io::Write as _;
+        out.flush()?;
+        eprintln!("\r  {written} messages written        ");
+    }
+    Ok(())
+}
+
+/// One JSON object per message. `list_unsubscribe` rides along because it is
+/// the deterministic bulk-mail signal, and any analysis wants to separate
+/// "mail a person sent me" from "mail a system sent everyone" before counting
+/// anything.
+fn write_corpus_batch(
+    out: &mut impl std::io::Write,
+    account: &str,
+    batch: &[types::Email],
+) -> Result<()> {
+    for e in batch {
+        let row = serde_json::json!({
+            "account": account,
+            "thread_id": e.thread_id,
+            "message_id": e.id,
+            "date": e.date_received,
+            "from": e.from_address,
+            "from_name": e.from_name,
+            "to": e.to_addresses,
+            "cc": e.cc_addresses,
+            "subject": e.subject,
+            "snippet": e.snippet,
+            "is_read": e.is_read,
+            "has_attachments": e.has_attachments,
+            "bulk": e.list_unsubscribe.is_some(),
+        });
+        writeln!(out, "{row}")?;
+    }
+    Ok(())
+}
+
+/// `YYYY/MM/DD` window pairs from `since` to today, one per month — Gmail's
+/// `after:`/`before:` take that format.
+fn month_windows(since: &str) -> Result<Vec<(String, String)>> {
+    use chrono::Datelike as _;
+    let start = chrono::NaiveDate::parse_from_str(since, "%Y-%m-%d")
+        .context("--since must be YYYY-MM-DD")?;
+    let today = chrono::Utc::now().date_naive();
+    let mut out = Vec::new();
+    let mut cur = start;
+    while cur < today {
+        let next = if cur.month() == 12 {
+            chrono::NaiveDate::from_ymd_opt(cur.year() + 1, 1, 1)
+        } else {
+            chrono::NaiveDate::from_ymd_opt(cur.year(), cur.month() + 1, 1)
+        }
+        .context("date overflow")?;
+        let end = next.min(today + chrono::Duration::days(1));
+        out.push((
+            cur.format("%Y/%m/%d").to_string(),
+            end.format("%Y/%m/%d").to_string(),
+        ));
+        cur = next;
+    }
+    Ok(out)
 }
 
 /// Load the registry, or start an empty one — `auth` and `import` are how
