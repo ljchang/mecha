@@ -53,6 +53,7 @@ pub mod compact;
 pub mod config;
 pub mod counterfactual;
 pub mod cron;
+pub mod diagnose;
 pub mod distill;
 pub mod doctor;
 pub mod eval;

@@ -69,6 +69,7 @@ session.rs   append-only JSONL transcripts; a rewrite record when compaction edi
              and a `RunStats` outcome record per run — how it went, beside what it said
 runlog.rs    the run-quality corpus: every recorded outcome, read back across sessions
 candidate.rs a proposed harness change, its falsifiable prediction, and the gate
+diagnose.rs  the one place a model authors a change: counters in, a typed candidate out
 replay.rs    re-run a transcript against its recorded tool results
 replay_run.rs  the driver behind that, shared with the validation probes
 work.rs      ~/.mecha/work/<producer>/ — a run's workspace, and its retention
@@ -1126,6 +1127,46 @@ prediction that was made *before* either was measured.
   scored. The standing recommendation is that `Security` is never proposed at
   all — a loop that can argue for widening its own confinement will eventually
   argue well, and the metric will agree with it.
+
+### The diagnostic stage
+
+`detect` finds that something is wrong and the gate decides whether a fix
+helped; neither authors the fix. That step is an inference, so `diagnose.rs`
+is where a model belongs — and the only place in this loop it does.
+
+**A model is safe here because being wrong is cheap.** Automated failure
+attribution measures at 53.5% for naming the responsible agent and **14.2%**
+for pinpointing the failing step, some methods below random (Who&When). A
+diagnostician will usually be wrong. Every proposal therefore carries a
+falsifiable prediction and nothing is accepted until a measurement it did not
+run confirms it, so a bad diagnosis costs one replay. That property does not
+hold at the accept gate, which is why there is no model there.
+
+Two rules are structural rather than instructed:
+
+- **The brief is built from counters, not content.** `Evidence` holds numbers
+  and doctor's findings; there is deliberately no field for a transcript
+  excerpt and no argument that adds one. A counter carries no instructions, so
+  a corpus of them cannot be an injection surface the way tool output would
+  be. `frontdoor::Record::for_privileged_run` in a second setting — the safety
+  property is a function signature, not a rule someone remembers.
+- **The proposal never quotes its evidence.** The diagnostician may read the
+  source, these documents and the web; `carries_over` rejects a proposal that
+  reproduces eight consecutive words from anything it read. An instruction
+  lifted from a page cannot survive that; a conclusion drawn from one can.
+  Eight because shorter runs collide on ordinary technical prose, and a check
+  that fires on honest proposals gets turned off and protects nothing.
+
+Smaller things with tests on them: declining to propose is a legitimate answer
+and is never coerced into a change (a diagnostician that always proposes is
+optimizing for proposal frequency, a named failure mode); a block missing its
+class or metric parses as *nothing*, because a proposal that cannot be
+falsified must not enter the gate; the last block wins when a model
+reconsiders mid-answer; and a rate with no denominator reaches the model as
+`unknown`, never as zero — one told "0%" reads a stopped component as a
+healthy one. Reasoning comes first and the typed fields last, on the front
+door's finding that constrained output degrades reasoning when the answer
+precedes the thinking.
 
 The corpus is the sensor `docs/SELF-IMPROVEMENT-RESEARCH.md` is built around:
 rumination's only input is a human stepping in, so a harness problem produces
