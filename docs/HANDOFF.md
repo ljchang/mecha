@@ -96,9 +96,17 @@ cargo test --workspace && cargo clippy --all-targets --all-features
 Expect **936 tests**, no failures — re-measured 2026-08-18 on `main`
 after the mail-triage and documents work merged (16 commits unpushed). The growth from 707 (2026-08-10) spans
 the 0.1.3–0.1.6 arcs; each
-release's CHANGELOG entry names what its tests pin. One flake was seen once
-in `mecha-core` on 2026-08-08 and never reproduced — unidentified, worth an
-eye.
+release's CHANGELOG entry names what its tests pin. **A flake has now been seen twice and is still unidentified.** Once in
+`mecha-core` on 2026-08-08, and again on 2026-08-19 (`cargo test --workspace`
+reported `506 passed; 1 failed` in the `mecha-core` lib suite, then four
+consecutive clean runs of the same suite and the whole workspace). The failing
+test's *name* was not captured either time, which is the thing to fix next
+sighting: run the suite so the `failures:` block survives, rather than grepping
+for a summary line. Two sightings eleven days apart in the same crate is a
+pattern forming, not noise to keep ignoring — the likeliest suspects are the
+tests that share process-global state (`MECHA_HOME`, which the trigger and work
+tests set behind a lock) or the `temp_store` helpers keyed on pid plus thread
+id.
 
 | Suite | Count |
 |---|---:|
