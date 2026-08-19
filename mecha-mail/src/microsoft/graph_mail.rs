@@ -101,6 +101,72 @@ impl OutlookProvider {
             .unwrap_or_default())
     }
 
+    /// Walk the whole mailbox backwards in time, newest first, stopping once
+    /// messages are older than `since` (RFC 3339).
+    ///
+    /// This is the corpus path, and it is a different shape from
+    /// [`Self::search`] for two reasons Graph forces. `search` caps at 100 with
+    /// no cursor at all, so it cannot reach a year; and `$search` forbids
+    /// `$orderby`, so it cannot walk time in order. What works is `$orderby`
+    /// **alone** — no `$filter` beside it, the same constraint `recent`
+    /// documents — plus following `@odata.nextLink`, which
+    /// `graph_calendar.rs` already does for `calendarView`.
+    ///
+    /// `/me/messages` rather than `/me/mailFolders/inbox/messages`: a corpus
+    /// wants filed and sent mail too. Sent is the load-bearing part — whether
+    /// a thread ever got a reply is only answerable if the replies are in the
+    /// data, and "which requests did I never answer" is the question this
+    /// corpus exists to ask.
+    ///
+    /// Envelope and preview only, never bodies. A year of full bodies is a
+    /// second copy of the mailbox for an analysis that does not need one, and
+    /// the bodies of any thread that turns out to matter can be fetched by id
+    /// afterwards.
+    ///
+    /// `on_batch` is called per page so the caller can stream to disk instead
+    /// of holding a year of mail in memory.
+    pub async fn page_since<F>(&self, since: &str, mut on_batch: F) -> Result<usize, MailError>
+    where
+        F: FnMut(&[Email]) -> Result<(), MailError>,
+    {
+        const CORPUS_SELECT: &str = "id,conversationId,subject,bodyPreview,from,toRecipients,\
+ccRecipients,receivedDateTime,isRead,hasAttachments,internetMessageHeaders";
+        let mut url = format!(
+            "{GRAPH}/me/messages?$top=100&$select={CORPUS_SELECT}&$orderby=receivedDateTime%20desc"
+        );
+        let mut total = 0usize;
+        loop {
+            let json = self.get_json(&url).await?;
+            let page: Vec<Email> = json["value"]
+                .as_array()
+                .map(|arr| arr.iter().map(parse_outlook_message).collect())
+                .unwrap_or_default();
+            if page.is_empty() {
+                break;
+            }
+            // Newest first, so the first message older than the cutoff ends
+            // the walk — everything after it is older still.
+            let keep: Vec<Email> = page
+                .iter()
+                .take_while(|e| e.date_received.as_str() >= since)
+                .cloned()
+                .collect();
+            let reached_cutoff = keep.len() < page.len();
+            if !keep.is_empty() {
+                total += keep.len();
+                on_batch(&keep)?;
+            }
+            if reached_cutoff {
+                break;
+            }
+            match json["@odata.nextLink"].as_str() {
+                Some(next) => url = next.to_string(),
+                None => break,
+            }
+        }
+        Ok(total)
+    }
+
     pub async fn get_message(&self, message_id: &str) -> Result<Email, MailError> {
         let url = format!(
             "{GRAPH}/me/messages/{}?$select={SELECT}",

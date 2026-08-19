@@ -50,6 +50,13 @@ pub struct MailTools {
 }
 
 impl MailTools {
+    /// The configured accounts, for operator commands that work per mailbox
+    /// rather than through the tool surface — `mecha-mail corpus` is the one
+    /// today. Read-only: nothing outside this module builds an `Account`.
+    pub fn accounts(&self) -> &[Account] {
+        &self.accounts
+    }
+
     /// Load every configured account. A configured account whose credentials
     /// cannot load fails startup with the fix named — a server that silently
     /// served fewer mailboxes than configured would read as "no mail there".
