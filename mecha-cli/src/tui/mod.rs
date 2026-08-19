@@ -811,6 +811,7 @@ fn finish_run(
                 // state. The opening user message was written when it was
                 // submitted.
                 s.record_run(&persisted, &app.convo)?;
+                s.record_outcome(&outcome)?;
                 s.append(&Record::Taint(app.convo.taint))?;
             }
         }

@@ -23,6 +23,22 @@ pub enum Record {
         usage: Usage,
         turns: u32,
     },
+    /// How the run went, as distinct from what it said.
+    ///
+    /// [`Summary`] answers "what did this cost"; this answers "did it work".
+    /// The distinction earns a second record because the audience is
+    /// different: cost is for a person reading `sessions show`, and this is
+    /// for a machine reading many sessions at once — the sensor a
+    /// harness-improvement loop needs and did not have.
+    ///
+    /// The gap it closes is that [`crate::agent::RunOutcome`] carries fifteen
+    /// fields and the transcript kept two of them, so every chat, TUI and
+    /// Slack run was *less* observable than a trigger, whose ledger recorded
+    /// the rest. The signal was already computed; it was thrown away at the
+    /// end of every interactive run.
+    ///
+    /// [`Summary`]: Record::Summary
+    Outcome(RunStats),
     /// Everything that shaped the request, written each time a process
     /// attaches to the session — on creation and again on every resume.
     ///
@@ -185,6 +201,90 @@ impl RunConfig {
     }
 }
 
+/// How a run went, in numbers a machine can compare across sessions.
+///
+/// Every field is a deterministic count taken from
+/// [`crate::agent::RunOutcome`] — nothing here is a model's opinion, and
+/// nothing is derived from the *content* of a tool result. That is the
+/// property that lets this be an input to automated grading: a counter
+/// carries no instructions, so a corpus of these cannot be an injection
+/// surface the way a corpus of transcript excerpts would be.
+///
+/// Every field defaults, so a session written before this record existed
+/// loads, and a field added later does not invalidate the ones already
+/// recorded.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RunStats {
+    #[serde(default)]
+    pub turns: u32,
+    #[serde(default)]
+    pub usage: Usage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// False when `usage` is a lower bound rather than a measurement.
+    #[serde(default)]
+    pub usage_complete: bool,
+    /// Why the loop stopped. The single most informative field here: it
+    /// separates "the model decided it was done" from every way the harness
+    /// cut it short, and none of that is visible in the answer text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_cause: Option<crate::agent::StopCause>,
+    #[serde(default)]
+    pub exhausted: bool,
+    /// The model stopped of its own accord with its last call failed.
+    #[serde(default)]
+    pub ended_on_failed_call: bool,
+    /// Tool calls attempted, and how they went. `errors` counts the
+    /// environment refusing (including a call to a tool that does not exist);
+    /// `denied` counts a human or a policy refusing, which is the harness
+    /// working and must not be averaged in with failure.
+    #[serde(default)]
+    pub tool_calls: u32,
+    #[serde(default)]
+    pub tool_errors: u32,
+    #[serde(default)]
+    pub tool_denied: u32,
+    #[serde(default)]
+    pub tool_staged: u32,
+    #[serde(default)]
+    pub malformed_tool_args: u32,
+    #[serde(default)]
+    pub blocked_sends: u32,
+    #[serde(default)]
+    pub compactions: u32,
+    /// What had entered the conversation by the end. Recorded here as well as
+    /// in [`Record::Taint`] because this record is read on its own, by a
+    /// reader that is counting rather than reconstructing.
+    #[serde(default)]
+    pub taint: Taint,
+}
+
+impl From<&crate::agent::RunOutcome> for RunStats {
+    fn from(o: &crate::agent::RunOutcome) -> Self {
+        RunStats {
+            turns: o.turns,
+            usage: o.usage.clone(),
+            cost_usd: o.cost_usd,
+            usage_complete: o.usage_complete,
+            stop_cause: Some(o.stop_cause),
+            exhausted: o.exhausted,
+            ended_on_failed_call: o.ended_on_failed_call,
+            tool_calls: o.tool_calls.len() as u32,
+            tool_errors: o
+                .tool_calls
+                .iter()
+                .filter(|c| c.is_error || c.unknown)
+                .count() as u32,
+            tool_denied: o.tool_calls.iter().filter(|c| c.denied).count() as u32,
+            tool_staged: o.tool_calls.iter().filter(|c| c.staged).count() as u32,
+            malformed_tool_args: o.malformed_tool_args,
+            blocked_sends: o.blocked_sends,
+            compactions: o.compactions,
+            taint: o.taint,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMeta {
     pub id: String,
@@ -274,6 +374,39 @@ impl Session {
         self.record_transition(prev, &convo.messages)
     }
 
+    /// Record how the run went, beside what it said.
+    ///
+    /// Separate from [`record_run`] rather than folded into it, because the
+    /// two answer to different failures: a run that errored mid-flight still
+    /// has messages worth keeping and no outcome to describe, and a caller
+    /// that has an outcome always has it *after* the transcript is safe.
+    /// Deliberately takes the whole outcome rather than the fields, so a new
+    /// counter reaches every front-end by upgrading rather than by
+    /// remembering to thread it through six call sites.
+    ///
+    /// [`record_run`]: Session::record_run
+    pub fn record_outcome(&self, outcome: &crate::agent::RunOutcome) -> Result<()> {
+        self.append(&Record::Outcome(RunStats::from(outcome)))
+    }
+
+    /// Every outcome recorded in a transcript, in order.
+    ///
+    /// One per run, so a resumed session has several. Malformed lines are
+    /// skipped rather than fatal, like every other reader here: a torn line
+    /// is the store's problem and must not cost the rows around it.
+    pub fn outcomes(path: &Path) -> Result<Vec<RunStats>> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        Ok(text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| match serde_json::from_str(l) {
+                Ok(Record::Outcome(s)) => Some(s),
+                _ => None,
+            })
+            .collect())
+    }
+
     /// One before→after step. When the run only appended, the new tail is
     /// appended here too. When it rewrote what was already recorded —
     /// compaction, eviction, thinning, all of which edit earlier messages in
@@ -317,7 +450,7 @@ impl Session {
                 // Merged rather than replaced: taint only ever grows, and a
                 // transcript written by an older build has none at all.
                 Ok(Record::Taint(t)) => taint.merge(t),
-                Ok(Record::Summary { .. }) | Ok(Record::Config(_)) => {}
+                Ok(Record::Summary { .. }) | Ok(Record::Config(_)) | Ok(Record::Outcome(_)) => {}
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
         }
@@ -933,6 +1066,92 @@ mod tests {
         assert_eq!(peeked.model, loaded.model);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_outcome_record_survives_a_round_trip_and_does_not_disturb_the_transcript() {
+        use crate::agent::{RunOutcome, StopCause, ToolCallTrace};
+        use crate::message::StopReason;
+
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-outcome")).unwrap();
+        session
+            .append_messages(&[Message::user("go"), Message::assistant(vec![])])
+            .unwrap();
+
+        let call = |is_error: bool, denied: bool, unknown: bool, staged: bool| ToolCallTrace {
+            name: "fs_edit".into(),
+            input: serde_json::json!({}),
+            is_error,
+            denied,
+            unknown,
+            staged,
+        };
+        let outcome = RunOutcome {
+            text: "done".into(),
+            stop_reason: StopReason::EndTurn,
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 4,
+                ..Usage::default()
+            },
+            turns: 3,
+            refusal: None,
+            exhausted: false,
+            ended_on_failed_call: true,
+            tool_calls: vec![
+                call(true, false, false, false),
+                call(false, false, true, false),
+                call(false, true, false, false),
+                call(false, false, false, true),
+            ],
+            malformed_tool_args: 1,
+            blocked_sends: 2,
+            taint: Taint {
+                private: true,
+                untrusted: false,
+            },
+            stop_cause: StopCause::Completed,
+            compactions: 4,
+            cost_usd: Some(0.5),
+            usage_complete: true,
+        };
+        session.record_outcome(&outcome).unwrap();
+
+        let stats = Session::outcomes(&session.path).unwrap();
+        assert_eq!(stats.len(), 1);
+        let got = &stats[0];
+        assert_eq!(got.turns, 3);
+        assert_eq!(got.stop_cause, Some(StopCause::Completed));
+        assert!(got.ended_on_failed_call);
+        assert_eq!(got.tool_calls, 4);
+        // The environment refusing: the error and the unknown tool. A denial
+        // is the harness working and must never be averaged in with failure.
+        assert_eq!(got.tool_errors, 2);
+        assert_eq!(got.tool_denied, 1);
+        assert_eq!(got.tool_staged, 1);
+        assert_eq!(got.malformed_tool_args, 1);
+        assert_eq!(got.blocked_sends, 2);
+        assert_eq!(got.compactions, 4);
+        assert!(got.taint.private && !got.taint.untrusted);
+
+        // And it is inert to every existing reader: the record is not a
+        // message, so the conversation is unchanged, and `usage_totals`
+        // counts `Summary` records only.
+        let (_, convo) = Session::load(&session.path).unwrap();
+        assert_eq!(convo.messages.len(), 2);
+        assert_eq!(Session::usage_totals(&session.path).unwrap().1, 0);
+    }
+
+    #[test]
+    fn a_transcript_with_no_outcome_records_reads_as_empty_not_as_an_error() {
+        // Sessions written before this record existed, and runs that died
+        // before producing an outcome. Unknown is not zero-with-confidence,
+        // but it must not be a failure either.
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-no-outcome")).unwrap();
+        session.append_messages(&[Message::user("go")]).unwrap();
+        assert!(Session::outcomes(&session.path).unwrap().is_empty());
     }
 
     #[test]

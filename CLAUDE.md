@@ -65,7 +65,8 @@ frontdoor.rs inbound requests from strangers, and the quarantine over them
 learning.rs  the reflection/rule store behind reflect, learn, validate
 counterfactual.rs  did the rules change the answer at the recorded moment?
 distill.rs   session → episode, staged to the knowledge graph over MCP
-session.rs   append-only JSONL transcripts; a rewrite record when compaction edits history
+session.rs   append-only JSONL transcripts; a rewrite record when compaction edits history,
+             and a `RunStats` outcome record per run — how it went, beside what it said
 replay.rs    re-run a transcript against its recorded tool results
 replay_run.rs  the driver behind that, shared with the validation probes
 work.rs      ~/.mecha/work/<producer>/ — a run's workspace, and its retention

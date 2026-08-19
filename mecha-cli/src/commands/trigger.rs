@@ -976,6 +976,7 @@ async fn run_agent(
         usage: outcome.usage.clone(),
         turns: outcome.turns,
     })?;
+    session.record_outcome(&outcome)?;
 
     record.turns = outcome.turns;
     record.cost_usd = outcome.cost_usd;

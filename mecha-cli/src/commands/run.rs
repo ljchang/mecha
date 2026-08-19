@@ -154,6 +154,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             usage: outcome.usage.clone(),
             turns: outcome.turns,
         })?;
+        s.record_outcome(&outcome)?;
         if let Some(mb) = &prepared.mailbox {
             mb.detach(&s.meta.id);
         }
