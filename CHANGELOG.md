@@ -197,6 +197,26 @@ remedy. Nothing else in this release requires action.
   half of the idea becomes mail's own `needs-info`. Recognising a kind was
   already separate from routing it, which is why nothing else moved.
 
+- **`mecha mail correct`** — say the classifier got a thread wrong, field by
+  field. A misread bucket, a missed deadline and a wrong request kind are
+  different errors with different fixes, so the correction names which. The
+  verdict is fixed in place immediately and the before/after pair is kept on
+  the record, because a learner shown only the right answer cannot see what to
+  stop doing. A correction that agrees with the classifier records nothing.
+
+- **`mecha mail score`** — score the live triage store against what actually
+  happened. Behaviour (did a reply go out) and testimony (what you corrected)
+  are reported apart, because a reply is one-sided evidence and a correction is
+  not. Threads younger than 48 hours are excluded: most replies that ever
+  happen land on the first day, so a same-day thread has no outcome yet and
+  counting it would punish a rule for how recently the mail arrived.
+
+- **`mecha mail eval`** — grade the classifier against a corpus whose outcome
+  is known, with no human grading anything. Reports a false-`ignore` rate on
+  the answered stratum and a volume on the unanswered one, never a blended
+  accuracy; `--out` keeps every graded verdict so a run can be re-read without
+  being re-run.
+
 ### Fixed
 
 - **A retired proposal no longer makes a triage record unreadable.**
@@ -215,6 +235,26 @@ remedy. Nothing else in this release requires action.
   slope is indistinguishable from a finding. The ceiling is now
   high enough to be theoretical, reported on stderr when reached, and errors
   propagate.
+
+
+- **A failed classification is retried instead of buried forever.** The sweep
+  skipped anything the store had heard of, and the store holds failures as well
+  as verdicts — so a thread whose classification failed was skipped by every
+  later sweep on the strength of a record saying it never happened. An outage
+  on 2026-08-19 left 17 threads in that state, one of them a manuscript review
+  invitation.
+
+- **A classify run that did nothing now fails.** It returned success however
+  badly it went, so a run that classified 0 of 16 logged SUCCESS and every
+  exit-code check — `OnFailure=`, `systemctl --failed`, doctor's failed-unit
+  scan — read a dead nightly as healthy. Partial failure stays a success
+  deliberately.
+
+- **A retired learned rule survives a reworded re-derivation.** Retirement was
+  carried by exact text, so the same rule in different spelling or punctuation
+  came back live. It now matches after normalising case, punctuation, spacing
+  and `-ise`/`-ize`, checked only against retired rules so two distinct rules
+  cannot be merged by accident.
 
 ## [0.1.6] - 2026-08-16
 
