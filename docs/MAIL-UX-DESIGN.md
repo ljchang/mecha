@@ -190,8 +190,26 @@ and `mail_search` can say whether an outbound message has gone since. So:
 Four things it must get right, three of them from the caveats the measurement
 carries:
 
-- **It keys on the `respond` bucket, never on silence.** Most unanswered mail
-  correctly needed no reply. A mechanism built on
+- **It keys on the `respond` bucket, never on silence.** Silence is not
+  evidence of anything on its own.
+
+  **But selectivity is not the goal, and assuming it was is a mistake this
+  document made.** The first eval surfaced ~83% of unanswered threads as
+  needing action, which was read here as a possible precision problem. Luke's
+  correction, 2026-08-19: *"there are many emails that I should have responded
+  to — that's why we are trying to build a system to help me with this."* The
+  backlog is real, so a system that filtered it down to look manageable would
+  be hiding the problem rather than solving it.
+
+  What follows is that day two's job is **not to show less, it is to make
+  acting cheaper**. Surfacing seven threads a day with nothing attached is a
+  longer to-do list. Surfacing them with a draft ready to approve is the
+  feature. That is the outbox and an agent run, both of which already exist,
+  and it is what "help me complete tasks and respond with my approval" asked
+  for from the first conversation.
+
+  Ordering therefore matters more than filtering: deadline first, then who is
+  waiting on an answer, then how long it has waited. A mechanism built on
   "no reply yet" nags about FYIs, and a nudge that fires on everything has
   stopped being a nudge — the same failure as a taint warning that fires on
   every draft.
