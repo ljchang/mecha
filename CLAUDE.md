@@ -1151,7 +1151,15 @@ other signal — measured against the trigger's own earlier runs and never an
 absolute floor, or a prompt that legitimately needs no tools would read as the
 broken one, and suppressed when the run also errored, because that already has
 a finding), failed
-`mecha-*` units, and graph nightlies that stopped writing their daily log (cron exec
+`mecha-*` units, graph nightlies that stopped writing their daily log, and the
+population signals in the run-quality corpus — a model finishing a fifth of
+its runs over a failed call, failing a quarter of its tool calls, or having a
+quarter of its runs cut short by a ceiling (thresholds deliberately **high**,
+because rule-based evaluators are measured to under-report success and a
+doctor that cries wolf stops being read; `Interrupted` excluded, since a
+person pressing Ctrl-C is the system working and counting it would make an
+attentive user look like a problem; per model with a 20-run floor, since a
+blend across models describes neither and names the wrong one) (cron exec
 failures die before the script's own logging starts, and cron mails the
 error to an MTA that isn't there — 2026-08-17's missing execute bit). It exists because of 2026-08-11: a revoked OAuth token took scheduling
 down for three days while five stores each recorded the distress correctly
