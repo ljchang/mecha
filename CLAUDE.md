@@ -68,6 +68,7 @@ distill.rs   session → episode, staged to the knowledge graph over MCP
 session.rs   append-only JSONL transcripts; a rewrite record when compaction edits history,
              and a `RunStats` outcome record per run — how it went, beside what it said
 runlog.rs    the run-quality corpus: every recorded outcome, read back across sessions
+candidate.rs a proposed harness change, its falsifiable prediction, and the gate
 replay.rs    re-run a transcript against its recorded tool results
 replay_run.rs  the driver behind that, shared with the validation probes
 work.rs      ~/.mecha/work/<producer>/ — a run's workspace, and its retention
@@ -1072,6 +1073,48 @@ The design decisions, each of which is a bug if undone:
 - **The module counts and never judges.** Thresholds live with the reader that
   acts on them, because what counts as a bad rate depends on what the run was
   for.
+
+### The gate
+
+`candidate.rs` decides what happens to a proposed change, and it is **pure**
+for the same reason `compact.rs` is: getting it wrong is silent — a rule that
+scores well ships and rides in every future prompt — so it is unit-tested
+rather than trialled. It takes two arms' worth of `RunStats` and the
+prediction that was made *before* either was measured.
+
+- **A candidate carries a falsifiable prediction**: the metric it claims to
+  move, and the direction. Without one a proposal cannot be refuted by the
+  next measurement, which is where "harness updating is not harness benefit"
+  comes from. Every `Metric` is phrased as a **cost**, so lower is better
+  everywhere — mixed polarity is how a comparison inverts silently.
+- **Paired by episode, then split.** Episodes differ from each other far more
+  than arms do, so an unpaired comparison measures which episodes landed
+  where. Selection happens on one slice and the winner is confirmed on a
+  holdout it was never chosen on, because picking the best of N on the
+  episodes that justify it is a multiple-comparisons trap that looks *better*
+  the more it overfits. The split is a hash of the episode id, never random: a
+  rerun that resplits is a holdout that means nothing.
+- **The work guardrail outranks the score.** A change that improves its metric
+  while tool calls fall below `WORK_FLOOR` is rejected, not ranked — "fewer
+  errors" is trivially achieved by attempting less, which is the null run and
+  the reward-hacking result (METR: o3 gamed its own scorer on 30.4% of
+  RE-Bench runs). For the same reason a run that made **no calls** is neutral
+  on the error-rate metric rather than perfect.
+- **Thin evidence proposes; it never rejects.** An absence of evidence is not
+  evidence of harm, and the floors are deliberately low because a replay
+  corpus costs a real model run per episode per arm — the holdout does the
+  work a larger sample would.
+- **An episode that ran in only one arm is dropped.** Not a tie and not a
+  loss: scoring it either way lets a candidate that dies on the hard episodes
+  look good on the ones it survived.
+- **Counts, not a significance test.** With a few dozen episodes the noise is
+  the model's sampling rather than the measurement, and the answer to that is
+  repetition (pass^k), not a p-value over one sample. The raw win/loss/tie
+  counts ride on the judgement so a human sees what it was decided from.
+- `Architecture` and `Security` changes reach a person however well they
+  scored. The standing recommendation is that `Security` is never proposed at
+  all — a loop that can argue for widening its own confinement will eventually
+  argue well, and the metric will agree with it.
 
 The corpus is the sensor `docs/SELF-IMPROVEMENT-RESEARCH.md` is built around:
 rumination's only input is a human stepping in, so a harness problem produces
