@@ -1124,22 +1124,19 @@ const ENDED_ON_FAILURE_RATE: f64 = 0.20;
 /// The share of attempted tool calls the environment refuses.
 const TOOL_ERROR_RATE: f64 = 0.25;
 
+/// And below this many *calls* across the window, no rate at all. Runs and
+/// calls are different denominators: twenty runs can hold four calls.
+const RUNS_MIN_CALLS: u64 = 20;
+
 /// The share of runs the *harness* cut short. `Interrupted` is excluded from
 /// the numerator by [`cut_short`]: a person pressing Ctrl-C is the system
 /// working, and counting it would make an attentive user look like a problem.
 const CUT_SHORT_RATE: f64 = 0.25;
 
-/// Did the harness end this run, as distinct from the model finishing or a
-/// person stopping it?
+/// Did the harness end this run? One definition, on [`crate::agent::StopCause`],
+/// shared with the candidate gate's metric — see its doc for why there were two.
 fn cut_short(stats: &crate::session::RunStats) -> bool {
-    use crate::agent::StopCause;
-    matches!(
-        stats.stop_cause,
-        Some(StopCause::MaxTurns)
-            | Some(StopCause::OutputTokenBudget)
-            | Some(StopCause::CostBudget)
-            | Some(StopCause::Loop)
-    )
+    stats.stop_cause.is_some_and(|c| c.cut_short())
 }
 
 /// Report population-level run quality: the signals that are invisible in any
@@ -1214,7 +1211,11 @@ fn check_runs(sessions: &Path) -> Vec<Finding> {
         }
 
         if let Some(rate) = runs.tool_error_rate() {
-            if rate >= TOOL_ERROR_RATE {
+            // The sibling trigger check states the rule this one omitted: a
+            // rate over three calls is noise. Twenty conversational runs that
+            // made four calls between them must not raise a finding because
+            // one of them errored.
+            if rate >= TOOL_ERROR_RATE && runs.tool_calls() >= RUNS_MIN_CALLS {
                 out.push(Finding {
                     component: "runs".to_string(),
                     severity: Severity::Attention,

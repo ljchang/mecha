@@ -166,7 +166,14 @@ fn apply_override(opts: &mut GlobalOpts, spec: &str) -> Result<()> {
     };
     match key {
         "compact_at_tokens" => opts.compact_at = Some(num("compact_at_tokens")?),
-        "max_turns" => opts.max_turns = Some(num("max_turns")? as u32),
+        "max_turns" => {
+            // `as u32` wraps, and this function's whole job is to be the
+            // closed, validated set of knobs an automated proposer may move.
+            opts.max_turns = Some(
+                u32::try_from(num("max_turns")?)
+                    .with_context(|| format!("max_turns is out of range: `{value}`"))?,
+            )
+        }
         "max_output_tokens" => opts.max_output_tokens = Some(num("max_output_tokens")?),
         "effort" => {
             opts.effort = Some(

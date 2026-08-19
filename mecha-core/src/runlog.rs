@@ -25,7 +25,7 @@
 //! that acts on them. This module counts.
 
 use crate::agent::StopCause;
-use crate::session::{Record, RunStats, Session, SessionMeta};
+use crate::session::{Record, RunStats, Session};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::BTreeMap;
@@ -82,11 +82,23 @@ impl Corpus {
                 break;
             }
             out.sessions_read += 1;
-            let Ok(stats) = Session::outcomes(&path) else {
+            // Attributed rather than taken from the header: a mid-session
+            // model switch writes a `Config`, and crediting those runs to the
+            // header's model would defeat `by_model` in the one case where a
+            // corpus genuinely blends two.
+            let Ok(rows) = Session::outcomes_attributed(&path) else {
                 continue;
             };
-            for (i, s) in stats.into_iter().enumerate() {
-                out.rows.push(RunRow::new(&meta, i as u32 + 1, s));
+            for (i, (provider, model, s)) in rows.into_iter().enumerate() {
+                out.rows.push(RunRow {
+                    session_id: meta.id.clone(),
+                    started_at: meta.created_at,
+                    provider,
+                    model,
+                    title: meta.title.clone(),
+                    run: i as u32 + 1,
+                    stats: s,
+                });
             }
         }
         Ok(out)
@@ -196,20 +208,6 @@ impl Corpus {
             bucket.sessions_read = self.sessions_read;
         }
         out
-    }
-}
-
-impl RunRow {
-    fn new(meta: &SessionMeta, run: u32, stats: RunStats) -> RunRow {
-        RunRow {
-            session_id: meta.id.clone(),
-            started_at: meta.created_at,
-            provider: meta.provider.clone(),
-            model: meta.model.clone(),
-            title: meta.title.clone(),
-            run,
-            stats,
-        }
     }
 }
 
@@ -332,6 +330,38 @@ mod tests {
         let causes = corpus.stop_causes();
         assert_eq!(causes[&Some(StopCause::Completed)], 2);
         assert_eq!(causes[&Some(StopCause::MaxTurns)], 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_mid_session_model_switch_attributes_each_run_to_the_model_that_ran_it() {
+        // The TUI can change model mid-session and records a `Config` when it
+        // does. Reading the header instead would credit the second model's
+        // runs to the first — defeating `by_model` in the one case where a
+        // corpus genuinely blends two, and pointing a threshold at the wrong
+        // model.
+        let dir = tmpdir();
+        let s = session_with(
+            &dir,
+            "20260801T000000-switch",
+            "first-model",
+            vec![stats(4, 0, false, StopCause::Completed)],
+        );
+        s.append(&Record::Config(crate::session::RunConfig {
+            provider: "local".into(),
+            model: "second-model".into(),
+            ..Default::default()
+        }))
+        .unwrap();
+        s.append(&Record::Outcome(stats(6, 3, false, StopCause::Completed)))
+            .unwrap();
+
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(corpus.len(), 2);
+        let by_model = corpus.by_model();
+        assert_eq!(by_model["first-model"].tool_error_rate(), Some(0.0));
+        assert_eq!(by_model["second-model"].tool_error_rate(), Some(0.5));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

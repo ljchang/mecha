@@ -1442,11 +1442,20 @@ kinds of check, in descending order of how much they are worth:
   `ended_on_failed_call` grades the silent failure — the model stopped on its
   own with its last call failed and answered as though it had not. It is an
   *observation*, not an error condition, because a case whose right answer is
-  "that file does not exist" should end on a failed call; a denial is excluded
-  (a human or a policy said no, in those words, to someone who can see it), and
-  a run the harness cut short never sets it, or the flag would double-count
-  what `stop_cause` and `exhausted` already say. Only the last call counts:
-  one failure among successes is recovery, which is the model working.
+  "that file does not exist" should end on a failed call; a run the harness cut
+  short never sets it, or the flag would double-count what `stop_cause` and
+  `exhausted` already say. Only the last *executed* call counts: one failure
+  among successes is recovery, which is the model working.
+  **A denied trace carries `is_error: true` as well as `denied: true`**, so
+  every counter that means "the environment refused" must say
+  `unknown || (is_error && !denied)` and never `is_error` alone — otherwise a
+  read-only run reports the approver doing its job as a harness failure, and
+  the rate the candidate gate and doctor threshold on averages in "the harness
+  working". The same flag is why `collapse_repeated_failures` skips results
+  beginning `Denied by the user:` / `Blocked by policy:` / `Blocked by a hook:`:
+  those are the strings the learning miner reads a correction out of, and
+  compaction rewrites the transcript in place, so folding three refusals into
+  one marker destroys the evidence rather than merely undercounting it.
 - Everything a model says about its own work is hearsay. Grade the artifact.
 
 `--runs k` repeats every case k times and reports **pass^k** (all k runs pass)

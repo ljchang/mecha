@@ -289,10 +289,15 @@ impl RunStats {
         self.exhausted = o.exhausted;
         self.ended_on_failed_call = o.ended_on_failed_call;
         self.tool_calls += o.tool_calls.len() as u32;
+        // `denied` is excluded, and the exclusion has to be written out: a
+        // denied trace carries `is_error: true` too, so filtering on
+        // `is_error` alone counts every refusal as an environment failure and
+        // averages "the harness working" into the rate the candidate gate and
+        // doctor both threshold on.
         self.tool_errors += o
             .tool_calls
             .iter()
-            .filter(|c| c.is_error || c.unknown)
+            .filter(|c| c.unknown || (c.is_error && !c.denied))
             .count() as u32;
         self.tool_denied += o.tool_calls.iter().filter(|c| c.denied).count() as u32;
         self.tool_staged += o.tool_calls.iter().filter(|c| c.staged).count() as u32;
@@ -418,6 +423,38 @@ impl Session {
     /// [`record_run`]: Session::record_run
     pub fn record_outcome(&self, outcome: &crate::agent::RunOutcome) -> Result<()> {
         self.append(&Record::Outcome(RunStats::from(outcome)))
+    }
+
+    /// Every outcome recorded in a transcript, in order, with the model and
+    /// provider that were in effect when it was written.
+    ///
+    /// Not the session header: the TUI can switch model mid-session and
+    /// records a `Config` when it does, so attributing every run to the
+    /// header would credit the second model's work to the first — and defeat
+    /// the per-model split in exactly the case where blending actually
+    /// happens. Falls back to the header when no `Config` precedes the row,
+    /// which is what an older transcript looks like.
+    pub fn outcomes_attributed(path: &Path) -> Result<Vec<(String, String, RunStats)>> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut provider = String::new();
+        let mut model = String::new();
+        let mut out = Vec::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str(line) {
+                Ok(Record::Meta(meta)) => {
+                    provider = meta.provider;
+                    model = meta.model;
+                }
+                Ok(Record::Config(cfg)) => {
+                    provider = cfg.provider;
+                    model = cfg.model;
+                }
+                Ok(Record::Outcome(stats)) => out.push((provider.clone(), model.clone(), stats)),
+                _ => {}
+            }
+        }
+        Ok(out)
     }
 
     /// Every outcome recorded in a transcript, in order.
