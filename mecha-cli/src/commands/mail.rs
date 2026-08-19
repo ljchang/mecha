@@ -102,6 +102,51 @@ pub enum Cmd {
         #[arg(long)]
         deadline: Option<String>,
     },
+    /// Track a thread as a task on the knowledge graph's board.
+    ///
+    /// **The deadline the classifier found is carried across**, which is the
+    /// point: a task someone has to re-read the mail to schedule is a task
+    /// they will schedule later or never.
+    Task {
+        thread_id: String,
+        #[arg(long)]
+        account: Option<String>,
+        /// The task, phrased as an action. Defaults to the classifier's
+        /// one-line summary, which describes the mail rather than the action —
+        /// so it is worth overriding when the two differ.
+        #[arg(long)]
+        name: Option<String>,
+        /// YYYY-MM-DD, `today`, `tomorrow` or `+Nd`. Defaults to the deadline
+        /// on the verdict, if it found one.
+        #[arg(long)]
+        due: Option<String>,
+        /// GTD context tag. `@email` unless told otherwise.
+        #[arg(long, default_value = "@email")]
+        context: String,
+        /// Parent project. **Must already exist on the graph** — it is passed
+        /// through untouched and never invented from the thread, because a
+        /// project node conjured out of a subject line is a board nobody can
+        /// query.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Park a thread until somebody answers, naming what is missing.
+    ///
+    /// Mail's own `needs-info`, and the surviving half of the front-door idea:
+    /// the most useful thing to do with "can you write me a letter?" is ask
+    /// the questions that make a good one possible.
+    ///
+    /// **Not `dismiss`.** Dismissing says "I am not doing this"; parking says
+    /// "I have asked and cannot proceed yet". The thread stays the user's
+    /// problem.
+    NeedsInfo {
+        thread_id: String,
+        #[arg(long)]
+        account: Option<String>,
+        /// What you are waiting for, in your own words.
+        #[arg(long)]
+        missing: String,
+    },
     /// Turn corrections into `triage`-domain reflections for the learner.
     ///
     /// One model call per unmined correction, tool-less and history-less like
@@ -231,6 +276,30 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             request_type.as_deref(),
             deadline.as_deref(),
         ),
+        Cmd::Task {
+            thread_id,
+            account,
+            name,
+            due,
+            context,
+            project,
+        } => {
+            task(
+                global,
+                &thread_id,
+                account.as_deref(),
+                name.as_deref(),
+                due.as_deref(),
+                &context,
+                project.as_deref(),
+            )
+            .await
+        }
+        Cmd::NeedsInfo {
+            thread_id,
+            account,
+            missing,
+        } => needs_info(&thread_id, account.as_deref(), &missing),
         Cmd::Reflect { account, dry_run } => reflect(global, account.as_deref(), dry_run).await,
         Cmd::Score {
             account,
@@ -1491,5 +1560,117 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
     if learned > 0 {
         println!("`mecha learn --domain triage` consolidates them into rules.");
     }
+    Ok(())
+}
+
+/// Put a thread on the task board, carrying its deadline.
+#[allow(clippy::too_many_arguments)]
+async fn task(
+    global: &GlobalOpts,
+    thread_id: &str,
+    account: Option<&str>,
+    name: Option<&str>,
+    due: Option<&str>,
+    context: &str,
+    project: Option<&str>,
+) -> Result<()> {
+    let store = TriageStore::open(TriageStore::default_root()?)?;
+    let account = resolve_account(&store, thread_id, account)?;
+    let rec = store
+        .get(&account, thread_id)
+        .with_context(|| format!("no such thread in the triage store: {thread_id}"))?;
+
+    // The classifier's summary describes the mail; a task wants an action.
+    // Defaulting to it beats refusing, and the flag exists because the two are
+    // genuinely different sentences.
+    let name = name
+        .map(str::to_string)
+        .or_else(|| rec.verdict.as_ref().map(|v| v.one_line.clone()))
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| rec.subject.clone());
+    // **This is the phase's whole point.** A deadline the classifier already
+    // found, carried without anyone re-reading the thread to find it again.
+    let due = due
+        .map(str::to_string)
+        .or_else(|| rec.verdict.as_ref().and_then(|v| v.deadline.clone()));
+
+    let prepared = setup::prepare_tools(global, false).await?;
+    let create = find_tool(&prepared.registry, "kg_task_create")
+        .context("no knowledge-graph server in this configuration — is `[[mcp]]` enabled?")?;
+    let ctx = tool_ctx(&prepared);
+
+    let mut args = json!({ "name": name, "context": context });
+    if let Some(d) = &due {
+        args["due"] = json!(d);
+    }
+    // Passed through untouched. `kg_task_create` requires it to resolve to an
+    // existing node, and inventing one from a subject line would produce a
+    // board that cannot be queried — the failure the project field exists to
+    // prevent.
+    if let Some(p) = project {
+        args["project"] = json!(p);
+    }
+    let out = create.call(args, &ctx).await?;
+    if out.is_error {
+        bail!("creating the task failed: {}", out.content);
+    }
+    println!("{}", out.content.trim());
+
+    store.mark(&account, thread_id, "task", mecha_core::mail_triage::ACTED)?;
+    println!("\n{}", name);
+    match &due {
+        Some(d) => println!(
+            "  due {d} (from the {})",
+            if due_came_from_verdict(&rec, d) {
+                "verdict"
+            } else {
+                "flag"
+            }
+        ),
+        None => println!("  no due date — the classifier found none and none was given"),
+    }
+    println!("  context {context}");
+    println!(
+        "  thread {thread_id} · `mecha mail show {thread_id} --account {account}` to re-read it"
+    );
+    Ok(())
+}
+
+/// Whether the due date came from the classifier rather than the flag — the
+/// difference between "it noticed" and "you told it", which is the thing worth
+/// reporting back.
+fn due_came_from_verdict(rec: &Record, due: &str) -> bool {
+    rec.verdict
+        .as_ref()
+        .and_then(|v| v.deadline.as_deref())
+        .is_some_and(|d| d == due)
+}
+
+/// Park a thread until somebody answers.
+fn needs_info(thread_id: &str, account: Option<&str>, missing: &str) -> Result<()> {
+    if missing.trim().is_empty() {
+        bail!("say what is missing — parking a thread without naming what it waits for is dismissing it slowly");
+    }
+    let store = TriageStore::open(TriageStore::default_root()?)?;
+    let account = resolve_account(&store, thread_id, account)?;
+    let mut rec = store
+        .get(&account, thread_id)
+        .with_context(|| format!("no such thread in the triage store: {thread_id}"))?;
+
+    rec.state = mecha_core::mail_triage::PARKED.to_string();
+    rec.acted = Some("needs-info".into());
+    rec.acted_at = Some(chrono::Utc::now().to_rfc3339());
+    // Kept in `rest` rather than as a typed field: what a thread waits for is
+    // the user's own prose, it is read by people rather than by code, and the
+    // store preserves unknown keys on write.
+    rec.rest.insert(
+        mecha_core::mail_triage::PARKED_FOR.to_string(),
+        json!(missing),
+    );
+    store.put(&rec)?;
+
+    println!("parked {thread_id}");
+    println!("  waiting for: {missing}");
+    println!("  still yours — `mecha mail list --all` shows it; dismiss drops it instead");
     Ok(())
 }
