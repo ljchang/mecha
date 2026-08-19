@@ -642,3 +642,92 @@ restriction on what its reading may turn into. A human who reads the proposal
 can always author the rule themselves — which is the correct place for that
 promotion to happen, and the same shape as the front door's split between what
 a person may read and what a privileged run may act on.
+
+---
+
+## 13. Decisions, 2026-08-19
+
+Owner rulings. These **supersede** the corresponding parts of §8, §11 and
+§12.4, which are left standing above so the reasoning that was overridden is
+still legible.
+
+### 13.1 The diagnostician may search the web, and its output is not restricted
+
+**Superseded:** §11's rule that an untrusted-origin diagnosis may argue only
+for a number, and §12.4's restatement of it.
+
+The argument that carried it: restricting a web-informed diagnosis to numeric
+output throws away most of what the research produced, at the cost of the
+tokens that produced it. A diagnosis worth doing is worth acting on in the form
+the finding actually takes, and a finding about conduct takes the form of a
+sentence.
+
+What replaces the origin restriction is a **test on the artifact rather than a
+label on its provenance** — which is the stronger form of the same idea, and
+the form the rest of this system already uses (`ToolOutput::external` over
+`Capabilities::untrusted_input`; the front door's extraction over its prose):
+
+- **No verbatim carry-over.** A prose proposal is checked deterministically
+  against the content the diagnostician fetched — n-gram overlap above a
+  threshold rejects the proposal outright. This makes "the proposal never
+  quotes its evidence" a check rather than an intention. An instruction lifted
+  from a page cannot survive it; a conclusion drawn from a page can.
+- **The prediction is still mandatory**, so a web-informed proposal is
+  falsified by the same measurement as any other.
+- **Retirement still applies.** A rule that measurably harms accumulates
+  attributed regressions and is retired by machinery that already exists, so
+  acceptance is not tenure here either.
+
+**The residual risk, stated once and accepted.** Replay grades harness
+metadata, not content, so a rule can pass the metric while changing behaviour
+the metric cannot see. The mitigation is that a *prose* proposal must clear a
+content-sensitive arm as well — `mecha eval` cases with `judge` or `verify`
+graders, not replay alone — and the no-carry-over check above. Numeric
+proposals are unaffected: a config value cannot carry an instruction.
+
+### 13.2 Architecture changes are proposable, behind a human gate
+
+**Superseded:** §12.2's list of what may never be proposed.
+
+The diagnostician may propose new hooks, subagent profiles, triggers, eval
+cases, tool-surface changes, and module-level changes to the source. All of it
+reaches a human before it lands. The reasoning is unchanged from §12.2 — a
+hook is an arbitrary command with the event on stdin, a trigger is a cron slot,
+and machine-authored code gets read by a person before it runs — but the
+conclusion moves from *excluded* to *gated*, because a proposal a human reads
+and rejects costs a review and a proposal never made costs the improvement.
+
+Security boundaries — the trifecta interlock, the path jail, sandbox
+configuration, `[outbox] tools` and `publish_tools` — are human-gated by this
+rule. The recommendation on record is that they stay **never proposed at
+all**, on the silently-degrading-sandbox reasoning: a loop that can argue for
+widening its own confinement will eventually argue well, and the metric agrees
+with it (a run that can reach the network fails fewer calls). Gated is
+nonetheless safe, since nothing lands without a human.
+
+### 13.3 Everything else auto-accepts on measured improvement
+
+**Superseded:** §8's ladder, which gated prose unconditionally.
+
+A change auto-accepts when **all** of the following hold, and reaches a human
+otherwise:
+
+1. It is not an architecture or security change (§13.2).
+2. Counterfactual replay shows it **better than the original** — the paired
+   comparison of §10, never a best-of-N ranking on its own.
+3. The **paired work-volume counter did not fall** (§8's Goodhart guard: a
+   change that improves its target by attempting less is rejected, not ranked).
+4. A **holdout slice never used for selection** confirms it (§10).
+5. For prose specifically: the content-sensitive arm and the no-carry-over
+   check of §13.1.
+6. It is reversible, and the reversal is recorded with the acceptance.
+
+Rejections and acceptances both append to the validation ledger, so the
+question "is this loop actually helping" is answerable from the record rather
+than from impression — which is the §2 failure mode this whole design is
+arranged against.
+
+### 13.4 What did not move
+
+The modification procedure stays uneditable (§12.3), and the diagnostician
+still does not run its own test. Every bound above rests on those two.
