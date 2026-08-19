@@ -346,3 +346,198 @@ a sampled set of real sessions from the transcript store. Replaying costs a
 real model run per episode, so this belongs in `ruminate.sh` beside the other
 nightly stages, after `validate` and on the same "a skipped night is not a
 failed night" contract.
+
+---
+
+## 9. Grading the *quality* of a run, not just the harness
+
+`RunStats` says whether the harness worked. It says nothing about whether the
+run was any good. Four candidate signals, in descending order of how much they
+can be trusted, and one that mecha already collects and has never used.
+
+### 9.1 Deterministic contracts over the trace beat a judge, measurably
+
+📄 **GroundEval**
+([arXiv:2606.22737](https://arxiv.org/pdf/2606.22737)) replaces LLM-as-judge
+for stateful agent evaluation with programmatic assertions over execution
+traces, state changes and output artifacts. Five dimensions: **access control**
+(only authorized resources touched), **temporal horizon** (finished within
+constraints), **evidence visibility** (outputs retrievable afterwards),
+**causal grounding** (the demonstrated output actually resulted from the
+agent's actions), **verified absence** (harmful side effects did not occur).
+
+Measured: **89% agreement with human evaluation against 67% for an LLM judge**,
+and **100% deterministic reproducibility**. Strongest exactly where mecha lives
+— long-horizon tasks where sequencing and causal chains matter.
+
+The substrate for this already exists here: the tool trace, the path jail, the
+taint record, the outbox, the work directory. Several GroundEval dimensions are
+things mecha *enforces* and could additionally *score* — and scoring an
+invariant is how a regression in it becomes visible before an incident.
+
+### 9.2 Rule-based evaluators fail in a known direction, and it is the opposite one
+
+✅ **AgentRewardBench**
+([arXiv:2504.08942](https://arxiv.org/pdf/2504.08942)) is the meta-evaluation:
+expert-annotated web-agent trajectories, used to grade the graders. Its finding
+corrects something this repo has been one-sided about — **rule-based benchmark
+evaluators systematically *underreport* success**, marking successful
+trajectories as failures at notably higher rates than humans would, while LLM
+judges are more nuanced and also do not match experts.
+
+So the two families err in *opposite* directions: judges are permissive and
+credulous about silent failure (`VERIFICATION-RESEARCH.md`: AUROC 0.65 / 0.54,
+75.8% false successes), and deterministic rules are conservative and
+false-positive-prone. `ended_on_failed_call` is exactly a rule-based evaluator,
+and this predicts its error direction — which was already the design assumption
+("a false positive costs one read"), and is now a measured expectation rather
+than a hope.
+
+**The consequence for using it as an objective function is sharper.**
+Optimizing against a conservative grader optimizes for *looking* safe. A
+harness change that reduces flagged runs by having the model attempt less
+scores well on both, which is §8's Goodhart case arriving through the grader
+rather than through the metric.
+
+### 9.3 Cross-run agreement: a triage signal, not a grader
+
+📄 [Auditing self-consistency and cross-model agreement](https://arxiv.org/abs/2607.08065)
+and 📄 [behavioral consistency as an uncertainty signal](https://arxiv.org/html/2602.11619v2)
+both land in the same place: agreement is a **regime-dependent, positive but
+weak** proxy for accuracy, and it is not accuracy — models agree out of shared
+bias, memorized heuristics and position priors as readily as out of truth.
+Consistent-wrong tasks run **5.5–10%** and set a hard ceiling on any filter
+built this way.
+
+mecha gets this signal for free from `--runs k` (the pass^k / pass@k gap *is*
+the disagreement). Worth using to decide **which runs a human should read**.
+Not worth promoting to a grader.
+
+### 9.4 The label mecha already collects and has never used as one
+
+The outbox records `args_before` and `args`, and every staged item ends in
+**sent**, **sent-with-edits**, or **rejected** — by a human, with a reason on
+the rejection. The frontdoor records `closed` with a required reason,
+`needs-info`, and a rejected draft returning to `extracted`.
+
+That is a human quality judgement on a specific run's specific output, already
+being collected, already durable, already joined back to the session that
+produced it. `mecha reflect` mines the *edit distance* of these into writing
+rules — but the **accept/reject bit itself has never been read as a label**.
+
+It is the best signal in this section by some distance: it is a real human
+decision rather than a proxy for one, it costs nothing to collect because
+review already happens, and it is joined to a session id so it can be paired
+with that run's `RunStats`. Its limits are honest ones — it exists only for
+runs that staged something, and "sent" means *good enough to send*, not
+*optimal*.
+
+### 9.5 What to build, if anything
+
+In order:
+
+1. **Join the outbox and frontdoor dispositions to `RunStats`.** No new
+   signal, no model, no judge — a join across two stores that already agree on
+   a session id. This is the only item here that produces a *labelled* corpus.
+2. **A small set of GroundEval-style contracts** over what mecha already
+   enforces, scored rather than merely enforced.
+3. **Cross-run disagreement as a read-this-one flag**, nowhere near a gate.
+4. **A judge, only as an input to a human**, if at all — CriticGPT's finding
+   stands (human+model teams hallucinate less than the model alone), and every
+   gating use in this file's evidence base is refuted.
+
+---
+
+## 10. Many counterfactuals, or one comparison against the original?
+
+Both are sound, and they are not equally safe.
+
+**Compare-to-original is the right primitive, and mecha already implements
+it.** `counterfactual.rs` runs a before-arm and an after-arm against the same
+recorded moment; the paired design controls for everything about the episode
+and leaves the change as the only variable. A/B against baseline is also the
+only form that answers the question actually being asked — *is this better than
+what we have* — rather than *which of these is least bad*.
+
+**Best-of-N over a fixed corpus is a multiple-comparisons trap.** Generate
+twenty candidate configurations, score them on the replay corpus, keep the
+winner, and a good part of what has been selected is corpus-specific noise —
+which is failure mode 3 in §2 (early gains that do not sustain) arriving by
+construction rather than by bad luck. The more candidates, the worse it gets,
+and the selection *looks* better the more it overfits.
+
+The guard is a **holdout**, and `mecha learn --holdout` already exists for the
+identical reason on the rules side. So:
+
+- Selection among N candidates happens on the **selection slice**.
+- The winner is then confirmed against the original on a **holdout slice never
+  used for selection**, and a candidate that wins selection but not the holdout
+  is discarded rather than shipped.
+- Reported as **pass^k**, not mean: `BENCHMARK-RESEARCH.md`'s point that
+  reliability decays faster than mean success applies here exactly, and a
+  candidate that wins on the mean while losing on pass^k has bought its gain
+  with variance.
+
+And the paired counter-metric from §8 rides on both arms, because a candidate
+that improves its target while doing less work must be rejected rather than
+ranked.
+
+---
+
+## 11. The missing stage: diagnosis
+
+§6–§10 describe detection, testing and gating, and skip the step between them.
+A deterministic scan can propose a *knob* because knobs are enumerable in
+advance. It cannot propose a fix for "the run loses its place after a
+compaction" or "it re-reads the same file three times before acting", because
+naming what to change there is an inference, not a lookup. **Replay can only
+test a candidate; something has to author one.**
+
+That stage is generative, and this document has been avoiding it for a reason
+that does not survive inspection. The provenance rule (§5) says untrusted
+*text* must not reach the prompt prefix. It does not say a model may not be in
+the loop. The pipeline is:
+
+```
+detect      deterministic scan over the RunStats corpus         no model
+diagnose    structured evidence in, a typed proposal out        MODEL
+test        replay / eval, paired against the original, holdout no model
+gate        the autonomy ladder of §8                           human or auto
+record      validations.jsonl, per-proposal verdict             no model
+```
+
+AHE already runs exactly this stage and names it well: an "Agent Debugger"
+distils rollouts into per-task failure analysis, and the evolve agent proposes
+with a manifest naming **failure evidence, inferred root cause, targeted fix,
+and predicted impact**. That last field is what makes the output testable
+rather than merely plausible — a diagnosis without a prediction cannot be
+falsified by the next measurement, and an unfalsifiable proposal is where
+"harness updating is not harness benefit" (§2) comes from.
+
+Three constraints on the diagnostic step, each derived from something already
+settled here rather than invented for it:
+
+- **Structured evidence in, by default.** The first-choice input is the
+  aggregate — stop-cause distribution, tool error rates by tool, the shape of
+  the trace (call sequence, repeats, compaction points), contract violations
+  from §9.1. A counter carries no instructions, so a diagnosis over counters is
+  clean by construction.
+- **Transcript excerpts are sometimes unavoidable, and they carry their
+  origin.** Some diagnoses genuinely need to see what happened. That is exactly
+  what `Origin` already exists for: classify the harness reflection from the
+  same `taint_timeline`, and let the classification decide what the proposal
+  may *become*. A clean-origin diagnosis may argue for prose; an
+  untrusted-origin one may argue only for a numeric config change, or go to
+  `doctor` for a human — because a config value cannot carry an instruction and
+  a sentence can. Fail-closed, as everywhere else: unknown counts as untrusted.
+- **The proposal never quotes its evidence.** Whatever the diagnosis read, what
+  it emits is a typed change plus a prediction. This is `frontdoor.rs`'s rule
+  in a second setting — the privileged artifact sees the extraction, never the
+  prose — and it is what stops a diagnosis from becoming a laundering path for
+  the text it was reading.
+
+**This is the only place a model belongs in this loop, and it is bounded on
+both sides**: it is handed evidence it did not choose, and its output is
+falsified by a measurement it does not run before anything is accepted. A bad
+diagnosis costs one replay, which is the property that makes having a model
+here safe in a way that having one at the accept gate is not.
