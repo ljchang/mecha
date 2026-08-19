@@ -310,7 +310,10 @@ fn health(
             dir.display(),
             corpus.sessions_read
         );
-        println!("outcomes are recorded from v0.1.8 on; older transcripts carry none");
+        println!(
+            "outcomes are recorded from the release that added the record; older\n\
+         transcripts carry none"
+        );
         return Ok(());
     }
 
