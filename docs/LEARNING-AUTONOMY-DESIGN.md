@@ -166,14 +166,30 @@ it. Nothing does now.
 behaviour so this is a recorded decision rather than a surprise; the assertion
 inverts when it is closed.
 
-**How to close it, and what to avoid.** The cheap deterministic option is
-`sources`: a rule already records which reflections produced it, so a new rule
-drawing on the same reflections as a retired one is a re-derivation candidate,
-found with a set intersection and no model. The expensive option is semantic
-similarity, which means embeddings or a judge — and a judge deciding whether a
-rule may live is a model-rated policy, which this project refuses everywhere
-else. Prefer the deterministic one; if it proves insufficient, the honest
-fallback is to surface the collision rather than to have a model rule on it.
+**Partly closed, and the obvious fix does not work.** `sources` looked like
+the deterministic answer — a new rule drawing on the same reflections as a
+retired one is a re-derivation candidate, found by set intersection. It fails
+on inspection: `finalize_rules` assigns `sources = batch_sources` to *every*
+new rule in a consolidation, and the learner's reply schema has no per-rule
+attribution, so the intersection matches everything from an overlapping batch.
+A false match there silently retires a good rule with nobody reading proposals
+to notice, which is worse than the miss.
+
+What shipped instead is `normalized_rule_key`: retirement is inherited when a
+new rule matches a retired one after normalising case, punctuation, spacing and
+`-ise`/`-ize`. Checked only against retired rules and only for retirement, so
+identity carry-forward still uses exact text and two distinct rules cannot be
+merged by a normalisation accident. Deliberately no stemming, stopword removal
+or synonym table: **a false match is worse than the miss it prevents**, and
+that asymmetry sets how aggressive this may be.
+
+**A genuine paraphrase is still not caught, and that is accepted.** Closing it
+needs a judge or per-rule source attribution, and both put a model in charge of
+whether a rule may live — the model-rated policy this project refuses
+everywhere else. The residual risk is bounded rather than eliminated: a
+paraphrased harmful rule regresses and is retired again, at two regressions in
+`triage`. The cost is one measurement cycle of harm, which is the price of not
+having a model adjudicate tenure.
 
 ## 6. Deliberately not being built
 
