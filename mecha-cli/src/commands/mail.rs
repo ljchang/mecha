@@ -21,8 +21,8 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 use mecha_core::mail_triage::{
-    changed_fields, needs_body, Record, ThreadInput, TriageStore, Verdict, BODY_CHARS_MAX,
-    CLASSIFIED, DISMISSED, FAILED,
+    changed_fields, needs_body, prefilter, Graded, Record, Scorecard, ThreadInput, TriageStore,
+    Verdict, BODY_CHARS_MAX, CLASSIFIED, DISMISSED, FAILED,
 };
 
 use crate::{setup, GlobalOpts};
@@ -71,6 +71,39 @@ pub enum Cmd {
         #[arg(long)]
         account: Option<String>,
     },
+    /// Grade the classifier against a corpus of mail whose outcome is known.
+    ///
+    /// **The ground truth is one-sided and the output says so.** A thread the
+    /// user answered proves the thread mattered, so burying it is a countable
+    /// error; a thread they never answered proves nothing, because most
+    /// unanswered mail correctly needed no answer and some was settled in a
+    /// meeting. So this reports a false-`ignore` rate on the answered stratum
+    /// and a *volume* on the other, and never a single blended accuracy.
+    ///
+    /// Reads `~/.mecha/mail-corpus/<account>.jsonl` — see `mecha-mail corpus`.
+    /// Writes nothing to the triage store: grading year-old mail is not
+    /// triaging it, and a scorecard that mutates the queue it measures would
+    /// be unrepeatable.
+    Eval {
+        /// Which corpus file to grade.
+        #[arg(long, default_value = "dartmouth")]
+        account: String,
+        /// How many threads to sample from each stratum. Answered threads are
+        /// rare, so both strata are sampled to this size rather than the
+        /// corpus being sampled uniformly — otherwise a run of 200 would hold
+        /// a handful of the only threads that carry ground truth.
+        #[arg(long, default_value_t = 60)]
+        sample: usize,
+        /// Fixed by default so a scorecard is reproducible.
+        #[arg(long, default_value_t = 7)]
+        seed: u64,
+        /// Report what the deterministic rules do and stop. No model, no cost.
+        #[arg(long)]
+        prefilter_only: bool,
+        /// Machine output.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
@@ -87,6 +120,13 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             dry_run,
         } => classify(global, account.as_deref(), limit, force, dry_run).await,
         Cmd::Dismiss { thread_id, account } => dismiss(&thread_id, account.as_deref()),
+        Cmd::Eval {
+            account,
+            sample,
+            seed,
+            prefilter_only,
+            json,
+        } => eval(global, &account, sample, seed, prefilter_only, json).await,
     }
 }
 
@@ -440,6 +480,28 @@ async fn classify(
         "\n{ok} classified ({escalated} read in full), \
          {prefiltered} disposed without a model, {failed} failed"
     );
+
+    // **A run that accomplished nothing must exit non-zero.**
+    //
+    // 2026-08-19: the nightly classified 0 of 16 threads — the local model
+    // server was not running, so every call failed — and systemd recorded the
+    // unit as SUCCESS, because this function returned `Ok(())` regardless.
+    // That is the silently-degrading pattern: `OnFailure=`, `systemctl
+    // --failed` and doctor's failed-unit check all read a broken nightly as a
+    // healthy one, and the only trace was a log nobody reads.
+    //
+    // Partial failure stays a success on purpose — fourteen of sixteen
+    // classified is a working nightly, and failing the unit for it would
+    // train someone to ignore the alarm. What is reported here is the run
+    // having done *nothing*: no classification and no pre-filter disposal,
+    // with at least one failure to explain why.
+    if run_accomplished_nothing(ok, prefiltered, failed) {
+        bail!(
+            "classified nothing: all {failed} thread(s) failed. \
+             The most common cause is the model provider being unreachable — \
+             check it is running, then re-run."
+        );
+    }
     Ok(())
 }
 
@@ -536,4 +598,284 @@ fn print_line(t: &ThreadInput, v: &Verdict, escalated_from: Option<&str>) {
             .map(|b| format!("  [was {b} on the snippet]"))
             .unwrap_or_default()
     );
+}
+
+/// Whether a classify run did nothing at all and should fail its unit.
+///
+/// A function so the rule is testable without a mailbox: the condition is easy
+/// to state and easy to get subtly wrong in a direction nobody notices, which
+/// is how the original `Ok(())` survived.
+fn run_accomplished_nothing(ok: u32, prefiltered: u32, failed: u32) -> bool {
+    ok == 0 && prefiltered == 0 && failed > 0
+}
+
+/// One thread reconstructed from the corpus, with the outcome that grades it.
+struct CorpusThread {
+    input: ThreadInput,
+    bulk: bool,
+    replied: bool,
+}
+
+/// Group corpus messages into threads and recover the ground truth.
+///
+/// The user's own address comes from the corpus rather than from config: the
+/// rows record who sent each message, and a thread counts as answered only
+/// when an outbound message *follows* the inbound one. Counting any outbound
+/// message would include threads the user started and somebody replied to,
+/// which is not an answer to anything and inflates the baseline.
+fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {} — run `mecha-mail corpus` first", path.display()))?;
+    let mut by: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let v: Value = serde_json::from_str(line).context("a corpus line is not JSON")?;
+        let Some(t) = v["thread_id"].as_str() else {
+            continue;
+        };
+        by.entry(t.to_string()).or_default().push(v);
+    }
+    let mut out = Vec::new();
+    for (thread_id, mut msgs) in by {
+        msgs.sort_by(|a, b| a["date"].as_str().cmp(&b["date"].as_str()));
+        let is_me = |m: &Value| {
+            m["from"]
+                .as_str()
+                .unwrap_or_default()
+                .eq_ignore_ascii_case(me)
+        };
+        let Some(first_in) = msgs.iter().find(|m| !is_me(m)) else {
+            continue; // the user's own thread with no inbound message
+        };
+        let after = first_in["date"].as_str().unwrap_or_default().to_string();
+        let replied = msgs
+            .iter()
+            .any(|m| is_me(m) && m["date"].as_str().unwrap_or_default() >= after.as_str());
+        let g = |k: &str| first_in[k].as_str().unwrap_or_default().to_string();
+        out.push(CorpusThread {
+            input: ThreadInput {
+                thread_id,
+                account: g("account"),
+                from: g("from"),
+                from_name: g("from_name"),
+                subject: g("subject"),
+                date: g("date"),
+                // The snippet is exactly what the live classifier sees on its
+                // first pass, which is the pass this grades.
+                body: g("snippet"),
+            },
+            bulk: first_in["bulk"].as_bool().unwrap_or(false),
+            replied,
+        });
+    }
+    Ok(out)
+}
+
+/// Deterministic shuffle so a scorecard is reproducible from its seed.
+fn shuffled<T>(mut v: Vec<T>, seed: u64) -> Vec<T> {
+    let mut st = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+    let mut next = || {
+        st = st
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (st >> 33) as usize
+    };
+    for i in (1..v.len()).rev() {
+        v.swap(i, next() % (i + 1));
+    }
+    v
+}
+
+async fn eval(
+    global: &GlobalOpts,
+    account: &str,
+    sample: usize,
+    seed: u64,
+    prefilter_only: bool,
+    json_out: bool,
+) -> Result<()> {
+    // Via `mecha_home` rather than `$HOME` directly, so `MECHA_HOME` moves
+    // the corpus with every other store.
+    let dir = mecha_core::work::mecha_home()?.join("mail-corpus");
+    let path = dir.join(format!("{account}.jsonl"));
+    let me = std::env::var("MECHA_EVAL_SELF").ok();
+    let me = match me {
+        Some(m) => m,
+        None => guess_self(&path)?,
+    };
+    let threads = corpus_threads(&path, &me)?;
+    if threads.is_empty() {
+        bail!("no threads in {}", path.display());
+    }
+
+    // The pre-filter is deterministic, so it is graded over the WHOLE corpus
+    // rather than a sample. There is no reason to estimate a number that can
+    // be computed exactly and for nothing.
+    let mut pf_caught = 0usize;
+    let mut pf_caught_replied = 0usize;
+    let mut survivors: Vec<&CorpusThread> = Vec::new();
+    for t in &threads {
+        match prefilter(&t.input, t.bulk) {
+            Some(_) => {
+                pf_caught += 1;
+                pf_caught_replied += usize::from(t.replied);
+            }
+            None => survivors.push(t),
+        }
+    }
+    let total = threads.len();
+    println!(
+        "corpus {}: {total} threads, self = {me}\n\
+         pre-filter: {pf_caught} disposed ({:.1}%), {pf_caught_replied} of them had been answered ({:.2}% of disposed)\n\
+         reaching the classifier: {} ({:.1}%)",
+        path.display(),
+        100.0 * pf_caught as f64 / total as f64,
+        100.0 * pf_caught_replied as f64 / pf_caught.max(1) as f64,
+        survivors.len(),
+        100.0 * survivors.len() as f64 / total as f64,
+    );
+    if prefilter_only {
+        return Ok(());
+    }
+
+    // Both strata are sampled to the same size. Answered threads are a small
+    // minority, so a uniform sample would spend almost all of its model calls
+    // on the stratum that carries no ground truth.
+    let (yes, no): (Vec<_>, Vec<_>) = survivors.into_iter().partition(|t| t.replied);
+    fn pick(v: Vec<&CorpusThread>, s: u64, n: usize) -> Vec<&CorpusThread> {
+        shuffled(v, s).into_iter().take(n).collect()
+    }
+    let chosen: Vec<&CorpusThread> = pick(yes, seed, sample)
+        .into_iter()
+        .chain(pick(no, seed ^ 0x9E37_79B9, sample))
+        .collect();
+
+    let cwd = std::env::current_dir()?;
+    let cfg = mecha_core::config::Config::load(&cwd)?;
+    let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
+    let provider = mecha_core::provider::build(provider_cfg)?;
+    let model = global
+        .model
+        .clone()
+        .or_else(|| provider_cfg.model.clone())
+        .unwrap_or_else(|| provider.default_model().to_string());
+    eprintln!(
+        "grading {} thread(s) with {model} ({provider_name}) — no writes to the triage store",
+        chosen.len()
+    );
+
+    let mut graded = Vec::new();
+    let mut failed = 0u32;
+    for (i, t) in chosen.iter().enumerate() {
+        // Judged as of the day it arrived. Grading a year-old deadline against
+        // today would score every one of them as passed.
+        let today = t.input.date.get(..10).unwrap_or("1970-01-01");
+        match mecha_core::mail_triage::classify(provider.as_ref(), &model, &t.input, today).await {
+            Ok(v) => graded.push(Graded {
+                replied: t.replied,
+                verdict: Some(v),
+                prefiltered: None,
+            }),
+            Err(e) => {
+                failed += 1;
+                eprintln!("  ! {} — {e}", t.input.thread_id);
+            }
+        }
+        if (i + 1) % 10 == 0 {
+            eprint!("\r  {}/{}", i + 1, chosen.len());
+        }
+    }
+    eprintln!();
+
+    let s = Scorecard::of(&graded);
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "corpus": path.display().to_string(),
+                "threads_total": total,
+                "prefilter": {"disposed": pf_caught, "disposed_but_answered": pf_caught_replied},
+                "sampled": graded.len(), "failed": failed,
+                "answered": {"n": s.replied, "buried": s.replied_final_ignore,
+                             "false_ignore_rate": s.false_ignore_rate()},
+                "unanswered": {"n": s.unreplied, "surfaced": s.unreplied_surfaced},
+                "caveat": Scorecard::caveat(),
+            }))?
+        );
+        return Ok(());
+    }
+    println!("\n── answered threads — the stratum with ground truth ──");
+    println!("  graded:            {}", s.replied);
+    match s.false_ignore_rate() {
+        Some(r) => println!(
+            "  buried as `ignore`: {} ({:.1}%)  ← the number this eval exists for",
+            s.replied_final_ignore,
+            100.0 * r
+        ),
+        None => println!("  buried as `ignore`: n/a — no answered threads in the sample"),
+    }
+    println!("\n── unanswered threads — no ground truth ──");
+    println!("  graded:            {}", s.unreplied);
+    println!(
+        "  surfaced as needing you: {} ({:.1}%)",
+        s.unreplied_surfaced,
+        100.0 * s.unreplied_surfaced as f64 / s.unreplied.max(1) as f64
+    );
+    println!("  {}", Scorecard::caveat());
+    if failed > 0 {
+        println!("\n{failed} thread(s) failed to classify and are excluded.");
+    }
+    Ok(())
+}
+
+/// The mailbox owner's address, read off the corpus: the address that appears
+/// most often as a *recipient*. Derived rather than configured because the
+/// corpus is the thing being graded, and a mismatch between the two would
+/// silently score every thread as unanswered.
+fn guess_self(path: &std::path::Path) -> Result<String> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {} — run `mecha-mail corpus` first", path.display()))?;
+    let mut c: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for line in text.lines().take(4000) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        for r in v["to"].as_array().into_iter().flatten() {
+            if let Some(a) = r.as_str() {
+                *c.entry(a.to_ascii_lowercase()).or_default() += 1;
+            }
+        }
+    }
+    c.into_iter()
+        .max_by_key(|(_, n)| *n)
+        .map(|(a, _)| a)
+        .context("could not infer the mailbox owner; set MECHA_EVAL_SELF")
+}
+
+#[cfg(test)]
+mod classify_exit_tests {
+    use super::run_accomplished_nothing;
+
+    /// 2026-08-19: the nightly classified 0 of 16 and systemd logged SUCCESS,
+    /// because the command returned `Ok(())` whatever happened. Every check
+    /// downstream — `OnFailure=`, `systemctl --failed`, doctor's failed-unit
+    /// scan — reads a unit's exit code, so a broken nightly was invisible to
+    /// all of them at once.
+    #[test]
+    fn a_run_that_did_nothing_fails_and_a_partial_one_does_not() {
+        assert!(run_accomplished_nothing(0, 0, 16), "the incident");
+
+        // Partial failure is a working nightly. Failing the unit here would
+        // train someone to ignore the alarm, which costs more than it buys.
+        assert!(!run_accomplished_nothing(14, 0, 2));
+        assert!(!run_accomplished_nothing(1, 0, 99));
+
+        // Pre-filter disposal is work. A sweep of nothing but bulk mail did
+        // its job without one model call.
+        assert!(!run_accomplished_nothing(0, 12, 0));
+        assert!(!run_accomplished_nothing(0, 12, 3));
+
+        // Nothing to do is not a failure — the common case for a nightly that
+        // already swept an hour ago, and the one false alarm to avoid.
+        assert!(!run_accomplished_nothing(0, 0, 0));
+    }
 }
