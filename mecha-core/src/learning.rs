@@ -145,6 +145,22 @@ impl Reflexion {
     /// happens rather than needing anyone to remember. `LEARNING-AUTONOMY-DESIGN.md`
     /// §4 is the argument; `an_untrusted_triage_reflection_stops_being_learnable_if_it_reaches_a_run`
     /// is the test.
+    ///
+    /// **The residual, stated because nothing enforces it.** The check keys on
+    /// `RUN_DOMAINS` membership, which is a *proxy* for the consumer rather
+    /// than the consumer itself. It catches the likely breakage — someone
+    /// routes `triage` into ordinary runs — and it does not catch a second
+    /// one: a future caller that has tools calling
+    /// [`LearningStore::rules_prompt_block_for`] with `triage` directly.
+    /// Nothing stops that today, and this function would keep answering
+    /// `true` while its premise had quietly stopped holding.
+    ///
+    /// Expressing that in the type system would need "this domain has exactly
+    /// one load site", which Rust cannot say cheaply and a registry would cost
+    /// more than it protects. So it is written here instead, where the next
+    /// person meets it: **if you are adding a consumer of `triage` rules that
+    /// has tools, a network, or a way to send, this exemption is no longer
+    /// sound and has to be argued again rather than inherited.**
     pub fn learnable(&self) -> bool {
         if self.origin == Origin::Clean {
             return true;
