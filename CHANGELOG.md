@@ -26,6 +26,44 @@ remedy. Nothing else in this release requires action.
 
 ### Added
 
+- **A run now records how it went, not only what it cost.**
+  `Record::Outcome(RunStats)` lands one row per finished run in the session
+  transcript, written by every front-end. `RunOutcome` carries fifteen fields
+  and the transcript kept two, so an interactive run was measurably less
+  observable than an unattended one — the signal was computed and discarded at
+  the end of every run a human was watching. Every field is a deterministic
+  count and none is derived from the *content* of a tool result, which is what
+  makes the corpus usable as an input to automated grading: a counter carries
+  no instructions.
+
+- **`mecha sessions health`** reads that corpus back across the whole session
+  store — stop causes, tool reliability, how often a run finished over a
+  failure — split by model, because a corpus spanning two has no single rate
+  worth quoting. A rate with no denominator prints as an em dash rather than
+  as zero: "nothing went wrong" and "nothing happened" are different answers.
+
+- **`mecha diagnose`** reads the corpus, folds in `doctor`'s findings, and
+  proposes one typed change with a falsifiable prediction. It does not measure
+  and does not apply — it prints the `eval --ab-config` line that would falsify
+  it. Automated failure attribution is right about which step failed roughly
+  one time in seven, so the design target is that being wrong costs one
+  measurement. The brief is built from counters and has no field for a
+  transcript excerpt, and a proposal reproducing eight consecutive words from
+  anything the diagnostician read is refused.
+
+- **`mecha eval --ab-config KEY=VALUE`** runs the case set twice, differing
+  only in the override, and judges the difference: paired by case,
+  deterministic holdout, and a work guardrail that rejects a gain bought by
+  attempting less. Overrides are a closed set of run options, so both arms are
+  built by one code path.
+
+- **`mecha doctor` reads the population, not just the incident** — a model
+  finishing a fifth of its runs over a failed call, failing a quarter of its
+  tool calls, or having a quarter of its runs cut short by a ceiling.
+  Cancellations are excluded: a person pressing Ctrl-C is the system working.
+  It also names a trigger failing a large share of its calls, and a trigger
+  whose most recent run succeeded having done nothing at all.
+
 - **Mail triage.** `mecha-mail` gained `mail_triage` — archive, read, unread,
   spam, trash — as a closed action enum over a whole thread. The write surface
   was previously send, reply and calendar CRUD, so a mailbox could be read and
@@ -218,6 +256,22 @@ remedy. Nothing else in this release requires action.
   being re-run.
 
 ### Fixed
+
+- **A pile of identical failures no longer rides in every request.**
+  `compact::collapse_repeated_failures` folds repeated failures onto their
+  newest member. Errors are exempt from supersession on purpose — a failed
+  call says nothing about the target — and that rule is right for one failure
+  and inverts for eight: a model is measurably likelier to fail a step when
+  the context holds its own earlier errors, and the effect does not go away
+  with model size. Nothing in the harness touched these before: eviction skips
+  errors by construction and thinning only truncates long results, so a
+  sixty-character failure message was untouchable by both.
+
+- **A run that answers over a failed call now says so.**
+  `RunOutcome::ended_on_failed_call`, with an `expect` check beside it. Nothing
+  in the answer text or the stop reason distinguishes a run that recovered
+  from one reporting success over a failure, and grading the claim needs a
+  judge, which measures near chance at exactly this.
 
 - **A retired proposal no longer makes a triage record unreadable.**
   `Proposed`'s derived `Deserialize` failed the whole record on an unknown

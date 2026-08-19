@@ -60,7 +60,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     anyhow::ensure!(
         !corpus.is_empty(),
         "no recorded run outcomes in {} ({} session(s) read) — outcomes are recorded from \
-         v0.1.8 on, so the corpus fills as you use it",
+         the release that added the record, so the corpus fills as you use it",
         dir.display(),
         corpus.sessions_read
     );
