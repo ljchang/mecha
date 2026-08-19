@@ -216,6 +216,13 @@ and the connector reconnected with its 12 threads intact at 14:28. The timer-dri
 no restart; restarting them would be cargo-culting. The set that needs action
 is exactly the set holding a long-lived process.
 
+- **Two live changes on 2026-08-19 that exist in no repository**, both under
+  `~/.mecha/`, which is not a git checkout. The `morning` trigger's `notify`
+  line now appends day two to the briefing by shelling out to
+  `mecha mail list --aged --surface`, so **the installed binary must carry
+  `--aged` before 07:00 or the briefing pastes a clap usage error into
+  itself** — caught on the day by running the hook rather than reading it. And
+  `llama-local.service` is new (below). A fresh clone has neither.
 - **The local model server is `llama-local.service`** (systemd user, enabled,
   `scripts/start-moe-mtp.sh`, qwen3.6-35b-a3b on 127.0.0.1:8080). **It became a
   unit on 2026-08-19 and the reason generalises.** Before that it was only ever
