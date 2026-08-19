@@ -21,8 +21,9 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 use mecha_core::mail_triage::{
-    changed_fields, needs_body, prefilter, Graded, Record, Scorecard, ThreadInput, TriageStore,
-    Verdict, BODY_CHARS_MAX, CLASSIFIED, DISMISSED, FAILED,
+    changed_fields, needs_body, prefilter, Bucket, Correcting, Graded, Proposed, Record, Scorecard,
+    ThreadInput, TriageStore, Urgency, Verdict, BODY_CHARS_MAX, CLASSIFIED, DISMISSED, FAILED,
+    REQUEST_TYPES,
 };
 
 use crate::{setup, GlobalOpts};
@@ -70,6 +71,36 @@ pub enum Cmd {
         thread_id: String,
         #[arg(long)]
         account: Option<String>,
+    },
+    /// Say the classifier got something wrong, field by field.
+    ///
+    /// **Field-level on purpose**: a misread bucket, a missed deadline and a
+    /// wrong request kind are different errors with different fixes, and a
+    /// correction that only says "this was wrong" teaches the learner noise.
+    ///
+    /// The verdict is fixed immediately — the list you read is right straight
+    /// away — and the before/after pair is kept on the record, because the
+    /// mistake is what a learner has to see. Use `none` to clear a deadline or
+    /// a request type.
+    Correct {
+        thread_id: String,
+        #[arg(long)]
+        account: Option<String>,
+        /// respond | notify | ignore
+        #[arg(long)]
+        bucket: Option<String>,
+        /// now | today | week | none
+        #[arg(long)]
+        urgency: Option<String>,
+        /// reply | archive | spam | schedule | task | forward | none
+        #[arg(long)]
+        proposed: Option<String>,
+        /// A kind from the closed list, or `none` to clear it.
+        #[arg(long)]
+        request_type: Option<String>,
+        /// YYYY-MM-DD, or `none` to clear it.
+        #[arg(long)]
+        deadline: Option<String>,
     },
     /// Grade the classifier against a corpus of mail whose outcome is known.
     ///
@@ -131,6 +162,23 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             dry_run,
         } => classify(global, account.as_deref(), limit, force, dry_run).await,
         Cmd::Dismiss { thread_id, account } => dismiss(&thread_id, account.as_deref()),
+        Cmd::Correct {
+            thread_id,
+            account,
+            bucket,
+            urgency,
+            proposed,
+            request_type,
+            deadline,
+        } => correct(
+            &thread_id,
+            account.as_deref(),
+            bucket.as_deref(),
+            urgency.as_deref(),
+            proposed.as_deref(),
+            request_type.as_deref(),
+            deadline.as_deref(),
+        ),
         Cmd::Eval {
             account,
             sample,
@@ -963,5 +1011,146 @@ mod classify_exit_tests {
         // Nothing to do is not a failure — the common case for a nightly that
         // already swept an hour ago, and the one false alarm to avoid.
         assert!(!run_accomplished_nothing(0, 0, 0));
+    }
+}
+
+/// Parse a closed-vocabulary value, listing the alternatives on failure.
+///
+/// A typo must fail at the keyboard rather than write a verdict nobody asked
+/// for — the same reason `mecha trigger add` validates a cron expression up
+/// front instead of at three in the morning.
+fn one_of<T: Copy>(name: &str, given: &str, table: &[(&str, T)]) -> Result<T> {
+    table
+        .iter()
+        .find(|(k, _)| *k == given)
+        .map(|(_, v)| *v)
+        .with_context(|| {
+            format!(
+                "unknown {name} `{given}` — one of: {}",
+                table.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(", ")
+            )
+        })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn correct(
+    thread_id: &str,
+    account: Option<&str>,
+    bucket: Option<&str>,
+    urgency: Option<&str>,
+    proposed: Option<&str>,
+    request_type: Option<&str>,
+    deadline: Option<&str>,
+) -> Result<()> {
+    let mut c = Correcting::default();
+    if let Some(v) = bucket {
+        c.bucket = Some(one_of(
+            "bucket",
+            v,
+            &[
+                ("respond", Bucket::Respond),
+                ("notify", Bucket::Notify),
+                ("ignore", Bucket::Ignore),
+            ],
+        )?);
+    }
+    if let Some(v) = urgency {
+        c.urgency = Some(one_of(
+            "urgency",
+            v,
+            &[
+                ("now", Urgency::Now),
+                ("today", Urgency::Today),
+                ("week", Urgency::Week),
+                ("none", Urgency::None),
+            ],
+        )?);
+    }
+    if let Some(v) = proposed {
+        c.proposed = Some(one_of(
+            "proposed",
+            v,
+            &[
+                ("reply", Proposed::Reply),
+                ("archive", Proposed::Archive),
+                ("spam", Proposed::Spam),
+                ("schedule", Proposed::Schedule),
+                ("task", Proposed::Task),
+                ("forward", Proposed::Forward),
+                ("none", Proposed::None),
+            ],
+        )?);
+    }
+    if let Some(v) = request_type {
+        c.request_type = Some(match v {
+            "none" => None,
+            other => {
+                if !REQUEST_TYPES.contains(&other) {
+                    bail!(
+                        "unknown request type `{other}` — one of: {}, or `none`",
+                        REQUEST_TYPES.join(", ")
+                    );
+                }
+                Some(other.to_string())
+            }
+        });
+    }
+    if let Some(v) = deadline {
+        c.deadline = Some(match v {
+            "none" => None,
+            d => {
+                // The same shape `parse_verdict` enforces: anything downstream
+                // hands this to `kg_task_create`, which takes YYYY-MM-DD.
+                if chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err() {
+                    bail!("deadline `{d}` is not YYYY-MM-DD (or `none`)");
+                }
+                Some(d.to_string())
+            }
+        });
+    }
+    if c.is_empty() {
+        bail!("nothing to correct — pass at least one of --bucket, --urgency, --proposed, --request-type, --deadline");
+    }
+
+    let store = TriageStore::open(TriageStore::default_root()?)?;
+    let account = resolve_account(&store, thread_id, account)?;
+    let at = chrono::Utc::now().to_rfc3339();
+    match store.correct(&account, thread_id, &c, &at)? {
+        None => bail!("no such thread in the triage store: {thread_id}"),
+        Some(made) if made.is_empty() => {
+            println!("nothing changed — the verdict already said that.");
+        }
+        Some(made) => {
+            println!("corrected {} field(s) on {thread_id}:", made.len());
+            for m in &made {
+                println!("  {}: {} → {}", m.field, m.was, m.now);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The account a thread lives in: what was asked for, or the only one that
+/// holds it. Thread ids are account-scoped, so guessing wrong would correct a
+/// different thread.
+fn resolve_account(store: &TriageStore, thread_id: &str, given: Option<&str>) -> Result<String> {
+    if let Some(a) = given {
+        return Ok(a.to_string());
+    }
+    let hits: Vec<Record> = store
+        .list()?
+        .into_iter()
+        .filter(|r| r.thread_id == thread_id)
+        .collect();
+    match hits.len() {
+        0 => bail!("no such thread in the triage store: {thread_id}"),
+        1 => Ok(hits[0].account.clone()),
+        _ => bail!(
+            "thread id is in several accounts ({}) — pass --account",
+            hits.iter()
+                .map(|r| r.account.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
