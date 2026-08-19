@@ -2,6 +2,7 @@ pub mod batch;
 pub mod chat;
 pub mod config;
 pub mod corroborate;
+pub mod diagnose;
 pub mod distill;
 pub mod doctor;
 pub mod eval;
