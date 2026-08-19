@@ -153,6 +153,34 @@ impl Reflexion {
     }
 }
 
+/// Domains loaded by a **named pass** rather than by a general run.
+///
+/// [`RUN_DOMAINS`] is what an agent run carries in its prompt. A pass-scoped
+/// domain is loaded by exactly one caller instead — `triage` by the mail
+/// classifier — and is deliberately *absent* from `RUN_DOMAINS`, because
+/// classifier rules are noise to every run that is not classifying.
+///
+/// **This list exists so "unrouted" can mean what it says.**
+/// [`LearningStore::unrouted_domains`] warns about a domain whose rules ride in
+/// no prompt, which is a real failure — a typo'd filename produces rules
+/// nobody reads, indistinguishable from rules being obeyed. Measured against
+/// `RUN_DOMAINS` alone, `triage` trips that warning permanently the moment it
+/// learns its first rule, with a message that is simply untrue. And a
+/// permanent false positive is worse than noise: it is where a real unrouted
+/// domain hides. Same failure as a threshold silent on zero, pointed the other
+/// way.
+pub const PASS_DOMAINS: &[&str] = &[TRIAGE_DOMAIN];
+
+/// Every domain something actually loads. What "unrouted" must be measured
+/// against — a domain is routed if a run carries it *or* a pass reads it.
+pub fn routed_domains() -> Vec<&'static str> {
+    RUN_DOMAINS
+        .iter()
+        .chain(PASS_DOMAINS.iter())
+        .copied()
+        .collect()
+}
+
 /// The mail classifier's own learning domain.
 ///
 /// Named as a constant because two separate things key on it: the provenance
@@ -2322,9 +2350,11 @@ mod tests {
         );
 
         // A domain with nothing active is not a finding — there is no silence
-        // to report when there is nothing to say.
+        // to report when there is nothing to say. Uses another unrouted name
+        // rather than `triage`, which is routed via PASS_DOMAINS and would
+        // therefore pass this for the wrong reason.
         std::fs::write(
-            store.root().join("rules/triage.user.toml"),
+            store.root().join("rules/wriing.user.toml"),
             "[[rules]]\ntext = \"off\"\nenabled = false\n",
         )
         .unwrap();
@@ -2593,6 +2623,50 @@ mod tests {
             created_at: "2026-08-19T00:00:00Z".into(),
             origin,
         }
+    }
+
+    /// **A pass-scoped domain is routed, and must not trip the unrouted
+    /// warning.** `triage` rules fire from the classifier's own pass, so
+    /// warning that they "can never fire" would be false on every single
+    /// `mecha` invocation once the domain learns a rule — and a permanent
+    /// false positive is where a real unrouted domain hides, which is the
+    /// failure this check exists to prevent.
+    ///
+    /// Fails on `unrouted_domains(RUN_DOMAINS)`, which is what it was.
+    #[test]
+    fn a_domain_a_pass_loads_is_routed_even_though_no_run_carries_it() {
+        let store = temp_store();
+        std::fs::write(
+            store
+                .root()
+                .join(format!("rules/{TRIAGE_DOMAIN}.user.toml")),
+            "[[rules]]\ntext = \"Receipts are never urgent.\"\n",
+        )
+        .unwrap();
+        // A domain nothing reads: the real thing the warning is for.
+        std::fs::write(
+            store.root().join("rules/typo-mail.user.toml"),
+            "[[rules]]\ntext = \"Something.\"\n",
+        )
+        .unwrap();
+
+        let unrouted = store.unrouted_domains(&routed_domains()).unwrap();
+        assert!(
+            !unrouted.contains(&TRIAGE_DOMAIN.to_string()),
+            "triage is read by the classifier pass, so it is routed"
+        );
+        assert!(
+            unrouted.contains(&"typo-mail".to_string()),
+            "a domain nothing loads must still be caught — that is the point"
+        );
+
+        // And the two lists stay disjoint: a pass-scoped domain in RUN_DOMAINS
+        // would put classifier rules in front of a tool-having agent and would
+        // silently void the provenance exemption.
+        for d in PASS_DOMAINS {
+            assert!(!RUN_DOMAINS.contains(d), "{d} must not be a run domain");
+        }
+        std::fs::remove_dir_all(store.root()).ok();
     }
 
     /// The provenance gate holds everywhere it was holding before.
