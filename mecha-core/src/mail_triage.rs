@@ -582,6 +582,86 @@ pub struct Correction {
     pub at: String,
 }
 
+/// What a human is changing about a verdict. Every field optional; a request
+/// with none set is refused by the caller rather than silently doing nothing.
+///
+/// `Option<Option<String>>` on the nullable fields is deliberate and means
+/// three things rather than two: `None` leaves the field alone, `Some(None)`
+/// clears it, `Some(Some(v))` sets it. Collapsing those would make "this
+/// thread has no deadline after all" unsayable, which is a correction the
+/// classifier most needs to hear.
+#[derive(Debug, Default, Clone)]
+pub struct Correcting {
+    pub bucket: Option<Bucket>,
+    pub urgency: Option<Urgency>,
+    pub proposed: Option<Proposed>,
+    pub request_type: Option<Option<String>>,
+    pub deadline: Option<Option<String>>,
+}
+
+impl Correcting {
+    pub fn is_empty(&self) -> bool {
+        self.bucket.is_none()
+            && self.urgency.is_none()
+            && self.proposed.is_none()
+            && self.request_type.is_none()
+            && self.deadline.is_none()
+    }
+}
+
+/// Apply a correction, returning one [`Correction`] per field that **actually
+/// changed**.
+///
+/// Setting a field to the value it already holds records nothing. A learner
+/// shown a "correction" that affirms the classifier would read it as evidence
+/// the answer was wrong, and would learn to move away from a verdict a human
+/// had just endorsed — the correction store's version of mining a hook denial
+/// as a user correction.
+pub fn apply_correction(v: &mut Verdict, c: &Correcting, at: &str) -> Vec<Correction> {
+    let mut out = Vec::new();
+    let mut note = |field: &str, was: String, now: String| {
+        if was != now {
+            out.push(Correction {
+                field: field.to_string(),
+                was,
+                now,
+                at: at.to_string(),
+            });
+            true
+        } else {
+            false
+        }
+    };
+    if let Some(b) = c.bucket {
+        if note("bucket", v.bucket.as_str().into(), b.as_str().into()) {
+            v.bucket = b;
+        }
+    }
+    if let Some(u) = c.urgency {
+        if note("urgency", v.urgency.as_str().into(), u.as_str().into()) {
+            v.urgency = u;
+        }
+    }
+    if let Some(p) = c.proposed {
+        if note("proposed", v.proposed.as_str().into(), p.as_str().into()) {
+            v.proposed = p;
+        }
+    }
+    if let Some(rt) = &c.request_type {
+        let shown = |x: &Option<String>| x.clone().unwrap_or_else(|| "none".into());
+        if note("request_type", shown(&v.request_type), shown(rt)) {
+            v.request_type = rt.clone();
+        }
+    }
+    if let Some(d) = &c.deadline {
+        let shown = |x: &Option<String>| x.clone().unwrap_or_else(|| "none".into());
+        if note("deadline", shown(&v.deadline), shown(d)) {
+            v.deadline = d.clone();
+        }
+    }
+    out
+}
+
 /// One thread, as the classifier left it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
@@ -844,6 +924,38 @@ impl TriageStore {
 
     /// Record what a human did. Returns false when the thread is unknown,
     /// rather than inventing a row for it.
+    /// Record that a human corrected the verdict. Returns what changed, or an
+    /// empty vec when nothing did.
+    ///
+    /// **Corrects in place and keeps the history.** The record's verdict
+    /// becomes right immediately, so the list a person reads is right
+    /// immediately; the pair rides in `corrections` so the learner can see
+    /// what the classifier said before it was told otherwise.
+    pub fn correct(
+        &self,
+        account: &str,
+        thread_id: &str,
+        c: &Correcting,
+        at: &str,
+    ) -> Result<Option<Vec<Correction>>> {
+        let Some(mut rec) = self.get(account, thread_id) else {
+            return Ok(None);
+        };
+        let Some(v) = rec.verdict.as_mut() else {
+            anyhow::bail!(
+                "thread {thread_id} has no verdict to correct (state `{}`)",
+                rec.state
+            );
+        };
+        let made = apply_correction(v, c, at);
+        if made.is_empty() {
+            return Ok(Some(made));
+        }
+        rec.corrections.extend(made.iter().cloned());
+        self.put(&rec)?;
+        Ok(Some(made))
+    }
+
     pub fn mark(&self, account: &str, thread_id: &str, action: &str, state: &str) -> Result<bool> {
         let Some(mut rec) = self.get(account, thread_id) else {
             return Ok(false);
@@ -1437,6 +1549,117 @@ mod tests {
         for id in ["f", "c", "d"] {
             assert!(store.is_known("a", id));
         }
+    }
+
+    /// **A "correction" that agrees with the classifier is not a correction.**
+    /// Recording one would teach the learner to move away from a verdict a
+    /// human had just endorsed — the correction store's version of mining a
+    /// hook denial as if it were a user saying no.
+    #[test]
+    fn only_a_field_that_actually_changed_is_recorded() {
+        let mut v = verdict_with(Bucket::Notify, None);
+        v.urgency = Urgency::Week;
+
+        // Same bucket it already has, plus a real change beside it.
+        let made = apply_correction(
+            &mut v,
+            &Correcting {
+                bucket: Some(Bucket::Notify),
+                urgency: Some(Urgency::Today),
+                ..Default::default()
+            },
+            "2026-08-19T00:00:00Z",
+        );
+        assert_eq!(made.len(), 1, "the no-op field must not be recorded");
+        assert_eq!(made[0].field, "urgency");
+        assert_eq!(made[0].was, "week");
+        assert_eq!(made[0].now, "today");
+        assert_eq!(v.urgency, Urgency::Today);
+        assert_eq!(v.bucket, Bucket::Notify);
+
+        // Nothing at all changes: no corrections, verdict untouched.
+        let before = v.clone();
+        let made = apply_correction(&mut v, &Correcting::default(), "2026-08-19T00:00:00Z");
+        assert!(made.is_empty());
+        assert_eq!(v.bucket, before.bucket);
+    }
+
+    /// Clearing a field and leaving it alone are different instructions, and
+    /// the type has to be able to say both — "this thread has no deadline
+    /// after all" is a correction the classifier most needs to hear.
+    #[test]
+    fn a_nullable_field_can_be_cleared_as_well_as_set() {
+        let mut v = verdict_with(Bucket::Respond, Some("letter"));
+        v.deadline = Some("2026-09-01".into());
+
+        let made = apply_correction(
+            &mut v,
+            &Correcting {
+                deadline: Some(None),
+                request_type: Some(Some("review".into())),
+                ..Default::default()
+            },
+            "2026-08-19T00:00:00Z",
+        );
+        assert_eq!(made.len(), 2);
+        assert!(v.deadline.is_none());
+        assert_eq!(v.request_type.as_deref(), Some("review"));
+        let d = made.iter().find(|c| c.field == "deadline").unwrap();
+        assert_eq!((d.was.as_str(), d.now.as_str()), ("2026-09-01", "none"));
+
+        // Leaving it alone is a third thing, and does nothing.
+        let made = apply_correction(&mut v, &Correcting::default(), "z");
+        assert!(made.is_empty());
+    }
+
+    /// A correction is appended to the record's history and the verdict is
+    /// right immediately, so the list a person reads is right immediately.
+    #[test]
+    fn correcting_a_record_keeps_the_history_and_fixes_the_verdict() {
+        let store = temp_store("correct");
+        store.put(&rec("dartmouth", "t1", Bucket::Ignore)).unwrap();
+
+        let made = store
+            .correct(
+                "dartmouth",
+                "t1",
+                &Correcting {
+                    bucket: Some(Bucket::Respond),
+                    ..Default::default()
+                },
+                "2026-08-19T00:00:00Z",
+            )
+            .unwrap()
+            .expect("thread exists");
+        assert_eq!(made.len(), 1);
+
+        let back = store.get("dartmouth", "t1").unwrap();
+        assert_eq!(back.verdict.unwrap().bucket, Bucket::Respond);
+        assert_eq!(back.corrections.len(), 1);
+        assert_eq!(back.corrections[0].was, "ignore");
+
+        // A second correction appends rather than replacing: a correction that
+        // was itself wrong is evidence too.
+        store
+            .correct(
+                "dartmouth",
+                "t1",
+                &Correcting {
+                    bucket: Some(Bucket::Notify),
+                    ..Default::default()
+                },
+                "2026-08-20T00:00:00Z",
+            )
+            .unwrap();
+        let back = store.get("dartmouth", "t1").unwrap();
+        assert_eq!(back.corrections.len(), 2);
+        assert_eq!(back.corrections[1].was, "respond");
+
+        // An unknown thread is None, not an error and not a silent success.
+        assert!(store
+            .correct("dartmouth", "nope", &Correcting::default(), "z")
+            .unwrap()
+            .is_none());
     }
 
     /// The vocabulary is measured, not proposed
