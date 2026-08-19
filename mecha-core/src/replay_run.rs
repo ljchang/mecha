@@ -224,6 +224,12 @@ pub struct ReplayReport {
     pub stopped_early: bool,
     /// The replayed final answer, to set beside the recorded one.
     pub final_text: String,
+    /// How the replayed episode went, in the same counters a live run
+    /// records. This is what a candidate arm is compared on — the driver
+    /// already had every outcome and used to keep only the calls and the
+    /// text, which made the whole episode ungradeable by anything but a
+    /// divergence diff.
+    pub stats: crate::session::RunStats,
 }
 
 impl ReplayReport {
@@ -253,10 +259,16 @@ pub async fn drive(
     let mut final_text = String::new();
     let mut turns = 0;
     let mut stopped_early = false;
+    // True until a turn says otherwise, as everywhere else that totals usage.
+    let mut stats = crate::session::RunStats {
+        usage_complete: true,
+        ..Default::default()
+    };
 
     for turn in &trajectory.turns {
         convo.push(Message::user(turn.clone()));
         let outcome = agent.run_in(cx, &mut convo, None).await?;
+        stats.absorb(&outcome);
         replayed.extend(outcome.tool_calls);
         final_text = outcome.text;
         turns += 1;
@@ -273,6 +285,7 @@ pub async fn drive(
         turns,
         stopped_early,
         final_text,
+        stats,
     })
 }
 

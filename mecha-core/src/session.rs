@@ -259,29 +259,60 @@ pub struct RunStats {
     pub taint: Taint,
 }
 
+impl RunStats {
+    /// Fold another run's outcome in.
+    ///
+    /// An *episode* — a replayed session, a multi-turn eval case, a batch item
+    /// — is several runs on one conversation, and is one row. Counters sum,
+    /// because the episode really did spend all of it. Three fields do not,
+    /// and the split is the whole reason this is a method rather than a loop
+    /// at each call site:
+    ///
+    /// - `stop_cause`, `exhausted` and `ended_on_failed_call` describe how the
+    ///   episode *ended*, so the last run wins. An episode whose first turn
+    ///   ended on a failure and whose second recovered has not finished over
+    ///   a failure, and summing would say it had.
+    /// - `taint` merges and never resets: it is a property of the
+    ///   conversation, and a later clean run does not un-read what an earlier
+    ///   one read.
+    /// - `usage_complete` is an AND: one lower-bound turn makes the total a
+    ///   lower bound.
+    pub fn absorb(&mut self, o: &crate::agent::RunOutcome) {
+        self.turns += o.turns;
+        self.usage.add(&o.usage);
+        self.cost_usd = match (self.cost_usd, o.cost_usd) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+        self.usage_complete &= o.usage_complete;
+        self.stop_cause = Some(o.stop_cause);
+        self.exhausted = o.exhausted;
+        self.ended_on_failed_call = o.ended_on_failed_call;
+        self.tool_calls += o.tool_calls.len() as u32;
+        self.tool_errors += o
+            .tool_calls
+            .iter()
+            .filter(|c| c.is_error || c.unknown)
+            .count() as u32;
+        self.tool_denied += o.tool_calls.iter().filter(|c| c.denied).count() as u32;
+        self.tool_staged += o.tool_calls.iter().filter(|c| c.staged).count() as u32;
+        self.malformed_tool_args += o.malformed_tool_args;
+        self.blocked_sends += o.blocked_sends;
+        self.compactions += o.compactions;
+        self.taint.merge(o.taint);
+    }
+}
+
 impl From<&crate::agent::RunOutcome> for RunStats {
     fn from(o: &crate::agent::RunOutcome) -> Self {
-        RunStats {
-            turns: o.turns,
-            usage: o.usage.clone(),
-            cost_usd: o.cost_usd,
-            usage_complete: o.usage_complete,
-            stop_cause: Some(o.stop_cause),
-            exhausted: o.exhausted,
-            ended_on_failed_call: o.ended_on_failed_call,
-            tool_calls: o.tool_calls.len() as u32,
-            tool_errors: o
-                .tool_calls
-                .iter()
-                .filter(|c| c.is_error || c.unknown)
-                .count() as u32,
-            tool_denied: o.tool_calls.iter().filter(|c| c.denied).count() as u32,
-            tool_staged: o.tool_calls.iter().filter(|c| c.staged).count() as u32,
-            malformed_tool_args: o.malformed_tool_args,
-            blocked_sends: o.blocked_sends,
-            compactions: o.compactions,
-            taint: o.taint,
-        }
+        // `usage_complete` starts true and is ANDed down, so the default's
+        // `false` would make every single-run row a lower bound.
+        let mut stats = RunStats {
+            usage_complete: true,
+            ..RunStats::default()
+        };
+        stats.absorb(o);
+        stats
     }
 }
 
@@ -1141,6 +1172,110 @@ mod tests {
         let (_, convo) = Session::load(&session.path).unwrap();
         assert_eq!(convo.messages.len(), 2);
         assert_eq!(Session::usage_totals(&session.path).unwrap().1, 0);
+    }
+
+    #[test]
+    fn an_episode_of_several_runs_sums_its_costs_and_takes_its_ending_from_the_last() {
+        use crate::agent::{RunOutcome, StopCause, ToolCallTrace};
+        use crate::message::StopReason;
+
+        let outcome =
+            |turns: u32, calls: usize, errored: bool, ended_failed: bool, cause| RunOutcome {
+                text: String::new(),
+                stop_reason: StopReason::EndTurn,
+                usage: Usage {
+                    input_tokens: 10,
+                    output_tokens: 1,
+                    ..Usage::default()
+                },
+                turns,
+                refusal: None,
+                exhausted: false,
+                ended_on_failed_call: ended_failed,
+                tool_calls: (0..calls)
+                    .map(|_| ToolCallTrace {
+                        name: "fs_edit".into(),
+                        input: serde_json::json!({}),
+                        is_error: errored,
+                        denied: false,
+                        unknown: false,
+                        staged: false,
+                    })
+                    .collect(),
+                malformed_tool_args: 1,
+                blocked_sends: 0,
+                taint: Taint {
+                    private: true,
+                    untrusted: false,
+                },
+                stop_cause: cause,
+                compactions: 1,
+                cost_usd: Some(0.25),
+                usage_complete: true,
+            };
+
+        let mut stats = RunStats {
+            usage_complete: true,
+            ..RunStats::default()
+        };
+        // Turn one fails and ends over the failure; turn two recovers.
+        stats.absorb(&outcome(2, 3, true, true, StopCause::MaxTurns));
+        stats.absorb(&outcome(4, 5, false, false, StopCause::Completed));
+
+        // Costs sum: the episode really did spend all of it.
+        assert_eq!(stats.turns, 6);
+        assert_eq!(stats.tool_calls, 8);
+        assert_eq!(stats.tool_errors, 3);
+        assert_eq!(stats.malformed_tool_args, 2);
+        assert_eq!(stats.compactions, 2);
+        assert_eq!(stats.cost_usd, Some(0.5));
+        assert_eq!(stats.usage.input_tokens, 20);
+
+        // The ending is the last run's. An episode whose first turn ended on
+        // a failure and whose second recovered has not finished over one.
+        assert_eq!(stats.stop_cause, Some(StopCause::Completed));
+        assert!(!stats.ended_on_failed_call);
+
+        // Taint merges and never resets: a later clean run does not un-read
+        // what an earlier one read.
+        assert!(stats.taint.private);
+    }
+
+    #[test]
+    fn one_lower_bound_turn_makes_the_whole_episode_a_lower_bound() {
+        use crate::agent::{RunOutcome, StopCause};
+        use crate::message::StopReason;
+
+        let mut incomplete = RunOutcome {
+            text: String::new(),
+            stop_reason: StopReason::Other,
+            usage: Usage::default(),
+            turns: 1,
+            refusal: None,
+            exhausted: true,
+            ended_on_failed_call: false,
+            tool_calls: Vec::new(),
+            malformed_tool_args: 0,
+            blocked_sends: 0,
+            taint: Taint::default(),
+            stop_cause: StopCause::Interrupted,
+            compactions: 0,
+            cost_usd: None,
+            usage_complete: false,
+        };
+
+        let mut stats = RunStats {
+            usage_complete: true,
+            ..RunStats::default()
+        };
+        stats.absorb(&incomplete);
+        assert!(!stats.usage_complete);
+
+        // And it stays false: a later complete turn cannot repair a total
+        // that already lost a measurement.
+        incomplete.usage_complete = true;
+        stats.absorb(&incomplete);
+        assert!(!stats.usage_complete);
     }
 
     #[test]
