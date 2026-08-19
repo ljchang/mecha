@@ -510,6 +510,133 @@ fn clip(mut text: String, max: usize) -> String {
     text
 }
 
+/// A staged message, shaped the way a person reads one.
+///
+/// [`OutboxKind::Publish`]'s lesson generalises: **a message's reviewable
+/// object is the message**, not the JSON carrying it. A review surface that
+/// prints `{"body_markdown": "Dear Dirk,\n\nThank you…"}` asks the reviewer to
+/// decode escape sequences to find out what would be said in their name — and
+/// "approve without reading" is the exact failure the outbox exists to
+/// prevent, so a draft that is hard to read is a security cost rather than a
+/// cosmetic one. It is also what an editor should open: editing prose inside a
+/// JSON string literal is where a real newline becomes `\n`, a stray quote
+/// becomes a parse error, and the whole edit is refused for a reason that has
+/// nothing to do with what the person meant to say.
+///
+/// Keyed on well-known argument *names*, like [`headline`] and for the same
+/// reason: the store stays tool-agnostic, so a tool nobody anticipated is
+/// still reviewable — its fields land in `other` rather than vanishing.
+///
+/// **Nothing is dropped.** Every key of the arguments appears in exactly one
+/// of `headers`, `body` or `other`, and there is a test on that, because a
+/// field the reviewer cannot see is a field they approved without reading.
+/// That is the whole difference between reshaping a draft and summarising it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DraftView {
+    /// Addressing and the other short scalars, in reading order.
+    pub headers: Vec<(String, String)>,
+    /// The prose, with its real newlines.
+    pub body: Option<String>,
+    /// Which argument the prose came from, so an edit writes it back to the
+    /// same key rather than guessing a second time.
+    pub body_field: Option<String>,
+    /// Everything else, unshaped — shown after the body, never hidden.
+    pub other: Vec<(String, String)>,
+}
+
+/// Header-ish arguments, in the order a person reads them rather than the
+/// order a map hands them back.
+/// Deliberately short. `thread_id` and `message_id` address the *provider*,
+/// not a person, and a reviewer answering "would I send this?" needs them the
+/// way a letter writer needs the postcode format — which is to say later, and
+/// not above the prose. They fall through to `other`, which every surface
+/// shows below the body.
+const HEADER_FIELDS: [&str; 8] = [
+    "to", "cc", "bcc", "channel", "subject", "title", "when", "account",
+];
+
+/// Arguments that carry the prose, most specific first. Exactly one wins; the
+/// runners-up are ordinary arguments and are shown as such.
+const BODY_FIELDS: [&str; 8] = [
+    "body_markdown",
+    "body_text",
+    "body_html",
+    "body",
+    "text",
+    "markdown",
+    "message",
+    "content",
+];
+
+impl DraftView {
+    pub fn of(args: &Value) -> DraftView {
+        let mut view = DraftView::default();
+        let Some(map) = args.as_object() else {
+            // Not an object: there is nothing to shape, and showing it raw is
+            // still showing all of it.
+            view.other.push(("arguments".into(), args.to_string()));
+            return view;
+        };
+        for key in HEADER_FIELDS {
+            if let Some(value) = map.get(key) {
+                view.headers.push((key.to_string(), render(value)));
+            }
+        }
+        for key in BODY_FIELDS {
+            if let Some(text) = map.get(key).and_then(Value::as_str) {
+                view.body = Some(text.to_string());
+                view.body_field = Some(key.to_string());
+                break;
+            }
+        }
+        for (key, value) in map {
+            if HEADER_FIELDS.contains(&key.as_str())
+                || view.body_field.as_deref() == Some(key.as_str())
+            {
+                continue;
+            }
+            view.other.push((key.clone(), render(value)));
+        }
+        view
+    }
+}
+
+/// One argument as a person should see it: a string as itself, a list of
+/// addresses joined, anything else as its JSON. An empty value says so rather
+/// than rendering as nothing — a blank `to` is a fact about the draft, and a
+/// label with nothing after it reads as a display bug instead.
+fn render(value: &Value) -> String {
+    let text = match value {
+        Value::String(s) => s.clone(),
+        Value::Array(a) if a.iter().all(Value::is_string) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", "),
+        other => other.to_string(),
+    };
+    if text.trim().is_empty() {
+        "(empty)".to_string()
+    } else {
+        text
+    }
+}
+
+/// Write an edited body back into the arguments it came from.
+///
+/// The inverse of [`DraftView::body_field`], and it lives here so the one
+/// decision about which key holds the prose is made once. Returns the changed
+/// arguments, or `None` when there was no body to replace — a caller must
+/// then fall back to editing the arguments themselves rather than silently
+/// changing nothing.
+pub fn with_body(args: &Value, body: &str) -> Option<Value> {
+    let field = DraftView::of(args).body_field?;
+    let mut args = args.clone();
+    args.as_object_mut()?
+        .insert(field, Value::String(body.to_string()));
+    Some(args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -890,5 +1017,82 @@ mod tests {
         let _ = std::fs::remove_file(&outside);
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The invariant that separates reshaping a draft from summarising one:
+    /// every argument reaches the reviewer somewhere. A field that falls
+    /// between the three buckets is a field released unread.
+    #[test]
+    fn a_draft_view_drops_no_argument() {
+        let args = json!({
+            "to": ["a@x.org", "b@x.org"],
+            "subject": "Tuesday?",
+            "body_markdown": "Dear A,\n\nHello.\n\nLuke",
+            "account": "dartmouth",
+            "importance": "high",
+            "attachments": [{"name": "f.pdf"}],
+        });
+        let view = DraftView::of(&args);
+        let mut seen: Vec<String> = view
+            .headers
+            .iter()
+            .map(|(k, _)| k.clone())
+            .chain(view.body_field.clone())
+            .chain(view.other.iter().map(|(k, _)| k.clone()))
+            .collect();
+        seen.sort();
+        let mut keys: Vec<String> = args.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(seen, keys);
+        assert_eq!(view.body.as_deref(), Some("Dear A,\n\nHello.\n\nLuke"));
+        // Reading order, not map order.
+        assert_eq!(
+            view.headers
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .collect::<Vec<_>>(),
+            ["to", "subject", "account"]
+        );
+        assert_eq!(view.headers[0].1, "a@x.org, b@x.org");
+    }
+
+    /// A tool nobody anticipated is still reviewable: no headers, no body, and
+    /// every argument shown.
+    #[test]
+    fn an_unrecognised_draft_shows_everything_as_other() {
+        let view = DraftView::of(&json!({"emoji": "wave", "ts": 17}));
+        assert!(view.headers.is_empty() && view.body.is_none());
+        assert_eq!(
+            view.other,
+            vec![
+                ("emoji".to_string(), "wave".to_string()),
+                ("ts".to_string(), "17".to_string())
+            ]
+        );
+    }
+
+    /// A blank value is shown as blank-on-purpose. The alternative is a label
+    /// with nothing after it, which reads as a broken display rather than as
+    /// an empty recipient list.
+    #[test]
+    fn an_empty_argument_says_so() {
+        let view = DraftView::of(&json!({"to": "", "body": "hi"}));
+        assert_eq!(
+            view.headers,
+            vec![("to".to_string(), "(empty)".to_string())]
+        );
+    }
+
+    /// An edit writes back to the key the body came from, and to nothing else.
+    #[test]
+    fn an_edited_body_returns_to_its_own_field() {
+        let args = json!({"thread_id": "t1", "body_markdown": "old", "account": "personal"});
+        let edited = with_body(&args, "new").unwrap();
+        assert_eq!(edited["body_markdown"], "new");
+        assert_eq!(edited["thread_id"], "t1");
+        assert_eq!(edited["account"], "personal");
+        // No prose, no body edit — the caller must fall back rather than
+        // silently save nothing.
+        assert!(with_body(&json!({"event_id": "e1", "response": "accept"}), "x").is_none());
     }
 }
