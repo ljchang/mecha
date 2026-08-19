@@ -816,6 +816,26 @@ fn request_age(record: &crate::frontdoor::Record, now: DateTime<Utc>) -> Option<
 
 // --- trigger health ---------------------------------------------------------
 
+/// How many recent runs the reliability check averages over.
+///
+/// Five, because one bad morning is not a trend and a long window would hide a
+/// trigger that broke this week behind a month of health.
+const HEALTH_WINDOW: usize = 5;
+
+/// Below this many calls in the window, no rate is reported.
+///
+/// A rate over three calls is noise, and a doctor that cries wolf stops being
+/// read — the same reasoning as the scope check declining to guess.
+const HEALTH_MIN_CALLS: u32 = 10;
+
+/// The share of failed calls that is worth a human's attention.
+///
+/// A third. Deliberately not near-zero: a model that tries a path, is told it
+/// does not exist, and tries the right one has done nothing wrong, and errors
+/// are how a run learns about its environment. What this is looking for is a
+/// trigger whose environment has moved out from under it.
+const HEALTH_ERROR_RATE: f64 = 1.0 / 3.0;
+
 /// Read the trigger files and the ledger directly — same reason as above:
 /// [`crate::trigger::TriggerStore::open`] creates and re-chmods the root.
 fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
@@ -863,7 +883,7 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     // One ledger scan for both questions: the newest row that actually *ran*
     // per trigger, and the newest *accounted slot* per trigger (manual runs
     // carry no slot, so they are invisible to the schedule on purpose).
-    let mut last_run: BTreeMap<String, crate::trigger::RunRecord> = BTreeMap::new();
+    let mut recent: BTreeMap<String, Vec<crate::trigger::RunRecord>> = BTreeMap::new();
     let mut last_slot: BTreeMap<String, DateTime<Utc>> = BTreeMap::new();
     let ledger = root.join("runs.jsonl");
     if ledger.is_file() {
@@ -889,7 +909,11 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
                         row.status,
                         crate::trigger::RunStatus::Ok | crate::trigger::RunStatus::Error
                     ) {
-                        last_run.insert(row.trigger.clone(), row);
+                        let window = recent.entry(row.trigger.clone()).or_default();
+                        window.push(row);
+                        if window.len() > HEALTH_WINDOW {
+                            window.remove(0);
+                        }
                     }
                 }
             }
@@ -908,7 +932,8 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
 
         // The most recent run failed: a manual run is the safe probe, because
         // it records a row with no slot and so never advances the schedule.
-        if let Some(row) = last_run.get(&trigger.name) {
+        let window = recent.get(&trigger.name);
+        if let Some(row) = window.and_then(|w| w.last()) {
             if row.status == crate::trigger::RunStatus::Error {
                 out.push(Finding {
                     component: "triggers".to_string(),
@@ -934,6 +959,50 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
                     }),
                 });
             }
+        }
+
+        // Reliability across the window. An unattended run has nobody
+        // watching it fail: the briefing still arrives, the ledger still says
+        // `ok`, and a trigger failing a third of its calls looks exactly like
+        // one that works. Silent below a floor of calls, because a rate over
+        // three of them is noise, and unknown is never a finding.
+        let (calls, errors) = window
+            .map(|w| {
+                w.iter().fold((0u32, 0u32), |(c, e), r| {
+                    (c + r.tool_calls, e + r.tool_errors)
+                })
+            })
+            .unwrap_or((0, 0));
+        if calls >= HEALTH_MIN_CALLS && f64::from(errors) / f64::from(calls) >= HEALTH_ERROR_RATE {
+            let runs = window.map(Vec::len).unwrap_or(0);
+            out.push(Finding {
+                component: "triggers".to_string(),
+                severity: Severity::Attention,
+                summary: format!(
+                    "trigger `{}` failed {errors} of {calls} tool calls",
+                    trigger.name
+                ),
+                detail: format!(
+                    "across its last {runs} run(s){}. A run's answer arrives either way, so                      this is invisible in the ledger's status — and per-step reliability is                      what decides how long a task the run can finish, so a third of the                      calls failing is not a third of the work lost.",
+                    if window.is_some_and(|w| w.last().is_some_and(|r| r.ended_on_failed_call)) {
+                        ", and the most recent run answered with its last call failed"
+                    } else {
+                        ""
+                    }
+                ),
+                // Reading is the remedy: what to change is in the transcript,
+                // and doctor never decides that.
+                remedy: Some(Remedy {
+                    description: format!("read `{}`'s recent runs", trigger.name),
+                    argv: vec![
+                        "mecha".into(),
+                        "trigger".into(),
+                        "show".into(),
+                        trigger.name.clone(),
+                    ],
+                    needs_terminal: false,
+                }),
+            });
         }
 
         // A catch-up-always trigger whose accounted slots stopped advancing:
@@ -1579,6 +1648,104 @@ mod tests {
 
         let findings = examine(&home, utc(NOW));
         assert!(of(&findings, "triggers").is_empty(), "{findings:#?}");
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_trigger_quietly_failing_a_third_of_its_calls_is_reported() {
+        // Every run says `ok` and every briefing arrived. The only place the
+        // degradation exists is the call counts, which nothing read before.
+        let home = home("trigger-tool-errors");
+        trigger_file(&home, "morning", "");
+        for day in 10..15 {
+            ledger_row(
+                &home,
+                &json!({
+                    "trigger": "morning",
+                    "slot": format!("2026-08-{day}T07:00:00Z"),
+                    "started_at": format!("2026-08-{day}T07:00:01Z"),
+                    "status": "ok",
+                    "summary": "briefed",
+                    "tool_calls": 6,
+                    "tool_errors": 3,
+                }),
+            );
+        }
+
+        let findings = examine(&home, utc(NOW));
+        let triggers = of(&findings, "triggers");
+        assert_eq!(triggers.len(), 1, "{findings:#?}");
+        assert_eq!(triggers[0].severity, Severity::Attention);
+        assert!(
+            triggers[0].summary.contains("15 of 30"),
+            "{}",
+            triggers[0].summary
+        );
+        assert_eq!(
+            triggers[0].remedy.as_ref().unwrap().argv,
+            vec!["mecha", "trigger", "show", "morning"],
+            "reading is the remedy — what to change is in the transcript"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_handful_of_failed_calls_is_not_a_trend() {
+        // Two rules at once, and both are about not crying wolf. A rate over
+        // three calls is noise, so the floor holds; and errors are how a run
+        // learns about its environment, so a rate under the bar is silence
+        // rather than a quieter finding.
+        let home = home("trigger-tool-errors-quiet");
+        trigger_file(&home, "morning", "");
+        // Under the call floor, though every call failed.
+        ledger_row(
+            &home,
+            &json!({
+                "trigger": "morning",
+                "slot": "2026-08-14T07:00:00Z",
+                "started_at": "2026-08-14T07:00:01Z",
+                "status": "ok",
+                "tool_calls": 3,
+                "tool_errors": 3,
+            }),
+        );
+        assert!(of(&examine(&home, utc(NOW)), "triggers").is_empty());
+
+        // Over the floor, under the rate.
+        ledger_row(
+            &home,
+            &json!({
+                "trigger": "morning",
+                "slot": "2026-08-15T07:00:00Z",
+                "started_at": "2026-08-15T07:00:01Z",
+                "status": "ok",
+                "tool_calls": 40,
+                "tool_errors": 4,
+            }),
+        );
+        assert!(of(&examine(&home, utc(NOW)), "triggers").is_empty());
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_ledger_written_before_the_counts_existed_reports_nothing() {
+        // Not a perfect score, and not a division by zero: no data is not a
+        // finding, which is the rule the whole module runs on.
+        let home = home("trigger-tool-errors-bare");
+        trigger_file(&home, "morning", "");
+        ledger_row(
+            &home,
+            &json!({
+                "trigger": "morning",
+                "slot": "2026-08-14T07:00:00Z",
+                "started_at": "2026-08-14T07:00:01Z",
+                "status": "ok",
+            }),
+        );
+        assert!(of(&examine(&home, utc(NOW)), "triggers").is_empty());
 
         let _ = std::fs::remove_dir_all(&home);
     }

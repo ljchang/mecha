@@ -450,6 +450,24 @@ pub struct RunRecord {
     pub staged: u32,
     #[serde(default)]
     pub taint: Taint,
+    /// Tool calls attempted, and how many the environment refused.
+    ///
+    /// Recorded because an unattended run's reliability is invisible
+    /// otherwise: the briefing still arrives, the ledger still says `ok`, and
+    /// a trigger quietly failing a third of its calls reads exactly like one
+    /// that works. It matters more than it looks — marginal per-step accuracy
+    /// compounds into how long a task a run can finish — and `mecha doctor`
+    /// is the reader.
+    #[serde(default)]
+    pub tool_calls: u32,
+    #[serde(default)]
+    pub tool_errors: u32,
+    /// The run decided it was done with its last call failed. See
+    /// [`crate::agent::RunOutcome::ended_on_failed_call`] — worth recording
+    /// here above all, because nobody is reading the answer that reported
+    /// success over it.
+    #[serde(default)]
+    pub ended_on_failed_call: bool,
     /// Why the loop stopped, when it was not the model deciding it was done —
     /// a timeout, a budget, a shutdown. Without it a run cut short records as
     /// plain `ok` and a trigger that has been quietly truncating its answer
@@ -487,6 +505,9 @@ impl RunRecord {
             cost_usd: None,
             blocked_sends: 0,
             staged: 0,
+            tool_calls: 0,
+            tool_errors: 0,
+            ended_on_failed_call: false,
             taint: Taint::default(),
             stop_cause: None,
             summary: String::new(),
