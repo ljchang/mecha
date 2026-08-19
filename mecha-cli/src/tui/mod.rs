@@ -16,6 +16,7 @@ mod ask;
 mod command;
 mod doctor;
 mod frontdoor;
+mod mail;
 mod outbox;
 mod polls;
 mod tools;
@@ -271,6 +272,7 @@ struct App {
     staged: Option<outbox::OutboxModal>,
     /// The /frontdoor modal, when open. Takes every key while it is up.
     requests: Option<frontdoor::FrontdoorModal>,
+    mail: Option<mail::MailModal>,
     /// The /polls modal, when open. Takes every key while it is up.
     poll_monitor: Option<polls::PollsModal>,
     /// The /doctor modal, when open. Takes every key while it is up.
@@ -526,6 +528,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         scheduled: None,
         staged: None,
         requests: None,
+        mail: None,
         poll_monitor: None,
         health: None,
         pending_doctor_remedy: None,
@@ -1437,6 +1440,9 @@ fn on_key(
     if app.requests.is_some() {
         return handle_frontdoor_key(app, key);
     }
+    if app.mail.is_some() {
+        return handle_mail_key(app, key);
+    }
     if app.poll_monitor.is_some() {
         return handle_polls_key(app, key);
     }
@@ -1829,6 +1835,14 @@ fn run_command(
         Command::Frontdoor => match frontdoor::load() {
             Ok(rows) => app.requests = Some(frontdoor::FrontdoorModal::new(rows)),
             Err(e) => say(format!("frontdoor: {e:#}")),
+        },
+
+        Command::Mail => match mail::load() {
+            Ok(rows) if rows.is_empty() => {
+                say("nothing classified yet — `mecha mail classify` fills the queue".into())
+            }
+            Ok(rows) => app.mail = Some(mail::MailModal::new(rows)),
+            Err(e) => say(format!("mail: {e:#}")),
         },
 
         Command::Polls => match polls::load() {
@@ -3557,6 +3571,9 @@ fn draw(
     if let Some(modal) = &app.requests {
         modal.draw(frame);
     }
+    if let Some(modal) = &app.mail {
+        modal.draw(frame);
+    }
     if let Some(modal) = &app.poll_monitor {
         modal.draw(frame);
     }
@@ -3907,6 +3924,161 @@ fn leave(terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>) ->
     Ok(())
 }
 
+/// Keys for the `/mail` modal.
+///
+/// Every mutation is `mecha mail …` in a child process — see `tui/mail.rs` for
+/// why. Nothing here touches the store directly, so a thing the modal can do
+/// is a thing a script or a trigger can do.
+fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let Some(modal) = &mut app.mail else {
+        return Ok(());
+    };
+
+    // A note being typed owns the keyboard, like the front door's.
+    if let Some(input) = &mut modal.input {
+        match key.code {
+            KeyCode::Esc => {
+                modal.input = None;
+            }
+            KeyCode::Enter => {
+                let Some(input) = modal.input.take() else {
+                    return Ok(());
+                };
+                let Some(row) = modal.rows.get(modal.selected) else {
+                    return Ok(());
+                };
+                if input.buffer.trim().is_empty() {
+                    modal.status = Some("nothing typed — cancelled".into());
+                    return Ok(());
+                }
+                let (thread, account) = (row.thread_id.clone(), row.account.clone());
+                let result = match input.verb {
+                    "needs-info" => self_cli(&[
+                        "mail",
+                        "needs-info",
+                        &thread,
+                        "--account",
+                        &account,
+                        "--missing",
+                        input.buffer.trim(),
+                    ]),
+                    // A correction names a bucket; anything else is a typo and
+                    // the CLI says so with the alternatives.
+                    _ => self_cli(&[
+                        "mail",
+                        "correct",
+                        &thread,
+                        "--account",
+                        &account,
+                        "--bucket",
+                        input.buffer.trim(),
+                    ]),
+                };
+                modal.status = Some(match result {
+                    Ok(out) => out.lines().next().unwrap_or("done").to_string(),
+                    Err(e) => format!("{e:#}"),
+                });
+                refresh_mail(app);
+            }
+            KeyCode::Backspace => {
+                input.buffer.pop();
+            }
+            KeyCode::Char(c) => input.buffer.push(c),
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    // A pending confirmation owns it next. EOF and anything that is not `y`
+    // mean no, which is the outbox's rule and the doctor's.
+    if modal.confirm.is_some() {
+        let yes = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'));
+        modal.confirm = None;
+        if !yes {
+            modal.status = Some("cancelled".into());
+            return Ok(());
+        }
+        let Some(row) = modal.rows.get(modal.selected) else {
+            return Ok(());
+        };
+        let (thread, account) = (row.thread_id.clone(), row.account.clone());
+        let out = self_cli(&["mail", "spam", &thread, "--account", &account]);
+        modal.status = Some(match out {
+            Ok(o) => o.lines().next().unwrap_or("marked spam").to_string(),
+            Err(e) => format!("{e:#}"),
+        });
+        refresh_mail(app);
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mail = None;
+        }
+        KeyCode::Up | KeyCode::Char('k') => modal.move_by(-1),
+        KeyCode::Down | KeyCode::Char('j') => modal.move_by(1),
+        KeyCode::Enter => modal.detail = !modal.detail,
+        KeyCode::Char(c) => {
+            let Some(action) = mail::action_for(c) else {
+                return Ok(());
+            };
+            let Some(row) = modal.rows.get(modal.selected) else {
+                return Ok(());
+            };
+            let (thread, account) = (row.thread_id.clone(), row.account.clone());
+            match action {
+                mail::Action::Close => app.mail = None,
+                mail::Action::Detail => modal.detail = !modal.detail,
+                mail::Action::Confirm(verb) => {
+                    // Spam is the one triage action with an effect outside the
+                    // user's own mailbox: it trains the provider's filter.
+                    modal.confirm = Some(format!("mark as {verb}? trains the filter — y/N"));
+                }
+                mail::Action::Prompt(verb, label) => {
+                    modal.input = Some(mail::MailInput {
+                        label: label.to_string(),
+                        verb,
+                        buffer: String::new(),
+                    });
+                }
+                mail::Action::Now(verb) => {
+                    let out = self_cli(&["mail", verb, &thread, "--account", &account]);
+                    modal.status = Some(match out {
+                        Ok(o) => o.lines().next().unwrap_or("done").to_string(),
+                        Err(e) => format!("{e:#}"),
+                    });
+                    refresh_mail(app);
+                }
+                mail::Action::Detached(verb) => {
+                    modal.status = Some(format!(
+                        "{verb}: not built yet — the run would draft into /outbox"
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Re-read the store after a mutation, keeping the cursor where it was.
+///
+/// Reloading rather than patching the row in memory: the child process is the
+/// only writer, so anything this modal believed about the record is now a
+/// guess. Cheap — the store is small and local.
+fn refresh_mail(app: &mut App) {
+    let (selected, status) = match &app.mail {
+        Some(m) => (m.selected, m.status.clone()),
+        None => return,
+    };
+    if let Ok(rows) = mail::load() {
+        let mut modal = mail::MailModal::new(rows);
+        modal.selected = selected.min(modal.rows.len().saturating_sub(1));
+        modal.status = status;
+        app.mail = Some(modal);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::input_layout;
@@ -3951,6 +4123,7 @@ mod tests {
             scheduled: None,
             staged: None,
             requests: None,
+            mail: None,
             poll_monitor: None,
             health: None,
             pending_doctor_remedy: None,

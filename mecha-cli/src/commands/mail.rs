@@ -21,9 +21,9 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 use mecha_core::mail_triage::{
-    changed_fields, needs_body, prefilter, Bucket, Correcting, Graded, Proposed, Record, Scorecard,
-    ThreadInput, TriageStore, Urgency, Verdict, BODY_CHARS_MAX, CLASSIFIED, DISMISSED, FAILED,
-    REQUEST_TYPES,
+    changed_fields, handle, needs_body, prefilter, Bucket, Correcting, Graded, Proposed, Record,
+    Scorecard, ThreadInput, TriageStore, Urgency, Verdict, BODY_CHARS_MAX, CLASSIFIED, DISMISSED,
+    FAILED, REQUEST_TYPES,
 };
 
 use crate::{setup, GlobalOpts};
@@ -126,6 +126,25 @@ pub enum Cmd {
         /// YYYY-MM-DD, or `none` to clear it.
         #[arg(long)]
         deadline: Option<String>,
+    },
+    /// Archive a thread — out of the inbox, reversible, nobody else notified.
+    Archive {
+        thread_id: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Mark a thread as spam.
+    ///
+    /// **Separate verbs rather than `triage --action <x>`**, on
+    /// `SLACK-ACTIONS-DESIGN.md` §1's reasoning: a free-form label argument
+    /// would put `spam` inside a verb that reads as harmless. `mecha mail
+    /// spam` reads as what it is, and it is the one triage action with an
+    /// effect outside the user's own mailbox — it trains the provider's
+    /// filter, which archiving does not.
+    Spam {
+        thread_id: String,
+        #[arg(long)]
+        account: Option<String>,
     },
     /// Track a thread as a task on the knowledge graph's board.
     ///
@@ -310,6 +329,12 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             request_type.as_deref(),
             deadline.as_deref(),
         ),
+        Cmd::Archive { thread_id, account } => {
+            triage(global, &thread_id, account.as_deref(), "archive").await
+        }
+        Cmd::Spam { thread_id, account } => {
+            triage(global, &thread_id, account.as_deref(), "spam").await
+        }
         Cmd::Task {
             thread_id,
             account,
@@ -1239,53 +1264,6 @@ fn guess_self(path: &std::path::Path) -> Result<String> {
         .context("could not infer the mailbox owner; set MECHA_EVAL_SELF")
 }
 
-#[cfg(test)]
-mod classify_exit_tests {
-    use super::run_accomplished_nothing;
-
-    /// 2026-08-19: the nightly classified 0 of 16 and systemd logged SUCCESS,
-    /// because the command returned `Ok(())` whatever happened. Every check
-    /// downstream — `OnFailure=`, `systemctl --failed`, doctor's failed-unit
-    /// scan — reads a unit's exit code, so a broken nightly was invisible to
-    /// all of them at once.
-    #[test]
-    fn a_run_that_did_nothing_fails_and_a_partial_one_does_not() {
-        assert!(run_accomplished_nothing(0, 0, 16), "the incident");
-
-        // Partial failure is a working nightly. Failing the unit here would
-        // train someone to ignore the alarm, which costs more than it buys.
-        assert!(!run_accomplished_nothing(14, 0, 2));
-        assert!(!run_accomplished_nothing(1, 0, 99));
-
-        // Pre-filter disposal is work. A sweep of nothing but bulk mail did
-        // its job without one model call.
-        assert!(!run_accomplished_nothing(0, 12, 0));
-        assert!(!run_accomplished_nothing(0, 12, 3));
-
-        // Nothing to do is not a failure — the common case for a nightly that
-        // already swept an hour ago, and the one false alarm to avoid.
-        assert!(!run_accomplished_nothing(0, 0, 0));
-    }
-}
-
-/// Parse a closed-vocabulary value, listing the alternatives on failure.
-///
-/// A typo must fail at the keyboard rather than write a verdict nobody asked
-/// for — the same reason `mecha trigger add` validates a cron expression up
-/// front instead of at three in the morning.
-fn one_of<T: Copy>(name: &str, given: &str, table: &[(&str, T)]) -> Result<T> {
-    table
-        .iter()
-        .find(|(k, _)| *k == given)
-        .map(|(_, v)| *v)
-        .with_context(|| {
-            format!(
-                "unknown {name} `{given}` — one of: {}",
-                table.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(", ")
-            )
-        })
-}
-
 #[allow(clippy::too_many_arguments)]
 fn correct(
     thread_id: &str,
@@ -1635,7 +1613,7 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
                 }
                 Ok(Some(lesson)) => {
                     let refl = mecha_core::learning::Reflexion {
-                        id: format!("triage-{}", &key),
+                        id: format!("triage-{key}"),
                         domain: mecha_core::learning::TRIAGE_DOMAIN.to_string(),
                         // The thread is the session here: there is no
                         // conversation, and this is what a later reader would
@@ -1809,4 +1787,87 @@ fn resolve_thread_lenient(store: &TriageStore, given: &str) -> Result<String> {
         mecha_core::mail_triage::resolve_thread_id(given, ids.iter().map(String::as_str))?
             .unwrap_or_else(|| given.to_string()),
     )
+}
+
+/// Act on a thread in the user's own mailbox.
+///
+/// `mail_triage` reaches nobody: no third party learns anything, which is why
+/// it is `destructiveHint` alone rather than `external_send`, and why it is
+/// never outbox-routed — staging it would make triage circular, reviewing a
+/// queue in order to fill another queue.
+async fn triage(
+    global: &GlobalOpts,
+    thread_id: &str,
+    account: Option<&str>,
+    action: &str,
+) -> Result<()> {
+    let store = TriageStore::open(TriageStore::default_root()?)?;
+    let thread_id = &resolve_thread(&store, thread_id)?;
+    let account = resolve_account(&store, thread_id, account)?;
+
+    let prepared = setup::prepare_tools(global, false).await?;
+    let tool = find_tool(&prepared.registry, "mail_triage")
+        .context("no mail server in this configuration — is `[[mcp]]` for mecha-mail enabled?")?;
+    let out = tool
+        .call(
+            json!({ "thread_id": thread_id, "account": account, "action": action }),
+            &tool_ctx(&prepared),
+        )
+        .await?;
+    if out.is_error {
+        bail!("{action} failed: {}", out.content);
+    }
+    // Recorded before reporting: the mailbox has already changed, and a store
+    // that disagrees with it would send the next sweep back over a thread the
+    // user has dealt with.
+    store.mark(&account, thread_id, action, mecha_core::mail_triage::ACTED)?;
+    println!("{action}d {} — {}", handle(thread_id), out.content.trim());
+    Ok(())
+}
+
+/// Parse a closed-vocabulary value, listing the alternatives on failure.
+///
+/// A typo must fail at the keyboard rather than write a verdict nobody asked
+/// for — the same reason `mecha trigger add` validates a cron expression up
+/// front instead of at three in the morning.
+fn one_of<T: Copy>(name: &str, given: &str, table: &[(&str, T)]) -> Result<T> {
+    table
+        .iter()
+        .find(|(k, _)| *k == given)
+        .map(|(_, v)| *v)
+        .with_context(|| {
+            format!(
+                "unknown {name} `{given}` — one of: {}",
+                table.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(", ")
+            )
+        })
+}
+
+#[cfg(test)]
+mod classify_exit_tests {
+    use super::run_accomplished_nothing;
+
+    /// 2026-08-19: the nightly classified 0 of 16 and systemd logged SUCCESS,
+    /// because the command returned `Ok(())` whatever happened. Every check
+    /// downstream — `OnFailure=`, `systemctl --failed`, doctor's failed-unit
+    /// scan — reads a unit's exit code, so a broken nightly was invisible to
+    /// all of them at once.
+    #[test]
+    fn a_run_that_did_nothing_fails_and_a_partial_one_does_not() {
+        assert!(run_accomplished_nothing(0, 0, 16), "the incident");
+
+        // Partial failure is a working nightly. Failing the unit here would
+        // train someone to ignore the alarm, which costs more than it buys.
+        assert!(!run_accomplished_nothing(14, 0, 2));
+        assert!(!run_accomplished_nothing(1, 0, 99));
+
+        // Pre-filter disposal is work. A sweep of nothing but bulk mail did
+        // its job without one model call.
+        assert!(!run_accomplished_nothing(0, 12, 0));
+        assert!(!run_accomplished_nothing(0, 12, 3));
+
+        // Nothing to do is not a failure — the common case for a nightly that
+        // already swept an hour ago, and the one false alarm to avoid.
+        assert!(!run_accomplished_nothing(0, 0, 0));
+    }
 }
