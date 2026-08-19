@@ -4148,6 +4148,49 @@ fn refresh_mail(app: &mut App) {
     }
 }
 
+/// Start a drafting run and let it go.
+///
+/// **Detached, because it is a whole agent run.** It builds a tool surface,
+/// reads a thread and writes prose — minutes, not milliseconds — and doing
+/// that on the event loop freezes the interface. The result lands in
+/// `/outbox`, which is where it is reviewed; this only reports that the run
+/// started.
+fn spawn_draft(app: &mut App, verb: &str, thread: &str, account: &str, to: Option<&str>) {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => {
+            if let Some(m) = &mut app.mail {
+                m.status = Some(format!("cannot find my own binary: {e}"));
+            }
+            return;
+        }
+    };
+    let mut args: Vec<String> = vec![
+        "mail".into(),
+        verb.into(),
+        thread.into(),
+        "--account".into(),
+        account.into(),
+    ];
+    if let Some(to) = to {
+        args.push("--to".into());
+        args.push(to.into());
+    }
+    let spawned = std::process::Command::new(exe)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Some(m) = &mut app.mail {
+        m.input = None;
+        m.status = Some(match spawned {
+            Ok(_) => format!("{verb} drafting in the background — watch /outbox"),
+            Err(e) => format!("could not start {verb}: {e}"),
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::input_layout;
@@ -4524,48 +4567,5 @@ mod tests {
         // arithmetic that ran first.
         let (_, _, rows) = input_layout("abc", 3, 0);
         assert!(rows >= 1);
-    }
-}
-
-/// Start a drafting run and let it go.
-///
-/// **Detached, because it is a whole agent run.** It builds a tool surface,
-/// reads a thread and writes prose — minutes, not milliseconds — and doing
-/// that on the event loop freezes the interface. The result lands in
-/// `/outbox`, which is where it is reviewed; this only reports that the run
-/// started.
-fn spawn_draft(app: &mut App, verb: &str, thread: &str, account: &str, to: Option<&str>) {
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(e) => {
-            if let Some(m) = &mut app.mail {
-                m.status = Some(format!("cannot find my own binary: {e}"));
-            }
-            return;
-        }
-    };
-    let mut args: Vec<String> = vec![
-        "mail".into(),
-        verb.into(),
-        thread.into(),
-        "--account".into(),
-        account.into(),
-    ];
-    if let Some(to) = to {
-        args.push("--to".into());
-        args.push(to.into());
-    }
-    let spawned = std::process::Command::new(exe)
-        .args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    if let Some(m) = &mut app.mail {
-        m.input = None;
-        m.status = Some(match spawned {
-            Ok(_) => format!("{verb} drafting in the background — watch /outbox"),
-            Err(e) => format!("could not start {verb}: {e}"),
-        });
     }
 }
