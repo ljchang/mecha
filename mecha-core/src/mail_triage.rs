@@ -558,6 +558,30 @@ pub const REQUEST_TYPES: &[&str] = &[
     // against anything.
 ];
 
+/// One field a human said the classifier got wrong.
+///
+/// **Field-level, because "wrong" is not one thing.** A misread bucket, a
+/// missed deadline and a wrong request kind are different errors with
+/// different fixes, and a correction store that flattens them into "this was
+/// wrong" teaches the learner noise. `was` is kept beside `now` because the
+/// mistake is the lesson — a learner shown only the right answer cannot see
+/// what to stop doing.
+///
+/// **No context is copied onto it**, unlike flowmail's
+/// `classification_corrections`, which denormalised sender, subject and
+/// snippet so a correction survived the email being deleted. Here the
+/// [`Record`] is an index rather than a mailbox copy and already holds the
+/// envelope, so the correction sits beside its own context and cannot drift
+/// from it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Correction {
+    /// `bucket`, `urgency`, `proposed`, `request_type` or `deadline`.
+    pub field: String,
+    pub was: String,
+    pub now: String,
+    pub at: String,
+}
+
 /// One thread, as the classifier left it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
@@ -627,6 +651,13 @@ pub struct Record {
     /// that only ever fires and never reports cannot be wrong out loud.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub escalated_from: Option<String>,
+    /// Every field a human corrected, oldest first.
+    ///
+    /// **Appended, never overwritten.** A correction that was itself wrong is
+    /// evidence too, and the sequence is what distinguishes "the classifier
+    /// was wrong once" from "this thread is genuinely ambiguous".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub corrections: Vec<Correction>,
     /// What a human did about it, and when.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acted: Option<String>,
@@ -766,6 +797,7 @@ impl TriageStore {
             escalated: false,
             escalated_changed: Vec::new(),
             escalated_from: None,
+            corrections: Vec::new(),
             acted: None,
             acted_at: None,
             rest: Default::default(),
@@ -864,6 +896,7 @@ mod tests {
             escalated: false,
             escalated_changed: Vec::new(),
             escalated_from: None,
+            corrections: Vec::new(),
             acted: None,
             acted_at: None,
             rest: Default::default(),
