@@ -206,6 +206,21 @@ and the connector reconnected with its 12 threads intact at 14:28. The timer-dri
 no restart; restarting them would be cargo-culting. The set that needs action
 is exactly the set holding a long-lived process.
 
+- **The local model server is `llama-local.service`** (systemd user, enabled,
+  `scripts/start-moe-mtp.sh`, qwen3.6-35b-a3b on 127.0.0.1:8080). **It became a
+  unit on 2026-08-19 and the reason generalises.** Before that it was only ever
+  started as a transient unit, so a reboot restored every *consumer* —
+  `mecha-triggers`, `mecha-slack`, `mecha-drain`, `mecha-mail-classify` are all
+  persistent and enabled — and none of the thing they consume. The machine
+  rebooted at 02:39 that morning and for nine hours every agent run failed with
+  a connection error while systemd reported a healthy system. A reboot does not
+  degrade this box evenly: it brings back exactly the half that generates load.
+  `Restart=on-failure`, deliberately not `always` — a server that cannot load
+  should stay visibly down rather than loop.
+  **After restarting it, measure tokens/sec and not merely that it answered**:
+  `start-moe-mtp.sh` records that a server which loads while memory is
+  contended stays slow for its whole life and never recovers. 100.5 tok/s on a
+  short prompt is a healthy load; ~82 is the degraded one.
 - **Reflect-on-close**: `~/.mecha/config.toml` carries a `session_end` hook
   running `nohup mecha reflect -p local ... &` — every recorded session is mined
   minutes after it closes.
@@ -768,6 +783,26 @@ provider labels, and no mail parser belongs in mecha — the graph already inges
 `NEVER_AUTO` guard, so the live path pushes evidence through `kg_upsert` on the
 `distill.rs` pattern and lets the graph extract. Push only `respond`/`notify`
 buckets.
+
+**The nightly's outage on 2026-08-19 cost three fixes**, all shipped, and they
+are worth reading together because one absence produced all three:
+
+1. The model server was not a unit (above), so it did not come back.
+2. `mecha mail classify` returned `Ok(())` however badly it went, so a run that
+   classified 0 of 16 logged SUCCESS and every exit-code-based check —
+   `OnFailure=`, `systemctl --failed`, doctor's failed-unit scan — read a dead
+   nightly as a healthy one. It now exits non-zero when a run classified
+   nothing, disposed of nothing, and failed at least once. Partial failure is
+   still success on purpose: failing the unit for 14-of-16 trains someone to
+   ignore the alarm.
+3. **The sweep skipped anything the store had heard of**, and the store holds
+   failures as well as verdicts, so all 17 threads that failed against the dead
+   server would have been skipped forever — including a manuscript review
+   invitation, the category with the lowest reply rate and the hardest
+   deadlines. `TriageStore::needs_classifying` replaces `!is_known`: absent or
+   `failed` means classify, `dismissed` is a person's decision and
+   `classified` is done. Nothing would have reported this one either — the
+   sweep printed "0 to classify", which is what a quiet morning looks like.
 
 **Local state in no repository**, and the next session will want it:
 
