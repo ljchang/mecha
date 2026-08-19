@@ -560,6 +560,14 @@ failure mode is optimizing for update *frequency*. Building the autonomous
 driver before knowing whether these findings are worth acting on is that
 failure mode by name.
 
+**The corpus does not start filling until a build that writes it is
+installed.** Triggers, the Slack service and the nightly all run release
+paths, so every run before the deploy records nothing. As of 2026-08-19 the
+0.1.7 release is held for mail phase 6 (~25% done), and no install has
+happened — so `0 outcomes` is the expected reading for the whole hold and is
+not a bug. The clock on the checks below starts at install, not at the date
+this section was written.
+
 **Check as data accumulates, in this order.** Each step is cheap and each one
 can retire the next:
 
