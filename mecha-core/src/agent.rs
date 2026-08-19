@@ -651,6 +651,27 @@ pub struct RunOutcome {
     pub stop_cause: StopCause,
     /// Cost of this run, when the provider has prices configured.
     pub cost_usd: Option<f64>,
+    /// The model said it was finished, and the last thing it did was fail.
+    ///
+    /// The silent-failure shape: an agent that stops on its own after a failed
+    /// call may have understood the failure and said so, or may be reporting
+    /// success over it. Measured elsewhere, 75.8% of self-assessing AppWorld
+    /// runs are false successes and no LLM-judge configuration exceeds AUROC
+    /// 0.65 at catching one — while *this* signal is free, deterministic, and
+    /// visible nowhere in the answer text.
+    ///
+    /// Deliberately an observation rather than a verdict, which is why it is
+    /// named for what it saw. "Read this file" answered with "that file does
+    /// not exist" is a correct run that ends on a failed call, so this is not
+    /// an error condition; it is a flag a case or a human can gate on, and a
+    /// false positive costs one read. Only `Completed` runs can set it: a run
+    /// the harness cut short already says so through `stop_cause` and
+    /// `exhausted`.
+    ///
+    /// The last call only. One failure among successes is ordinary recovery —
+    /// what this names is a run whose *final* act failed and which then
+    /// declared itself done.
+    pub ended_on_failed_call: bool,
     /// How many times the transcript was summarised to keep it sendable.
     ///
     /// Reported because compaction is lossy: an answer produced after four
@@ -1139,6 +1160,10 @@ impl Agent {
                     turns,
                     refusal: None,
                     exhausted: true,
+                    // As in `interrupted`: the harness stopped this run, so
+                    // "it decided it was done over a failure" is not what
+                    // happened, whatever the last call did.
+                    ended_on_failed_call: false,
                     tool_calls: trace,
                     malformed_tool_args: malformed,
                     blocked_sends,
@@ -1763,6 +1788,17 @@ impl Agent {
             text
         };
 
+        // A denial is excluded: a human or a policy said no, the model was
+        // told so in those words, and the refusal is already visible to
+        // whoever issued it. What this looks for is the environment saying no.
+        let ended_on_failed_call = tool_calls.last().is_some_and(|c| c.is_error || c.unknown);
+        if ended_on_failed_call {
+            tracing::warn!(
+                "the run finished on a failed tool call; its answer may report \
+                 success over it"
+            );
+        }
+
         RunOutcome {
             text,
             stop_reason: response.stop_reason,
@@ -1770,6 +1806,7 @@ impl Agent {
             turns,
             refusal: response.refusal.clone(),
             exhausted: false,
+            ended_on_failed_call,
             tool_calls,
             malformed_tool_args,
             blocked_sends,
@@ -1902,6 +1939,9 @@ impl Agent {
             // The answer is partial, so callers that gate on this — the batch
             // runner's `ok`, for one — must not count it as a success.
             exhausted: true,
+            // Only a run that decided for itself that it was done can be
+            // finishing over a failure; this one was cut off, and says so.
+            ended_on_failed_call: false,
             tool_calls,
             malformed_tool_args,
             blocked_sends,
@@ -2535,6 +2575,29 @@ mod tests {
             Ok(ToolOutput::ok(
                 input.get("value").and_then(Value::as_str).unwrap_or(""),
             ))
+        }
+    }
+
+    /// A tool that always reports failure — the environment saying no, which
+    /// is a different thing from an approver saying no.
+    struct FailingTool;
+
+    #[async_trait]
+    impl Tool for FailingTool {
+        fn name(&self) -> &str {
+            "fs_edit"
+        }
+        fn description(&self) -> &str {
+            "Edit a file."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            false
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::err("`old` does not appear in the file"))
         }
     }
 
@@ -3914,32 +3977,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_run_that_answers_straight_after_a_failed_call_says_so() {
+        // The silent-failure shape: the edit failed, the model stopped on its
+        // own, and the answer reads like a success. Nothing in the text or the
+        // stop reason distinguishes this from a run that worked.
+        let turns = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t0".into(),
+                    name: "fs_edit".into(),
+                    input: json!({"path": "a.rs"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(
+                vec![Block::text("Done — the call site is fixed.")],
+                StopReason::EndTurn,
+            ),
+        ];
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(FailingTool)], PermissionMode::Allow);
+        agent.cfg.force_final_answer = false;
+
+        let mut convo = Conversation::user("fix the call site");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+        assert!(
+            outcome.ended_on_failed_call,
+            "the run declared itself done with its last act failed, and nothing \
+             else in the outcome can say so"
+        );
+    }
+
+    #[tokio::test]
+    async fn recovering_from_a_failure_is_not_finishing_over_one() {
+        // One failure among successes is ordinary work — a model that tries an
+        // edit, is told the anchor is ambiguous, and succeeds on the second
+        // attempt has done exactly the right thing. Flagging it would make the
+        // signal noise.
+        let turns = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t0".into(),
+                    name: "fs_edit".into(),
+                    input: json!({"path": "a.rs"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "ok"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("fixed")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![Arc::new(FailingTool), Arc::new(EchoTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = false;
+
+        let mut convo = Conversation::user("fix the call site");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert!(
+            outcome.tool_calls.iter().any(|c| c.is_error),
+            "the fixture must actually have failed once, or this proves nothing"
+        );
+        assert!(!outcome.ended_on_failed_call);
+    }
+
+    #[tokio::test]
+    async fn a_run_the_harness_cut_short_never_reads_as_finishing_over_a_failure() {
+        // `exhausted` and `stop_cause` already say the answer is incomplete.
+        // This flag means "it decided for itself that it was done", so a run
+        // that was stopped cannot set it however its last call went — or the
+        // two signals would double-count the same fact and the flag would stop
+        // meaning anything on its own.
+        let turns: Vec<CompletionResponse> = (0..4)
+            .map(|i| {
+                assistant(
+                    vec![Block::ToolUse {
+                        id: format!("t{i}"),
+                        name: "fs_edit".into(),
+                        input: json!({"path": "a.rs"}),
+                    }],
+                    StopReason::ToolUse,
+                )
+            })
+            .collect();
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(FailingTool)], PermissionMode::Allow);
+        agent.cfg.max_turns = 2;
+        agent.cfg.force_final_answer = false;
+
+        let mut convo = Conversation::user("fix the call site");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::MaxTurns);
+        assert!(outcome.tool_calls.last().is_some_and(|c| c.is_error));
+        assert!(!outcome.ended_on_failed_call);
+    }
+
+    #[tokio::test]
     async fn a_run_that_fails_the_same_call_over_and_over_stops_carrying_every_copy() {
         // The self-conditioning shape, end to end: the model retries one edit
         // six times and fails identically every time. Before the collapse pass
         // all six copies rode in every subsequent request — eviction exempts
         // errors and thinning only truncates long results, so nothing in the
         // harness touched them. This test fails on that behaviour.
-        struct AlwaysFails;
-        #[async_trait]
-        impl Tool for AlwaysFails {
-            fn name(&self) -> &str {
-                "fs_edit"
-            }
-            fn description(&self) -> &str {
-                "Edit a file."
-            }
-            fn input_schema(&self) -> Value {
-                json!({"type": "object"})
-            }
-            fn read_only(&self) -> bool {
-                false
-            }
-            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
-                Ok(ToolOutput::err("`old` does not appear in the file"))
-            }
-        }
-
         let mut turns: Vec<CompletionResponse> = Vec::new();
         for i in 0..6 {
             turns.push(assistant(
@@ -3954,7 +4105,7 @@ mod tests {
         turns.push(assistant(vec![Block::text("gave up")], StopReason::EndTurn));
 
         let (mut agent, _) =
-            agent_with_tools(turns, vec![Arc::new(AlwaysFails)], PermissionMode::Allow);
+            agent_with_tools(turns, vec![Arc::new(FailingTool)], PermissionMode::Allow);
         // Over the threshold every turn, but with nothing legal to summarise:
         // `compact_keep_recent` past the transcript length means `compact`
         // returns `None`, so this exercises the cheap passes alone.

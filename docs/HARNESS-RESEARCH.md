@@ -303,8 +303,11 @@ budgets derived from the window.
    into a count, keep the newest verbatim.** Deterministic, unit-testable in
    `compact.rs`, gradeable by pass^k. `StopCause::Loop` is not this: it stops a
    run that already went wrong, and it is dormant until a compaction.
-2. **A run can stop `Completed` with its trailing tool calls errored, and
-   nothing notices.** That is the silent-failure shape — 75.8% of
+2. ~~**A run can stop `Completed` with its trailing tool calls errored, and
+   nothing notices.**~~ **Built 2026-08-19** as `RunOutcome::ended_on_failed_call`
+   and `expect.ended_on_failed_call` — named for what it observes rather than
+   for a verdict, since a run whose right answer is "that file does not exist"
+   ends on a failed call correctly. That is the silent-failure shape — 75.8% of
    self-assessing AppWorld runs are false successes, and no LLM judge exceeds
    AUROC 0.65 at catching it, where the deterministic signal is free. A
    `completed_over_failures` flag on `RunOutcome` plus an `expect` check is the

@@ -232,6 +232,17 @@ pub struct Expect {
     /// answered by a model that had to use it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_compactions: Option<u32>,
+    /// Whether the run may finish on a failed tool call.
+    ///
+    /// Almost always `false`, and it is worth having as a check rather than as
+    /// a global rule because the exceptions are real: a case whose right answer
+    /// is "that file does not exist" *should* end on a failed call. What it
+    /// catches is the shape no other check can see — the model stops on its own
+    /// after a failure and writes an answer as though it had succeeded. Grading
+    /// that from the text needs a judge, and judges measure near chance at it
+    /// (AUROC 0.65 on tau2-bench, 0.54 on AppWorld) while this costs nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_on_failed_call: Option<bool>,
     /// A rubric for a second model to grade the answer against.
     ///
     /// For cases where the right answer is a *judgement* — did it ask instead of
@@ -469,6 +480,30 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
                 match result.stop_cause {
                     Some(actual) => format!("it {}", actual.describe()),
                     None => "the run never reached an outcome".into(),
+                }
+            },
+        });
+    }
+
+    if let Some(expected) = case.expect.ended_on_failed_call {
+        let passed = result.ended_on_failed_call == expected;
+        checks.push(Check {
+            name: if expected {
+                "finishes on a failed tool call".into()
+            } else {
+                "does not finish on a failed tool call".into()
+            },
+            passed,
+            detail: if passed {
+                String::new()
+            } else if expected {
+                "the run's last call succeeded".into()
+            } else {
+                // Name the call, or the reader has to go and find it: the
+                // failure is the last row of a trace that may be forty long.
+                match result.tool_calls.last() {
+                    Some(c) => format!("it stopped after {} failed, and answered anyway", c.name),
+                    None => "it stopped after a failed call".into(),
                 }
             },
         });
@@ -992,6 +1027,7 @@ mod tests {
         BatchResult {
             id: "c".into(),
             ok: true,
+            ended_on_failed_call: false,
             text: text.into(),
             error: None,
             turns: 2,
@@ -1065,6 +1101,55 @@ mod tests {
             ..Default::default()
         };
         assert!(!grade(&case(expect), &clean).passed);
+    }
+
+    #[test]
+    fn a_confident_answer_over_a_failed_call_fails_the_case() {
+        // The check exists because the answer text cannot be trusted to admit
+        // this: "Done — the call site is fixed" is what the model says whether
+        // the edit landed or not, and grading the claim needs a judge that
+        // measures near chance.
+        let failed = ToolCallTrace {
+            name: "fs_edit".into(),
+            input: json!({"path": "a.rs"}),
+            is_error: true,
+            denied: false,
+            unknown: false,
+            staged: false,
+        };
+        let mut over = result_with(vec![failed], "Done — the call site is fixed.");
+        over.ended_on_failed_call = true;
+
+        let expect = Expect {
+            ended_on_failed_call: Some(false),
+            contains: vec!["fixed".into()],
+            ..Default::default()
+        };
+        let graded = grade(&case(expect.clone()), &over);
+        assert!(
+            !graded.passed,
+            "the substring check passes on the model's own claim, so the case \
+             is only honest if the trace check fails it"
+        );
+        assert!(
+            graded
+                .checks
+                .iter()
+                .any(|c| !c.passed && c.detail.contains("fs_edit")),
+            "the failure has to name the call, not just report a flag"
+        );
+
+        // Same answer, same substring, last call succeeded: passes.
+        let ok = result_with(vec![], "Done — the call site is fixed.");
+        assert!(grade(&case(expect), &ok).passed);
+
+        // And a case whose right answer *is* a failure can say so.
+        let expect = Expect {
+            ended_on_failed_call: Some(true),
+            ..Default::default()
+        };
+        assert!(grade(&case(expect.clone()), &over).passed);
+        assert!(!grade(&case(expect), &ok).passed);
     }
 
     #[test]
