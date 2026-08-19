@@ -114,6 +114,7 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_outbox(&home.join("outbox"), now));
     findings.extend(check_frontdoor(&home.join("requests"), now));
     findings.extend(check_triggers(&home.join("triggers"), now));
+    findings.extend(check_runs(&home.join("sessions")));
     // The graph store is `~/.mecha-graph`, a hidden sibling of the mecha home
     // by that store's own convention — resolved relative to `home` so a test
     // (or a relocated home) carries its sibling with it.
@@ -1096,6 +1097,161 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     out
 }
 
+// --- run quality ------------------------------------------------------------
+
+/// How many sessions back a run-quality check reads.
+///
+/// Doctor runs in one pass with no network and no model, and each session is
+/// a file read — so this is a budget, not a claim about relevance. Two hundred
+/// covers weeks of ordinary use and stays well inside "fast enough to run
+/// whenever you wonder".
+const RUNS_WINDOW: usize = 200;
+
+/// Below this many runs *for one model*, no rate is reported.
+///
+/// Twenty rather than the trigger check's ten, because these rates are
+/// population statistics across mixed work rather than one job doing the same
+/// thing every morning, and the noise is correspondingly higher.
+const RUNS_MIN: usize = 20;
+
+/// The share of runs finishing over a failed call that is worth saying out
+/// loud. Deliberately high: rule-based evaluators are measured to *under*
+/// report success — they mark good trajectories as failures more often than
+/// humans do (AgentRewardBench) — so a low bar here would fire constantly on
+/// runs that were fine, and a doctor that cries wolf stops being read.
+const ENDED_ON_FAILURE_RATE: f64 = 0.20;
+
+/// The share of attempted tool calls the environment refuses.
+const TOOL_ERROR_RATE: f64 = 0.25;
+
+/// The share of runs the *harness* cut short. `Interrupted` is excluded from
+/// the numerator by [`cut_short`]: a person pressing Ctrl-C is the system
+/// working, and counting it would make an attentive user look like a problem.
+const CUT_SHORT_RATE: f64 = 0.25;
+
+/// Did the harness end this run, as distinct from the model finishing or a
+/// person stopping it?
+fn cut_short(stats: &crate::session::RunStats) -> bool {
+    use crate::agent::StopCause;
+    matches!(
+        stats.stop_cause,
+        Some(StopCause::MaxTurns)
+            | Some(StopCause::OutputTokenBudget)
+            | Some(StopCause::CostBudget)
+            | Some(StopCause::Loop)
+    )
+}
+
+/// Report population-level run quality: the signals that are invisible in any
+/// single run and obvious across a few hundred.
+///
+/// Split by model, because a corpus spanning two has no single rate worth
+/// quoting — the blend is true and useless, and a threshold on it fires for
+/// the wrong model. Silent until there is enough of one model to say
+/// anything, which is the same rule as everywhere else here: unknown is not a
+/// finding.
+fn check_runs(sessions: &Path) -> Vec<Finding> {
+    use crate::runlog::{Corpus, Scan};
+
+    let mut out = Vec::new();
+    if !sessions.is_dir() {
+        return out;
+    }
+    let corpus = match Corpus::scan(
+        sessions,
+        &Scan {
+            max_sessions: Some(RUNS_WINDOW),
+            since: None,
+        },
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            out.push(Finding::unreadable(
+                "runs",
+                "the session store",
+                format!("{}: {e}", sessions.display()),
+            ));
+            return out;
+        }
+    };
+
+    let remedy = |what: &str| {
+        Some(Remedy {
+            description: format!("read the run-quality summary ({what})"),
+            argv: vec![
+                "mecha".into(),
+                "sessions".into(),
+                "health".into(),
+                "--days".into(),
+                "30".into(),
+            ],
+            needs_terminal: false,
+        })
+    };
+
+    for (model, runs) in corpus.by_model() {
+        if runs.len() < RUNS_MIN {
+            continue;
+        }
+        let n = runs.len();
+
+        if let Some(rate) = runs.rate_of(|r| r.stats.ended_on_failed_call) {
+            if rate >= ENDED_ON_FAILURE_RATE {
+                out.push(Finding {
+                    component: "runs".to_string(),
+                    severity: Severity::Attention,
+                    summary: format!(
+                        "{:.0}% of `{model}` runs finished on a failed tool call",
+                        rate * 100.0
+                    ),
+                    detail: format!(
+                        "{} of {n} recent run(s). The model stopped of its own accord with                          its last call failed, and the answer it wrote may report success                          over it — which nothing in the text or the stop reason can show.",
+                        runs.ended_on_failed_call()
+                    ),
+                    remedy: remedy("which runs, and what failed"),
+                });
+            }
+        }
+
+        if let Some(rate) = runs.tool_error_rate() {
+            if rate >= TOOL_ERROR_RATE {
+                out.push(Finding {
+                    component: "runs".to_string(),
+                    severity: Severity::Attention,
+                    summary: format!(
+                        "`{model}` runs fail {:.0}% of their tool calls",
+                        rate * 100.0
+                    ),
+                    detail: format!(
+                        "{} of {} call(s) across {n} run(s) were refused by the environment.                          Errors are how a run learns where it is, so some are healthy — a                          quarter of them says something moved: a renamed path, a revoked                          grant, a tool whose schema the model keeps mis-filling.",
+                        runs.tool_errors(),
+                        runs.tool_calls()
+                    ),
+                    remedy: remedy("which tool, and how it failed"),
+                });
+            }
+        }
+
+        if let Some(rate) = runs.rate_of(|r| cut_short(&r.stats)) {
+            if rate >= CUT_SHORT_RATE {
+                out.push(Finding {
+                    component: "runs".to_string(),
+                    severity: Severity::Attention,
+                    summary: format!(
+                        "the harness cut {:.0}% of `{model}` runs short",
+                        rate * 100.0
+                    ),
+                    detail: format!(
+                        "{n} recent run(s) hit a turn, token or cost ceiling, or tripped the                          loop guard. A budget that stops a quarter of runs is measuring the                          budget rather than the work — the answers are truncated and say so                          only in `stop_cause`. Cancellations are not counted here.",
+                    ),
+                    remedy: remedy("which ceiling, and how often"),
+                });
+            }
+        }
+    }
+    out
+}
+
 // --- graph nightly silence --------------------------------------------------
 
 /// The two daily jobs that keep the knowledge graph current, each of which
@@ -1892,6 +2048,159 @@ mod tests {
         assert_eq!(triggers.len(), 1, "{triggers:#?}");
         assert!(triggers[0].detail.contains("provider unreachable"));
 
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Write `n` runs of one model into the session store, so the
+    /// population checks have something to be a population of.
+    fn runs_in(
+        home: &Path,
+        model: &str,
+        n: usize,
+        stats: impl Fn(usize) -> crate::session::RunStats,
+    ) {
+        let dir = home.join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..n {
+            let session = crate::session::Session::create(
+                &dir,
+                crate::session::SessionMeta {
+                    // The model rides in the id: two calls to this helper
+                    // in one test must not collide, or the second silently
+                    // rewrites the first's transcripts and the fixture stops
+                    // describing what the test says it does.
+                    id: format!("2026080{}T00000{i:03}-{model}", 1 + i % 9),
+                    created_at: utc(NOW),
+                    provider: "local".into(),
+                    model: model.to_string(),
+                    workspace: std::path::PathBuf::from("/tmp"),
+                    title: None,
+                },
+            )
+            .unwrap();
+            session
+                .append(&crate::session::Record::Outcome(stats(i)))
+                .unwrap();
+        }
+    }
+
+    fn run_stats(
+        calls: u32,
+        errors: u32,
+        ended_failed: bool,
+        cause: crate::agent::StopCause,
+    ) -> crate::session::RunStats {
+        crate::session::RunStats {
+            tool_calls: calls,
+            tool_errors: errors,
+            ended_on_failed_call: ended_failed,
+            stop_cause: Some(cause),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_model_that_keeps_finishing_over_failures_is_reported() {
+        use crate::agent::StopCause;
+        let home = home("runs-ended-on-failure");
+        // A third of runs end over a failure; everything else is healthy.
+        runs_in(&home, "tiny-local", 30, |i| {
+            run_stats(6, 0, i % 3 == 0, StopCause::Completed)
+        });
+
+        let all = examine(&home, utc(NOW));
+        let findings = of(&all, "runs");
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert!(
+            findings[0].summary.contains("tiny-local"),
+            "{}",
+            findings[0].summary
+        );
+        assert!(
+            findings[0].summary.contains("33%"),
+            "{}",
+            findings[0].summary
+        );
+        assert_eq!(
+            findings[0].remedy.as_ref().unwrap().argv,
+            vec!["mecha", "sessions", "health", "--days", "30"],
+            "reading is the remedy; doctor never decides what to change"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_cancelled_run_is_not_the_harness_cutting_it_short() {
+        use crate::agent::StopCause;
+        // A person pressing Ctrl-C is the system working, and counting it
+        // would make an attentive user look like a problem.
+        let home = home("runs-interrupted");
+        runs_in(&home, "tiny-local", 30, |_| {
+            run_stats(6, 0, false, StopCause::Interrupted)
+        });
+        let findings = examine(&home, utc(NOW));
+        assert!(of(&findings, "runs").is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_turn_ceiling_stopping_a_quarter_of_runs_is_a_finding() {
+        use crate::agent::StopCause;
+        let home = home("runs-max-turns");
+        runs_in(&home, "tiny-local", 30, |_| {
+            run_stats(6, 0, false, StopCause::MaxTurns)
+        });
+        let all = examine(&home, utc(NOW));
+        let findings = of(&all, "runs");
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert!(
+            findings[0].summary.contains("cut"),
+            "{}",
+            findings[0].summary
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_thin_sample_of_one_model_says_nothing_about_it() {
+        use crate::agent::StopCause;
+        // Every run terrible, and still silent: nineteen runs is not a
+        // population, and unknown is not a finding.
+        let home = home("runs-thin");
+        runs_in(&home, "tiny-local", 19, |_| {
+            run_stats(6, 6, true, StopCause::MaxTurns)
+        });
+        let all = examine(&home, utc(NOW));
+        assert!(of(&all, "runs").is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_bad_model_does_not_drag_a_good_one_into_a_finding() {
+        use crate::agent::StopCause;
+        // The reason rates split: blended, these two average to a rate that
+        // describes neither, and a threshold on it names the wrong model.
+        let home = home("runs-two-models");
+        runs_in(&home, "steady", 25, |_| {
+            run_stats(10, 0, false, StopCause::Completed)
+        });
+        runs_in(&home, "flaky", 25, |_| {
+            run_stats(10, 9, false, StopCause::Completed)
+        });
+
+        let all = examine(&home, utc(NOW));
+        let findings = of(&all, "runs");
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert!(
+            findings[0].summary.contains("flaky"),
+            "{}",
+            findings[0].summary
+        );
+        assert!(
+            !findings[0].summary.contains("steady"),
+            "the healthy model was named in a finding about the other one"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
