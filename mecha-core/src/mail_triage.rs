@@ -272,9 +272,9 @@ pub const TAGS: &[&str] = &[
     "lab-app",
     "rec-letter",
     "admin",
-    // Added 2026-08-19 from the corpus measurement. Student advising is 31.5%
-    // of personally-addressed mail — the largest single category — and
-    // `teaching` did not cover it: a prerequisite question, a major plan and a
+    // Added 2026-08-19 from the corpus measurement. Student advising is the
+    // largest single category of mail arriving, and `teaching` did not cover
+    // it: a prerequisite question, a major plan and a
     // course petition are advising load, not a class being taught. It was
     // invisible when this list was written because it is the most routine
     // thing that arrives, and routine things do not come to mind when a person
@@ -307,8 +307,8 @@ pub const TAGS: &[&str] = &[
 /// (`docs/MAIL-CORPUS-RESEARCH.md`). The list had been guesswork — intuition
 /// plus one fifty-one-thread sample — and was wrong in both directions.
 pub const REQUEST_TYPES: &[&str] = &[
-    // 769 threads a year — the largest category by a factor of three, and
-    // absent from this list until it was measured. Major plans, prerequisites,
+    // The largest category by a wide margin, and absent from this list until
+    // it was measured. Major plans, prerequisites,
     // course petitions, transfer credit, thesis logistics. It passes the test
     // above: answering needs the student's year, their programme and what they
     // have already taken, every time.
@@ -321,8 +321,8 @@ pub const REQUEST_TYPES: &[&str] = &[
     // set of things has to be known before it can be answered.
     //
     // A peer review invitation: journal, manuscript, deadline, and an
-    // accept-or-decline. 219 threads a year at a 5% reply rate — the lowest of
-    // any real category, against the hardest deadlines.
+    // accept-or-decline. Real volume at the lowest reply rate of any category,
+    // against the hardest deadlines.
     "review",
     // A letter of support for someone else's proposal. Distinct from `letter`:
     // the agency, the mechanism, the deadline and what is being committed are
@@ -966,7 +966,7 @@ mod tests {
     fn the_taxonomy_matches_what_was_measured() {
         assert!(
             REQUEST_TYPES.contains(&"student-advising"),
-            "31.5% of personally-addressed mail; the largest single category"
+            "the largest single category of mail that arrives"
         );
         assert!(
             !REQUEST_TYPES.contains(&"book"),
