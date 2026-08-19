@@ -770,6 +770,18 @@ pub const FAILED: &str = "failed";
 /// on an answer is the shape that dies on day one.
 pub const PARKED: &str = "parked";
 
+/// A draft is staged and waiting in the outbox.
+///
+/// **Not `acted`.** A staged draft is not a sent reply, and calling the thread
+/// done at staging time would drop it out of the queue while the answer still
+/// needs releasing. The thread stays the user's until the outbox item goes.
+pub const DRAFTED: &str = "drafted";
+
+/// The session that drafted, so a later pass can join outbox items back to the
+/// thread — the front door's trick, where `outbox send` in another process
+/// hours later closes the loop without knowing it is doing so.
+pub const DRAFT_SESSION: &str = "draft_session";
+
 /// What a parked thread is waiting for. Free text, the user's own words.
 pub const PARKED_FOR: &str = "parked_for";
 
