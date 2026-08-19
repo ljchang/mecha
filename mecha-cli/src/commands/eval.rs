@@ -124,6 +124,62 @@ pub struct Args {
     /// with `--out`, both arms and the flips land in one clearly-marked JSON.
     #[arg(long, conflicts_with = "compare")]
     pub ab_rules: bool,
+
+    /// Measure a candidate config change: run the case set once as configured
+    /// and once with these overrides, and judge the difference.
+    ///
+    /// `KEY=VALUE`, repeatable. Keys are run options, which is the honest
+    /// boundary — the knobs an automated proposer may move are exactly the
+    /// ones a run can be launched with, so both arms are built by the same
+    /// code path and differ only in the override. A second construction site
+    /// is how two arms silently stop being comparable.
+    ///
+    /// Graded on case *outcome* rather than on harness counters, because a
+    /// replay holds tool results fixed and cannot see a change in what the
+    /// model said — this is the content-sensitive arm a prose or prompt-facing
+    /// change needs.
+    #[arg(
+        long = "ab-config",
+        value_name = "KEY=VALUE",
+        conflicts_with_all = ["compare", "ab_rules"]
+    )]
+    pub ab_config: Vec<String>,
+
+    /// One episode in this many is held out of selection, for `--ab-config`.
+    #[arg(long, default_value_t = 3, value_name = "N")]
+    pub holdout_in: u64,
+}
+
+/// A candidate config override, parsed from `KEY=VALUE`.
+///
+/// Deliberately a closed set. An open one would let a proposer reach settings
+/// whose effect is not measurable by this comparison — or worse, security
+/// settings, which are never a measurement's to decide.
+fn apply_override(opts: &mut GlobalOpts, spec: &str) -> Result<()> {
+    let (key, value) = spec
+        .split_once('=')
+        .with_context(|| format!("--ab-config expects KEY=VALUE, got `{spec}`"))?;
+    let num = |what: &str| -> Result<u64> {
+        value
+            .parse::<u64>()
+            .with_context(|| format!("{what} takes a number, got `{value}`"))
+    };
+    match key {
+        "compact_at_tokens" => opts.compact_at = Some(num("compact_at_tokens")?),
+        "max_turns" => opts.max_turns = Some(num("max_turns")? as u32),
+        "max_output_tokens" => opts.max_output_tokens = Some(num("max_output_tokens")?),
+        "effort" => {
+            opts.effort = Some(
+                value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("unknown effort `{value}`"))?,
+            )
+        }
+        other => anyhow::bail!(
+            "`{other}` is not an overridable key; try compact_at_tokens, max_turns, max_output_tokens or effort"
+        ),
+    }
+    Ok(())
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -155,8 +211,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     if args.ab_rules {
         return ab_rules(global, &args, &cases, &fixture).await;
     }
+    if !args.ab_config.is_empty() {
+        return ab_config(global, &args, &cases, &fixture).await;
+    }
 
-    let (scorecard, graded) = run_arm(global, &args, &cases, &fixture, false, "").await?;
+    let (scorecard, graded) = run_arm(global, &args, &cases, &fixture, false, &[], "").await?;
 
     print_scorecard(&scorecard, &graded, args.failures);
 
@@ -189,6 +248,7 @@ async fn run_arm(
     cases: &[EvalCase],
     fixture: &Path,
     with_rules: bool,
+    overrides: &[String],
     arm: &str,
 ) -> Result<(Scorecard, Vec<GradedCase>)> {
     // Force read-only and point the workspace at the fixture, whatever the
@@ -227,6 +287,11 @@ async fn run_arm(
     // or worse, have a stray message from last night's trigger folded into
     // its conversation mid-case.
     opts.no_messages = true;
+    // The candidate arm's whole difference from the baseline, applied here so
+    // both arms are built by one code path. Empty for every other caller.
+    for spec in overrides {
+        apply_override(&mut opts, spec)?;
+    }
     let mut prepared = setup::prepare(&opts, false).await?;
     if !args.no_ask_user {
         prepared
@@ -470,9 +535,9 @@ async fn ab_rules(
     );
 
     eprintln!("── arm A: rules-free ──");
-    let (a_card, a_graded) = run_arm(global, args, cases, fixture, false, "a").await?;
+    let (a_card, a_graded) = run_arm(global, args, cases, fixture, false, &[], "a").await?;
     eprintln!("── arm B: with this machine's learned rules ──");
-    let (b_card, b_graded) = run_arm(global, args, cases, fixture, true, "b").await?;
+    let (b_card, b_graded) = run_arm(global, args, cases, fixture, true, &[], "b").await?;
 
     // A case passes an arm when every run of it passed — the same pass^k the
     // scorecard reports.
@@ -981,6 +1046,157 @@ fn compare(paths: &[PathBuf]) -> Result<()> {
         }
     }
     println!();
+    Ok(())
+}
+
+/// `--ab-config`: the case set run twice, and the difference judged.
+///
+/// The content-sensitive arm of the candidate gate. A case's *cost* is
+/// failing it, so a pass is a win and every guardrail in `candidate.rs`
+/// applies unchanged — the holdout split, the work floor, and the rule that
+/// thin evidence proposes rather than rejects.
+///
+/// Like `--ab-rules`, neither arm is written as an ordinary scorecard: a
+/// scorecard produced under a candidate override is not comparable to one
+/// produced without it, and filing it as though it were is how an A/B
+/// contaminates a series.
+async fn ab_config(
+    global: &GlobalOpts,
+    args: &Args,
+    cases: &[EvalCase],
+    fixture: &Path,
+) -> Result<()> {
+    use mecha_core::candidate::{judge_with, ChangeClass, Disposition};
+
+    // Parse before an hour of inference, not after: a typo in an override
+    // should cost a line of output, not two full arms.
+    for spec in &args.ab_config {
+        apply_override(&mut global.clone(), spec)?;
+    }
+    anyhow::ensure!(
+        args.holdout_in >= 2,
+        "--holdout-in must be at least 2, or every episode is held out and \
+         nothing selects"
+    );
+
+    eprintln!("── arm A: as configured ──");
+    let (a_card, a_graded) = run_arm(global, args, cases, fixture, false, &[], "a").await?;
+    eprintln!("── arm B: {} ──", args.ab_config.join(", "));
+    let (b_card, b_graded) =
+        run_arm(global, args, cases, fixture, false, &args.ab_config, "b").await?;
+
+    // pass^k in both arms, the same bar the scorecard reports.
+    let case_pass = |graded: &[GradedCase], id: &str| {
+        let runs: Vec<&GradedCase> = graded.iter().filter(|g| g.id == id).collect();
+        !runs.is_empty() && runs.iter().all(|g| g.passed)
+    };
+    let calls = |graded: &[GradedCase], id: &str| -> u64 {
+        graded
+            .iter()
+            .filter(|g| g.id == id)
+            .map(|g| g.tools_called.len() as u64)
+            .sum()
+    };
+
+    struct Outcome {
+        id: String,
+        was: bool,
+        now: bool,
+        work_a: u64,
+        work_b: u64,
+    }
+    // Only cases that ran in both arms: one missing from an arm is missing,
+    // not a tie, and scoring it either way lets a candidate that dies on the
+    // hard cases look good on the ones it survived.
+    let outcomes: Vec<Outcome> = cases
+        .iter()
+        .filter(|c| a_graded.iter().any(|g| g.id == c.id) && b_graded.iter().any(|g| g.id == c.id))
+        .map(|c| Outcome {
+            id: c.id.clone(),
+            was: case_pass(&a_graded, &c.id),
+            now: case_pass(&b_graded, &c.id),
+            work_a: calls(&a_graded, &c.id),
+            work_b: calls(&b_graded, &c.id),
+        })
+        .collect();
+
+    fn cost(o: &Outcome) -> (&str, f64, f64) {
+        (
+            o.id.as_str(),
+            f64::from(u8::from(!o.was)),
+            f64::from(u8::from(!o.now)),
+        )
+    }
+    let judgement = judge_with(
+        ChangeClass::Config,
+        &outcomes,
+        cost,
+        |o| (o.work_a, o.work_b),
+        args.holdout_in,
+    );
+
+    println!("\n── config A/B ──");
+    println!(
+        "arm A (as configured): {}/{} cases",
+        a_card.passed, a_card.total
+    );
+    println!(
+        "arm B ({}): {}/{} cases",
+        args.ab_config.join(", "),
+        b_card.passed,
+        b_card.total
+    );
+    for o in &outcomes {
+        if o.was != o.now {
+            println!(
+                "  {}: {}",
+                if o.now { "IMPROVED" } else { "REGRESSED" },
+                o.id
+            );
+        }
+    }
+    println!(
+        "\nselection  {}+ {}- {}=    holdout  {}+ {}- {}=",
+        judgement.selection.wins,
+        judgement.selection.losses,
+        judgement.selection.ties,
+        judgement.holdout.wins,
+        judgement.holdout.losses,
+        judgement.holdout.ties,
+    );
+    println!(
+        "work       {} tool calls → {}",
+        judgement.work_baseline, judgement.work_candidate
+    );
+    match &judgement.disposition {
+        Disposition::Accept => println!(
+            "\nverdict: BETTER — beat the original on the selection slice and held on the \
+             holdout"
+        ),
+        Disposition::Propose(why) => println!("\nverdict: READ IT — {why}"),
+        Disposition::Reject(why) => println!("\nverdict: NO — {why}"),
+    }
+    println!(
+        "\njudge-graded flips are a prompt to read the answers, not a verdict; this is one \
+         sample of a non-deterministic measurement"
+    );
+
+    if let Some(path) = &args.out {
+        let out = serde_json::json!({
+            "ab_config": args.ab_config,
+            "holdout_in": args.holdout_in,
+            "judgement": judgement,
+            "arm_a": { "passed": a_card.passed, "total": a_card.total },
+            "arm_b": { "passed": b_card.passed, "total": b_card.total },
+            "cases": outcomes.iter().map(|o| serde_json::json!({
+                "id": o.id, "was": o.was, "now": o.now,
+                "work_a": o.work_a, "work_b": o.work_b,
+            })).collect::<Vec<_>>(),
+        });
+        std::fs::write(path, serde_json::to_string_pretty(&out)?)
+            .with_context(|| format!("writing {}", path.display()))?;
+        eprintln!("\nwrote {}", path.display());
+    }
     Ok(())
 }
 

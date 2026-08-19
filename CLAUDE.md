@@ -1111,6 +1111,17 @@ prediction that was made *before* either was measured.
   the model's sampling rather than the measurement, and the answer to that is
   repetition (pass^k), not a p-value over one sample. The raw win/loss/tie
   counts ride on the judgement so a human sees what it was decided from.
+- **Two currencies, one gate.** `judge_with` grades anything that can name an
+  episode and produce a cost: replayed sessions on `RunStats` (did the
+  *harness* go better), eval cases on whether the case **passed**. The second
+  is the content-sensitive arm a prose change needs, because replay holds tool
+  results fixed and cannot see a change in what the model said. One gate, so
+  the holdout and the guardrails cannot drift apart between them.
+  `mecha eval --ab-config KEY=VALUE` is that arm: the case set run twice,
+  differing only in the override, judged. Overrides are a **closed set of run
+  options** — the knobs a proposer may move are exactly the ones a run can be
+  launched with, so both arms are built by one code path, and a second
+  construction site is how two arms silently stop being comparable.
 - `Architecture` and `Security` changes reach a person however well they
   scored. The standing recommendation is that `Security` is never proposed at
   all — a loop that can argue for widening its own confinement will eventually
