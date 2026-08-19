@@ -574,9 +574,11 @@ the tool surface is one prompt away from being asked to. It also stores mail
 *unclassified* — running a corpus through the classifier projects the current
 tags onto it and confirms them by construction, so a taxonomy derived that way
 measures the labels rather than the mail. That is how the vocabulary was wrong
-for a month: `student-advising` is 31.5% of personally-addressed mail and was
-missing, because the most routine thing that arrives is the thing that does not
-come to mind. `docs/MAIL-CORPUS-RESEARCH.md` is the measurement.
+for a month: the largest single category of mail arriving was missing from the
+list entirely, because the most routine thing that arrives is the thing that
+does not come to mind. `docs/MAIL-CORPUS-RESEARCH.md` is the measurement, and
+is **gitignored** — one mailbox's figures are its owner's, so the decisions it
+produced are written down without them.
 
 **A closed enum written to an append-only store is a wire format, not a type.**
 `Proposed` hand-rolls `Deserialize` so an unknown variant degrades to `None`

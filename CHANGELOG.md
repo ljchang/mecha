@@ -182,10 +182,9 @@ remedy. Nothing else in this release requires action.
   ledger would be keyed to a rule set no run ever had.
 
 - **The mail taxonomy is measured rather than guessed.** A year of real mail
-  (8,167 threads) said the request kinds were wrong in both directions.
-  `student-advising` joins `REQUEST_TYPES` and `advising` joins `TAGS` — 31.5%
-  of personally-addressed mail, the largest category by a factor of three, and
-  absent because it is the most routine thing that arrives. `book` leaves: two
+  said the request kinds were wrong in both directions. `student-advising`
+  joins `REQUEST_TYPES` and `advising` joins `TAGS` — the largest category by a
+  wide margin, and absent because it is the most routine thing that arrives. `book` leaves: two
   threads in ten months, neither a request to write a book. A name on that list
   is a claim that the kind arrives.
 
@@ -211,9 +210,9 @@ remedy. Nothing else in this release requires action.
 - **`mecha-mail corpus` no longer silently truncates Gmail.** Each month was
   capped at 500 messages and a failed month was `unwrap_or_default()`ed into an
   empty one, so a partial corpus and a quiet month were the same value. On a
-  real year, nine of thirteen months hit the cap and the loss grew toward the
-  present as volume grew — which does not add noise to an analysis, it adds a
-  slope, and a slope is indistinguishable from a finding. The ceiling is now
+  real year, most months hit the cap and the loss grew toward the present as
+  volume grew — which does not add noise to an analysis, it adds a slope, and a
+  slope is indistinguishable from a finding. The ceiling is now
   high enough to be theoretical, reported on stderr when reached, and errors
   propagate.
 

@@ -56,6 +56,16 @@ Thumbs.db
 # repository should not carry. docs/HANDOFF.md keeps the engineering lessons and
 # points at this file for the specifics.
 /docs/OPERATIONS.md
+
+# The mail corpus analysis. Aggregates rather than correspondence — no
+# addresses, no subjects, no senders — but they are aggregates of one person's
+# mailbox: how much of it goes unanswered, which kinds of request get replies
+# and which do not. That is the mailbox owner's business and not a public
+# repository's. The design decisions it produced live in MAIL-UX-DESIGN.md and
+# HANDOFF.md with the reasoning and without the figures, on the same split as
+# OPERATIONS.md above. The corpus itself is at ~/.mecha/mail-corpus/, outside
+# the repository entirely, and *.jsonl below covers it twice over.
+/docs/MAIL-CORPUS-RESEARCH.md
 # Scratch output from runs. Nothing generated belongs in the repository.
 /artifacts/
 # A rendered bundle written beside the source it was rendered from. Twice now a
