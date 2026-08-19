@@ -1276,11 +1276,20 @@ kinds of check, in descending order of how much they are worth:
   differently across runs, so treat a single judge failure as a prompt to read
   the answer, not as a result.
 - **Run-metadata checks** — `expect.stop_cause`, `expect.taint`,
-  `expect.blocked_sends`, `expect.min_compactions`. Deterministic like the trace
-  checks, and the only way to grade the *harness* rather than the model: whether
-  the interlock fired, whether a budget was what stopped the run, whether a
-  summary was ever taken. None of it is visible in the answer text, and a case
-  that asserts an outcome it never exercised is worse than no case.
+  `expect.blocked_sends`, `expect.min_compactions`,
+  `expect.ended_on_failed_call`. Deterministic like the trace checks, and the
+  only way to grade the *harness* rather than the model: whether the interlock
+  fired, whether a budget was what stopped the run, whether a summary was ever
+  taken. None of it is visible in the answer text, and a case that asserts an
+  outcome it never exercised is worse than no case.
+  `ended_on_failed_call` grades the silent failure — the model stopped on its
+  own with its last call failed and answered as though it had not. It is an
+  *observation*, not an error condition, because a case whose right answer is
+  "that file does not exist" should end on a failed call; a denial is excluded
+  (a human or a policy said no, in those words, to someone who can see it), and
+  a run the harness cut short never sets it, or the flag would double-count
+  what `stop_cause` and `exhausted` already say. Only the last call counts:
+  one failure among successes is recovery, which is the model working.
 - Everything a model says about its own work is hearsay. Grade the artifact.
 
 `--runs k` repeats every case k times and reports **pass^k** (all k runs pass)

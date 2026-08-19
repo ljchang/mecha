@@ -260,6 +260,7 @@ mod tests {
             turns: 3,
             refusal: None,
             exhausted: false,
+            ended_on_failed_call: false,
             tool_calls: Vec::new(),
             malformed_tool_args: 0,
             blocked_sends: 0,

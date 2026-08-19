@@ -111,6 +111,15 @@ pub struct BatchResult {
     /// False when `usage` is a lower bound — see [`crate::agent::RunOutcome`].
     #[serde(default)]
     pub usage_complete: bool,
+    /// The item's *last* run finished on a failed tool call — see
+    /// [`crate::agent::RunOutcome::ended_on_failed_call`].
+    ///
+    /// Not summed into [`Totals`] like everything else here, because it is a
+    /// property of how the item ended rather than of what it cost: a two-turn
+    /// item whose first turn ended on a failure and whose second recovered has
+    /// not finished over a failure, and summing would say it had.
+    #[serde(default)]
+    pub ended_on_failed_call: bool,
 }
 
 /// Run every item, at most `concurrency` at a time.
@@ -214,6 +223,7 @@ where
                 blocked_sends: totals.blocked_sends,
                 compactions: totals.compactions,
                 usage_complete: totals.usage_complete,
+                ended_on_failed_call: outcome.ended_on_failed_call,
             },
             // A failure keeps whatever the earlier turns cost: they ran, and a
             // sweep that under-reports its own spend is worse than one that
@@ -235,6 +245,8 @@ where
                 blocked_sends: totals.blocked_sends,
                 compactions: totals.compactions,
                 usage_complete: totals.usage_complete,
+                // No run reached an outcome, so there is nothing to observe.
+                ended_on_failed_call: false,
             },
         }
     }))
@@ -558,6 +570,7 @@ mod tests {
     #[test]
     fn a_summary_totals_usage_and_counts_both_outcomes() {
         let result = |id: &str, ok: bool| BatchResult {
+            ended_on_failed_call: false,
             id: id.into(),
             ok,
             text: String::new(),
