@@ -15,6 +15,7 @@ belonged in three other places.
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Build, test, review expectations | present | rarely |
 | [`SECURITY.md`](../SECURITY.md) | Reporting a vulnerability; the threat model and accepted limitations | present | rarely |
 | [`OPERATIONS.md`](OPERATIONS.md) | This deployment's specifics — hosts, keys, mailboxes, timers. **Gitignored**; the transferable lesson goes in `HISTORY.md` instead | present | with the machines |
+| `MAIL-CORPUS-RESEARCH.md` | What a year of the user's own mail measured. **Gitignored** for the same reason as `OPERATIONS.md`: no correspondence, but aggregates of one mailbox are still its owner's. The decisions it produced are in `MAIL-UX-DESIGN.md` without the figures | past | once |
 | [`HANDOFF.md`](HANDOFF.md) | Current state and **only the open work** | present | **only with open work — completed items leave** |
 | [`HISTORY.md`](HISTORY.md) | What shipped and when; what was learned the hard way | past | append-only |
 | `*-RESEARCH.md` | One question, researched once, with evidence and a date | past | one per question |
