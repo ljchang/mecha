@@ -405,14 +405,33 @@ fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) ->
     }
 
     if rows.is_empty() {
-        println!(
-            "{}",
-            if aged {
-                "nothing has been waiting — every thread that needed you got dealt with"
-            } else {
-                "nothing needs you"
-            }
-        );
+        if !aged {
+            println!("nothing needs you");
+            return Ok(());
+        }
+        // **"Nothing new to surface" is not "nothing is waiting."** Day two
+        // says its piece once, so after a briefing the same threads are still
+        // unanswered and no longer candidates. Reporting that as "every thread
+        // got dealt with" would be a cheerful lie about the exact backlog this
+        // feature exists to expose.
+        let still: usize = store
+            .list()?
+            .into_iter()
+            .filter(|r| {
+                r.state == CLASSIFIED
+                    && r.rest.contains_key(mecha_core::mail_triage::SURFACED_AT)
+                    && r.verdict
+                        .as_ref()
+                        .is_some_and(|v| v.bucket == mecha_core::mail_triage::Bucket::Respond)
+            })
+            .count();
+        match still {
+            0 => println!("nothing has been waiting"),
+            n => println!(
+                "nothing new to surface — {n} thread(s) are still unanswered but \
+                 have had their turn. `mecha mail list` shows them."
+            ),
+        }
         return Ok(());
     }
     if aged {
