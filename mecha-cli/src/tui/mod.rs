@@ -2522,6 +2522,9 @@ fn submit(
         // Steering. The loop picks this up at the top of its next turn and
         // folds it in beside the tool results, so the model reads it without
         // the run being stopped and restarted.
+        if let Some(a) = &app.attached {
+            spawn_echo(a, &text, true);
+        }
         if let Ok(mut queue) = run.queue.lock() {
             queue.push_back(text);
         }
@@ -2532,6 +2535,9 @@ fn submit(
     app.convo.push(user.clone());
     if let Some(s) = session {
         s.append(&Record::Message(user))?;
+    }
+    if let Some(a) = &app.attached {
+        spawn_echo(a, &text, false);
     }
     app.transcript.push(Entry::User(text));
 
@@ -4183,6 +4189,26 @@ fn run_shell_escape(app: &mut App, agent: &Arc<Agent>, cmd: String) {
         // The receiver only closes when the TUI is exiting; output arriving
         // after that has nowhere sensible to go anyway.
         let _ = tx.send(entry);
+    });
+}
+
+/// Echo what the user typed into the mirrored thread.
+///
+/// Fire-and-forget, and deliberately not reported on failure: the run is
+/// already underway by the time this could fail, and an error line about a
+/// missing echo would interrupt the thing the user is actually doing. The
+/// consequence of losing one is a thread that reads slightly oddly, which the
+/// answer beneath it still makes sense of.
+fn spawn_echo(attached: &crate::slack::remote::Attached, text: &str, steering: bool) {
+    let (slack, channel, thread_ts) = (
+        attached.slack.clone(),
+        attached.channel_id.clone(),
+        attached.thread_ts.clone(),
+    );
+    let body = crate::slack::remote::echo_text(text, steering);
+    tokio::spawn(async move {
+        let _ =
+            mecha_slack::chat::post_message(&slack, &channel, Some(&thread_ts), &body, None).await;
     });
 }
 

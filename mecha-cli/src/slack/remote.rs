@@ -423,6 +423,34 @@ pub async fn attach(
     ))
 }
 
+/// Put what the user typed into the mirrored thread.
+///
+/// The tee carries `AgentEvent`s, and an `AgentEvent` is everything the *loop*
+/// does — it has never carried the prompt, because until now nothing needed it
+/// to. Without this the thread shows answers with no questions above them,
+/// which is unreadable as a conversation and actively misleading in a
+/// scrollback somebody comes back to hours later.
+///
+/// Marked as the user's words rather than posted bare. Everything else in this
+/// thread is the bot speaking, so an unlabelled line would read as the model
+/// having said it — the same reason `outbox_source` gutters quoted mail.
+pub fn echo_text(text: &str, steering: bool) -> String {
+    let who = if steering {
+        "_you, steering mid-run:_"
+    } else {
+        "_you, at the terminal:_"
+    };
+    // Block-quoted line by line: Slack's `>` applies to one line, so a
+    // multi-line prompt would leave everything after the first line rendered
+    // as the bot's own prose.
+    let quoted: String = text
+        .lines()
+        .map(|l| format!("> {l}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{who}\n{quoted}")
+}
+
 /// End an attachment: mark the record cold, and say so in the thread.
 ///
 /// Best-effort on the Slack half and strict on the store half. A closing line
@@ -484,6 +512,35 @@ mod tests {
             prior,
             takeover,
         )
+    }
+
+    /// A thread of answers with no questions above them is unreadable as a
+    /// conversation, and worse in a scrollback somebody returns to hours
+    /// later.
+    #[test]
+    fn what_the_user_typed_is_quoted_and_attributed_to_them() {
+        let e = echo_text("summarise the inbox", false);
+        assert!(e.contains("you, at the terminal"), "{e}");
+        assert!(e.contains("> summarise the inbox"), "{e}");
+    }
+
+    /// Slack's `>` quotes one line. Quoting only the first would render every
+    /// following line as the bot's own prose — the model appearing to say what
+    /// the user typed, which is the confusion the attribution exists to stop.
+    #[test]
+    fn every_line_of_a_multi_line_prompt_is_quoted() {
+        let e = echo_text("first line\nsecond line\nthird", false);
+        for line in ["> first line", "> second line", "> third"] {
+            assert!(e.contains(line), "{line} missing from {e}");
+        }
+    }
+
+    /// Steering is not a new question and must not read as one: the answer
+    /// above it is still being written.
+    #[test]
+    fn steering_reads_differently_from_starting_a_turn() {
+        assert!(echo_text("actually, skip the news", true).contains("steering mid-run"));
+        assert!(!echo_text("actually, skip the news", false).contains("steering"));
     }
 
     /// Somebody reading this on a phone has to be able to tell which session
