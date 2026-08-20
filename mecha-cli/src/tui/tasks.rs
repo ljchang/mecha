@@ -422,7 +422,8 @@ impl TasksModal {
 
         let width = 120u16.min(frame.area().width);
         let strip_lines = strip_height(&strip_text, width.saturating_sub(2));
-        let height = list_height(body.len() as u16, strip_lines, frame.area().height);
+        let height =
+            super::list_height_reserving(body.len() as u16, frame.area().height, strip_lines);
         let area = super::centered(frame.area(), width, height);
         frame.render_widget(Clear, area);
         // The strip renders outside the scrolling paragraph, in the first line
@@ -602,22 +603,6 @@ fn draw_form(frame: &mut Frame, form: &Form) {
     );
 }
 
-/// The list box's height, in a terminal `terminal_height` rows tall.
-///
-/// **Both bounds move here, so `clamp` needs the guard twice.** `/doctor`
-/// learned that the ceiling saturates to zero on a terminal four rows or
-/// fewer and inverts `min <= max` — a panic that takes the whole session
-/// down. This box has the same ceiling *and* a floor that is not a constant:
-/// the legend grows as the terminal narrows, so at 20 columns it wants eight
-/// rows on a screen that may have four. Floor the ceiling at one row, then
-/// pull the floor down to meet it: a tiny terminal degrades to a stub box,
-/// which is a bad view of the board rather than the end of the session.
-fn list_height(rows: u16, strip_lines: u16, terminal_height: u16) -> u16 {
-    let max = terminal_height.saturating_sub(4).max(1);
-    let floor = (strip_lines + 1).min(max);
-    (rows + strip_lines).clamp(floor, max) + 2
-}
-
 /// How many lines the legend needs at this width. Ceiling division on the
 /// character count: the strip is one flat run of ASCII verbs, so there is no
 /// grapheme subtlety to get wrong here.
@@ -768,6 +753,23 @@ mod tests {
         assert_eq!(strip_height("abcdef", 3), 2);
         assert_eq!(strip_height("abcdef", 2), 3);
         assert_eq!(strip_height("", 0), 1, "never zero-height");
+    }
+
+    /// The shared helper is called with the legend's rows as `reserved`, and
+    /// **the argument order is the thing this pins**: all three parameters are
+    /// `u16`, so swapping `terminal_height` and `reserved` compiles, does not
+    /// panic, and silently returns a three-row box. Nothing else here would
+    /// fail on that — the panic test still passes, because a too-small box is
+    /// not a crash. So the numbers are asserted directly.
+    #[test]
+    fn the_box_reserves_the_legends_rows_and_not_something_else() {
+        // 24 rows: ceiling 20. Three tasks and a one-line legend want 4.
+        assert_eq!(super::super::list_height_reserving(3, 24, 1), 6);
+        // The legend's rows are what a full board loses to, not the list's.
+        assert_eq!(super::super::list_height_reserving(100, 24, 1), 22);
+        // Argument order, stated as a value: were height and reserved swapped,
+        // this would be 3 rather than 6.
+        assert_ne!(super::super::list_height_reserving(3, 1, 24), 6);
     }
 
     /// Every view, at every shape of terminal a person can drag one into.
