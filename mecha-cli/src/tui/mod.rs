@@ -19,6 +19,7 @@ mod frontdoor;
 mod mail;
 mod outbox;
 mod polls;
+mod skills;
 mod tools;
 mod transcript;
 mod triggers;
@@ -43,6 +44,7 @@ use mecha_core::tool::{Approver, ModeApprover};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -180,6 +182,12 @@ struct Live {
     /// rebuilds the agent and its tools wholesale — refreshes it for free; a
     /// handle cached anywhere else would go stale and watch a dead list.
     todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
+    /// The skill tool the agent is actually using — the carried set for
+    /// /skills, and which of them this conversation has loaded. Riding here
+    /// for the same reason `todo` does: a `/model` switch rebuilds the agent
+    /// and its tools wholesale, and a handle cached anywhere else would keep
+    /// answering for the agent that was replaced.
+    skill: Option<Arc<mecha_core::tool::skill::SkillTool>>,
     /// Held for the lifetime of the session: dropping a client kills its
     /// server, so the *old* set must outlive the switch that replaced it only
     /// until the new one is up.
@@ -194,6 +202,7 @@ impl Live {
             provider: p.provider_name,
             opts,
             todo: p.todo,
+            skill: p.skill,
             _mcp: p._mcp,
         }
     }
@@ -280,6 +289,13 @@ struct App {
     help: bool,
     /// The /tools modal, when open. Takes every key while it is up.
     tools: Option<tools::ToolsModal>,
+    /// The /skills modal, when open. Takes every key while it is up.
+    skills: Option<skills::SkillsModal>,
+    /// Where the skill store lives, resolved from `[skills] dir` once at
+    /// startup — the same resolution the agent's own set came from, so the
+    /// modal cannot end up describing a different directory than the run
+    /// read.
+    skills_dir: PathBuf,
     /// The /triggers modal, when open. Takes every key while it is up.
     scheduled: Option<triggers::TriggersModal>,
     /// The /outbox modal, when open. Takes every key while it is up.
@@ -535,6 +551,14 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         picker: None,
         help: false,
         tools: None,
+        skills: None,
+        skills_dir: prepared
+            .config
+            .skills
+            .dir
+            .clone()
+            .or_else(|| mecha_core::skill::SkillStore::default_dir().ok())
+            .unwrap_or_default(),
         sandbox_line: setup::sandbox_line(&prepared.sandbox),
         workspace: prepared.workspace.clone(),
         todo_visible: true,
@@ -725,7 +749,7 @@ async fn run_loop(
         }));
 
         tokio::select! {
-            Some(Ok(event)) = keys.next() => on_terminal_event(app, event, &mut events_tx, &mut events_rx, &live.agent, session)?,
+            Some(Ok(event)) = keys.next() => on_terminal_event(app, event, &mut events_tx, &mut events_rx, live, session)?,
 
             Some(event) = events_rx.recv() => {
                 match &event {
@@ -1314,6 +1338,7 @@ fn open_scoped_review(app: &mut App, ids: Vec<String>) {
         || app.asking.is_some()
         || app.picker.is_some()
         || app.tools.is_some()
+        || app.skills.is_some()
         || app.scheduled.is_some()
         || app.staged.is_some()
         || app.requests.is_some()
@@ -1347,12 +1372,12 @@ fn on_terminal_event(
     event: Event,
     events_tx: &mut mpsc::UnboundedSender<AgentEvent>,
     events_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
-    agent: &Arc<Agent>,
+    live: &Live,
     session: Option<&Session>,
 ) -> Result<()> {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
-            on_key(app, key, events_tx, events_rx, agent, session)
+            on_key(app, key, events_tx, events_rx, live, session)
         }
         // Inserted whole, never submitted. Dropping a file onto the terminal
         // arrives here too: terminals send the *path* as pasted text, so a drop
@@ -1380,7 +1405,7 @@ fn on_key(
     key: KeyEvent,
     events_tx: &mut mpsc::UnboundedSender<AgentEvent>,
     events_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
-    agent: &Arc<Agent>,
+    live: &Live,
     session: Option<&Session>,
 ) -> Result<()> {
     // An approval modal takes every key: nothing else should be reachable while
@@ -1485,6 +1510,30 @@ fn on_key(
         return Ok(());
     }
 
+    // The skills modal, same keys as /tools: the two are a pair and a user
+    // arriving from one should not have to learn the other.
+    if let Some(modal) = &mut app.skills {
+        match key.code {
+            KeyCode::Up if !modal.detail => modal.move_by(-1),
+            KeyCode::Down if !modal.detail => modal.move_by(1),
+            // In the detail view the same keys scroll the procedure — a
+            // SKILL.md is a document the user wrote, so it has no length this
+            // modal can assume.
+            KeyCode::Up => modal.scroll_detail(-1),
+            KeyCode::Down => modal.scroll_detail(1),
+            KeyCode::Enter => modal.toggle_detail(),
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if modal.detail {
+                    modal.detail = false;
+                } else {
+                    app.skills = None;
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     // The triggers modal, same rule as /tools: it owns the keyboard.
     if app.scheduled.is_some() {
         return handle_triggers_key(app, key);
@@ -1504,7 +1553,7 @@ fn on_key(
         return handle_polls_key(app, key);
     }
     if app.health.is_some() {
-        return handle_doctor_key(app, key, agent, session);
+        return handle_doctor_key(app, key, live, session);
     }
 
     // A modal list owns the keyboard while it is up, for the same reason the
@@ -1521,7 +1570,7 @@ fn on_key(
                 if let Some(picker) = app.picker.take() {
                     let chosen = picker.selected;
                     if let Some((_, cmd)) = picker.items.into_iter().nth(chosen) {
-                        return run_command(app, cmd, agent, session);
+                        return run_command(app, cmd, live, session);
                     }
                 }
             }
@@ -1635,7 +1684,7 @@ fn on_key(
                 app.cursor = 0;
                 app.history.push(text.clone());
                 app.history_pos = None;
-                submit(app, text, events_tx, events_rx, agent, session)?;
+                submit(app, text, events_tx, events_rx, live, session)?;
             }
         }
 
@@ -1834,10 +1883,11 @@ fn record_config(session: Option<&Session>, live: &Live, mode: PermissionMode) -
 fn run_command(
     app: &mut App,
     cmd: command::Command,
-    agent: &Arc<Agent>,
+    live: &Live,
     session: Option<&Session>,
 ) -> Result<()> {
     use command::Command;
+    let agent = &live.agent;
 
     let mut say = |text: String| app.transcript.push(Entry::Notice(text));
 
@@ -1862,6 +1912,100 @@ fn run_command(
                 selected: 0,
                 detail: false,
                 sandbox_line: app.sandbox_line.clone(),
+            });
+        }
+
+        Command::Skills => {
+            // Two reads, because neither source can answer alone. The agent
+            // knows what this run carries and what it has loaded; only the
+            // store knows what else is on disk and what failed to parse.
+            let (store, errors) = mecha_core::skill::SkillStore::load(&app.skills_dir);
+            let carried: Vec<&mecha_core::skill::Skill> =
+                live.skill.iter().flat_map(|h| h.available()).collect();
+            let loaded = live.skill.as_ref().map(|h| h.loaded()).unwrap_or_default();
+
+            let mut rows: Vec<skills::SkillRow> = store
+                .all()
+                .iter()
+                .map(|on_disk| {
+                    // For a carried skill the agent's copy is the one that
+                    // matters, and it is not always the file: skills are read
+                    // once at startup, into the cached prefix, so an edit
+                    // since then has changed the file and not the run. Showing
+                    // the new body under a `loaded` badge, or a new `tools:`
+                    // list as "narrows the tool surface to", would describe a
+                    // procedure this conversation is not carrying and a
+                    // narrowing that is not in force.
+                    let mine = carried.iter().find(|s| s.name == on_disk.name);
+                    let s = mine.copied().unwrap_or(on_disk);
+                    skills::SkillRow {
+                        name: s.name.clone(),
+                        description: s.description.clone(),
+                        triggers: s.triggers.clone(),
+                        narrows: s.tools.clone(),
+                        body: s.body.clone(),
+                        dir: s.dir.clone(),
+                        carried: mine.is_some(),
+                        loaded: loaded.iter().any(|n| n == &s.name),
+                        error: None,
+                    }
+                })
+                .collect();
+
+            // A skill the run carries that the store no longer holds — the
+            // file was edited or removed since startup. It stays on the list
+            // because the *run* still has it: skills are read once, into the
+            // cached prefix, so what is on disk now is not what this session
+            // is carrying. Dropping it would make the modal disagree with the
+            // agent it is describing.
+            for skill in live.skill.iter().flat_map(|h| h.available()) {
+                if rows.iter().any(|r| r.name == skill.name) {
+                    continue;
+                }
+                rows.push(skills::SkillRow {
+                    name: skill.name.clone(),
+                    description: format!(
+                        "{} (no longer in the store — carried from startup)",
+                        skill.description
+                    ),
+                    triggers: skill.triggers.clone(),
+                    narrows: skill.tools.clone(),
+                    body: skill.body.clone(),
+                    dir: skill.dir.clone(),
+                    carried: true,
+                    loaded: loaded.iter().any(|n| n == &skill.name),
+                    error: None,
+                });
+            }
+
+            // Failures last, and present rather than logged: `setup` warns
+            // about these on stderr before the TUI takes the screen, so the
+            // alternate screen covers the warning for the whole session.
+            rows.extend(errors.into_iter().map(|e| {
+                skills::SkillRow {
+                    name: e
+                        .dir
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("?")
+                        .to_string(),
+                    description: String::new(),
+                    triggers: Vec::new(),
+                    narrows: None,
+                    body: String::new(),
+                    dir: e.dir,
+                    carried: false,
+                    loaded: false,
+                    error: Some(e.why),
+                }
+            }));
+
+            app.skills = Some(skills::SkillsModal {
+                rows,
+                selected: 0,
+                detail: false,
+                detail_scroll: 0,
+                dir: app.skills_dir.clone(),
             });
         }
 
@@ -2074,9 +2218,10 @@ fn submit(
     text: String,
     events_tx: &mut mpsc::UnboundedSender<AgentEvent>,
     events_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
-    agent: &Arc<Agent>,
+    live: &Live,
     session: Option<&Session>,
 ) -> Result<()> {
+    let agent = &live.agent;
     // The shell escape is handled before steering, like slash commands: a
     // `!git status` typed mid-run is the user checking on the world, not an
     // instruction meant for the model.
@@ -2089,7 +2234,7 @@ fn submit(
     // more likely to be a mistake than an instruction meant for the model, and
     // sending it as steering would put a slash command into the transcript.
     if let Some(cmd) = command::parse(&text) {
-        return run_command(app, cmd, agent, session);
+        return run_command(app, cmd, live, session);
     }
 
     if let Some(run) = &app.running {
@@ -2908,7 +3053,7 @@ fn reload_frontdoor(app: &mut App) {
 fn handle_doctor_key(
     app: &mut App,
     key: KeyEvent,
-    agent: &Arc<Agent>,
+    live: &Live,
     session: Option<&Session>,
 ) -> Result<()> {
     let Some(modal) = &mut app.health else {
@@ -3016,7 +3161,7 @@ fn handle_doctor_key(
                         // The surface the remedy names is a keystroke away —
                         // switch to it rather than spawning a nested CLI.
                         app.health = None;
-                        return run_command(app, cmd, agent, session);
+                        return run_command(app, cmd, live, session);
                     }
                     doctor::RemedyDispatch::Interactive => {
                         app.pending_doctor_remedy = Some(remedy);
@@ -3647,6 +3792,9 @@ fn draw(
     if let Some(modal) = &app.tools {
         modal.draw(frame);
     }
+    if let Some(modal) = &app.skills {
+        modal.draw(frame);
+    }
     if let Some(modal) = &app.scheduled {
         modal.draw(frame);
     }
@@ -3900,6 +4048,20 @@ fn human_tokens(n: u64) -> String {
     } else {
         format!("{:.1}k", n as f64 / 1000.0)
     }
+}
+
+/// The height of a modal's list box for a terminal `terminal_height` rows tall.
+///
+/// Shared because the obvious inline spelling is a crash: `rows.clamp(1,
+/// terminal_height.saturating_sub(4))` violates `min <= max` — a panic — the
+/// moment the terminal is four rows or fewer, since the subtraction saturates
+/// to zero. Flooring the upper bound at one row degrades a tiny terminal to a
+/// one-row box instead. Found once in /doctor (F9) and written inline again in
+/// /skills, which is what makes it a helper rather than a fix: the next modal
+/// copies whichever sibling it happens to open.
+fn list_height(rows: u16, terminal_height: u16) -> u16 {
+    let max = terminal_height.saturating_sub(4).max(1);
+    rows.clamp(1, max) + 2
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -4383,6 +4545,8 @@ mod tests {
             picker: None,
             help: false,
             tools: None,
+            skills: None,
+            skills_dir: std::path::PathBuf::from("/nonexistent-skills"),
             sandbox_line: "sandbox: none — commands run as you, with your credentials".into(),
             workspace: std::env::temp_dir(),
             todo_visible: true,
@@ -4563,6 +4727,91 @@ mod tests {
         assert!(
             text.contains("sandbox: none"),
             "shell's detail names the sandbox: {text}"
+        );
+    }
+
+    fn skill_row(name: &str) -> skills::SkillRow {
+        skills::SkillRow {
+            name: name.into(),
+            description: "how to answer a rec-letter request".into(),
+            triggers: Vec::new(),
+            narrows: None,
+            body: "1. read the request\n2. draft it".into(),
+            dir: std::path::PathBuf::from("/skills").join(name),
+            carried: true,
+            loaded: false,
+            error: None,
+        }
+    }
+
+    /// The three states a user opens /skills to tell apart have to be
+    /// distinguishable on the *list*, not only in the detail view — the whole
+    /// reason a withheld skill is listed rather than omitted is that "not
+    /// carried" and "the model didn't use it" look identical otherwise.
+    #[test]
+    fn the_skills_list_separates_loaded_withheld_and_failed() {
+        let mut app = test_app();
+        app.skills = Some(skills::SkillsModal {
+            rows: vec![
+                skills::SkillRow {
+                    loaded: true,
+                    ..skill_row("rec-letter")
+                },
+                skills::SkillRow {
+                    carried: false,
+                    ..skill_row("expenses")
+                },
+                skills::SkillRow {
+                    error: Some("missing `description`".into()),
+                    carried: false,
+                    ..skill_row("halfwritten")
+                },
+            ],
+            selected: 0,
+            detail: false,
+            detail_scroll: 0,
+            dir: std::path::PathBuf::from("/skills"),
+        });
+        let text = frame_text(&mut app, 110, 30, None);
+        assert!(text.contains("rec-letter"), "{text}");
+        assert!(text.contains("loaded"), "{text}");
+        assert!(text.contains("withheld"), "{text}");
+        assert!(
+            text.contains("failed") && text.contains("missing `description`"),
+            "a broken SKILL.md is only ever visible here — the startup warning \
+             goes to a stderr the alternate screen ate: {text}"
+        );
+        assert!(
+            text.contains("1 of 2 skills carried"),
+            "the ratio excludes what could not load: {text}"
+        );
+    }
+
+    /// Loading a skill narrows the tool surface for the rest of the
+    /// conversation and there is no unload, so the detail view has to say so.
+    /// Nothing else in the TUI reports it: /tools lists the whole registry,
+    /// not the narrowed dispatch set.
+    #[test]
+    fn the_skills_detail_names_the_narrowing_and_that_it_is_in_force() {
+        let mut app = test_app();
+        app.skills = Some(skills::SkillsModal {
+            rows: vec![skills::SkillRow {
+                narrows: Some(vec!["fs_read".into(), "mail_send".into()]),
+                loaded: true,
+                ..skill_row("rec-letter")
+            }],
+            selected: 0,
+            detail: true,
+            detail_scroll: 0,
+            dir: std::path::PathBuf::from("/skills"),
+        });
+        let text = frame_text(&mut app, 100, 30, None);
+        assert!(text.contains("narrows the tool surface to"), "{text}");
+        assert!(text.contains("fs_read"), "{text}");
+        assert!(text.contains("in force until /clear"), "{text}");
+        assert!(
+            text.contains("read the request"),
+            "the procedure itself is the point of the detail view: {text}"
         );
     }
 

@@ -29,6 +29,11 @@ pub struct Prepared {
     pub sandbox: Arc<mecha_core::sandbox::Sandbox>,
     /// The todo tool the agent is actually using, for the TUI's live pane.
     pub todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
+    /// The skill tool the agent is actually using, for the TUI's /skills
+    /// modal. `None` when the run carries no skills — which is also the
+    /// answer to "why is /skills empty", so the modal says so rather than
+    /// showing a blank list.
+    pub skill: Option<Arc<mecha_core::tool::skill::SkillTool>>,
     /// The messaging route, when `[messages]` is enabled — the front-end
     /// sets this run's identity on it once the session exists, and reads
     /// the store for waiting-mail notices.
@@ -49,6 +54,10 @@ pub struct PreparedTools {
     /// `items()` live. `None` when the tool is disabled or an MCP server
     /// shadowed it.
     pub todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
+    /// A concrete handle onto the registered skill tool, so a UI can read the
+    /// carried set and what has been loaded so far. `None` when the run
+    /// carries no skills or an MCP server shadowed the tool.
+    pub skill: Option<Arc<mecha_core::tool::skill::SkillTool>>,
     /// The messaging route, when `[messages]` is enabled — `message_send`
     /// holds a clone, the agent's context gets it attached in `build`, and
     /// the front-end sets the run's identity on it once a session exists.
@@ -248,6 +257,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         config: cfg,
         sandbox: tools.sandbox,
         todo: tools.todo,
+        skill: tools.skill,
         mailbox: tools.mailbox,
         _mcp: tools._mcp,
     })
@@ -562,11 +572,17 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     // `skills` is already empty when a `--tool` allowlist excludes `skill` —
     // filtered where the prompt block is built, so the block and the tool
     // cannot disagree about whether skills exist.
-    if !skills.is_empty() {
-        registry.insert(Arc::new(mecha_core::tool::skill::SkillTool::new(
-            skills.clone(),
-        )));
-    }
+    //
+    // The handle is kept for the same reason `todo`'s is: a UI asking "what
+    // does this agent know how to do" has to read the tool the run is actually
+    // using. Which skills are *loaded* is conversation state living behind that
+    // Mutex, and the carried set has already had `--skill` applied — neither is
+    // recoverable from config and the store.
+    let skill = (!skills.is_empty()).then(|| {
+        let handle = Arc::new(mecha_core::tool::skill::SkillTool::new(skills.clone()));
+        registry.insert(Arc::clone(&handle) as Arc<dyn mecha_core::tool::Tool>);
+        handle
+    });
 
     // Search is only registered when a backend is configured — an agent with a
     // `web_search` tool that always errors is worse than no tool at all.
@@ -682,17 +698,10 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     // built-ins, deliberately). The handle would then be live but frozen —
     // watching a list nothing writes to — so drop it unless the registered
     // tool is still ours.
-    let todo = todo.filter(|handle| {
-        registry.get("todo").is_some_and(|registered| {
-            // Data pointers, not Arc::ptr_eq: comparing a concrete Arc with a
-            // trait-object Arc through ptr_eq compares vtables too, which is
-            // the documented footgun.
-            std::ptr::eq(
-                Arc::as_ptr(registered) as *const (),
-                Arc::as_ptr(handle) as *const (),
-            )
-        })
-    });
+    let todo = todo.filter(|handle| still_ours(&registry, "todo", handle));
+    // And `skill` the same way: a server shadowing it would leave the modal
+    // listing procedures nothing can load.
+    let skill = skill.filter(|handle| still_ours(&registry, "skill", handle));
 
     // Prove the sandbox works before the agent can call anything, and refuse
     // to start if it doesn't. Falling back to unconfined execution would be
@@ -712,8 +721,32 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         config: cfg,
         approver,
         todo,
+        skill,
         mailbox,
         _mcp: clients,
+    })
+}
+
+/// Is the tool registered under `name` still the one this handle points at?
+///
+/// An MCP server may legitimately shadow a built-in — servers are registered
+/// after them, deliberately — and a shadowed handle stays live while watching
+/// state nothing writes to any more, which is worse than having no handle at
+/// all: a UI would show a frozen list with no sign it had been replaced.
+///
+/// Data pointers, not `Arc::ptr_eq`: comparing a concrete `Arc` with a
+/// trait-object `Arc` through `ptr_eq` compares vtables too, which is the
+/// documented footgun.
+fn still_ours<T: mecha_core::tool::Tool + 'static>(
+    registry: &Registry,
+    name: &str,
+    handle: &Arc<T>,
+) -> bool {
+    registry.get(name).is_some_and(|registered| {
+        std::ptr::eq(
+            Arc::as_ptr(registered) as *const (),
+            Arc::as_ptr(handle) as *const (),
+        )
     })
 }
 
