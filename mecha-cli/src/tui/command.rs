@@ -14,6 +14,9 @@ use mecha_core::config::PermissionMode;
 pub enum Command {
     Help,
     Tools,
+    /// User-authored procedures: what the run carries, what it has loaded,
+    /// and what the store holds that this run did not get.
+    Skills,
     /// Scheduled prompts: see, edit, enable/disable, run, cancel, delete.
     Triggers,
     /// Staged outbound actions: read, edit, send, reject.
@@ -82,6 +85,9 @@ pub fn parse(line: &str) -> Option<Command> {
     Some(match name {
         "help" | "h" | "?" => Command::Help,
         "tools" => Command::Tools,
+        // `skill` singular too: the tool the model calls is `skill`, so that
+        // is the word a user has just been reading in the transcript.
+        "skills" | "skill" => Command::Skills,
         // Both spellings: the command is `mecha trigger`, the thing you want
         // to see is all of them.
         "triggers" | "trigger" => Command::Triggers,
@@ -239,9 +245,10 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 16] = [
+pub const NAMES: [&str; 17] = [
     "help",
     "tools",
+    "skills",
     "triggers",
     "outbox",
     "frontdoor",
@@ -313,6 +320,7 @@ pub fn mode_name(mode: PermissionMode) -> &'static str {
 pub const HELP: &str = "\
   /help                  this list
   /tools                 tools this agent can call
+  /skills                procedures this agent can load, and which are loaded
   /triggers              scheduled prompts: see, edit, run, cancel
   /outbox                staged outbound drafts: read, edit, send, reject
   /frontdoor             inbound requests: read, extract, triage, close

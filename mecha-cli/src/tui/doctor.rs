@@ -225,7 +225,7 @@ impl DoctorModal {
                 .collect()
         };
 
-        let height = list_height(body.len() as u16, frame.area().height);
+        let height = super::list_height(body.len() as u16, frame.area().height);
         let area = super::centered(frame.area(), 110, height);
         frame.render_widget(Clear, area);
         frame.render_widget(
@@ -263,17 +263,6 @@ impl DoctorModal {
             area,
         );
     }
-}
-
-/// The list box's height for a terminal `terminal_height` rows tall (F9).
-///
-/// The old inline `clamp(1, height.saturating_sub(4))` violated `min <= max`
-/// — a panic — the moment the terminal shrank to four rows or fewer, because
-/// the subtraction saturates to zero. The upper bound is floored at one row
-/// instead, so a tiny terminal degrades to a one-row box rather than a crash.
-fn list_height(rows: u16, terminal_height: u16) -> u16 {
-    let max = terminal_height.saturating_sub(4).max(1);
-    rows.clamp(1, max) + 2
 }
 
 /// The y/N gate for a spawnable remedy, with the command line on screen: what
@@ -604,7 +593,7 @@ mod tests {
             for rows in 0..=3u16 {
                 // The call itself is the assertion the old code fails: it
                 // panicked here. The bounds check is the degradation story.
-                let h = list_height(rows, terminal_height);
+                let h = super::super::list_height(rows, terminal_height);
                 let max_body = terminal_height.saturating_sub(4).max(1);
                 assert!(
                     h >= 3 && h <= max_body + 2,
@@ -613,9 +602,9 @@ mod tests {
             }
         }
         // The ordinary case is unchanged: content-sized plus the border.
-        assert_eq!(list_height(5, 45), 7);
+        assert_eq!(super::super::list_height(5, 45), 7);
         // And a tall list still stops short of the screen.
-        assert_eq!(list_height(200, 45), 43);
+        assert_eq!(super::super::list_height(200, 45), 43);
     }
 
     /// F5, failing on the old watch arm, which posted one notice at five

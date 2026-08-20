@@ -1392,6 +1392,7 @@ mod tests {
                     mode: mecha_core::config::PermissionMode::Allow,
                 }),
                 todo: None,
+                skill: None,
                 mailbox: None,
                 _mcp: Vec::new(),
             },

@@ -60,6 +60,18 @@ impl SkillTool {
         self.loaded.lock().unwrap().clone()
     }
 
+    /// What this run actually carries — the level-1 set, after config
+    /// selection and `--skill` narrowing.
+    ///
+    /// For a UI answering "what does this agent know how to do". It has to
+    /// come from here rather than from re-reading the store beside the
+    /// config, because `--skill` narrows the run without touching either:
+    /// `mecha skills` shipped with exactly that bug, marking every
+    /// config-selected skill as carried while the run carried one.
+    pub fn available(&self) -> &[Skill] {
+        &self.available
+    }
+
     /// Forget what is loaded, because the conversation that loaded it ended.
     ///
     /// A loaded skill is the agent's state and a **conversation** is the scope

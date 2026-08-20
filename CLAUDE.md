@@ -769,6 +769,21 @@ them, and exits non-zero when a `SKILL.md` failed to parse. A skill that fails
 to load is reported at startup by name and reason, because a silent one looks
 exactly like a skill the model chose not to use — the unrouted-domain shape.
 
+**`/skills` is that surface in the TUI**, and it reads from two places because
+neither can answer alone. What the run *carries* comes from the running agent's
+`SkillTool` — never from re-deriving the selection off config, because `--skill`
+narrows a run without touching config or the store, which is the bug `mecha
+skills` shipped with. What *exists* comes from the store, because the agent only
+holds what survived selection, and a withheld skill that is merely absent is
+indistinguishable from one the model chose not to use. A `SKILL.md` that failed
+to parse is a row rather than a log line: the startup warning is printed before
+the TUI takes the screen, so the alternate screen covers it for the whole
+session, making this the only place a TUI user can see it while there is still
+something to do about it. The handle rides on the front-end's `Live` bundle
+beside `todo`'s, so a `/model` switch — which rebuilds the agent and its tools
+wholesale — refreshes it rather than leaving a modal describing the agent that
+was replaced.
+
 **The YAML dependency was chosen against the obvious answers.** `serde_yaml` is
 archived, `serde_yml` ships as a shim announcing its own unmaintenance and
 carries RUSTSEC-2025-0068, and `serde_norway`/`serde_yaml_ng` are stale forks.
