@@ -2245,6 +2245,29 @@ fn run_command(
             });
         }
 
+        Command::Send(None) => app.transcript.push(Entry::Error(
+            "/send needs a path — try `/send report.png`".into(),
+        )),
+
+        // **Resolved through the run's path jail, on the event loop.** Doing
+        // it here rather than in the task is what makes "no such file" arrive
+        // as itself, immediately, instead of arriving a second later mixed in
+        // with whatever the network had to say. The jail is the same one every
+        // other path in a session goes through: a user who means to send
+        // something from outside the workspace can `!cp` it in, and one rule
+        // for where paths point beats an exception that exists because typing
+        // is tedious.
+        Command::Send(Some(raw)) => match agent.context().tools.resolve(&raw) {
+            Ok(path) => {
+                app.transcript
+                    .push(Entry::Notice(format!("sending {raw} to Slack…")));
+                spawn_send(path, app.shell_tx.clone());
+            }
+            Err(e) => app
+                .transcript
+                .push(Entry::Error(format!("/send {raw}: {e:#}"))),
+        },
+
         Command::Quit => app.should_quit = true,
 
         Command::Model(None) | Command::Provider(None) => {
@@ -4017,6 +4040,39 @@ fn run_shell_escape(app: &mut App, agent: &Arc<Agent>, cmd: String) {
         };
         // The receiver only closes when the TUI is exiting; output arriving
         // after that has nowhere sensible to go anyway.
+        let _ = tx.send(entry);
+    });
+}
+
+/// Upload a file to the owner's Slack DM, reporting into the transcript.
+///
+/// In-process and async rather than a detached `mecha slack send`, on the
+/// `run_shell_escape` precedent above: the work is one upload, the outcome is
+/// one line, and there is nothing for a person to interact with in between.
+/// `/triggers` shells out because firing a trigger builds an entire agent and
+/// can run for twenty minutes, which is a different size of thing. The rule
+/// that actually matters — nothing the TUI can do that the command line
+/// cannot — is kept by both surfaces calling the same function, not by both
+/// spawning the same process.
+///
+/// The failure is reported and never retried. A retry would double-post on
+/// the half of the three-step upload that is not idempotent, and a duplicate
+/// file in a DM is a worse answer than a line saying what went wrong.
+fn spawn_send(path: PathBuf, tx: mpsc::UnboundedSender<Entry>) {
+    tokio::spawn(async move {
+        let entry = match crate::slack::send::send_file(&path, None).await {
+            Ok(sent) => Entry::Notice(format!(
+                "sent {} ({}) to your Slack DM",
+                sent.filename,
+                crate::slack::send::human(sent.bytes)
+            )),
+            // `{:#}` so the context chain arrives — "uploading chart.png:
+            // nothing is bound" is the whole diagnosis, where either half
+            // alone sends the reader looking in the wrong place.
+            Err(e) => Entry::Error(format!("/send {}: {e:#}", path.display())),
+        };
+        // The receiver only closes when the TUI is exiting; an outcome
+        // arriving after that has nowhere sensible to go anyway.
         let _ = tx.send(entry);
     });
 }

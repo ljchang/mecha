@@ -154,6 +154,30 @@ there. A phone rarely needs the mail, the calendar and the factory at once.
 Names are exact, never globs. Note that `http_fetch` is also what a `research`
 subagent needs — without it, that subagent silently stops being registered.
 
+## Getting a file out
+
+A box you reach over SSH can make a chart you cannot look at. `mecha slack
+send` — and `/send <path>` inside the TUI — uploads one file into your own DM,
+where a phone can open it:
+
+```bash
+mecha slack send results/accuracy.png
+```
+
+```
+/send results/accuracy.png
+```
+
+Two things about it are deliberate. **The destination is not an argument** —
+it is your DM, read from the binding, and no flag moves it; that is what will
+let the agent itself surface a chart later without the ability to send one
+anywhere else. And **the TUI's `/send` resolves the path through the run's
+jail**, so it reaches what the session can reach and nothing else. To send
+something from outside the workspace, `!cp` it in first.
+
+`[slack] max_upload_mb` (25 MB) caps this, and caps attachments coming the
+other way with the same number.
+
 ## Two things it deliberately does not do
 
 - **`ask_user` is absent.** It is a *tool*, and the tool registry belongs to the

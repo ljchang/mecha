@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`/send <path>` in the TUI, and `mecha slack send`.** A file goes from a
+  session into the owner's Slack DM, where a phone can open it. The problem it
+  answers is small and constant: a chart rendered on a headless box is a file
+  nobody can see, because SSH has no viewer and scp back is a second
+  connection nobody sets up to look at a PNG.
+
+  **The destination is not an argument.** It is the owner's DM, read from the
+  binding, and there is no parameter that moves it — the same shape as
+  `frontdoor::Record::for_privileged_run`, where the safety property is a
+  function signature rather than a rule someone remembers. That is what will
+  let the agent itself surface a visualisation in a later rung without the
+  tool becoming a way to send a file anywhere else.
+
+  The TUI's `/send` resolves through the run's **path jail** and the CLI verb
+  does not, which is deliberate: a session has a jail and no reason for a
+  second rule, while the command line runs in a shell that is already the
+  boundary. Refusals are decided before the DM is opened, so "that is a
+  directory" arrives as itself rather than after a network error that happened
+  first, and `[slack] max_upload_mb` now caps both directions rather than only
+  what comes in.
+
+  Rung 1 of `docs/REMOTE-CONTROL-DESIGN.md`, which is the rest of it: a named
+  Slack thread attached to a live TUI session, files both ways, steering from
+  a phone.
+
 ## [0.1.9] - 2026-08-20
 
 ### Added

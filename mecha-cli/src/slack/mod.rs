@@ -12,5 +12,6 @@ pub mod doctor;
 pub mod frontdoor;
 pub mod pump;
 pub mod review;
+pub mod send;
 pub mod threads;
 pub mod triggers;

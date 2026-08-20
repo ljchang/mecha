@@ -43,6 +43,10 @@ pub enum Command {
     Session,
     /// Show or hide the live todo pane.
     Todo,
+    /// Put a file in front of the user where they can actually look at it —
+    /// their Slack DM. `None` is the argument-less form, which is a mistake
+    /// rather than a default: there is no sensible file to guess.
+    Send(Option<String>),
     Quit,
     /// Recognised as a command, but not one we have. Kept as its own variant so
     /// a typo says so instead of being sent to the model as a prompt.
@@ -115,6 +119,10 @@ pub fn parse(line: &str) -> Option<Command> {
         "clear" | "new" => Command::Clear,
         "session" => Command::Session,
         "todo" => Command::Todo,
+        // The whole argument is the path, so a name with spaces in it works.
+        // A caption would have to be split off somehow, and the file's own
+        // name is already the caption Slack shows.
+        "send" => Command::Send(arg.map(str::to_string)),
         "exit" | "quit" | "q" => Command::Quit,
         "mcp" => match arg {
             None => Command::Mcp(None),
@@ -274,6 +282,7 @@ pub const NAMES: [&str; 19] = [
     "clear",
     "session",
     "todo",
+    "send",
 ];
 
 /// Command names that could still be meant by what has been typed.
@@ -349,6 +358,7 @@ pub const HELP: &str = "\
   /clear                 start a new conversation, dropping its taint
   /session               where the transcript is being written
   /todo                  show or hide the live task pane
+  /send <path>           send a file to your Slack DM, to look at elsewhere
   /exit                  quit";
 
 #[cfg(test)]
@@ -384,6 +394,29 @@ mod tests {
         assert_eq!(common_prefix(&["session", "settings"]), "se");
         assert_eq!(common_prefix(&completions("/u")), "usage");
         assert_eq!(common_prefix::<&str>(&[]), "");
+    }
+
+    /// The whole argument is the path, because a file name may contain
+    /// spaces and splitting a caption off the end would make those files
+    /// unsendable — the one thing this command exists to do.
+    #[test]
+    fn send_takes_the_rest_of_the_line_as_one_path() {
+        assert_eq!(
+            parse("/send report.png"),
+            Some(Command::Send(Some("report.png".into())))
+        );
+        assert_eq!(
+            parse("/send my notes/draft 2.md"),
+            Some(Command::Send(Some("my notes/draft 2.md".into())))
+        );
+    }
+
+    /// A bare `/send` is a mistake, not a default: there is no file worth
+    /// guessing at, and guessing one would upload something nobody named.
+    #[test]
+    fn a_bare_send_carries_no_path_rather_than_inventing_one() {
+        assert_eq!(parse("/send"), Some(Command::Send(None)));
+        assert_eq!(parse("/send   "), Some(Command::Send(None)));
     }
 
     #[test]
