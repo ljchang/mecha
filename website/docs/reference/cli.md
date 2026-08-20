@@ -654,7 +654,7 @@ Driving mecha from Slack: the credential, the binding, and who may drive.
 `status` is the default subcommand.
 
 ```
-mecha slack [status|auth|link|threads|connect|sweep|notify|unlink] [ARGS]
+mecha slack [status|auth|link|threads|connect|sweep|notify|send|unlink] [ARGS]
 ```
 
 | Subcommand | Flag | Description |
@@ -667,6 +667,7 @@ mecha slack [status|auth|link|threads|connect|sweep|notify|unlink] [ARGS]
 | `connect` | | Run the connector: hold the Slack socket open and drive runs from threads. |
 | `sweep` | | Mark threads whose run did not survive a restart, so none is left showing "working…" forever. |
 | `notify` | `--title <TEXT>` | Read stdin and send it to the owner as a DM. |
+| `send` | `<PATH>`, `--comment <TEXT>` | Upload a file to the owner's DM — a chart, a log, a screenshot. |
 | `unlink` | | Forget the binding. The tokens stay, so `link` can be run again. |
 
 `auth` reads the tokens from `MECHA_SLACK_BOT_TOKEN` (`xoxb-`) and
@@ -684,6 +685,18 @@ already runs with the run's answer on stdin, so
 `--notify 'mecha slack notify --title briefing'` puts the morning briefing on a
 phone with no new trigger concept at all.
 
+`send` is how something a headless box made gets looked at. Over SSH there is
+no viewer, and scp in the other direction is a second connection nobody wants
+to set up to look at a PNG — so the file goes to the one place already
+reachable from a phone. The destination is not an argument: it is the owner's
+DM, from the binding, and there is deliberately no flag that moves it.
+`[slack] max_upload_mb` caps it (25 MB by default), in both directions.
+
+The TUI has the same thing as `/send <path>`, with one difference: there the
+path goes through the run's path jail, because a session has one and there is
+no reason for it to have a second rule. Here the path is taken as typed —
+this verb runs in your own shell, which is already the boundary.
+
 Nothing in `[slack]` config grants access. Who may drive lives in
 `~/.mecha/slack/binding.json`, a store rather than config.
 
@@ -695,6 +708,7 @@ mecha slack link                  # then type the printed code at the app in Sla
 mecha slack status
 mecha slack threads --state awaiting_input
 echo "deploy finished" | mecha slack notify --title deploy
+mecha slack send results/accuracy.png --comment 'the run finished'
 ```
 
 See [Slack](/docs/features/slack).

@@ -182,8 +182,11 @@ pub struct SlackConfig {
     /// guidance; the timer is so a slow model still shows progress.
     pub stream_flush_chars: usize,
     pub stream_flush_ms: u64,
-    /// Largest attachment fetched into a run's workspace. Slack allows 1 GB;
-    /// a remote control does not need to.
+    /// Largest file to move between a workspace and Slack, in **both**
+    /// directions: an attachment fetched into a run's workspace, and anything
+    /// `/send` puts back. Slack allows 1 GB; a remote control does not need
+    /// to. One number rather than two, because "how big is too big to move
+    /// over this link" is one question and two answers to it drift.
     pub max_upload_mb: u64,
     /// Narrow the tool surface for Slack-driven runs.
     ///

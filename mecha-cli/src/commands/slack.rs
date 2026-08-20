@@ -81,6 +81,17 @@ pub enum Cmd {
         #[arg(long)]
         title: Option<String>,
     },
+    /// Send a file to the owner's DM.
+    ///
+    /// The way something a headless box made gets looked at: a chart, a log, a
+    /// screenshot. Rung 1 of `docs/REMOTE-CONTROL-DESIGN.md`.
+    Send {
+        /// The file to send.
+        path: std::path::PathBuf,
+        /// A line above it in the DM.
+        #[arg(long)]
+        comment: Option<String>,
+    },
     /// Forget the binding. The tokens stay, so `link` can be run again.
     Unlink,
 }
@@ -94,6 +105,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         Cmd::Threads { state } => threads(state.as_deref()),
         Cmd::Sweep => sweep(),
         Cmd::Notify { title } => notify(&store, title.as_deref()).await,
+        Cmd::Send { path, comment } => send(&path, comment.as_deref()).await,
         Cmd::Connect => crate::slack::connector::run(global).await,
         Cmd::Unlink => {
             store.clear_binding()?;
@@ -244,14 +256,11 @@ fn threads(filter: Option<&str>) -> Result<()> {
 /// and a DM's recipient is the principal, so it is not a send sink in the way
 /// a channel post would be.
 async fn notify(store: &SlackStore, title: Option<&str>) -> Result<()> {
-    let creds = credentials(store)?;
-    let binding = store
-        .binding()?
-        .context("nothing is bound — run `mecha slack link` first")?;
-    let owner = binding
-        .owners
-        .first()
-        .context("the binding names no owners")?;
+    // The credential is checked before stdin is read and the DM is opened
+    // after — the order matters, and it is why `owner_client` and `open_dm`
+    // are separate. A trigger that produced no answer must cost no round trip,
+    // and one with a broken binding must still say so.
+    let (slack, owner) = crate::slack::send::owner_client(store)?;
 
     let mut body = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut body)
@@ -263,22 +272,28 @@ async fn notify(store: &SlackStore, title: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    let slack = Slack::new(&creds.bot_token);
-    // A DM channel has to be opened before it can be posted to, and doing so
-    // is idempotent — Slack returns the existing one.
-    let opened: Value = slack
-        .call("conversations.open", json!({ "users": owner }))
-        .await
-        .context("opening a DM with the owner")?;
-    let channel = opened["channel"]["id"]
-        .as_str()
-        .context("conversations.open returned no channel")?;
-
+    let channel = crate::slack::send::open_dm(&slack, &owner).await?;
     let text = match title {
         Some(t) => format!("*{t}*\n{body}"),
         None => body.to_string(),
     };
-    chat::post_message(&slack, channel, None, &text, None).await?;
+    chat::post_message(&slack, &channel, None, &text, None).await?;
+    Ok(())
+}
+
+/// `mecha slack send` — the CLI half of the TUI's `/send`.
+///
+/// The path is taken as typed, where the TUI's `/send` puts it through the
+/// run's path jail. That difference is deliberate rather than an oversight:
+/// this verb runs in the user's own shell, which is already the boundary, and
+/// a jail here would refuse to send a file the person is standing next to.
+async fn send(path: &std::path::Path, comment: Option<&str>) -> Result<()> {
+    let sent = crate::slack::send::send_file(path, comment).await?;
+    println!(
+        "sent {} ({}) to your Slack DM",
+        sent.filename,
+        crate::slack::send::human(sent.bytes)
+    );
     Ok(())
 }
 
