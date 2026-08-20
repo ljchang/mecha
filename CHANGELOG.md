@@ -5,6 +5,95 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-08-20
+
+### Added
+
+- **The task board reaches the session that needs it.** `mecha tasks` — list,
+  add, set — and `/tasks` in the TUI, onto the GTD board in the knowledge
+  graph. `/todo` was the model's own scratchpad for the run it is in; the board
+  a person keeps had no surface here at all, so the only way to look at it was
+  to leave.
+
+  The board is reached **only through the MCP tool surface** (`kg_task_list` /
+  `kg_task_create` / `kg_task_update`), the way `mecha mail task` already did
+  — so nothing gains a dependency on the graph or a second reader of its
+  schema, and the lookup matches on the tool's *suffix*, which is what keeps a
+  renamed server or a `prefix_tools` flip from turning the board into "no
+  tasks". The modal drives the CLI, so nothing it can do is missing from a
+  script.
+
+  Keys are `mecha-graph tui` screen 6's keys, with a test saying so: two boards
+  over one store with divergent letters is a trap, and the keystroke it springs
+  is `x` on something you meant to finish. **Nothing confirms** — the board
+  reaches nobody, every status is one keypress from where it was, and the tool
+  surface has no delete — because a confirmation on a reversible private change
+  only teaches people to approve without reading, which the outbox then has to
+  fight. A reload re-finds the cursor **by id**, since changing a status is
+  also what reorders the board and the next keypress might be `d`.
+
+  Capture takes name, due, project and context; edit takes due, defer and
+  context and *not* the name, because `kg_task_update` has no rename and a box
+  that silently discarded what was typed in it would be worse than no box.
+  `--due` accepts `today`, `tomorrow` and `+Nd`; `--project` must already name
+  a node, and an unknown one is an error rather than an invented node. On
+  `set`, an omitted field is untouched and `""` clears — passed through rather
+  than reinterpreted, or changing a status would wipe a due date.
+
+- **`/skills` — what this agent knows how to do.** The slash counterpart to
+  `/tools`. `mecha skills` shipped without it, so the question could only be
+  asked from outside the session. It reads from two places because neither can
+  answer alone: what the run *carries* comes from the running agent rather than
+  from re-deriving the selection off config, since `--skill` narrows a run
+  without changing any file; what config *withheld* is marked rather than
+  omitted, because a withheld skill and one the model chose not to load look
+  identical from the outside and only one is a mistake.
+
+- **A reply is shown with the message it replies to.** "A message's reviewable
+  object is the message" was half a rule: a staged `mail_reply` carries a body
+  and a `thread_id`, and a `thread_id` addresses the provider rather than the
+  reviewer — so the queue asked people to approve a letter without showing them
+  the letter it answers. Deciding *is this the right reply* without the
+  original is approving unread, in the one way this surface exists to prevent.
+
+  Nothing needed recording. The drafting run read the thread before it wrote
+  the reply, the item already names its session, and the transcript already
+  held the result; the link existed and nobody followed it. It comes from the
+  **transcript, never a live re-fetch** — a reviewer needs the bytes the model
+  drafted from, not today's version of the thread, and `show` stays a store
+  read with no network behind a display. The join knows nothing about mail: it
+  matches identifying arguments by key *and* value against earlier calls in the
+  same session, so `thread_id == thread_id` finds the read where
+  `account == account` would have matched everything. Quoted under a heading
+  naming it as third-party content, because a quoted block with no heading
+  reads as more of the letter.
+
+### Fixed
+
+- **Eight modals stopped taking the session down when the window shrank.**
+  `rows.clamp(1, terminal_height.saturating_sub(4))` is a panic and not a
+  layout bug: the subtraction saturates to zero at four rows or fewer, `clamp`
+  asserts `min <= max`, and a panic in the draw path is the whole run — partial
+  answer and all. Found once in `/doctor`, then written again in six siblings,
+  because a new modal is written by opening whichever one is nearest.
+
+  `/mail` was the eighth and hid a row deeper: its floor was **two**, since it
+  reserves a line for its key strip, so it died at five rows where the others
+  died at four — and it survived the sweep that fixed the rest because the site
+  read `clamp(2, …)` and matched no search aimed at `clamp(1, …)`. The helper
+  now takes what the box `reserved`s, which is the thing the two-argument form
+  could not say; a helper that cannot express a caller is how that caller ends
+  up spelling it inline. The degradation is deliberate: the ceiling floors at
+  one row and then the floor is pulled *down* to meet it, so a terminal too
+  short for both the strip and a row of list gets a useless, living box rather
+  than a dead session.
+
+- **`/outbox` no longer opens underneath another modal.** A run finishing under
+  `/review now` hands the review surface a set of ids, and the guard that
+  refuses when something already owns the keyboard did not know about `/mail`,
+  `/tasks` or `/polls` — so the board stayed on screen while the keystrokes
+  drove the queue, and `r` rejected a draft nobody could see.
+
 ## [0.1.8] - 2026-08-20
 
 ### Added
@@ -1385,7 +1474,8 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/ljchang/mecha/releases/tag/v0.1.9
 [0.1.8]: https://github.com/ljchang/mecha/releases/tag/v0.1.8
 [0.1.7]: https://github.com/ljchang/mecha/releases/tag/v0.1.7
 [0.1.6]: https://github.com/ljchang/mecha/releases/tag/v0.1.6
