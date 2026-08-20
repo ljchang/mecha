@@ -1,6 +1,6 @@
 ---
 title: Polls
-sidebar_position: 6
+sidebar_position: 7
 description: A poll is a list of typed questions — choice, ranking, likert, vas, text, times — answered by ballots the box validates against each question's own vocabulary.
 ---
 

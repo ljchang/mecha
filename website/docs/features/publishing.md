@@ -1,6 +1,6 @@
 ---
 title: Publishing
-sidebar_position: 10
+sidebar_position: 11
 description: Staging a publish through the outbox — why a rendered bundle is not a staged email, and what review had to learn.
 ---
 

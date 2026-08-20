@@ -1,6 +1,6 @@
 ---
 title: Memory
-sidebar_position: 12
+sidebar_position: 13
 description: Three memories with three trust models — the knowledge graph for the world, the learning store for behaviour, the transcript for what was actually said.
 ---
 

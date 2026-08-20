@@ -128,6 +128,11 @@ easy to undo:
   also means a stranger's prose is never fetched *into* a context that already
   holds tools.
 
+[The inbound queue](/docs/factory/inbound-queue) covers the half of that
+pipeline people ask about most: nothing is ever "connected", so killing an
+agent loses nothing and restarting one reconnects to nothing — and why exactly
+one machine per account should be the one draining.
+
 ## How mecha talks to it
 
 `factory-publish` is both the CLI and the MCP server; there is no daemon.
