@@ -266,11 +266,33 @@ Two details there that cost something to get right:
 Every fire appends one row: the slot, start and finish, status
 (`ok` / `error` / `skipped (overlap)` / `skipped (stale)`), the session id,
 turns, cost, `blocked_sends`, how many calls were **staged** (the number to
-look at in the morning), the taint snapshot, and the stop cause.
+look at in the morning), the taint snapshot, the stop cause, and how the run's
+tool calls went — `tool_calls`, `tool_errors`, `ended_on_failed_call`.
 
 The stop cause is recorded because without it a run cut short by a timeout or
 a budget records as plain `ok`, and a trigger that has been quietly truncating
 its answer every morning looks exactly like one that works.
+
+The call counts are there for the same reason, one level down. **An unattended
+run has nobody watching it fail**: the briefing still arrives, the ledger still
+says `ok`, and a trigger failing a third of its calls reads exactly like one
+that works. Per-step reliability is what decides how long a task a run can
+finish, so a third of the calls failing is not a third of the work lost.
+`mecha doctor` is the reader, and it raises two findings from these counters:
+
+- **A trigger failing a third of its tool calls** across its last five runs.
+  Silent below ten calls in that window, because a rate over three of them is
+  noise.
+- **A trigger whose most recent run succeeded having done nothing.** The rate
+  check cannot see this one — a rate over zero calls is undefined rather than
+  bad — so a trigger that made thirty calls every morning and now makes none is
+  silent in every other signal the ledger carries. Measured against the
+  trigger's *own* earlier runs and never an absolute floor: a prompt that
+  legitimately needs no tools makes zero calls every morning, and calling that
+  broken would be wrong about the healthiest trigger on the machine.
+  Suppressed when the run also errored, since that already has a finding.
+
+See [Run quality](/docs/features/run-quality).
 
 The full answer stays in the session transcript rather than being copied into
 the ledger. `--notify` is a command handed that answer on stdin — an observer,
@@ -296,4 +318,5 @@ three.
 - [The outbox](/docs/features/outbox) — what makes overnight triage safe.
 - [Security model](/docs/features/security) — the interlock, which applies unchanged to an unattended run.
 - [Sessions and replay](/docs/features/sessions-and-replay) — where a trigger's answer actually lives.
+- [Run quality](/docs/features/run-quality) — the corpus that makes an unattended run's reliability visible.
 - [CLI reference](/docs/reference/cli) — every `mecha trigger` subcommand and flag.

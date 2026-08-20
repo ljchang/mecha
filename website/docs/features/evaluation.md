@@ -1,6 +1,6 @@
 ---
 title: Evaluation
-sidebar_position: 17
+sidebar_position: 18
 description: The eval rig — grading the tool-call trace and the artifact rather than what the model says about its own work.
 ---
 
@@ -268,6 +268,62 @@ rules-on, prints the per-case flips, and writes a **differently shaped** JSON
 `--compare` cannot mistake for a scorecard. Neither arm's ordinary scorecard is
 printed, and it always exits 0 — the delta is a finding, not a gate.
 
+## `--ab-config`: measuring a proposed change
+
+`--ab-config KEY=VALUE` runs the case set twice, differing only in the override,
+and judges the difference. It is the **content-sensitive arm of the
+[candidate gate](/docs/features/run-quality#the-gate)**: a case's cost is failing it, so a
+pass is a win and every guardrail in the gate applies unchanged.
+
+```bash
+mecha eval --ab-config max_turns=40 eval/cases.jsonl
+mecha eval --ab-config compact_at_tokens=8000 --holdout-in 4 -o results/ab.json
+```
+
+```text
+── config A/B ──
+arm A (as configured): 31/40 cases
+arm B (max_turns=40): 34/40 cases
+  IMPROVED: chaining-deep-traversal
+  REGRESSED: audit-multi-file
+
+selection  6+ 2- 19=    holdout  3+ 0- 10=
+work       1841 tool calls → 1902
+
+verdict: BETTER — beat the original on the selection slice and held on the holdout
+```
+
+**Overrides are a closed set of run options** — `compact_at_tokens`,
+`max_turns`, `max_output_tokens`, `effort`. The knobs an automated proposer may
+move are exactly the ones a run can be launched with, so both arms are built by
+one code path; a second construction site is how two arms silently stop being
+comparable. An unknown key is refused, and every override is parsed **before**
+the first arm runs, so a typo costs a line of output rather than an hour of
+inference.
+
+Four properties come from the gate rather than from this command:
+
+- **Paired by case, and split.** A case is scored on pass^k in both arms. One in
+  `--holdout-in` cases (default 3) is held out of selection by a hash of its id
+  — never at random, or a rerun grades against a different holdout and
+  "confirmed on unseen cases" stops meaning anything.
+- **A case that ran in only one arm is dropped.** Missing is missing, not a tie.
+- **The work guardrail outranks the score.** Tool calls falling below 75% of the
+  baseline rejects the change: passing more cases while attempting less is the
+  null run, not an improvement.
+- **Thin evidence proposes rather than rejecting.** Below the pair floors the
+  verdict is *read it*, not *no*.
+
+Like `--ab-rules`, neither arm is written as an ordinary scorecard. A scorecard
+produced under a candidate override is not comparable to one produced without
+it, and filing it as though it were is how an A/B contaminates a series. The
+output warns on its way out that judge-graded flips are a prompt to read the
+answers rather than a verdict — this is one sample of a non-deterministic
+measurement.
+
+`mecha diagnose` prints the exact `--ab-config` line that would falsify its own
+proposal; see [Run quality](/docs/features/run-quality#the-diagnostic-stage).
+
 ## Flags
 
 | Flag | Default | What it does |
@@ -286,10 +342,12 @@ printed, and it always exits 0 — the delta is a finding, not a gate.
 | `--no-ask-user` | off | withhold `ask_user` (by default it is present and always declines) |
 | `--compare <PATHS…>` | — | print a table from written reports instead of running |
 | `--ab-rules` | off | paired rules-free / rules-on run |
+| `--ab-config <K=V>` | — | paired run under a config override, judged; repeatable |
+| `--holdout-in <N>` | 3 | one case in N held out of selection, for `--ab-config` |
 
 `mecha eval` exits non-zero when any case failed, so it also works as a
-regression gate on the harness itself. (`--compare` and `--ab-rules` always exit
-0.)
+regression gate on the harness itself. (`--compare`, `--ab-rules` and
+`--ab-config` always exit 0 — a delta is a finding, not a gate.)
 
 Case files skip blank lines and lines starting with `//`, so they can carry
 section headers.
@@ -351,3 +409,11 @@ by the harness, and `expect.blocked_sends` counts it. The `graph` persona carrie
 `[mcp.capabilities] untrusted_input = true`, because neither the fixture nor the
 real server declares `openWorldHint` on its read tools, and without the override
 the graph would count as private-but-trusted.
+
+## Where to go next
+
+- [Run quality](/docs/features/run-quality) — the corpus `--ab-config` judges
+  against, and the gate whose guardrails it borrows.
+- [Sessions and replay](/docs/features/sessions-and-replay) — the other arm of
+  that gate, and what it cannot see.
+- [CLI reference](/docs/reference/cli) — every `mecha eval` flag.

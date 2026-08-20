@@ -1,6 +1,6 @@
 ---
 title: Compaction
-sidebar_position: 15
+sidebar_position: 16
 description: Making a long conversation fit — eviction first, a legal cut, a validated summary, and what must survive all of it.
 ---
 
@@ -117,7 +117,59 @@ this content is needed.]
 
 The marker also lets a second pass tell it has already been here.
 
-### 2. Thin old results, keep the calls
+### 2. Collapse repeated failures
+
+```rust
+let collapsed = crate::compact::collapse_repeated_failures(messages);
+```
+
+Eviction's error exemption is right for one failure and inverts for eight. A
+model is measurably likelier to fail a step when the context holds its own
+earlier errors — self-conditioning, which does not go away with model size — and
+a repeated failure is the same-target near-miss the distractor literature prices
+at 25–68%, not the free kind of bulk.
+
+Nothing in the harness touched these before: eviction skips errors by
+construction and thinning only truncates long results, so a sixty-character
+failure message was untouchable by both.
+
+The diagnosis the error exemption protects is carried by the **newest** failure
+alone, so that one survives verbatim and the older identical ones become
+markers:
+
+```
+[repeat: this call failed again later with the same error, which is kept in
+full below. Repeating it unchanged has not worked.]
+```
+
+The marker names what happened *and what it means* — one that only says
+"collapsed" invites the model to try once more to see for itself.
+
+Four rules:
+
+- **The key is target *and* exact error text.** "No such file" then "permission
+  denied" on one path are two facts, and collapsing either loses a diagnosis.
+  Collapsing too little costs tokens; collapsing too much destroys information,
+  so narrow is the fail-safe direction.
+- **Nothing is removed.** Dropping a `tool_result` block is a 400. The content
+  is replaced, the block stays.
+- **Refusals are never collapsed.** A denied call carries `is_error: true` like
+  any failure, so keying on that flag alone would fold a *human's* refusals
+  together. Results beginning `Denied by the user:`, `Blocked by policy:` or
+  `Blocked by a hook:` are skipped — those are the strings the
+  [learning miner](/docs/features/learning) reads a correction out of, and compaction
+  rewrites the transcript in place, so folding three refusals into one marker
+  destroys the evidence rather than merely undercounting it.
+- **It does not count toward "freed enough, defer the summary".** It removes
+  repetition rather than bulk, so treating it as freed space would spend a turn
+  arriving back at the same threshold. It *is* enough to write a `rewrite`
+  record, because the transcript really did change.
+
+Distinct from [the loop guard](#a-compaction-arms-the-loop-guard), which stops a
+run that has already gone wrong and only after a compaction. This runs before
+there is anything to stop.
+
+### 3. Thin old results, keep the calls
 
 ```rust
 let thinned = crate::compact::thin_old_results(
@@ -142,11 +194,12 @@ so it does not depend on a summariser noticing it mattered. It costs no
 request, and an already-thinned result is left alone so repeated passes do not
 eat the head a chunk at a time.
 
-**If eviction or thinning freed anything, the summary is deferred a turn.** The
-next reported prompt size says whether that was enough, and a summary is lossy
-where thinning is merely lossy about the middle of a file.
+**If eviction or thinning freed anything, the summary is deferred a turn** —
+collapsing does not count, for the reason above. The next reported prompt size
+says whether that was enough, and a summary is lossy where thinning is merely
+lossy about the middle of a file.
 
-### 3. Summarise the middle
+### 4. Summarise the middle
 
 Only if the transcript is still too big.
 
@@ -321,7 +374,8 @@ the limit while the *next* request is well over.
 
 `is_context_overflow` recognises the refusal across backends by message text —
 no backend gives it a usable code — and the loop compacts and retries **the same
-turn, once**. A false positive costs one summary; a false negative loses the
+turn, once**. All three cheap passes run first, exactly as at the threshold:
+they cost no request, so there is never a reason to skip them. A false positive costs one summary; a false negative loses the
 whole run, which is what used to happen.
 
 Recovery differs from the between-turns pass in one way: it thins with

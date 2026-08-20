@@ -1,6 +1,6 @@
 ---
 title: Sessions and replay
-sidebar_position: 16
+sidebar_position: 17
 description: Append-only JSONL transcripts, what they record beyond the messages, and replay as a standing regression check.
 ---
 
@@ -16,7 +16,8 @@ copy that could disagree with it.
 mecha sessions list
 mecha sessions show 20260805T091500
 mecha sessions path 20260805T091500
-mecha sessions stats --days 30
+mecha sessions stats --days 30      # what runs cost
+mecha sessions health --days 30     # how runs went
 ```
 
 Transcripts live in `~/.mecha/sessions` (override with `MECHA_SESSION_DIR`), in
@@ -29,7 +30,7 @@ so a crashed run still leaves a readable transcript. Ids are
 `20260805T091500-3f2a1b7c` — sortable by name, and still unique when two runs
 start in the same second.
 
-Six record kinds:
+Seven record kinds:
 
 ```json
 {"record":"meta","id":"20260805T091500-3f2a1b7c","created_at":"...","provider":"anthropic","model":"claude-opus-5","workspace":"/home/you/project","title":"summarize what changed"}
@@ -38,6 +39,7 @@ Six record kinds:
 {"record":"taint","private":true,"untrusted":false}
 {"record":"rewrite","messages":[...]}
 {"record":"summary","usage":{...},"turns":4}
+{"record":"outcome","turns":4,"stop_cause":"end_turn","tool_calls":11,"tool_errors":1,"tool_denied":0,"ended_on_failed_call":false,"compactions":0, ...}
 ```
 
 The `rewrite` record is how an append-only file expresses an in-place edit:
@@ -98,6 +100,31 @@ one**. A message with no checkpoint after it returns `None`, which the caller
 must treat as *unknown*, and unknown provenance is never clean. This is what
 `mecha learn` uses to exclude non-clean reflections structurally — see
 [Learning](/docs/features/learning).
+
+### The outcome record
+
+`summary` answers *what did this run cost*; `outcome` answers *did it work*.
+They are two records rather than more fields on one because the audience is
+different — cost is for a person reading `sessions show`, and the outcome is for
+a machine reading a thousand sessions at once.
+
+It carries the stop cause, whether a budget was reached, tool calls attempted
+against errors, denials and stagings, malformed arguments, blocked sends,
+compactions taken, the end-of-run taint, and whether the run stopped of its own
+accord with its last call failed. Written by **every** front-end: before it
+existed, an interactive run was measurably less observable than a trigger, whose
+ledger already recorded most of this.
+
+Two counters that must not be added together: `tool_errors` is the environment
+refusing, and `tool_denied` is a human or a policy refusing — which is the
+harness working. Everything downstream keys on that split.
+
+`mecha sessions health` reads these back across the store, and the loop built on
+top of them is [Run quality](/docs/features/run-quality).
+
+```bash
+mecha sessions health --days 30
+```
 
 ### The config record
 
@@ -257,6 +284,20 @@ not pretending to know which differences matter.
 Nothing executes in `stop` or `error` mode, so nothing needs approving. `live`
 falls back to the configured permission mode: real tools run after the
 divergence and deserve exactly the scrutiny they always get.
+
+### A replayed episode comes back gradeable
+
+The report carries the replayed episode's outcome counters — the same
+`RunStats` a live run records — alongside the calls and the final text. Without
+them a replay was gradeable only by a divergence diff, which answers "did it do
+something else" and not "did it go better".
+
+That is what lets a replayed corpus be one arm of the
+[candidate gate](/docs/features/run-quality#the-gate): each episode names itself, produces
+a cost, and is paired against the same episode in the other arm. Note the limit
+this arm has by construction — replay holds the tool results fixed, so it cannot
+see a change in *what the model said*. A prose change needs the
+`eval --ab-config` arm instead.
 
 ### What replay is not
 
