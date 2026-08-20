@@ -547,6 +547,14 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
             Arc::clone(&asker),
         )));
 
+    // Registered only by the TUI, like `ask_user`: it is the only front-end
+    // that can attach a session to a thread, and a tool that can never succeed
+    // is worse than one that is absent.
+    prepared
+        .agent
+        .registry_mut()
+        .insert(Arc::new(crate::slack::show::ShowFileTool));
+
     let session_dir = Session::default_dir()?;
     // One conversation for the session, so the taint accumulates across turns
     // the way the model's context does.
@@ -2626,7 +2634,11 @@ fn submit(
         // folds it in beside the tool results, so the model reads it without
         // the run being stopped and restarted.
         if let Some(a) = &app.attached.as_ref().filter(|_| !from_remote) {
-            spawn_echo(a, &text, true);
+            // No ordering to keep here: the stream is already open, so the
+            // echo simply lands after it, which is what happened. Dropped
+            // explicitly rather than `let _`, which on a `JoinHandle` reads as
+            // an ignored future — the task is meant to detach and finish.
+            drop(spawn_echo(a, &text, true));
         }
         if let Ok(mut queue) = run.queue.lock() {
             queue.push_back(text);
@@ -2639,9 +2651,16 @@ fn submit(
     if let Some(s) = session {
         s.append(&Record::Message(user))?;
     }
-    if let Some(a) = &app.attached.as_ref().filter(|_| !from_remote) {
-        spawn_echo(a, &text, false);
-    }
+    // Kept, so the stream can wait for it. Both are posted to the same thread
+    // and Slack orders by the timestamp *it* assigns, so firing them
+    // concurrently is a race — and the losing arrangement reads as the answer
+    // arriving before the question, which makes a scrollback somebody returns
+    // to actively misleading rather than merely untidy.
+    let echoed = app
+        .attached
+        .as_ref()
+        .filter(|_| !from_remote)
+        .map(|a| spawn_echo(a, &text, false));
     app.transcript.push(Entry::User(text));
 
     set_title(&format!(
@@ -2687,6 +2706,11 @@ fn submit(
                 flush_ms: a.flush_ms,
             };
             tokio::spawn(async move {
+                // Ordering, not synchronisation: the stream must not open
+                // before the line it is answering has landed.
+                if let Some(echoed) = echoed {
+                    let _ = echoed.await;
+                }
                 crate::slack::pump::pump(&slack, &channel, &thread_ts, slack_rx, &cfg).await;
             });
             tokio::spawn(async move {
@@ -4429,7 +4453,11 @@ fn spawn_note(attached: &crate::slack::remote::Attached, text: &str) {
 /// missing echo would interrupt the thing the user is actually doing. The
 /// consequence of losing one is a thread that reads slightly oddly, which the
 /// answer beneath it still makes sense of.
-fn spawn_echo(attached: &crate::slack::remote::Attached, text: &str, steering: bool) {
+fn spawn_echo(
+    attached: &crate::slack::remote::Attached,
+    text: &str,
+    steering: bool,
+) -> JoinHandle<()> {
     let (slack, channel, thread_ts) = (
         attached.slack.clone(),
         attached.channel_id.clone(),
@@ -4439,7 +4467,7 @@ fn spawn_echo(attached: &crate::slack::remote::Attached, text: &str, steering: b
     tokio::spawn(async move {
         let _ =
             mecha_slack::chat::post_message(&slack, &channel, Some(&thread_ts), &body, None).await;
-    });
+    })
 }
 
 /// Claim a name and open its thread, off the event loop.
