@@ -1229,9 +1229,23 @@ answer and all. It was found in `/doctor`, then written again in `/skills`, and
 five more modals had their own copy — because a new modal is written by opening
 whichever sibling is nearest, which is what makes this a shared function rather
 than seven fixes. Flooring the bound at one row degrades a tiny terminal to a
-one-row box instead. Each modal carries a draw-at-`0..=6`-rows test whose
+one-row box instead. Each modal carries a draw-at-tiny-sizes test whose
 assertion *is* the draw, verified to fail on the old line (`min > max. min = 1,
 max = 0`) rather than merely to pass on the new one.
+
+**And the eighth site is the one worth remembering**, because it survived the
+sweep that fixed the other seven. `/mail` renders its key legend *inside* the
+block rather than in the title, so its box needs a floor of **two** — it spelled
+its clamp `clamp(2, …)`, matched no grep aimed at `clamp(1, …)`, and collided
+with the ceiling one row earlier than everywhere else (dead at five rows, not
+four). The lesson is not "grep harder": the two-argument helper **could not
+express that box**, and a helper that cannot say what a caller means is how a
+caller keeps saying it inline. `list_height_reserving(rows, height, reserved)`
+can, `list_height` delegates to it with `reserved = 0`, and the degradation runs
+the safe way — the ceiling floors at one row and then the *floor is pulled down
+to meet it*, so a terminal too short for the strip and a row of list gets a
+useless live box instead of a dead session. The general form to search for is
+`.clamp(` near `saturating_sub(4)`, not either literal.
 
 **The TUI's `/triggers` modal drives the CLI, not the store.** Every action —
 run now, cancel, enable, delete, edit — shells out to `mecha trigger ...` as a
