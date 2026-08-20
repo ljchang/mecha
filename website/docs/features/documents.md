@@ -1,6 +1,6 @@
 ---
 title: Documents
-sidebar_position: 20
+sidebar_position: 22
 description: Google Docs, Sheets and Slides under drive.file — a grant that cannot reach a document nobody handed it.
 ---
 

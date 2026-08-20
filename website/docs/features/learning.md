@@ -95,8 +95,22 @@ handed the same constant, so the two cannot drift apart.
 It is also *per domain*, and a run carries only the domains it asks for
 (`RUN_DOMAINS`: `behavior` and `writing`). A domain is opt-in, so a new one
 joins no prompt until something names it; a domain holding active rules that
-no run carries is reported at startup, because rules that cannot fire look
-exactly like rules being obeyed. A candidate set
+nothing carries is reported at startup, because rules that cannot fire look
+exactly like rules being obeyed.
+
+**"Routed" has two meanings, and the warning needs both.** `RUN_DOMAINS` is what
+an *agent run* carries in its prompt. `PASS_DOMAINS` is what a named, tool-less
+pass loads — today just [`triage`](#the-triage-domain), which the mail classifier
+loads and which is deliberately absent from `RUN_DOMAINS`. Measured against
+`RUN_DOMAINS` alone, `triage` would have tripped the unrouted warning on every
+single `mecha` invocation from its first learned rule, with a sentence that is
+false: those rules do fire, from the classifier's own pass. The cost that matters
+is not the noise — a permanent false positive is where a *real* unrouted domain
+hides, so the check would have stopped doing the one job it exists for. The
+warning is measured against the union, and the two lists stay disjoint with a
+test saying so.
+
+A candidate set
 that ends over the cap may land only by *shrinking* an already-over set toward
 it — growth past the cap is refused, which is what forces the next pass to merge
 or retire before it may add. User rules are not counted: they are the user's own
@@ -166,6 +180,53 @@ There is deliberately **no knob** that loosens this. A switch that lets
 third-party text into every future prompt is the silently-degrading-sandbox
 shape. Excluded reflections stay in `reflections.jsonl` as readable evidence;
 they are simply never candidates.
+
+## The triage domain
+
+`triage` is the mail classifier's own rule set, fed by
+[`mecha mail reflect`](/docs/features/mail#corrections-become-rules) turning your
+corrections into lessons. It is the first **pass-scoped** domain: its rules ride
+in the classifier's frame and in no agent run's prompt.
+
+Its frame differs from the other two in the way the domain does. It asks for
+rules about *kinds of mail* rather than about conduct — a general instruction is
+noise to a classifier exactly as a classifier's rules would be noise to a
+general run — and it forbids carrying a sentence from a message into a rule
+verbatim, because a rule that quotes an email is that email speaking to every
+future classification.
+
+### The provenance exemption, and what it rests on
+
+This is the subtlest thing on the page. [Provenance gating](#provenance-gating-why-this-is-stricter-than-the-interlock)
+demands `Origin::Clean` and says in its own comment that there is deliberately
+no knob, because a switch letting untrusted content into every future prompt is
+the silently-degrading-sandbox shape.
+
+**A triage lesson necessarily saw mail.** Under that gate the domain is not
+unsafe — it is impossible, because a correction with no context cannot
+generalise. (That defect has a name in the prior art: flowmail's correction
+system documents it directly, and this repository nearly repeated it.)
+
+The resolution is to notice what the gate's premise actually is. It guards rules
+that ride in *every future run's* prefix, in front of an agent with tools, a
+network and a way to send. Triage rules ride only in a tool-less, history-less
+pass emitting a fixed schema, which cannot exfiltrate, send, or reach the
+network. So the exemption is keyed on **the consumer**, not on a setting — and it
+**goes false the moment that stops being true**: adding `triage` to
+`RUN_DOMAINS` disables it with nobody needing to remember, and a test says so.
+
+Three things bound the residual risk: generalisation across many corrections
+means one hostile message cannot mint a rule, the frame forbids quoting a
+message verbatim, and the outcome is
+[measured daily](/docs/features/mail#measuring-it-score-and-eval).
+
+**The residual is stated rather than hidden.** The check keys on `RUN_DOMAINS`
+membership, which is a *proxy* for the consumer: it catches someone routing
+triage into ordinary runs, and it does not catch a future tool-having caller
+that reads triage rules directly. Expressing the real property needs "this
+domain has exactly one load site", which Rust cannot say cheaply and a registry
+would cost more than it protects. So it is written where the next person meets
+it — a sentence to argue with rather than an assumption to discover.
 
 ## `mecha validate` — acceptance is not tenure
 
@@ -283,6 +344,33 @@ is shown it in a section headed:
 which a deleted line could not say. `finalize_rules` carries retired rules
 through every consolidation untouched, so a rewrite can neither resurrect nor
 erase what retirement recorded. `mecha rules restore` clears both fields.
+
+### Re-derivation, and the brake that stops it
+
+The prompt section above is the *soft* half — it depends on the model listening.
+The hard half is that `finalize_rules` carries `retired_at` forward onto any
+rewritten rule matching a retired one, so a re-derived retirement comes back
+**already retired and never renders**. Enforcement that does not depend on the
+model, the same principle as the count cap.
+
+Matching is by a `normalized_rule_key` that folds case, punctuation, spacing and
+`-ise`/`-ize`, so the variants a learner actually produces between runs are
+caught rather than only byte-identical text. It is scoped tightly on purpose:
+checked **only against retired rules**, **only for retirement**, with identity
+carry-forward still on exact text — so two genuinely distinct rules cannot be
+merged by a normalisation accident, which has its own test. No stemming, no
+stopword removal, no synonym table. The asymmetry sets how aggressive this may
+be: a false match silently retires a *good* rule.
+
+**A genuine paraphrase is still not caught, and that is accepted.** Closing it
+would need either a judge or model-attributed sources, and a model deciding
+whether a rule may live is exactly the model-rated policy this project refuses
+everywhere else. (A `sources` set-intersection looks like the answer and is not:
+a consolidation assigns the same batch sources to every new rule, so the
+intersection would match everything from an overlapping batch.) The residual is
+bounded instead — a re-derived rule that is actually harmful regresses the same
+probes that retired it the first time, and one measurement cycle of harm is the
+price of not having a model adjudicate tenure.
 
 ## What is deliberately absent
 

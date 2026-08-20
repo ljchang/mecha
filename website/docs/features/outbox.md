@@ -158,11 +158,33 @@ from its workspace. The drafting run said `{"bundle": "site"}` inside
 `~/.mecha/work/<producer>/`; `send` runs in another process, hours later, from
 wherever the reviewer is standing.
 
-So the item records its workspace and the release rebuilds the tool surface
-rooted there. An absolute path fails loudly in the wrong place; **a relative one
-is worse**, because a same-named directory beside the reviewer publishes the
-wrong bytes with no error anywhere. It is also the stricter jail of the two —
-the agent's, not the human's — which is the one the interlock reasoned about.
+So the item records a workspace and the release rebuilds the tool surface rooted
+there. An absolute path fails loudly in the wrong place; **a relative one is
+worse**, because a same-named directory beside the reviewer publishes the wrong
+bytes with no error anywhere.
+
+**Which workspace is recorded is the subtle part: the tool's own fixed root when
+it has one, and the run's otherwise.** A tool with a fixed root — an MCP server
+spawned once for many runs — resolved its paths against that root *at draft time
+too*, so a release that re-rooted it anywhere else would execute a different call
+than the one the model made. Note that this is not always the narrower of the
+two. It was a live bug in exactly the direction that surprises: [Slack](/docs/features/slack)
+threads are jailed to subdirectories of the producer root the MCP servers run
+in, staging recorded the *thread* jail, and every Slack publish therefore failed
+containment on release, forever.
+
+The mirror case is the residual hazard worth knowing: an artifact authored with
+the **built-in** fs tools lives in the thread's jail, so handing its relative
+name to a fixed-root server names a different place. Give that server the
+absolute path.
+
+**`show` resolves through the recorded jail too, not only `send`.** The display
+forgot the jail long after the executor learned it, which reported a draft's
+source file as gone — and, in the symmetric case, would have printed and offered
+to open a same-named file beside the reviewer as though it were the draft's.
+A reviewer reading one file while approving another is the failure this whole
+surface exists to prevent, so every surface that touches a staged path resolves
+it the same way.
 
 A batch release builds one surface per distinct workspace, lazily, so the
 ordinary nine-replies-from-one-run case still starts the MCP servers exactly

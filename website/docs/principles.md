@@ -138,6 +138,20 @@ rather than the model (did the interlock fire, was a budget what stopped the
 run, was a summary ever taken) exist because none of that is visible in the
 answer text.
 
+Runs themselves are counted the same way. Every finished run records **how it
+went** as well as what it cost — stop cause, calls attempted against errors,
+whether it stopped of its own accord with its last call failed — and
+[that corpus](/docs/features/run-quality) is what lets a harness problem be
+noticed at all. Before it, the only signal that something was wrong was a human
+stepping in, so a run that quietly failed a third of its tool calls produced no
+intervention and nothing downstream ever heard about it.
+
+And a proposed change to the harness has to beat the original to survive: a
+falsifiable prediction made before the measurement, arms paired by episode,
+the winner confirmed on a holdout it was never selected on, and a work guardrail
+that rejects a gain bought by attempting less. "Fewer errors" is trivially
+achieved by doing nothing.
+
 A corollary: never edit a recorded measurement to match a later result. A
 retracted measurement is evidence about how much to trust the next one.
 
@@ -202,6 +216,16 @@ had twice:
 - **No escape hatch on the front door's extraction boundary**, no argument that
   returns a stranger's prose to a privileged run, and no fallback to passing the
   prose through when extraction fails — a failed extraction waits for a human.
+- **No harness change that applies itself.** `mecha diagnose` is the one place a
+  model authors a change, and it prints the command that would falsify its own
+  proposal rather than running it. A model is safe there precisely because being
+  wrong costs one measurement — automated failure attribution is right about
+  which step failed roughly one time in seven — and that property does not hold
+  at the gate, which is why there is no model in the gate.
+- **No significance test on a candidate.** With a few dozen episodes the noise
+  is the model's sampling rather than the measurement, and the answer to that is
+  repetition, not a p-value over one sample. The raw win/loss/tie counts ride on
+  the verdict so a person sees what it was decided from.
 
 ## Where these came from
 

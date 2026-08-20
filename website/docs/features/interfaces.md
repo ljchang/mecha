@@ -96,13 +96,27 @@ Keys, from the `?` overlay:
 Slash commands go further than `chat`'s, because the TUI is the only front end
 that can change anything mid-session: `/model`, `/provider` and `/mode` switch
 what is answering, `/mcp` turns servers on and off individually or wholesale,
-`/todo` shows the live task list, and four modals open onto the review surfaces:
-`/triggers` (see [Triggers](/docs/features/triggers)), `/outbox` (see [the
-outbox](/docs/features/outbox)), `/frontdoor` (see [the front
-door](/docs/features/frontdoor)) and `/polls` (see
-[Polls](/docs/factory/polls#watching-one-without-leaving-the-session)). Each
-drives the matching `mecha …` or `factory-publish …` child process rather than
-reimplementing it, so nothing the modal can do is missing from the command line.
+`/todo` shows the live task list, and `/review [now|later|auto]` decides what
+happens when a run stages drafts (see [the outbox](/docs/features/outbox)).
+
+Six modals open onto the review surfaces:
+
+| Modal | Onto |
+|---|---|
+| `/triggers` | [scheduled prompts](/docs/features/triggers) — see, edit, run, cancel |
+| `/outbox` | [staged outbound drafts](/docs/features/outbox) — read, edit, send, reject |
+| `/frontdoor` | [inbound requests](/docs/features/frontdoor) — read, extract, triage, close |
+| `/mail` (or `/inbox`) | [the triage queue](/docs/features/mail#mail--the-queue-as-a-modal) — reply, task, correct, park, dismiss |
+| `/polls` | [open polls](/docs/factory/polls#watching-one-without-leaving-the-session) — tallies, close, export |
+| `/doctor` | [what is silently wrong](/docs/reference/cli#doctor) across every store, and the way out |
+
+Every one of them drives the matching `mecha …` or `factory-publish …` child
+process rather than reimplementing it, so nothing a modal can do is missing from
+the command line — and, more usefully, nothing a modal can do is unavailable to
+a script or a trigger. Slow work (a release's MCP startup, an extraction, a
+drafting run) spawns **detached and is watched by polling the store**, never the
+child, so a twenty-minute action cannot freeze the interface.
+
 A typo'd command is reported as unknown rather than sent to the model as a
 prompt.
 

@@ -183,6 +183,15 @@ tests passing, but whether they pass. Repeated runs report **pass^k** beside
 pass@k, because reliability decays much faster than mean success and a
 single-run scorecard cannot tell a flaky case from a solid one.
 
+**And the harness measures itself.** Every finished run records how it went, not
+only what it cost, so a run that quietly failed a third of its tool calls is
+visible instead of silent. `mecha doctor` reads those
+[populations](/docs/features/run-quality), `mecha diagnose` proposes one change
+with a falsifiable prediction, and `mecha eval --ab-config` is the measurement
+that would refute it — paired by case, confirmed on a holdout, and rejected
+outright if the gain was bought by attempting less work. Nothing in that loop
+applies itself.
+
 ## Where to go next
 
 - [Installation](/docs/getting-started/installation) — build it from source.

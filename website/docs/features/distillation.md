@@ -1,6 +1,6 @@
 ---
 title: Distillation
-sidebar_position: 14
+sidebar_position: 15
 description: mecha distill turns each closed session into an episode staged to a knowledge graph as evidence, not belief — and why its provenance rule differs from learning's on purpose.
 ---
 
