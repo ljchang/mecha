@@ -4080,6 +4080,24 @@ fn list_height(rows: u16, terminal_height: u16) -> u16 {
 /// than the other way around. A terminal too short for the strip *and* a row of
 /// list gets a one-row box that the strip fills, which is useless and alive —
 /// the fail-safe direction, since the alternative is taking the session down.
+///
+/// **Do not swap the last two arguments.** All three are `u16`, so the wrong
+/// order compiles, and — because this function's job is to degrade rather than
+/// panic — it returns a small box instead of complaining. The numbers, because
+/// this is only obvious once the two are side by side:
+///
+/// ```text
+/// list_height_reserving(12, 45, 1)  ==  15   // rows, terminal_height, reserved
+/// list_height_reserving(12, 1, 45)  ==   3   // the same call, transposed
+/// ```
+///
+/// Note what that costs: the panic-safety test cannot catch it, because a
+/// three-row box is exactly what correct degradation looks like at a tiny
+/// terminal. Replacing a crash with a floor buys a live session and gives up
+/// self-reporting — a crash announces itself and a floor does not — which is
+/// the silently-degrading shape this project keeps finding, one level up from
+/// the bug the helper was written for. The durable answer is a `Reserved(u16)`
+/// newtype, which would make the transposition fail to compile.
 fn list_height_reserving(rows: u16, terminal_height: u16, reserved: u16) -> u16 {
     let max = terminal_height.saturating_sub(4).max(1);
     let min = reserved.saturating_add(1).min(max);
