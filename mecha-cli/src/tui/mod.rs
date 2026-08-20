@@ -1346,6 +1346,9 @@ fn open_scoped_review(app: &mut App, ids: Vec<String>) {
         || app.scheduled.is_some()
         || app.staged.is_some()
         || app.requests.is_some()
+        || app.mail.is_some()
+        || app.tasks.is_some()
+        || app.poll_monitor.is_some()
         || app.health.is_some()
         || app.help;
     if busy {
@@ -3335,21 +3338,24 @@ fn run_remedy_interactive(argv: &[String]) -> Result<()> {
     }
 }
 
-/// Run `mecha <args...>` and return its output.
-///
-/// `current_exe` rather than a bare `mecha`, so a TUI started from
-/// `target/debug` drives the build it is part of and not whatever is on PATH —
-/// otherwise testing a change to a subcommand would silently exercise the
-/// installed binary. Every modal mutation goes through here: one
-/// implementation of each verb, and no way for the TUI to do something the
-/// command line cannot.
 /// Read the board by driving `mecha tasks list --json` — the tool's own
 /// answer, forwarded unchanged.
 ///
-/// Blocks for the child, on the `/polls` reasoning: the honest alternative is
-/// a watcher nobody needs for a call that opens a local SQLite file, and a
-/// board drawn from a stale copy would be answering a question about now with
-/// a state from before the last keypress.
+/// Blocks for the child, on the `/polls` reasoning: a board drawn from a stale
+/// copy would answer a question about now with the state before the last
+/// keypress, and the alternative is a watcher for something that finishes in
+/// the time it takes to lift a finger.
+///
+/// **What it costs is a whole `prepare_tools`, not a SQLite open.** The child
+/// connects *every* configured `[[mcp]]` server — mail with its token
+/// lifecycle, the graph, whatever else — and runs the sandbox preflight, which
+/// measures ~270ms here; a status change pays it twice, once to set and once
+/// to re-read the reordered board. That is the real difference from `/mail`,
+/// whose list comes from a local store. It is under the threshold where a
+/// keypress stops feeling like one, and it is the price of the seam: the graph
+/// is reached through the tool surface, and the tool surface is what
+/// `prepare_tools` builds. If it ever needs to be cheaper, the fix is a way to
+/// connect one named server, not a second path into the graph.
 fn load_tasks(show_closed: bool) -> Result<tasks::TasksModal> {
     let mut args = vec!["tasks", "list", "--json"];
     if show_closed {
@@ -3378,13 +3384,17 @@ fn reload_tasks(app: &mut App, status: Option<String>) {
     let fallback = old.selected;
     match load_tasks(show_closed) {
         Ok(mut modal) => {
-            modal.selected = id
-                .and_then(|id| modal.rows.iter().position(|r| r.id == id))
-                .unwrap_or_else(|| fallback.min(modal.rows.len().saturating_sub(1)));
-            // A task that left the board — dropped while closed rows are
-            // hidden — takes its detail pane with it rather than showing the
-            // pane of whichever row inherited the cursor.
-            modal.detail = detail && !modal.rows.is_empty();
+            let found = id.and_then(|id| modal.rows.iter().position(|r| r.id == id));
+            modal.selected =
+                found.unwrap_or_else(|| fallback.min(modal.rows.len().saturating_sub(1)));
+            // **Keyed on whether the task was found, not on whether the board
+            // is empty.** A task that left the board — marked done while
+            // closed rows are hidden — must take its detail pane with it. The
+            // cursor falls through to whichever row inherited the index, and a
+            // detail pane left open would redraw as *that* task under a header
+            // still offering `d`: a second keypress, the natural "did that
+            // register?", would close a task nobody selected.
+            modal.detail = detail && found.is_some();
             modal.help = help;
             modal.status = status;
             app.tasks = Some(modal);
@@ -3612,6 +3622,14 @@ fn submit_task_form(app: &mut App) -> Result<()> {
     Ok(())
 }
 
+/// Run `mecha <args...>` and return its output.
+///
+/// `current_exe` rather than a bare `mecha`, so a TUI started from
+/// `target/debug` drives the build it is part of and not whatever is on PATH —
+/// otherwise testing a change to a subcommand would silently exercise the
+/// installed binary. Every modal mutation goes through here: one
+/// implementation of each verb, and no way for the TUI to do something the
+/// command line cannot.
 fn self_cli(args: &[&str]) -> Result<String> {
     let exe = std::env::current_exe().context("cannot find my own binary")?;
     let out = std::process::Command::new(exe)
