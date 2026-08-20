@@ -160,7 +160,38 @@ pub fn decide(
 pub struct InboundLine {
     pub id: String,
     pub text: String,
+    /// Files staged beside this line, by their stored name under
+    /// `<name>/files/`. Names rather than paths, so the store can move without
+    /// every record in it becoming wrong.
+    #[serde(default)]
+    pub files: Vec<String>,
     pub received_at: DateTime<Utc>,
+}
+
+/// A name in `dir` that is not taken, by suffixing before the extension.
+///
+/// Two screenshots are both called `Screenshot.png`, and overwriting the first
+/// with the second loses a file the user believes they sent — silently, which
+/// is the part that matters. The cap exists so a pathological directory cannot
+/// turn one attachment into a scan.
+fn free_name(dir: &Path, name: &str) -> String {
+    if !dir.join(name).exists() {
+        return name.to_string();
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+    for n in 2..1000 {
+        let candidate = format!("{stem}-{n}{ext}");
+        if !dir.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    format!(
+        "{stem}-{}{ext}",
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    )
 }
 
 pub struct RemoteStore {
@@ -258,8 +289,76 @@ impl RemoteStore {
         }))
     }
 
+    /// Where the connector stages downloaded attachments.
+    ///
+    /// A directory the *connector* owns, deliberately not the run's workspace.
+    /// The owning process is the one that writes into its own jail — which may
+    /// be a real project directory rather than a disposable producer root —
+    /// and a download that arrives while the session is dead then lands
+    /// nowhere it could be mistaken for something the run made.
+    pub fn files_dir(&self, name: &str) -> Result<PathBuf> {
+        Ok(self.dir(name)?.join("files"))
+    }
+
+    /// Put a downloaded attachment beside the inbox, under a name that cannot
+    /// climb out of the directory and cannot silently replace another.
+    pub fn stage_file(&self, name: &str, filename: &str, bytes: &[u8]) -> Result<String> {
+        let dir = self.files_dir(name)?;
+        mecha_core::create_private_dir(&dir)?;
+        let safe = crate::slack::connector::safe_filename(filename);
+        let stored = free_name(&dir, &safe);
+        std::fs::write(dir.join(&stored), bytes)?;
+        Ok(stored)
+    }
+
+    /// Move staged files into a run's workspace, returning what to tell the
+    /// model.
+    ///
+    /// Moved rather than copied, so the staging directory does not become a
+    /// second copy of everything the user has ever sent — with a copy-then-
+    /// remove fallback, because `rename` fails across filesystems and a
+    /// workspace is wherever the user launched from.
+    ///
+    /// Paths are returned relative to the workspace: the model reads them with
+    /// `fs_read`, which resolves against the jail, and an absolute path here
+    /// would be one the model then has to be trusted not to wander from.
+    pub fn take_files(
+        &self,
+        name: &str,
+        files: &[String],
+        workspace: &Path,
+    ) -> Result<Vec<String>> {
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
+        let staged = self.files_dir(name)?;
+        let inbox = workspace.join("inbox");
+        std::fs::create_dir_all(&inbox).with_context(|| format!("creating {}", inbox.display()))?;
+
+        let mut landed = Vec::new();
+        for file in files {
+            // Re-sanitised on the way out as well as on the way in. The record
+            // is a file on disk that a second process wrote, and a boundary
+            // that trusts its caller is not one.
+            let safe = crate::slack::connector::safe_filename(file);
+            let from = staged.join(&safe);
+            if !from.is_file() {
+                continue;
+            }
+            let stored = free_name(&inbox, &safe);
+            let to = inbox.join(&stored);
+            if std::fs::rename(&from, &to).is_err() {
+                std::fs::copy(&from, &to)
+                    .with_context(|| format!("copying {} to {}", from.display(), to.display()))?;
+                let _ = std::fs::remove_file(&from);
+            }
+            landed.push(format!("./inbox/{stored}"));
+        }
+        Ok(landed)
+    }
+
     /// Leave a line for the session that owns this name.
-    pub fn push_inbound(&self, name: &str, text: &str) -> Result<InboundLine> {
+    pub fn push_inbound(&self, name: &str, text: &str, files: Vec<String>) -> Result<InboundLine> {
         let inbox = self.dir(name)?.join("inbox");
         mecha_core::create_private_dir(&inbox)?;
         let now = Utc::now();
@@ -273,6 +372,7 @@ impl RemoteStore {
                 std::process::id()
             ),
             text: text.to_string(),
+            files,
             received_at: now,
         };
         let path = inbox.join(format!("{}.json", line.id));
@@ -804,7 +904,7 @@ mod tests {
             .unwrap();
 
         for text in ["first", "second", "third"] {
-            store.push_inbound("lab", text).unwrap();
+            store.push_inbound("lab", text, Vec::new()).unwrap();
         }
 
         let claimed = store.claim_inbound("lab").unwrap();
@@ -817,6 +917,118 @@ mod tests {
         // transcript a moment later, and that transcript is the record — a
         // second copy here could only disagree with it.
         assert!(store.claim_inbound("lab").unwrap().is_empty());
+    }
+
+    /// The whole point of staging in a directory the connector owns: the
+    /// bytes cross into the run's jail only when the owning process moves
+    /// them, and they land somewhere a relative path can find.
+    #[test]
+    fn a_staged_file_lands_in_the_workspace_inbox_and_is_named_relatively() {
+        let root = scratch("files");
+        let store = RemoteStore::open(&root).unwrap();
+        store
+            .put(&AttachRecord::new("lab", "s1", PathBuf::from("/w")))
+            .unwrap();
+        let ws = root.join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        let stored = store.stage_file("lab", "shot.png", b"PNGDATA").unwrap();
+        let landed = store.take_files("lab", &[stored], &ws).unwrap();
+
+        assert_eq!(landed, vec!["./inbox/shot.png".to_string()]);
+        assert_eq!(
+            std::fs::read(ws.join("inbox/shot.png")).unwrap(),
+            b"PNGDATA"
+        );
+        // Moved, not copied: the staging directory must not become a second
+        // copy of everything the user has ever sent.
+        assert!(!store.files_dir("lab").unwrap().join("shot.png").exists());
+    }
+
+    /// A name that reaches the filesystem is a path. The connector writes
+    /// these before any tool is involved, so nothing else is going to catch a
+    /// traversal.
+    #[test]
+    fn an_attachment_name_cannot_climb_out_of_either_directory() {
+        let root = scratch("climb");
+        let store = RemoteStore::open(&root).unwrap();
+        store
+            .put(&AttachRecord::new("lab", "s1", PathBuf::from("/w")))
+            .unwrap();
+        let ws = root.join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        let stored = store
+            .stage_file("lab", "../../.mecha/slack/credentials.json", b"x")
+            .unwrap();
+        assert!(!stored.contains(".."), "{stored}");
+        assert!(!stored.contains('/'), "{stored}");
+
+        let landed = store.take_files("lab", &[stored], &ws).unwrap();
+        assert_eq!(landed.len(), 1);
+        assert!(landed[0].starts_with("./inbox/"), "{:?}", landed[0]);
+        assert!(ws.join("inbox").read_dir().unwrap().count() == 1);
+    }
+
+    /// Two screenshots are both called `Screenshot.png`. Overwriting the first
+    /// loses a file the user believes they sent, silently, which is the part
+    /// that matters.
+    #[test]
+    fn a_second_file_of_the_same_name_does_not_replace_the_first() {
+        let root = scratch("collide");
+        let store = RemoteStore::open(&root).unwrap();
+        store
+            .put(&AttachRecord::new("lab", "s1", PathBuf::from("/w")))
+            .unwrap();
+        let ws = root.join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        let a = store.stage_file("lab", "Screenshot.png", b"first").unwrap();
+        let b = store
+            .stage_file("lab", "Screenshot.png", b"second")
+            .unwrap();
+        assert_ne!(a, b, "the staging directory collided");
+
+        let landed = store.take_files("lab", &[a, b], &ws).unwrap();
+        assert_eq!(landed.len(), 2);
+        assert_ne!(landed[0], landed[1], "the workspace inbox collided");
+        // Both sets of bytes survived, which is the assertion that matters.
+        let mut seen: Vec<Vec<u8>> = landed
+            .iter()
+            .map(|p| std::fs::read(ws.join(p.trim_start_matches("./"))).unwrap())
+            .collect();
+        seen.sort();
+        assert_eq!(seen, vec![b"first".to_vec(), b"second".to_vec()]);
+    }
+
+    /// The extension is kept when a name is disambiguated: `shot-2.png` still
+    /// opens, where `shot.png-2` does not.
+    #[test]
+    fn disambiguating_a_name_keeps_its_extension() {
+        let dir = scratch("freename");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("shot.png"), b"x").unwrap();
+        assert_eq!(free_name(&dir, "shot.png"), "shot-2.png");
+        assert_eq!(free_name(&dir, "notes"), "notes");
+        std::fs::write(dir.join("notes"), b"x").unwrap();
+        assert_eq!(free_name(&dir, "notes"), "notes-2");
+    }
+
+    /// A file the record names but the staging directory does not have is
+    /// skipped, not fatal: the line still carries text worth delivering.
+    #[test]
+    fn a_missing_staged_file_is_skipped_rather_than_failing_the_line() {
+        let root = scratch("missing");
+        let store = RemoteStore::open(&root).unwrap();
+        store
+            .put(&AttachRecord::new("lab", "s1", PathBuf::from("/w")))
+            .unwrap();
+        let ws = root.join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let landed = store
+            .take_files("lab", &["never-existed.png".to_string()], &ws)
+            .unwrap();
+        assert!(landed.is_empty());
     }
 
     #[test]

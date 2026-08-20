@@ -4237,22 +4237,73 @@ fn deliver_inbound(
         }
     };
 
+    let workspace = live.agent.context().tools.workspace.clone();
+
     for line in lines {
+        // **Files first, and independently of the text.** A screenshot sent
+        // with a caption that happens to be a slash command is still a
+        // screenshot the user meant to send, and discarding it to punish the
+        // caption would lose the thing they cared about.
+        let landed = match store.take_files(&attached.name, &line.files, &workspace) {
+            Ok(landed) => landed,
+            Err(e) => {
+                app.transcript
+                    .push(Entry::Error(format!("could not save an attachment: {e:#}")));
+                Vec::new()
+            }
+        };
+        if !landed.is_empty() {
+            app.transcript
+                .push(Entry::Notice(format!("⇄ saved {}", landed.join(", "))));
+            spawn_note(
+                &attached,
+                &format!("Saved to the workspace: {}", landed.join(", ")),
+            );
+        }
+
         if command::parse(&line.text).is_some() || command::shell_escape(&line.text).is_some() {
-            let refusal = "Commands and `!` shell escapes only work at the terminal. \
-                           Send a prompt instead.";
+            let refusal = if landed.is_empty() {
+                "Commands and `!` shell escapes only work at the terminal. Send a prompt \
+                 instead."
+                    .to_string()
+            } else {
+                format!(
+                    "The attachment was saved. Commands and `!` shell escapes only work at \
+                     the terminal, so `{}` was not run.",
+                    line.text.trim()
+                )
+            };
             app.transcript.push(Entry::Notice(format!(
                 "refused a command from Slack: {}",
                 line.text
             )));
-            spawn_note(&attached, refusal);
+            spawn_note(&attached, &refusal);
             continue;
         }
+
+        // Named as paths, never injected as content — the connector's rule for
+        // its own attachments, and the right one: the model reaches the bytes
+        // with `fs_read`, which already declares `private_data`, so the taint
+        // arms through the path that exists rather than a parallel one.
+        let mut prompt = line.text.trim().to_string();
+        if !landed.is_empty() {
+            if !prompt.is_empty() {
+                prompt.push_str("\n\n");
+            }
+            prompt.push_str("The user attached:\n");
+            for path in &landed {
+                prompt.push_str(&format!("- {path}\n"));
+            }
+        }
+        if prompt.trim().is_empty() {
+            continue;
+        }
+
         // Marked, because the person at the terminal did not type it and the
         // difference matters when two people are looking at one session.
         app.transcript
             .push(Entry::Notice(format!("⇄ from Slack · {}", attached.name)));
-        submit(app, line.text, events_tx, events_rx, live, session, true)?;
+        submit(app, prompt, events_tx, events_rx, live, session, true)?;
     }
     Ok(())
 }

@@ -525,7 +525,58 @@ impl State {
         match self.remote.attached_thread(&channel, &thread_ts) {
             Ok(Some(rec)) if rec.is_live() => {
                 let name = rec.name.clone();
-                if let Err(e) = self.remote.push_inbound(&name, &text) {
+                // Attachments are downloaded *here*, by the process holding
+                // the token, and staged in a directory this process owns —
+                // never written straight into the session's workspace, which
+                // may be a real project directory. The owning process moves
+                // them in when it claims the line.
+                let mut staged = Vec::new();
+                for file in &event.files {
+                    let raw = file.name.as_deref().unwrap_or(&file.id);
+                    match mecha_slack::files::download(
+                        &self.slack,
+                        file,
+                        self.cfg.max_upload_mb.saturating_mul(1024 * 1024),
+                    )
+                    .await
+                    {
+                        Ok(bytes) => match self.remote.stage_file(&name, raw, &bytes) {
+                            Ok(stored) => staged.push(stored),
+                            Err(e) => {
+                                tracing::warn!("could not stage {raw}: {e:#}");
+                                let _ = chat::post_message(
+                                    &self.slack,
+                                    &channel,
+                                    Some(&thread_ts),
+                                    &format!("Could not save `{raw}`: {e:#}"),
+                                    None,
+                                )
+                                .await;
+                            }
+                        },
+                        // Said out loud. A screenshot that silently did not
+                        // arrive is indistinguishable from one the session
+                        // chose to ignore, and the person is on a phone with
+                        // no way to tell which.
+                        Err(e) => {
+                            tracing::warn!("could not fetch {}: {e:#}", file.id);
+                            let _ = chat::post_message(
+                                &self.slack,
+                                &channel,
+                                Some(&thread_ts),
+                                &format!("Could not fetch `{raw}`: {e:#}"),
+                                None,
+                            )
+                            .await;
+                        }
+                    }
+                }
+                // Nothing to hand on: a message with no text and no file that
+                // survived is not something to wake a session for.
+                if text.trim().is_empty() && staged.is_empty() {
+                    return;
+                }
+                if let Err(e) = self.remote.push_inbound(&name, &text, staged) {
                     // Fail loudly. A line that silently went nowhere is
                     // indistinguishable from a session ignoring you, and the
                     // person is on a phone with no way to tell which.
@@ -2227,7 +2278,7 @@ fn releases_without_card(
 /// ordinary string until it is joined onto something. The path jail would catch
 /// a model asking for that; nothing catches it here, because this write happens
 /// in the connector before any tool is involved.
-fn safe_filename(raw: &str) -> String {
+pub(crate) fn safe_filename(raw: &str) -> String {
     let base = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
     let cleaned: String = base
         .chars()
