@@ -26,7 +26,7 @@
 
 use anyhow::Result;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use mecha_core::mail_triage::{
     contact_candidates, handle, recipient_token, Bucket, Contact, Record, TriageStore, CLASSIFIED,
@@ -55,6 +55,44 @@ pub struct MailModal {
     /// Confirmation pending for an action that reaches outside the mailbox.
     pub confirm: Option<String>,
     pub status: Option<String>,
+    /// The thread being read in full. Built by `mecha mail show` in a child
+    /// process, off the event loop — see `spawn_mail_read`.
+    pub reading: Option<Reader>,
+    /// A read in flight, by handle. A second `enter` while one is loading
+    /// would stack a second MCP startup on an impatient keypress.
+    pub loading: Option<String>,
+    /// The key list, on `?`.
+    pub help: bool,
+}
+
+/// One thread, open and readable.
+///
+/// A viewer and nothing else: the text is whatever `mecha mail show` printed,
+/// so there is exactly one renderer of a thread and the modal cannot drift
+/// from what the command line says. The same rule the rest of this module
+/// follows for mutations, applied to reading.
+pub struct Reader {
+    /// The thread's handle, for the title.
+    pub handle: String,
+    pub lines: Vec<String>,
+    pub scroll: u16,
+}
+
+impl Reader {
+    pub fn new(handle: String, text: &str) -> Self {
+        Reader {
+            handle,
+            lines: text.lines().map(str::to_string).collect(),
+            scroll: 0,
+        }
+    }
+
+    /// Scroll, stopping at both ends. Running off the bottom into blank space
+    /// reads as a truncated message rather than as the end of one.
+    pub fn scroll_by(&mut self, delta: i16) {
+        let max = self.lines.len().saturating_sub(1) as u16;
+        self.scroll = self.scroll.saturating_add_signed(delta).min(max);
+    }
 }
 
 pub struct MailInput {
@@ -151,6 +189,9 @@ impl MailModal {
             input: None,
             confirm: None,
             status: None,
+            reading: None,
+            loading: None,
+            help: false,
         }
     }
 
@@ -241,6 +282,112 @@ pub enum Action {
     Close,
 }
 
+/// One key, and what it is called on each of the two surfaces that name it.
+pub struct Key {
+    pub key: char,
+    /// The verb, for the strip across the top of the list.
+    pub short: &'static str,
+    /// What it actually does, for `?`.
+    pub note: &'static str,
+}
+
+/// Every key this modal answers to, written down once.
+///
+/// **A modal whose actions are invisible is a modal with one action** — the
+/// `/outbox` note, one step on. That title carried its four keys comfortably;
+/// eleven do not fit in a title on any terminal, and the answer to "they do
+/// not fit" was, for a while, to show none of them. So the strip across the
+/// top of the list names the verbs and `?` explains them: the same two tiers
+/// of progressive disclosure the main help overlay already uses.
+///
+/// One table, because two would drift — a legend that advertises a key the
+/// map does not answer to is worse than no legend, and a test asserts the two
+/// agree. `enter` and the movement keys are here too: they are keys a person
+/// needs, and "documented only where the code happens to mention them" is how
+/// `enter` went a whole release doing nothing visible.
+pub const KEYS: &[Key] = &[
+    Key {
+        key: 'j',
+        short: "",
+        note: "move down (↓ too)",
+    },
+    Key {
+        key: 'k',
+        short: "",
+        note: "move up (↑ too)",
+    },
+    Key {
+        key: '\n',
+        short: "enter read",
+        note: "read the whole thread, in full",
+    },
+    Key {
+        key: 'a',
+        short: "a archive",
+        note: "archive it — reversible, and nobody else learns anything",
+    },
+    Key {
+        key: 's',
+        short: "s spam",
+        note: "mark spam — asks first: it trains the provider's filter",
+    },
+    Key {
+        key: 't',
+        short: "t task",
+        note: "turn it into a task",
+    },
+    Key {
+        key: 'd',
+        short: "d dismiss",
+        note: "dismiss it — the mailbox is left alone",
+    },
+    Key {
+        key: 'n',
+        short: "n needs-info",
+        note: "park it until someone answers a question",
+    },
+    Key {
+        key: '!',
+        short: "! wrong",
+        note: "correct the classifier's bucket",
+    },
+    Key {
+        key: 'r',
+        short: "r reply",
+        note: "draft a reply — it lands in /outbox for review",
+    },
+    Key {
+        key: 'f',
+        short: "f forward",
+        note: "forward it — lands in /outbox",
+    },
+    Key {
+        key: 'e',
+        short: "e schedule",
+        note: "draft a calendar reply — lands in /outbox",
+    },
+    Key {
+        key: '?',
+        short: "",
+        note: "this list",
+    },
+    Key {
+        key: 'q',
+        short: "",
+        note: "close (esc too)",
+    },
+];
+
+/// The strip across the top of the list: the verbs, in key order, skipping
+/// the ones the title and the shape of a list already teach.
+pub fn key_strip() -> String {
+    KEYS.iter()
+        .filter(|k| !k.short.is_empty())
+        .map(|k| k.short)
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 /// The key map.
 ///
 /// **`s` confirms and the others do not**, which is the one asymmetry worth
@@ -277,10 +424,11 @@ impl MailModal {
         if let Some(confirm) = &self.confirm {
             return format!(" {confirm} ");
         }
+        if let Some(handle) = &self.loading {
+            return format!(" mail — reading {handle}… ");
+        }
         let (need, parked) = self.counts();
-        format!(
-            " mail — {need} need you · {parked} parked · a archive · s spam · t task · n needs-info · ! wrong · esc "
-        )
+        format!(" mail — {need} need you · {parked} parked · ? keys · esc ")
     }
 
     /// Keep the selection on screen.
@@ -295,6 +443,14 @@ impl MailModal {
     }
 
     pub fn draw(&self, frame: &mut Frame) {
+        if self.help {
+            self.draw_help(frame);
+            return;
+        }
+        if let Some(reader) = &self.reading {
+            draw_reader(frame, reader);
+            return;
+        }
         if let Some(input) = &self.input {
             if input.contacts.is_empty() {
                 super::outbox::draw_reason_input(frame, &input.title(), &input.buffer);
@@ -303,6 +459,10 @@ impl MailModal {
             }
             return;
         }
+        // The keys, across the top and above the list. A strip rather than a
+        // longer title: eleven of them do not fit in a border, and a title
+        // that truncates teaches whichever half the terminal happened to fit.
+        let strip = Line::styled(format!("  {}", key_strip()), Style::new().fg(Color::Cyan));
         let body: Vec<Line> = if self.rows.is_empty() {
             vec![Line::styled(
                 "  nothing classified yet — `mecha mail classify` fills the queue",
@@ -319,13 +479,17 @@ impl MailModal {
                     // thread that needs an answer: one vocabulary across every
                     // reader of this store.
                     let bullet = if row.needs_me { "●" } else { " " };
+                    // **No handle column.** It is a thread id's last eight
+                    // characters — the join to the CLI, and eight characters
+                    // of noise to someone who selects with a cursor. It is on
+                    // the reader's title bar, which is where a person who
+                    // wants to type `mecha mail archive <handle>` is looking.
                     let text = format!(
-                        "{marker} {bullet} {:<7} {:<9} {:<18} {:<52} {}",
+                        "{marker} {bullet} {:<7} {:<18} {:<58} {}",
                         row.urgency,
-                        row.handle,
                         truncate(&row.tags, 18),
-                        truncate(&row.summary, 52),
-                        truncate(&row.from, 28),
+                        truncate(&row.summary, 58),
+                        truncate(&row.from, 26),
                     );
                     if selected {
                         Line::styled(text, Style::new().fg(Color::Black).bg(Color::Cyan))
@@ -342,18 +506,59 @@ impl MailModal {
                 .collect()
         };
 
-        let height = (body.len() as u16).clamp(1, frame.area().height.saturating_sub(4)) + 2;
+        let height = (body.len() as u16 + 1).clamp(2, frame.area().height.saturating_sub(4)) + 2;
         let area = super::centered(frame.area(), 120, height);
         frame.render_widget(Clear, area);
+        // The strip is rendered *outside* the scrolling paragraph, in the
+        // first line of the block. Inside it, a queue longer than the box
+        // scrolls the legend away — and a legend that disappears exactly when
+        // the list gets big enough to need one is not a legend.
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(Color::Cyan))
+            .title(self.title());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.height == 0 {
+            return;
+        }
+        frame.render_widget(Paragraph::new(strip), Rect { height: 1, ..inner });
+        let list = Rect {
+            y: inner.y + 1,
+            height: inner.height.saturating_sub(1),
+            ..inner
+        };
         frame.render_widget(
-            Paragraph::new(body)
-                .scroll((self.list_scroll(area.height.saturating_sub(2)), 0))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::new().fg(Color::Cyan))
-                        .title(self.title()),
-                ),
+            Paragraph::new(body).scroll((self.list_scroll(list.height), 0)),
+            list,
+        );
+    }
+
+    /// `?` — every key, with what it does.
+    fn draw_help(&self, frame: &mut Frame) {
+        let body: Vec<Line> = KEYS
+            .iter()
+            .map(|k| {
+                let key = if k.key == '\n' {
+                    "enter".to_string()
+                } else {
+                    k.key.to_string()
+                };
+                Line::from(vec![
+                    Span::styled(format!("  {key:<8}"), Style::new().fg(Color::Cyan)),
+                    Span::styled(k.note, Style::new().fg(Color::White)),
+                ])
+            })
+            .collect();
+        let area = super::centered(frame.area(), 74, body.len() as u16 + 2);
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(body).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::new().fg(Color::Cyan))
+                    .title(" mail keys · any key closes "),
+            ),
             area,
         );
     }
@@ -370,6 +575,60 @@ fn truncate(s: &str, n: usize) -> String {
         "{}…",
         s.chars().take(n.saturating_sub(1)).collect::<String>()
     )
+}
+
+/// The thread, open.
+///
+/// **`enter` used to run `mecha mail show` and print its `subject:` line into
+/// the title bar** — a whole mail fetch, an MCP server started, a thread
+/// downloaded, and one line of it shown. The record was fetched and thrown
+/// away. Everything below the header is what a person opened it for.
+///
+/// The header lines the command prints — account, from, subject, date, and
+/// the classifier's own reasoning — are greyed and the message is not, so the
+/// eye lands on the prose rather than on the metadata above it.
+fn draw_reader(frame: &mut Frame, reader: &Reader) {
+    let grey = Style::new().fg(Color::DarkGray);
+    let body: Vec<Line> = reader
+        .lines
+        .iter()
+        .map(|line| {
+            let meta = [
+                "account:",
+                "from:",
+                "subject:",
+                "date:",
+                "verdict:",
+                "tags:",
+                "reasoning:",
+                "looks like",
+            ]
+            .iter()
+            .any(|p| line.starts_with(p));
+            if meta {
+                Line::styled(line.clone(), grey)
+            } else {
+                Line::styled(line.clone(), Style::new().fg(Color::White))
+            }
+        })
+        .collect();
+    let area = super::centered(frame.area(), 100, frame.area().height.saturating_sub(4));
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(body)
+            .wrap(Wrap { trim: false })
+            .scroll((reader.scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::new().fg(Color::Cyan))
+                    .title(format!(
+                        " {} · ↑↓ scroll · r reply · a archive · ? keys · esc back ",
+                        reader.handle
+                    )),
+            ),
+        area,
+    );
 }
 
 /// The recipient line, with the candidates under it.
@@ -417,4 +676,107 @@ fn draw_recipient_input(frame: &mut Frame, input: &MailInput) {
         ),
         area,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One table, checked both ways. A legend advertising a key the map does
+    /// not answer to is worse than no legend — it teaches a keypress that
+    /// does nothing and reads as a broken modal — and a key the legend omits
+    /// is a feature nobody finds, which is how `enter` came to be a whole
+    /// mail fetch printing one line into a title bar.
+    #[test]
+    fn the_legend_and_the_key_map_are_the_same_set() {
+        // Every advertised *action* exists. The entries with no verb — move,
+        // read, help, close — are the modal's own keys rather than the map's,
+        // which is exactly why they carry no verb.
+        // `enter` is the exception: it carries a verb because it is worth
+        // advertising, and it is the modal's own key because opening a reader
+        // is not a `mecha mail` verb.
+        for key in KEYS.iter().filter(|k| !k.short.is_empty() && k.key != '\n') {
+            assert!(
+                action_for(key.key).is_some(),
+                "the strip advertises `{}`, which the map does not answer to",
+                key.key
+            );
+        }
+        for c in ' '..='~' {
+            if let Some(action) = action_for(c) {
+                assert!(
+                    KEYS.iter().any(|k| k.key == c),
+                    "`{c}` runs {action:?} and is in no legend",
+                );
+            }
+        }
+    }
+
+    /// The strip is the verbs, not every key: `j`/`k`/`?`/`q` are taught by
+    /// the title and by the shape of a list, and spending the width on them
+    /// would push a real action off the end.
+    #[test]
+    fn the_key_strip_names_the_actions_and_fits_a_line() {
+        let strip = key_strip();
+        for expected in ["enter read", "a archive", "s spam", "r reply"] {
+            assert!(strip.contains(expected), "{expected} missing from {strip}");
+        }
+        assert!(!strip.contains(" j "), "{strip}");
+        assert!(strip.chars().count() < 116, "{} wide: {strip}", strip.len());
+    }
+
+    fn row(summary: &str) -> MailRow {
+        MailRow {
+            thread_id: "AAQkADFiNjVjOWI1LTlkNGEtNDcxMi00ZDVmLWM3ZWI=".into(),
+            handle: handle("AAQkADFiNjVjOWI1LTlkNGEtNDcxMi00ZDVmLWM3ZWI="),
+            account: "dartmouth".into(),
+            urgency: "week".into(),
+            tags: "#research".into(),
+            summary: summary.into(),
+            from: "someone@example.org".into(),
+            state: CLASSIFIED.into(),
+            needs_me: true,
+        }
+    }
+
+    /// The reader stops at the last line. Scrolling past the end shows blank
+    /// space, which reads as a message that was cut off rather than one that
+    /// ended.
+    #[test]
+    fn the_reader_scrolls_within_its_own_text() {
+        let mut reader = Reader::new("ubwPPLw=".into(), "one\ntwo\nthree");
+        reader.scroll_by(-5);
+        assert_eq!(reader.scroll, 0);
+        reader.scroll_by(50);
+        assert_eq!(reader.scroll, 2);
+    }
+
+    /// The list is for recognising a thread, and eight characters of base64
+    /// help nobody do that. The handle is kept on the row — the reader's
+    /// title shows it, and it is what `mecha mail archive <handle>` takes.
+    #[test]
+    fn the_list_spends_its_width_on_the_subject_not_the_id() {
+        let modal = MailModal::new(vec![row("Peer review request for manuscript 2026-25921")]);
+        let mut buffer = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 130, 20));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 20)).unwrap();
+        terminal.draw(|f| modal.draw(f)).unwrap();
+        buffer.clone_from(terminal.backend().buffer());
+        let screen: String = buffer
+            .content()
+            .chunks(130)
+            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !screen.contains(&modal.rows[0].handle),
+            "the handle is noise in a list you select with a cursor:\n{screen}"
+        );
+        assert!(
+            screen.contains("Peer review request for manuscript 2026-25921"),
+            "the subject survives the width it freed:\n{screen}"
+        );
+        // The legend is on screen without being asked for.
+        assert!(screen.contains("a archive"), "{screen}");
+    }
 }

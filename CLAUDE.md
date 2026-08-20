@@ -861,6 +861,43 @@ knowledge of the outbox to be covered by it. Decisions that carry it:
   staging takes no lock at all, so the agent never blocks on a review).
   `send` holds the lock across execution so two sends cannot double-fire.
 
+**A message's reviewable object is the message.** That is the publish rule
+generalised, and it took a person actually reviewing a draft to notice it was
+missing: `show` and the modal both led with provenance and then printed
+`{"body_markdown": "Dear Dirk,\n\nThank…"}`, so deciding whether to send a
+letter in your own name meant decoding escape sequences. Approving without
+reading is the failure this whole surface exists to prevent, so a draft that
+is hard to read has a security cost and not a cosmetic one.
+`mecha_core::outbox::DraftView` reshapes the arguments into headers, prose and
+everything-else — keyed on well-known argument *names* like `headline`, so the
+store stays tool-agnostic and an unanticipated tool's fields land in `other`
+rather than vanishing. **Nothing is dropped**: every key appears in exactly one
+of the three, with a test on it, because a field the reviewer cannot see is a
+field they approved unread. Provenance moves to the bottom, the taint warning
+stays above everything, and the exact bytes are `--json` on the CLI and `J` in
+the modal — the check, not the read.
+
+**And `edit` opens the prose, not the JSON.** Editing a letter inside a string
+literal means typing `\n` for a paragraph break and escaping every quote, in a
+file where one slip is a parse error that discards the whole edit — for the one
+action here whose entire purpose is changing the words. The scratch file is a
+`.md` holding the body, written back through `outbox::with_body` to the key it
+came from (that decision lives in one place so it is made once). `--json` is
+what it always did, and is the fallback for a draft with no prose — a calendar
+RSVP is not a letter. The learning capture is untouched: `args_before` still
+holds the draft and `reflect` still mines the difference; only which bytes a
+human is shown changed.
+
+**Resolved items are hidden, never deleted.** A sent or rejected draft stays on
+file forever — that is the record, and it is why nothing here deletes — but a
+decided item is not work, and a queue where three pending drafts sit under
+twenty-eight resolved ones is a queue people stop reading. The modal shows
+pending by default and `h` reveals the rest, with the count in the title so the
+filter is visible rather than a list that silently looks shorter than it is.
+The toggle re-finds the row under the cursor **by id**: the two lists have
+different lengths, and an index carried across would name a different draft to
+a keypress that might be `s`.
+
 **Review lives in the TUI too.** `/outbox` and `/frontdoor` are modals on the
 `/triggers` pattern — store read for display, every mutation a `mecha …`
 child process, slow work (a release's MCP startup, an extraction, a triage

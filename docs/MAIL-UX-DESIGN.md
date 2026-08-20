@@ -319,6 +319,32 @@ Three rules carried from `/outbox`:
 - **`s` confirms.** Spam trains the provider's filter; it is the one triage
   action with an effect outside the mailbox.
 
+### Three things this table said and the first build did not do
+
+Found by using it, which is the only way this kind of thing is found.
+
+- **The legend was in the mock and not on the screen.** The keys went into the
+  modal title, where four of eleven fit and the rest were invisible — and a
+  status message replaced even those. They are now a pinned strip across the
+  top of the list, built from the same table the key map is built from (one
+  `KEYS` const, with a test asserting the two agree, because a legend
+  advertising a key nothing answers to is worse than no legend). `?` opens the
+  full list with a sentence each: the same two tiers of disclosure the main
+  help overlay uses.
+- **`enter` fetched a thread and threw it away.** It ran `mecha mail show` —
+  an MCP startup and a network round trip — and printed the `subject:` line
+  into the title bar. Everything below the header is what a person opened it
+  for. It now opens a scrollable reader, and the fetch runs **off the event
+  loop** (a thread, collected by a `Watch`, on the `RestartProbe` precedent):
+  twenty seconds of frozen interface at the exact moment someone is waiting to
+  read something is the worst place in this modal to block. Acting from inside
+  the reader works — read, then `a` — because closing it first to archive is a
+  motion nobody should have to make.
+- **The `handle` column was noise.** Eight characters of base64 in a list you
+  select with a cursor, spending width the subject needed. It survives where a
+  person actually wants it: on the reader's title bar, which is where someone
+  about to type `mecha mail archive <handle>` is looking.
+
 ---
 
 ## 6. Phase 6 — the correction loop
