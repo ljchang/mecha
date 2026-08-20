@@ -294,6 +294,14 @@ async fn run_arm(
     // or worse, have a stray message from last night's trigger folded into
     // its conversation mid-case.
     opts.no_messages = true;
+    // And for skills: a skill is a procedure the user wrote, so a case run on
+    // a machine holding one is measuring that procedure as much as the model.
+    // Same rule as learned rules, one step further out — a rule is at least
+    // machine-derived from measured interventions, where a skill is whatever
+    // its author typed. There is deliberately no `--with-skills` yet: nothing
+    // asks the question, and a flag whose arm nobody runs is a claim about
+    // comparability that no scorecard has tested.
+    opts.no_skills = true;
     // The candidate arm's whole difference from the baseline, applied here so
     // both arms are built by one code path. Empty for every other caller.
     for spec in overrides {

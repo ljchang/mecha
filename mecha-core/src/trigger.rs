@@ -212,6 +212,24 @@ pub struct Trigger {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
 
+    /// Skills this run may load. **Empty means none**, which is the opposite
+    /// of the `tools` field above and is deliberate.
+    ///
+    /// A trigger is an unattended run with nobody to ask, so "what does this
+    /// run actually do" has to be answerable from the trigger file. If the
+    /// model could load any skill in the store, the effective instruction set
+    /// of a scheduled run would be larger than its file shows, and it would
+    /// grow every time the user wrote an unrelated skill — the same reason
+    /// `trigger show` prints the resolved workspace rather than leaving an
+    /// omitted line to be interpreted.
+    ///
+    /// So this defaults closed and the schedule names what it needs. Note the
+    /// asymmetry with `tools`: an empty allowlist there means "the usual
+    /// surface", because that surface is fixed and reviewable, where the skill
+    /// store is a directory the user adds to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+
     /// Skip MCP servers entirely for this run.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_mcp: bool,
@@ -267,6 +285,7 @@ impl Trigger {
             workspace: None,
             permission_mode: default_permission(),
             tools: Vec::new(),
+            skills: Vec::new(),
             no_mcp: false,
             max_turns: None,
             max_output_tokens: None,

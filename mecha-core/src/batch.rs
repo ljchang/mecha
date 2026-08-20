@@ -165,6 +165,11 @@ where
         // now covers the taint as well: one item reading a hostile page must
         // not arm the interlock for the next, which is a different
         // conversation that never saw it.
+        // A fresh conversation, so anything scoped to the previous item's
+        // must go with it. One agent serves every item here, so a `skill`
+        // loaded by item 3 would otherwise narrow item 4's tool surface and
+        // splice item 3's procedure into item 4's compaction.
+        agent.registry().forget_conversation_state();
         let mut convo = Conversation::new();
         let cx = context_for(&item).unwrap_or_else(|| Arc::clone(agent.context()));
 

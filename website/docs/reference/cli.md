@@ -34,6 +34,8 @@ never build an agent (where they are simply ignored).
 | `--no-mcp` | Skip MCP servers entirely. |
 | `--no-mcp-server <NAME>` | Skip these MCP servers by name. Repeatable; for turning one off while the rest stay. |
 | `--no-thinking` | Turn off reasoning. Cheaper and faster, but noticeably worse on multi-step work. |
+| `--no-skills` | Don't load skills from `~/.mecha/skills` — no `skill` tool, and nothing about them in the system prompt. |
+| `--skill <NAME>` | Only carry these skills. Repeatable, and narrows what `[skills]` already selected — it cannot enable one config withheld. |
 | `--no-learned-rules` | Do not inject learned rules from `~/.mecha/learning` into the system prompt. |
 | `--no-hooks` | Do not run configured `[[hook]]` commands. Config is still validated. |
 | `--no-outbox` | Do not route any tools through the outbox; configured `[outbox]` tools execute directly. |
@@ -208,6 +210,8 @@ mecha eval [OPTIONS] [CASES]
 | `--mcp-file <PATH>` | Connect exactly the servers named in this TOML file, instead of the machine's config. |
 | `--no-ask-user` | Withhold `ask_user`, which is otherwise part of the tool surface. |
 | `--ab-rules` | Run the set twice — rules-free, then with this machine's learned rules — and report the per-case flips. |
+| `--ab-config <KEY=VALUE>` | Run the set twice, differing only in this override, and judge the difference against a holdout. Repeatable. |
+| `--holdout-in <N>` | One case in N is held out of selection, for `--ab-config`. Default `3`. |
 | `--compare <FILES>...` | Compare previously written scorecards side by side instead of running. |
 
 `mecha eval` exits non-zero when anything fails, so it works as a regression gate.
@@ -222,6 +226,12 @@ sample counted k times; the harness warns when it detects that.
 `--mcp-file` resolves relative paths in a server's `command`/`args` against the
 file's own directory, and a server that fails to connect is fatal here.
 
+`--ab-config` overrides a **closed set** of run options — `compact_at_tokens`,
+`max_turns`, `max_output_tokens`, `effort` — so both arms are built by one code
+path. Unknown keys are refused, and every override is parsed before the first arm
+runs. Neither arm is filed as an ordinary scorecard, and it always exits 0: a
+delta is a finding, not a gate.
+
 ```bash
 mecha eval -p local -m qwen3-moe -o results/qwen.json
 mecha eval -p anthropic          -o results/opus5.json
@@ -230,6 +240,7 @@ mecha eval --compare results/*.json
 mecha eval --tag chaining --failures            # one slice, with reasons
 mecha eval -k 5 -o results/qwen-k5.json         # pass^5 beside pass@5
 mecha eval eval/graph-cases.jsonl --mcp-file eval/mcp.toml
+mecha eval --ab-config max_turns=40             # measure a proposed change
 ```
 
 ## `tools`
@@ -256,12 +267,40 @@ mecha tools --json | jq '.[] | select(.capabilities.external_send)'
 mecha tools --schema --no-mcp
 ```
 
+## `skills`
+
+List the skills an agent would carry — the procedures you have written in
+`~/.mecha/skills/`, and which of them this run would load. Builds no provider
+and connects to nothing.
+
+```
+mecha skills [--show] [--json]
+```
+
+| Flag | Description |
+|---|---|
+| `--show` | Print each skill's full body, exactly as the model would receive it. |
+| `--json` | Emit JSON instead of a table. |
+
+A skill config withholds is listed with a `-` rather than omitted, so "why is
+this not firing" is answerable here instead of by intersecting two config files
+by hand. Exits non-zero when a `SKILL.md` failed to parse, so it works as a
+check in a script; a store that is merely empty is healthy.
+
+```bash
+mecha skills
+mecha skills --show
+mecha skills --json | jq '.skills[] | select(.carried)'
+```
+
+See [Skills](/docs/features/skills).
+
 ## `sessions`
 
 Inspect saved transcripts. Requires a subcommand.
 
 ```
-mecha sessions <list|show|path|stats> [OPTIONS]
+mecha sessions <list|show|path|stats|health> [OPTIONS]
 ```
 
 | Subcommand | Flag | Description |
@@ -272,15 +311,27 @@ mecha sessions <list|show|path|stats> [OPTIONS]
 | `path` | `<ID>` | Print the path to a session file. |
 | `stats` | `--days <N>` | Only sessions started in the last N days. |
 | `stats` | `--json` | Emit JSON instead of a table. |
+| `health` | `--days <N>` | Only sessions started in the last N days. |
+| `health` | `-n`, `--limit <N>` | Stop after this many sessions, newest first. |
+| `health` | `--json` | Emit JSON instead of a table. |
 
 `stats` totals token usage — and cost, where prices are configured — grouped by
 provider and model. Transcripts live in `~/.mecha/sessions` unless
 `MECHA_SESSION_DIR` says otherwise.
 
+`health` is the other question: not what runs cost but **how they went** — stop
+causes, tool calls against errors and denials, runs that finished over a failed
+call, compactions taken. Rates split by model, because a blend across two
+describes neither, and a rate with no denominator prints `—` rather than `0%`.
+Transcripts written before the outcome record carry none, so the corpus fills as
+you use it. See [Run quality](/docs/features/run-quality).
+
 ```bash
 mecha sessions list -n 50
 mecha sessions show 20260805T091500 --json | jq -r 'select(.role == "user") | .content'
 mecha sessions stats --days 30
+mecha sessions health --days 30
+mecha sessions health --json | jq '.by_model'
 cat "$(mecha sessions path 20260805T091500)"
 ```
 
@@ -427,6 +478,67 @@ mecha work clean --producer briefing --keep 3
 ```
 
 See [The work directory](/docs/features/work).
+
+## `mail`
+
+The inbox as a queue you work. `list` is the default subcommand.
+
+```
+mecha mail [list|show|classify|reply|forward|schedule|archive|spam|task|needs-info|correct|dismiss|reflect|score|eval] [ARGS]
+```
+
+Threads are named by an eight-character handle — the **last** eight characters of
+the id — and any unique suffix is accepted. A suffix rather than a prefix because
+Outlook conversation ids share a 57-character common prefix. Ambiguity is an
+error, never a guess.
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `list` | `--all` | include threads already acted on, and the ones classified `ignore` |
+| `list` | `--aged` | day two: `respond` threads old enough to have been answered and still untouched |
+| `list` | `--aged-hours <N>` | how old that means. Default `30` — a working day, so an evening email is not nagged about at breakfast |
+| `list` | `--surface` | record that these were surfaced, so they are not surfaced again. Deliberately separate from reading the list |
+| `list` | `--json` | machine output: the typed fields only |
+| `show` | `<THREAD>` | read one thread — the prose, for a human |
+| `classify` | `--account <NAME>` | one mailbox. Omit to sweep every configured account |
+| `classify` | `--limit <N>` | recent threads to consider per account. Default `25` |
+| `classify` | `--force` | re-classify threads already in the store |
+| `classify` | `--dry-run` | say what would be classified, and spend nothing |
+| `reply` | `--note <TEXT>` | extra steering — "decline politely", "ask for the deadline first" |
+| `forward` | `--to <ADDRS>` | comma-separated recipients |
+| `task` | `--name` / `--due` / `--context` / `--project` | the task, its deadline, its GTD context (`@email`), and a parent project that **must already exist** on the graph |
+| `needs-info` | `--missing <TEXT>` | what you are waiting for, in your own words |
+| `correct` | `--bucket` / `--urgency` / `--proposed` / `--request-type` / `--deadline` | field-level; `none` clears a field |
+| `reflect` | `--dry-run` | turn corrections into `triage`-domain reflections |
+| `score` | `--min-age-hours <N>` | exclude threads younger than this. Default `48` |
+| `eval` | `--sample` / `--seed` / `--prefilter-only` / `--out <PATH>` | grade the classifier against a corpus whose outcome is known |
+
+Every subcommand takes `--account <NAME>`.
+
+`reply`, `forward` and `schedule` **stage into the [outbox](/docs/features/outbox)
+and never send**. `archive` and `spam` reach nobody outside your own mailbox and
+so are not staged. Separate verbs rather than one `--action` argument, because a
+free-form label would put `spam` inside a verb that reads as harmless.
+
+`eval` writes nothing to the triage store: grading year-old mail is not triaging
+it, and a scorecard that mutated the queue it measures would be unrepeatable.
+`score` reads the corpus written by `mecha-mail corpus`, not the MCP tools — a
+measurement keyed on a display format breaks silently the day the format
+changes.
+
+```bash
+mecha mail classify --account dartmouth
+mecha mail list
+mecha mail list --aged --surface                  # what the morning briefing runs
+mecha mail show 3f2a1b7c
+mecha mail reply 3f2a1b7c --note "decline politely"
+mecha mail correct 3f2a1b7c --bucket respond --urgency today
+mecha mail task 3f2a1b7c --due +3d
+mecha mail reflect --dry-run
+mecha-mail corpus --since 2026-07-01 --account dartmouth && mecha mail score
+```
+
+See [Mail and calendar](/docs/features/mail#triage-the-queue-over-the-mailbox).
 
 ## `frontdoor`
 
@@ -777,7 +889,9 @@ mecha distill -p local --limit 10 --server graph
 
 Read every store — no network, no model, no tokens — and report what is
 silently wrong: dead mail logins, stuck outbox drafts, stalled frontdoor
-requests, triggers whose slots stopped advancing, failed `mecha-*` units.
+requests, triggers whose slots stopped advancing, failed `mecha-*` units, graph
+nightlies that stopped writing their log, and the population signals in the run
+corpus.
 
 ```
 mecha doctor [--json]
@@ -791,6 +905,50 @@ On a terminal, each finding offers its remedy through an existing command —
 one at a time, EOF is no. Piped or `--json`, it only reports. Exit 0 is
 healthy; 1 means findings. Findings propose; a human disposes — there is
 deliberately no `--yes`.
+
+Beyond the incident checks it reads **populations**, per model, over the last
+200 sessions and only above a floor of 20 runs: a model finishing a fifth of its
+runs over a failed call, failing a quarter of its tool calls, or having a quarter
+of its runs cut short by a ceiling. Thresholds are deliberately high — a doctor
+that cries wolf stops being read — and cancellations are excluded, because a
+person pressing Ctrl-C is the system working. Two trigger checks sit beside them:
+one quietly failing a third of its tool calls, and one whose most recent run
+succeeded having made none at all. See
+[Run quality](/docs/features/run-quality).
+
+## `diagnose`
+
+Read the run corpus and propose one change to try — the stage between `doctor`
+saying something is wrong and `eval --ab-config` saying whether a fix helped.
+
+```
+mecha diagnose [OPTIONS]
+```
+
+| Flag | Description |
+|---|---|
+| `--model <MODEL>` | Which model's runs to diagnose. Defaults to whichever has the most. |
+| `--days <N>` | Only sessions started in the last N days. |
+| `-n`, `--limit <N>` | Stop after this many sessions, newest first. Default `200`. |
+| `--dry-run` | Print the brief the diagnostician would be handed, and stop. |
+
+**It proposes; it does not measure and does not apply.** It prints a typed block
+— class, change, predicted metric, rationale — and then the exact
+`mecha eval --ab-config …` line that would falsify it, shell-quoted because the
+change is model-authored and the line exists to be pasted.
+
+The brief is built from counters and doctor's own findings; there is no field for
+a transcript excerpt, so the corpus cannot be an injection surface. The run is
+read-only with learned rules and the outbox off. A proposal that reproduces eight
+consecutive words from anything the diagnostician read is **refused** — a
+conclusion drawn from a source is a proposal, a sentence lifted from one is the
+source's. Declining to propose is a legitimate answer, and a block that could not
+be measured parses as nothing.
+
+```bash
+mecha diagnose --dry-run                    # see the evidence, pay nothing
+mecha diagnose --model qwen3-moe --days 14
+```
 
 ## `vet`
 

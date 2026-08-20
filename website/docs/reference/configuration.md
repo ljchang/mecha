@@ -50,6 +50,15 @@ an ignored section that looks applied is the silently-degrading-sandbox shape.
 A global `[messages]` or `[slack]` is kept, of course; there is a test on each
 side of that boundary.
 
+`[skills]` is a third case and takes a **narrowing-only** merge rather than a
+strip, because a repository saying "these three are the relevant ones" is
+genuinely useful where authoring a skill would be a supply-chain hole. From a
+project layer, `enabled` **intersects** with what is already selected (so naming
+a skill the global layer did not enable enables nothing), `disabled` **unions**
+(withholding is always safe), and `dir` is dropped loudly. The direction is
+enforced by the merge, not asked for in a comment. See
+[Skills](/docs/features/skills).
+
 ## Top level
 
 | Key | Type | Default | Description |
@@ -265,6 +274,33 @@ conservative default. See [Publishing](/docs/features/publishing).
 run's path jail. Entries are counted, not files — a rendered bundle is a directory
 and counts as one. `clean` never removes anything a published bundle names as a
 source. See [The work directory](/docs/features/work).
+
+## `[skills]`
+
+Which of `~/.mecha/skills/` a run carries. There is deliberately **no way to
+author a skill here** — a body only ever comes from a file you wrote in the
+store, and config only names skills. Naming is not authoring.
+
+```toml
+[skills]
+enabled = []              # empty means every skill in the store
+disabled = ["noisy"]      # applied after enabled, so it wins
+dir = "~/.mecha/skills"   # global file only
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `[]` | Skills to carry. Empty means all of them. |
+| `disabled` | `[]` | Skills to withhold, applied after `enabled`. |
+| `dir` | `~/.mecha/skills` | Where the store lives. Global file only. |
+
+A name matching no skill on disk warns at startup, like a routed outbox name
+matching no tool: a typo'd enable is indistinguishable from a skill the model
+never chose, and both look like nothing happening.
+
+`--no-skills` carries none for one run; `--skill <name>` narrows further and
+cannot widen. A [trigger](/docs/features/triggers) names its skills in its own
+file and carries none by default.
 
 ## `[messages]`
 

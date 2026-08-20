@@ -1934,6 +1934,10 @@ fn run_command(
             app.convo = Conversation::new();
             app.usage = Usage::default();
             app.prompt_tokens = 0;
+            // Whatever the tools were holding for it goes too, for the same
+            // reason the taint does. A `skill` narrowing that survived a clear
+            // would constrain a task nobody had started yet.
+            agent.registry().forget_conversation_state();
             app.transcript.push(Entry::Notice(
                 "cleared — new conversation, and the taint went with it".into(),
             ));

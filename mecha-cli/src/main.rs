@@ -80,6 +80,13 @@ pub struct GlobalOpts {
     #[arg(long = "tool", global = true)]
     pub tools: Vec<String>,
 
+    /// Only carry these skills (repeatable). Names are matched exactly.
+    ///
+    /// Narrows what `[skills]` already selected; it cannot enable a skill the
+    /// config withheld.
+    #[arg(long = "skill", global = true)]
+    pub skills: Vec<String>,
+
     /// Skip MCP servers entirely.
     #[arg(long, global = true)]
     pub no_mcp: bool,
@@ -98,6 +105,11 @@ pub struct GlobalOpts {
     /// prompt.
     #[arg(long, global = true)]
     pub no_learned_rules: bool,
+
+    /// Don't load skills from ~/.mecha/skills — no `skill` tool, and nothing
+    /// about them in the system prompt.
+    #[arg(long, global = true)]
+    pub no_skills: bool,
 
     /// Don't run configured [[hook]] commands.
     #[arg(long, global = true)]
@@ -249,6 +261,10 @@ pub enum Command {
     /// List the tools an agent would see.
     Tools(commands::tools::Args),
 
+    /// List the skills an agent would carry — the procedures you have written
+    /// for it in ~/.mecha/skills, and which of them this run would load.
+    Skills(commands::skills::Args),
+
     /// Inspect saved transcripts.
     #[command(subcommand)]
     Sessions(commands::sessions::Args),
@@ -304,6 +320,7 @@ async fn dispatch() -> Result<()> {
         Command::Rules(args) => commands::rules::execute(args).await,
         Command::Replay(args) => commands::replay::execute(&cli.global, args).await,
         Command::Tools(args) => commands::tools::execute(&cli.global, args).await,
+        Command::Skills(args) => commands::skills::execute(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
         Command::Config(args) => commands::config::execute(&cli.global, args).await,
     }

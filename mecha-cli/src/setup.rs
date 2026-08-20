@@ -376,6 +376,100 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         });
         cfg.agent.system_prompt_file = None;
     }
+    // Skills, at level 1: a name and a description each, and nothing else
+    // until the model asks. They sit inside the cached prefix like the learned
+    // rules, and change only when the user edits the store — so enabling or
+    // disabling one re-pays the prefix for that session, which is the reason
+    // nothing here may toggle per turn.
+    //
+    // Read-only and best-effort: a machine with no skills gets no block and no
+    // tool, and one bad SKILL.md never stops the others loading.
+    let skills = if opts.no_skills {
+        Vec::new()
+    } else {
+        let dir = match cfg.skills.dir.clone() {
+            Some(dir) => dir,
+            None => mecha_core::skill::SkillStore::default_dir()?,
+        };
+        let (store, errors) = mecha_core::skill::SkillStore::load(&dir);
+        // A skill that failed to parse is indistinguishable from one the model
+        // chose not to use, which is the unrouted-domain shape: said at
+        // startup, naming the file and the reason, or it is silent forever.
+        for e in &errors {
+            eprintln!(
+                "mecha: skill `{}` did not load — {}",
+                e.dir.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                e.why
+            );
+        }
+        // And a name in config matching nothing on disk means a skill the user
+        // believes is enabled and is not — the routed-outbox-name precedent.
+        for name in store
+            .unknown_names(&cfg.skills.enabled)
+            .into_iter()
+            .chain(store.unknown_names(&cfg.skills.disabled))
+        {
+            eprintln!(
+                "mecha: [skills] names `{name}`, which is not a skill in {} — check the \
+                 spelling, or the directory name",
+                dir.display()
+            );
+        }
+        // `--skill` narrows further, and only further: it intersects with
+        // what config already selected rather than replacing it, so the flag
+        // cannot turn on something `[skills] disabled` withheld. Same
+        // direction as the project layer, for the same reason.
+        let selected = store.select(&cfg.skills.enabled, &cfg.skills.disabled);
+        if opts.skills.is_empty() {
+            selected
+        } else {
+            // Two different silences to break, and only one is a missing
+            // file. A skill that *exists* but sits outside `[skills] enabled`
+            // (or inside `disabled`) intersects away to nothing — and for a
+            // trigger, which derives `no_skills` from its own list, that means
+            // the scheduled run carries no skills and no `skill` tool at all.
+            // "My trigger names a skill and it never fires" needs an answer on
+            // screen.
+            for name in &opts.skills {
+                if store.get(name).is_none() {
+                    eprintln!(
+                        "mecha: --skill names `{name}`, which is not a skill in {}",
+                        dir.display()
+                    );
+                } else if !selected.iter().any(|s| &s.name == name) {
+                    eprintln!(
+                        "mecha: --skill names `{name}`, which `[skills]` withholds — it \
+                         will not be carried, because narrowing cannot re-enable what \
+                         config disabled"
+                    );
+                }
+            }
+            selected
+                .into_iter()
+                .filter(|s| opts.skills.iter().any(|n| n == &s.name))
+                .collect()
+        }
+    };
+    // Gated on the same condition the tool registration below is. A `--tool`
+    // allowlist that omits `skill` (the shipped Slack path sets one from
+    // `[slack] tools`) would otherwise leave a system prompt saying "call the
+    // `skill` tool" with no such tool in the surface, costing the model a turn
+    // on a call that can only fail.
+    let skills: Vec<_> = if opts.tools.is_empty() || opts.tools.iter().any(|t| t == "skill") {
+        skills
+    } else {
+        Vec::new()
+    };
+    if let Some(block) = mecha_core::skill::prompt_block(&skills) {
+        let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
+        cfg.agent.system_prompt = Some(if base.is_empty() {
+            block
+        } else {
+            format!("{base}\n\n{block}")
+        });
+        cfg.agent.system_prompt_file = None;
+    }
+
     // Learned rules ride at the end of the system prompt — still inside the
     // cached prefix, and they only change at consolidation time. Read-only:
     // an agent that has learned nothing yet must not create state by starting.
@@ -459,6 +553,20 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         registry.insert(Arc::clone(&handle) as Arc<dyn mecha_core::tool::Tool>);
         handle
     });
+
+    // The `skill` tool exists only when there is a skill to load, on the same
+    // rule as `web_search`: a tool that can only ever answer "nothing here" is
+    // worse than no tool, and it would cost a slot in every prompt to say so.
+    // Registered before subagents are built, so a child that allowlists
+    // `skill` gets the same set the parent has.
+    // `skills` is already empty when a `--tool` allowlist excludes `skill` —
+    // filtered where the prompt block is built, so the block and the tool
+    // cannot disagree about whether skills exist.
+    if !skills.is_empty() {
+        registry.insert(Arc::new(mecha_core::tool::skill::SkillTool::new(
+            skills.clone(),
+        )));
+    }
 
     // Search is only registered when a backend is configured — an agent with a
     // `web_search` tool that always errors is worse than no tool at all.

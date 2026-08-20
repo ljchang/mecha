@@ -7,6 +7,7 @@
 pub mod ask;
 pub mod builtin;
 pub mod recall;
+pub mod skill;
 pub mod todo;
 
 use crate::config::{PermissionMode, SecurityConfig, ToolsConfig};
@@ -14,7 +15,7 @@ use crate::message::ToolSpec;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -212,6 +213,50 @@ pub trait Tool: Send + Sync {
     fn fixed_workspace(&self) -> Option<PathBuf> {
         None
     }
+
+    /// Tool names this tool is currently restricting the surface to, if it is
+    /// restricting it at all.
+    ///
+    /// The third method in the family with [`carried_state`](Tool::carried_state)
+    /// and [`fixed_workspace`](Tool::fixed_workspace), and it exists for the
+    /// same reason: the loop learns that *some* tool may narrow the surface,
+    /// never which kind of tool or why. A `skill` whose frontmatter names the
+    /// tools its procedure needs is the first caller, and the loop stays
+    /// unable to tell a skill from an MCP server.
+    ///
+    /// **Narrow only, never widen.** [`Registry::specs_for`] intersects the
+    /// restriction with what it already holds, so a name here that matches no
+    /// registered tool adds nothing — the same one-way rule as a config
+    /// capability override, and for the same reason: a mechanism that could
+    /// widen the surface by declaring a name would make the cheapest
+    /// configuration the most dangerous one.
+    ///
+    /// `None` — the default — is "no opinion", which is what every stateless
+    /// tool honestly has. Note that it is *not* the same as an empty list:
+    /// nothing may restrict the surface to nothing, and the parser refuses an
+    /// empty list upstream rather than leaving a run with no way to act.
+    fn narrows_surface_to(&self) -> Option<Vec<String>> {
+        None
+    }
+
+    /// Drop state that belonged to the conversation that just ended.
+    ///
+    /// Most tools are stateless and the default no-op is honest for them. A
+    /// tool that *is* stateful has a scope problem the registry cannot see:
+    /// the registry belongs to the **agent**, and an agent can outlive a
+    /// conversation — a batch item, a `/clear`, a Slack thread. State scoped
+    /// to the conversation therefore has to be told when one ends, or it
+    /// leaks into the next.
+    ///
+    /// The leak is not merely untidy where the state gates the tool surface:
+    /// a `skill` narrowing that survived would constrain a task nobody had
+    /// started yet. Same family as [`carried_state`](Tool::carried_state) —
+    /// the loop learns that some tools have conversation-scoped state, never
+    /// which ones or what it is.
+    ///
+    /// Note what this is *not*: an unload verb. Nothing calls it mid-run, and
+    /// a procedure that has been read cannot be un-read.
+    fn forget_conversation_state(&self) {}
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
@@ -541,6 +586,37 @@ impl Registry {
         self.tools.get(name)
     }
 
+    /// The tool a call may actually reach: registered **and** inside whatever
+    /// restriction is currently active.
+    ///
+    /// Dispatch goes through this rather than [`get`](Registry::get), because
+    /// a restriction that only shortened the spec list would be advisory. A
+    /// model that saw `fs_write` three turns ago can still name it, and a
+    /// narrowing enforced only in the list is one the model routes around by
+    /// remembering — the same reason the phase filter makes tools genuinely
+    /// absent rather than merely refused.
+    pub fn available(&self, name: &str) -> Option<&Arc<dyn Tool>> {
+        let tool = self.tools.get(name)?;
+        match self.surface_restriction() {
+            Some(allowed) if !allowed.contains(name) => None,
+            _ => Some(tool),
+        }
+    }
+
+    /// Names a call may reach right now, for the message that says so.
+    pub fn available_names(&self) -> Vec<&str> {
+        let restriction = self.surface_restriction();
+        self.tools
+            .values()
+            .map(|t| t.name())
+            .filter(|n| {
+                restriction
+                    .as_ref()
+                    .is_none_or(|allowed| allowed.contains(*n))
+            })
+            .collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
@@ -580,11 +656,54 @@ impl Registry {
     /// turn re-pays for it. That is the price of the tools being genuinely
     /// absent rather than merely refused, and it is the right trade.
     pub fn specs_for(&self, phase: crate::agent::Phase) -> Vec<ToolSpec> {
+        let restriction = self.surface_restriction();
         self.tools
             .values()
             .filter(|t| phase.allows(t.read_only()))
+            .filter(|t| {
+                restriction
+                    .as_ref()
+                    .is_none_or(|allowed| allowed.contains(t.name()))
+            })
             .map(|t| t.spec())
             .collect()
+    }
+
+    /// The names the surface is currently narrowed to, if anything is
+    /// narrowing it.
+    ///
+    /// The **union** across everything that has an opinion, which is the only
+    /// composition that lets two restrictions coexist: each names the tools
+    /// its own procedure needs, and intersecting them would strand a run that
+    /// loaded two skills. The invariant that matters is not "smallest" but
+    /// "never larger than the unrestricted surface", and a union of subsets is
+    /// still a subset — [`specs_for`](Registry::specs_for) intersects with
+    /// what is registered, so a name nothing matches adds nothing.
+    ///
+    /// A tool that is *itself* restricting stays in the surface whatever it
+    /// declared. Otherwise the first `skill` call could remove `skill`, and a
+    /// procedure that says "then load the follow-up skill" would name a tool
+    /// that had just been taken away — a restriction that eats its own
+    /// mechanism is a trap rather than a policy.
+    /// Tell every tool the conversation ended. See
+    /// [`Tool::forget_conversation_state`].
+    pub fn forget_conversation_state(&self) {
+        for tool in self.tools.values() {
+            tool.forget_conversation_state();
+        }
+    }
+
+    pub fn surface_restriction(&self) -> Option<BTreeSet<String>> {
+        let mut allowed: Option<BTreeSet<String>> = None;
+        for tool in self.tools.values() {
+            let Some(names) = tool.narrows_surface_to() else {
+                continue;
+            };
+            let set = allowed.get_or_insert_with(BTreeSet::new);
+            set.extend(names);
+            set.insert(tool.name().to_string());
+        }
+        allowed
     }
 
     /// Register the built-ins permitted by config.
@@ -612,6 +731,7 @@ impl Registry {
 #[cfg(test)]
 mod cap_tests {
     use super::*;
+    use serde_json::json;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("mecha-cap-{name}-{}", uuid::Uuid::new_v4()));
@@ -731,5 +851,114 @@ mod cap_tests {
         let ctx = ToolCtx::default();
         let rerooted = ctx.with_workspace(std::env::temp_dir());
         assert_ne!(ctx.spill_dir, rerooted.spill_dir);
+    }
+
+    /// A tool that declares a restriction, so the registry rules can be tested
+    /// without a skill store on disk.
+    struct Narrowing(&'static str, Option<Vec<String>>);
+
+    #[async_trait]
+    impl Tool for Narrowing {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "test"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn narrows_surface_to(&self) -> Option<Vec<String>> {
+            self.1.clone()
+        }
+        async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok(""))
+        }
+    }
+
+    fn registry_with(tools: Vec<Arc<dyn Tool>>) -> Registry {
+        let mut r = Registry::new();
+        for t in tools {
+            r.insert(t);
+        }
+        r
+    }
+
+    #[test]
+    fn nothing_narrows_until_something_says_so() {
+        let r = registry_with(vec![
+            Arc::new(Narrowing("a", None)),
+            Arc::new(Narrowing("b", None)),
+        ]);
+        assert!(r.surface_restriction().is_none());
+        assert_eq!(r.specs_for(crate::agent::Phase::Execute).len(), 2);
+    }
+
+    #[test]
+    fn a_restriction_can_never_widen_the_surface() {
+        // The invariant the whole mechanism rests on. `gate` names a tool that
+        // is not registered; naming it must not conjure it, or a mechanism
+        // that declares a name could add capability rather than remove it.
+        let r = registry_with(vec![
+            Arc::new(Narrowing("a", None)),
+            Arc::new(Narrowing("b", None)),
+            Arc::new(Narrowing(
+                "gate",
+                Some(vec!["a".into(), "not_registered".into()]),
+            )),
+        ]);
+        let names: Vec<String> = r
+            .specs_for(crate::agent::Phase::Execute)
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert!(names.contains(&"a".to_string()));
+        assert!(!names.contains(&"b".to_string()), "b was narrowed away");
+        assert!(
+            !names.iter().any(|n| n == "not_registered"),
+            "a name nothing matches adds nothing: {names:?}"
+        );
+        assert!(
+            names.contains(&"gate".to_string()),
+            "the tool doing the narrowing stays reachable, or it eats its own mechanism"
+        );
+    }
+
+    #[test]
+    fn a_narrowed_tool_is_out_of_reach_for_dispatch_and_not_merely_unlisted() {
+        // A shorter spec list alone would be advisory: a model that saw `b`
+        // three turns ago can still name it.
+        let r = registry_with(vec![
+            Arc::new(Narrowing("a", None)),
+            Arc::new(Narrowing("b", None)),
+            Arc::new(Narrowing("gate", Some(vec!["a".into()]))),
+        ]);
+        assert!(r.available("a").is_some());
+        assert!(r.available("b").is_none(), "narrowed away, so unreachable");
+        assert!(
+            r.get("b").is_some(),
+            "still registered — `get` is a lookup, `available` is the gate"
+        );
+        assert!(!r.available_names().contains(&"b"));
+    }
+
+    #[test]
+    fn two_restrictions_union_rather_than_intersect() {
+        // Intersecting would strand a run that loaded two skills, each naming
+        // what its own procedure needs. The union is still a subset of the
+        // registered surface, which is the property that matters.
+        let r = registry_with(vec![
+            Arc::new(Narrowing("a", None)),
+            Arc::new(Narrowing("b", None)),
+            Arc::new(Narrowing("c", None)),
+            Arc::new(Narrowing("g1", Some(vec!["a".into()]))),
+            Arc::new(Narrowing("g2", Some(vec!["b".into()]))),
+        ]);
+        let allowed = r.surface_restriction().unwrap();
+        assert!(allowed.contains("a") && allowed.contains("b"));
+        assert!(!allowed.contains("c"), "still a subset: {allowed:?}");
     }
 }
