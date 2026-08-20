@@ -262,7 +262,7 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 19] = [
+pub const NAMES: [&str; 20] = [
     "help",
     "tools",
     "skills",
