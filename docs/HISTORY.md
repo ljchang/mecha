@@ -2080,8 +2080,17 @@ All found by pre-push review or by running it.
   contradicted in two is not recorded**, and the place it survives is rarely
   the place a reader looks. Where a relationship holds between a config value
   and something a process reports, the durable answer is to *check* it at
-  startup rather than restate it — `/props` answers, the way `unrouted_domains`
-  warns instead of failing quietly.
+  startup rather than restate it. This project already has the shape and it is
+  `Sandbox::preflight`, which runs a real command through the real backend at
+  startup rather than trusting what config claims — on the reasoning that a
+  configured sandbox which does not work is worse than none, because the tool's
+  declared capabilities narrow and the interlock believes it. `context_window`
+  is the same bargain one layer up: four values narrow around a number nothing
+  verifies. **`/props` is the `preflight` of this fact** — it reports
+  `total_slots` and the real per-slot `n_ctx`, so the check is a request, not a
+  reimplementation of llama-server's arithmetic. Warning rather than refusing
+  is the right severity here (`unrouted_domains`' precedent): a mismatch makes
+  a run compact at the wrong moment, which is not a reason to refuse to start.
 
 - **A heredoc can eat a line continuation before the compiler sees it.** Five
   doctor messages written through a Python heredoc lost their `\`-continuations
