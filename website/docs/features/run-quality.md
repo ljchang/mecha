@@ -1,6 +1,6 @@
 ---
 title: Run quality
-sidebar_position: 19
+sidebar_position: 20
 description: The corpus of how runs went rather than what they cost — and the detect, diagnose, measure, gate loop built on top of it.
 ---
 

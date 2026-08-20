@@ -1,6 +1,6 @@
 ---
 title: Live polls on a slide
-sidebar_position: 7
+sidebar_position: 8
 description: The projector page, and the PowerPoint content add-in that puts it on a slide — install, insert, and what fails soft.
 ---
 

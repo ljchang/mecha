@@ -1,6 +1,6 @@
 ---
 title: Artifacts
-sidebar_position: 3
+sidebar_position: 4
 description: Versions that never move, an alias that does, who may read a bundle, and what taking one down actually means.
 ---
 

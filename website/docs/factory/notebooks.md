@@ -1,6 +1,6 @@
 ---
 title: Notebooks
-sidebar_position: 5
+sidebar_position: 6
 description: Publishing a marimo notebook that runs in the reader's browser — the vendored runtime, the compute policy, and what the export does and does not execute.
 ---
 

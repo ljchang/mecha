@@ -1,6 +1,6 @@
 ---
 title: Triggers
-sidebar_position: 9
+sidebar_position: 10
 description: Prompts that run unattended on a cron schedule, and the five decisions that make an unwatched agent run safe.
 ---
 

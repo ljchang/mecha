@@ -330,9 +330,12 @@ output_price_per_mtok = 25.0
 ```
 
 A provider reports what a prompt *cost*, never what is left, so
-`context_window` has to be told. Three things depend on it — the derived
-compaction threshold, the TUI's fuel gauge, and honest reporting — and without
-it all three degrade silently. See [Compaction](/docs/features/compaction).
+`context_window` has to be told. Four things depend on it — the derived
+compaction threshold, the per-turn tool-output budget, the TUI's fuel gauge,
+and overflow recovery — and without it all four degrade silently. See
+[Compaction](/docs/features/compaction), and
+[Serving a local model](/docs/features/serving) for how `context_window`
+relates to the `-c` and `-np` a local server was actually started with.
 
 Prices are required in **both** halves: knowing one is worse than knowing
 neither, because it silently under-reports. Leave them unset for a local model

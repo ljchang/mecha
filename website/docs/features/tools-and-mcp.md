@@ -1,6 +1,6 @@
 ---
 title: Tools and MCP
-sidebar_position: 3
+sidebar_position: 4
 description: The Tool trait, the registry, approval, the built-in tools, and the stdio MCP client with its environment allowlist.
 ---
 

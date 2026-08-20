@@ -1,6 +1,6 @@
 ---
 title: Mail and calendar
-sidebar_position: 20
+sidebar_position: 21
 description: mecha-mail — every Gmail and Outlook account behind one provider-neutral MCP surface, where the model names an account and never a provider, plus the triage queue over it.
 ---
 

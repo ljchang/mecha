@@ -1,6 +1,6 @@
 ---
 title: Sessions and replay
-sidebar_position: 17
+sidebar_position: 18
 description: Append-only JSONL transcripts, what they record beyond the messages, and replay as a standing regression check.
 ---
 
