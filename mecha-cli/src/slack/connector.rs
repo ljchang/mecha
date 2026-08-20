@@ -605,7 +605,8 @@ impl State {
                     &channel,
                     Some(&thread_ts),
                     &format!(
-                        "`{}` is not attached to a live session — {ended}. Run                          `/remote-control {}` in a terminal to pick this thread up again.",
+                        "`{}` is not attached to a live session — {ended}. Run \
+                         `/remote-control {}` in a terminal to pick this thread up again.",
                         rec.name, rec.name
                     ),
                     None,
@@ -623,7 +624,8 @@ impl State {
                     &self.slack,
                     &channel,
                     Some(&thread_ts),
-                    "Could not tell whether this thread mirrors a terminal session, so                      nothing was started.",
+                    "Could not tell whether this thread mirrors a terminal session, so \
+                     nothing was started.",
                     None,
                 )
                 .await;

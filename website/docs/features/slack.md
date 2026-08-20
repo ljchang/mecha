@@ -178,6 +178,42 @@ something from outside the workspace, `!cp` it in first.
 `[slack] max_upload_mb` (25 MB) caps this, and caps attachments coming the
 other way with the same number.
 
+## Remote control: one session, two places
+
+`/remote-control <name>` in the TUI gives a live terminal session a named
+thread in your DM. What the run does appears in both places, what you type
+appears in both places, and files move both ways:
+
+```
+/remote-control lab      # attach, or pick the thread up again
+/remote-control          # what this session is attached to
+/remote-control off      # detach; the thread and its history stay
+```
+
+**A name is durable and its thread is forever.** `/remote-control lab`
+tomorrow posts into the same thread as today, which is what lets a line of
+work accumulate in one place. Detaching does not delete the record — that
+record is *how the thread is found again*.
+
+**Typing in the thread reaches the session**: steering if a run is in flight,
+a new turn if not. Files you drop there land in the session's workspace under
+`./inbox/`, and only the *path* is given to the model — it reads them with
+`fs_read`, so the taint arms through the tool that already declares
+`private_data` rather than a parallel path.
+
+**Slash commands and `!` escapes stay at the terminal.** They are not prompts:
+`/model` rebuilds the agent, `/clear` drops the conversation and its taint,
+and `!` runs a shell command with no approver in front of it. Those are
+affordances of sitting at the machine.
+
+Inbound needs `mecha slack connect` running; output does not. `mecha slack
+remote` lists what this machine mirrors, and `--sweep` cools any attachment
+whose session has gone.
+
+Note the one thing this cannot do yet: mecha is text-only end to end, so a
+screenshot arrives as a *file* the model cannot look at. A `.txt`, a log or a
+CSV works today.
+
 ## Two things it deliberately does not do
 
 - **`ask_user` is absent.** It is a *tool*, and the tool registry belongs to the
