@@ -318,8 +318,10 @@ connector is down too, the thread simply stops, and the next
 `/remote-control lab` opens with "the previous session ended". Three layers,
 each covering the one below's absence, and none of them load-bearing alone.
 
-`mecha remote sweep` is the by-hand version of the connector's pass, on the
-`mecha slack sweep` precedent, for the same reason it exists there: a thread
+`mecha slack remote --sweep` is the by-hand version of the connector's pass,
+on the `mecha slack sweep` precedent (built under `slack` rather than as a
+top-level `remote` verb, because it needs the binding and reads the same
+store family), for the same reason it exists there: a thread
 left showing "working…" forever is the confusion this whole surface is
 supposed to prevent.
 

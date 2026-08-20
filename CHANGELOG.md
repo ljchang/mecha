@@ -30,9 +30,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first, and `[slack] max_upload_mb` now caps both directions rather than only
   what comes in.
 
-  Rung 1 of `docs/REMOTE-CONTROL-DESIGN.md`, which is the rest of it: a named
-  Slack thread attached to a live TUI session, files both ways, steering from
-  a phone.
+  Rung 1 of `docs/REMOTE-CONTROL-DESIGN.md`.
+
+- **`/remote-control <name>` — a live TUI session and a named Slack thread are
+  the same conversation.** What the run does and what you type appear in both
+  places; typing in the thread steers a run in flight or starts a new turn;
+  files dropped there land in the session's workspace under `./inbox/`, with
+  only the path given to the model so the taint arms through `fs_read` rather
+  than a parallel route.
+
+  A name is durable and its thread is forever, so detaching marks the record
+  cold rather than deleting it — the record is how the thread is found again.
+  The connector no longer starts its own run in a mirrored thread, which it
+  previously did: a fresh conversation in a different workspace under a
+  different permission mode, answering in a scrollback it knew nothing about.
+
+  Slash commands and `!` escapes are refused from Slack. They are not prompts,
+  and the gap between "the owner typed this" and "the owner is at the
+  keyboard" is where a remote surface should stay narrow.
+
+  `mecha slack remote` lists what this machine mirrors; `--sweep` cools an
+  attachment whose session has gone.
 
 ## [0.1.9] - 2026-08-20
 

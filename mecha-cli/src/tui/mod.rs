@@ -394,6 +394,13 @@ struct App {
     /// that vanished when you changed model would be the `todo` handle bug in
     /// a surface where the loss is both silent and outbound.
     attached: Option<crate::slack::remote::Attached>,
+    /// A name whose attach is in flight.
+    ///
+    /// `attached` is only written when the outcome lands, so without this the
+    /// "already attached" guard cannot fire in the window between the two —
+    /// two enters on `/rc` would open two threads and leave the first with no
+    /// handle, no closing line, and a live record nothing will ever cool.
+    attaching: Option<String>,
     /// What `shell` actually is, computed once — the sandbox is config-driven
     /// and a provider switch rebuilds it identically.
     sandbox_line: String,
@@ -651,6 +658,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         shell_tx,
         attach_tx,
         attached: None,
+        attaching: None,
         providers: prepared
             .config
             .providers
@@ -763,6 +771,11 @@ async fn run_loop(
     // sender here keeps the receiver alive between runs so `select!` has
     // something to poll rather than a closed branch.
     let (mut events_tx, mut events_rx) = mpsc::unbounded_channel::<AgentEvent>();
+    // How often an attached session looks for text from its thread. A
+    // deadline rather than a timer branch — see the check at the top of the
+    // loop for why that distinction is the whole feature.
+    const INBOUND_EVERY: std::time::Duration = std::time::Duration::from_millis(1_000);
+    let mut last_inbound = std::time::Instant::now();
 
     loop {
         // Log lines held since the last frame. Into the transcript rather than
@@ -843,6 +856,20 @@ async fn run_loop(
             return Ok(());
         }
 
+        // **Inbound is checked here, not in the tick arm.** `tick` is a fresh
+        // sleep constructed every iteration, so whichever branch fires first
+        // discards it — and during a streaming turn `TextDelta` arrives far
+        // more often than the 200ms tier, so the sleep never elapses and a
+        // timer branch never runs. Steering from a phone *mid-run* is the
+        // headline of the inbound path, and it was the one case that could
+        // not happen. A deadline is unaffected by the restart: the loop turns
+        // on every event, and this does a directory read at most once a
+        // second.
+        if app.attached.is_some() && last_inbound.elapsed() >= INBOUND_EVERY {
+            last_inbound = std::time::Instant::now();
+            deliver_inbound(app, live, session, &mut events_tx, &mut events_rx);
+        }
+
         // A run in flight redraws on a timer so the elapsed clock ticks even
         // when nothing else is happening. A live watch tightens the idle tick
         // to a second — that is the whole polling loop behind "the result
@@ -879,7 +906,25 @@ async fn run_loop(
                 app.transcript.absorb(&event);
             }
 
-            Some(request) = approvals.recv() => app.pending = Some(request),
+            Some(request) = approvals.recv() => {
+                // A run started from a phone in `ask` mode otherwise stops
+                // dead: the approver emits no `AgentEvent`, so the thread
+                // shows the tool's card in progress forever. `AwaitingInput`
+                // exists in the Slack thread state machine precisely so
+                // waiting and wedged are distinguishable; this is the same
+                // distinction on the mirrored surface.
+                if let Some(a) = &app.attached {
+                    spawn_note(
+                        a,
+                        &format!(
+                            "Waiting for you at the terminal: `{}` needs approval. \
+                             `/mode allow` there, or answer the prompt.",
+                            request.tool
+                        ),
+                    );
+                }
+                app.pending = Some(request);
+            }
             Some(question) = questions.recv() => app.asking = Some(question),
             // A `!command` finished; its output enters the transcript and
             // nothing else — the model never sees it.
@@ -889,26 +934,60 @@ async fn run_loop(
             // so the handle and the transcript line cannot disagree.
             Some(outcome) = attach_results.recv() => match outcome {
                 AttachOutcome::Attached(a, notice) => {
+                    app.attaching = None;
                     app.transcript.push(Entry::Notice(notice));
                     app.attached = Some(*a);
                 }
                 AttachOutcome::Detached(notice) => {
+                    app.attaching = None;
                     app.transcript.push(Entry::Notice(notice));
                     app.attached = None;
                 }
-                AttachOutcome::Failed(e) => app.transcript.push(Entry::Error(e)),
+                AttachOutcome::Failed(e) => {
+                    app.attaching = None;
+                    app.transcript.push(Entry::Error(e));
+                }
             },
 
             // A finished run: collect the outcome and take the conversation back.
             outcome = wait_for_run(&mut app.running), if app.running.is_some() => {
                 let persisted = app.running.as_mut().map(|r| std::mem::take(&mut r.persisted)).unwrap_or_default();
                 let baseline = app.running.as_mut().and_then(|r| r.outbox_before.take());
+                // **Steering the run ended before folding in.** The queue is
+                // drained at the top of each turn, so a run that finishes in
+                // one turn — no tool calls, just an answer — never reaches a
+                // point where queued text can land. Typed at the keyboard that
+                // loses a sentence; arriving from the remote inbox it loses it
+                // *permanently*, because claiming already deleted it from the
+                // store. Carried into a fresh turn instead of dropped.
+                //
+                // Joined rather than submitted one at a time: the first would
+                // start a run and the rest would queue into it, which is the
+                // same trap one turn later.
+                let leftover: Vec<String> = app
+                    .running
+                    .as_mut()
+                    .and_then(|r| r.queue.lock().ok().map(|mut q| q.drain(..).collect()))
+                    .unwrap_or_default();
                 finish_run(app, outcome, persisted, baseline, session)?;
+                if !leftover.is_empty() {
+                    app.transcript.push(Entry::Notice(
+                        "the run ended before folding these in — sending them now".into(),
+                    ));
+                    let carried = leftover.join("\n");
+                    // `from_remote` suppresses the echo: whatever queued this
+                    // already announced itself when it arrived.
+                    if let Err(e) =
+                        submit(app, carried, &mut events_tx, &mut events_rx, live, session, true)
+                    {
+                        app.transcript
+                            .push(Entry::Error(format!("could not carry steering over: {e:#}")));
+                    }
+                }
             }
 
             _ = tick => {
                 poll_watches(app);
-                deliver_inbound(app, live, session, &mut events_tx, &mut events_rx)?;
                 // The idle tick doubles as the badge's clock: a trigger in
                 // another process can stage drafts while this session sits
                 // idle. Not while running — run end refreshes it anyway.
@@ -2348,6 +2427,14 @@ fn run_command(
 
         Command::RemoteControl(command::Remote::Off) => match app.attached.take() {
             Some(a) => spawn_detach(a, "detached from the terminal", app.attach_tx.clone()),
+            // An attach in flight cannot be cancelled from here — the task is
+            // already talking to Slack — so this says so rather than silently
+            // doing nothing and letting the attachment land against the
+            // user's last instruction.
+            None if app.attaching.is_some() => say(
+                "an attach is still in flight — run `/remote-control off` again once it lands"
+                    .into(),
+            ),
             None => say("not attached".into()),
         },
 
@@ -2355,6 +2442,10 @@ fn run_command(
         // thread mid-session would leave the first one silently ended with no
         // line in it saying so.
         Command::RemoteControl(command::Remote::Attach(name)) => match (&app.attached, session) {
+            _ if app.attaching.is_some() => app.transcript.push(Entry::Error(format!(
+                "already attaching as `{}` — wait for it to land",
+                app.attaching.clone().unwrap_or_default()
+            ))),
             (Some(current), _) => app.transcript.push(Entry::Error(format!(
                 "already attached as `{}` — `/remote-control off` first",
                 current.name
@@ -2370,6 +2461,7 @@ fn run_command(
             (None, Some(s)) => {
                 app.transcript
                     .push(Entry::Notice(format!("attaching as `{name}`…")));
+                app.attaching = Some(name.clone());
                 spawn_attach(
                     name,
                     s.meta.id.clone(),
@@ -4222,18 +4314,18 @@ fn deliver_inbound(
     session: Option<&Session>,
     events_tx: &mut mpsc::UnboundedSender<AgentEvent>,
     events_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
-) -> Result<()> {
+) {
     let Some(attached) = app.attached.clone() else {
-        return Ok(());
+        return;
     };
     let Ok(store) = crate::slack::remote::RemoteStore::open_default() else {
-        return Ok(());
+        return;
     };
     let lines = match store.claim_inbound(&attached.name) {
         Ok(lines) => lines,
         Err(e) => {
             tracing::warn!("could not read the remote inbox: {e:#}");
-            return Ok(());
+            return;
         }
     };
 
@@ -4303,9 +4395,17 @@ fn deliver_inbound(
         // difference matters when two people are looking at one session.
         app.transcript
             .push(Entry::Notice(format!("⇄ from Slack · {}", attached.name)));
-        submit(app, prompt, events_tx, events_rx, live, session, true)?;
+        // **Never propagated.** Claiming already removed these from the store,
+        // so an error escaping here would end the session *and* take the
+        // remaining lines with it — they are gone from disk and would never be
+        // delivered anywhere. One line failing is a line to report, not a
+        // reason to stop reading the rest.
+        if let Err(e) = submit(app, prompt, events_tx, events_rx, live, session, true) {
+            app.transcript.push(Entry::Error(format!(
+                "could not deliver a Slack line: {e:#}"
+            )));
+        }
     }
-    Ok(())
 }
 
 /// Say something in the mirrored thread that is not part of a run.
@@ -5995,6 +6095,7 @@ mod tests {
             shell_tx,
             attach_tx: mpsc::unbounded_channel().0,
             attached: None,
+            attaching: None,
             providers: Vec::new(),
             kitty_keyboard: false,
         }

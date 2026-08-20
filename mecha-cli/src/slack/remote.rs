@@ -39,6 +39,18 @@ use serde::{Deserialize, Serialize};
 
 /// A session is attached and the process is expected to be alive.
 pub const STATE_LIVE: &str = "live";
+/// The name is claimed but its thread is not confirmed yet.
+///
+/// The window between reserving a name and posting into its thread contains an
+/// OAuth-shaped round trip and a `chat.postMessage`, and both obvious designs
+/// are wrong inside it. Writing `live` first means a failed post leaves a
+/// thread routing inbound lines to a session that is not attached, where they
+/// pile up unread and are replayed en masse at the next successful attach.
+/// Writing nothing first lets two terminals claim one name.
+///
+/// So the name is reserved in a state [`AttachRecord::is_live`] refuses, which
+/// is what the connector routes on.
+pub const STATE_ATTACHING: &str = "attaching";
 /// The session that held this name is gone. The thread and its history stay.
 pub const STATE_COLD: &str = "cold";
 
@@ -135,14 +147,23 @@ pub fn decide(
     let Some(rec) = existing else {
         return Claim::Fresh;
     };
-    if rec.session_id == my_session {
-        return Claim::AlreadyMine;
-    }
-    if rec.state == STATE_LIVE && alive(rec.pid) {
+    // **Liveness is checked before identity.** A session id is not unique to a
+    // process: `mecha tui --resume <id>` in two terminals gives both the same
+    // one, and letting the second call the record its own would put two
+    // processes on one thread, both streaming into it and only one receiving.
+    // Only *this* process may claim a live record.
+    if rec.state == STATE_LIVE && alive(rec.pid) && rec.pid != std::process::id() {
         return Claim::Refused {
             pid: rec.pid,
             session_id: rec.session_id.clone(),
         };
+    }
+    // Ours and still standing. Re-running the command is a question, not a
+    // collision — but only while the record says live: after a
+    // `/remote-control off` the honest answer is that the thread is being
+    // picked back up, not that nothing happened.
+    if rec.session_id == my_session && rec.state == STATE_LIVE {
+        return Claim::AlreadyMine;
     }
     Claim::TakenOver {
         previous_session: rec.session_id.clone(),
@@ -284,9 +305,37 @@ impl RemoteStore {
         channel_id: &str,
         thread_ts: &str,
     ) -> Result<Option<AttachRecord>> {
-        Ok(self.list()?.into_iter().find(|r| {
-            r.channel_id.as_deref() == Some(channel_id) && r.thread_ts.as_deref() == Some(thread_ts)
-        }))
+        // Deliberately **not** built on `list()`. That swallows an unreadable
+        // directory and a malformed record alike — right for a listing, and
+        // catastrophic here: this answer decides whether the connector starts a
+        // run in somebody's mirrored thread, and "I could not read the store"
+        // must never arrive as "not attached". `get` already refuses on
+        // malformed input for exactly this reason; this is the routing path
+        // finally going through the same door.
+        let entries = match std::fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).context("reading the remote store"),
+        };
+        for entry in entries {
+            let path = entry
+                .context("reading the remote store")?
+                .path()
+                .join("record.json");
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+            };
+            let rec: AttachRecord = serde_json::from_str(&text)
+                .with_context(|| format!("reading {}", path.display()))?;
+            if rec.channel_id.as_deref() == Some(channel_id)
+                && rec.thread_ts.as_deref() == Some(thread_ts)
+            {
+                return Ok(Some(rec));
+            }
+        }
+        Ok(None)
     }
 
     /// Where the connector stages downloaded attachments.
@@ -502,18 +551,19 @@ pub fn header_text(
         ));
     }
 
-    // The honest statement of what this rung does not do yet. Without it, a
-    // reply here silently starts a *separate* Slack-side run in a different
-    // workspace, which looks like the mirror answering and is not.
-    // Deliberately does not claim to know whether the connector is running.
-    // `flock` cannot be queried without attempting it, and attempting it could
-    // make the connector fail to start in that instant — so this says something
-    // true in both worlds rather than probing for a fact it cannot cheaply
-    // have. The same rule as a rate with no denominator reading `unknown`
-    // rather than zero.
+    // What this thread can actually do — which changed under this paragraph
+    // once inbound landed. An earlier version said nothing typed here reached
+    // the session and kept saying it after that stopped being true; a header
+    // is posted once and read later, so a stale one is worse than none.
+    //
+    // It does not claim to know whether the connector is running. `flock`
+    // cannot be queried without attempting it, and attempting it could make
+    // the connector fail to start in that instant, so the dependency is named
+    // rather than resolved.
     out.push_str(
-        "\n_Output only for now. Nothing typed here reaches this session — \
-         and if the connector is running it starts a *separate* Slack run instead._",
+        "\nType here and it reaches this session; files land in its workspace. \
+         Slash commands and `!` escapes stay at the terminal. Inbound needs \
+         `mecha slack connect` running.",
     );
     out
 }
@@ -541,7 +591,8 @@ pub async fn attach(
 
     let (reuse_thread, takeover_of, notice) = match &claim {
         Claim::Refused { pid, session_id } => bail!(
-            "`{name}` is held by a live session ({session_id}, pid {pid}) —              pick another name, or detach it there first"
+            "`{name}` is held by a live session ({session_id}, pid {pid}) — pick another \
+             name, or detach it there first"
         ),
         Claim::AlreadyMine => (
             existing.as_ref().and_then(|r| r.thread_ts.clone()),
@@ -559,26 +610,50 @@ pub async fn attach(
         Claim::Fresh => (None, None, format!("attached as `{name}`")),
     };
 
+    // Reserved, not claimed: nothing routes to an `attaching` record, so a
+    // failure below leaves the thread inert rather than a trap.
     let mut record = match existing {
         // Keep the thread, take the session: that is what a durable name is.
         Some(mut r) => {
             r.session_id = session_id.to_string();
             r.pid = std::process::id();
             r.workspace = workspace.to_path_buf();
-            r.state = STATE_LIVE.to_string();
+            r.state = STATE_ATTACHING.to_string();
             r.ended_reason = None;
             r.attached_at = Utc::now();
             r.updated_at = Utc::now();
             r
         }
-        None => AttachRecord::new(name, session_id, workspace.to_path_buf()),
+        None => {
+            let mut r = AttachRecord::new(name, session_id, workspace.to_path_buf());
+            r.state = STATE_ATTACHING.to_string();
+            r
+        }
     };
     store.put(&record)?;
+
+    // Every failure from here has to put the reservation back. Losing the name
+    // costs one retry; leaving it half-claimed costs every line typed into a
+    // thread nothing is reading.
+    fn release(store: &RemoteStore, record: &mut AttachRecord, why: &str) {
+        record.go_cold(why);
+        let _ = store.put(record);
+    }
 
     let cfg = mecha_core::config::Config::load_global()?;
     let slack_store =
         mecha_slack::binding::SlackStore::open(mecha_core::work::mecha_home()?.join("slack"))?;
-    let (slack, channel) = crate::slack::send::owner_dm(&slack_store).await?;
+    let (slack, channel) = match crate::slack::send::owner_dm(&slack_store).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            release(
+                &store,
+                &mut record,
+                "attach failed before the thread was opened",
+            );
+            return Err(e);
+        }
+    };
 
     let text = header_text(
         name,
@@ -591,11 +666,24 @@ pub async fn attach(
     // A reused thread gets the header *inside* it, so one name really is one
     // scrollback. A fresh name gets a new parent message, and its `ts` becomes
     // the thread everything else replies into.
-    let ts = chat::post_message(&slack, &channel, reuse_thread.as_deref(), &text, None).await?;
+    let ts = match chat::post_message(&slack, &channel, reuse_thread.as_deref(), &text, None).await
+    {
+        Ok(ts) => ts,
+        Err(e) => {
+            release(
+                &store,
+                &mut record,
+                "attach failed while opening the thread",
+            );
+            return Err(e.into());
+        }
+    };
     let thread_ts = reuse_thread.unwrap_or_else(|| ts.to_string());
 
+    // Only now is it live, and only now does the connector route to it.
     record.channel_id = Some(channel.clone());
     record.thread_ts = Some(thread_ts.clone());
+    record.state = STATE_LIVE.to_string();
     record.updated_at = Utc::now();
     store.put(&record)?;
 
@@ -781,20 +869,25 @@ mod tests {
         assert!(!header((false, false), 0, None).contains("ended"));
     }
 
-    /// The rung's own limitation, said out loud — without it a reply here
-    /// silently starts a separate Slack-side run in a different workspace,
-    /// which looks like the mirror answering and is not.
+    /// The header is posted once and read later, so a stale one is worse than
+    /// none. This wording described rung 2's world and survived into rung 4,
+    /// telling every reader their input went nowhere *after* it started
+    /// arriving — kept in place by a test asserting the stale sentence.
     ///
-    /// The wording must hold whether or not the connector is running, because
-    /// this cannot cheaply find that out: `flock` is not queryable without
-    /// attempting it, and attempting it could make the connector fail to
-    /// start. Saying something true in both worlds beats probing for a fact
-    /// and being wrong about it.
+    /// It still must not claim to know whether the connector is running:
+    /// `flock` is not queryable without attempting it, and attempting it could
+    /// make the connector fail to start. The dependency is named, not probed.
     #[test]
-    fn the_header_admits_what_this_rung_cannot_do_yet() {
+    fn the_header_describes_what_the_thread_can_actually_do() {
         let h = header((false, false), 0, None);
-        assert!(h.contains("Nothing typed here reaches this session"), "{h}");
-        assert!(h.contains("*separate* Slack run"), "{h}");
+        assert!(h.contains("reaches this session"), "{h}");
+        assert!(h.contains("files land in its workspace"), "{h}");
+        assert!(h.contains("stay at the terminal"), "{h}");
+        assert!(h.contains("mecha slack connect"), "{h}");
+        assert!(
+            !h.contains("Nothing typed here"),
+            "the stale rung-2 wording came back: {h}"
+        );
     }
 
     #[test]
@@ -830,11 +923,41 @@ mod tests {
     }
 
     /// Re-running `/remote-control lab` in the session that already holds it
-    /// is a question, not a collision.
+    /// is a question, not a collision — but only when it really is this
+    /// process.
     #[test]
-    fn my_own_name_is_not_a_collision_even_while_live() {
-        let mine = rec("lab", "s1", 4242);
+    fn my_own_live_record_is_not_a_collision() {
+        let mine = rec("lab", "s1", std::process::id());
         assert_eq!(decide(Some(&mine), "s1", ALIVE), Claim::AlreadyMine);
+    }
+
+    /// A session id is not unique to a process: `mecha tui --resume <id>` in
+    /// two terminals gives both the same one. Letting the second call the
+    /// record its own would put two processes on one thread, both streaming
+    /// into it and only one receiving inbound lines.
+    #[test]
+    fn a_second_process_resuming_the_same_session_is_refused_not_welcomed() {
+        let theirs = rec("lab", "s1", 4242);
+        assert_eq!(
+            decide(Some(&theirs), "s1", ALIVE),
+            Claim::Refused {
+                pid: 4242,
+                session_id: "s1".into()
+            }
+        );
+    }
+
+    /// After `/remote-control off` the record is cold, so picking the name
+    /// back up in the same session is a takeover of the thread rather than
+    /// "already attached", which was untrue and read as a no-op.
+    #[test]
+    fn re_attaching_after_detaching_reports_picking_the_thread_up() {
+        let mut mine = rec("lab", "s1", std::process::id());
+        mine.go_cold("detached from the terminal");
+        assert!(matches!(
+            decide(Some(&mine), "s1", ALIVE),
+            Claim::TakenOver { .. }
+        ));
     }
 
     /// A cold record whose pid happens to have been reused by an unrelated
@@ -1074,6 +1197,41 @@ mod tests {
             .put(&AttachRecord::new("lab", "s1", PathBuf::from("/w")))
             .unwrap();
         assert!(store.attached_thread("D1", "1755.0001").unwrap().is_none());
+    }
+
+    /// The reservation state exists so a failed attach cannot leave a thread
+    /// routing inbound lines into an inbox nothing consumes. Everything that
+    /// routes goes through `is_live`, so this is the assertion that carries it.
+    #[test]
+    fn a_reserved_name_does_not_route_anything_until_its_thread_is_confirmed() {
+        let mut r = AttachRecord::new("lab", "s1", PathBuf::from("/w"));
+        r.state = STATE_ATTACHING.to_string();
+        assert!(
+            !r.is_live(),
+            "an attach that never finished must not look attached"
+        );
+        r.state = STATE_LIVE.to_string();
+        assert!(r.is_live());
+    }
+
+    /// The routing lookup must fail closed. Answering "not attached" for a
+    /// store it could not read is the branch that starts a fresh run in
+    /// somebody's mirrored thread — the exact thing the guard exists to stop.
+    #[test]
+    fn an_unreadable_record_refuses_to_answer_rather_than_saying_not_attached() {
+        let root = scratch("failclosed");
+        let store = RemoteStore::open(&root).unwrap();
+        let mut r = AttachRecord::new("lab", "s1", PathBuf::from("/w"));
+        r.channel_id = Some("D1".into());
+        r.thread_ts = Some("1755.0001".into());
+        store.put(&r).unwrap();
+        assert!(store.attached_thread("D1", "1755.0001").unwrap().is_some());
+
+        std::fs::write(root.join("lab").join("record.json"), b"{ not json").unwrap();
+        assert!(
+            store.attached_thread("D1", "1755.0001").is_err(),
+            "a malformed record read as `not attached`"
+        );
     }
 
     #[test]

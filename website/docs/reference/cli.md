@@ -654,7 +654,7 @@ Driving mecha from Slack: the credential, the binding, and who may drive.
 `status` is the default subcommand.
 
 ```
-mecha slack [status|auth|link|threads|connect|sweep|notify|send|unlink] [ARGS]
+mecha slack [status|auth|link|threads|connect|sweep|notify|send|remote|unlink] [ARGS]
 ```
 
 | Subcommand | Flag | Description |
@@ -668,6 +668,7 @@ mecha slack [status|auth|link|threads|connect|sweep|notify|send|unlink] [ARGS]
 | `sweep` | | Mark threads whose run did not survive a restart, so none is left showing "working…" forever. |
 | `notify` | `--title <TEXT>` | Read stdin and send it to the owner as a DM. |
 | `send` | `<PATH>`, `--comment <TEXT>` | Upload a file to the owner's DM — a chart, a log, a screenshot. |
+| `remote` | `--sweep` | Named threads a TUI session is mirrored into. `--sweep` cools any whose session has gone. |
 | `unlink` | | Forget the binding. The tokens stay, so `link` can be run again. |
 
 `auth` reads the tokens from `MECHA_SLACK_BOT_TOKEN` (`xoxb-`) and
@@ -709,6 +710,8 @@ mecha slack status
 mecha slack threads --state awaiting_input
 echo "deploy finished" | mecha slack notify --title deploy
 mecha slack send results/accuracy.png --comment 'the run finished'
+mecha slack remote            # what this machine is mirroring
+mecha slack remote --sweep    # cool attachments whose session died
 ```
 
 See [Slack](/docs/features/slack).
