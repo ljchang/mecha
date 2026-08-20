@@ -10,6 +10,7 @@ use crate::message::{Effort, Message, Usage};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -525,6 +526,43 @@ impl Session {
 
         let meta = meta.with_context(|| format!("{} has no session header", path.display()))?;
         Ok((meta, Conversation::resumed(messages, taint)))
+    }
+
+    /// Every message the conversation ever contained, in first-seen order.
+    ///
+    /// `Message` records are the append-only common case. A `Rewrite` record is a
+    /// compaction (or eviction, or thinning) replacing the list in place — for
+    /// *loading* a session the replacement is the truth, but for a reader asking what the conversation ever held the whole
+    /// point is what the replacement dropped, so its messages are unioned in
+    /// rather than substituted: anything new (the summary, an edited result)
+    /// joins the corpus, anything already seen is skipped. Malformed lines are
+    /// skipped exactly as [`crate::session::Session::load`] skips them — a
+    /// truncated final line is the normal residue of a killed process.
+    pub fn messages_ever(transcript: &str) -> Vec<Message> {
+        let mut seen = HashSet::new();
+        let mut all = Vec::new();
+        let mut admit = |m: Message, all: &mut Vec<Message>| {
+            // Equality via the serialized form: `Message` is `PartialEq` but not
+            // `Hash`, and the serialization is already the file's own currency.
+            if let Ok(key) = serde_json::to_string(&m) {
+                if seen.insert(key) {
+                    all.push(m);
+                }
+            }
+        };
+        for line in transcript.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str::<Record>(line) {
+                Ok(Record::Message(m)) => admit(m, &mut all),
+                Ok(Record::Rewrite { messages }) => {
+                    for m in messages {
+                        admit(m, &mut all);
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!(error = %e, "skipping malformed transcript line"),
+            }
+        }
+        all
     }
 
     /// The taint checkpoints of a transcript, positioned against its messages.
