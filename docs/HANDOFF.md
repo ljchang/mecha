@@ -242,6 +242,15 @@ under `mecha-graph extract`, say — because a server that loads under contentio
 stays slow and never recovers. Check tok/s afterwards, not just that the unit
 came back up. Liveness is the check that cannot see this failure.
 
+**Two live config changes exist in no repository.** `~/.mecha/` is not a git
+repo, so `config.toml` is on one disk and in no history. As of 2026-08-20 it
+carries a `[[mcp]] name = "docs"` block running `~/.cargo/bin/mecha-docs`, and
+six `docs__*` names in `[outbox] tools` (`docs_create`, `docs_append`,
+`docs_replace`, `sheets_create`, `sheets_write`, `slides_create`) — verified
+live on the surface after the 0.1.9 install: writes staged, reads read-only,
+and `docs_trash` deliberately unrouted because it reaches nobody. A fresh clone
+plus a fresh `~/.mecha` would have the binary and none of this wiring.
+
 ### Standing machinery on this machine
 
 **Publishing a release changes nothing about a running system.** The installed
