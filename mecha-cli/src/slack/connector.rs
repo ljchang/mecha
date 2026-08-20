@@ -196,6 +196,7 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         slack,
         binding,
         threads,
+        remote: crate::slack::remote::RemoteStore::open_default()?,
         cfg,
         agent,
         my_user_id,
@@ -358,6 +359,11 @@ struct State {
     slack: Slack,
     binding: Binding,
     threads: ThreadStore,
+    /// Which threads mirror a terminal session. Held rather than opened per
+    /// message so the check is a directory scan and nothing else — but *read*
+    /// per message, never cached, because a session that attaches after this
+    /// process starts has to be recognised without restarting it.
+    remote: crate::slack::remote::RemoteStore,
     cfg: mecha_core::config::SlackConfig,
     agent: Arc<Agent>,
     my_user_id: String,
@@ -506,6 +512,72 @@ impl State {
             };
             let _ = chat::post_message(&self.slack, &channel, Some(&thread_ts), &reply, None).await;
             return;
+        }
+
+        // **A thread that mirrors a terminal session is not this process's to
+        // run.** Without this the next line would mint a thread record, start
+        // a fresh `Conversation` in a different workspace under a different
+        // permission mode, and answer — looking exactly like the mirror
+        // replying while knowing nothing about the conversation it appears to
+        // be part of. Not a leak, since that conversation is clean, taint and
+        // all; a stranger wearing the thread's clothes, which reads worse and
+        // is just as wrong to act on.
+        match self.remote.attached_thread(&channel, &thread_ts) {
+            Ok(Some(rec)) if rec.is_live() => {
+                let name = rec.name.clone();
+                if let Err(e) = self.remote.push_inbound(&name, &text) {
+                    // Fail loudly. A line that silently went nowhere is
+                    // indistinguishable from a session ignoring you, and the
+                    // person is on a phone with no way to tell which.
+                    let _ = chat::post_message(
+                        &self.slack,
+                        &channel,
+                        Some(&thread_ts),
+                        &format!("Could not hand that to `{name}`: {e:#}"),
+                        None,
+                    )
+                    .await;
+                }
+                return;
+            }
+            // The session that owned this thread has gone. Running something
+            // unrelated in its scrollback is what the branch above exists to
+            // prevent, so say what happened instead of quietly becoming a
+            // different feature.
+            Ok(Some(rec)) => {
+                let ended = rec
+                    .ended_reason
+                    .clone()
+                    .unwrap_or_else(|| "the session ended".to_string());
+                let _ = chat::post_message(
+                    &self.slack,
+                    &channel,
+                    Some(&thread_ts),
+                    &format!(
+                        "`{}` is not attached to a live session — {ended}. Run                          `/remote-control {}` in a terminal to pick this thread up again.",
+                        rec.name, rec.name
+                    ),
+                    None,
+                )
+                .await;
+                return;
+            }
+            Ok(None) => {}
+            // An unreadable store must not silently downgrade into "not
+            // attached", because that is the branch that starts a run.
+            // Refusing costs one message; guessing costs the confusion above.
+            Err(e) => {
+                tracing::warn!("could not read the remote store: {e:#}");
+                let _ = chat::post_message(
+                    &self.slack,
+                    &channel,
+                    Some(&thread_ts),
+                    "Could not tell whether this thread mirrors a terminal session, so                      nothing was started.",
+                    None,
+                )
+                .await;
+                return;
+            }
         }
 
         let record = match self
