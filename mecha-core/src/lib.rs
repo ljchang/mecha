@@ -73,6 +73,7 @@ pub mod runlog;
 pub mod sandbox;
 pub mod search;
 pub mod session;
+pub mod skill;
 pub mod subagent;
 pub mod tool;
 pub mod trigger;

@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Skills — procedures you write, that the agent loads when it needs them.**
+  `~/.mecha/skills/<name>/SKILL.md` in the Agent Skills format: YAML
+  frontmatter (`name`, `description`, optional `triggers` and `tools`) and a
+  markdown body. Progressive disclosure in three levels — name and description
+  in the system prompt at roughly a hundred tokens each, the body only when the
+  model calls `skill`, and a bundled file only when the procedure points at
+  one. That profile is the pressure valve for the learned-rule cap: a procedure
+  too long for a rule, too specific to be worth a slot, and irrelevant on
+  almost every run is exactly what this shape was built for.
+
+  The format is the standard's rather than ours because the procedures worth
+  writing are portable — the two `SKILL.md` files this repository already
+  carried, written for a different harness, load unmodified.
+
+  **A skill is user-authored and there is deliberately no way for it not to
+  be**: no install command, no registry, no remote body, nothing derived from a
+  session, and no project-layer store. That absence is the whole safety
+  argument — 36.8% of 3,984 published skills carry a security flaw and a cloned
+  repository is the delivery route — and it is why loading one arms no taint:
+  the body is the user's own words, like the system prompt. A project's
+  `mecha.toml` may narrow the set by name and structurally cannot widen it.
+
+  `mecha skills` lists what a run would carry and marks what config withheld;
+  `--no-skills` and `--skill <name>` narrow per run; a trigger names its skills
+  explicitly, where empty means none, because an unattended run's instruction
+  set must not grow every time an unrelated skill is written. `mecha eval`
+  forces them off, like MCP, hooks and learned rules.
+
+  Loading is a tool call rather than a shell `cat` so it passes the `pre_tool`
+  gate, lands in the trace, and works where `shell` is sandboxed or absent. A
+  skill's `tools` list narrows the surface while loaded — union across loaded
+  skills, never wider than the unrestricted surface, and enforced at **dispatch**
+  rather than only in the tool list, because a shortened list is advisory to a
+  model that remembers a tool from three turns ago. A loaded skill crosses a
+  compaction verbatim, since a paraphrased procedure is a different procedure.
+
+
 ## [0.1.7] - 2026-08-19
 
 Two releases in one day, and they rhyme. mecha got a writable seat at the

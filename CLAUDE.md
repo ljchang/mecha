@@ -54,6 +54,7 @@ search.rs    web_search: a chain of backends, first to answer wins
 agent.rs     the loop: ask → run tools → feed results back → repeat
 cache_lens.rs  per-run observer: is the cached prefix actually being reused?
 subagent.rs  a profile-narrowed child agent, exposed to the parent as a tool
+skill.rs     user-authored procedures: the store, and the level-1 prompt block
 hooks.rs     user commands at lifecycle points; pre_tool can deny a call
 outbox.rs    the store behind staged sends and publishes
 mailbox.rs   inter-agent messages between sessions; taint travels with them
@@ -673,6 +674,112 @@ there describes an edit that never happened. And no local index of picked ids
 exists: a listing under `drive.file` returns exactly the in-scope files, so
 Google is the record and a second copy could only drift.
 
+
+## Skills
+
+`~/.mecha/skills/<name>/SKILL.md` is a procedure the **user** wrote, that the
+model loads when it decides one is relevant. The format is the Agent Skills
+standard — YAML frontmatter (`name`, `description`, optional `triggers` and
+`tools`), then markdown — because the procedures worth writing are portable and
+this repo already carried two of them, written for the other side of it.
+`docs/SKILLS-RESEARCH.md` is the survey behind it.
+
+Progressive disclosure is the point: **level 1** is name + description in the
+system prompt (~100 tokens each), **level 2** is the body, arriving only when
+the model calls `skill`, and **level 3** is a bundled file, costing nothing
+until the procedure points at one. That is what makes skills the pressure valve
+for `MAX_ACTIVE_RULES_PER_DOMAIN` — a *how to answer a rec-letter request*
+procedure is too long for a rule, too specific to be worth a slot, and
+irrelevant on almost every run. Skills do not loosen the cap; they make it
+affordable.
+
+**A skill is user-authored, and there is deliberately no way for it not to be.**
+No `mecha skill install`, no registry client, no remote body, nothing derived
+from a session, and no way for a model to write one. That absence is the whole
+safety argument, and it is why loading a skill **arms no taint**: the body is
+the user's own words, exactly like the system prompt, and marking it untrusted
+would be the same category error as labelling a harness refusal third-party
+content. The evidence for the absence: Snyk found 36.8% of 3,984 published
+skills carrying a security flaw and 76 confirmed malicious payloads, and
+Datadog's finding is the sharper one — *a cloned repository can bring skills
+into a trusted session even if the developer never installed one from a
+marketplace*. Which is exactly the `[[trigger]]` rule, so it gets the same
+answer: **the store is global only, and there is nowhere in a project's
+`mecha.toml` to put a skill.**
+
+Decisions, each a bug if undone:
+
+- **Loading is a tool call, not a `cat`.** `shell` may be sandboxed or absent,
+  so a loader built on it breaks in the configurations that were locked down on
+  purpose; a tool call passes the `pre_tool` gate, so a policy hook can decide
+  which skills load; and it lands in the trace, where an eval case can assert
+  on it. A silent context injection is what Datadog named as defeating every
+  downstream defence.
+- **Level 3 is served by the tool, never by `fs_read`.** A skill lives in
+  `~/.mecha/skills/`, *outside the run's workspace*, so the path jail refuses
+  it — correctly. The first cut told the model to read bundled files with the
+  ordinary file tools, which produced a call that could not succeed; found by
+  running it, not by reading the code. `skill(name, file:)` serves them, with
+  containment proved against the skill's own directory, because `file` is the
+  one argument here a model can point at a filesystem.
+- **`tools:` narrows, never widens.** A skill declaring a tool list restricts
+  the surface while loaded, through `Tool::narrows_surface_to` — the third
+  method in the family with `carried_state` and `fixed_workspace`, so the loop
+  learns that *some* tool may narrow and never that skills exist. Composition
+  is the **union** across loaded skills: each names what its own procedure
+  needs, intersecting would strand a run that loaded two, and a union of
+  subsets is still a subset. The tool doing the narrowing always stays
+  reachable, or the first `skill` call would eat its own mechanism.
+- **The restriction gates dispatch, not just the spec list.** `Registry::available`
+  is what the loop resolves a call through; `get` stays a plain lookup. A
+  shortened tool list alone is advisory, and measurably so — a real run
+  reasoned *"let me just try calling it"* about a tool that had been narrowed
+  away.
+- **A loaded skill crosses a compaction verbatim**, via `carried_state`. A
+  summariser preserves what is true and drops how far you got, and for a
+  procedure it does something worse: a paraphrased procedure is a *different*
+  procedure, and the steps would survive as a plausible gist with the specifics
+  gone.
+- **Sorted order, always.** The level-1 block is inside the cached prefix, so
+  filesystem order is not an order — the same reason the registry is a
+  `BTreeMap`. Enabling or disabling a skill re-pays the prefix for that
+  session, which is why nothing may toggle skills per turn.
+- **A project layer may narrow and never widen**, and that is enforced rather
+  than asked for: `enabled` **intersects** with what is already selected,
+  `disabled` **unions**, and `dir` from a project layer is dropped loudly.
+  `--skill` narrows the same way.
+- **A trigger names its skills, and empty means none** — the opposite default
+  from its `tools` allowlist, on purpose. An unattended run has nobody to ask,
+  so "what does this run actually do" has to be answerable from the trigger
+  file; otherwise a scheduled run's instruction set would grow every time the
+  user wrote an unrelated skill. `trigger show` prints the line even when
+  empty, like the resolved workspace.
+- **`mecha eval` forces skills off**, like MCP, hooks, learned rules, the
+  outbox and fallback. A skill is whatever its author typed, so a case run on a
+  machine holding one grades the procedure as much as the model.
+
+The front door's extractor gets none by construction — it is issued a request
+with an empty tool list and `system: None`, so there is nothing to reach and no
+block to read. Worth stating so it is not "fixed" later.
+
+`mecha skills` is the `mecha tools`-shaped answer to "what does this agent know
+how to do": it builds no provider, marks withheld skills rather than omitting
+them, and exits non-zero when a `SKILL.md` failed to parse. A skill that fails
+to load is reported at startup by name and reason, because a silent one looks
+exactly like a skill the model chose not to use — the unrouted-domain shape.
+
+**The YAML dependency was chosen against the obvious answers.** `serde_yaml` is
+archived, `serde_yml` ships as a shim announcing its own unmaintenance and
+carries RUSTSEC-2025-0068, and `serde_norway`/`serde_yaml_ng` are stale forks.
+The YAML organisation's own `yaml-serde` is alive but pulls `libyaml-rs`, a C
+FFI binding — the wrong direction for the one parser here that reads
+third-party-authored files. `serde-saphyr` is stable at 1.x, depends on
+`serde_core` and nothing else, is explicitly designed not to panic on malformed
+input, and refuses tag-driven object instantiation. A panic here takes down
+every run, since skills load before the agent does. Unknown frontmatter keys
+are **ignored** so a skill written for another harness still loads; a known key
+with the wrong type is refused, because that is an authoring mistake rather
+than a portability one.
 
 ## mecha-slack
 

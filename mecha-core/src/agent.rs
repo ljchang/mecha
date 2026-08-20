@@ -2101,15 +2101,33 @@ impl Agent {
                 }
             }
 
-            let Some(tool) = self.registry.get(name) else {
-                let content = format!(
-                    "no tool named `{name}`. Available: {}",
-                    self.registry
-                        .iter()
-                        .map(|t| t.name())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
+            // `available`, not `get`: a tool the active restriction excludes is
+            // genuinely out of reach rather than merely absent from the spec
+            // list, or narrowing would be advisory the moment a model named a
+            // tool it remembered from three turns ago.
+            let Some(tool) = self.registry.available(name) else {
+                // Two different answers wearing one shape. A tool that is
+                // registered but outside the active restriction was *withheld
+                // by policy*; one that was never registered is a name the
+                // model invented. Recording both as `unknown` counts the
+                // harness working as an environment failure, and
+                // `RunStats::merge` reads `unknown || (is_error && !denied)`
+                // into the tool-error rate that `doctor` thresholds at 25% and
+                // the candidate gate scores against — the same mistake as
+                // `"Blocked by a hook:"` being mined as a user correction.
+                let withheld = self.registry.get(name).is_some();
+                let content = if withheld {
+                    format!(
+                        "Blocked by policy: `{name}` is withheld by an active restriction \
+                         for this run. Available: {}",
+                        self.registry.available_names().join(", ")
+                    )
+                } else {
+                    format!(
+                        "no tool named `{name}`. Available: {}",
+                        self.registry.available_names().join(", ")
+                    )
+                };
                 emit(
                     events,
                     AgentEvent::ToolResult {
@@ -2128,8 +2146,8 @@ impl Agent {
                     name: name.clone(),
                     input: input.clone(),
                     is_error: true,
-                    denied: false,
-                    unknown: true,
+                    denied: withheld,
+                    unknown: !withheld,
                     staged: false,
                 });
                 continue;
@@ -2767,6 +2785,81 @@ mod tests {
         let seen = provider.seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[1].messages.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_tool_withheld_by_a_restriction_is_a_denial_and_not_an_environment_error() {
+        // The counters read `unknown || (is_error && !denied)` as a tool
+        // *error* — the rate doctor thresholds at 25% and the candidate gate
+        // scores against. Recording harness policy there would count the
+        // harness working as the environment failing, which is the
+        // `"Blocked by a hook:"` mistake in a new costume.
+        struct Gate;
+        #[async_trait]
+        impl Tool for Gate {
+            fn name(&self) -> &str {
+                "gate"
+            }
+            fn description(&self) -> &str {
+                "narrows"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn narrows_surface_to(&self) -> Option<Vec<String>> {
+                Some(vec!["gate".into()])
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok(""))
+            }
+        }
+
+        let (agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        // Registered, but outside the restriction `gate` sets.
+                        name: "echo".into(),
+                        input: json!({"text": "hi"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("ok")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(EchoTool), Arc::new(Gate)],
+            PermissionMode::Allow,
+        );
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        let call = outcome
+            .tool_calls
+            .iter()
+            .find(|c| c.name == "echo")
+            .expect("the call was attempted");
+        assert!(call.denied, "withheld by policy, so it is a denial");
+        assert!(
+            !call.unknown,
+            "and not an invented name — `echo` is registered, just out of reach"
+        );
+
+        let mut stats = crate::session::RunStats::default();
+        stats.absorb(&outcome);
+        assert_eq!(stats.tool_errors, 0, "the environment did not fail");
+        assert_eq!(stats.tool_denied, 1);
+
+        match &convo.messages[2].content[0] {
+            Block::ToolResult { content, .. } => assert!(
+                content.starts_with("Blocked by policy:"),
+                "the prefix compaction and the miner key on: {content}"
+            ),
+            other => panic!("expected a tool result, got {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -157,6 +157,15 @@ pub struct AddArgs {
     /// Create it switched off.
     #[arg(long)]
     pub disabled: bool,
+    /// A skill this run may load (repeatable).
+    ///
+    /// Named explicitly because an unattended run has nobody to ask: without
+    /// this the effective instruction set of a scheduled run would grow every
+    /// time an unrelated skill was written. Omit for a trigger that needs
+    /// none, which is most of them.
+    #[arg(long = "skill")]
+    pub skills: Vec<String>,
+
     /// Overwrite an existing trigger of the same name.
     #[arg(long)]
     pub force: bool,
@@ -305,6 +314,17 @@ fn show(name: &str, last: bool) -> Result<()> {
     }
     println!("  catch up    {}", t.catch_up);
     println!("  permission  {:?}", t.permission_mode);
+    // Printed even when empty, on the same rule as the resolved workspace
+    // below: "what does this run actually carry" must not be answered by a
+    // line that is not there.
+    println!(
+        "  skills      {}",
+        if t.skills.is_empty() {
+            "none".to_string()
+        } else {
+            t.skills.join(", ")
+        }
+    );
     println!(
         "  timeout     {}",
         mecha_core::trigger::render_duration(t.timeout_duration())
@@ -489,6 +509,7 @@ fn add(global: &GlobalOpts, a: AddArgs) -> Result<()> {
     let mut t = Trigger::new(&a.name, schedule, prompt);
 
     t.description = a.description;
+    t.skills = a.skills.clone();
     // Resolve the zone *now* and write it down. Leaving it implicit would mean
     // a later edit to `[agent] timezone` silently moves every trigger, and "the
     // briefing arrived at the wrong time" is the hardest kind of bug to notice.
@@ -856,6 +877,11 @@ async fn run_agent(
         max_output_tokens: t.max_output_tokens,
         max_cost: t.max_cost_usd,
         tools: t.tools.clone(),
+        // Default closed: a scheduled run carries only the skills its file
+        // names. See `Trigger::skills` for why this is the opposite of the
+        // `tools` allowlist directly above it.
+        skills: t.skills.clone(),
+        no_skills: t.skills.is_empty(),
         no_mcp: t.no_mcp,
         global_config_only: true,
         ..GlobalOpts::default()

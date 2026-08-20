@@ -47,6 +47,36 @@ pub struct Config {
     /// Inter-agent messages between mecha sessions on this machine. See
     /// [`crate::mailbox`].
     pub messages: MessagesConfig,
+    /// Which of `~/.mecha/skills/` a run carries. See [`crate::skill`].
+    pub skills: SkillsConfig,
+}
+
+/// Which skills a run carries.
+///
+/// **There is no way to author a skill here, and that absence is the whole
+/// design.** A skill body only ever comes from `~/.mecha/skills/`, which the
+/// user writes by hand; config names skills, and naming is not authoring. The
+/// threat this forecloses is the one Datadog named — *a cloned repository can
+/// bring skills into a trusted session even if the developer never installed
+/// one from a marketplace* — and it is foreclosed the same way it is for
+/// `[[trigger]]`: by there being nowhere to put one.
+///
+/// A project's `mecha.toml` may still narrow the set, because narrowing is
+/// always safe and a repository saying "these three are the relevant ones" is
+/// useful. It may never widen it: see [`SkillsLayer`] for how that is
+/// enforced rather than asked for.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SkillsConfig {
+    /// Skills to carry. Empty means every skill in the store.
+    pub enabled: Vec<String>,
+    /// Skills to withhold, applied after `enabled` so it wins.
+    pub disabled: Vec<String>,
+    /// Where the store lives. Defaults to `~/.mecha/skills`.
+    ///
+    /// Global-file only — a project layer naming its own directory would be
+    /// the authoring hole this type exists to close, wearing a different hat.
+    pub dir: Option<PathBuf>,
 }
 
 /// Messaging between this machine's own mecha sessions.
@@ -236,6 +266,7 @@ impl Default for Config {
             agent: AgentConfig::default(),
             tools: ToolsConfig::default(),
             security: SecurityConfig::default(),
+            skills: SkillsConfig::default(),
             sandbox: crate::sandbox::SandboxConfig::default(),
             mcp: Vec::new(),
             subagents: Vec::new(),
@@ -792,6 +823,48 @@ impl Config {
                 path.display()
             );
         }
+        // `[skills]` from a project layer may only ever *narrow*, and that is
+        // enforced here rather than asked for. `dir` is dropped outright — a
+        // project naming its own skill directory is the authoring hole
+        // `SkillsConfig` exists to close, wearing a different hat — and
+        // `enabled` is intersected with what is already selected rather than
+        // replacing it, so a repository cannot turn on a skill the user did
+        // not. `disabled` is left alone: withholding is always safe.
+        if trust == LayerTrust::Project {
+            if let Some(skills) = layer.skills.as_mut() {
+                if skills.dir.take().is_some() {
+                    tracing::warn!(
+                        "[skills] dir in {} is ignored — the skill store loads from the \
+                         global config only",
+                        path.display()
+                    );
+                }
+                if let Some(wanted) = skills.enabled.as_mut() {
+                    let already = &self.skills.enabled;
+                    if !already.is_empty() {
+                        wanted.retain(|name| already.contains(name));
+                    }
+                    // An empty global list means "everything", so a project
+                    // list stands as written — still a narrowing, since the
+                    // baseline was the whole store.
+                }
+                // `disabled` unions, and the union has to happen *here*
+                // rather than being left to `apply`, which assigns. A project
+                // shipping `disabled = []` would otherwise wipe the user's
+                // global list and carry the very skill they withheld —
+                // widening by writing an empty list, which is the exact hole
+                // this layer exists to close. Folding the global list into
+                // the project's makes the later assignment a union by
+                // construction.
+                if let Some(withheld) = skills.disabled.as_mut() {
+                    for name in &self.skills.disabled {
+                        if !withheld.contains(name) {
+                            withheld.push(name.clone());
+                        }
+                    }
+                }
+            }
+        }
         layer.apply(self);
         Ok(())
     }
@@ -869,6 +942,31 @@ struct ConfigLayer {
     work: Option<WorkLayer>,
     slack: Option<SlackLayer>,
     messages: Option<MessagesLayer>,
+    skills: Option<SkillsLayer>,
+}
+
+/// A layer's opinion about which skills to carry.
+///
+/// The merge is **narrowing-only, structurally**, which is why this cannot be
+/// the usual "later layer wins" assignment:
+///
+/// - `enabled` **intersects** with what is already selected. A project asking
+///   for a skill the global layer did not enable gets nothing, so the list can
+///   only ever shrink.
+/// - `disabled` **unions**. Withholding is always allowed.
+///
+/// The alternative — assignment, with a note asking project files not to
+/// widen — is the shape this repository refuses everywhere else: a rule that
+/// holds until the first person in a hurry. Note that the global layer is
+/// where an intersection starts from nothing, so it assigns rather than
+/// intersects; the distinction is [`LayerTrust`], applied in
+/// [`Config::merge_file`].
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillsLayer {
+    enabled: Option<Vec<String>>,
+    disabled: Option<Vec<String>>,
+    dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1127,6 +1225,21 @@ impl ConfigLayer {
                 cfg.work.keep = v;
             }
         }
+        // Assignment here is the *global* layer's semantics. A project layer
+        // never reaches this with a widening list, because `merge_file`
+        // narrows it first — see [`SkillsLayer`].
+        if let Some(x) = self.skills {
+            let t = &mut cfg.skills;
+            if let Some(v) = x.enabled {
+                t.enabled = v;
+            }
+            if let Some(v) = x.disabled {
+                t.disabled = v;
+            }
+            if x.dir.is_some() {
+                t.dir = x.dir;
+            }
+        }
         // Only ever reached from the global layer, like `[messages]`.
         if let Some(x) = self.slack {
             let t = &mut cfg.slack;
@@ -1354,6 +1467,87 @@ mod tests {
         assert_eq!(from_global.slack.max_turns, 999);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_project_layer_cannot_un_withhold_a_skill_with_an_empty_list() {
+        // The narrowest form of the widening attack, and the one the first
+        // version of this code allowed: `disabled = []` is a *present* empty
+        // value, so an assigning merge replaces the user's list with nothing
+        // and the withheld skill is carried. Writing no `[skills]` table at
+        // all is the honest way to have no opinion.
+        let dir = std::env::temp_dir().join(format!("mecha-skills-wipe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("project.toml");
+        std::fs::write(&project, "[skills]\ndisabled = []\n").unwrap();
+
+        let mut cfg = Config::default();
+        cfg.skills.disabled = vec!["dangerous".into()];
+        cfg.merge_file(&project, LayerTrust::Project).unwrap();
+        assert_eq!(
+            cfg.skills.disabled,
+            vec!["dangerous".to_string()],
+            "an empty project list must not clear the user's"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_layer_can_narrow_the_skill_set_but_never_widen_it() {
+        // The rule that lets `[skills]` be project-declarable at all. A cloned
+        // repository saying "these are the relevant ones" is useful; one
+        // turning on a skill the user did not enable is the supply-chain shape
+        // this whole subsystem is arranged to refuse, so the merge enforces
+        // the direction rather than documenting it.
+        let dir = std::env::temp_dir().join(format!("mecha-skills-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("project.toml");
+        std::fs::write(
+            &project,
+            "[skills]\nenabled = [\"audit\", \"deploy\"]\ndisabled = [\"brief\"]\ndir = \"/tmp/theirs\"\n",
+        )
+        .unwrap();
+
+        // Global enabled `audit` and `brief`. The project asks for `audit`
+        // and `deploy`; only the intersection survives.
+        let mut cfg = Config::default();
+        cfg.skills.enabled = vec!["audit".into(), "brief".into()];
+        // Non-empty on purpose: with an empty global list an overwrite and a
+        // union are indistinguishable, which is how the first version of this
+        // test passed while a project file could still wipe the list.
+        cfg.skills.disabled = vec!["dangerous".into()];
+        cfg.merge_file(&project, LayerTrust::Project).unwrap();
+        assert_eq!(
+            cfg.skills.enabled,
+            vec!["audit".to_string()],
+            "`deploy` was never enabled globally, so naming it must not enable it"
+        );
+        assert!(
+            cfg.skills.disabled.contains(&"brief".to_string()),
+            "withholding is always allowed"
+        );
+        assert!(
+            cfg.skills.disabled.contains(&"dangerous".to_string()),
+            "a project file must not be able to un-withhold what the user withheld"
+        );
+        assert!(
+            cfg.skills.dir.is_none(),
+            "a project must not point the store somewhere it controls"
+        );
+
+        // And the global layer is authoritative, so the same file read as
+        // global does assign — otherwise this would be a broken apply rather
+        // than a narrowing.
+        let mut global = Config::default();
+        global.merge_file(&project, LayerTrust::Global).unwrap();
+        assert_eq!(
+            global.skills.enabled,
+            vec!["audit".to_string(), "deploy".to_string()]
+        );
+        assert_eq!(global.skills.dir.as_deref(), Some(Path::new("/tmp/theirs")));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -339,6 +339,13 @@ async fn build_agent(
         // limitation, written down rather than papered over; closing it means
         // an agent per thread, which means an MCP startup per thread.
         workspace: Some(producer_root()?),
+        // No skills, for the reason `ask_user` is absent and `recall` is
+        // absent: the registry belongs to the agent and one agent serves every
+        // thread, so a `skill` shared across them is shared *state*. Loading
+        // one in thread A would narrow thread B's tool surface and splice A's
+        // procedure into B's compaction. Per-thread skills means an agent per
+        // thread, which is the same trade as per-thread MCP isolation above.
+        no_skills: true,
         ..GlobalOpts::default()
     };
     // Not interactive: no terminal approver, and no `ask_user` — the registry

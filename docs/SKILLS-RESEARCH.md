@@ -7,6 +7,50 @@ survey behind adding a skill mechanism to mecha, written before the design.*
 
 ---
 
+## Status — built 2026-08-19
+
+**This survey has been implemented.** `mecha-core/src/skill.rs` is the store,
+`mecha-core/src/tool/skill.rs` is the `skill` tool, `[skills]` is the config,
+`mecha skills` is the inspector, and `CLAUDE.md` § *Skills* is the maintained
+record. §7's six rules all hold and have tests named on them.
+
+How §8's open questions were answered:
+
+1. **Does a loaded skill survive compaction?** Yes, via `Tool::carried_state`,
+   reproduced verbatim after the summary — the leaning, taken.
+2. **Can a skill be loaded in an unattended run?** Only ones the trigger file
+   names, and **empty means none** — the opposite default from the `tools`
+   allowlist beside it.
+3. **Does the front door's extractor get skills?** No, by construction: it is
+   issued a request with an empty tool list and `system: None`.
+4. **Do skills appear in `mecha tools --json`?** No — `mecha skills` is the
+   command, in `mecha tools`' shape.
+5. **Eval.** Forced off, like MCP, hooks, learned rules, the outbox and
+   fallback. There is deliberately no `--with-skills` arm yet: nothing asks the
+   question, and a flag whose arm nobody runs is an untested claim about
+   comparability.
+
+Two things this survey did not anticipate, both found by running it:
+
+- **Level 3 cannot go through `fs_read`.** A skill lives outside the run's
+  workspace, so the path jail refuses it — correctly. Bundled files are served
+  by the tool instead (`skill(name, file:)`), with containment proved against
+  the skill's own directory.
+- **A `tools:` narrowing has to gate dispatch, not just the spec list.** A
+  shortened tool list is advisory to a model that remembers a tool from three
+  turns ago; a real run, having lost `fs_write` to a narrowing, reasoned *"let
+  me just try calling it"*. `Registry::available` is the gate; `get` stayed a
+  plain lookup.
+
+The YAML dependency was chosen against the obvious answers, which are all dead:
+`serde_yaml` is archived, `serde_yml` carries RUSTSEC-2025-0068 and ships as a
+shim announcing its own unmaintenance, `serde_norway`/`serde_yaml_ng` are stale
+forks, and the YAML organisation's `yaml-serde` pulls a C FFI binding.
+`serde-saphyr` is stable at 1.x, depends only on `serde_core`, is designed not
+to panic on malformed input, and refuses tag-driven object instantiation.
+
+---
+
 ## 0. The short answer
 
 **Take the format, refuse the ecosystem.**
