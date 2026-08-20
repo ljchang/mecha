@@ -154,6 +154,42 @@ recorded bug). Empty by default: strict beats silently answering with a
 different model. `mecha eval` forces `--no-fallback`, like MCP, hooks and the
 outbox, because a scorecard grades the model it names.
 
+## The local model server
+
+**`docs/LLAMA-SERVER.md` is the reference** — slot geometry, the KV arithmetic,
+the measured `-np` table, the request contract, and what each flag cost to
+learn. `scripts/start-moe-mtp.sh` is the authority on the flags themselves.
+Read the doc before changing anything there; most of its content exists because
+something had already gone wrong.
+
+The parts that bite hardest:
+
+- **`-c` is divided across slots**, so `context_window` must equal `-c / -np`,
+  not `-c`. Confirm from the startup line (`n_ctx_slot = …`), not by arithmetic.
+- **Two servers, one model each** — :8080 chat, :8081 embeddings. llama-server
+  holds one model per process, so pointing both at one port sends embedding
+  requests to the chat model.
+- **`max_tokens` must sit comfortably above `--reasoning-budget`**, or the
+  thinking block eats the allowance and the reply is HTTP 200 with an empty
+  `content`. Any client here refuses that by name rather than treating it as an
+  answer.
+- **Ask what is served (`GET /props` → `model_alias`), don't assert it.**
+  llama-server ignores the request's `model` field, so naming one is not
+  selecting it — only deciding what gets recorded.
+- **Throughput is wall clock.** The server times a request only while it is
+  running, so summing its per-request rates hides queue wait and reads ~4× at
+  `-np 1`, on the one configuration that cannot run anything concurrently.
+- **Slot affinity needs its own test** (`scripts/affinity-test.py`). A
+  throughput benchmark sends independent prompts, which is the workload with no
+  prefix to lose, so it is structurally blind to the regression
+  `--cache-idle-slots` caused. The metric is `prompt eval time = … / N tokens`
+  staying small across turns, not tok/s.
+
+The model is **hybrid attention** — 11 of 41 layers hold a KV cache, the other
+30 carry a constant-size recurrent state — which is why long context is cheap
+here (63 tok/s at 108k against 92 at 1k) and why the KV cost is 22 KiB/token
+rather than the 82 the naive per-layer arithmetic predicts.
+
 ## Security model
 
 **The full trifecta map lives in `docs/TRIFECTA.md`** — the four ways a
@@ -1521,9 +1557,12 @@ Three rules, each load-bearing:
 ## Context, and knowing how much is left
 
 `[providers.X] context_window` is what the model's context holds — for a
-local server, the `-c` it was started with. Nothing can discover it: a
-provider reports what a prompt *cost*, never what is left. Four things
-depend on it, and without it all four degrade silently:
+local server, **`-c` divided by `-np`**, because `-c` is the budget across all
+slots and llama-server splits it evenly. It was the same number as `-c` until
+`-np` moved off 1 on 2026-08-20, which is exactly what makes it easy to write
+down wrong. Nothing can discover it: a provider reports what a prompt *cost*,
+never what is left. Four things depend on it, and without it all four degrade
+silently:
 
 - **`AgentConfig::compact_at`** derives a compaction threshold (two thirds of
   the window) when `compact_at_tokens` is unset, which turns compaction from
