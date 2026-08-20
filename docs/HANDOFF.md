@@ -172,7 +172,16 @@ A working agent harness, used and measured rather than just compiled.
 ## Environment as left
 
 > **This checkout is a live service's `ExecStart`. Do not `git stash`, `git
-> checkout --` or `git restore` `scripts/start-moe-mtp.sh`.**
+> checkout --`, `git restore` — or `git checkout <branch>`.**
+> As of 2026-08-20 the clone is parked on **`llama-server-arc`**, deliberately,
+> because that branch holds the parameterised script the running unit executes.
+> `git checkout main` is therefore the dangerous gesture rather than the tidy
+> one: `main` still carries the old hardcoded `-c 262144 -np 1`, so the routine
+> cleanup reflex is what reverts the server. **Work on `main` from a separate
+> worktree instead** — which is the correct application of the worktree advice,
+> not a contradiction of it: the arc that owns the service-referenced path is
+> the one that must stay put, and everyone else moves. That is how the three
+> docs commits above `d72e82d` were made.
 > `~/.config/systemd/user/llama-local.service` names
 > `/home/ljchang/Github/mecha/scripts/start-moe-mtp.sh` literally, and the unit
 > is active (verified 2026-08-20, started 15:30 UTC). The working copy is
@@ -724,10 +733,33 @@ What is genuinely unbuilt, and deliberately so until step 3 answers:
   **This is somebody else's live arc**, uncommitted as of `cfa2cc2`
   (`CLAUDE.md`, `scripts/start-moe-mtp.sh`, and a new `docs/LLAMA-SERVER.md`
   that is not yet in git), and it already carries the correction. What is left
-  for whoever lands it: refresh the Environment row above, and decide whether
-  anything should *check* the relationship rather than restate it — a startup
-  warning when `context_window` disagrees with `/props` would end this class,
-  the same way `unrouted_domains` warns rather than failing quietly.
+  for whoever lands it: refresh the Environment row above, and build the check
+  below.
+
+- **Nothing verifies `context_window`, and two sessions have already believed
+  something did.** This is the unbuilt half of the item above, split out
+  because it kept being read as done: `git grep -nEi
+  'n_ctx_slot|total_slots|/props' -- '*.rs'` returns nothing on `main` as of
+  `d72e82d`. The argument for it lives in HISTORY under Environment, and
+  putting it there was the mistake — a proposal filed under completed work is
+  indistinguishable from completed work, and within an hour one session had
+  stood down from the area to avoid duplicating a feature that does not exist.
+  **The shape**, which is not novel because this project already has it:
+  `Sandbox::preflight` runs a real command through the real backend at startup
+  rather than trusting what config claims, on the reasoning that a configured
+  sandbox which does not work is worse than none — the tool's declared
+  capabilities narrow and the interlock believes it. `context_window` is the
+  same bargain one layer up: `compact_at`, `resolved_output_budget`, the fuel
+  gauge and overflow recovery all narrow around a number nothing checks.
+  **`/props` is the `preflight` of this fact** — one request, reporting
+  `total_slots` and the real per-slot `n_ctx`, so the check never
+  reimplements llama-server's slot arithmetic. **Warn, do not refuse**
+  (`unrouted_domains`' precedent, not `preflight`'s): a wrong `context_window`
+  makes a run compact at the wrong moment, which is not a reason to refuse to
+  start, where an unconfined `shell` believed to be confined is. Scope: the
+  OpenAI-compatible backend only — `/props` is a llama-server endpoint, and a
+  provider that does not answer it must be silent rather than warning, or the
+  check becomes noise on every Anthropic run.
 
 - **Decide whether replayed reasoning stays unbounded.** As of 0.1.2 the
   OpenAI-compatible backend sends every `Block::Thinking` back, which is what
