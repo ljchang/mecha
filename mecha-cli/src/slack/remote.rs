@@ -139,6 +139,11 @@ pub enum Claim {
 /// Pure, with liveness injected, so every branch is testable without spawning
 /// a process — including the one that matters most, which is a dead holder
 /// being taken over rather than blocking the name forever.
+/// Whether a record claims its name — reserved counts, cold does not.
+fn held(rec: &AttachRecord) -> bool {
+    rec.state == STATE_LIVE || rec.state == STATE_ATTACHING
+}
+
 pub fn decide(
     existing: Option<&AttachRecord>,
     my_session: &str,
@@ -152,7 +157,13 @@ pub fn decide(
     // one, and letting the second call the record its own would put two
     // processes on one thread, both streaming into it and only one receiving.
     // Only *this* process may claim a live record.
-    if rec.state == STATE_LIVE && alive(rec.pid) && rec.pid != std::process::id() {
+    // `attaching` counts as held, or the reservation reserves nothing: two
+    // terminals starting the same fresh name inside one attach round trip
+    // would both see a takeable record, open two threads, and race to write
+    // `record.json`. The loser then streams into a thread no record names —
+    // so anything typed there falls through to the connector, which starts an
+    // unrelated run in it. The exact failure the guard exists to prevent.
+    if held(rec) && alive(rec.pid) && rec.pid != std::process::id() {
         return Claim::Refused {
             pid: rec.pid,
             session_id: rec.session_id.clone(),
@@ -318,10 +329,19 @@ impl RemoteStore {
             Err(e) => return Err(e).context("reading the remote store"),
         };
         for entry in entries {
-            let path = entry
-                .context("reading the remote store")?
-                .path()
-                .join("record.json");
+            let dir = entry.context("reading the remote store")?.path();
+            // A name is a directory. Anything else in here — a `.DS_Store`, an
+            // editor backup, a file someone dropped — is not a record and must
+            // not be read as one: `read_to_string("<file>/record.json")` fails
+            // with `ENOTDIR`, which is not `NotFound`, so failing closed on it
+            // would answer *every* owner message with "could not tell" and
+            // take the whole remote control down until somebody found the
+            // stray file. Fail closed on a record that is unreadable, not on a
+            // thing that was never a record.
+            if !dir.is_dir() {
+                continue;
+            }
+            let path = dir.join("record.json");
             let text = match std::fs::read_to_string(&path) {
                 Ok(text) => text,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -494,7 +514,10 @@ impl RemoteStore {
     pub fn sweep(&self) -> Result<Vec<AttachRecord>> {
         let mut swept = Vec::new();
         for mut rec in self.list()? {
-            if rec.state == STATE_LIVE && !mecha_core::process_alive(rec.pid) {
+            // Reserved-and-dead counts too: a TUI killed between claiming a
+            // name and posting its header leaves `attaching` behind, and the
+            // verb promises to cool "any attachment whose session has gone".
+            if held(&rec) && !mecha_core::process_alive(rec.pid) {
                 rec.go_cold("the terminal session ended without detaching");
                 self.put(&rec)?;
                 swept.push(rec);
@@ -1231,6 +1254,73 @@ mod tests {
         );
         r.state = STATE_LIVE.to_string();
         assert!(r.is_live());
+    }
+
+    /// The reservation has to actually reserve. Two terminals starting the
+    /// same fresh name inside one attach round trip would otherwise both see a
+    /// takeable record, open two threads, and race to write `record.json` —
+    /// leaving the loser streaming into a thread no record names, which the
+    /// connector then treats as unattached.
+    #[test]
+    fn a_name_being_attached_by_another_live_process_is_not_takeable() {
+        let mut reserving = rec("lab", "s1", 4242);
+        reserving.state = STATE_ATTACHING.to_string();
+        assert_eq!(
+            decide(Some(&reserving), "s2", ALIVE),
+            Claim::Refused {
+                pid: 4242,
+                session_id: "s1".into()
+            }
+        );
+        // But a reservation whose process died is takeable, or a crash mid
+        // attach would burn the name until someone deleted the file.
+        assert!(matches!(
+            decide(Some(&reserving), "s2", DEAD),
+            Claim::TakenOver { .. }
+        ));
+    }
+
+    /// A `.DS_Store` — or any file someone drops in the store root — is not a
+    /// record. Reading it as one fails with `ENOTDIR`, which is not
+    /// `NotFound`, so failing closed on it would answer *every* owner message
+    /// with "could not tell" and take the whole remote control down until
+    /// somebody found the stray file. Fail closed on an unreadable record, not
+    /// on a thing that was never a record.
+    #[test]
+    fn a_stray_file_in_the_store_does_not_disable_routing() {
+        let root = scratch("stray");
+        let store = RemoteStore::open(&root).unwrap();
+        let mut r = AttachRecord::new("lab", "s1", PathBuf::from("/w"));
+        r.channel_id = Some("D1".into());
+        r.thread_ts = Some("1755.0001".into());
+        store.put(&r).unwrap();
+
+        std::fs::write(root.join(".DS_Store"), b"junk").unwrap();
+        std::fs::write(root.join("notes.txt"), b"junk").unwrap();
+
+        assert_eq!(
+            store
+                .attached_thread("D1", "1755.0001")
+                .expect("a stray file must not break the lookup")
+                .map(|r| r.name),
+            Some("lab".to_string())
+        );
+    }
+
+    /// `--sweep` promises to cool "any attachment whose session has gone",
+    /// and a TUI killed between claiming a name and posting its header leaves
+    /// a reservation behind.
+    #[test]
+    fn a_sweep_also_cools_a_reservation_whose_process_died() {
+        let store = RemoteStore::open(scratch("sweepattach")).unwrap();
+        let mut stuck = AttachRecord::new("stuck", "s1", PathBuf::from("/w"));
+        stuck.pid = 424242;
+        stuck.state = STATE_ATTACHING.to_string();
+        store.put(&stuck).unwrap();
+
+        let swept = store.sweep().unwrap();
+        assert_eq!(swept.len(), 1);
+        assert_eq!(store.get("stuck").unwrap().unwrap().state, STATE_COLD);
     }
 
     /// The routing lookup must fail closed. Answering "not attached" for a

@@ -60,8 +60,11 @@ impl Tool for ShowFileTool {
         "Put a file in front of the user where they can actually look at it — a chart, a \
          rendered image, a PDF, a log. Use this when you have produced something whose \
          point is to be *seen* rather than described, and the user is not sitting at this \
-         machine. It works only while the session is mirrored to a Slack thread; if it is \
-         not, say what you made and where it is instead."
+         machine. **Call it in a later turn than the one that wrote the file**: tool calls \
+         you request together are executed at the same time, so showing a file in the same \
+         turn that creates it will usually find nothing there. It works only while the \
+         session is mirrored to a Slack thread; if it is not, say what you made and where \
+         it is instead."
     }
 
     fn input_schema(&self) -> Value {
@@ -115,7 +118,13 @@ impl Tool for ShowFileTool {
             Err(e) => return Ok(ToolOutput::err(format!("could not read the store: {e}"))),
         };
 
-        let cfg = mecha_core::config::Config::load_global()?;
+        // `Ok(is_error)`, not `?`. Every other failure in this function lets
+        // the model route around it — say what it made and where — and a
+        // malformed config is no more the model's fault than a missing file.
+        let cfg = match mecha_core::config::Config::load_global() {
+            Ok(cfg) => cfg,
+            Err(e) => return Ok(ToolOutput::err(format!("could not read the config: {e}"))),
+        };
         let max_bytes = cfg.slack.max_upload_mb.saturating_mul(1024 * 1024);
         let meta = match std::fs::metadata(&path) {
             Ok(meta) => meta,
@@ -131,10 +140,12 @@ impl Tool for ShowFileTool {
         let (Some(channel), Some(thread_ts)) = (&record.channel_id, &record.thread_ts) else {
             return Ok(ToolOutput::err("the attachment has no thread yet"));
         };
-        let creds = match mecha_slack::binding::SlackStore::open(
-            mecha_core::work::mecha_home()?.join("slack"),
-        )
-        .and_then(|s| s.credentials())
+        let home = match mecha_core::work::mecha_home() {
+            Ok(home) => home,
+            Err(e) => return Ok(ToolOutput::err(format!("no mecha home: {e}"))),
+        };
+        let creds = match mecha_slack::binding::SlackStore::open(home.join("slack"))
+            .and_then(|s| s.credentials())
         {
             Ok(Some(creds)) => creds,
             Ok(None) => return Ok(ToolOutput::err("no Slack tokens stored")),
