@@ -92,11 +92,11 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,105 tests**, no failures — re-measured 2026-08-20 on `main` at
-0.1.9 (629 in the `mecha-core` lib suite, 262 in `mecha-cli`, 122 in
-`mecha-mail`, 75 in `mecha-slack`, and 15 across the two integration suites
-that need real backends). The 2026-08-19 count was 989 and the 2026-08-18 one
-936; the growth from 707 (2026-08-10) spans the 0.1.3–0.1.9 arcs, and each
+Expect **1,140 tests**, no failures — re-measured 2026-08-20 on `main` at
+`cfa2cc2` (629 in the `mecha-core` lib suite, 297 in `mecha-cli`, 122 in
+`mecha-mail`, 75 in `mecha-slack`, and 17 across the two integration suites
+that need real backends). The earlier 2026-08-20 count was 1,105 at 0.1.9,
+the 2026-08-19 count was 989 and the 2026-08-18 one 936; the growth from 707 (2026-08-10) spans the 0.1.3–0.1.9 arcs, and each
 release's CHANGELOG entry names what its tests pin. **A flake has now been seen twice and is still unidentified.** Once in
 `mecha-core` on 2026-08-08, and again on 2026-08-19 (`cargo test --workspace`
 reported `506 passed; 1 failed` in the `mecha-core` lib suite, then four
@@ -180,7 +180,7 @@ machine actually runs until the `update` skill is run.
 
 | Port | Model | State |
 |---|---|---|
-| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, **`-c 262144`** — the model's whole trained window (`qwen35moe.context_length`), raised from 32768 on 2026-08-10 after re-measuring. **`-c` costs nothing in speed**: 32k/64k/128k/256k are within noise of each other (~92 tok/s at a 1k prompt, ~80 at 30k), and the 50x slowdown recorded on 2026-08-07 was that day's OOM, not the flag. It costs memory as a startup *reservation* — 21.4 GB at 32k to 28.5 GB at 256k, i.e. weights ~20.7 GB plus ~32 KiB/token. **The full tables, the needle test at 188k, the `-np` trade-off and the two traps live in `scripts/start-moe-mtp.sh`** — read it before touching any of this. **`--reasoning-budget 4096`** (2026-08-07) was believed to be the mitigation for this model's "non-terminating reasoning" — **that diagnosis was wrong and is retired as of 2026-08-10 evening**: the empty turns were tool calls emitted before `</think>` closed, one of them 120 characters long, so no token budget was ever involved. The flag is harmless and stays; the real cause and fix are in `CHANGELOG.md` under 0.1.2. The nudge-retry allowance still resets on productive turns, which remains correct for its own reasons. `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` (= `-c`) and `max_tokens` (**above** the budget; 8192) — four numbers that move together. `-np 1` means every fan-out serializes. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **A transient unit** — now `llama-local.service` (`systemctl --user status llama-local`; it was `llama-qwen` when this was written, and that name no longer resolves), not a tmux pane — see below |
+| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, **`-c 262144`** — the model's whole trained window (`qwen35moe.context_length`), raised from 32768 on 2026-08-10 after re-measuring. **`-c` costs nothing in speed**: 32k/64k/128k/256k are within noise of each other (~92 tok/s at a 1k prompt, ~80 at 30k), and the 50x slowdown recorded on 2026-08-07 was that day's OOM, not the flag. It costs memory as a startup *reservation* — 21.4 GB at 32k to 28.5 GB at 256k, i.e. weights ~20.7 GB plus ~32 KiB/token. **The full tables, the needle test at 188k, the `-np` trade-off and the two traps live in `scripts/start-moe-mtp.sh`** — read it before touching any of this. **`--reasoning-budget 4096`** (2026-08-07) was believed to be the mitigation for this model's "non-terminating reasoning" — **that diagnosis was wrong and is retired as of 2026-08-10 evening**: the empty turns were tool calls emitted before `</think>` closed, one of them 120 characters long, so no token budget was ever involved. The flag is harmless and stays; the real cause and fix are in `CHANGELOG.md` under 0.1.2. The nudge-retry allowance still resets on productive turns, which remains correct for its own reasons. `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` and `max_tokens` (**above** the budget; 8192) — four numbers that move together. **`context_window` is `-c / -np`, not `-c`** — llama-server divides the context across slots, so the rule this line used to state was right only by accident of `-np 1`. Read it off `/props` (`default_generation_settings.n_ctx`) or the startup line's `n_ctx_slot`, never by arithmetic on the flag. **This row's numbers are stale and a live arc is rewriting them** — see the open item under *What to do next*. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **A transient unit** — now `llama-local.service` (`systemctl --user status llama-local`; it was `llama-qwen` when this was written, and that name no longer resolves), not a tmux pane — see below |
 | 8081 | gemma-4-E4B | down; nothing currently depends on it |
 | 8083 | Qwen3.8-27B | **down as of 2026-08-20** (was up on 2026-08-16). Nothing in config depends on it, so nothing is broken by it — noted because the previous pass recorded it up and a reader would otherwise assume it still is |
 | 8082 | gemma-4-26B-A4B | **down — restart it before any judged run.** The eval judge and nightly validate's judge both point here, so `mecha eval` with a `judge` rubric and the nightly validate will fail without it. `scripts/start-gemma26.sh` |
@@ -688,6 +688,29 @@ What is genuinely unbuilt, and deliberately so until step 3 answers:
 
 ### Cheap, and worth doing first
 
+- **`context_window` is `-c / -np` and four derived numbers trusted the wrong
+  rule.** Verified 2026-08-20: `/props` on :8080 reports `total_slots: 4` and
+  `default_generation_settings.n_ctx: 262144`, against `-c 1048576` in
+  `scripts/start-moe-mtp.sh` — so the per-slot window is a quarter of the flag.
+  The Environment row above stated `context_window` (= `-c`) and `-np 1`, which
+  was true when written and became wrong the moment slots were added; the
+  *current* `~/.mecha/config.toml` value (262144) happens to be right, so
+  nothing is broken today and the rule was still wrong. It matters because
+  **four things derive from `context_window` and all four degrade silently if
+  it is wrong**: `AgentConfig::compact_at` (two thirds of the window),
+  `ToolsConfig::resolved_output_budget` (an eighth, clamped), the TUI fuel
+  gauge, and overflow recovery's expectations. At `-np 4` a stale `= -c` value
+  would have set the compaction threshold four times too high — meaning no
+  reactive compaction at all, and every long run discovering the limit as a
+  raw 400 instead. CLAUDE.md's Context section still states the `-c` rule too.
+  **This is somebody else's live arc**, uncommitted as of `cfa2cc2`
+  (`CLAUDE.md`, `scripts/start-moe-mtp.sh`, and a new `docs/LLAMA-SERVER.md`
+  that is not yet in git), and it already carries the correction. What is left
+  for whoever lands it: refresh the Environment row above, and decide whether
+  anything should *check* the relationship rather than restate it — a startup
+  warning when `context_window` disagrees with `/props` would end this class,
+  the same way `unrouted_domains` warns rather than failing quietly.
+
 - **Decide whether replayed reasoning stays unbounded.** As of 0.1.2 the
   OpenAI-compatible backend sends every `Block::Thinking` back, which is what
   the model's own template expects and what took the empty turns from 6/6 to
@@ -984,8 +1007,11 @@ are worth reading together because one absence produced all three:
 
 - **Steering and queuing are the same key.** Enter starts a run when idle and
   steers one already going; there is no way to queue a follow-up instead.
-- **No `/export` or copy.** `NAMES` lists eighteen commands (2026-08-20, after
-  `/skills` and `/tasks`) and none of them get the transcript out.
+- **No `/export` or copy.** `NAMES` lists nineteen commands (2026-08-20, after
+  `/docs`) and none of them get the transcript out. `/docs` does put a link on
+  the system clipboard over OSC 52 (`tui/docs.rs`, `clipboard_escape`), which
+  is the mechanism an export would use — it survives SSH because the escape
+  travels back down the same connection the screen does.
 - **`NO_COLOR` is honoured only by the plain CLI renderer.** The TUI hardcodes
   colours inline; there is no semantic colour table.
 - **No keymap configuration.**
@@ -998,6 +1024,28 @@ are worth reading together because one absence produced all three:
   could see. Fixed by adding the three names, which is the fix that will be
   needed again. The shape that ends it is one predicate the modals answer
   rather than a list of fields.
+- **`pub const NAMES: [&str; N]` states its length twice.** The count is in the
+  type, so adding a command means editing two places — and when two sessions
+  add one each, the merge is textually *clean* and the array ends up one short,
+  because both sides made the same `18 -> 19` edit on one line and git takes it
+  once. It fails as a compile error rather than silently, which is the good
+  news. `pub static NAMES: &[&str]` says it once; `iter()` and `contains()` are
+  unchanged. Deliberately not done on 2026-08-20 with a second TUI arc in
+  flight: changing that line would have traded a known one-character merge fix
+  for an unknown conflict.
+- **Six modals scroll their detail unclamped.** `/skills`, `/outbox`,
+  `/frontdoor`, `/triggers`, `/polls` and `/doctor` `saturating_add` the offset
+  with no upper bound, so you can scroll past the end into blank space. You can
+  still reach everything, so this is "cannot tell where the end is" rather than
+  hidden content — the reason it is listed and not fixed. `/tools`, `/tasks`
+  and `/help` were given the measured form on 2026-08-20 (`line_count`, clamp
+  to `drawn - visible`, hint only when `max_scroll > 0`) and are what to copy.
+- **Captured log lines wait for the idle tick.** `logs.rs` drains at the top of
+  the event loop, which fires every 200ms during a run but only every 60s at
+  idle, so a warning with nothing else happening can appear a minute late. Any
+  keypress drains it at once. Ending it means a channel the writer wakes the
+  loop on; at idle there is nothing running to warn about, so it was judged not
+  worth the complexity rather than overlooked.
 
 ### The graph, now a sibling
 
