@@ -26,6 +26,7 @@ use mecha_core::mail_triage::{
     FAILED, REQUEST_TYPES,
 };
 
+use crate::setup::{find_tool, tool_ctx};
 use crate::{setup, GlobalOpts};
 
 #[derive(clap::Args, Debug)]
@@ -459,22 +460,6 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 }
 
-/// Find a tool by its bare name whatever prefix config gave the server.
-///
-/// `mail__mail_recent` assumes the server is aliased `mail` with
-/// `prefix_tools` on, and neither is guaranteed — a deployment that renamed
-/// the server would get "tool not available" from a driver that hardcoded the
-/// prefix. Matching on the suffix is what `[outbox] tools` already does when
-/// it warns about a routed name.
-fn find_tool<'a>(
-    registry: &'a mecha_core::tool::Registry,
-    bare: &str,
-) -> Option<&'a std::sync::Arc<dyn mecha_core::tool::Tool>> {
-    registry
-        .iter()
-        .find(|t| t.name() == bare || t.name().ends_with(&format!("__{bare}")))
-}
-
 fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) -> Result<()> {
     let Some(store) = TriageStore::open_existing_default() else {
         println!("nothing classified yet — run `mecha mail classify`");
@@ -665,16 +650,6 @@ async fn show(global: &GlobalOpts, thread_id: &str, account: Option<&str>) -> Re
     let out = tool.call(input, &ctx).await?;
     println!("{}", out.content);
     Ok(())
-}
-
-fn tool_ctx(prepared: &setup::PreparedTools) -> mecha_core::tool::ToolCtx {
-    mecha_core::tool::ToolCtx {
-        workspace: prepared.workspace.clone(),
-        shell_timeout: std::time::Duration::from_secs(prepared.config.tools.shell_timeout_secs),
-        security: prepared.config.security.clone(),
-        output_budget_bytes: prepared.config.tools.resolved_output_budget(None),
-        ..Default::default()
-    }
 }
 
 fn dismiss(thread_id: &str, account: Option<&str>) -> Result<()> {

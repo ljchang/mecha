@@ -676,6 +676,40 @@ exists: a listing under `drive.file` returns exactly the in-scope files, so
 Google is the record and a second copy could only drift.
 
 
+## The task board
+
+`mecha tasks` and the TUI's `/tasks` are the GTD board in the knowledge graph,
+which is somebody else's store: mecha reaches it **only through the MCP tool
+surface** (`kg_task_list` / `kg_task_create` / `kg_task_update`), exactly as
+`mecha mail task` already did. That is the whole design — no dependency on
+`mecha-graph`, no second reader of its SQLite schema, and a lookup that matches
+on the tool's *suffix* so a renamed server or a `prefix_tools` flip does not
+turn the board into "no tasks". The one shared helper is `setup::find_tool`,
+because two copies of that rule is two places for a hardcoded `graph__` to
+creep back in.
+
+The modal drives the CLI, on the `/triggers` rule, so nothing it can do is
+missing from a script. Three decisions on top of that:
+
+- **Nothing confirms.** `/mail` confirms on `s` because spam trains the
+  provider's filter and so reaches outside the mailbox; the board reaches
+  nobody (`openWorldHint: false`), every status is one keystroke from where it
+  was, and the tool surface has no delete at all. A confirmation on a
+  reversible private change teaches people to hit enter without reading, which
+  is what the outbox's confirmations then have to fight.
+- **A reload re-finds the cursor by id.** Changing a status is also the thing
+  that *reorders* the board — actionable first, then by due date — so an index
+  carried across a reload names a different task to the next keypress, and the
+  next keypress might be `d`. The `/outbox` hidden-items toggle learned this as
+  an edge case; here it is the common path.
+- **The status letters are `mecha-graph tui` screen 6's letters**, and a test
+  says so. Two boards over one store with divergent keys is a trap, and the
+  keystroke it springs is `x` on something you meant to finish.
+
+An edit form offers due, defer and context and *not* the name, because
+`kg_task_update` has no rename — a box that silently discarded what was typed
+in it would be worse than not offering one.
+
 ## Skills
 
 `~/.mecha/skills/<name>/SKILL.md` is a procedure the **user** wrote, that the
