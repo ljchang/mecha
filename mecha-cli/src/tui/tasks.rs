@@ -422,9 +422,7 @@ impl TasksModal {
 
         let width = 120u16.min(frame.area().width);
         let strip_lines = strip_height(&strip_text, width.saturating_sub(2));
-        let height = (body.len() as u16 + strip_lines)
-            .clamp(strip_lines + 1, frame.area().height.saturating_sub(4))
-            + 2;
+        let height = list_height(body.len() as u16, strip_lines, frame.area().height);
         let area = super::centered(frame.area(), width, height);
         frame.render_widget(Clear, area);
         // The strip renders outside the scrolling paragraph, in the first line
@@ -604,6 +602,22 @@ fn draw_form(frame: &mut Frame, form: &Form) {
     );
 }
 
+/// The list box's height, in a terminal `terminal_height` rows tall.
+///
+/// **Both bounds move here, so `clamp` needs the guard twice.** `/doctor`
+/// learned that the ceiling saturates to zero on a terminal four rows or
+/// fewer and inverts `min <= max` — a panic that takes the whole session
+/// down. This box has the same ceiling *and* a floor that is not a constant:
+/// the legend grows as the terminal narrows, so at 20 columns it wants eight
+/// rows on a screen that may have four. Floor the ceiling at one row, then
+/// pull the floor down to meet it: a tiny terminal degrades to a stub box,
+/// which is a bad view of the board rather than the end of the session.
+fn list_height(rows: u16, strip_lines: u16, terminal_height: u16) -> u16 {
+    let max = terminal_height.saturating_sub(4).max(1);
+    let floor = (strip_lines + 1).min(max);
+    (rows + strip_lines).clamp(floor, max) + 2
+}
+
 /// How many lines the legend needs at this width. Ceiling division on the
 /// character count: the strip is one flat run of ASCII verbs, so there is no
 /// grapheme subtlety to get wrong here.
@@ -754,6 +768,71 @@ mod tests {
         assert_eq!(strip_height("abcdef", 3), 2);
         assert_eq!(strip_height("abcdef", 2), 3);
         assert_eq!(strip_height("", 0), 1, "never zero-height");
+    }
+
+    /// Every view, at every shape of terminal a person can drag one into.
+    ///
+    /// The `/doctor` regression, which this box reintroduced with a second
+    /// moving bound: `clamp` panics when the ceiling saturates below the
+    /// floor, and a panic in `draw` is the whole session. 20x8 is the case a
+    /// fixed floor missed — narrow enough that the legend wraps to seven
+    /// lines, short enough that four rows are all there is.
+    #[test]
+    fn no_terminal_size_panics_the_draw() {
+        let (rows, today) = rows_from_json(BOARD).unwrap();
+        for (w, h) in [
+            (130, 24),
+            (130, 5),
+            (130, 3),
+            (130, 1),
+            (60, 5),
+            (20, 8),
+            (20, 3),
+            (8, 2),
+            (1, 1),
+        ] {
+            let (rows, today) = (clone_rows(&rows), today.clone());
+            let mut modal = TasksModal::new(rows, today);
+            for view in 0..4 {
+                match view {
+                    1 => modal.detail = true,
+                    2 => {
+                        modal.detail = false;
+                        modal.help = true;
+                    }
+                    3 => {
+                        modal.help = false;
+                        modal.form = Some(Form::capture());
+                    }
+                    _ => {}
+                }
+                let mut terminal =
+                    ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+                terminal
+                    .draw(|f| modal.draw(f))
+                    .unwrap_or_else(|e| panic!("{w}x{h} view {view}: {e}"));
+            }
+        }
+        // Not vacuous: the floor really does exceed the ceiling at 20x8, so
+        // an unguarded clamp would have panicked above.
+        assert!(strip_height(&format!("  {}", key_strip()), 18) > 8u16.saturating_sub(4));
+    }
+
+    fn clone_rows(rows: &[TaskRow]) -> Vec<TaskRow> {
+        rows.iter()
+            .map(|r| TaskRow {
+                id: r.id.clone(),
+                name: r.name.clone(),
+                status: r.status.clone(),
+                due_at: r.due_at.clone(),
+                defer_until: r.defer_until.clone(),
+                context: r.context.clone(),
+                project: r.project.clone(),
+                waiting_on: r.waiting_on.clone(),
+                overdue: r.overdue,
+                closed: r.closed,
+            })
+            .collect()
     }
 
     #[test]
