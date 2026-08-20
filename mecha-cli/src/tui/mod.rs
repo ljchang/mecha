@@ -91,7 +91,14 @@ struct Running {
 enum AttachOutcome {
     Attached(Box<crate::slack::remote::Attached>, String),
     Detached(String),
-    Failed(String),
+    /// The name it was attaching *as*, when there was one. Without it a
+    /// failure — or a slow detach — clears a reservation belonging to a
+    /// different, still-running attach, and the guard it exists to power stops
+    /// firing exactly when two are in flight.
+    Failed {
+        name: Option<String>,
+        error: String,
+    },
 }
 
 /// One piece of detached work being watched for its outcome.
@@ -394,6 +401,11 @@ struct App {
     /// that vanished when you changed model would be the `todo` handle bug in
     /// a surface where the loss is both silent and outbound.
     attached: Option<crate::slack::remote::Attached>,
+    /// When the thread was last told a run is waiting on the terminal. A run
+    /// in `ask` mode making several gated calls would otherwise post one DM
+    /// each — flooding the scrollback and pushing the transport toward the
+    /// per-channel rate limit, which then delays the stream it shares.
+    last_waiting_note: Option<std::time::Instant>,
     /// A name whose attach is in flight.
     ///
     /// `attached` is only written when the outcome lands, so without this the
@@ -540,20 +552,6 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     // fight the interface for stdin.
     let approver: Arc<dyn Approver> = Arc::new(tui_approver);
     let mut prepared = setup::prepare_with_approver(global, Arc::clone(&approver)).await?;
-    prepared
-        .agent
-        .registry_mut()
-        .insert(Arc::new(mecha_core::tool::ask::AskUserTool::new(
-            Arc::clone(&asker),
-        )));
-
-    // Registered only by the TUI, like `ask_user`: it is the only front-end
-    // that can attach a session to a thread, and a tool that can never succeed
-    // is worse than one that is absent.
-    prepared
-        .agent
-        .registry_mut()
-        .insert(Arc::new(crate::slack::show::ShowFileTool));
 
     let session_dir = Session::default_dir()?;
     // One conversation for the session, so the taint accumulates across turns
@@ -582,9 +580,10 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
 
     // On create and on resume both: a session picked up under different flags
     // is exactly what this record exists to catch.
+    // Before the config record, which captures the tool list for replay.
+    install_frontend_tools(&mut prepared.agent, &asker, session.as_ref());
+
     if let Some(s) = &session {
-        // Before the config record, which captures the tool list for replay.
-        setup::register_recall(&mut prepared.agent, s);
         s.append(&Record::Config(RunConfig::of(
             &prepared.agent,
             &prepared.config,
@@ -667,6 +666,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         attach_tx,
         attached: None,
         attaching: None,
+        last_waiting_note: None,
         providers: prepared
             .config
             .providers
@@ -727,6 +727,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         &mut attach_rx,
         session.as_ref(),
         &approver,
+        &asker,
     )
     .await;
     leave(&mut terminal)?;
@@ -762,6 +763,55 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     result
 }
 
+/// The approver a permission mode means.
+///
+/// `ask` is the one the event loop owns — a fresh terminal approver would
+/// fight the interface for stdin — and everything else is mechanical.
+///
+/// A function because it is needed in two places and was only written in one.
+/// `/mode` set it correctly; a `/model`, `/provider` or `/mcp` switch rebuilt
+/// the agent around the *retained* ask-mode approver instead, so a session
+/// switched to `read-only` and then to another model went on displaying
+/// `read-only` while actually asking — the badge and the behaviour disagreeing,
+/// in the direction that loosens. `allow` degraded the same way, harmlessly.
+fn approver_for(mode: PermissionMode, retained: &Arc<dyn Approver>) -> Arc<dyn Approver> {
+    match mode {
+        PermissionMode::Ask => Arc::clone(retained),
+        other => Arc::new(ModeApprover { mode: other }),
+    }
+}
+
+/// The tools that belong to this *front-end* rather than to the agent's
+/// configuration.
+///
+/// Installed in two places — at startup, and again after every `/model`,
+/// `/provider` or `/mcp` switch, because those rebuild the agent and its
+/// registry wholesale. Before this existed, a switch silently dropped all of
+/// them: `ask_user` stopped existing mid-session, `recall` stopped existing,
+/// and the model simply carried on without them with nothing said anywhere.
+/// The same shape as the `todo` and `skill` handles riding on `Live`, and the
+/// same fix — one function, so two call sites cannot disagree about the set.
+fn install_frontend_tools(
+    agent: &mut mecha_core::agent::Agent,
+    asker: &Arc<dyn mecha_core::tool::ask::Asker>,
+    session: Option<&Session>,
+) {
+    // Only ever registered by the TUI: it is the one front-end that owns a
+    // human to ask, and the one that can attach a session to a thread. A tool
+    // that can never succeed is worse than one that is absent.
+    agent
+        .registry_mut()
+        .insert(Arc::new(mecha_core::tool::ask::AskUserTool::new(
+            Arc::clone(asker),
+        )));
+    agent
+        .registry_mut()
+        .insert(Arc::new(crate::slack::show::ShowFileTool));
+    if let Some(s) = session {
+        setup::register_recall(agent, s);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_loop(
     terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>,
@@ -773,6 +823,7 @@ async fn run_loop(
     attach_results: &mut mpsc::UnboundedReceiver<AttachOutcome>,
     session: Option<&Session>,
     approver: &Arc<dyn Approver>,
+    asker: &Arc<dyn mecha_core::tool::ask::Asker>,
 ) -> Result<()> {
     let mut keys = EventStream::new();
     // Agent events arrive on a channel that is replaced per run. Holding a
@@ -829,7 +880,7 @@ async fn run_loop(
         // Applied here rather than in the key handler: rebuilding is async, and
         // a run in flight must finish under the settings it started with.
         if let Some(switch) = app.pending_switch.take() {
-            apply_switch(switch, app, live, approver, session).await?;
+            apply_switch(switch, app, live, approver, asker, session).await?;
             continue;
         }
 
@@ -921,7 +972,12 @@ async fn run_loop(
                 // exists in the Slack thread state machine precisely so
                 // waiting and wedged are distinguishable; this is the same
                 // distinction on the mirrored surface.
-                if let Some(a) = &app.attached {
+                let quiet_for = app
+                    .last_waiting_note
+                    .map(|t| t.elapsed() >= std::time::Duration::from_secs(60))
+                    .unwrap_or(true);
+                if let (Some(a), true) = (&app.attached, quiet_for) {
+                    app.last_waiting_note = Some(std::time::Instant::now());
                     spawn_note(
                         a,
                         &format!(
@@ -942,18 +998,24 @@ async fn run_loop(
             // so the handle and the transcript line cannot disagree.
             Some(outcome) = attach_results.recv() => match outcome {
                 AttachOutcome::Attached(a, notice) => {
-                    app.attaching = None;
+                    if app.attaching.as_deref() == Some(a.name.as_str()) {
+                        app.attaching = None;
+                    }
                     app.transcript.push(Entry::Notice(notice));
                     app.attached = Some(*a);
                 }
+                // Detaching never set `attaching`, so it has no business
+                // clearing it — a slow detach landing after a new attach
+                // began would otherwise open the door it was holding shut.
                 AttachOutcome::Detached(notice) => {
-                    app.attaching = None;
                     app.transcript.push(Entry::Notice(notice));
                     app.attached = None;
                 }
-                AttachOutcome::Failed(e) => {
-                    app.attaching = None;
-                    app.transcript.push(Entry::Error(e));
+                AttachOutcome::Failed { name, error } => {
+                    if name.is_some() && app.attaching == name {
+                        app.attaching = None;
+                    }
+                    app.transcript.push(Entry::Error(error));
                 }
             },
 
@@ -977,8 +1039,21 @@ async fn run_loop(
                     .as_mut()
                     .and_then(|r| r.queue.lock().ok().map(|mut q| q.drain(..).collect()))
                     .unwrap_or_default();
+                // **Not after a cancel.** Ctrl-C on a run you have just
+                // steered is very often *because* of what you steered it
+                // with, and starting a fresh run on the sentence somebody
+                // aborted is the worst possible reading of the gesture. The
+                // queue is still drained — leaving it would fire it into the
+                // next run instead — and what was dropped is named, because
+                // silently discarding it is the other half of the same bug.
+                let cancelled = app.running.as_ref().is_some_and(|r| r.cancelling);
                 finish_run(app, outcome, persisted, baseline, session)?;
-                if !leftover.is_empty() {
+                if cancelled && !leftover.is_empty() {
+                    app.transcript.push(Entry::Notice(format!(
+                        "dropped {} queued line(s) — the run was stopped",
+                        leftover.len()
+                    )));
+                } else if !leftover.is_empty() {
                     app.transcript.push(Entry::Notice(
                         "the run ended before folding these in — sending them now".into(),
                     ));
@@ -2018,11 +2093,13 @@ fn on_key(
 ///     something hostile does not unread it, and the interlock stays armed.
 ///     `/clear` is the only thing that resets it, because that drops the
 ///     context too.
+#[allow(clippy::too_many_arguments)]
 async fn apply_switch(
     switch: Switch,
     app: &mut App,
     live: &mut Live,
     approver: &Arc<dyn Approver>,
+    asker: &Arc<dyn mecha_core::tool::ask::Asker>,
     session: Option<&Session>,
 ) -> Result<()> {
     if app.running.is_some() {
@@ -2040,11 +2117,7 @@ async fn apply_switch(
             ));
             return Ok(());
         };
-        let next: Arc<dyn Approver> = match mode {
-            PermissionMode::Ask => Arc::clone(approver),
-            other => Arc::new(ModeApprover { mode: other }),
-        };
-        agent.set_approver(next);
+        agent.set_approver(approver_for(mode, approver));
         app.mode = mode;
         app.transcript
             .push(Entry::Notice(format!("mode {}", mode_name(mode))));
@@ -2098,7 +2171,11 @@ async fn apply_switch(
     app.transcript
         .push(Entry::Notice(format!("switching to {what}…")));
 
-    let prepared = match setup::prepare_with_approver(&opts, Arc::clone(approver)).await {
+    // **The mode in force, not the one the process started in.** See
+    // `approver_for`: passing the retained approver here reverted the session
+    // to asking while the status line still claimed otherwise.
+    let prepared = match setup::prepare_with_approver(&opts, approver_for(app.mode, approver)).await
+    {
         Ok(p) => p,
         // Keep the working agent. A failed switch that also broke the session
         // would punish a typo far out of proportion.
@@ -2111,6 +2188,12 @@ async fn apply_switch(
         }
     };
 
+    // **Re-installed, or the switch quietly takes them away.** A rebuilt agent
+    // gets a registry from config alone, and everything this front-end added
+    // is gone — which is invisible, because a model with no `show_file` simply
+    // describes the chart instead.
+    let mut prepared = prepared;
+    install_frontend_tools(&mut prepared.agent, asker, session);
     let tools_changed = prepared.agent.registry().len() != live.agent.registry().len();
     *live = Live::new(prepared, opts);
     app.mcp_on = !live.opts.no_mcp;
@@ -2708,8 +2791,13 @@ fn submit(
             tokio::spawn(async move {
                 // Ordering, not synchronisation: the stream must not open
                 // before the line it is answering has landed.
+                // Bounded. A 429 on the echo honours `Retry-After` and can
+                // sleep for a minute, and waiting that long would hold the
+                // *entire* answer out of the thread — a worse outcome than
+                // the mis-ordering this is here to prevent. Ordering is worth
+                // a moment, not the mirror.
                 if let Some(echoed) = echoed {
-                    let _ = echoed.await;
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), echoed).await;
                 }
                 crate::slack::pump::pump(&slack, &channel, &thread_ts, slack_rx, &cfg).await;
             });
@@ -4363,8 +4451,16 @@ fn deliver_inbound(
         let landed = match store.take_files(&attached.name, &line.files, &workspace) {
             Ok(landed) => landed,
             Err(e) => {
+                // Said in the thread as well as the terminal. The connector's
+                // own rule, two files over: a file that silently did not
+                // arrive is indistinguishable from one the session chose to
+                // ignore, and the person is on a phone with no way to tell.
                 app.transcript
                     .push(Entry::Error(format!("could not save an attachment: {e:#}")));
+                spawn_note(
+                    &attached,
+                    &format!("Could not save your attachment into the workspace: {e:#}"),
+                );
                 Vec::new()
             }
         };
@@ -4498,7 +4594,10 @@ fn spawn_attach(
         .await
         {
             Ok((attached, notice)) => AttachOutcome::Attached(Box::new(attached), notice),
-            Err(e) => AttachOutcome::Failed(format!("/remote-control {name}: {e:#}")),
+            Err(e) => AttachOutcome::Failed {
+                name: Some(name.clone()),
+                error: format!("/remote-control {name}: {e:#}"),
+            },
         };
         let _ = tx.send(outcome);
     });
@@ -4521,7 +4620,10 @@ fn spawn_detach(
             Ok(()) => AttachOutcome::Detached(format!(
                 "detached `{name}` — the thread and everything in it stay"
             )),
-            Err(e) => AttachOutcome::Failed(format!("/remote-control off: {e:#}")),
+            Err(e) => AttachOutcome::Failed {
+                name: None,
+                error: format!("/remote-control off: {e:#}"),
+            },
         };
         let _ = tx.send(outcome);
     });
@@ -6124,6 +6226,7 @@ mod tests {
             attach_tx: mpsc::unbounded_channel().0,
             attached: None,
             attaching: None,
+            last_waiting_note: None,
             providers: Vec::new(),
             kitty_keyboard: false,
         }
@@ -6172,6 +6275,30 @@ mod tests {
             assert!(
                 command::parse(ordinary).is_none() && command::shell_escape(ordinary).is_none(),
                 "{ordinary} would have been refused"
+            );
+        }
+    }
+
+    /// A switch that rebuilds the agent must carry the mode in force, not the
+    /// one the process launched with. Asserted by pointer identity, because
+    /// the bug was precisely that the *retained* ask-mode approver was reused
+    /// for every mode — leaving `/mode read-only` displaying read-only while
+    /// the harness asked, which loosens rather than tightens.
+    #[test]
+    fn a_rebuild_keeps_the_permission_mode_it_was_in() {
+        let (tui, _rx) = approve::TuiApprover::new();
+        let retained: Arc<dyn Approver> = Arc::new(tui);
+
+        let ask = approver_for(PermissionMode::Ask, &retained);
+        assert!(
+            Arc::ptr_eq(&ask, &retained),
+            "ask must reinstate the approver wired to the event loop"
+        );
+        for other in [PermissionMode::ReadOnly, PermissionMode::Allow] {
+            let got = approver_for(other, &retained);
+            assert!(
+                !Arc::ptr_eq(&got, &retained),
+                "{other:?} silently fell back to asking"
             );
         }
     }
