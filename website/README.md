@@ -28,19 +28,26 @@ This command generates static content into the `build` directory and can be serv
 
 ## Deployment
 
-Using SSH:
+**Push to `main`. That is the whole procedure.**
+`.github/workflows/docs.yml` builds the site and publishes it with
+`actions/deploy-pages@v5`, so the deploy is an artifact upload rather than a
+branch — there is no `gh-pages` branch in this repository and nothing serves
+one. The workflow runs on pull requests too, and `onBrokenLinks: 'throw'` means
+a dead internal link fails it.
+
+**Do not run `npm run deploy`.** It is Docusaurus's stock script, it survives
+here only because it ships in the template, and what it does is build the site
+and force-push it to a `gh-pages` branch. Following the instructions this
+section used to carry would create a branch nothing reads, while the live site
+carried on being served from the workflow — a deploy that appears to succeed
+and changes nothing anybody can see.
+
+Local checks before pushing:
 
 ```bash
-USE_SSH=true npm run deploy
+npm run build    # what CI runs; fails on a broken internal link
+npm run serve    # serve the built site to look at it
 ```
-
-Not using SSH:
-
-```bash
-GIT_USER=<Your GitHub username> npm run deploy
-```
-
-If you are using GitHub Pages for hosting, this command is a convenient way to build the website and push to the `gh-pages` branch.
 
 ## Diagrams
 
