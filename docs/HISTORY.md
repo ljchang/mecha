@@ -1145,6 +1145,40 @@ empty at build time (178 sessions read, 0 outcomes), and the research's own
 finding is that agents update their harnesses without benefiting, so the next
 thing to learn is whether doctor's findings would actually have been acted on.
 
+**2026-08-19 (night) — skills, and the queue stops asking people to read
+JSON.** `mecha-core/src/skill.rs` and the Agent Skills format: a procedure the
+*user* writes and the model loads when it decides one is relevant, at three
+levels of disclosure — name and description in the prompt, the body on a
+`skill` call, a bundled file only when the procedure points at one. The
+absences are the safety argument and are structural: no install command, no
+registry, no remote body, nothing derived from a session, no project-layer
+store, and therefore no taint when one loads. It is also the pressure valve for
+the per-domain rule cap, since a procedure too long for a rule and irrelevant
+on most runs now has somewhere to live. Alongside it the review surfaces
+stopped rendering arguments at people: a staged message shows as the letter it
+is, `edit` opens the prose instead of a string literal, resolved drafts go
+behind `h`, and `/mail` grew a pinned key strip and an `enter` that opens the
+thread instead of fetching one and printing its subject into a title bar.
+
+**2026-08-20 — documents, and four arcs in one night across three sessions.**
+`mecha-docs` shipped as the fourth binary on `mecha-mail` (`google/docs.rs`,
+`google/docs_server.rs`), and the scope *is* the design: `drive.file` is the
+one non-sensitive scope in the family and covers only files the app created or
+the user handed it through Google's own chooser, which is the path jail applied
+to Drive — provable by reading a scope string rather than by reviewing every
+future diff. Then, in one evening: **the task board reached the session** —
+`mecha tasks` and `/tasks` onto the graph's GTD board over `kg_task_*`, with
+the same status letters as `mecha-graph tui` screen 6 and a test saying so;
+**`/skills`** as the slash counterpart to `/tools`, reading what a run carries
+from the running agent rather than re-deriving it from config; **a reply became
+reviewable with the message it replies to**, recovered from the transcript that
+already held it rather than from a re-fetch, joined by identifying arguments
+matched by key and value so nothing about mail is special-cased; and **eight
+modals stopped taking the session down when the window shrank**. Released as
+0.1.9 the same night, with the site's pages for the three arcs that had
+documented nothing outside `CLAUDE.md`.
+
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -1367,6 +1401,30 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+- **A sweep that keys on a spelling misses the shape.** Seven modals carried
+  `rows.clamp(1, terminal_height.saturating_sub(4))`, which panics at four rows
+  because the subtraction saturates below the floor; the fix swept the codebase
+  for `clamp(1,` and fixed six. `/mail` spelled it `clamp(2, …)` — it reserves a
+  row for its key strip — so it matched nothing, and it was the *worst*
+  instance, dying at five rows where the others died at four. It was found only
+  because someone asked which modals have an in-box header, which is the
+  question the bug was actually about. **Search for the invariant, not the
+  token.** The second half is why the spelling diverged at all: the shared
+  helper took only `(rows, height)`, so a box that reserves a row could not be
+  expressed and its author wrote the arithmetic inline. A helper that cannot say
+  what a caller means is how that caller stops using it.
+
+- **When the fix's fail-safe behaviour is the new bug's observable, the test
+  that caught the original cannot catch the misuse.** The repaired helper takes
+  `(rows, terminal_height, reserved)` — three `u16`s — and its whole design is
+  to degrade to a small box rather than panic. Transposing the last two
+  arguments therefore compiles, does not panic, and silently returns a
+  three-row box; the tiny-terminal regression test passes with the arguments
+  swapped, because a box too small to read is not a crash. Pin the *values* at
+  the call site, or make the type carry the meaning. A guard and a bug that
+  share an observable are indistinguishable to every test written against the
+  guard.
 
 - **A wrong gold answer measures nothing.** One was shipped ($2,450 vs the
   correct $1,750) by double-counting a base rate. Verify arithmetic with a
@@ -1865,6 +1923,18 @@ All found by pre-push review or by running it.
   cancellation and reminder passes on every quiet tick — the common case.
   When a verb grows a second duty, audit every `return` that predates it.
 
+
+- **A clean merge is not a correct merge, and only a compile-time fact caught
+  it.** Two sessions each added a slash command, so each changed
+  `pub const NAMES: [&str; 16]` to `17` and added its own entry. git merged the
+  hunk with no conflict marker and produced **18 elements declared as
+  `[&str; 17]`** — a length that agrees with neither side. Nothing about the
+  diff looks wrong; it was caught because the array length is checked by the
+  compiler. The lesson generalises past git: where two edits to one list are
+  likely, keep a fact about the list that a machine verifies, and never resolve
+  a silently-merged hunk by eye. Three sessions worked one repository that
+  night and this was the only merge hazard that a careful reading would have
+  passed.
 
 - **A systemd unit gives its children a minimal environment, and that is where
   `notify` runs.** The first real scheduled trigger run produced its briefing

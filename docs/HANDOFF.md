@@ -21,10 +21,9 @@ maps which document holds what.
 
 ## Where the work is
 
-Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.6**
-(2026-08-16 night; 0.1.5 was the same afternoon — two releases in one day,
-the second because the knowledge-graph rename touched mecha's own surface).
-**Four** crates are on crates.io at 0.1.6 — `mecha-core`, `mecha-mail`,
+Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.9**
+(2026-08-20; 0.1.7 and 0.1.8 shipped 2026-08-19 and 2026-08-20 after the mail
+hold lifted). **Four** crates are on crates.io — `mecha-core`, `mecha-mail`,
 `mecha-slack`, `mecha-cli` (the bare name `mecha` was taken, so the CLI
 crate installs the `mecha` binary) — published through the tag-driven
 `release` workflow with Trusted Publishing, so no registry token exists
@@ -93,10 +92,11 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **989 tests**, no failures — re-measured 2026-08-19 on
-`repeated-failures-collapse` after the run-quality arc (the 2026-08-18 count
-was 936 on `main`). The growth from 707 (2026-08-10) spans
-the 0.1.3–0.1.6 arcs; each
+Expect **1,105 tests**, no failures — re-measured 2026-08-20 on `main` at
+0.1.9 (629 in the `mecha-core` lib suite, 262 in `mecha-cli`, 122 in
+`mecha-mail`, 75 in `mecha-slack`, and 15 across the two integration suites
+that need real backends). The 2026-08-19 count was 989 and the 2026-08-18 one
+936; the growth from 707 (2026-08-10) spans the 0.1.3–0.1.9 arcs, and each
 release's CHANGELOG entry names what its tests pin. **A flake has now been seen twice and is still unidentified.** Once in
 `mecha-core` on 2026-08-08, and again on 2026-08-19 (`cargo test --workspace`
 reported `506 passed; 1 failed` in the `mecha-core` lib suite, then four
@@ -149,7 +149,7 @@ A working agent harness, used and measured rather than just compiled.
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
 | Context | Two-pass compaction: thin tool results, then summarise. Taint preserved, a tool's own state (the todo list) crosses verbatim, the states a mid-run rewrite replaced ride `Conversation::rewritten` into the session record, and a per-run cache lens watches whether the cached prefix is actually reused (warns only on unexplained re-payment) |
 | Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep, and `slack` for the remote control |
-| TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/outbox` and `/frontdoor` modals drive the CLI like `/triggers` does, the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
+| TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/outbox`, `/frontdoor`, `/mail`, `/tasks`, `/skills`, `/polls` and `/doctor` modals drive the CLI like `/triggers` does, the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
 | Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`. **Merged 2026-08-09 (PR #25) and running as `mecha-slack.service`** |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
@@ -158,25 +158,31 @@ A working agent harness, used and measured rather than just compiled.
 | Messaging | `[messages]` + `mecha msg send/list/show/dismiss/agents` — a file mailbox between this machine's sessions (`~/.mecha/messages/<recipient>/`, producer-name addressing, per-session liveness registry). Delivery folds in at the steering point with the sender's harness-stamped taint merged first, so a hop launders nothing; attended surfaces hold with a notice, unattended accept; global config only; full mailboxes refuse, identical pending sends dedup. `docs/MESSAGING-RESEARCH.md` is the design record; phase 2 (TUI modal/badge) is scoped there |
 | Workspaces | `~/.mecha/work/<producer>/` is a run's workspace and its output directory; `mecha work list/path/clean`, retention nightly. A workspace containing the mecha home is refused |
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed. **`mail_triage`** (2026-08-18) adds archive/read/unread/spam/trash as a closed `TriageAction` enum, thread-level, in a third capability quadrant — `destructive` but *not* `external_send`, so it never routes through the outbox and a read-only run cannot reach it. Tagging is deliberately absent: a tag is mecha's own, on the triage record, not a Gmail label or a Graph category |
+| Tasks | `mecha tasks` list/add/set and the `/tasks` modal onto the graph's GTD board, reached only over `kg_task_*` — no dependency on mecha-graph and no second reader of its schema. Status letters match `mecha-graph tui` screen 6; nothing confirms (the board reaches nobody and has no delete); a reload re-finds the cursor by id because a status change reorders the board |
+| Documents | `mecha-docs`, the fourth binary on `mecha-mail` — Google Docs/Sheets/Slides under **`drive.file` and nothing else**, so only files mecha created or the user picked in Google's own chooser are reachable, and no instruction inside a run can widen that. Reads are `untrusted_input` and never `openWorldHint`; writes are outbox-routed, because writing into a document a third party can read is a publish. No permanent-delete and no sharing verb, with tests on the absences |
 | Front door | `mecha frontdoor` list/show/extract/next/**triage**/**needs-info**/**close** over `~/.mecha/requests/` — the quarantine between a stranger's request and a run with tools, and the state machine that lets one reach an answer. The extractor is issued no tools and no history; `Record::for_privileged_run` has no argument that returns the prose; an extraction failure routes to a human. `triage` drafts into the outbox and refuses to run unrouted; `reconcile` closes the loop from released items on its own, with no verb to remember. `mecha-factory-publish drain` fills the directory |
 | Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, **the daemon is installed and running here**; a failed `notify` is recorded on the run |
+| Skills | `~/.mecha/skills/<name>/SKILL.md` in the Agent Skills format, loaded by a `skill` tool call at three levels of disclosure. User-authored with no mechanism for anything else — no install, no registry, no remote body, none derived from a session — which is why loading one arms no taint. `tools:` narrows the surface and can never widen it; a loaded skill crosses compaction verbatim; `mecha eval` forces them off |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B). Budget is 25 active rules and 2600 chars **per domain**, and a run carries only `RUN_DOMAINS` (`behavior` + `writing`) — new domains are opt-in and `unrouted_domains` warns at startup on any that ride in no prompt |
 | Run quality | `Record::Outcome(RunStats)` per finished run from every front-end; `runlog.rs` reads the corpus back (`mecha sessions health`, rates split by model, `—` where a denominator is zero); three population checks in `doctor`; `candidate.rs` gates a proposed change on a paired comparison with a deterministic holdout and a work guardrail; `mecha eval --ab-config KEY=VALUE` is the content-sensitive arm; `mecha diagnose` proposes one change from the corpus and prints the command that would falsify it. **Nothing is applied automatically and the corpus was empty at build time** — see below |
-| Eval | 36 cases, 15 tags, scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `graph-cases.jsonl` — 10 memory/interlock cases against fixture MCP servers (`--mcp-file`), renamed with the graph and expecting the bare `kg_*` names production serves (scorecards across the rename are not comparable) |
+| Eval | 36 cases, 15 tags (both re-counted 2026-08-20, unchanged), scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `graph-cases.jsonl` — 10 memory/interlock cases against fixture MCP servers (`--mcp-file`), renamed with the graph and expecting the bare `kg_*` names production serves (scorecards across the rename are not comparable) |
 
 `cargo clippy --all-targets` is clean and should stay that way.
 
 ## Environment as left
 
 Running on the DGX Spark (GB10, aarch64, 128GB unified). **Re-verified
-2026-08-16 night** (8080 and 8083 answering with `total_slots=1`; 8081 and
-8082 down; SearXNG up; installed binaries at 0.1.6 same evening):
+2026-08-20** (8080 answering with `total_slots=1`; 8081, 8082 **and 8083** all
+down; SearXNG up). **The installed binaries are at 0.1.8 and the repository is
+at 0.1.9** — `~/.cargo/bin/mecha` was last built 2026-08-20 00:26, before the
+four arcs of that night, so nothing in this release is in the binary the
+machine actually runs until the `update` skill is run.
 
 | Port | Model | State |
 |---|---|---|
-| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, **`-c 262144`** — the model's whole trained window (`qwen35moe.context_length`), raised from 32768 on 2026-08-10 after re-measuring. **`-c` costs nothing in speed**: 32k/64k/128k/256k are within noise of each other (~92 tok/s at a 1k prompt, ~80 at 30k), and the 50x slowdown recorded on 2026-08-07 was that day's OOM, not the flag. It costs memory as a startup *reservation* — 21.4 GB at 32k to 28.5 GB at 256k, i.e. weights ~20.7 GB plus ~32 KiB/token. **The full tables, the needle test at 188k, the `-np` trade-off and the two traps live in `scripts/start-moe-mtp.sh`** — read it before touching any of this. **`--reasoning-budget 4096`** (2026-08-07) was believed to be the mitigation for this model's "non-terminating reasoning" — **that diagnosis was wrong and is retired as of 2026-08-10 evening**: the empty turns were tool calls emitted before `</think>` closed, one of them 120 characters long, so no token budget was ever involved. The flag is harmless and stays; the real cause and fix are in `CHANGELOG.md` under 0.1.2. The nudge-retry allowance still resets on productive turns, which remains correct for its own reasons. `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` (= `-c`) and `max_tokens` (**above** the budget; 8192) — four numbers that move together. `-np 1` means every fan-out serializes. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **A transient unit** (`systemctl --user status llama-qwen`), not a tmux pane — see below |
+| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, **`-c 262144`** — the model's whole trained window (`qwen35moe.context_length`), raised from 32768 on 2026-08-10 after re-measuring. **`-c` costs nothing in speed**: 32k/64k/128k/256k are within noise of each other (~92 tok/s at a 1k prompt, ~80 at 30k), and the 50x slowdown recorded on 2026-08-07 was that day's OOM, not the flag. It costs memory as a startup *reservation* — 21.4 GB at 32k to 28.5 GB at 256k, i.e. weights ~20.7 GB plus ~32 KiB/token. **The full tables, the needle test at 188k, the `-np` trade-off and the two traps live in `scripts/start-moe-mtp.sh`** — read it before touching any of this. **`--reasoning-budget 4096`** (2026-08-07) was believed to be the mitigation for this model's "non-terminating reasoning" — **that diagnosis was wrong and is retired as of 2026-08-10 evening**: the empty turns were tool calls emitted before `</think>` closed, one of them 120 characters long, so no token budget was ever involved. The flag is harmless and stays; the real cause and fix are in `CHANGELOG.md` under 0.1.2. The nudge-retry allowance still resets on productive turns, which remains correct for its own reasons. `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` (= `-c`) and `max_tokens` (**above** the budget; 8192) — four numbers that move together. `-np 1` means every fan-out serializes. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **A transient unit** — now `llama-local.service` (`systemctl --user status llama-local`; it was `llama-qwen` when this was written, and that name no longer resolves), not a tmux pane — see below |
 | 8081 | gemma-4-E4B | down; nothing currently depends on it |
-| 8083 | Qwen3.8-27B | up, `total_slots=1`, `-c 262144`, draft-MTP — brought up since the last pass; nothing in config depends on it yet (verified 2026-08-16) |
+| 8083 | Qwen3.8-27B | **down as of 2026-08-20** (was up on 2026-08-16). Nothing in config depends on it, so nothing is broken by it — noted because the previous pass recorded it up and a reader would otherwise assume it still is |
 | 8082 | gemma-4-26B-A4B | **down — restart it before any judged run.** The eval judge and nightly validate's judge both point here, so `mecha eval` with a `judge` rubric and the nightly validate will fail without it. `scripts/start-gemma26.sh` |
 | 8888 | SearXNG | up (docker, JSON format enabled) |
 
@@ -466,15 +472,20 @@ tested, but has never been exercised against the real box by a person:
 
 Everything else below is independent of that.
 
-Every item below was verified against source on 2026-08-16 night to still be
-unbuilt — MCP resources and HTTP/SSE transports, the subagent workspace field,
-per-command approval, the seccomp half of the sandbox item, `Rule`'s missing
-scope, the raw reflection window, a task store, file watchers and a TUI export
-are each still absent from the file the item names. (The Landlock backend
-itself shipped 2026-08-16 — its item below now describes only the remainder.) One item was struck the same pass:
-`decode_usage` now reads `prompt_tokens_details.cached_tokens`
-(`mecha-core/src/provider/openai.rs:309`), shipped with the reasoning arc, and
-has moved to [`HISTORY.md`](HISTORY.md).
+Every item below was re-verified against source on **2026-08-20** — MCP
+resources (`mecha-core/src/mcp.rs:206` still advertises `"capabilities": {}`),
+HTTP/SSE transports, the subagent workspace field, per-command approval, the
+seccomp half of the sandbox item, `Rule`'s missing scope, the raw reflection
+window, file watchers and a TUI export are each still absent from the file the
+item names, and `gossip`/`vet`/`corroborate` are still in `mecha-cli/src/commands/`.
+Three items changed that pass. **Skills** and **Google Docs/Sheets/Slides
+write access** both said "not built" and are fully shipped
+(`mecha-core/src/skill.rs`; `mecha-mail/src/google/docs.rs`,
+`google/docs_server.rs` and a 323-line `bin/mecha-docs.rs`), so both moved to
+[`HISTORY.md`](HISTORY.md). The **task store** item shipped in part — the
+`/tasks` modal and direct capture exist and the store turned out to be the
+graph's board rather than a new one under `~/.mecha/` — and has been rewritten
+under Triggers to describe only the escalation half that is still missing.
 Ordered by value per unit of effort, not by size.
 
 ### The scheduling instrument — live since 2026-08-08
@@ -740,16 +751,18 @@ The arc is complete and running nightly. What is missing is refinement:
 
 ### Triggers
 
-- **A durable task and deadline store, and a `/tasks` TUI modal.** Nothing
-  tracks these: `~/.mecha/` has no task store and the `todo` tool is an in-run
-  scratchpad that dies with the run. This is what turns silence from an absence
-  into a state that can be surfaced and escalated — an unanswered message is
-  currently invisible because there is no object to hang a state on. Three
-  sources: an inbound request's SLA, a **commitment the user made** (extractable
-  from released outbox items, where mecha already knows what went out), and
-  direct capture. Stored in pkg with an `Origin` per task so only user-origin
-  tasks escalate unattended; recurrence reuses `cron.rs`. The modal drives the
-  CLI like `/triggers` does. Design in `PUBLIC-SURFACE-DESIGN.md` §3.2–3.3.
+- **Deadline escalation, on top of the task surface that now exists.** The
+  `/tasks` modal and `mecha tasks` shipped 2026-08-20 — direct capture, status,
+  scheduling — so *direct capture* and *the modal* are done and the store is
+  the graph's board, reached over `kg_task_*` rather than built in `~/.mecha/`.
+  What that arc did **not** build is the part that turns silence into a state:
+  no task is created from an inbound request's SLA, none from a **commitment
+  the user made** (extractable from released outbox items, where mecha already
+  knows what went out), there is no `Origin` per task so nothing can decide
+  which tasks may escalate unattended, and nothing escalates. Recurrence still
+  wants `cron.rs`. An unanswered message is still invisible; there is now
+  somewhere to hang the state, and nothing hangs it. Design in
+  `PUBLIC-SURFACE-DESIGN.md` §3.2–3.3.
 - **Policy questions as a new `proposals` kind — not a third queue.**
   `ask_user` is absent from unattended runs by construction, so a trigger can
   stage but cannot ask. The elicitation that grows autonomy is *policy*
@@ -778,12 +791,11 @@ The arc is complete and running nightly. What is missing is refinement:
 **`docs/MAIL-CORPUS-RESEARCH.md` (2026-08-19) is the measurement that reordered
 it — gitignored, on `OPERATIONS.md`'s split: the lesson is here, the figures
 are not**; `MAIL-UX-RESEARCH.md` is the original survey. Where they disagree the
-later one wins, and the corpus is the latest. **The 0.1.7 release is held until
-this is complete** — Luke's decision 2026-08-18, **reaffirmed 2026-08-19 after
-the scope grew**: phase 4 was deleted and three items were added (the corpus
-eval, day two, the third pre-filter rule), and the hold stands for everything
-through the correction loop anyway. So the unpushed backlog keeps growing on
-purpose; it is a known cost, not an oversight.
+later one wins, and the corpus is the latest. **The release hold is over**:
+0.1.7 shipped 2026-08-19 and 0.1.8 and 0.1.9 on 2026-08-20, so the phases below
+are ordinary open work rather than a blocker on shipping. What the hold bought
+is recorded in `HISTORY.md`; what it was holding for — the phases below — is
+still unbuilt, and is now unblocked rather than deferred.
 
 Phases 1-3 shipped 2026-08-18: `mail_triage` (archive/read/unread/spam/trash,
 closed enum, both providers), `~/.mecha/mail-triage/` holding one typed verdict
@@ -920,49 +932,24 @@ are worth reading together because one absence produced all three:
   would roughly double the thread count for a negligible number of real
   threads.
 
-### Google Docs/Sheets/Slides write access — researched and validated, not built
-
-*2026-08-18, from the parallel session that did this work; `docs/DOCS-RESEARCH.md`
-is the authority and §6 is measured rather than cited.*
-
-A second Cloud project `mecha-docs` now exists, **published to In production**,
-carrying `drive.file` and nothing else — non-sensitive, so no verification, no
-CASA, and no seven-day token expiry, which is the whole reason it is not in
-FlowMail. Measured on the day: Google's desktop Picker
-(`trigger_onepick=true`) renders a real chooser and returns file ids to a
-loopback redirect on the headless workstation through an SSH tunnel; the code
-exchanges for a token carrying a refresh token; picked Docs, Sheets and folders
-all read back. Plan is native Rust in `mecha-mail` reusing the OAuth and token
-machinery, with the grant at `~/.mecha/docs/<account>/oauth.json` — own root,
-same `StoredCredentials` type, deliberately *not* a sibling under
-`mail/<account>/`, because doctor's two mail checks glob `mail/*/oauth.json`
-and would report a `drive.file` grant as a broken mail account. **No code
-written.** Left open: whether a folder pick reaches the folder's contents (two
-runs say no; the folder-emptiness confound is named in §6.1c), and
-`documents.get` not yet exercised. The client secret is at
-`~/.mecha/docs/client_secret.json`, 0600, in no repository.
-
-### Skills
-
-`docs/SKILLS-RESEARCH.md` (2026-08-17). mecha has no skill mechanism; the
-`.claude/skills/` directories are Claude Code's and the agent cannot see them.
-The nearest thing is `[[subagent]]`, which is the *delegate* shape where a
-skill is the *instruct* shape. Wanted before the mail phases above, because
-`handle-rec-letter` and `expense-forward` want to be editable files rather
-than branches in a triage prompt. Take the `SKILL.md` format (a real
-cross-vendor standard) and refuse the ecosystem: no install path, no
-project-layer skills, no remote bodies, loading is an explicit tool call so a
-`pre_tool` hook can gate it. Needs a design doc first.
-
 ### TUI polish
 
 - **Steering and queuing are the same key.** Enter starts a run when idle and
   steers one already going; there is no way to queue a follow-up instead.
-- **No `/export` or copy.** `NAMES` lists fifteen commands and none of them
-  get the transcript out.
+- **No `/export` or copy.** `NAMES` lists eighteen commands (2026-08-20, after
+  `/skills` and `/tasks`) and none of them get the transcript out.
 - **`NO_COLOR` is honoured only by the plain CLI renderer.** The TUI hardcodes
   colours inline; there is no semantic colour table.
 - **No keymap configuration.**
+- **The "is a modal open?" guard is a list maintained by memory.**
+  `open_scoped_review` enumerates every modal field to decide whether something
+  already owns the keyboard, so it is wrong the next time one is added — and it
+  was wrong three times over, missing `/mail` and `/polls` from the day they
+  shipped until 2026-08-20, which meant a run finishing under `/review now`
+  opened `/outbox` *underneath* the visible modal and drove it with keys nobody
+  could see. Fixed by adding the three names, which is the fix that will be
+  needed again. The shape that ends it is one predicate the modals answer
+  rather than a list of fields.
 
 ### The graph, now a sibling
 
@@ -1228,7 +1215,9 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
     threads is not there, and closing it is the same fix as above.
   - **The outbox review cards have not been exercised live.** Built and unit
     tested; no run has yet staged a draft while the connector was watching.
-  - **It is installed and running** (re-verified 2026-08-16, on 0.1.6).
+  - **It is installed and running** (`mecha-slack.service` active, re-verified
+    2026-08-20 — but on the **0.1.8** binary, since the install is a release
+    behind the repository).
     `mecha-slack.service` is enabled with linger, and `[slack] tools` is now
     `[]` — the whole surface, **including `mail__*` and the graph's `kg_*`**
     (re-measured 2026-08-10; the rationale comment sits above the line in
@@ -1264,7 +1253,8 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   fragment and the 08-07 attempt stay in their worktrees as diagnosis
   evidence, not baselines. Two earlier lessons still stand when launching:
   rebuild the portable binary first (`bench/run.sh` scores whichever
-  checkout you launch from — it is at 0.1.6 as of 2026-08-16), and read any
+  checkout you launch from — last recorded at 0.1.6 on 2026-08-16 and
+  **not re-verified since**, so assume it is stale rather than current), and read any
   job with `bench/check-subset.py` before believing it is a subset.
   k=5 for a leaderboard-comparable number is the follow-up, ~74h.
   AgentDojo (for the interlock) and a SWE-bench Bash Only control are named in
