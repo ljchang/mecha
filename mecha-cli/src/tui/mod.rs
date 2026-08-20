@@ -4060,8 +4060,30 @@ fn human_tokens(n: u64) -> String {
 /// /skills, which is what makes it a helper rather than a fix: the next modal
 /// copies whichever sibling it happens to open.
 fn list_height(rows: u16, terminal_height: u16) -> u16 {
+    list_height_reserving(rows, terminal_height, 0)
+}
+
+/// The same, for a box that spends `reserved` of its own rows on something
+/// that is not the list — /mail renders a key legend inside the block rather
+/// than in the title.
+///
+/// It exists because the two-argument form **could not express that box**, and
+/// that is why /mail kept its own spelling and why the sweep that fixed six
+/// modals walked past it: the site read `clamp(2, …)` rather than `clamp(1, …)`
+/// and matched no grep aimed at the others. It is also worse — a floor of two
+/// collides with the ceiling one row *earlier*, so /mail died at five rows
+/// where the rest died at four. A helper that cannot say what a caller means is
+/// how a caller ends up saying it inline.
+///
+/// The degradation is the whole reason it is not `assert`-shaped: the ceiling
+/// floors at one row, and then **the floor is pulled down to meet it** rather
+/// than the other way around. A terminal too short for the strip *and* a row of
+/// list gets a one-row box that the strip fills, which is useless and alive —
+/// the fail-safe direction, since the alternative is taking the session down.
+fn list_height_reserving(rows: u16, terminal_height: u16, reserved: u16) -> u16 {
     let max = terminal_height.saturating_sub(4).max(1);
-    rows.clamp(1, max) + 2
+    let min = reserved.saturating_add(1).min(max);
+    rows.saturating_add(reserved).clamp(min, max) + 2
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {

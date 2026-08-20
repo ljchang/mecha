@@ -607,6 +607,39 @@ mod tests {
         assert_eq!(super::super::list_height(200, 45), 43);
     }
 
+    /// /mail reserves a row inside the block for its key legend, so its floor
+    /// is two and its collision with the ceiling comes one row *earlier* than
+    /// everywhere else — it died at five rows where the others died at four.
+    /// The old spelling was `(rows + 1).clamp(2, height - 4) + 2`.
+    #[test]
+    fn a_reserved_row_moves_the_floor_without_moving_the_crash_into_it() {
+        for terminal_height in 0..=6u16 {
+            for rows in 0..=3u16 {
+                // The call is the assertion: `clamp(2, 1)` panicked here.
+                let h = super::super::list_height_reserving(rows, terminal_height, 1);
+                assert!(h >= 3, "rows={rows} terminal={terminal_height} -> {h}");
+            }
+        }
+        // Above the collision the arithmetic is exactly what it always was.
+        for (rows, terminal_height) in [(3u16, 45u16), (0, 45), (200, 45), (3, 7), (3, 6)] {
+            assert_eq!(
+                super::super::list_height_reserving(rows, terminal_height, 1),
+                (rows + 1).clamp(2, terminal_height.saturating_sub(4)) + 2,
+                "rows={rows} terminal={terminal_height}"
+            );
+        }
+        // And reserving nothing is the two-argument helper, so the six modals
+        // that swapped to it are unmoved.
+        for terminal_height in 0..=60u16 {
+            for rows in 0..=4u16 {
+                assert_eq!(
+                    super::super::list_height_reserving(rows, terminal_height, 0),
+                    super::super::list_height(rows, terminal_height)
+                );
+            }
+        }
+    }
+
     /// F5, failing on the old watch arm, which posted one notice at five
     /// minutes and dropped the watch — a zombie child and a lost outcome.
     /// The poll now keeps the watch alive with periodic notices and only

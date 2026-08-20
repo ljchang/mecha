@@ -506,7 +506,10 @@ impl MailModal {
                 .collect()
         };
 
-        let height = (body.len() as u16 + 1).clamp(2, frame.area().height.saturating_sub(4)) + 2;
+        // `reserved: 1` is the legend strip, which is rendered inside the
+        // block rather than in its title — the reason this box needs a floor
+        // the two-argument helper cannot express.
+        let height = super::list_height_reserving(body.len() as u16, frame.area().height, 1);
         let area = super::centered(frame.area(), 120, height);
         frame.render_widget(Clear, area);
         // The strip is rendered *outside* the scrolling paragraph, in the
@@ -778,5 +781,22 @@ mod tests {
         );
         // The legend is on screen without being asked for.
         assert!(screen.contains("a archive"), "{screen}");
+    }
+
+    /// The site the six-modal sweep walked past, because it spelled its clamp
+    /// `clamp(2, …)` rather than `clamp(1, …)` — the legend strip needs a row,
+    /// so the floor is two and the collision with the ceiling lands at five
+    /// rows rather than four. Fails on the old line with `min > max. min = 2,
+    /// max = 1`.
+    #[test]
+    fn a_tiny_terminal_shrinks_the_list_rather_than_panicking() {
+        let modal = MailModal::new(vec![row("a"), row("b"), row("c")]);
+        for height in 0..=8u16 {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, height.max(1)))
+                    .unwrap();
+            // The draw itself is the assertion: the old code panicked here.
+            terminal.draw(|f| modal.draw(f)).unwrap();
+        }
     }
 }
