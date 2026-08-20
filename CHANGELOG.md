@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.8] - 2026-08-20
 
 ### Added
 
@@ -44,6 +44,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than only in the tool list, because a shortened list is advisory to a
   model that remembers a tool from three turns ago. A loaded skill crosses a
   compaction verbatim, since a paraphrased procedure is a different procedure.
+
+
+### Changed
+
+- **A staged message is reviewed as a message, not as its arguments.** `mecha
+  outbox show` and the `/outbox` modal led with provenance and then printed
+  `{"body_markdown": "Dear Dirk,\n\nThank…"}`, so deciding whether to send a
+  letter in your own name meant decoding escape sequences. Both now lead with
+  the draft — headers, then the prose with its own newlines — with the taint
+  warning still above everything and the provenance in grey below.
+  `mecha_core::outbox::DraftView` does the reshaping, keyed on well-known
+  argument *names* like `headline` so the store stays tool-agnostic and an
+  unanticipated tool's fields land in `other` rather than vanishing. Nothing is
+  dropped: every argument appears in exactly one of headers, body or other,
+  with a test on it, because a field the reviewer cannot see is a field they
+  approved unread. The exact bytes are `--json` on the CLI and `J` in the
+  modal — the check, not the read. A tainted send's confirmation is reshaped
+  the same way: what is approved must be what was read.
+
+- **`mecha outbox edit` opens the prose.** Editing a letter inside a JSON
+  string literal means typing `\n` for a paragraph break and escaping every
+  quote, in a file where one slip is a parse error that discards the whole
+  edit — for the one action here whose purpose is changing the words. The
+  scratch file is now a `.md` holding the body, written back to the field it
+  came from; `--json` is what it always did, and is the automatic fallback for
+  a draft that is not prose. The learning capture is untouched: `args_before`
+  still holds the draft and `mecha reflect` still mines the difference.
+
+- **`/outbox` hides resolved items behind `h`.** They stay on file forever —
+  that is the record — but a decided draft is not work, and a queue where one
+  pending item sits under twenty-eight resolved ones is a queue nobody reads to
+  the bottom of. The count rides in the title so the filter is visible, and the
+  toggle re-finds the row under the cursor by id, because the two lists have
+  different lengths and an index carried across would name a different draft to
+  a keypress that might be `s`.
+
+- **`/mail` shows its keys, and `enter` opens the thread.** Eleven keys were
+  going into a title bar that fit four and were replaced entirely by the first
+  status message; they are a pinned strip now, built from the same table the
+  key map is built from, with a test asserting the two agree, and `?` opens the
+  full list. `enter` was starting an MCP server, fetching a whole thread and
+  printing its subject line into that title — the mail was downloaded and
+  thrown away. It opens a scrollable reader instead, off the event loop on a
+  watch, and the triage keys work from inside it so read-then-archive is one
+  motion. The handle column is gone from the list: eight characters of base64
+  spending width the subject needed, kept on the reader's title bar where
+  someone about to type `mecha mail archive <handle>` is looking.
 
 
 ## [0.1.7] - 2026-08-19
@@ -1338,7 +1385,9 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/ljchang/mecha/releases/tag/v0.1.8
+[0.1.7]: https://github.com/ljchang/mecha/releases/tag/v0.1.7
 [0.1.6]: https://github.com/ljchang/mecha/releases/tag/v0.1.6
 [0.1.5]: https://github.com/ljchang/mecha/releases/tag/v0.1.5
 [0.1.4]: https://github.com/ljchang/mecha/releases/tag/v0.1.4
