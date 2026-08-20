@@ -137,6 +137,20 @@ enum Watch {
     /// its own thread instead; this watch collects the answer, execs the
     /// remedy only if the unit is still failed, and reports "already
     /// recovered" as the outcome otherwise.
+    /// A `mecha mail show` fetching one thread for the /mail reader.
+    ///
+    /// The same exception `RestartProbe` takes, for the same reason: reading
+    /// a thread in full starts an MCP server and makes a network call, and
+    /// doing that on the event loop freezes the interface at the exact moment
+    /// someone is waiting to read something. Nothing durable records a read,
+    /// so the child's answer is the cue — on its own thread, because what is
+    /// wanted back is the text and not an exit code.
+    MailRead {
+        rx: std::sync::mpsc::Receiver<Result<String>>,
+        /// For the reader's title and for saying which read failed.
+        handle: String,
+        since: std::time::Instant,
+    },
     RestartProbe {
         rx: std::sync::mpsc::Receiver<bool>,
         /// The remedy to spawn if the unit is still failed.
@@ -1105,6 +1119,48 @@ fn poll_watches(app: &mut App) {
                     }
                 }
             }
+            Watch::MailRead { rx, handle, since } => match rx.try_recv() {
+                Ok(Ok(text)) => match &mut app.mail {
+                    Some(modal) => {
+                        modal.loading = None;
+                        modal.status = None;
+                        modal.reading = Some(mail::Reader::new(handle, &text));
+                    }
+                    // The modal was closed while it loaded. Printing a whole
+                    // thread into the transcript is not the favour it looks
+                    // like — say it is ready and let them ask again.
+                    None => app.transcript.push(Entry::Notice(format!(
+                        "{handle} finished loading after /mail closed"
+                    ))),
+                },
+                Ok(Err(e)) => {
+                    let line = format!("could not read {handle}: {e:#}");
+                    match &mut app.mail {
+                        Some(modal) => {
+                            modal.loading = None;
+                            modal.status = Some(line);
+                        }
+                        None => app.transcript.push(Entry::Error(line)),
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if since.elapsed() > doctor::EXAMINE_CAP {
+                        if let Some(modal) = &mut app.mail {
+                            modal.loading = None;
+                            modal.status =
+                                Some(format!("{handle} never answered — enter tries again"));
+                        }
+                    } else {
+                        app.watches.push(Watch::MailRead { rx, handle, since });
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if let Some(modal) = &mut app.mail {
+                        modal.loading = None;
+                        modal.status = Some(format!("the read of {handle} was lost"));
+                    }
+                }
+            },
             Watch::RestartProbe {
                 rx,
                 argv,
@@ -2363,6 +2419,15 @@ fn handle_outbox_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.staged = None;
             }
         }
+        // The exact bytes, for checking what the readable view reshaped.
+        KeyCode::Char('J') if modal.detail => {
+            modal.show_raw = !modal.show_raw;
+            modal.detail_scroll = 0;
+        }
+        // Decided items, hidden by default. Only from the list: the detail
+        // is about one item, and a filter that silently changed which item
+        // is under the cursor is the accident this modal must not have.
+        KeyCode::Char('h') if !modal.detail => modal.toggle_history(),
         KeyCode::Char('s') => {
             if let Some(row) = modal.selected_row() {
                 if row.pending() {
@@ -2418,8 +2483,15 @@ fn handle_outbox_key(app: &mut App, key: KeyEvent) -> Result<()> {
 /// to the whole backlog. The badge rides along, counted before the scope
 /// filter so it always describes the store.
 fn reload_outbox(app: &mut App) {
-    let (selected, detail, status, scope) = match &app.staged {
-        Some(m) => (m.selected, m.detail, m.status.clone(), m.scope.clone()),
+    let (selected, detail, status, scope, show_raw, history) = match &app.staged {
+        Some(m) => (
+            m.selected,
+            m.detail,
+            m.status.clone(),
+            m.scope.clone(),
+            m.show_raw,
+            m.history,
+        ),
         None => return,
     };
     match outbox::load() {
@@ -2429,14 +2501,22 @@ fn reload_outbox(app: &mut App) {
                 Some(ids) => rows.into_iter().filter(|r| ids.contains(&r.id)).collect(),
                 None => rows,
             };
-            let selected = selected.min(rows.len().saturating_sub(1));
-            app.staged = Some(outbox::OutboxModal {
-                selected,
-                detail: detail && !rows.is_empty(),
+            let mut modal = outbox::OutboxModal {
                 status,
                 scope,
+                show_raw,
+                history,
                 ..outbox::OutboxModal::new(rows)
-            });
+            };
+            // Clamped against what is *shown*, not against the whole record:
+            // with history hidden, the two differ, and a cursor past the end
+            // of the visible list is a `s` aimed at nothing.
+            let visible = modal.shown().len();
+            modal.selected = selected.min(visible.saturating_sub(1));
+            // A detail view of an item that just left the list has nothing to
+            // show — a send resolves the draft it was opened on.
+            modal.detail = detail && visible > 0;
+            app.staged = Some(modal);
         }
         Err(e) => {
             app.staged = None;
@@ -3263,12 +3343,12 @@ fn suspend_and_edit_trigger(
     Ok(())
 }
 
-/// Edit an outbox draft's arguments in `$EDITOR`, then reload the modal.
+/// Edit an outbox draft in `$EDITOR`, then reload the modal.
 ///
-/// Saving goes through `mecha outbox edit`'s own path — invalid JSON is
-/// refused and the draft kept, `args_before` is never touched — so the
-/// learning capture that mines `diff(staged, sent)` sees the TUI's edits
-/// exactly as it sees the command line's.
+/// Saving goes through `mecha outbox edit`'s own path — which opens the prose
+/// and writes it back to the field it came from, and never touches
+/// `args_before` — so the learning capture that mines `diff(staged, sent)`
+/// sees the TUI's edits exactly as it sees the command line's.
 fn suspend_and_edit_outbox(
     terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>,
     app: &mut App,
@@ -4028,6 +4108,49 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // The key list swallows the next keypress, whatever it is: an overlay you
+    // have to guess your way out of is not help.
+    if modal.help {
+        modal.help = false;
+        return Ok(());
+    }
+
+    // An open thread takes the scrolling keys and gives everything else to
+    // the action map below — reading a thread and then archiving it is one
+    // motion, and making the reader a dead end would mean closing it first.
+    if let Some(reader) = &mut modal.reading {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                modal.reading = None;
+                return Ok(());
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                reader.scroll_by(-1);
+                return Ok(());
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Enter => {
+                reader.scroll_by(1);
+                return Ok(());
+            }
+            KeyCode::PageUp => {
+                reader.scroll_by(-15);
+                return Ok(());
+            }
+            KeyCode::PageDown | KeyCode::Char(' ') => {
+                reader.scroll_by(15);
+                return Ok(());
+            }
+            KeyCode::Char('?') => {
+                modal.help = true;
+                return Ok(());
+            }
+            // Anything else falls through to the action map, and acting
+            // closes the reader: the row it was opened on has just moved.
+            KeyCode::Char(c) if mail::action_for(c).is_some() => modal.reading = None,
+            _ => return Ok(()),
+        }
+    }
+
     // A pending confirmation owns it next. EOF and anything that is not `y`
     // mean no, which is the outbox's rule and the doctor's.
     if modal.confirm.is_some() {
@@ -4056,24 +4179,24 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Up | KeyCode::Char('k') => modal.move_by(-1),
         KeyCode::Down | KeyCode::Char('j') => modal.move_by(1),
-        // Enter reads the thread in full, which is a whole mail fetch — so it
-        // goes through the CLI like every other action rather than being a
-        // second renderer of the same record.
+        KeyCode::Char('?') => modal.help = true,
+        // Enter opens the thread. It goes through the CLI like every other
+        // action rather than being a second renderer of the same record — and
+        // off the event loop, because it is a whole mail fetch.
         KeyCode::Enter => {
+            if modal.loading.is_some() {
+                return Ok(());
+            }
             let Some(row) = modal.rows.get(modal.selected) else {
                 return Ok(());
             };
-            let (thread, account) = (row.thread_id.clone(), row.account.clone());
-            modal.status = Some(
-                match self_cli(&["mail", "show", &thread, "--account", &account]) {
-                    Ok(o) => o
-                        .lines()
-                        .find(|l| l.starts_with("subject:"))
-                        .unwrap_or("read")
-                        .to_string(),
-                    Err(e) => format!("{e:#}"),
-                },
+            let (thread, account, handle) = (
+                row.thread_id.clone(),
+                row.account.clone(),
+                row.handle.clone(),
             );
+            modal.loading = Some(handle.clone());
+            spawn_mail_read(app, &thread, &account, &handle);
         }
         KeyCode::Char(c) => {
             let Some(action) = mail::action_for(c) else {
@@ -4137,16 +4260,43 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
 /// only writer, so anything this modal believed about the record is now a
 /// guess. Cheap — the store is small and local.
 fn refresh_mail(app: &mut App) {
-    let (selected, status) = match &app.mail {
-        Some(m) => (m.selected, m.status.clone()),
-        None => return,
+    let Some(current) = &mut app.mail else {
+        return;
     };
-    if let Ok(rows) = mail::load() {
-        let mut modal = mail::MailModal::new(rows);
-        modal.selected = selected.min(modal.rows.len().saturating_sub(1));
-        modal.status = status;
-        app.mail = Some(modal);
-    }
+    let Ok(rows) = mail::load() else {
+        return;
+    };
+    // The rows are replaced; everything the *person* was doing — an open
+    // thread, a read in flight, the cursor — is theirs and survives. Rebuilding
+    // the modal here would close a thread they were halfway through reading
+    // because an unrelated archive succeeded.
+    current.rows = rows;
+    current.selected = current.selected.min(current.rows.len().saturating_sub(1));
+}
+
+/// Fetch one thread for the reader, off the event loop.
+///
+/// A thread on purpose rather than a detached child: what is wanted back is
+/// the text, and `self_cli` already knows how to get it. The watch collects
+/// it a tick later and installs it into the modal.
+fn spawn_mail_read(app: &mut App, thread: &str, account: &str, handle: &str) {
+    let args: Vec<String> = vec![
+        "mail".into(),
+        "show".into(),
+        thread.into(),
+        "--account".into(),
+        account.into(),
+    ];
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = tx.send(self_cli(&borrowed));
+    });
+    app.watches.push(Watch::MailRead {
+        rx,
+        handle: handle.to_string(),
+        since: std::time::Instant::now(),
+    });
 }
 
 /// Start a drafting run and let it go.
