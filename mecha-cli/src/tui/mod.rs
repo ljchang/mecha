@@ -14,6 +14,7 @@
 mod approve;
 mod ask;
 mod command;
+mod docs;
 mod doctor;
 mod frontdoor;
 mod mail;
@@ -154,6 +155,18 @@ enum Watch {
         handle: String,
         since: std::time::Instant,
     },
+    /// A `mecha-docs …` child answering for the /docs modal.
+    ///
+    /// The same exception `MailRead` takes: listing the scope is a Drive
+    /// request and finishing a pick is a token exchange, and either on the
+    /// event loop freezes the interface at exactly the moment someone is
+    /// waiting for it. On its own thread, because what is wanted back is the
+    /// JSON and not an exit code.
+    Docs {
+        rx: std::sync::mpsc::Receiver<Result<String>>,
+        job: DocsJob,
+        since: std::time::Instant,
+    },
     RestartProbe {
         rx: std::sync::mpsc::Receiver<bool>,
         /// The remedy to spawn if the unit is still failed.
@@ -161,6 +174,19 @@ enum Watch {
         unit: String,
         since: std::time::Instant,
     },
+}
+
+/// Which `mecha-docs` call a `Watch::Docs` is waiting on. The answer is JSON
+/// either way; what differs is where it goes.
+#[derive(Clone, Copy, PartialEq)]
+enum DocsJob {
+    /// `list --json` — the files this grant can reach.
+    List,
+    /// `pick --url --json` — an authorization URL, and an attempt recorded on
+    /// disk for the second half to finish.
+    PickUrl,
+    /// `pick --redirect … --json` — the exchange, and what went into scope.
+    PickDone,
 }
 
 /// Everything a provider or MCP change replaces at once.
@@ -286,8 +312,13 @@ struct App {
     /// Open modal list, if any. Takes every key while it is up.
     picker: Option<Picker>,
     /// The help overlay is up. It exists to be glanced at and dismissed, so
-    /// any key closes it.
+    /// any key closes it — except the ones that scroll it, because the list
+    /// is longer than a short terminal and a reference card that silently
+    /// stops at `/outbox` is worse than none.
     help: bool,
+    /// First body row the overlay shows. Reset every time it opens: a card
+    /// that reopens halfway down is a card that looks broken.
+    help_scroll: u16,
     /// The /tools modal, when open. Takes every key while it is up.
     tools: Option<tools::ToolsModal>,
     /// The /skills modal, when open. Takes every key while it is up.
@@ -304,6 +335,8 @@ struct App {
     /// The /frontdoor modal, when open. Takes every key while it is up.
     requests: Option<frontdoor::FrontdoorModal>,
     mail: Option<mail::MailModal>,
+    /// The /docs modal, when open. Takes every key while it is up.
+    documents: Option<docs::DocsModal>,
     /// The /tasks modal, when open. Takes every key while it is up.
     tasks: Option<tasks::TasksModal>,
     /// The /polls modal, when open. Takes every key while it is up.
@@ -553,6 +586,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         asking: None,
         picker: None,
         help: false,
+        help_scroll: 0,
         tools: None,
         skills: None,
         skills_dir: prepared
@@ -570,6 +604,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         staged: None,
         requests: None,
         mail: None,
+        documents: None,
         tasks: None,
         poll_monitor: None,
         health: None,
@@ -624,6 +659,10 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
 
     let mut live = Live::new(prepared, global.clone());
     let (mut terminal, kitty) = enter()?;
+    // From here until `leave`, stderr is the alternate screen. Hold log lines
+    // instead of letting them scribble through the frame; the loop drains them
+    // into the transcript, where they can actually be read.
+    crate::logs::capture();
     app.kitty_keyboard = kitty;
     set_title(&format!("mecha · {}", workspace_name(&app)));
     let result = run_loop(
@@ -638,6 +677,11 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     )
     .await;
     leave(&mut terminal)?;
+    // The screen is the user's again, so anything still held — including a
+    // warning from the very last frame — goes where it was always headed.
+    for line in crate::logs::release() {
+        eprintln!("{line}");
+    }
 
     if let Some(s) = &session {
         println!(
@@ -674,6 +718,19 @@ async fn run_loop(
     let (mut events_tx, mut events_rx) = mpsc::unbounded_channel::<AgentEvent>();
 
     loop {
+        // Log lines held since the last frame. Into the transcript rather than
+        // onto the terminal, which is the point of capturing them — and as
+        // entries rather than a status flash, because a warning about a run
+        // that finished on a failed tool call has to still be there when the
+        // user looks up.
+        for line in crate::logs::drain() {
+            app.transcript.push(if crate::logs::is_alarming(&line) {
+                Entry::Error(line)
+            } else {
+                Entry::Notice(line)
+            });
+        }
+
         // Recomputed each frame: a `/provider` or `/mcp` switch changes the
         // tool list underneath us.
         let (model, provider, tools) = (
@@ -1189,6 +1246,31 @@ fn poll_watches(app: &mut App) {
                     }
                 }
             },
+            Watch::Docs { rx, job, since } => match rx.try_recv() {
+                Ok(answer) => install_docs_answer(app, job, answer),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if since.elapsed() > doctor::EXAMINE_CAP {
+                        if let Some(modal) = &mut app.documents {
+                            modal.loading = false;
+                            if let Some(pick) = &mut modal.pick {
+                                pick.working = false;
+                            }
+                            modal.status = Some("mecha-docs never answered — r tries again".into());
+                        }
+                    } else {
+                        app.watches.push(Watch::Docs { rx, job, since });
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if let Some(modal) = &mut app.documents {
+                        modal.loading = false;
+                        if let Some(pick) = &mut modal.pick {
+                            pick.working = false;
+                        }
+                        modal.status = Some("the call to mecha-docs was lost".into());
+                    }
+                }
+            },
             Watch::RestartProbe {
                 rx,
                 argv,
@@ -1347,6 +1429,7 @@ fn open_scoped_review(app: &mut App, ids: Vec<String>) {
         || app.staged.is_some()
         || app.requests.is_some()
         || app.mail.is_some()
+        || app.documents.is_some()
         || app.tasks.is_some()
         || app.poll_monitor.is_some()
         || app.health.is_some()
@@ -1502,6 +1585,13 @@ fn on_key(
         match key.code {
             KeyCode::Up if !modal.detail => modal.move_by(-1),
             KeyCode::Down if !modal.detail => modal.move_by(1),
+            // In the detail the arrows scroll it, as they do in /skills: the
+            // body is a tool description, and an MCP server's runs past any
+            // box worth drawing.
+            KeyCode::Up => modal.scroll_detail(-1),
+            KeyCode::Down => modal.scroll_detail(1),
+            KeyCode::PageUp => modal.scroll_detail(-10),
+            KeyCode::PageDown => modal.scroll_detail(10),
             // Enter opens the detail; from the detail it steps back out, so
             // enter-enter-enter walks in and out rather than dead-ending.
             KeyCode::Enter => modal.detail = !modal.detail,
@@ -1556,6 +1646,9 @@ fn on_key(
     if app.mail.is_some() {
         return handle_mail_key(app, key);
     }
+    if app.documents.is_some() {
+        return handle_docs_key(app, key);
+    }
     if app.tasks.is_some() {
         return handle_tasks_key(app, key);
     }
@@ -1596,6 +1689,20 @@ fn on_key(
     // nothing). Checked after the real modals — an approval or a question
     // arriving while help is up still gets its answer.
     if app.help {
+        // The scroll keys are the exception to "any key closes": the card is
+        // taller than a short terminal, and the half below the fold is the
+        // half nobody has memorised.
+        match key.code {
+            KeyCode::Up | KeyCode::PageUp => {
+                app.help_scroll = app.help_scroll.saturating_sub(1);
+                return Ok(());
+            }
+            KeyCode::Down | KeyCode::PageDown => {
+                app.help_scroll = app.help_scroll.saturating_add(1);
+                return Ok(());
+            }
+            _ => {}
+        }
         app.help = false;
         match key.code {
             KeyCode::Char(c) if c != '?' => {}
@@ -1700,7 +1807,10 @@ fn on_key(
 
         // Only on an empty line: with anything typed, `?` is a character in a
         // question the user is writing.
-        KeyCode::Char('?') if app.input.is_empty() => app.help = true,
+        KeyCode::Char('?') if app.input.is_empty() => {
+            app.help = true;
+            app.help_scroll = 0;
+        }
 
         KeyCode::Char(c) => {
             app.quit_armed = false;
@@ -1902,7 +2012,10 @@ fn run_command(
     let mut say = |text: String| app.transcript.push(Entry::Notice(text));
 
     match cmd {
-        Command::Help => app.help = true,
+        Command::Help => {
+            app.help = true;
+            app.help_scroll = 0;
+        }
 
         Command::Tools => {
             let outbox = agent.context().outbox.clone();
@@ -1921,6 +2034,7 @@ fn run_command(
                 rows,
                 selected: 0,
                 detail: false,
+                detail_scroll: 0,
                 sandbox_line: app.sandbox_line.clone(),
             });
         }
@@ -2054,6 +2168,26 @@ fn run_command(
             }
             Ok(rows) => app.mail = Some(mail::MailModal::new(rows)),
             Err(e) => say(format!("mail: {e:#}")),
+        },
+
+        // Opened at once in a loading state, with the listing fetched off the
+        // event loop: it is a Drive request, and a modal that appears only
+        // after the network answers reads as a key that did nothing.
+        Command::Docs => match docs_accounts() {
+            accounts if accounts.is_empty() => {
+                say("no documents grant yet — run `mecha-docs auth` once, then \
+                 `mecha-docs pick` or /docs to put a document in scope"
+                    .into())
+            }
+            accounts => {
+                let account = accounts[0].clone();
+                app.documents = Some(docs::DocsModal::new(account.clone(), accounts));
+                spawn_docs(
+                    app,
+                    DocsJob::List,
+                    &["--account", &account, "list", "--json"],
+                );
+            }
         },
 
         Command::Tasks => match load_tasks(false) {
@@ -2543,12 +2677,11 @@ fn handle_outbox_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     input.buffer.pop();
                 }
             }
-            KeyCode::Char(c) => {
-                if let Some(input) = &mut modal.rejecting {
+            _ => {
+                if let (Some(c), Some(input)) = (typed_char(&key), &mut modal.rejecting) {
                     input.buffer.push(c);
                 }
             }
-            _ => {}
         }
         return Ok(());
     }
@@ -2740,12 +2873,11 @@ fn handle_frontdoor_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     input.buffer.pop();
                 }
             }
-            KeyCode::Char(c) => {
-                if let Some(input) = &mut modal.input {
+            _ => {
+                if let (Some(c), Some(input)) = (typed_char(&key), &mut modal.input) {
                     input.buffer.push(c);
                 }
             }
-            _ => {}
         }
         return Ok(());
     }
@@ -2905,12 +3037,11 @@ fn handle_polls_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     input.buffer.pop();
                 }
             }
-            KeyCode::Char(c) => {
-                if let Some(input) = &mut modal.input {
+            _ => {
+                if let (Some(c), Some(input)) = (typed_char(&key), &mut modal.input) {
                     input.buffer.push(c);
                 }
             }
-            _ => {}
         }
         return Ok(());
     }
@@ -3441,6 +3572,13 @@ fn handle_tasks_key(app: &mut App, key: KeyEvent) -> Result<()> {
     modal.status = None;
 
     match key.code {
+        // In the detail the arrows scroll it, as they do in /tools and
+        // /skills: the name is whatever the user typed, so the body wraps
+        // past the box on any task described in a sentence.
+        KeyCode::Up if modal.detail => modal.scroll_detail(-1),
+        KeyCode::Down if modal.detail => modal.scroll_detail(1),
+        KeyCode::PageUp if modal.detail => modal.scroll_detail(-10),
+        KeyCode::PageDown if modal.detail => modal.scroll_detail(10),
         KeyCode::Up | KeyCode::Char('k') => modal.move_by(-1),
         KeyCode::Down | KeyCode::Char('j') => modal.move_by(1),
         KeyCode::Enter => {
@@ -3548,9 +3686,12 @@ fn handle_tasks_form_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Tab | KeyCode::Down => form.move_by(1),
         KeyCode::BackTab | KeyCode::Up => form.move_by(-1),
         KeyCode::Backspace => form.backspace(),
-        KeyCode::Char(c) => form.push(c),
         KeyCode::Enter => return submit_task_form(app),
-        _ => {}
+        _ => {
+            if let Some(c) = typed_char(&key) {
+                form.push(c);
+            }
+        }
     }
     Ok(())
 }
@@ -3930,6 +4071,35 @@ fn recall(app: &mut App, direction: i32) {
     app.cursor = app.input.len();
 }
 
+/// The character a key event actually typed, or `None` if it was a chord.
+///
+/// `KeyCode::Char('c')` with CONTROL held **is** Ctrl-C — crossterm reports
+/// the modifier beside the letter rather than in place of it, so a `match` on
+/// `KeyCode::Char(c)` alone sees the bare letter and cannot tell the two
+/// apart. Every text field and every key table in this file did exactly that,
+/// which was harmless in the input box (the `ctrl` branch runs first and
+/// consumes them) and not harmless anywhere else:
+///
+/// - Six text inputs — an outbox rejection reason, a frontdoor note, a poll
+///   note, the task form, a mail reason, the /docs paste field — inserted a
+///   literal `c` when someone pressed Ctrl-C to back out.
+/// - `/mail` was worse than cosmetic. Its keys go through `action_for`, so
+///   **Ctrl-A archived the selected thread, Ctrl-D dismissed it, Ctrl-T made
+///   a task of it and Ctrl-R started a drafting run** — on chords that mean
+///   beginning-of-line, delete and refresh everywhere else in a terminal.
+///
+/// A helper rather than seven guards, on the `list_height` rule: a new modal
+/// is written by copying whichever sibling is nearest, so the fix has to be
+/// the thing that gets copied. SHIFT is *not* a chord — that is how capitals
+/// arrive under the kitty protocol.
+fn typed_char(key: &KeyEvent) -> Option<char> {
+    let chord = KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER;
+    match key.code {
+        KeyCode::Char(c) if !key.modifiers.intersects(chord) => Some(c),
+        _ => None,
+    }
+}
+
 fn prev_boundary(s: &str, at: usize) -> Option<usize> {
     s[..at].char_indices().next_back().map(|(i, _)| i)
 }
@@ -3938,39 +4108,144 @@ fn next_boundary(s: &str, at: usize) -> usize {
     s[at..].chars().next().map_or(at, |c| at + c.len_utf8())
 }
 
-/// Where the cursor sits in the wrapped input box, and how many rows the text
-/// needs: `(column, row, rows)`.
+/// How the input box's text is laid out: which byte range each visual row
+/// shows, and where the caret sits among them.
 ///
-/// Split out and made pure because pasted text can contain newlines, and the
-/// arithmetic that assumed it could not put the cursor in the wrong place the
-/// moment anyone pasted a snippet. A newline is a hard break; everything else
-/// wraps at `width`.
-fn input_layout(text: &str, cursor: usize, width: u16) -> (u16, u16, u16) {
-    let width = width.max(1);
-    let (mut col, mut row) = (0u16, 0u16);
-    let (mut cursor_col, mut cursor_row) = (0u16, 0u16);
-
-    for (offset, ch) in text.char_indices() {
-        if offset == cursor {
-            (cursor_col, cursor_row) = (col, row);
-        }
-        if ch == '\n' {
-            col = 0;
-            row += 1;
-        } else {
-            col += 1;
-            if col >= width {
-                col = 0;
-                row += 1;
-            }
-        }
-    }
-    if cursor >= text.len() {
-        (cursor_col, cursor_row) = (col, row);
-    }
-
-    (cursor_col, cursor_row, row + 1)
+/// **This is the only wrapper the input box has**, and that is the fix rather
+/// than an implementation detail. The box used to hand its text to
+/// `Paragraph::wrap(Wrap { trim: false })` — ratatui's `WordWrapper`, which
+/// breaks at *word* boundaries and measures in *display cells* — while this
+/// function counted *characters* and broke at exactly `width`. Two
+/// implementations of one question, and the caret followed this one while the
+/// text followed that one, so they parted company the moment a word straddled
+/// the right edge, which is most lines of prose. Measured on
+/// `"can you help me prepare my schedule for my undergrad fMRI class"` at 30
+/// columns: ratatui painted a last row reading `"class"` and the caret was
+/// placed at column 3 of it. Wide characters were the same bug twice — one
+/// CJK glyph is two cells and was counted as one.
+///
+/// So `draw` now renders the rows this returns and there is no `.wrap()`
+/// anywhere near the input box. Nothing is left to disagree.
+struct InputLayout {
+    /// One byte range per visual row. A **partition** of `0..text.len()`:
+    /// contiguous, gapless, covering everything — so no character can be shown
+    /// twice or vanish, and the caret's row can be found by containment rather
+    /// than by re-deriving the wrap a second time. A hard newline belongs to
+    /// the row it ends.
+    rows: Vec<std::ops::Range<usize>>,
+    cursor_col: u16,
+    cursor_row: u16,
 }
+
+/// How many terminal cells one character occupies. Control characters are
+/// zero rather than an error: they still occupy *bytes*, and the partition
+/// above is what keeps them from being silently eaten.
+fn cell_width(c: char) -> usize {
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
+}
+
+/// Greedy word wrap: a word moves down whole rather than being split, unless
+/// it cannot fit a row at all, in which case it breaks at the edge.
+fn input_layout(text: &str, cursor: usize, width: u16) -> InputLayout {
+    // A pty with no window size reports zero columns, and this is the
+    // arithmetic that runs first.
+    let width = (width.max(1)) as usize;
+    let mut rows: Vec<std::ops::Range<usize>> = Vec::new();
+    // Where the row being built starts, and how many cells it has used.
+    let (mut start, mut col) = (0usize, 0usize);
+
+    let mut chars = text.char_indices().peekable();
+    while let Some(&(i, ch)) = chars.peek() {
+        if ch == '\n' {
+            chars.next();
+            // The newline belongs to the row it ends — that is what keeps the
+            // ranges a partition, and it is what puts a caret typed just
+            // before it on the right row rather than the next one.
+            rows.push(start..i + 1);
+            (start, col) = (i + 1, 0);
+            continue;
+        }
+        if ch.is_whitespace() {
+            // A space at the wrap point stays on the row it came from, even
+            // past the edge, where the terminal clips it and nobody sees it.
+            // The alternative — carrying it down — shifts the visible text of
+            // every continuation row one column right, which is ugly on every
+            // wrapped line to fix something invisible. It is also what ratatui
+            // painted, so the box does not change shape under the fix.
+            chars.next();
+            col += cell_width(ch);
+            continue;
+        }
+
+        // A word: the run of non-whitespace beginning here, measured before
+        // anything is committed, because the decision is about the whole of it.
+        let (mut end, mut w) = (i, 0usize);
+        while let Some(&(j, c)) = chars.peek() {
+            if c.is_whitespace() {
+                break;
+            }
+            chars.next();
+            end = j + c.len_utf8();
+            w += cell_width(c);
+        }
+        if col > 0 && col + w > width {
+            rows.push(start..i);
+            (start, col) = (i, 0);
+        }
+        if col + w <= width {
+            col += w;
+            continue;
+        }
+        // Longer than a whole row even from column zero — a pasted URL, a
+        // path. Break it wherever the edge falls; there is nowhere better.
+        for (o, c) in text[i..end].char_indices() {
+            let (j, cw) = (i + o, cell_width(c));
+            if col > 0 && col + cw > width {
+                rows.push(start..j);
+                (start, col) = (j, 0);
+            }
+            col += cw;
+        }
+    }
+    rows.push(start..text.len());
+
+    let cursor = cursor.min(text.len());
+    let (mut cursor_row, mut cursor_col) = (0u16, 0u16);
+    for (n, r) in rows.iter().enumerate() {
+        // `cursor == r.end` belongs to the *next* row: that is where the next
+        // character typed will appear, and the caret has to be where the
+        // character will be. The last row keeps it, having no next.
+        if cursor < r.end || n + 1 == rows.len() {
+            let upto = cursor.clamp(r.start, r.end);
+            cursor_row = n as u16;
+            cursor_col = text[r.start..upto].chars().map(cell_width).sum::<usize>() as u16;
+            break;
+        }
+    }
+    // A caret at or past the right edge belongs at the start of the next row —
+    // that is where the next character will land, and a caret drawn on the
+    // border is a caret in the wrong place. Two ways to be there: a row that
+    // filled exactly (rows break lazily, when the character that overflows
+    // arrives, so the next row does not exist yet) or a trailing space parked
+    // past the edge by the rule above.
+    if cursor_col as usize >= width {
+        if cursor_row as usize + 1 == rows.len() {
+            rows.push(text.len()..text.len());
+        }
+        cursor_row += 1;
+        cursor_col = 0;
+    }
+
+    InputLayout {
+        rows,
+        cursor_col,
+        cursor_row,
+    }
+}
+
+/// The tallest the input box's text area gets before it scrolls. Past this the
+/// box would be eating the transcript to show a message nobody is reading yet.
+const INPUT_ROWS: u16 = 6;
 
 fn draw(
     frame: &mut Frame,
@@ -3982,9 +4257,34 @@ fn draw(
 ) {
     // The input box grows with what has been typed rather than scrolling
     // sideways, so a long steering instruction stays readable while writing it.
+    // Past `INPUT_ROWS` it scrolls vertically instead of growing further.
+    //
+    // The ghost completion is laid out *with* the text, not appended after it:
+    // it occupies cells, so a wrap computed without it is a wrap the box does
+    // not draw, and the box ends up a row short of its own content.
     let inner_width = frame.area().width.saturating_sub(2);
-    let (cursor_col, cursor_row, rows) = input_layout(&app.input, app.cursor, inner_width);
-    let input_height = rows.clamp(1, 6) + 2;
+    let (candidates, typed) = match command::at_token(&app.input, app.cursor) {
+        Some((_, partial)) => (
+            command::path_candidates(partial, &app.workspace),
+            partial.to_string(),
+        ),
+        None => (
+            command::completions(&app.input)
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            app.input.trim_start_matches('/').to_string(),
+        ),
+    };
+    let ghost = command::common_prefix(&candidates)
+        .strip_prefix(&typed)
+        .unwrap_or_default()
+        .to_string();
+    let tail = if ghost.is_empty() { "" } else { "  tab" };
+    let display = format!("{}{ghost}{tail}", app.input);
+    let layout = input_layout(&display, app.cursor, inner_width);
+    let visible = (layout.rows.len() as u16).clamp(1, INPUT_ROWS);
+    let input_height = visible + 2;
 
     // The pane exists only while there is a list: an empty bordered box would
     // be a badge that is always there, and those stop being read.
@@ -4009,56 +4309,78 @@ fn draw(
     );
 
     let (border, hint) = match &app.running {
-        Some(run) if run.cancelling => (Color::Red, " stopping "),
-        Some(_) => (Color::Yellow, " steer "),
-        None => (Color::Cyan, " message "),
+        Some(run) if run.cancelling => (Color::Red, "stopping"),
+        Some(_) => (Color::Yellow, "steer"),
+        None => (Color::Cyan, "message"),
     };
-    // Ghost completion: the rest of what every candidate agrees on, dim, after
-    // the cursor. Shown rather than applied, so typing on never fights it.
-    // Two candidate sources, one mechanism: an `@path` token at the cursor
+
+    // Keep the caret's row on screen. Scrolling to the *last* visible row
+    // rather than the first means typing at the end never jumps the view.
+    let scroll = layout
+        .cursor_row
+        .saturating_sub(visible - 1)
+        .min((layout.rows.len() as u16).saturating_sub(visible));
+
+    // The ghost is the rest of what every candidate agrees on, dim, after the
+    // cursor — shown rather than applied, so typing on never fights it. Two
+    // candidate sources, one mechanism: an `@path` token at the cursor
     // completes against the workspace, anything else against command names.
-    let (candidates, typed) = match command::at_token(&app.input, app.cursor) {
-        Some((_, partial)) => (
-            command::path_candidates(partial, &app.workspace),
-            partial.to_string(),
-        ),
-        None => (
-            command::completions(&app.input)
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            app.input.trim_start_matches('/').to_string(),
-        ),
-    };
-    let ghost = command::common_prefix(&candidates)
-        .strip_prefix(&typed)
-        .unwrap_or_default()
-        .to_string();
+    // Here it is only a matter of which spans get the dim style: the wrap
+    // above already accounted for the cells.
+    let (typed_end, ghost_end) = (app.input.len(), app.input.len() + ghost.len());
+    let body: Vec<Line> = layout.rows[scroll as usize..]
+        .iter()
+        .take(visible as usize)
+        .map(|r| {
+            // The part of this row falling inside `[lo, hi)`. Every bound is a
+            // char boundary — the row ranges by construction, the two marks
+            // because they are lengths of whole strings — so the slice is safe.
+            let clip = |lo: usize, hi: usize| {
+                let a = r.start.max(lo).min(r.end);
+                let b = r.end.min(hi).max(a);
+                // The newline is in the range because the ranges partition the
+                // text; it must not be in the row that gets drawn.
+                display[a..b].trim_end_matches('\n')
+            };
+            let dim = Style::new().fg(Color::DarkGray);
+            Line::from(vec![
+                Span::raw(clip(0, typed_end)),
+                Span::styled(clip(typed_end, ghost_end), dim),
+                Span::styled(clip(ghost_end, display.len()), dim),
+            ])
+        })
+        .collect();
 
-    let body = if ghost.is_empty() {
-        Line::from(app.input.as_str())
+    // No `.wrap()`: `input_layout` already did it, and a second wrapper is the
+    // bug this whole shape exists to remove.
+    let title = if layout.rows.len() as u16 > visible {
+        // A box that silently looks shorter than its content is the thing the
+        // outbox modal's hidden-item counter exists to avoid.
+        format!(
+            " {hint} · line {}/{} ",
+            layout.cursor_row + 1,
+            layout.rows.len()
+        )
     } else {
-        Line::from(vec![
-            Span::raw(app.input.as_str()),
-            Span::styled(ghost.clone(), Style::new().fg(Color::DarkGray)),
-            Span::styled("  tab", Style::new().fg(Color::DarkGray)),
-        ])
+        format!(" {hint} ")
     };
-
-    let input = Paragraph::new(body).wrap(Wrap { trim: false }).block(
+    let input = Paragraph::new(body).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::new().fg(border))
-            .title(hint),
+            .title(title),
     );
     frame.render_widget(input, chunks[3]);
 
-    // Cursor position inside the bordered box, wrapping as the text does and
-    // breaking where the text does.
-    frame.set_cursor_position((
-        chunks[3].x + 1 + cursor_col,
-        chunks[3].y + 1 + cursor_row.min(rows.clamp(1, 6).saturating_sub(1)),
-    ));
+    // The caret, in the same coordinates the rows above were drawn in. Guarded
+    // because a terminal short enough to squeeze the box to its borders has no
+    // row to put it on, and pointing at one is how a caret lands on a border.
+    if chunks[3].height >= 3 {
+        frame.set_cursor_position((
+            chunks[3].x + 1 + layout.cursor_col.min(inner_width.saturating_sub(1)),
+            chunks[3].y + 1 + layout.cursor_row.saturating_sub(scroll),
+        ));
+    }
 
     // What else could still be meant, listed under the box. Only while the
     // name is being typed — once there is an argument the question is settled.
@@ -4086,7 +4408,7 @@ fn draw(
     // Help first: a question or an approval arriving while it is up matters
     // more than the reference card, so they draw over it.
     if app.help {
-        draw_help(frame, app.kitty_keyboard);
+        app.help_scroll = draw_help(frame, app.kitty_keyboard, app.help_scroll);
     }
     if let Some(modal) = &app.tools {
         modal.draw(frame);
@@ -4104,6 +4426,9 @@ fn draw(
         modal.draw(frame);
     }
     if let Some(modal) = &app.mail {
+        modal.draw(frame);
+    }
+    if let Some(modal) = &app.documents {
         modal.draw(frame);
     }
     if let Some(modal) = &app.tasks {
@@ -4170,7 +4495,24 @@ fn draw_todo(frame: &mut Frame, area: Rect, items: &[mecha_core::tool::todo::Tod
 
 /// The middle tier of progressive disclosure: the status line hints at 3–4
 /// keys in the moment, this lists all of them, and the docs hold the rest.
-fn draw_help(frame: &mut Frame, kitty: bool) {
+/// The reference card. Returns the scroll position actually used, so the
+/// caller's copy cannot run past the end of a list only this function knows
+/// the length of.
+///
+/// Two things it used to do silently, both found by looking at it on a real
+/// terminal rather than by reading it:
+///
+/// - **The box was a fixed 70 columns and the lines are not.** `/doctor` and
+///   `/review` are past eighty characters, and a `Paragraph` with no `.wrap()`
+///   truncates — so the two entries that most needed explaining ended
+///   mid-sentence with nothing to say they had. The width now comes from the
+///   content, capped by the terminal.
+/// - **It clipped vertically with no bottom border and no marker.** On a
+///   forty-row terminal the card ends around `/todo`; on a thirty-row one it
+///   ends at `/outbox`, which is exactly the picture that reads as "the
+///   overlay is broken" rather than "there is more". It scrolls now, and the
+///   title says so.
+fn draw_help(frame: &mut Frame, kitty: bool, scroll: u16) -> u16 {
     // Shift+Enter only where it can actually arrive — advertising it on a
     // terminal without the kitty protocol would teach a key that submits.
     let newline_keys = if kitty {
@@ -4214,23 +4556,39 @@ fn draw_help(frame: &mut Frame, kitty: bool) {
         ));
     }
 
+    // Wide enough for the widest line, and never wider than the terminal.
+    let widest = body.iter().map(Line::width).max().unwrap_or(0) as u16;
     let area = centered(
         frame.area(),
-        70,
+        widest.saturating_add(4).max(40),
         (body.len() as u16)
             .saturating_add(2)
             .min(frame.area().height),
     );
+    let visible = area.height.saturating_sub(2) as usize;
+    let max_scroll = (body.len().saturating_sub(visible)) as u16;
+    let scroll = scroll.min(max_scroll);
+    let title = if max_scroll == 0 {
+        " help · any key to close ".to_string()
+    } else {
+        format!(
+            " help · {}–{} of {} · ↑↓ scrolls · any other key closes ",
+            scroll as usize + 1,
+            (scroll as usize + visible).min(body.len()),
+            body.len()
+        )
+    };
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(body).block(
+        Paragraph::new(body).scroll((scroll, 0)).block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::new().fg(Color::Cyan))
-                .title(" help · any key to close "),
+                .title(title),
         ),
         area,
     );
+    scroll
 }
 
 fn draw_question(frame: &mut Frame, q: &ask::Question) {
@@ -4610,8 +4968,11 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     input.accept(&a);
                 }
             }
-            KeyCode::Char(c) => input.insert(c),
-            _ => {}
+            _ => {
+                if let Some(c) = typed_char(&key) {
+                    input.insert(c);
+                }
+            }
         }
         return Ok(());
     }
@@ -4706,8 +5067,10 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
             modal.loading = Some(handle.clone());
             spawn_mail_read(app, &thread, &account, &handle);
         }
-        KeyCode::Char(c) => {
-            let Some(action) = mail::action_for(c) else {
+        KeyCode::Char(_) => {
+            // Through `typed_char`, or Ctrl-A archives the thread under the
+            // cursor and Ctrl-R starts a run.
+            let Some(action) = typed_char(&key).and_then(mail::action_for) else {
                 return Ok(());
             };
             let Some(row) = modal.rows.get(modal.selected) else {
@@ -4807,6 +5170,316 @@ fn spawn_mail_read(app: &mut App, thread: &str, account: &str, handle: &str) {
     });
 }
 
+/// `mecha-docs`, resolved the way `spawn_remedy` resolves a doctor remedy's
+/// program: a sibling of this binary first — an install puts them together,
+/// and so does a `cargo build` target directory — then whatever is on `PATH`.
+///
+/// A *binary* rather than a library dependency, deliberately. `mecha-cli`
+/// takes no `mecha-mail` dependency anywhere, which is what lets the mail and
+/// documents surfaces be installed, upgraded and confined apart; buying four
+/// MIME strings and a URL shape with a crate edge would be the wrong trade,
+/// and `tui/docs.rs` carries its own copy of both for that reason.
+fn docs_bin() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join("mecha-docs")))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| "mecha-docs".into())
+}
+
+/// Run a `mecha-docs` verb on its own thread and collect the answer through a
+/// watch. Every call here reaches the network, so none of them may happen on
+/// the event loop.
+fn spawn_docs(app: &mut App, job: DocsJob, args: &[&str]) {
+    let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let out = std::process::Command::new(docs_bin())
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .output();
+        let _ = tx.send(match out {
+            Ok(out) if out.status.success() => {
+                Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+            }
+            // `mecha-docs` writes its prose to stderr and its data to stdout,
+            // so a failure's first stderr line is the message — and the
+            // fallback matters, because a missing binary fails with nothing
+            // on stderr at all.
+            Ok(out) => {
+                let err = String::from_utf8_lossy(&out.stderr);
+                Err(anyhow::anyhow!(
+                    "{}",
+                    err.trim()
+                        .lines()
+                        .next_back()
+                        .unwrap_or("mecha-docs failed")
+                ))
+            }
+            Err(e) => Err(anyhow::anyhow!(
+                "cannot run {}: {e} — is mecha-docs installed?",
+                docs_bin().display()
+            )),
+        });
+    });
+    if let Some(m) = &mut app.documents {
+        m.loading = true;
+    }
+    app.watches.push(Watch::Docs {
+        rx,
+        job,
+        since: std::time::Instant::now(),
+    });
+}
+
+/// Accounts with a documents grant. The directory listing *is* the list —
+/// there is no registry file, for the reason `mecha-docs` gives: a registry
+/// that can disagree with the filesystem is a second source of truth.
+fn docs_accounts() -> Vec<String> {
+    let Some(home) = dirs_home() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(home.join(".mecha").join("docs")) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        if entry.path().join("oauth.json").is_file() {
+            if let Some(name) = entry.file_name().to_str() {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+fn dirs_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
+/// Write an escape sequence straight to the terminal, around ratatui.
+///
+/// Only safe for sequences that paint nothing and move nothing — OSC 52 is
+/// exactly that, which is why this takes no general-purpose name. Anything
+/// that touched a cell would desynchronise ratatui's diff and stay on screen
+/// forever, which is the bug `logs.rs` exists to stop happening by accident.
+fn write_escape(seq: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    let _ = out.write_all(seq.as_bytes());
+    let _ = out.flush();
+}
+
+/// Keys for the `/docs` modal.
+///
+/// Every action is a `mecha-docs …` child process, on the `/triggers` rule:
+/// nothing the modal can do is missing from the command line.
+fn handle_docs_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let Some(modal) = &mut app.documents else {
+        return Ok(());
+    };
+    if modal.help {
+        modal.help = false;
+        return Ok(());
+    }
+
+    // The picking pane owns the keyboard while it is up: it has a text field,
+    // so a bare `q` is a character and not a close.
+    if let Some(pick) = &mut modal.pick {
+        match key.code {
+            KeyCode::Esc => {
+                modal.pick = None;
+                modal.status = Some("pick cancelled — the grant is unchanged".into());
+            }
+            KeyCode::Enter if !pick.working => {
+                let pasted = pick.buffer.trim().to_string();
+                if pasted.is_empty() {
+                    modal.status = Some("paste the address the browser landed on first".into());
+                    return Ok(());
+                }
+                pick.working = true;
+                let account = modal.account.clone();
+                spawn_docs(
+                    app,
+                    DocsJob::PickDone,
+                    &[
+                        "--account",
+                        &account,
+                        "pick",
+                        "--redirect",
+                        &pasted,
+                        "--json",
+                    ],
+                );
+            }
+            KeyCode::Backspace => {
+                if let Some(at) = prev_boundary(&pick.buffer, pick.cursor) {
+                    pick.buffer.remove(at);
+                    pick.cursor = at;
+                }
+            }
+            KeyCode::Left => pick.cursor = prev_boundary(&pick.buffer, pick.cursor).unwrap_or(0),
+            KeyCode::Right => pick.cursor = next_boundary(&pick.buffer, pick.cursor),
+            KeyCode::Home => pick.cursor = 0,
+            KeyCode::End => pick.cursor = pick.buffer.len(),
+            _ if typed_char(&key).is_some() => {
+                let c = typed_char(&key).unwrap_or_default();
+                // `y` copies only on an empty field. Once there is an address
+                // being typed the same key is a character — an authorization
+                // redirect is full of them, and a key that means two things
+                // depending on nothing visible is a key that eats input.
+                if c == 'y' && pick.buffer.is_empty() {
+                    write_escape(&docs::clipboard_escape(&pick.url));
+                    modal.status = Some(
+                        "link sent to your clipboard — if your terminal allows OSC 52                          (tmux needs set-clipboard on)"
+                            .into(),
+                    );
+                    return Ok(());
+                }
+                pick.buffer.insert(pick.cursor, c);
+                pick.cursor += c.len_utf8();
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.documents = None,
+        KeyCode::Up | KeyCode::Char('k') => modal.move_by(-1),
+        KeyCode::Down | KeyCode::Char('j') => modal.move_by(1),
+        KeyCode::Char('?') => modal.help = true,
+        KeyCode::Char('r') => {
+            let account = modal.account.clone();
+            modal.status = None;
+            spawn_docs(
+                app,
+                DocsJob::List,
+                &["--account", &account, "list", "--json"],
+            );
+        }
+        KeyCode::Char('a') => {
+            if let Some(next) = modal.next_account() {
+                modal.account = next.clone();
+                modal.rows.clear();
+                modal.selected = 0;
+                modal.status = None;
+                spawn_docs(app, DocsJob::List, &["--account", &next, "list", "--json"]);
+            }
+        }
+        KeyCode::Char('p') => {
+            let account = modal.account.clone();
+            modal.status = Some("asking Google for a chooser link…".into());
+            spawn_docs(
+                app,
+                DocsJob::PickUrl,
+                &["--account", &account, "pick", "--url", "--json"],
+            );
+        }
+        KeyCode::Char('y') => {
+            let Some(row) = modal.current() else {
+                return Ok(());
+            };
+            let url = row.url();
+            write_escape(&docs::clipboard_escape(&url));
+            modal.status = Some(format!(
+                "{url} — sent to your clipboard if your terminal allows OSC 52"
+            ));
+        }
+        // Into the message box, not onto the wire: composing someone's prompt
+        // for them is not this modal's job, and the id is the only part they
+        // could not have typed.
+        KeyCode::Enter => {
+            let Some(row) = modal.current() else {
+                return Ok(());
+            };
+            let reference = row.reference();
+            app.documents = None;
+            if !app.input.is_empty() && !app.input.ends_with(' ') {
+                app.input.push(' ');
+            }
+            app.input.push_str(&reference);
+            app.cursor = app.input.len();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Fold a finished `mecha-docs` call back into the modal.
+fn install_docs_answer(app: &mut App, job: DocsJob, answer: Result<String>) {
+    let Some(modal) = &mut app.documents else {
+        // The modal was closed while the call was in flight. A failure is
+        // still worth saying — it is the same failure the next open will hit.
+        if let Err(e) = answer {
+            app.transcript.push(Entry::Error(format!("docs: {e:#}")));
+        }
+        return;
+    };
+    modal.loading = false;
+    let text = match answer {
+        Ok(text) => text,
+        Err(e) => {
+            if let Some(pick) = &mut modal.pick {
+                pick.working = false;
+            }
+            modal.status = Some(format!("{e:#}"));
+            return;
+        }
+    };
+
+    match job {
+        DocsJob::List => modal.install(&text),
+        DocsJob::PickUrl => {
+            let url = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["url"].as_str().map(str::to_string));
+            match url {
+                Some(url) => {
+                    modal.status = None;
+                    modal.pick = Some(docs::Pick {
+                        url,
+                        buffer: String::new(),
+                        cursor: 0,
+                        working: false,
+                    });
+                }
+                None => modal.status = Some("mecha-docs did not return a link".into()),
+            }
+        }
+        DocsJob::PickDone => {
+            let picked: Vec<String> = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["picked"].as_array().cloned())
+                .unwrap_or_default()
+                .iter()
+                .map(|f| {
+                    format!(
+                        "{} {}",
+                        f["kind"].as_str().unwrap_or("file"),
+                        f["name"].as_str().unwrap_or("")
+                    )
+                })
+                .collect();
+            modal.pick = None;
+            // An empty pick is a real answer — someone opened the chooser and
+            // chose nothing — and reads differently from a failure.
+            modal.status = Some(if picked.is_empty() {
+                "nothing was picked; the grant was renewed and scope is unchanged".into()
+            } else {
+                format!("in scope now: {}", picked.join(", "))
+            });
+            let account = modal.account.clone();
+            spawn_docs(
+                app,
+                DocsJob::List,
+                &["--account", &account, "list", "--json"],
+            );
+        }
+    }
+}
+
 /// Start a drafting run and let it go.
 ///
 /// **Detached, because it is a whole agent run.** It builds a tool surface,
@@ -4886,6 +5559,7 @@ mod tests {
             asking: None,
             picker: None,
             help: false,
+            help_scroll: 0,
             tools: None,
             skills: None,
             skills_dir: std::path::PathBuf::from("/nonexistent-skills"),
@@ -4897,6 +5571,7 @@ mod tests {
             staged: None,
             requests: None,
             mail: None,
+            documents: None,
             tasks: None,
             poll_monitor: None,
             health: None,
@@ -4997,6 +5672,45 @@ mod tests {
         assert!(kitty.contains("shift+enter"), "{kitty}");
     }
 
+    #[test]
+    fn the_help_overlay_shows_its_longest_line_in_full() {
+        // The box was a fixed 70 columns and `/doctor` is past eighty
+        // characters, so the entry that most needed explaining ended
+        // mid-sentence — and a `Paragraph` with no `.wrap()` truncates in
+        // silence. Every HELP line, whole, or the card is lying about what
+        // the commands do.
+        let mut app = test_app();
+        app.help = true;
+        let text = frame_text(&mut app, 120, 40, None);
+        for line in command::HELP.lines() {
+            assert!(
+                text.contains(line.trim_end()),
+                "truncated: {:?}\n{text}",
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_terminal_scrolls_the_help_instead_of_swallowing_half_of_it() {
+        // Twenty-six rows is an ordinary split pane, and the card ends around
+        // `/outbox` there — with no bottom border, which is exactly the
+        // picture that reads as a broken overlay rather than as more to come.
+        let mut app = test_app();
+        app.help = true;
+        let top = frame_text(&mut app, 120, 26, None);
+        assert!(top.contains("↑↓ scrolls"), "{top}");
+        assert!(top.contains("enter"), "{top}");
+        assert!(!top.contains("/exit"), "the tail is below the fold: {top}");
+
+        // Scrolled to the end, the tail is reachable and the head is gone.
+        app.help_scroll = 99;
+        let bottom = frame_text(&mut app, 120, 26, None);
+        assert!(bottom.contains("/exit"), "{bottom}");
+        // And the caller's copy was clamped rather than left past the end.
+        assert!(app.help_scroll < 99, "scroll was not clamped");
+    }
+
     /// The badge follows the plan badge's rule: pending drafts are the
     /// exception worth a coloured block; zero is the state that says nothing.
     #[test]
@@ -5060,6 +5774,7 @@ mod tests {
             }],
             selected: 0,
             detail: true,
+            detail_scroll: 0,
             sandbox_line: app.sandbox_line.clone(),
         });
         let text = frame_text(&mut app, 100, 30, None);
@@ -5280,39 +5995,231 @@ mod tests {
         assert_eq!(p.selected, 0);
     }
 
+    /// `(cursor_col, cursor_row, rows)` — the shape the old tuple-returning
+    /// `input_layout` had, so these tests still read as what they assert.
+    fn at(text: &str, cursor: usize, width: u16) -> (u16, u16, usize) {
+        let l = input_layout(text, cursor, width);
+        (l.cursor_col, l.cursor_row, l.rows.len())
+    }
+
+    /// The rows as they would be drawn — what `draw` builds its `Line`s from.
+    fn painted(text: &str, width: u16) -> Vec<String> {
+        input_layout(text, 0, width)
+            .rows
+            .iter()
+            .map(|r| text[r.clone()].trim_end_matches('\n').to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_chord_is_not_the_letter_it_is_spelled_with() {
+        use crossterm::event::KeyEventKind;
+        let key = |c, m| KeyEvent {
+            code: KeyCode::Char(c),
+            modifiers: m,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        // Plain, and shifted — that is how a capital arrives under the kitty
+        // protocol, and refusing it would make the caps-lock key eat input.
+        assert_eq!(typed_char(&key('c', KeyModifiers::NONE)), Some('c'));
+        assert_eq!(typed_char(&key('C', KeyModifiers::SHIFT)), Some('C'));
+
+        // The bug: `KeyCode::Char('a')` with CONTROL held is Ctrl-A, and
+        // `/mail` fed it straight to `action_for`, which archives.
+        for m in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::SUPER,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ] {
+            assert_eq!(typed_char(&key('a', m)), None, "{m:?}");
+        }
+        // Named keys are never a typed character.
+        assert_eq!(
+            typed_char(&KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn no_mail_action_can_be_reached_by_a_chord() {
+        // The half that matters: every letter `/mail` acts on is a mutation,
+        // and Ctrl-A / Ctrl-D / Ctrl-T / Ctrl-R are chords a person presses
+        // meaning something else entirely.
+        for c in ['a', 's', 't', 'd', 'n', 'r', 'f', 'e', 'q'] {
+            assert!(mail::action_for(c).is_some(), "{c} should be an action");
+            let chord = KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers: KeyModifiers::CONTROL,
+                kind: crossterm::event::KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            };
+            assert!(
+                typed_char(&chord).and_then(mail::action_for).is_none(),
+                "ctrl+{c} must not reach an action"
+            );
+        }
+    }
+
+    #[test]
+    fn the_rows_partition_the_text_so_nothing_is_shown_twice_or_lost() {
+        // The invariant the caret arithmetic stands on: find the row that
+        // contains the cursor and the column is a width of one slice. It only
+        // works if every byte is in exactly one row.
+        for text in [
+            "",
+            "\n",
+            "a\n\nb",
+            "short",
+            "a much longer line that has to wrap somewhere",
+            "https://example.com/a/very/long/path/that/cannot/fit/in/one/row",
+            "  leading and trailing   ",
+            "naïve 日本語 mixed",
+        ] {
+            for width in [1u16, 3, 7, 12, 40] {
+                let rows = input_layout(text, 0, width).rows;
+                assert_eq!(rows[0].start, 0, "{text:?} @ {width}");
+                assert_eq!(rows.last().unwrap().end, text.len(), "{text:?} @ {width}");
+                for pair in rows.windows(2) {
+                    assert_eq!(pair[0].end, pair[1].start, "{text:?} @ {width}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_word_moves_down_whole_and_the_caret_goes_with_it() {
+        // The bug this pins, measured against what ratatui actually painted:
+        // at 30 columns the last row reads "class", and the old character
+        // wrapper put the caret at column 3 of it — because it broke at
+        // exactly 30 while the Paragraph beside it broke at word boundaries.
+        // Two wrappers, one caret. Now there is one wrapper.
+        let text = "can you help me prepare my schedule for my undergrad fMRI class";
+        assert_eq!(
+            painted(text, 30),
+            vec![
+                "can you help me prepare my ",
+                "schedule for my undergrad fMRI ",
+                "class",
+            ]
+        );
+        assert_eq!(at(text, text.len(), 30), (5, 2, 3));
+    }
+
+    #[test]
+    fn a_wide_character_costs_two_cells() {
+        // The other half of the same bug: the old wrapper counted characters,
+        // so one CJK glyph read as one cell and the caret sat a cell left of
+        // the text for every glyph before it.
+        assert_eq!(at("日本語", 9, 10), (6, 0, 1));
+        // Three glyphs at two cells each is six, so a fourth does not fit in
+        // seven columns.
+        assert_eq!(painted("日本語だ", 7), vec!["日本語", "だ"]);
+    }
+
     #[test]
     fn the_cursor_tracks_plain_wrapping() {
-        // 10 columns: "abcdefghij" fills a row, so the eleventh character is at
-        // the start of the next one.
-        assert_eq!(input_layout("abcdefghijk", 11, 10), (1, 1, 2));
-        assert_eq!(input_layout("abc", 3, 10), (3, 0, 1));
-        assert_eq!(input_layout("", 0, 10), (0, 0, 1));
+        // 10 columns, and "abcdefghijk" is one word too long for a row, so it
+        // breaks at the edge — there is nowhere better to break it.
+        assert_eq!(at("abcdefghijk", 11, 10), (1, 1, 2));
+        assert_eq!(at("abc", 3, 10), (3, 0, 1));
+        assert_eq!(at("", 0, 10), (0, 0, 1));
+    }
+
+    #[test]
+    fn a_caret_at_the_end_of_a_full_row_starts_the_next_one() {
+        // Rows break lazily — when the character that overflows arrives — so
+        // at the end of an exactly-full row there is no next row yet, and the
+        // caret would be drawn on the border. It belongs where the next
+        // character will land.
+        assert_eq!(at("abcdefghij", 10, 10), (0, 1, 2));
     }
 
     #[test]
     fn a_pasted_newline_breaks_the_line_instead_of_being_counted_as_a_character() {
-        // The bug this pins: the old arithmetic divided the character count by
-        // the width, so any pasted snippet put the cursor somewhere else
-        // entirely and the box was drawn too short.
+        // The bug this pins: the arithmetic before either wrapper divided the
+        // character count by the width, so any pasted snippet put the cursor
+        // somewhere else entirely and the box was drawn too short.
         let text = "one\ntwo";
-        assert_eq!(input_layout(text, text.len(), 40), (3, 1, 2));
+        assert_eq!(at(text, text.len(), 40), (3, 1, 2));
 
         let three = "a\nb\nc";
-        assert_eq!(input_layout(three, three.len(), 40), (1, 2, 3));
+        assert_eq!(at(three, three.len(), 40), (1, 2, 3));
+
+        // Just before the newline is the end of the first row, not the start
+        // of the second — the newline is in the row it ends, which is what
+        // keeps the ranges a partition.
+        assert_eq!(at(text, 3, 40), (3, 0, 2));
+        assert_eq!(at(text, 4, 40), (0, 1, 2));
+    }
+
+    #[test]
+    fn a_trailing_newline_leaves_an_empty_row_to_type_on() {
+        assert_eq!(at("hi\n", 3, 40), (0, 1, 2));
+        assert_eq!(painted("hi\n", 40), vec!["hi", ""]);
     }
 
     #[test]
     fn a_cursor_in_the_middle_of_pasted_text_lands_on_the_right_row() {
         let text = "one\ntwo\nthree";
         // Just after the second newline: start of the third row.
-        assert_eq!(input_layout(text, 8, 40), (0, 2, 3));
+        assert_eq!(at(text, 8, 40), (0, 2, 3));
     }
 
     #[test]
     fn a_zero_width_terminal_does_not_divide_by_zero() {
-        // A pty with no window size reports 0 columns, and this used to be the
-        // arithmetic that ran first.
-        let (_, _, rows) = input_layout("abc", 3, 0);
-        assert!(rows >= 1);
+        // A pty with no window size reports 0 columns, and this is the
+        // arithmetic that runs first.
+        assert!(!input_layout("abc", 3, 0).rows.is_empty());
+    }
+
+    #[test]
+    fn a_long_message_scrolls_instead_of_eating_the_transcript() {
+        // Twelve rows of text in a box that shows six: the caret stays on
+        // screen and the title says which line it is on, because a box that
+        // silently looks shorter than its content is the shape the outbox
+        // modal's hidden-item counter exists to avoid.
+        let mut app = test_app();
+        app.input = (0..12)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.cursor = app.input.len();
+        let text = frame_text(&mut app, 40, 30, None);
+        assert!(text.contains("line 12/12"), "{text}");
+        // The last six rows are shown; the first six have scrolled off.
+        assert!(text.contains("line11"), "{text}");
+        assert!(text.contains("line6"), "{text}");
+        assert!(!text.contains("line5"), "{text}");
+    }
+
+    #[test]
+    fn the_input_box_draws_what_the_caret_was_measured_against() {
+        // The end-to-end form of the whole fix: the row under the caret, as
+        // painted, is `cursor_col` cells wide up to the cursor. It fails on
+        // the old code, where the Paragraph wrapped one way and the caret was
+        // computed another.
+        let mut app = test_app();
+        app.input = "can you help me prepare my schedule for my undergrad fMRI class".into();
+        app.cursor = app.input.len();
+        let (width, height) = (32u16, 20u16);
+        let text = frame_text(&mut app, width, height, None);
+        let layout = input_layout(&app.input, app.cursor, width - 2);
+        let last = text
+            .lines()
+            .rev()
+            .find(|l| l.contains("class"))
+            .expect("the last row of the input is on screen");
+        // Strip the border column at each end.
+        let painted = last.trim_end().trim_start_matches('\u{2502}');
+        let painted = painted.trim_end_matches('\u{2502}');
+        assert_eq!(painted.trim_end(), "class");
+        assert_eq!(layout.cursor_col as usize, "class".len());
     }
 }

@@ -14,7 +14,7 @@ use crate::google::auth::OAuthConfig;
 /// Create the store directory owner-only. The files inside already enforce
 /// 0600 on themselves; the directory holding tokens and account addresses
 /// deserves the matching rule, and this tightens a pre-existing one too.
-pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {

@@ -33,7 +33,7 @@
 //! as a broken mail account — a finding naming the wrong subsystem, which is
 //! worse than no finding. Share the type, never the namespace.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::types::MailError;
 
@@ -156,6 +156,92 @@ pub fn build_auth_url(client_id: &str, port: u16, state: &str, picker: bool) -> 
         .collect::<Vec<_>>()
         .join("&");
     format!("{AUTH_URL}?{query}")
+}
+
+/// A browser leg that has been started and not yet finished.
+///
+/// `--paste` is one command that prints a URL and then blocks on stdin. That
+/// is fine at a shell prompt and unusable to anything else: a full-screen
+/// front-end cannot hand its keyboard to a child mid-frame, and a script
+/// cannot drive a prompt. Recording the attempt splits the leg into two
+/// ordinary commands that may run minutes apart, in different processes,
+/// driven by a person or by a modal — which is the whole reason `/docs` can
+/// pick a document on a machine with no browser and no forwarded port.
+///
+/// **The record holds the CSRF state, so the second command still does the
+/// pairing check itself.** The caller is never asked which attempt this is,
+/// for the same reason `frontdoor::Record::for_privileged_run` takes no
+/// argument that would let a caller widen it: a check a caller can answer is
+/// not a check.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingConsent {
+    pub state: String,
+    /// Whether the chooser was opened. Decides what the finish step reports,
+    /// and it comes from here rather than from a flag so the two halves
+    /// cannot disagree about which flow they are.
+    pub picker: bool,
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: String,
+    pub port: u16,
+    /// RFC3339, for a staleness message and nothing else. Google's own code
+    /// expiry is the real clock; this never refuses anything, because a
+    /// clock-based refusal on top of one that already exists is a second way
+    /// to fail that has to be kept in step with the first.
+    #[serde(default)]
+    pub started_at: String,
+}
+
+/// Where a half-finished attempt is recorded. Beside the grant it will become,
+/// in the same private directory.
+pub fn pending_path(account: &str) -> anyhow::Result<std::path::PathBuf> {
+    Ok(docs_home()?.join(account).join("pending-consent.json"))
+}
+
+/// Record an attempt. 0600 because it carries the client secret — a Desktop
+/// client's is a pseudo-secret by Google's own definition, but the file lives
+/// beside one that is not, and two permission stories in one directory is one
+/// too many.
+pub fn save_pending(account: &str, pending: &PendingConsent) -> anyhow::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = pending_path(account)?;
+    if let Some(dir) = path.parent() {
+        crate::token::create_private_dir(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(serde_json::to_string_pretty(pending)?.as_bytes())?;
+    }
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+/// Read back an attempt, or say what to run first.
+pub fn load_pending(account: &str) -> anyhow::Result<PendingConsent> {
+    let path = pending_path(account)?;
+    let raw = std::fs::read_to_string(&path).map_err(|_| {
+        anyhow::anyhow!(
+            "no consent attempt in progress for account {account:?} —              run `mecha-docs pick --url` first"
+        )
+    })?;
+    Ok(serde_json::from_str(&raw)?)
+}
+
+/// Forget an attempt. Best-effort: a leftover record is only ever *replaced*
+/// by the next `--url`, and a failure to remove it must not turn a completed
+/// sign-in into an error — the rule the Microsoft flow already learned about
+/// cosmetic failures after a grant lands.
+pub fn clear_pending(account: &str) {
+    if let Ok(path) = pending_path(account) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Read the redirect out of a URL the user pasted back.
@@ -359,7 +445,7 @@ pub fn credentials_from(
 // ---------------------------------------------------------------------------
 
 /// One file in scope.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DriveFile {
     pub id: String,
     #[serde(default)]

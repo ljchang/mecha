@@ -24,6 +24,10 @@ chrono-tz.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 futures.workspace = true
 rustyline = "18"
+# What a character costs on screen. The input box wraps its own text, and a
+# wrapper that counts characters puts the caret two cells left of the glyph the
+# moment anything is not one cell wide.
+unicode-width = "0.2"
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

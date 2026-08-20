@@ -127,6 +127,21 @@ pub struct TasksModal {
     pub rows: Vec<TaskRow>,
     pub selected: usize,
     pub detail: bool,
+    /// How far the detail view is scrolled.
+    ///
+    /// The body looks bounded — name, status, due, and four optional fields —
+    /// and it is bounded in *field count*, which is not the same thing. The
+    /// name is whatever the user typed, the box is sized from `body.len()`,
+    /// and the paragraph wraps: a name that takes four rows makes the drawn
+    /// height four rows taller than the box was built for, and what falls off
+    /// the bottom is `context` and the footer carrying the **task id** —
+    /// which is kept off the list on purpose so that the detail can be where
+    /// somebody who needs it looks. Measured at 60 columns: a 150-character
+    /// name, and the id was not on screen.
+    ///
+    /// Reset on every move, like the sibling modals': an offset carried onto
+    /// another row is a position in a different document.
+    pub detail_scroll: u16,
     /// Whether done and dropped are in `rows`. The list is reloaded when it
     /// flips rather than filtered here — the graph decides what "closed"
     /// means and orders the board, and re-implementing either would be a
@@ -301,6 +316,7 @@ impl TasksModal {
             rows,
             selected: 0,
             detail: false,
+            detail_scroll: 0,
             show_closed: false,
             form: None,
             help: false,
@@ -319,6 +335,7 @@ impl TasksModal {
         }
         let len = self.rows.len() as isize;
         self.selected = (((self.selected as isize + delta) % len + len) % len) as usize;
+        self.detail_scroll = 0;
     }
 
     /// The status `space` moves the selection to: the next actionable one
@@ -364,6 +381,10 @@ impl TasksModal {
     fn list_scroll(&self, visible: u16) -> u16 {
         let visible = visible.max(1) as usize;
         (self.selected + 1).saturating_sub(visible) as u16
+    }
+
+    pub fn scroll_detail(&mut self, delta: i16) {
+        self.detail_scroll = self.detail_scroll.saturating_add_signed(delta);
     }
 
     pub fn draw(&self, frame: &mut Frame) {
@@ -500,18 +521,32 @@ impl TasksModal {
             grey,
         ));
 
-        let area = super::centered(
-            frame.area(),
-            100,
-            (body.len() as u16 + 2).min(frame.area().height),
-        );
+        // `Wrap` means the drawn height is not `body.len()` — a wrapped name
+        // is three rows the box was never built for. Measure it, size to what
+        // is really drawn, and scroll when even that will not fit.
+        let paragraph = Paragraph::new(body).wrap(Wrap { trim: false });
+        let width = 100u16.min(frame.area().width);
+        let drawn = paragraph.line_count(width.saturating_sub(2)) as u16;
+        let area = super::centered(frame.area(), width, (drawn + 2).min(frame.area().height));
+        let visible = area.height.saturating_sub(2);
+        let max_scroll = drawn.saturating_sub(visible);
+        let scroll = self.detail_scroll.min(max_scroll);
+        let title = if max_scroll == 0 {
+            " task · e edit · n/i/s/w/d/x status · esc back ".to_string()
+        } else {
+            format!(
+                " task · {}/{} · ↑↓ scrolls · e edit · esc back ",
+                (scroll + visible).min(drawn),
+                drawn
+            )
+        };
         frame.render_widget(Clear, area);
         frame.render_widget(
-            Paragraph::new(body).wrap(Wrap { trim: false }).block(
+            paragraph.scroll((scroll, 0)).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::new().fg(Color::Cyan))
-                    .title(" task · e edit · n/i/s/w/d/x status · esc back "),
+                    .title(title),
             ),
             area,
         );
@@ -680,6 +715,96 @@ mod tests {
         {"id":"task-dead0000","name":"Something finished","status":"done",
          "due_at":null,"defer_until":null,"context":null,"project":null,
          "waiting_on":null,"completed_at":"2026-08-19","overdue":false}]}"#;
+
+    use ratatui::backend::TestBackend;
+
+    fn frame_text(m: &TasksModal, width: u16, height: u16) -> String {
+        let mut t = Terminal::new(TestBackend::new(width, height)).unwrap();
+        t.draw(|f| m.draw(f)).unwrap();
+        let buf = t.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn long_named_task() -> TaskRow {
+        TaskRow {
+            id: "task-790c1384".into(),
+            name: "Verify the suspicious Microsoft invoice email that arrived on Tuesday \
+                   and work out whether it is a phishing attempt or a real renewal notice \
+                   before the quoted deadline passes and the licence lapses"
+                .into(),
+            status: "next".into(),
+            due_at: Some("2026-08-25".into()),
+            defer_until: None,
+            context: Some("@email".into()),
+            project: Some("Admin".into()),
+            waiting_on: None,
+            overdue: false,
+            closed: false,
+        }
+    }
+
+    /// The detail's body is bounded in *field count*, which is not the same as
+    /// bounded in drawn height — the name is whatever the user typed and the
+    /// paragraph wraps. Sizing the box from `body.len()` therefore built it
+    /// three rows short of its own content, and what fell off the bottom was
+    /// `context` and the footer carrying the **task id**, which is kept off
+    /// the list on purpose so that this view can be where somebody who needs
+    /// it looks. Measured at 60 columns before the fix: the id was not on
+    /// screen, and no key reached it.
+    #[test]
+    fn a_wrapped_task_name_does_not_push_the_id_off_the_detail() {
+        let mut m = TasksModal::new(vec![long_named_task()], "2026-08-20".into());
+        m.detail = true;
+        let text = frame_text(&m, 60, 30);
+        assert!(
+            text.contains("task-790c1384"),
+            "the id is off screen: {text}"
+        );
+        assert!(text.contains("context   @email"), "{text}");
+        // It fits once measured, so nothing advertises a scroll that is not
+        // needed — a hint always on screen is a hint nobody reads.
+        assert!(!text.contains("↑↓ scrolls"), "{text}");
+    }
+
+    /// And when the terminal genuinely cannot hold it, it scrolls rather than
+    /// clipping — the tail is reachable and the title says there is one.
+    #[test]
+    fn a_terminal_too_short_for_the_detail_scrolls_to_the_tail() {
+        let mut m = TasksModal::new(vec![long_named_task()], "2026-08-20".into());
+        m.detail = true;
+        let top = frame_text(&m, 60, 10);
+        assert!(top.contains("↑↓ scrolls"), "{top}");
+        assert!(!top.contains("task-790c1384"), "{top}");
+
+        m.scroll_detail(99);
+        let bottom = frame_text(&m, 60, 10);
+        assert!(
+            bottom.contains("task-790c1384"),
+            "scrolling reaches it: {bottom}"
+        );
+    }
+
+    /// An offset carried onto another row is a position in a different task.
+    #[test]
+    fn moving_the_selection_resets_the_task_detail_scroll() {
+        let mut m = TasksModal::new(
+            vec![long_named_task(), long_named_task()],
+            "2026-08-20".into(),
+        );
+        m.scroll_detail(9);
+        assert_eq!(m.detail_scroll, 9);
+        m.move_by(1);
+        assert_eq!(m.detail_scroll, 0);
+        m.scroll_detail(-3);
+        assert_eq!(m.detail_scroll, 0);
+    }
 
     /// One table, checked both ways — the `/mail` rule. A legend advertising a
     /// key the map does not answer to teaches a keypress that does nothing;
