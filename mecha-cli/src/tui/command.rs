@@ -47,6 +47,8 @@ pub enum Command {
     /// their Slack DM. `None` is the argument-less form, which is a mistake
     /// rather than a default: there is no sensible file to guess.
     Send(Option<String>),
+    /// Mirror this session into a named Slack thread, or stop.
+    RemoteControl(Remote),
     Quit,
     /// Recognised as a command, but not one we have. Kept as its own variant so
     /// a typo says so instead of being sent to the model as a prompt.
@@ -64,6 +66,22 @@ pub enum Command {
     Review(Option<ReviewMode>),
     /// A review mode was named that does not exist.
     BadReview(String),
+}
+
+/// What `/remote-control` was asked to do.
+///
+/// An enum rather than `Option<String>` with `"off"` treated specially: a verb
+/// argument and a name argument sharing one slot means the name `off` becomes
+/// unusable, and a reserved word nobody documented is the kind of thing that
+/// is discovered by a session that will not attach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Remote {
+    /// Bare `/remote-control` — what is this session attached to?
+    Show,
+    /// `/remote-control off` — detach, leaving the thread and its history.
+    Off,
+    /// `/remote-control <name>` — attach, or re-attach, under that name.
+    Attach(String),
 }
 
 /// The release-policy mode `/review` sets. The enum, the release rule and
@@ -123,6 +141,14 @@ pub fn parse(line: &str) -> Option<Command> {
         // A caption would have to be split off somehow, and the file's own
         // name is already the caption Slack shows.
         "send" => Command::Send(arg.map(str::to_string)),
+        // `remote` and `rc` because nobody types eighteen characters twice.
+        "remote-control" | "remote" | "rc" => Command::RemoteControl(match arg {
+            None => Remote::Show,
+            Some(a) if a.eq_ignore_ascii_case("off") || a.eq_ignore_ascii_case("stop") => {
+                Remote::Off
+            }
+            Some(a) => Remote::Attach(a.to_string()),
+        }),
         "exit" | "quit" | "q" => Command::Quit,
         "mcp" => match arg {
             None => Command::Mcp(None),
@@ -262,7 +288,7 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 20] = [
+pub const NAMES: [&str; 21] = [
     "help",
     "tools",
     "skills",
@@ -283,6 +309,7 @@ pub const NAMES: [&str; 20] = [
     "session",
     "todo",
     "send",
+    "remote-control",
 ];
 
 /// Command names that could still be meant by what has been typed.
@@ -359,6 +386,7 @@ pub const HELP: &str = "\
   /session               where the transcript is being written
   /todo                  show or hide the live task pane
   /send <path>           send a file to your Slack DM, to look at elsewhere
+  /remote-control [name|off]    mirror this session into a named Slack thread
   /exit                  quit";
 
 #[cfg(test)]
@@ -417,6 +445,48 @@ mod tests {
     fn a_bare_send_carries_no_path_rather_than_inventing_one() {
         assert_eq!(parse("/send"), Some(Command::Send(None)));
         assert_eq!(parse("/send   "), Some(Command::Send(None)));
+    }
+
+    #[test]
+    fn remote_control_distinguishes_showing_stopping_and_attaching() {
+        assert_eq!(
+            parse("/remote-control"),
+            Some(Command::RemoteControl(Remote::Show))
+        );
+        assert_eq!(
+            parse("/remote-control off"),
+            Some(Command::RemoteControl(Remote::Off))
+        );
+        assert_eq!(
+            parse("/remote-control lab"),
+            Some(Command::RemoteControl(Remote::Attach("lab".into())))
+        );
+    }
+
+    /// The short spellings exist because nobody types eighteen characters
+    /// twice, and they must mean exactly the same thing.
+    #[test]
+    fn the_short_spellings_are_the_same_command() {
+        for spelling in ["/remote-control lab", "/remote lab", "/rc lab"] {
+            assert_eq!(
+                parse(spelling),
+                Some(Command::RemoteControl(Remote::Attach("lab".into()))),
+                "{spelling}"
+            );
+        }
+    }
+
+    /// `off` is a verb here and `OFF` is the same verb. Case-folding it is
+    /// what keeps the reserved word from being reserved twice.
+    #[test]
+    fn stopping_is_recognised_however_it_is_capitalised() {
+        for word in ["off", "OFF", "Off", "stop"] {
+            assert_eq!(
+                parse(&format!("/rc {word}")),
+                Some(Command::RemoteControl(Remote::Off)),
+                "{word}"
+            );
+        }
     }
 
     #[test]

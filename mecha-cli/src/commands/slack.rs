@@ -92,6 +92,16 @@ pub enum Cmd {
         #[arg(long)]
         comment: Option<String>,
     },
+    /// Named threads a TUI session has been mirrored into, and their state.
+    ///
+    /// The `threads` verb's counterpart for the other kind of thread: those
+    /// are driven from Slack, these mirror a terminal session.
+    Remote {
+        /// Mark cold every attachment whose session is gone, so none is left
+        /// reading `live` for a process that has died.
+        #[arg(long)]
+        sweep: bool,
+    },
     /// Forget the binding. The tokens stay, so `link` can be run again.
     Unlink,
 }
@@ -106,6 +116,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         Cmd::Sweep => sweep(),
         Cmd::Notify { title } => notify(&store, title.as_deref()).await,
         Cmd::Send { path, comment } => send(&path, comment.as_deref()).await,
+        Cmd::Remote { sweep } => remote(sweep),
         Cmd::Connect => crate::slack::connector::run(global).await,
         Cmd::Unlink => {
             store.clear_binding()?;
@@ -294,6 +305,50 @@ async fn send(path: &std::path::Path, comment: Option<&str>) -> Result<()> {
         sent.filename,
         crate::slack::send::human(sent.bytes)
     );
+    Ok(())
+}
+
+/// What is mirrored where, and the by-hand cold pass.
+///
+/// A store read and a pid check: no network, no model, no token. Being able to
+/// answer "what is this machine mirroring" without talking to Slack is what
+/// makes it usable when Slack is the thing that is wrong.
+fn remote(sweep: bool) -> Result<()> {
+    let store = crate::slack::remote::RemoteStore::open_default()?;
+    if sweep {
+        let cooled = store.sweep()?;
+        if cooled.is_empty() {
+            println!("Nothing to sweep — no attachment names a process that has gone.");
+        } else {
+            for rec in &cooled {
+                println!("{}  cooled  (was session {})", rec.name, rec.session_id);
+            }
+        }
+        return Ok(());
+    }
+
+    let records = store.list()?;
+    if records.is_empty() {
+        println!("No named threads yet — `/remote-control <name>` in the TUI makes one.");
+        return Ok(());
+    }
+    for rec in &records {
+        // Liveness is re-checked on read rather than trusted from the file: a
+        // record says what was true when it was written, and the process it
+        // names may have gone since without anything getting the chance to
+        // record it.
+        let state = if rec.is_live() { "live" } else { "cold" };
+        println!(
+            "{:<16} {:<5} {}  {}",
+            rec.name,
+            state,
+            rec.session_id,
+            rec.workspace.display()
+        );
+        if let Some(reason) = &rec.ended_reason {
+            println!("{:<16} {:<5} {reason}", "", "");
+        }
+    }
     Ok(())
 }
 

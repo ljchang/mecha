@@ -82,6 +82,18 @@ struct Running {
     outbox_before: Option<std::collections::HashSet<String>>,
 }
 
+/// What an off-loop `/remote-control` did.
+///
+/// Three variants rather than a `Result`, because detaching is not the inverse
+/// of attaching: it clears the handle, and a failure to post the closing line
+/// must not leave the interface believing it is still mirroring when the
+/// record already says it is not.
+enum AttachOutcome {
+    Attached(Box<crate::slack::remote::Attached>, String),
+    Detached(String),
+    Failed(String),
+}
+
 /// One piece of detached work being watched for its outcome.
 ///
 /// The polling is against the *stores*, never the child process: the store is
@@ -371,6 +383,17 @@ struct App {
     /// the event loop; running the command on a task keeps the input line
     /// live while it does.
     shell_tx: mpsc::UnboundedSender<Entry>,
+    /// Where an off-loop attach reports back. Talking to Slack cannot happen
+    /// on the event loop, and its outcome has to land on `App`, so this takes
+    /// the same shape as `shell_tx`.
+    attach_tx: mpsc::UnboundedSender<AttachOutcome>,
+    /// The Slack thread this session is mirrored into.
+    ///
+    /// On `App` rather than `Live` deliberately: a `/model` or `/provider`
+    /// switch rebuilds the agent and its tools wholesale, and an attachment
+    /// that vanished when you changed model would be the `todo` handle bug in
+    /// a surface where the loss is both silent and outbound.
+    attached: Option<crate::slack::remote::Attached>,
     /// What `shell` actually is, computed once — the sandbox is config-driven
     /// and a provider switch rebuilds it identically.
     sandbox_line: String,
@@ -421,6 +444,16 @@ impl App {
             spans.push(Span::styled(
                 format!(" outbox {} ", self.outbox_pending),
                 Style::new().fg(Color::Black).bg(Color::Yellow),
+            ));
+        }
+
+        // A mirrored session is one whose output is leaving the machine, which
+        // is exactly what the always-visible strip is for. In a modal, the
+        // answer to "is anyone else seeing this" would cost a keystroke.
+        if let Some(a) = &self.attached {
+            spans.push(Span::styled(
+                format!(" ⇄ {} ", a.name),
+                Style::new().fg(Color::Black).bg(Color::Green),
             ));
         }
 
@@ -554,6 +587,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     }
 
     let (shell_tx, mut shell_rx) = mpsc::unbounded_channel::<Entry>();
+    let (attach_tx, mut attach_rx) = mpsc::unbounded_channel::<AttachOutcome>();
     let mut app = App {
         transcript: Transcript::new(global.verbose),
         input: String::new(),
@@ -615,6 +649,8 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         review: command::ReviewMode::default(),
         watches: Vec::new(),
         shell_tx,
+        attach_tx,
+        attached: None,
         providers: prepared
             .config
             .providers
@@ -672,6 +708,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         &mut approvals,
         &mut questions,
         &mut shell_rx,
+        &mut attach_rx,
         session.as_ref(),
         &approver,
     )
@@ -681,6 +718,15 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     // warning from the very last frame — goes where it was always headed.
     for line in crate::logs::release() {
         eprintln!("{line}");
+    }
+
+    // The thread is told before this process is gone. A hard kill instead of
+    // an exit is covered by the record's pid reading as dead — three layers,
+    // none of them load-bearing alone.
+    if let Some(a) = app.attached.take() {
+        if let Err(e) = crate::slack::remote::detach(&a, "the terminal session ended").await {
+            eprintln!("could not close the Slack thread for `{}`: {e:#}", a.name);
+        }
     }
 
     if let Some(s) = &session {
@@ -708,6 +754,7 @@ async fn run_loop(
     approvals: &mut mpsc::UnboundedReceiver<approve::Request>,
     questions: &mut mpsc::UnboundedReceiver<ask::Question>,
     shell_results: &mut mpsc::UnboundedReceiver<Entry>,
+    attach_results: &mut mpsc::UnboundedReceiver<AttachOutcome>,
     session: Option<&Session>,
     approver: &Arc<dyn Approver>,
 ) -> Result<()> {
@@ -833,6 +880,20 @@ async fn run_loop(
             // A `!command` finished; its output enters the transcript and
             // nothing else — the model never sees it.
             Some(entry) = shell_results.recv() => app.transcript.push(entry),
+
+            // An attach or detach finished. Only this arm writes `attached`,
+            // so the handle and the transcript line cannot disagree.
+            Some(outcome) = attach_results.recv() => match outcome {
+                AttachOutcome::Attached(a, notice) => {
+                    app.transcript.push(Entry::Notice(notice));
+                    app.attached = Some(*a);
+                }
+                AttachOutcome::Detached(notice) => {
+                    app.transcript.push(Entry::Notice(notice));
+                    app.attached = None;
+                }
+                AttachOutcome::Failed(e) => app.transcript.push(Entry::Error(e)),
+            },
 
             // A finished run: collect the outcome and take the conversation back.
             outcome = wait_for_run(&mut app.running), if app.running.is_some() => {
@@ -2268,6 +2329,54 @@ fn run_command(
                 .push(Entry::Error(format!("/send {raw}: {e:#}"))),
         },
 
+        Command::RemoteControl(command::Remote::Show) => match &app.attached {
+            Some(a) => say(format!(
+                "attached as `{}` — this session is mirrored into your Slack DM",
+                a.name
+            )),
+            None => say(
+                "not attached — `/remote-control <name>` mirrors this session into a named \
+                 Slack thread"
+                    .into(),
+            ),
+        },
+
+        Command::RemoteControl(command::Remote::Off) => match app.attached.take() {
+            Some(a) => spawn_detach(a, "detached from the terminal", app.attach_tx.clone()),
+            None => say("not attached".into()),
+        },
+
+        // Refused rather than swapped: re-pointing a live mirror at a second
+        // thread mid-session would leave the first one silently ended with no
+        // line in it saying so.
+        Command::RemoteControl(command::Remote::Attach(name)) => match (&app.attached, session) {
+            (Some(current), _) => app.transcript.push(Entry::Error(format!(
+                "already attached as `{}` — `/remote-control off` first",
+                current.name
+            ))),
+            // Without a session there is no id to key the record on, and that
+            // record is what the connector reads to learn a thread is spoken
+            // for. Refusing beats attaching something nothing can find again.
+            (None, None) => app.transcript.push(Entry::Error(
+                "this session is not being recorded (--no-session), so there is nothing to \
+                 attach"
+                    .into(),
+            )),
+            (None, Some(s)) => {
+                app.transcript
+                    .push(Entry::Notice(format!("attaching as `{name}`…")));
+                spawn_attach(
+                    name,
+                    s.meta.id.clone(),
+                    agent.context().tools.workspace.clone(),
+                    live.model.clone(),
+                    (app.convo.taint.private, app.convo.taint.untrusted),
+                    app.convo.len(),
+                    app.attach_tx.clone(),
+                );
+            }
+        },
+
         Command::Quit => app.should_quit = true,
 
         Command::Model(None) | Command::Provider(None) => {
@@ -2448,12 +2557,45 @@ fn submit(
         .with_phase(app.phase)
         .with_queued_input(Arc::clone(&queue));
 
+    // **Attached, one run's events go to two places.** The agent takes a single
+    // sender, so the split is a task rather than a second subscription:
+    // everything is forwarded to the interface and a clone of it to the Slack
+    // pump. `AgentEvent` is `Clone`, so nothing is reconstructed and the two
+    // views cannot disagree about what happened or in what order.
+    //
+    // The interface is sent first on purpose. The person at the terminal is
+    // the one who can act on what they see, and an unbounded channel means
+    // neither side can slow the other down.
+    let run_tx = match &app.attached {
+        None => tx,
+        Some(a) => {
+            let (from_agent, mut split_rx) = mpsc::unbounded_channel::<AgentEvent>();
+            let (to_slack, slack_rx) = mpsc::unbounded_channel::<AgentEvent>();
+            let (slack, channel, thread_ts) =
+                (a.slack.clone(), a.channel_id.clone(), a.thread_ts.clone());
+            let cfg = crate::slack::pump::PumpConfig {
+                flush_chars: a.flush_chars,
+                flush_ms: a.flush_ms,
+            };
+            tokio::spawn(async move {
+                crate::slack::pump::pump(&slack, &channel, &thread_ts, slack_rx, &cfg).await;
+            });
+            tokio::spawn(async move {
+                while let Some(event) = split_rx.recv().await {
+                    let _ = tx.send(event.clone());
+                    let _ = to_slack.send(event);
+                }
+            });
+            from_agent
+        }
+    };
+
     let agent = Arc::clone(agent);
     // Everything up to and including the message just submitted is on disk.
     let persisted = app.convo.messages.clone();
     let mut convo = std::mem::take(&mut app.convo);
     let handle = tokio::spawn(async move {
-        let result = agent.run_in(&cx, &mut convo, Some(tx)).await;
+        let result = agent.run_in(&cx, &mut convo, Some(run_tx)).await;
         (result, convo)
     });
 
@@ -4041,6 +4183,63 @@ fn run_shell_escape(app: &mut App, agent: &Arc<Agent>, cmd: String) {
         // The receiver only closes when the TUI is exiting; output arriving
         // after that has nowhere sensible to go anyway.
         let _ = tx.send(entry);
+    });
+}
+
+/// Claim a name and open its thread, off the event loop.
+///
+/// Everything decidable locally has already been decided by the caller — an
+/// existing attachment, a missing session — so what is left here is the part
+/// that genuinely needs the network, and its only failure mode is reported as
+/// one line.
+#[allow(clippy::too_many_arguments)]
+fn spawn_attach(
+    name: String,
+    session_id: String,
+    workspace: PathBuf,
+    model: String,
+    taint: (bool, bool),
+    prior_messages: usize,
+    tx: mpsc::UnboundedSender<AttachOutcome>,
+) {
+    tokio::spawn(async move {
+        let outcome = match crate::slack::remote::attach(
+            &name,
+            &session_id,
+            &workspace,
+            &model,
+            taint,
+            prior_messages,
+        )
+        .await
+        {
+            Ok((attached, notice)) => AttachOutcome::Attached(Box::new(attached), notice),
+            Err(e) => AttachOutcome::Failed(format!("/remote-control {name}: {e:#}")),
+        };
+        let _ = tx.send(outcome);
+    });
+}
+
+/// End an attachment, off the event loop.
+///
+/// The handle is already gone from `App` by the time this runs — taken by the
+/// caller — so a failure here reports the failure and never resurrects it. A
+/// record that says cold while the interface says live is the disagreement
+/// this whole surface exists to prevent, and the store is the one that wins.
+fn spawn_detach(
+    attached: crate::slack::remote::Attached,
+    reason: &'static str,
+    tx: mpsc::UnboundedSender<AttachOutcome>,
+) {
+    tokio::spawn(async move {
+        let name = attached.name.clone();
+        let outcome = match crate::slack::remote::detach(&attached, reason).await {
+            Ok(()) => AttachOutcome::Detached(format!(
+                "detached `{name}` — the thread and everything in it stay"
+            )),
+            Err(e) => AttachOutcome::Failed(format!("/remote-control off: {e:#}")),
+        };
+        let _ = tx.send(outcome);
     });
 }
 
@@ -5638,6 +5837,8 @@ mod tests {
             review: command::ReviewMode::default(),
             watches: Vec::new(),
             shell_tx,
+            attach_tx: mpsc::unbounded_channel().0,
+            attached: None,
             providers: Vec::new(),
             kitty_keyboard: false,
         }
@@ -5662,6 +5863,30 @@ mod tests {
     }
 
     use mecha_core::tool::todo::{Status, TodoItem};
+
+    /// A mirrored session is one whose output is leaving the machine, so the
+    /// fact rides on the strip that is always visible rather than in a modal.
+    /// The failure this guards is not cosmetic: not knowing you are attached
+    /// is not knowing where what you type is going.
+    #[test]
+    fn an_attached_session_says_so_on_the_always_visible_strip() {
+        let mut app = test_app();
+        assert!(
+            !frame_text(&mut app, 110, 12, None).contains("⇄"),
+            "an unattached session must claim nothing"
+        );
+
+        app.attached = Some(crate::slack::remote::Attached {
+            name: "lab".into(),
+            channel_id: "D1".into(),
+            thread_ts: "1755.0001".into(),
+            slack: mecha_slack::Slack::new("xoxb-not-a-real-token"),
+            flush_chars: 400,
+            flush_ms: 700,
+        });
+        let attached = frame_text(&mut app, 110, 12, None);
+        assert!(attached.contains("⇄ lab"), "{attached}");
+    }
 
     #[test]
     fn the_status_line_reads_idle_context_and_scrolled() {

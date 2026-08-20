@@ -11,6 +11,7 @@ pub mod connector;
 pub mod doctor;
 pub mod frontdoor;
 pub mod pump;
+pub mod remote;
 pub mod review;
 pub mod send;
 pub mod threads;
