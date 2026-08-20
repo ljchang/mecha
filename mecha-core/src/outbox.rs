@@ -622,6 +622,36 @@ fn render(value: &Value) -> String {
     }
 }
 
+/// The arguments that address the **provider** rather than a person.
+///
+/// The leftovers of the classification [`DraftView`] already makes: not
+/// addressing, not the prose, and a string. What remains — `thread_id`,
+/// `message_id`, a Slack `ts` — names the *object* the call acts on, which is
+/// exactly what two calls about the same object have in common. That makes it
+/// the join key from a staged draft back to the read that produced it
+/// ([`crate::outbox_source`]), and it lives here so the one decision about
+/// which argument is which is still made once.
+///
+/// `account` and the other headers are excluded on purpose, and it is the
+/// exclusion that makes the join worth anything: `{"account": "dartmouth"}`
+/// is shared by every mail call in the session and would match all of them,
+/// which is a filter that filters nothing. Provider ids are high-entropy
+/// because they have to be.
+pub fn provider_ids(args: &Value) -> Vec<(String, String)> {
+    let Some(map) = args.as_object() else {
+        return Vec::new();
+    };
+    let body = DraftView::of(args).body_field;
+    map.iter()
+        .filter(|(key, _)| !HEADER_FIELDS.contains(&key.as_str()))
+        .filter(|(key, _)| body.as_deref() != Some(key.as_str()))
+        .filter_map(|(key, value)| {
+            let text = value.as_str()?;
+            (!text.trim().is_empty()).then(|| (key.clone(), text.to_string()))
+        })
+        .collect()
+}
+
 /// Write an edited body back into the arguments it came from.
 ///
 /// The inverse of [`DraftView::body_field`], and it lives here so the one

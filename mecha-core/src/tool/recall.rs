@@ -40,11 +40,9 @@
 
 use super::{Capabilities, Tool, ToolCtx, ToolOutput};
 use crate::message::{Block, Message, Role};
-use crate::session::Record;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// Matches returned per call unless the model asks for fewer. Enough to be
@@ -134,7 +132,7 @@ impl Tool for Recall {
             }
         };
 
-        let messages = every_message_ever(&text);
+        let messages = crate::session::Session::messages_ever(&text);
         let (rendered, matched, capped) = search(&messages, &query, max_matches);
 
         if matched == 0 {
@@ -159,43 +157,6 @@ impl Tool for Recall {
         }
         Ok(ToolOutput::ok(out))
     }
-}
-
-/// Every message the conversation ever contained, in first-seen order.
-///
-/// `Message` records are the append-only common case. A `Rewrite` record is a
-/// compaction (or eviction, or thinning) replacing the list in place — for
-/// *loading* a session the replacement is the truth, but for recall the whole
-/// point is what the replacement dropped, so its messages are unioned in
-/// rather than substituted: anything new (the summary, an edited result)
-/// joins the corpus, anything already seen is skipped. Malformed lines are
-/// skipped exactly as [`crate::session::Session::load`] skips them — a
-/// truncated final line is the normal residue of a killed process.
-fn every_message_ever(transcript: &str) -> Vec<Message> {
-    let mut seen = HashSet::new();
-    let mut all = Vec::new();
-    let mut admit = |m: Message, all: &mut Vec<Message>| {
-        // Equality via the serialized form: `Message` is `PartialEq` but not
-        // `Hash`, and the serialization is already the file's own currency.
-        if let Ok(key) = serde_json::to_string(&m) {
-            if seen.insert(key) {
-                all.push(m);
-            }
-        }
-    };
-    for line in transcript.lines().filter(|l| !l.trim().is_empty()) {
-        match serde_json::from_str::<Record>(line) {
-            Ok(Record::Message(m)) => admit(m, &mut all),
-            Ok(Record::Rewrite { messages }) => {
-                for m in messages {
-                    admit(m, &mut all);
-                }
-            }
-            Ok(_) => {}
-            Err(e) => tracing::debug!(error = %e, "recall: skipping malformed transcript line"),
-        }
-    }
-    all
 }
 
 /// The searchable text of a block, with a label saying what kind of thing

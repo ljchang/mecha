@@ -25,6 +25,7 @@
 //!   resolves nothing.
 
 use mecha_core::outbox::{DraftView, OutboxItem, OutboxKind};
+use mecha_core::outbox_source::SourceRead;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
@@ -410,7 +411,10 @@ fn row(item: &OutboxItem) -> OutboxRow {
         edited: item.edited(),
         args_text: confirm_text(item),
         error: item.error.clone(),
-        detail: detail_lines(item),
+        // Read once here, never per frame: `detail` is prebuilt so drawing
+        // is a scroll and nothing else, and the source read is a file the
+        // renderer must not touch sixty times a second.
+        detail: detail_lines(item, &crate::commands::outbox::source_reads(item)),
         raw: raw_lines(item),
     }
 }
@@ -431,7 +435,7 @@ fn row(item: &OutboxItem) -> OutboxRow {
 /// What is *not* dropped: the taint warning and a failed send stay on top in
 /// red, every argument still appears (`DraftView` guarantees it), and the
 /// exact bytes are one `J` away.
-fn detail_lines(item: &OutboxItem) -> Vec<Line<'static>> {
+fn detail_lines(item: &OutboxItem, reads: &[SourceRead]) -> Vec<Line<'static>> {
     let mut body: Vec<Line<'static>> = Vec::new();
     let white = Style::new().fg(Color::White);
     let grey = Style::new().fg(Color::DarkGray);
@@ -520,6 +524,25 @@ fn detail_lines(item: &OutboxItem) -> Vec<Line<'static>> {
             for line in pretty(&item.args).lines() {
                 body.push(Line::styled(line.to_string(), white));
             }
+        }
+    }
+
+    // What the draft answers, below the draft and above the provenance: it is
+    // context for the decision rather than the object of it. Cyan-on-grey and
+    // headed by where it came from, because these are someone else's words
+    // and must never read as a continuation of the letter.
+    for read in reads {
+        body.push(Line::raw(""));
+        body.push(Line::styled(
+            format!(
+                "replying to — third-party content via {} ({})",
+                read.tool,
+                read.keys.join(", ")
+            ),
+            header,
+        ));
+        for line in read.text.lines() {
+            body.push(Line::styled(format!("│ {line}"), grey));
         }
     }
 
@@ -760,7 +783,7 @@ mod tests {
     #[test]
     fn the_detail_leads_with_the_letter_and_ends_with_the_provenance() {
         let item = item("aaa1", "pending", OutboxKind::Message);
-        let body = text(&detail_lines(&item));
+        let body = text(&detail_lines(&item, &[]));
         let letter = body.find("hi").expect("the body is shown");
         let created = body.find("created").expect("the provenance is kept");
         assert!(letter < created, "the draft comes first:\n{body}");
@@ -781,13 +804,13 @@ mod tests {
     fn the_body_keeps_its_newlines() {
         let mut item = item("aaa1", "pending", OutboxKind::Message);
         item.args = json!({"to": "a@example.com", "body_markdown": "Dear A,\n\nHello.\n\nLuke"});
-        let body = text(&detail_lines(&item));
+        let body = text(&detail_lines(&item, &[]));
         assert!(body.contains("\nDear A,\n\nHello.\n\nLuke\n"), "{body}");
     }
 
     #[test]
     fn the_detail_shows_the_release_arguments_and_the_taint_warning() {
-        let clean = detail_lines(&item("aaa1", "pending", OutboxKind::Message));
+        let clean = detail_lines(&item("aaa1", "pending", OutboxKind::Message), &[]);
         let body = text(&clean);
         assert!(body.contains("a@example.com"), "{body}");
         assert!(
@@ -800,15 +823,42 @@ mod tests {
             private: true,
             untrusted: true,
         };
-        let body = text(&detail_lines(&tainted));
+        let body = text(&detail_lines(&tainted, &[]));
         assert!(body.contains("attacker"), "{body}");
+    }
+
+    #[test]
+    fn the_source_read_sits_below_the_letter_and_never_reads_as_part_of_it() {
+        let read = SourceRead {
+            tool: "mail__mail_get_thread".into(),
+            keys: vec!["thread_id".into()],
+            text: "Dear Dr. Chang,\n\nI am an incoming freshman.".into(),
+        };
+        let body = text(&detail_lines(
+            &item("aaa1", "pending", OutboxKind::Message),
+            std::slice::from_ref(&read),
+        ));
+        let (draft, source) = body
+            .split_once("replying to")
+            .expect("the source read is headed, not appended silently");
+        assert!(draft.contains("\nhi\n"), "the draft comes first: {body}");
+        assert!(
+            source.contains("mail__mail_get_thread") && source.contains("third-party"),
+            "the heading names the tool and says whose words these are: {body}"
+        );
+        // Gutter-marked, so a reader scrolling past cannot mistake a
+        // stranger's paragraph for the assistant's.
+        assert!(source.contains("│ Dear Dr. Chang,"), "{body}");
+        // And below the letter rather than above it: a reviewer's question is
+        // "would I send this?", which is answered by the draft.
+        assert!(body.find("\nhi\n") < body.find("Dear Dr. Chang,"), "{body}");
     }
 
     #[test]
     fn an_edited_item_shows_the_diff_the_learning_capture_will_mine() {
         let mut edited = item("aaa1", "pending", OutboxKind::Message);
         edited.args = json!({"to": "a@example.com", "body": "hello"});
-        let body = text(&detail_lines(&edited));
+        let body = text(&detail_lines(&edited, &[]));
         assert!(body.contains("edited since drafting"), "{body}");
         assert!(body.contains("hello"), "{body}");
     }
@@ -819,7 +869,7 @@ mod tests {
     fn a_publish_detail_leads_with_the_page_and_warns_when_it_is_gone() {
         let mut publish = item("bbb1", "pending", OutboxKind::Publish);
         publish.args = json!({"bundle": "/nonexistent/bundle-dir", "visibility": "public"});
-        let body = text(&detail_lines(&publish));
+        let body = text(&detail_lines(&publish, &[]));
         assert!(
             body.contains("rendered bundle: /nonexistent/bundle-dir"),
             "{body}"

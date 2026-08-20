@@ -18,6 +18,7 @@
 
 use anyhow::{bail, Context, Result};
 use mecha_core::outbox::{DraftView, OutboxItem, OutboxKind, OutboxLock, OutboxStore};
+use mecha_core::outbox_source::SourceRead;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -362,6 +363,10 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
                     mecha_core::outbox::diff_args(&item.args_before, &item.args)
                 );
             }
+            for read in source_reads(&item) {
+                println!("\n{}", source_heading(&read));
+                println!("{}", indent(&read.text));
+            }
         }
         // For a publish they are a path and a visibility flag. Reviewing means
         // opening the page, so lead with where it is; the arguments follow as
@@ -426,6 +431,35 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// What the draft is answering, or nothing when it cannot be found.
+///
+/// Best-effort at the surface as well as inside: a review must still render
+/// when the session store is unreadable, so a failure here is an absent
+/// section rather than a failed command. The absence is honest — a draft
+/// composing a *new* message answers nothing, and there is no way to tell
+/// that apart from a swept transcript without claiming to know more than we
+/// do.
+pub(crate) fn source_reads(item: &OutboxItem) -> Vec<SourceRead> {
+    let Ok(dir) = mecha_core::session::Session::default_dir() else {
+        return Vec::new();
+    };
+    mecha_core::outbox_source::for_item(item, &dir)
+}
+
+/// The heading over a quoted source read.
+///
+/// It says three things, and each is needed: that this is *not* the draft,
+/// that it came from outside this machine, and which tool fetched it. A
+/// quoted block with no heading reads as more of the letter — which for text
+/// an attacker may have written is the one impression this must never leave.
+pub(crate) fn source_heading(read: &SourceRead) -> String {
+    format!(
+        "replying to — third-party content via {} ({}), not part of your draft:",
+        read.tool,
+        read.keys.join(", ")
+    )
 }
 
 /// Arguments that name something on this machine, so `show` can point a
@@ -544,11 +578,29 @@ fn edit(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
     };
     let args = match body {
         Some(body) => {
+            // The original beneath the draft, so a reply can be written
+            // against the thing it answers rather than from memory. Cut back
+            // off below; see `strip_reference` for why a missing marker is a
+            // refusal.
+            let reads = source_reads(&item);
+            let seeded = mecha_core::outbox_source::with_reference(&body, &reads);
             let text =
-                crate::editor::edit_text(&body, &format!("mecha-outbox-edit-{}.md", item.id))
+                crate::editor::edit_text(&seeded, &format!("mecha-outbox-edit-{}.md", item.id))
                     .context("the item is unchanged")?;
-            // Trailing newline: an editor adds one, and it is not an edit.
-            let text = text.strip_suffix('\n').unwrap_or(&text).to_string();
+            let text = if reads.is_empty() {
+                // Trailing newline: an editor adds one, and it is not an edit.
+                text.strip_suffix('\n').unwrap_or(&text).to_string()
+            } else {
+                mecha_core::outbox_source::strip_reference(&text)
+                    .context(
+                        "the reference marker is gone from the edited file, so where the \
+                         reply ends cannot be told from where the quoted original begins — \
+                         and the two ways to guess are mailing the original back or \
+                         truncating your letter. The item is unchanged; run `edit` again \
+                         and leave the marker line in place, or use `--json`.",
+                    )?
+                    .to_string()
+            };
             mecha_core::outbox::with_body(&item.args, &text)
                 .context("the draft's body field went missing; the item is unchanged")?
         }
