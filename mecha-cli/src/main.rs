@@ -230,6 +230,13 @@ pub enum Command {
 
     /// Triage the inbox: classify, read, dismiss.
     Mail(commands::mail::Args),
+
+    /// The GTD board in the knowledge graph: what is on it, capture, and
+    /// moving a task through its lifecycle.
+    ///
+    /// The same board `/tasks` shows and the model reads through `kg_task_*`
+    /// — one store, reached through the tool surface from every side.
+    Tasks(commands::tasks::Args),
     /// Two readers with different sources ask each other about one entity.
     Gossip(commands::gossip::GossipArgs),
     /// Judge whether queued generalisations hold beyond their one source.
@@ -311,6 +318,7 @@ async fn dispatch() -> Result<()> {
         Command::Diagnose(args) => commands::diagnose::execute(&cli.global, args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
         Command::Mail(args) => commands::mail::run(&cli.global, args).await,
+        Command::Tasks(args) => commands::tasks::run(&cli.global, args).await,
         Command::Gossip(args) => commands::gossip::run(&cli.global, &args).await,
         Command::Corroborate(args) => commands::corroborate::run(&cli.global, &args).await,
         Command::Vet(args) => commands::vet::run(&cli.global, &args).await,

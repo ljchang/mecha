@@ -910,6 +910,39 @@ pub fn read_maybe_file(value: &str) -> Result<String> {
     }
 }
 
+/// Find a tool by its bare name whatever prefix config gave the server.
+///
+/// `mail__mail_recent` assumes the server is aliased `mail` with
+/// `prefix_tools` on, and neither is guaranteed — a deployment that renamed
+/// the server would get "tool not available" from a driver that hardcoded the
+/// prefix. Matching on the suffix is what `[outbox] tools` already does when
+/// it warns about a routed name.
+///
+/// Lives here rather than beside its first caller because there is now more
+/// than one driver reaching the tool surface from the command line, and two
+/// copies of this rule is two places for a prefix assumption to creep back in.
+pub fn find_tool<'a>(
+    registry: &'a Registry,
+    bare: &str,
+) -> Option<&'a Arc<dyn mecha_core::tool::Tool>> {
+    registry
+        .iter()
+        .find(|t| t.name() == bare || t.name().ends_with(&format!("__{bare}")))
+}
+
+/// The context a command-line driver calls a tool with: the run's workspace,
+/// the configured limits, and nothing else. Same shape every driver needs, so
+/// it is built once.
+pub fn tool_ctx(prepared: &PreparedTools) -> ToolCtx {
+    ToolCtx {
+        workspace: prepared.workspace.clone(),
+        shell_timeout: std::time::Duration::from_secs(prepared.config.tools.shell_timeout_secs),
+        security: prepared.config.security.clone(),
+        output_budget_bytes: prepared.config.tools.resolved_output_budget(None),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::excluded_by_allowlist;

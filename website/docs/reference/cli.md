@@ -540,6 +540,51 @@ mecha-mail corpus --since 2026-07-01 --account dartmouth && mecha mail score
 
 See [Mail and calendar](/docs/features/mail#triage-the-queue-over-the-mailbox).
 
+## `tasks`
+
+The GTD board in the knowledge graph. `list` is the default subcommand.
+
+```
+mecha tasks [list|add|set] [ARGS]
+```
+
+Reached through the MCP tool surface (`kg_task_list` / `kg_task_create` /
+`kg_task_update`), the same way the model reaches it — so this is one reader of
+one store rather than a second copy of it, and a configuration with no graph
+server says so instead of showing an empty board.
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `list` | `--closed` | also show done and dropped — the history |
+| `list` | `--json` | machine output: the tool's own answer, which is what the `/tasks` modal reads |
+| `add` | `<NAME…>` | the task, phrased as an action. Trailing words are joined, so it needs no quoting |
+| `add` | `--due <WHEN>` | `YYYY-MM-DD`, `today`, `tomorrow`, or `+Nd` |
+| `add` | `--project <NAME>` | parent project — **must already name a node on the graph**; an unknown name is an error, not an implicit node |
+| `add` | `--context <TAG>` | GTD context, e.g. `@email`, `@lab` |
+| `set` | `<ID>` | the task's node id, from `tasks list` |
+| `set` | `--status <S>` | `next`, `inbox`, `scheduled`, `waiting`, `done`, `dropped` |
+| `set` | `--due` / `--defer` / `--context` | omit to leave untouched; pass `""` to clear |
+
+A capture lands in `inbox` — captured, not yet committed to. `done` and
+`dropped` stamp a completion time and are **reversible**: any other status
+reopens the task. Nothing here deletes, and there is no delete verb, because
+the board is the record.
+
+The omit-versus-empty distinction on `set` is the tool's and is passed through
+rather than reinterpreted — a driver that read "unset" as "clear" would wipe a
+due date every time somebody changed a status.
+
+```bash
+mecha tasks
+mecha tasks add --due +3d --context @lab -- Re-run the eval set on the new prefix
+mecha tasks set task-1a2b3c4d --status next
+mecha tasks set task-1a2b3c4d --due ""          # clear it
+mecha tasks list --closed
+```
+
+The `/tasks` modal in `mecha tui` drives exactly these verbs, and
+`mecha-graph tui` screen 6 is the same board with the same status letters.
+
 ## `frontdoor`
 
 Requests that arrived through the public surface, and the quarantine they pass

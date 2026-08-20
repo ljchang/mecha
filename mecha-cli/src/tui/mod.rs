@@ -20,6 +20,7 @@ mod mail;
 mod outbox;
 mod polls;
 mod skills;
+mod tasks;
 mod tools;
 mod transcript;
 mod triggers;
@@ -303,6 +304,8 @@ struct App {
     /// The /frontdoor modal, when open. Takes every key while it is up.
     requests: Option<frontdoor::FrontdoorModal>,
     mail: Option<mail::MailModal>,
+    /// The /tasks modal, when open. Takes every key while it is up.
+    tasks: Option<tasks::TasksModal>,
     /// The /polls modal, when open. Takes every key while it is up.
     poll_monitor: Option<polls::PollsModal>,
     /// The /doctor modal, when open. Takes every key while it is up.
@@ -567,6 +570,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         staged: None,
         requests: None,
         mail: None,
+        tasks: None,
         poll_monitor: None,
         health: None,
         pending_doctor_remedy: None,
@@ -1549,6 +1553,9 @@ fn on_key(
     if app.mail.is_some() {
         return handle_mail_key(app, key);
     }
+    if app.tasks.is_some() {
+        return handle_tasks_key(app, key);
+    }
     if app.poll_monitor.is_some() {
         return handle_polls_key(app, key);
     }
@@ -2044,6 +2051,11 @@ fn run_command(
             }
             Ok(rows) => app.mail = Some(mail::MailModal::new(rows)),
             Err(e) => say(format!("mail: {e:#}")),
+        },
+
+        Command::Tasks => match load_tasks(false) {
+            Ok(modal) => app.tasks = Some(modal),
+            Err(e) => say(format!("tasks: {e:#}")),
         },
 
         Command::Polls => match polls::load() {
@@ -3331,6 +3343,275 @@ fn run_remedy_interactive(argv: &[String]) -> Result<()> {
 /// installed binary. Every modal mutation goes through here: one
 /// implementation of each verb, and no way for the TUI to do something the
 /// command line cannot.
+/// Read the board by driving `mecha tasks list --json` — the tool's own
+/// answer, forwarded unchanged.
+///
+/// Blocks for the child, on the `/polls` reasoning: the honest alternative is
+/// a watcher nobody needs for a call that opens a local SQLite file, and a
+/// board drawn from a stale copy would be answering a question about now with
+/// a state from before the last keypress.
+fn load_tasks(show_closed: bool) -> Result<tasks::TasksModal> {
+    let mut args = vec!["tasks", "list", "--json"];
+    if show_closed {
+        args.push("--closed");
+    }
+    let (rows, today) = tasks::rows_from_json(&self_cli(&args)?)?;
+    let mut modal = tasks::TasksModal::new(rows, today);
+    modal.show_closed = show_closed;
+    Ok(modal)
+}
+
+/// Re-read the board, keeping the cursor on the same *task*.
+///
+/// **By id, never by index.** The board is ordered actionable-first and then
+/// by due date, so the one action that reloads it — changing a status — is
+/// also the one that reorders it: a row carried across as a position would
+/// put the cursor on a different task, and the next keypress might be `d`.
+/// The `/outbox` hidden-items toggle learned this; here it is not an edge
+/// case but the common path.
+fn reload_tasks(app: &mut App, status: Option<String>) {
+    let Some(old) = &app.tasks else {
+        return;
+    };
+    let (detail, show_closed, help) = (old.detail, old.show_closed, old.help);
+    let id = old.selected_row().map(|r| r.id.clone());
+    let fallback = old.selected;
+    match load_tasks(show_closed) {
+        Ok(mut modal) => {
+            modal.selected = id
+                .and_then(|id| modal.rows.iter().position(|r| r.id == id))
+                .unwrap_or_else(|| fallback.min(modal.rows.len().saturating_sub(1)));
+            // A task that left the board — dropped while closed rows are
+            // hidden — takes its detail pane with it rather than showing the
+            // pane of whichever row inherited the cursor.
+            modal.detail = detail && !modal.rows.is_empty();
+            modal.help = help;
+            modal.status = status;
+            app.tasks = Some(modal);
+        }
+        // The board is unreadable, so there is nothing true to draw. Closing
+        // with the reason beats leaving the last good board on screen under a
+        // cursor whose keys now act on a store nobody can read.
+        Err(e) => {
+            app.tasks = None;
+            app.transcript
+                .push(transcript::Entry::Error(format!("tasks: {e:#}")));
+        }
+    }
+}
+
+fn tasks_cli(args: &[&str]) -> Result<String> {
+    let mut full = vec!["tasks"];
+    full.extend_from_slice(args);
+    self_cli(&full)
+}
+
+/// Keys for the /tasks modal. Every mutation drives `mecha tasks …` — the
+/// board's own CLI, one implementation per verb, and no way for the TUI to do
+/// something the command line cannot.
+fn handle_tasks_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    // A form being filled in owns the keyboard: `a`, `d` and `x` are letters
+    // somebody is typing into a task name, not verbs.
+    if app.tasks.as_ref().is_some_and(|m| m.form.is_some()) {
+        return handle_tasks_form_key(app, key);
+    }
+    let Some(modal) = &mut app.tasks else {
+        return Ok(());
+    };
+
+    // The `?` overlay exists to be glanced at and dismissed, like the main
+    // help. Any key closes it and does nothing else — a keypress that both
+    // dismissed the reference card and acted on it would act on whatever the
+    // cursor happened to be on while the card hid it.
+    if modal.help {
+        modal.help = false;
+        return Ok(());
+    }
+
+    modal.status = None;
+
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => modal.move_by(-1),
+        KeyCode::Down | KeyCode::Char('j') => modal.move_by(1),
+        KeyCode::Enter => {
+            if !modal.rows.is_empty() {
+                modal.detail = !modal.detail;
+            }
+        }
+        KeyCode::Char('?') => modal.help = true,
+        KeyCode::Esc => {
+            if modal.detail {
+                modal.detail = false;
+            } else {
+                app.tasks = None;
+            }
+        }
+        KeyCode::Char(c) => return run_task_action(app, c),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn run_task_action(app: &mut App, key: char) -> Result<()> {
+    let Some(modal) = &mut app.tasks else {
+        return Ok(());
+    };
+    let Some(action) = tasks::action_for(key) else {
+        return Ok(());
+    };
+
+    // What the action needs off the selected row, taken before anything
+    // borrows the modal mutably.
+    let selected = modal
+        .selected_row()
+        .map(|r| (r.id.clone(), r.status.clone()));
+
+    let status = match action {
+        tasks::Action::Close => {
+            if modal.detail {
+                modal.detail = false;
+            } else {
+                app.tasks = None;
+            }
+            return Ok(());
+        }
+        tasks::Action::Add => {
+            modal.form = Some(tasks::Form::capture());
+            return Ok(());
+        }
+        tasks::Action::Edit => {
+            if let Some(row) = modal.selected_row() {
+                modal.form = Some(tasks::Form::edit(row));
+            }
+            return Ok(());
+        }
+        tasks::Action::Closed => {
+            modal.show_closed = !modal.show_closed;
+            let shown = modal.show_closed;
+            reload_tasks(
+                app,
+                Some(if shown {
+                    "showing done and dropped".into()
+                } else {
+                    "open tasks only".into()
+                }),
+            );
+            return Ok(());
+        }
+        tasks::Action::Refresh => None,
+        tasks::Action::Status(status) => Some(status),
+        tasks::Action::Cycle => modal.next_in_cycle(),
+    };
+
+    let Some(status) = status else {
+        reload_tasks(app, None);
+        return Ok(());
+    };
+    let Some((id, was)) = selected else {
+        return Ok(());
+    };
+    let note = match tasks_cli(&["set", &id, "--status", status]) {
+        Ok(_) => format!("{was} → {status}"),
+        Err(e) => format!("could not set {status}: {e}"),
+    };
+    reload_tasks(app, Some(note));
+    Ok(())
+}
+
+/// Keys while a capture or an edit is being typed.
+///
+/// Submitting sends what is on screen, which for an edit is what the task
+/// already is with whatever changed — the form was prefilled, so the fields
+/// nobody touched arrive as the values they already had. That is why the
+/// empty string means "clear" on the tool and is passed through as such: an
+/// emptied box is somebody clearing a date, not a field they left alone.
+fn handle_tasks_form_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let Some(modal) = &mut app.tasks else {
+        return Ok(());
+    };
+    let Some(form) = &mut modal.form else {
+        return Ok(());
+    };
+
+    match key.code {
+        KeyCode::Esc => modal.form = None,
+        KeyCode::Tab | KeyCode::Down => form.move_by(1),
+        KeyCode::BackTab | KeyCode::Up => form.move_by(-1),
+        KeyCode::Backspace => form.backspace(),
+        KeyCode::Char(c) => form.push(c),
+        KeyCode::Enter => return submit_task_form(app),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn submit_task_form(app: &mut App) -> Result<()> {
+    let Some(modal) = &mut app.tasks else {
+        return Ok(());
+    };
+    let Some(form) = &modal.form else {
+        return Ok(());
+    };
+
+    let editing = form.editing.clone();
+    let (due, defer, context, project, name) = (
+        form.value("due").trim().to_string(),
+        form.value("defer").trim().to_string(),
+        form.value("context").trim().to_string(),
+        form.value("project").trim().to_string(),
+        form.value("name").trim().to_string(),
+    );
+
+    let result = match &editing {
+        Some(id) => tasks_cli(&[
+            "set",
+            id,
+            "--due",
+            &due,
+            "--defer",
+            &defer,
+            "--context",
+            &context,
+        ])
+        .map(|_| "schedule saved".to_string()),
+        None if name.is_empty() => Err(anyhow::anyhow!("a task needs a name")),
+        None => {
+            let mut args = vec!["add"];
+            for (flag, value) in [
+                ("--due", &due),
+                ("--project", &project),
+                ("--context", &context),
+            ] {
+                if !value.is_empty() {
+                    args.extend([flag, value.as_str()]);
+                }
+            }
+            // `--` before the name, always: a task called "-- rewrite the
+            // intro" is a task, and without the separator it is a parse error
+            // about an unknown flag.
+            args.push("--");
+            args.push(&name);
+            tasks_cli(&args).map(|_| "captured".to_string())
+        }
+    };
+
+    match result {
+        Ok(note) => {
+            modal.form = None;
+            reload_tasks(app, Some(note));
+        }
+        // The form stays open with the typing intact, showing the graph's own
+        // refusal — an unparseable date or a project it does not have. Closing
+        // it would lose the words and teach nothing about why.
+        Err(e) => {
+            if let Some(form) = &mut modal.form {
+                form.error = Some(format!("{e:#}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn self_cli(args: &[&str]) -> Result<String> {
     let exe = std::env::current_exe().context("cannot find my own binary")?;
     let out = std::process::Command::new(exe)
@@ -3805,6 +4086,9 @@ fn draw(
         modal.draw(frame);
     }
     if let Some(modal) = &app.mail {
+        modal.draw(frame);
+    }
+    if let Some(modal) = &app.tasks {
         modal.draw(frame);
     }
     if let Some(modal) = &app.poll_monitor {
@@ -4595,6 +4879,7 @@ mod tests {
             staged: None,
             requests: None,
             mail: None,
+            tasks: None,
             poll_monitor: None,
             health: None,
             pending_doctor_remedy: None,

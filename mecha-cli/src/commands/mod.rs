@@ -20,6 +20,7 @@ pub mod run;
 pub mod sessions;
 pub mod skills;
 pub mod slack;
+pub mod tasks;
 pub mod tools;
 pub mod trigger;
 pub mod validate;
