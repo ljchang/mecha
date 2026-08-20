@@ -150,6 +150,19 @@ pub fn decide(
     }
 }
 
+/// One line the owner typed into a mirrored thread, waiting for the session
+/// that owns it to pick it up.
+///
+/// The connector writes these and the TUI claims them. It is the frontdoor's
+/// directory-of-JSON idiom again, for the same reason: the two processes never
+/// speak, so the store is the whole protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboundLine {
+    pub id: String,
+    pub text: String,
+    pub received_at: DateTime<Utc>,
+}
+
 pub struct RemoteStore {
     root: PathBuf,
 }
@@ -227,6 +240,82 @@ impl RemoteStore {
         }
         out.sort_by_key(|r| std::cmp::Reverse(r.attached_at));
         Ok(out)
+    }
+
+    /// Which name, if any, owns this Slack thread.
+    ///
+    /// A directory scan per inbound message, which is the right cost: there
+    /// are a handful of names, and caching it in the connector would mean a
+    /// thread attached after the connector started would not be recognised
+    /// until it restarted.
+    pub fn attached_thread(
+        &self,
+        channel_id: &str,
+        thread_ts: &str,
+    ) -> Result<Option<AttachRecord>> {
+        Ok(self.list()?.into_iter().find(|r| {
+            r.channel_id.as_deref() == Some(channel_id) && r.thread_ts.as_deref() == Some(thread_ts)
+        }))
+    }
+
+    /// Leave a line for the session that owns this name.
+    pub fn push_inbound(&self, name: &str, text: &str) -> Result<InboundLine> {
+        let inbox = self.dir(name)?.join("inbox");
+        mecha_core::create_private_dir(&inbox)?;
+        let now = Utc::now();
+        // Sortable by construction, and unique without a random source: the
+        // connector is the only writer and it is one process, so a nanosecond
+        // stamp plus its pid cannot collide with itself.
+        let line = InboundLine {
+            id: format!(
+                "{}-{}",
+                now.timestamp_nanos_opt().unwrap_or_default(),
+                std::process::id()
+            ),
+            text: text.to_string(),
+            received_at: now,
+        };
+        let path = inbox.join(format!("{}.json", line.id));
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(&line)?)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(line)
+    }
+
+    /// Take everything waiting, oldest first.
+    ///
+    /// Claimed lines are **removed**, not marked. The text becomes a user
+    /// message in the session transcript a moment later, and that transcript
+    /// is the record — the same reasoning that keeps `runlog` from having a
+    /// ledger file. A second copy here could only disagree with it.
+    ///
+    /// Order is the order they were typed. Two lines sent quickly from a phone
+    /// arriving reversed would be a bug nobody could reproduce on purpose.
+    pub fn claim_inbound(&self, name: &str) -> Result<Vec<InboundLine>> {
+        let inbox = self.dir(name)?.join("inbox");
+        let Ok(entries) = std::fs::read_dir(&inbox) else {
+            return Ok(Vec::new());
+        };
+        let mut out: Vec<(PathBuf, InboundLine)> = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if let Ok(line) = serde_json::from_str::<InboundLine>(&text) {
+                out.push((path, line));
+            }
+        }
+        out.sort_by(|a, b| (a.1.received_at, &a.1.id).cmp(&(b.1.received_at, &b.1.id)));
+        let mut claimed = Vec::with_capacity(out.len());
+        for (path, line) in out {
+            let _ = std::fs::remove_file(&path);
+            claimed.push(line);
+        }
+        Ok(claimed)
     }
 
     /// Mark cold every record whose process is gone, returning what changed.
@@ -702,6 +791,77 @@ mod tests {
             assert!(store.get(bad).is_err(), "{bad:?} should be refused");
         }
         assert!(store.get("lab-2").is_ok());
+    }
+
+    /// Two lines sent quickly from a phone arriving reversed would be a bug
+    /// nobody could reproduce on purpose, so order is asserted rather than
+    /// assumed from the filesystem.
+    #[test]
+    fn inbound_lines_are_claimed_oldest_first_and_only_once() {
+        let store = RemoteStore::open(scratch("inbox")).unwrap();
+        store
+            .put(&AttachRecord::new("lab", "s1", PathBuf::from("/w")))
+            .unwrap();
+
+        for text in ["first", "second", "third"] {
+            store.push_inbound("lab", text).unwrap();
+        }
+
+        let claimed = store.claim_inbound("lab").unwrap();
+        assert_eq!(
+            claimed.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
+
+        // Claiming consumes. The text becomes a user message in the session
+        // transcript a moment later, and that transcript is the record — a
+        // second copy here could only disagree with it.
+        assert!(store.claim_inbound("lab").unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_empty_or_absent_inbox_is_not_an_error() {
+        let store = RemoteStore::open(scratch("empty")).unwrap();
+        store
+            .put(&AttachRecord::new("lab", "s1", PathBuf::from("/w")))
+            .unwrap();
+        assert!(store.claim_inbound("lab").unwrap().is_empty());
+    }
+
+    /// The connector's whole routing decision is this lookup. Getting it wrong
+    /// in the false direction starts an unrelated run in somebody's mirrored
+    /// scrollback.
+    #[test]
+    fn a_thread_is_matched_on_both_its_channel_and_its_timestamp() {
+        let store = RemoteStore::open(scratch("lookup")).unwrap();
+        let mut r = AttachRecord::new("lab", "s1", PathBuf::from("/w"));
+        r.channel_id = Some("D1".into());
+        r.thread_ts = Some("1755.0001".into());
+        store.put(&r).unwrap();
+
+        assert_eq!(
+            store
+                .attached_thread("D1", "1755.0001")
+                .unwrap()
+                .map(|r| r.name),
+            Some("lab".to_string())
+        );
+        // Same channel, different thread, and the same timestamp in another
+        // channel: neither is this attachment.
+        assert!(store.attached_thread("D1", "1755.9999").unwrap().is_none());
+        assert!(store.attached_thread("D2", "1755.0001").unwrap().is_none());
+    }
+
+    /// A record with no thread yet — written before the header is posted — must
+    /// never match a lookup, or a crash mid-attach would capture every thread
+    /// in the DM.
+    #[test]
+    fn a_record_with_no_thread_yet_matches_nothing() {
+        let store = RemoteStore::open(scratch("nothread")).unwrap();
+        store
+            .put(&AttachRecord::new("lab", "s1", PathBuf::from("/w")))
+            .unwrap();
+        assert!(store.attached_thread("D1", "1755.0001").unwrap().is_none());
     }
 
     #[test]

@@ -850,7 +850,11 @@ async fn run_loop(
         // guarantees the fast tick ends.
         let tick = tokio::time::sleep(std::time::Duration::from_millis(if app.running.is_some() {
             200
-        } else if !app.watches.is_empty() {
+        } else if !app.watches.is_empty() || app.attached.is_some() {
+            // Attached, this tick is the whole inbound path: it is what makes
+            // a line typed on a phone reach the run. A minute of latency would
+            // make the remote half unusable, so an attachment joins the same
+            // one-second tier a live watch does.
             1_000
         } else {
             60_000
@@ -904,6 +908,7 @@ async fn run_loop(
 
             _ = tick => {
                 poll_watches(app);
+                deliver_inbound(app, live, session, &mut events_tx, &mut events_rx)?;
                 // The idle tick doubles as the badge's clock: a trigger in
                 // another process can stage drafts while this session sits
                 // idle. Not while running — run end refreshes it anyway.
@@ -1862,7 +1867,7 @@ fn on_key(
                 app.cursor = 0;
                 app.history.push(text.clone());
                 app.history_pos = None;
-                submit(app, text, events_tx, events_rx, live, session)?;
+                submit(app, text, events_tx, events_rx, live, session, false)?;
             }
         }
 
@@ -2494,6 +2499,7 @@ fn run_command(
 
 /// Either start a run or steer the one already going — the same key, and from
 /// the user's side the same gesture.
+#[allow(clippy::too_many_arguments)]
 fn submit(
     app: &mut App,
     text: String,
@@ -2501,6 +2507,11 @@ fn submit(
     events_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
     live: &Live,
     session: Option<&Session>,
+    // Whether this text arrived from the mirrored Slack thread rather than
+    // from the keyboard. It suppresses the echo: the line is already in the
+    // thread, put there by the person who typed it, and posting it back would
+    // have the bot quoting the user to themselves.
+    from_remote: bool,
 ) -> Result<()> {
     let agent = &live.agent;
     // The shell escape is handled before steering, like slash commands: a
@@ -2522,7 +2533,7 @@ fn submit(
         // Steering. The loop picks this up at the top of its next turn and
         // folds it in beside the tool results, so the model reads it without
         // the run being stopped and restarted.
-        if let Some(a) = &app.attached {
+        if let Some(a) = &app.attached.as_ref().filter(|_| !from_remote) {
             spawn_echo(a, &text, true);
         }
         if let Ok(mut queue) = run.queue.lock() {
@@ -2536,7 +2547,7 @@ fn submit(
     if let Some(s) = session {
         s.append(&Record::Message(user))?;
     }
-    if let Some(a) = &app.attached {
+    if let Some(a) = &app.attached.as_ref().filter(|_| !from_remote) {
         spawn_echo(a, &text, false);
     }
     app.transcript.push(Entry::User(text));
@@ -4189,6 +4200,74 @@ fn run_shell_escape(app: &mut App, agent: &Arc<Agent>, cmd: String) {
         // The receiver only closes when the TUI is exiting; output arriving
         // after that has nowhere sensible to go anyway.
         let _ = tx.send(entry);
+    });
+}
+
+/// Hand anything typed in the mirrored thread to this session.
+///
+/// Steering when a run is in flight and a fresh turn when it is not — the same
+/// two paths a keystroke takes, because a line from a phone is the same user
+/// saying the same thing from somewhere else.
+///
+/// **Slash commands and `!` escapes are refused here, and that is the one real
+/// policy decision in this function.** They are not prompts: `/model` rebuilds
+/// the agent, `/clear` drops the conversation and its taint, and `!` runs a
+/// shell command with no approver in front of it. Those are affordances of
+/// sitting at the machine, and the gap between "the owner typed this" and "the
+/// owner is at the keyboard" is exactly where a remote surface should stay
+/// narrow. Refusing costs a sentence; allowing costs a shell.
+fn deliver_inbound(
+    app: &mut App,
+    live: &Live,
+    session: Option<&Session>,
+    events_tx: &mut mpsc::UnboundedSender<AgentEvent>,
+    events_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
+) -> Result<()> {
+    let Some(attached) = app.attached.clone() else {
+        return Ok(());
+    };
+    let Ok(store) = crate::slack::remote::RemoteStore::open_default() else {
+        return Ok(());
+    };
+    let lines = match store.claim_inbound(&attached.name) {
+        Ok(lines) => lines,
+        Err(e) => {
+            tracing::warn!("could not read the remote inbox: {e:#}");
+            return Ok(());
+        }
+    };
+
+    for line in lines {
+        if command::parse(&line.text).is_some() || command::shell_escape(&line.text).is_some() {
+            let refusal = "Commands and `!` shell escapes only work at the terminal. \
+                           Send a prompt instead.";
+            app.transcript.push(Entry::Notice(format!(
+                "refused a command from Slack: {}",
+                line.text
+            )));
+            spawn_note(&attached, refusal);
+            continue;
+        }
+        // Marked, because the person at the terminal did not type it and the
+        // difference matters when two people are looking at one session.
+        app.transcript
+            .push(Entry::Notice(format!("⇄ from Slack · {}", attached.name)));
+        submit(app, line.text, events_tx, events_rx, live, session, true)?;
+    }
+    Ok(())
+}
+
+/// Say something in the mirrored thread that is not part of a run.
+fn spawn_note(attached: &crate::slack::remote::Attached, text: &str) {
+    let (slack, channel, thread_ts) = (
+        attached.slack.clone(),
+        attached.channel_id.clone(),
+        attached.thread_ts.clone(),
+    );
+    let body = text.to_string();
+    tokio::spawn(async move {
+        let _ =
+            mecha_slack::chat::post_message(&slack, &channel, Some(&thread_ts), &body, None).await;
     });
 }
 
@@ -5889,6 +5968,33 @@ mod tests {
     }
 
     use mecha_core::tool::todo::{Status, TodoItem};
+
+    /// What `deliver_inbound` refuses. A slash command from a phone would
+    /// rebuild the agent or drop the conversation and its taint; a `!` escape
+    /// would run a shell command with no approver in front of it. The gap
+    /// between "the owner typed this" and "the owner is at the keyboard" is
+    /// exactly where a remote surface should stay narrow.
+    #[test]
+    fn remote_text_that_would_be_a_command_is_recognised_as_one() {
+        for dangerous in ["/clear", "/model claude-opus-5", "/mode allow", "!rm -rf ."] {
+            assert!(
+                command::parse(dangerous).is_some() || command::shell_escape(dangerous).is_some(),
+                "{dangerous} would have been sent to the model as a prompt"
+            );
+        }
+        // And ordinary prompts are not caught by it — a refusal that fires on
+        // real questions is a remote control nobody uses.
+        for ordinary in [
+            "summarise the inbox",
+            "what did the 7am briefing say?",
+            "why / how did that fail",
+        ] {
+            assert!(
+                command::parse(ordinary).is_none() && command::shell_escape(ordinary).is_none(),
+                "{ordinary} would have been refused"
+            );
+        }
+    }
 
     /// A mirrored session is one whose output is leaving the machine, so the
     /// fact rides on the strip that is always visible rather than in a modal.
