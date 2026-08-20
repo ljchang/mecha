@@ -1179,6 +1179,34 @@ modals stopped taking the session down when the window shrank**. Released as
 documented nothing outside `CLAUDE.md`.
 
 
+**2026-08-20 (later) — five surfaces that stated their size in one unit and
+drew in another.** Reported as "the prompt gets wonky — the cursor is
+misaligned, things are not clearing and we get collisions", and it was two
+causes wearing one costume. The collisions were not a rendering bug at all:
+`tracing` writes to stderr, and under `mecha tui` stderr *is* the alternate
+screen, so a `warn!` mid-run painted its bytes through the frame and stayed
+there forever — ratatui repaints by diffing its own buffer and therefore never
+repaints cells it did not write. `mecha-cli/src/logs.rs` holds the lines while
+a front-end owns the screen and the loop drains them into the transcript,
+bounded, colour stripped, with the remainder flushed to the real stderr on the
+way out. The caret was the second cause: `input_layout` counted characters and
+broke at `width` while the `Paragraph` beside it word-wrapped and measured in
+display cells, so two implementations of one question drifted apart on every
+line of prose. `input_layout` now returns a partition of the text into row
+ranges and `draw` renders those rows, with no `.wrap()` left to disagree.
+Underneath three more fixes was one repeated mistake — `body.len()` is not the
+drawn height when the paragraph wraps — which had `/help` truncating `/doctor`
+and `/review` mid-sentence, `/tools` hiding its declared-capability block below
+an unreachable fold, and `/tasks` pushing the task id off the one view that
+exists to show it. `typed_char` closed a separate class in the same pass:
+`KeyCode::Char('c')` with CONTROL held is Ctrl-C, and `/mail` had been feeding
+it to `action_for`, so Ctrl-A archived the thread under the cursor and Ctrl-R
+started a drafting run. Shipped alongside `/docs`, the ninth modal, which
+exists because `mecha-docs pick` printed a URL and then blocked on stdin — the
+browser leg split into `pick --url` and `pick --redirect` so it can span two
+commands minutes apart, which is what lets a document enter `drive.file` scope
+from a headless box with no tunnel and no forwarded port. `cfa2cc2`.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -1401,6 +1429,58 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+- **A value that only means something in a frame of reference, copied into a
+  context that dropped the frame.** Three separate TUI bugs on 2026-08-20 were
+  one mistake: `input_layout` counted *characters* where the terminal counts
+  *cells*; `/help`, `/tools` and `/tasks` sized their boxes from `body.len()`,
+  a count of `Line`s, and then drew through `Wrap`, which turns each into one
+  *or more* rows. Every one looked like arithmetic on a number that was simply
+  wrong, and none of them was — the number was right in the unit it was
+  computed in. The defence is not to re-derive the value in the new context but
+  to ask the thing that will actually draw it: `paragraph.line_count(width)`
+  rather than `body.len()`, and `unicode-width` rather than `chars().count()`.
+  `unstable-rendered-line-info` was already in the Cargo.toml for exactly this
+  and only `transcript.rs` was using it. The same shape reached the peer review
+  of that arc: a `git status --short` listing retyped into prose lost its
+  leading space, moving the mark from column 2 to column 1 and turning
+  "unstaged" into "staged" — the distinction that decides whether a bare
+  `git commit` is dangerous. Fixed-width output is a format; paste it, never
+  tidy it.
+
+- **Two implementations of one question always drift; delete one rather than
+  reconciling them.** The input box asked "where does this text wrap?" twice —
+  once in `input_layout`, once in `Paragraph::wrap` — and the caret followed
+  one answer while the glyphs followed the other. Measured on a real frame at
+  30 columns: the painted last row read `"class"` and the caret sat at column
+  3. Making them agree would have coupled the code to a ratatui internal that
+  is free to change; the fix was to stop calling `.wrap()` and render the rows
+  the layout function had already computed. Same rule as `list_height_reserving`
+  and `find_tool` — where two callers must answer identically, there has to be
+  one function they both call.
+
+- **`KeyCode::Char(c)` is not a typed character.** crossterm reports the
+  modifier *beside* the letter, so a match on `Char(c)` alone sees the bare
+  letter and cannot tell Ctrl-C from `c`. Harmless in the main input box, whose
+  `ctrl` branch runs first and consumes them; not harmless in `/mail`, whose
+  keys go through `action_for`, where **Ctrl-A archived the thread under the
+  cursor, Ctrl-D dismissed it, Ctrl-T made a task of it and Ctrl-R started a
+  drafting run** — on chords that mean beginning-of-line, delete and refresh
+  everywhere else in a terminal. Seven sites had their own copy of the mistake,
+  which is the `list_height` lesson again: a new modal is written by copying
+  whichever sibling is nearest, so the fix has to be the thing that gets
+  copied, not seven guards.
+
+- **A view can answer a shorter question than the one it exists for.** `/tools`
+  detail exists to say what a tool may do to you, and its capability block sits
+  at the *bottom* of a body whose top is an MCP server's own description —
+  arbitrary third-party text. With the built-in tools it always fit; on
+  `kg_task_create` it was eight of eleven lines, with "reads data the user
+  considers private" below the fold and `Up`/`Down` guarded `if !detail` so no
+  key reached it. The general shape: when a surface's *answer* is positioned
+  after content whose length someone else controls, the surface degrades to
+  looking complete while omitting the point. Test it with the largest real
+  input available, not with the fixture.
 
 - **A sweep that keys on a spelling misses the shape.** Seven modals carried
   `rows.clamp(1, terminal_height.saturating_sub(4))`, which panics at four rows
