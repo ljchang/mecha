@@ -203,6 +203,33 @@ Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
 `LLAMA_SERVER` overrides. Config is `~/.mecha/config.toml` (providers `local`,
 `small`, `gemma26`, `anthropic`).
 
+**A release key sits on an agent machine, and that is against the rule the
+factory wrote down.** `~/.mecha/factory/release.key` exists here (mode 0600,
+2026-08-07), on the same box that runs `mecha-slack.service` and
+`mecha-triggers.service` — both active. `mecha-factory/docs/SECOND-CLIENT.md:58`
+says "Keep release keys off machines agents use", and the reason is the
+ceiling: a paired agent machine's intended worst case is *immutable versions
+nobody can read*, and a release key removes that bound. Under mecha the
+publish path is outbox-routed so a human still gates each release, which is
+mitigation and not the property the rule protects — an unattended run on this
+box is one confused-deputy step from a capability the design says it should not
+be able to reach. **Surfaced, not acted on**: moving the key is a decision
+about how this machine is operated, and it belongs to whoever operates it.
+(Verified 2026-08-20.)
+
+**The KV cache is f16, not q8_0.** No `-ctk`/`-ctv` on the running server and no
+`LLAMA_ARG_CACHE_TYPE_*` in its environment (verified 2026-08-20). Nothing in
+this repository claims otherwise — recorded because the question came up and
+the answer should not have to be re-measured.
+
+**Restarting a model server under memory pressure is permanent for that
+server's life.** `scripts/start-moe-mtp.sh` records the finding; what it means
+operationally is that the `update` sequence must not restart
+`llama-local.service` while anything heavy is resident — a second llama-server
+under `mecha-graph extract`, say — because a server that loads under contention
+stays slow and never recovers. Check tok/s afterwards, not just that the unit
+came back up. Liveness is the check that cannot see this failure.
+
 ### Standing machinery on this machine
 
 **Publishing a release changes nothing about a running system.** The installed
