@@ -4,6 +4,7 @@ mod approve;
 mod commands;
 mod editor;
 mod interrupt;
+mod logs;
 mod probe;
 mod render;
 mod review_policy;
@@ -289,7 +290,12 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_from_env("MECHA_LOG")
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
-        .with_writer(std::io::stderr)
+        // Not `std::io::stderr` directly: under `mecha tui` stderr *is* the
+        // alternate screen, and a warning written to it scribbles through the
+        // frame and stays there — ratatui repaints by diffing its own buffer,
+        // so it never repaints cells it did not write. `logs` holds the lines
+        // instead, but only once a front-end says it has taken the screen.
+        .with_writer(logs::Make)
         .without_time()
         .init();
 

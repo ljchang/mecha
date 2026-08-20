@@ -57,12 +57,22 @@ enum Command {
         capture: Capture,
     },
     /// List every file this grant can reach.
-    List,
+    List {
+        /// Machine-readable output, for a caller that is not a person.
+        #[arg(long)]
+        json: bool,
+    },
     /// Serve MCP over stdio (the default when no subcommand is given).
     Serve,
 }
 
 /// How the redirect gets back here.
+///
+/// Four shapes, one browser leg. The last two are the same as `--paste` with
+/// the waiting taken out: `--url` starts an attempt and stops, `--redirect`
+/// finishes the one that was started. That split is what lets a front-end
+/// drive the flow — a full-screen TUI cannot hand its keyboard to a child
+/// that blocks on stdin, and neither can a script.
 #[derive(clap::Args, Debug, Clone)]
 struct Capture {
     /// Loopback port to listen on. Must match any SSH tunnel.
@@ -73,8 +83,19 @@ struct Capture {
     timeout: u64,
     /// Do not listen: print the URL and read the resulting address back from
     /// stdin. The path for a headless machine with no tunnel.
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["url", "redirect"])]
     paste: bool,
+    /// Print the authorization URL and stop, recording the attempt. Finish it
+    /// afterwards — from anywhere, at any time — with `--redirect`.
+    #[arg(long, conflicts_with = "redirect")]
+    url: bool,
+    /// Finish an attempt started with `--url`, from the address the browser
+    /// landed on.
+    #[arg(long, value_name = "URL")]
+    redirect: Option<String>,
+    /// Machine-readable output, for a caller that is not a person.
+    #[arg(long)]
+    json: bool,
 }
 
 #[tokio::main]
@@ -107,7 +128,7 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Some(Command::List) => list(&cli.account).await,
+        Some(Command::List { json }) => list(&cli.account, json).await,
         Some(Command::Serve) | None => {
             let path = docs::store_path(&cli.account)?;
             anyhow::ensure!(
@@ -164,6 +185,12 @@ fn resolve_client(
 /// The one browser leg, shared by `auth` and `pick` because they differ only
 /// in whether the chooser opens. Keeping it one function is what stops the
 /// two drifting into two grants.
+///
+/// Three ways to receive the redirect and **one** way to start and one to
+/// finish: `begin` mints the URL and records the attempt, `finish` verifies
+/// and exchanges. Every mode below is those two with something different in
+/// between, which is what stops `--paste` and `--url`/`--redirect` becoming
+/// two flows that have to be kept in step.
 async fn consent(
     account: &str,
     client_id: String,
@@ -171,10 +198,37 @@ async fn consent(
     picker: bool,
     capture: &Capture,
 ) -> Result<()> {
-    // The picker leg carries no PKCE of its own, so state is the only thing
-    // pairing the callback with this attempt.
-    let state = mecha_mail::google::auth::generate_pkce().code_verifier;
-    let url = docs::build_auth_url(&client_id, capture.port, &state, picker);
+    // Finishing an attempt started earlier: nothing to mint, and the client
+    // credentials come from the record rather than from these arguments —
+    // which is also why `--redirect` needs no flags.
+    if let Some(pasted) = &capture.redirect {
+        let pending = docs::load_pending(account)?;
+        let redirect = docs::parse_redirect_url(pasted.trim())?;
+        return finish(account, &pending, redirect, capture.json).await;
+    }
+
+    let url = begin(account, client_id, client_secret, picker, capture)?;
+
+    if capture.url {
+        // Nothing else on stdout: a caller parsing this is a program.
+        if capture.json {
+            println!(
+                "{}",
+                serde_json::json!({ "url": url, "picker": picker, "account": account })
+            );
+        } else {
+            println!("{url}");
+        }
+        eprintln!(
+            "\nOpen that in any browser, on any machine. It finishes on a \n\
+             127.0.0.1 address that fails to load — that is expected. Then:\n\n  \
+             mecha-docs --account {account} {} --redirect '<that address>'\n",
+            if picker { "pick" } else { "auth" }
+        );
+        return Ok(());
+    }
+
+    let pending = docs::load_pending(account)?;
 
     let redirect = if capture.paste {
         eprintln!("\nOpen this in any browser, on any machine:\n\n{url}\n");
@@ -209,23 +263,66 @@ async fn consent(
         docs::wait_for_picker_redirect(capture.port, capture.timeout).await?
     };
 
+    finish(account, &pending, redirect, capture.json).await
+}
+
+/// Mint the authorization URL and record the attempt. Returns the URL.
+fn begin(
+    account: &str,
+    client_id: String,
+    client_secret: String,
+    picker: bool,
+    capture: &Capture,
+) -> Result<String> {
+    // The picker leg carries no PKCE of its own, so state is the only thing
+    // pairing the callback with this attempt.
+    let state = mecha_mail::google::auth::generate_pkce().code_verifier;
+    let url = docs::build_auth_url(&client_id, capture.port, &state, picker);
+    docs::save_pending(
+        account,
+        &docs::PendingConsent {
+            state,
+            picker,
+            client_id,
+            client_secret,
+            port: capture.port,
+            started_at: chrono::Utc::now().to_rfc3339(),
+        },
+    )?;
+    Ok(url)
+}
+
+/// Verify the pairing, exchange the code, save the grant, and report what the
+/// chooser put in scope.
+async fn finish(
+    account: &str,
+    pending: &docs::PendingConsent,
+    redirect: docs::PickerRedirect,
+    json: bool,
+) -> Result<()> {
     anyhow::ensure!(
-        redirect.state == state,
-        "state mismatch on the redirect — run the command again"
+        redirect.state == pending.state,
+        "state mismatch on the redirect — that address belongs to a different \
+         attempt. Start again with --url."
     );
 
     let tokens = docs::exchange_code(
-        &client_id,
-        &client_secret,
+        &pending.client_id,
+        &pending.client_secret,
         &redirect.code,
-        capture.port,
+        pending.port,
         &mecha_mail::http::client(),
     )
     .await?;
 
     let path = docs::store_path(account)?;
     let previous_account = token::load(&path).ok().and_then(|c| c.account);
-    let mut creds = docs::credentials_from(client_id, client_secret, tokens, previous_account)?;
+    let mut creds = docs::credentials_from(
+        pending.client_id.clone(),
+        pending.client_secret.clone(),
+        tokens,
+        previous_account,
+    )?;
 
     // Name the account from Drive's own `about`, which answers under
     // `drive.file`. Best-effort on purpose: losing a completed sign-in over a
@@ -239,17 +336,62 @@ async fn consent(
         }
     }
     token::save(&path, &creds)?;
+    // The attempt is spent. Only now: a record cleared before the exchange
+    // would strand a redirect that arrives a second late with nothing to
+    // verify against.
+    docs::clear_pending(account);
+
+    // Read the picked items back before printing anything, so the JSON and the
+    // prose are built from the same answer.
+    let mut picked: Vec<serde_json::Value> = Vec::new();
+    let mut folders = 0;
+    if pending.picker && !redirect.picked.is_empty() {
+        let client = docs::DocsClient::new(token::TokenManager::load(path.clone())?);
+        for id in &redirect.picked {
+            match client.file(id).await {
+                Ok(f) => {
+                    if f.mime_type == docs::MIME_FOLDER {
+                        folders += 1;
+                    }
+                    picked.push(serde_json::json!({
+                        "id": f.id,
+                        "name": f.name,
+                        "kind": docs::kind_of(&f.mime_type),
+                    }));
+                }
+                Err(e) => picked.push(serde_json::json!({
+                    "id": id,
+                    "name": format!("(could not read back: {e})"),
+                    "kind": "file",
+                })),
+            }
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "account": creds.account,
+                "picker": pending.picker,
+                "picked": picked,
+                "folders": folders,
+                "granted_scope": creds.granted_scopes,
+            })
+        );
+        return Ok(());
+    }
+
     if let Some(who) = &creds.account {
         eprintln!("authorized as {who}");
     }
-
     eprintln!("credentials in {}", path.display());
     eprintln!(
         "granted scope: {}",
         creds.granted_scopes.as_deref().unwrap_or("(none reported)")
     );
 
-    if !picker {
+    if !pending.picker {
         eprintln!(
             "\nEverything mecha creates from now on is in scope automatically.\n\
              To let it edit a document that already exists: mecha-docs pick"
@@ -263,18 +405,12 @@ async fn consent(
     }
 
     eprintln!("\nput {} item(s) in scope:", redirect.picked.len());
-    let client = docs::DocsClient::new(token::TokenManager::load(path)?);
-    let mut folders = 0;
-    for id in &redirect.picked {
-        match client.file(id).await {
-            Ok(f) => {
-                if f.mime_type == docs::MIME_FOLDER {
-                    folders += 1;
-                }
-                eprintln!("  {:7} {}", docs::kind_of(&f.mime_type), f.name);
-            }
-            Err(e) => eprintln!("  {id}  (could not read back: {e})"),
-        }
+    for f in &picked {
+        eprintln!(
+            "  {:7} {}",
+            f["kind"].as_str().unwrap_or("file"),
+            f["name"].as_str().unwrap_or("")
+        );
     }
     if folders > 0 {
         eprintln!(
@@ -285,7 +421,7 @@ async fn consent(
     Ok(())
 }
 
-async fn list(account: &str) -> Result<()> {
+async fn list(account: &str, json: bool) -> Result<()> {
     let path = docs::store_path(account)?;
     anyhow::ensure!(
         path.exists(),
@@ -293,6 +429,13 @@ async fn list(account: &str) -> Result<()> {
     );
     let client = docs::DocsClient::new(token::TokenManager::load(path)?);
     let files = client.list_scope().await?;
+    if json {
+        // Empty is a legitimate answer and prints as one: a caller that gets
+        // `[]` knows the grant works and holds nothing, which is a different
+        // fact from an error.
+        println!("{}", serde_json::to_string(&files)?);
+        return Ok(());
+    }
     if files.is_empty() {
         eprintln!(
             "nothing in scope yet. Documents mecha creates land here \

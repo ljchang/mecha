@@ -50,6 +50,19 @@ pub struct ToolsModal {
     pub selected: usize,
     /// Showing the detail view for the selected row rather than the list.
     pub detail: bool,
+    /// How far the detail view is scrolled.
+    ///
+    /// The detail's body is a **tool description**, and for an MCP tool that
+    /// is text a third-party server wrote — unbounded, exactly like a
+    /// `SKILL.md`, which is why `/skills` grew this first. Without it the
+    /// declared-capability block, which is the entire reason to open this
+    /// view, sits below the fold on any real MCP tool with no key that
+    /// reaches it: measured at 22 rows, a 25-line description cut at line 18
+    /// and "reads data the user considers private" was simply not on screen.
+    ///
+    /// Reset on every move, like the sibling modals': an offset carried onto
+    /// another row is a position in a different document.
+    pub detail_scroll: u16,
     /// What `shell` actually is right now, shown on its detail view — the
     /// sandbox decides, and this modal is where the user looks.
     pub sandbox_line: String,
@@ -63,6 +76,11 @@ impl ToolsModal {
         let len = self.rows.len() as isize;
         // Wraps, like the picker: a list is faster to cycle than to bound.
         self.selected = (((self.selected as isize + delta) % len + len) % len) as usize;
+        self.detail_scroll = 0;
+    }
+
+    pub fn scroll_detail(&mut self, delta: i16) {
+        self.detail_scroll = self.detail_scroll.saturating_add_signed(delta);
     }
 
     pub fn draw(&self, frame: &mut Frame) {
@@ -184,12 +202,32 @@ impl ToolsModal {
             (body.len() as u16 + 4).min(frame.area().height),
         );
         frame.render_widget(Clear, area);
+        // `Wrap` means the drawn height is not `body.len()`, so a body that
+        // looks shorter than the box can still lose its tail — the bound is
+        // measured rather than assumed, the same way the transcript measures
+        // its own scrollable height.
+        let paragraph = Paragraph::new(body).wrap(Wrap { trim: false });
+        let inner = area.width.saturating_sub(2);
+        let drawn = paragraph.line_count(inner) as u16;
+        let visible = area.height.saturating_sub(2);
+        let max_scroll = drawn.saturating_sub(visible);
+        let scroll = self.detail_scroll.min(max_scroll);
+        let title = if max_scroll == 0 {
+            format!(" {} · esc to go back ", row.name)
+        } else {
+            format!(
+                " {} · {}/{} · ↑↓ scrolls · esc to go back ",
+                row.name,
+                (scroll + visible).min(drawn),
+                drawn
+            )
+        };
         frame.render_widget(
-            Paragraph::new(body).wrap(Wrap { trim: false }).block(
+            paragraph.scroll((scroll, 0)).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::new().fg(Color::Cyan))
-                    .title(format!(" {} · esc to go back ", row.name)),
+                    .title(title),
             ),
             area,
         );
@@ -199,6 +237,111 @@ impl ToolsModal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use ratatui::backend::TestBackend;
+
+    fn frame_text(modal: &ToolsModal, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| modal.draw(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The detail's body is whatever an MCP server wrote in its tool
+    /// description, so it has no length bound at all — and the block that says
+    /// what the tool may do to you is at the *bottom* of it. Measured before
+    /// the fix: at 22 rows a 25-line description cut at line 18 and
+    /// "reads data the user considers private" was simply not on screen, with
+    /// no key that could reach it (`Up`/`Down` were guarded `if !detail`).
+    #[test]
+    fn a_long_description_does_not_bury_the_capability_block_unreachably() {
+        let long: String = (1..=25)
+            .map(|i| format!("description line {i}\n"))
+            .collect();
+        let mut modal = ToolsModal {
+            rows: vec![ToolRow {
+                name: "kg_upsert".into(),
+                read_only: false,
+                outbox: false,
+                caps: Capabilities {
+                    private_data: true,
+                    ..Default::default()
+                },
+                description: long,
+            }],
+            selected: 0,
+            detail: true,
+            detail_scroll: 0,
+            sandbox_line: "sandbox: none".into(),
+        };
+
+        let top = frame_text(&modal, 90, 22);
+        assert!(top.contains("description line 1"), "{top}");
+        assert!(
+            !top.contains("reads data the user considers private"),
+            "the capability block is genuinely below the fold: {top}"
+        );
+        // And the box says there is more, rather than looking complete.
+        assert!(top.contains("↑↓ scrolls"), "{top}");
+
+        modal.scroll_detail(99);
+        let bottom = frame_text(&modal, 90, 22);
+        assert!(
+            bottom.contains("reads data the user considers private"),
+            "scrolling reaches it: {bottom}"
+        );
+    }
+
+    /// A short description needs no scrolling and must not advertise any —
+    /// a hint that is always on screen is a hint nobody reads.
+    #[test]
+    fn a_description_that_fits_says_nothing_about_scrolling() {
+        let modal = ToolsModal {
+            rows: vec![ToolRow {
+                name: "fs_read".into(),
+                read_only: true,
+                outbox: false,
+                caps: Capabilities::default(),
+                description: "Read a file.".into(),
+            }],
+            selected: 0,
+            detail: true,
+            detail_scroll: 0,
+            sandbox_line: "sandbox: none".into(),
+        };
+        let text = frame_text(&modal, 90, 30);
+        assert!(!text.contains("scrolls"), "{text}");
+    }
+
+    /// An offset carried onto another row is a position in a different
+    /// document — the rule every sibling modal follows.
+    #[test]
+    fn moving_the_selection_resets_the_detail_scroll() {
+        let mut modal = ToolsModal {
+            rows: vec![
+                row("a", Capabilities::default()),
+                row("b", Capabilities::default()),
+            ],
+            selected: 0,
+            detail: true,
+            detail_scroll: 0,
+            sandbox_line: String::new(),
+        };
+        modal.scroll_detail(12);
+        assert_eq!(modal.detail_scroll, 12);
+        modal.move_by(1);
+        assert_eq!(modal.detail_scroll, 0);
+        // And it never wraps below zero into a huge offset.
+        modal.scroll_detail(-5);
+        assert_eq!(modal.detail_scroll, 0);
+    }
 
     fn row(name: &str, caps: Capabilities) -> ToolRow {
         ToolRow {
@@ -238,6 +381,7 @@ mod tests {
             ],
             selected: 0,
             detail: false,
+            detail_scroll: 0,
             sandbox_line: String::new(),
         };
         modal.move_by(-1);
@@ -249,6 +393,7 @@ mod tests {
             rows: Vec::new(),
             selected: 0,
             detail: false,
+            detail_scroll: 0,
             sandbox_line: String::new(),
         };
         empty.move_by(1);
@@ -264,6 +409,7 @@ mod tests {
             rows,
             selected: 0,
             detail: false,
+            detail_scroll: 0,
             sandbox_line: String::new(),
         };
         assert_eq!(
@@ -292,6 +438,7 @@ mod tests {
             rows: vec![row("shell", Capabilities::default())],
             selected: 0,
             detail: false,
+            detail_scroll: 0,
             sandbox_line: String::new(),
         };
         for height in 0..=6u16 {

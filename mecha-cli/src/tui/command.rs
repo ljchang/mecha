@@ -24,6 +24,9 @@ pub enum Command {
     /// Inbound requests: read (prose included), extract, triage, park, close.
     Frontdoor,
     Mail,
+    /// Google Docs, Sheets and Slides: what is in scope, and how to put
+    /// something into it from a machine with no browser.
+    Docs,
     /// The GTD board in the knowledge graph: see it, capture, move a task on.
     Tasks,
     /// Open polls on the gate: tallies, close with an outcome, export.
@@ -97,6 +100,7 @@ pub fn parse(line: &str) -> Option<Command> {
         // Both spellings for the same reason as triggers: the command is
         // `mecha mail`, the thing you want to see is the queue.
         "mail" | "inbox" => Command::Mail,
+        "docs" => Command::Docs,
         // "requests" because that is what the store holds; `frontdoor` is the
         // component's name and the CLI's.
         "frontdoor" | "requests" => Command::Frontdoor,
@@ -250,7 +254,7 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 18] = [
+pub const NAMES: [&str; 19] = [
     "help",
     "tools",
     "skills",
@@ -260,6 +264,7 @@ pub const NAMES: [&str; 18] = [
     "tasks",
     "polls",
     "doctor",
+    "docs",
     "review",
     "model",
     "provider",
@@ -333,6 +338,7 @@ pub const HELP: &str = "\
   /tasks                 the graph's task board: see, capture, edit, move on
   /polls                 open polls on the gate: tallies, close, export
   /doctor                what is silently wrong across the stores, and the way out
+  /docs                  documents in scope, and how to put one there
   /review [now|later|auto]      what happens when a run stages drafts
   /model [id]            show or switch the model
   /provider [name]       show or switch the provider
