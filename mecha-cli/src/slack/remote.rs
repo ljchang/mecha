@@ -406,6 +406,25 @@ impl RemoteStore {
         Ok(landed)
     }
 
+    /// The attachment belonging to *this* process, if it has one.
+    ///
+    /// The store is asked rather than a handle being passed around, and that
+    /// is deliberate: `show_file` runs inside a tool call, on an agent shared
+    /// with whatever else is in flight, and threading a live `Attached`
+    /// through the registry would put a second copy of the truth beside the
+    /// record. The record is what the connector routes on; anything that
+    /// disagrees with it is wrong by definition.
+    ///
+    /// Matched on pid rather than session id, for the reason `decide` checks
+    /// liveness first: a session id is not unique to a process.
+    pub fn attached_here(&self) -> Result<Option<AttachRecord>> {
+        let me = std::process::id();
+        Ok(self
+            .list()?
+            .into_iter()
+            .find(|r| r.pid == me && r.is_live() && r.thread_ts.is_some()))
+    }
+
     /// Leave a line for the session that owns this name.
     pub fn push_inbound(&self, name: &str, text: &str, files: Vec<String>) -> Result<InboundLine> {
         let inbox = self.dir(name)?.join("inbox");

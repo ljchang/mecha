@@ -14,5 +14,6 @@ pub mod pump;
 pub mod remote;
 pub mod review;
 pub mod send;
+pub mod show;
 pub mod threads;
 pub mod triggers;
