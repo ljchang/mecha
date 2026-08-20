@@ -143,6 +143,32 @@ The status line grows one indicator (`⇄ lab`, or `⇄ lab · no connector`),
 beside the context fuel gauge. Everything that changes what a session can do
 belongs on the strip that is always visible, not in a modal you have to open.
 
+**The modal, when there is one, follows the house pattern rather than a ninth
+variant of it.** The list uses `list_scroll` and builds its body from every row
+with `.enumerate()` — never a `.skip().take()` window — with the hint strip as
+the last element of the body so it scrolls with the rows it describes, and
+`list_height_reserving` if the box needs a legend line.
+
+The detail pane **does** need the scroll machinery, and the rule that decides
+it is worth stating because the obvious version of it is wrong. It is not *is
+the field list fixed* — this pane shows six fields and that sounds bounded. It
+is: **can any field hold text a person or a third party wrote?** Here two can.
+A workspace is a path, which is arbitrarily deep, and a name is whatever the
+user typed. Either wraps, and a pane sized from `body.len()` builds a box
+shorter than what is drawn — `Wrap` means the count of lines pushed is not the
+count rendered. So the height is measured with `paragraph.line_count(width -
+2)`, the offset is clamped to `drawn - visible`, and the `n/m · ↑↓ scrolls`
+hint appears only when there is something to scroll, because a hint that is
+always on screen is one nobody reads.
+
+That rule was learned twice in one afternoon on the surfaces next door, both
+times the same way: `/tools` hid the declared-capability block — the answer its
+whole existence is for — below the fold of an MCP server's description, and
+`/tasks` hid the task id and `context` below the fold of a long task name. In
+both cases the content that fell off was the content someone had gone there to
+read. A remote-control pane whose workspace line is the part that scrolls away
+would be the same bug a third time.
+
 ---
 
 ## 6. Outbound: the mirror
