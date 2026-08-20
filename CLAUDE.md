@@ -1220,6 +1220,19 @@ timezone is written into the trigger file at `add` time, resolved from
 `[agent] timezone` then, so editing that config later cannot silently move
 every existing trigger.
 
+**Every modal sizes its list through one helper**, `tui::list_height`. The
+obvious inline spelling — `rows.clamp(1, terminal_height.saturating_sub(4))` —
+is a *panic*, not a layout bug: the subtraction saturates to zero the moment
+the terminal is four rows or fewer, and `clamp` asserts `min <= max`. So
+shrinking a window with any modal open took the whole session down, partial
+answer and all. It was found in `/doctor`, then written again in `/skills`, and
+five more modals had their own copy — because a new modal is written by opening
+whichever sibling is nearest, which is what makes this a shared function rather
+than seven fixes. Flooring the bound at one row degrades a tiny terminal to a
+one-row box instead. Each modal carries a draw-at-`0..=6`-rows test whose
+assertion *is* the draw, verified to fail on the old line (`min > max. min = 1,
+max = 0`) rather than merely to pass on the new one.
+
 **The TUI's `/triggers` modal drives the CLI, not the store.** Every action —
 run now, cancel, enable, delete, edit — shells out to `mecha trigger ...` as a
 child process. Firing builds a whole separate agent (its own provider, tool

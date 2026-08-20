@@ -158,7 +158,7 @@ impl PollsModal {
                 .collect()
         };
 
-        let height = (body.len() as u16).clamp(1, frame.area().height.saturating_sub(4)) + 2;
+        let height = super::list_height(body.len() as u16, frame.area().height);
         let area = super::centered(frame.area(), 120, height);
         frame.render_widget(Clear, area);
         frame.render_widget(
@@ -442,5 +442,20 @@ mod tests {
             buffer: String::new(),
         };
         assert!(input.title().contains("optional"), "{}", input.title());
+    }
+    /// Fails on the old inline `clamp(1, height.saturating_sub(4))`, which
+    /// panicked with `min > max` the moment the terminal was four rows or
+    /// fewer — the /doctor bug (F9), which every modal had a copy of because
+    /// each new one is written by opening whichever sibling is nearest.
+    #[test]
+    fn a_tiny_terminal_shrinks_the_list_rather_than_panicking() {
+        let modal = PollsModal::new(vec![row(&record()).unwrap()]);
+        for height in 0..=6u16 {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, height.max(1)))
+                    .unwrap();
+            // The draw itself is the assertion: the old code panicked here.
+            terminal.draw(|f| modal.draw(f)).unwrap();
+        }
     }
 }
