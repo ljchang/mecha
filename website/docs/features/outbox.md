@@ -63,6 +63,55 @@ draft is still good, the delivery was not, and the next `send` retries.
 Resolution rewrites the item in place rather than archiving it, so the file is
 its own audit record; a rejection stays on disk as the record of the refusal.
 
+## A reply is shown with the message it replies to
+
+"A message's reviewable object is the message" was half a rule. A staged
+`mail_reply` carries a body and a `thread_id` — and a `thread_id` addresses the
+provider, not the reviewer, so the queue was asking people to approve a letter
+without showing them the letter it answers. Deciding *is this the right reply?*
+without the original is approving unread, in the one way this whole surface
+exists to prevent.
+
+`show` and the review modal now print it underneath the draft, labelled for
+what it is:
+
+```
+replying to — third-party content via mail__mail_get_thread (thread_id),
+not part of your draft:
+  --- [dartmouth] From: … · 2026-08-17T12:00:24Z
+  Subject: COSAN Lab Research Opportunity Inquiry
+  …
+```
+
+Four things about that are deliberate:
+
+- **It comes from the transcript, never a live re-fetch.** A reviewer needs the
+  bytes the model drafted *from*, not today's version of the thread — a reply
+  judged against different text than it was written against is the same
+  wrong-bytes review that [the recorded jail](#an-item-records-the-jail-it-was-drafted-under)
+  exists to stop, arriving through the other door. It also keeps `show` a store
+  read: no network, no MCP startup, no token refresh behind a display.
+- **Nothing new is recorded to make it work.** The drafting run read the thread
+  before it wrote the reply, the item already names its session, and the
+  transcript already holds the result. The link was always there; nothing
+  followed it.
+- **The join knows nothing about mail.** It matches the staged call's
+  identifying arguments — the string arguments that are neither addressing nor
+  prose — by key *and* value against earlier tool calls in the same session.
+  `thread_id == thread_id` finds the read; `account == account` would have
+  matched every call in the session, which is why header fields are excluded
+  rather than merely ranked lower. No tool name is special-cased, so a Slack
+  thread or a document read joins the same way.
+- **It is labelled as third-party content, above the draft's own taint
+  warning.** What it shows is by definition somebody else's words, quoted into
+  a review surface; a reviewer reading it should be told that before they read
+  it, not after.
+
+No block means no source was recovered — for a `mail_send` that answers
+nothing there is none to find, and for a reply whose session has been pruned it
+is simply gone. Those two read the same on screen today, which is worth knowing
+before you take a missing block as "this reply answers nothing."
+
 ## Staging skips the interlock and the approver
 
 Deliberately. At stage time nothing leaves the machine: the call becomes a

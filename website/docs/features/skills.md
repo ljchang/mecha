@@ -236,6 +236,27 @@ not to use, which is the same shape as a
 [learning domain nothing routes](/docs/features/learning) — and reported for the
 same reason. A name in `[skills]` matching nothing on disk is called out too.
 
+## `/skills` — what this agent knows how to do
+
+The slash counterpart to `/tools`, and the reason it exists is the same: the
+only way to ask what procedures a run carries used to be leaving the session.
+
+```
+/skills          the list, with the body of the one you mean on enter
+```
+
+It reads from **two places, because neither can answer alone.** What the run
+*carries* comes from the running agent's own skill tool rather than from
+re-deriving the selection off config — `--skill` narrows a run without changing
+any file, so a list rebuilt from config would describe a different run than the
+one you are in. What was *withheld* comes from config, because a skill config
+excluded is absent from the agent entirely and a list that simply omitted it
+could not tell you why the procedure you wrote is not firing.
+
+Marked rather than omitted, on the same rule as `mecha skills`: a withheld
+skill and a skill the model chose not to load look identical from the outside,
+and only one of them is a configuration mistake.
+
 ## What is deliberately not here
 
 - **An install command, a marketplace, or a registry client.**

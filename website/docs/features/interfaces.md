@@ -99,11 +99,12 @@ what is answering, `/mcp` turns servers on and off individually or wholesale,
 `/todo` shows the live task list, and `/review [now|later|auto]` decides what
 happens when a run stages drafts (see [the outbox](/docs/features/outbox)).
 
-Seven modals open onto the review surfaces:
+Eight modals open onto the review surfaces:
 
 | Modal | Onto |
 |---|---|
 | `/triggers` | [scheduled prompts](/docs/features/triggers) — see, edit, run, cancel |
+| `/skills` | [the procedures this agent carries](/docs/features/skills#skills--what-this-agent-knows-how-to-do) — and the one you mean, in full |
 | `/outbox` | [staged outbound drafts](/docs/features/outbox) — read, edit, send, reject |
 | `/frontdoor` | [inbound requests](/docs/features/frontdoor) — read, extract, triage, close |
 | `/mail` (or `/inbox`) | [the triage queue](/docs/features/mail#mail--the-queue-as-a-modal) — reply, task, correct, park, dismiss |
