@@ -2078,19 +2078,26 @@ All found by pre-push review or by running it.
   (`-c 1048576 -np 4`) lands on the same 262144 per slot; the rule was still
   wrong and four derived numbers trusted it. **A fact recorded in one place and
   contradicted in two is not recorded**, and the place it survives is rarely
-  the place a reader looks. Where a relationship holds between a config value
-  and something a process reports, the durable answer is to *check* it at
-  startup rather than restate it. This project already has the shape and it is
-  `Sandbox::preflight`, which runs a real command through the real backend at
-  startup rather than trusting what config claims — on the reasoning that a
-  configured sandbox which does not work is worse than none, because the tool's
-  declared capabilities narrow and the interlock believes it. `context_window`
-  is the same bargain one layer up: four values narrow around a number nothing
-  verifies. **`/props` is the `preflight` of this fact** — it reports
-  `total_slots` and the real per-slot `n_ctx`, so the check is a request, not a
-  reimplementation of llama-server's arithmetic. Warning rather than refusing
-  is the right severity here (`unrouted_domains`' precedent): a mismatch makes
-  a run compact at the wrong moment, which is not a reason to refuse to start.
+  the place a reader looks. **Nothing verifies the relationship as of
+  `d72e82d`** — `git grep -nEi 'n_ctx_slot|total_slots|/props' -- '*.rs'`
+  returns nothing on `main`. The shape a fix would take is argued in
+  HANDOFF under *Cheap, and worth doing first*; it is unbuilt, and this entry
+  records the trap rather than a remedy.
+
+- **A design written into the record of what happened will be read as having
+  happened.** The paragraph above originally ended with the argument for a
+  startup check — a good argument, in past tense, in a file that is past tense
+  by construction. Within an hour a second session had read the commit that
+  added it as a shipped feature and stood down from the area to avoid duplicate
+  work, and a third had been told the same. Nothing was built, and the absence
+  was now defended by two people believing it was present. HISTORY cannot hold
+  a proposal, because there is no wording that survives being skimmed in a file
+  whose every other paragraph describes something that exists; the open-work
+  document is where a proposal reads correctly. The general shape, and it is a
+  sibling of the entry above rather than the same one: that was *a fact
+  contradicted elsewhere is not recorded*; this is **a proposal filed under
+  completed work is indistinguishable from completed work**. Both fail the same
+  way — silently, and with the reader confident.
 
 - **A heredoc can eat a line continuation before the compiler sees it.** Five
   doctor messages written through a Python heredoc lost their `\`-continuations
