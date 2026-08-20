@@ -217,10 +217,22 @@ be able to reach. **Surfaced, not acted on**: moving the key is a decision
 about how this machine is operated, and it belongs to whoever operates it.
 (Verified 2026-08-20.)
 
-**The KV cache is f16, not q8_0.** No `-ctk`/`-ctv` on the running server and no
-`LLAMA_ARG_CACHE_TYPE_*` in its environment (verified 2026-08-20). Nothing in
-this repository claims otherwise — recorded because the question came up and
-the answer should not have to be re-measured.
+**The KV cache is f16, not q8_0 — on either server.** No `-ctk`/`-ctv` on
+mecha's llama-server and no `LLAMA_ARG_CACHE_TYPE_*` in its environment; and
+`systemctl show ollama.service -p Environment` carries `PATH` and nothing else,
+so `OLLAMA_KV_CACHE_TYPE` is unset there too (all verified 2026-08-20). Nothing
+in this repository ever claimed otherwise.
+
+It is written down anyway because **the belief has a live source on disk and
+will regenerate.** `~/Github/dgx-spark-playbooks/nvidia/txt2kg/README.md:153` —
+NVIDIA's own tuning playbook for this hardware — recommends
+`OLLAMA_KV_CACHE_TYPE=q8_0` in a *troubleshooting* table ("Ollama performance
+issues → Suboptimal settings for DGX Spark"), and `assets/README.md:99` states
+"Q8_0 KV cache for memory efficiency" flatly. Both are advice for **ollama**,
+not for mecha's llama-server, and neither was ever applied. A recommendation
+read as a description is how a machine acquires a property nobody gave it; the
+playbook is still there and still says it, so the next reader will believe it
+again unless this measurement is beside it.
 
 **Restarting a model server under memory pressure is permanent for that
 server's life.** `scripts/start-moe-mtp.sh` records the finding; what it means
