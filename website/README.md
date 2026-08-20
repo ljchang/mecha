@@ -41,3 +41,25 @@ GIT_USER=<Your GitHub username> npm run deploy
 ```
 
 If you are using GitHub Pages for hosting, this command is a convenient way to build the website and push to the `gh-pages` branch.
+
+## Diagrams
+
+**Mermaid on the website; ASCII in a code fence everywhere else.** The
+constraint that produced this repo's ASCII diagrams is a terminal — `CLAUDE.md`
+and `docs/*.md` are read in one, and mermaid there is source nobody can see.
+The website has no terminal, so a diagram can render, follow the reader's light
+or dark theme, and reflow on a phone.
+
+````md
+```mermaid
+flowchart LR
+  a["one thing"] --> b["another"]
+```
+````
+
+One thing to know before adding one: **the build is not a gate for diagrams.**
+`onBrokenLinks: 'throw'` makes `npm run build` a real check for links, but a
+mermaid syntax error compiles fine and ships — `@docusaurus/theme-mermaid`
+renders client-side, so the failure surfaces as an error box in the reader's
+browser behind a green build and a green deploy. Check a new diagram by
+rendering it, not by building the site.
