@@ -2051,6 +2051,38 @@ All found by pre-push review or by running it.
 
 ### Environment
 
+- **A working copy can be a running service's `ExecStart`, and then every git
+  reflex is a deploy.** `~/.config/systemd/user/llama-local.service` names
+  `/home/ljchang/Github/mecha/scripts/start-moe-mtp.sh` literally — not a copy,
+  not an installed path, the file in the development checkout. So `git stash`,
+  `git checkout --` and `git restore` on that path silently rewrite the launch
+  command of an active unit, and the damage does not surface until the next
+  restart, when the server comes back healthy and merely behaves differently.
+  Found on 2026-08-20 with three arcs sharing the checkout, only because one of
+  them asked the other two what their dirty files were. **The lesson that
+  transfers is about the standard advice, not about the file**: "work in a
+  worktree" assumes nothing outside the repository points at a path *inside*
+  it. Here systemd does, so relocating that arc would have broken the running
+  server rather than protected it — the advice in CONTRIBUTING.md has this hole
+  and the checkout is the thing to check before following it.
+
+- **The fact was written down correctly in the file nobody consults, and wrongly
+  in the two that everybody does.** `scripts/start-moe-mtp.sh` has said since
+  it was written that llama-server "silently splits `-c` across" its parallel
+  slots — the exact `context_window = -c / -np` relationship. Meanwhile
+  `docs/HANDOFF.md`'s Environment row stated `context_window` (= `-c`) and
+  CLAUDE.md's Context section says the same. The script's own strategy was to
+  keep `-np 1` *so that* the wrong rule would stay accidentally true, which is
+  a rail that works right up until someone changes `-np` for throughput —
+  which is what happened. Nothing broke, because the new geometry
+  (`-c 1048576 -np 4`) lands on the same 262144 per slot; the rule was still
+  wrong and four derived numbers trusted it. **A fact recorded in one place and
+  contradicted in two is not recorded**, and the place it survives is rarely
+  the place a reader looks. Where a relationship holds between a config value
+  and something a process reports, the durable answer is to *check* it at
+  startup rather than restate it — `/props` answers, the way `unrouted_domains`
+  warns instead of failing quietly.
+
 - **A heredoc can eat a line continuation before the compiler sees it.** Five
   doctor messages written through a Python heredoc lost their `\`-continuations
   to the *heredoc's* parser, so the string literals reached the file as plain

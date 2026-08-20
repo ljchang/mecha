@@ -171,6 +171,24 @@ A working agent harness, used and measured rather than just compiled.
 
 ## Environment as left
 
+> **This checkout is a live service's `ExecStart`. Do not `git stash`, `git
+> checkout --` or `git restore` `scripts/start-moe-mtp.sh`.**
+> `~/.config/systemd/user/llama-local.service` names
+> `/home/ljchang/Github/mecha/scripts/start-moe-mtp.sh` literally, and the unit
+> is active (verified 2026-08-20, started 15:30 UTC). The working copy is
+> parameterised — `NP=4`, `CTX=1048576`, `--cache-idle-slots` deliberately
+> absent with a "do not add it back" note — and is **uncommitted**. `HEAD`'s
+> copy hardcodes `-c 262144 -np 1` and re-adds `--cache-idle-slots`, so any
+> reflex that reverts a dirty file silently rewrites the server's launch
+> command; it comes back healthy on the next restart and just behaves
+> differently. Precisely: the per-slot window is 262144 either way, so
+> `context_window` stays correct — what is lost is the four slots (every
+> fan-out serializes again) and the deliberate absence of a flag. The wider
+> lesson is in HISTORY under Environment: **"move it to a worktree" assumes
+> nothing outside the repository points at a path inside it**, and here systemd
+> does, so relocating would break the running server rather than protect it.
+> Three arcs shared this checkout on 2026-08-20 and all three staged by path.
+
 Running on the DGX Spark (GB10, aarch64, 128GB unified). **Re-verified
 2026-08-20** (8080 answering with `total_slots=1`; 8081, 8082 **and 8083** all
 down; SearXNG up). **The installed binaries are at 0.1.8 and the repository is
