@@ -724,6 +724,16 @@ pub struct SearchBackendConfig {
     /// Required for `searxng` (your instance); optional override elsewhere.
     pub base_url: Option<String>,
     pub disabled: bool,
+    /// Try this backend first when the caller asked for a deep search.
+    ///
+    /// The chain is preference-ordered and first-to-answer-wins, which makes
+    /// the free backend the right head for ordinary lookups and the wrong one
+    /// for a research question. This is how config says "this backend earns
+    /// its price on the hard ones" without the loop learning what any backend
+    /// costs. It reorders and never filters, so every backend stays reachable
+    /// as a fallback at either depth.
+    #[serde(default)]
+    pub prefer_deep: bool,
 }
 
 impl SearchBackendConfig {

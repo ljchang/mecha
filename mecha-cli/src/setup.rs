@@ -791,7 +791,7 @@ fn still_ours<T: mecha_core::tool::Tool + 'static>(
 /// Build the search chain in configured order, skipping backends that cannot
 /// be constructed (usually a missing key) rather than failing the whole run.
 fn build_search_chain(configs: &[SearchBackendConfig]) -> (SearchChain, Vec<String>) {
-    let mut backends: Vec<Box<dyn SearchBackend>> = Vec::new();
+    let mut backends: Vec<mecha_core::search::ChainEntry> = Vec::new();
     let mut errors = Vec::new();
 
     for cfg in configs.iter().filter(|c| !c.disabled) {
@@ -819,12 +819,15 @@ fn build_search_chain(configs: &[SearchBackendConfig]) -> (SearchChain, Vec<Stri
         };
 
         match built {
-            Ok(b) => backends.push(b),
+            Ok(backend) => backends.push(mecha_core::search::ChainEntry {
+                backend,
+                prefer_deep: cfg.prefer_deep,
+            }),
             Err(e) => errors.push(format!("{}: {e}", cfg.kind)),
         }
     }
 
-    (SearchChain::new(backends), errors)
+    (SearchChain::with_entries(backends), errors)
 }
 
 /// Build one subagent: a child [`Agent`] with a restricted registry, wrapped as

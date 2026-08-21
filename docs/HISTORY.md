@@ -1359,6 +1359,74 @@ always ignored the permission mode in force (see *Containment and state*).
 Both are fixed; `install_frontend_tools` and `approver_for` exist so the two
 call sites cannot disagree again. `d266fe8`, `d0a1499`.
 
+**2026-08-21 (0.1.11) — four things that read as working and were not.** A
+patch release with a single shape running through it. The TUI held mouse
+capture for the whole session, which made the wheel scroll and made a drag
+impossible, so `/docs`'s own documented fallback — "the URL stays on screen to
+be selected by hand" — had never existed for a 420-character link whose only
+other route out was an OSC 52 write no terminal acknowledges; any modal now
+releases the mouse and `^s` toggles selection in the main view, reconciled once
+a frame from the drawn state rather than restored at each pane's exit. Two more
+blocked the same picker: a paste while it was up landed in the message box
+behind the modal, and the link was drawn inside a bordered box, so a drag
+collected a `│` at both ends of every row. In `search.rs`, a chain whose
+backends all answered and all found nothing reported `every search backend
+failed`, which one model read as broken infrastructure and answered by
+rewording the query eight times — an exhausted chain of empties is now an
+answer, while a chain where nothing *answered* is still an error; and a SearXNG
+instance with every engine suspended or CAPTCHA'd returns `results: []` at HTTP
+200, byte-identical to an empty web, until `unresponsive_engines` is read. The
+cache lens scored re-payment from `input_tokens` — everything *not* read from
+cache, which on this workload is overwhelmingly the turn's new content — so it
+shouted loudest when tool results were biggest and called the real failure
+stable; it now measures what did not come back, and the field says `repaid`.
+`[[search]] prefer_deep` arrived alongside: depth had changed only *how* a
+backend searched, never which one ran, so a paid backend bought for hard
+questions was reached only when the free one came up empty. It reorders and
+never filters. 1,244 tests.
+
+**2026-08-21 (0.1.11, the second half) — a draft you could neither read nor
+approve.** Folded into the same tag, because it was one arc. Eleven drafts had
+piled up and the docs edits among them could not be released: pressing `s`
+raised the approval confirmation and nothing after that did anything. The
+confirmation put a tainted draft's arguments on screen "in full" and drew them
+with an unscrolled `Paragraph`, which renders from the top — so a
+`docs_replace` whose `find` was an entire syllabus section pushed the question
+and the `y` prompt off the bottom of the box, and `modal.confirm.take()` meant
+every other key dismissed the confirmation, so there was no way to scroll down
+to the instruction that had gone missing. The box was sized from `body.len()`
+besides, which counts *logical* lines where one long argument is a single
+`Line` and many rendered rows, so the height reported "it fits" in exactly the
+case where it did not. The arguments scroll now, the prompt is pinned to the
+bottom border where nothing can push it off, the height is measured with
+`Paragraph::line_count` *after* wrapping, and scroll keys no longer count as
+"anything else". The sibling detail view had done all of this correctly for
+months; the confirmation was simply never given the same treatment. Renamed in
+the same pass: the verb is `approve` on `a`, beside `e` edit and `r` reject,
+because the queue holds more than mail and a `docs_replace` is approved rather
+than *sent*. `outbox send` and `s` both still work, and the stored status
+stays `"sent"` — an append-only value that `mineable_as_writing` keys on, so
+renaming it would orphan every resolved item and silently stop the writing
+miner. 1,246 tests.
+
+**2026-08-21 — the web search a scraper could not win.** Every *general*
+engine behind the local SearXNG instance refused the box's IP at once — brave
+and google cse `Suspended: too many requests`, duckduckgo and startpage
+`CAPTCHA`, mojeek `access denied` — while its specialist engines answered
+fine. Enabling more engines did not help and was not going to: a self-hosted
+metasearch is in a standing race against anti-bot walls, and losing it looks
+exactly like a quiet web. Exa was wired as the second backend and Tavily as a
+third, both already implemented and needing only a key and three lines of
+TOML. Ordering was measured rather than reasoned: a quick Exa search bills
+$0.007 against Tavily's $0.008, read off Exa's own `costDollars`, and the
+`contents` block mecha sends costs nothing despite a price list that bills
+Contents separately. Merging the paid backends *into* SearXNG was considered
+and refused — SearXNG fans out in parallel to every enabled engine while the
+chain stops at the first answer, so every trivial lookup would have paid for
+Exa too; it would have collapsed the chain to one link whose only backend
+cannot report why it failed; and it would have kept the appearance of "the
+query never leaves your network" while destroying the fact.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -1581,6 +1649,18 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**A truncating pipe turned a partial test run into a plausible total.**
+`cargo test --workspace 2>&1 | tail -30` was sent to the background on
+2026-08-21; the exit code was 0 and the captured file held four `test result`
+lines summing to 76. That reads exactly like a small workspace passing, and the
+figure was almost quoted into the handoff — the real count was 1,244 across
+eight suites, and `tail` had thrown away every line above the last thirty. The
+grep that looked for totals ran over a file that no longer contained them.
+**A filter applied before capture makes the capture look complete. Aggregate
+from the whole stream, or capture the whole stream and filter on read** — and
+treat a suspiciously small total as evidence about the pipeline before it is
+evidence about the code.
 
 **The bug was only visible in a run that worked.** After images shipped, a
 Slack screenshot was answered correctly — and the run recorded
@@ -2268,6 +2348,29 @@ All found by pre-push review or by running it.
   the test has to be repeated on the far side of them.
 
 ### Environment
+
+**A secret in `~/.bashrc` is invisible to every systemd unit.** `EXA_API_KEY`
+exported there worked perfectly in every hand-test and would have reached no
+scheduled or connector run at all — and those are where unattended web search
+actually happens. `systemd --user` reads `~/.config/environment.d/`, and
+nothing else; `.bashrc` additionally returns early for non-interactive shells,
+so even a script would have missed it. Found by reading
+`/proc/<pid>/environ` of each service rather than by testing in the shell that
+had just exported it. The same audit showed `ANTHROPIC_API_KEY` had *never*
+been visible to any unit, harmless only because every unit runs a local
+provider. **A secret's location decides who can read it, and the only proof is
+reading it back from the process that needs it — never from the shell you set
+it in.**
+
+**A key pasted into `api_key_env` fails silently and leaks quietly.** The field
+names an *environment variable*; given a key it dutifully looked up a variable
+called `b0182b45-…`, found nothing, and reported `exa: no API key` — a message
+that describes a missing key rather than a misplaced one. The key meanwhile sat
+in plaintext in a mode-664 file. The mistake is invited by the name: `api_key`
+and `api_key_env` differ by a suffix and accept the same-looking string.
+**A config field whose value is a name rather than a datum should say so in the
+error when what it got was obviously a datum** — the diagnosis was two minutes
+of reading and would have been zero.
 
 **An install is not a restart, for anything already running.** `cargo install`
 replaced `~/.cargo/bin/mecha` while a TUI session begun two hours earlier kept

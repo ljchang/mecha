@@ -15,6 +15,13 @@ The loop itself is the same code in all four. What differs is who owns the
 terminal, and that single fact decides what each front end can do — most
 visibly, whether you can redirect a run without stopping it.
 
+[Slack](/docs/features/slack) is deliberately not a fifth entry in that list.
+It is a *remote control*: `mecha slack connect` answers in its own threads, and
+`/remote-control` puts an existing terminal session into a named thread so the
+two are one conversation. Which one you get is decided by the same question
+about ownership — see [the remote control is that owner, from somewhere
+else](#the-remote-control-is-that-owner-from-somewhere-else).
+
 ## One loop, four processes, and no extra models
 
 A question that comes up the first time a second agent starts: *if I run the
@@ -143,6 +150,7 @@ Keys, from the `?` overlay:
 | `tab` | complete a `/command` or an `@path` |
 | `shift+tab` | toggle planning, which hides the writing tools |
 | `^o` | show or hide thinking and tool output |
+| `^s` | select text with the mouse — the wheel stops until you press it again |
 | `^c` | stop the run; twice at idle to quit |
 | `^d` | quit, when the input is empty |
 | `esc` | jump back to the newest output |
@@ -152,10 +160,12 @@ Keys, from the `?` overlay:
 Slash commands go further than `chat`'s, because the TUI is the only front end
 that can change anything mid-session: `/model`, `/provider` and `/mode` switch
 what is answering, `/mcp` turns servers on and off individually or wholesale,
-`/todo` shows the live task list, and `/review [now|later|auto]` decides what
-happens when a run stages drafts (see [the outbox](/docs/features/outbox)).
+`/todo` shows the live task list, `/review [now|later|auto]` decides what
+happens when a run stages drafts (see [the outbox](/docs/features/outbox)), and
+`/remote-control <name>` mirrors the session into a Slack thread you can pick
+up from a phone (see [Slack](/docs/features/slack#remote-control-one-session-two-places)).
 
-Eight modals open onto the review surfaces:
+Nine modals open onto the review surfaces:
 
 | Modal | Onto |
 |---|---|
@@ -166,6 +176,7 @@ Eight modals open onto the review surfaces:
 | `/mail` (or `/inbox`) | [the triage queue](/docs/features/mail#mail--the-queue-as-a-modal) — reply, task, correct, park, dismiss |
 | `/tasks` (or `/task`) | [the graph's task board](/docs/reference/cli#tasks) — see, capture, edit, move a task on |
 | `/polls` | [open polls](/docs/factory/polls#watching-one-without-leaving-the-session) — tallies, close, export |
+| `/docs` | [what is in `drive.file` scope](/docs/features/documents#two-ways-a-document-gets-in-scope) — list, pick a new one, quote its id into the prompt |
 | `/doctor` | [what is silently wrong](/docs/reference/cli#doctor) across every store, and the way out |
 
 Every one of them drives the matching `mecha …` or `factory-publish …` child
@@ -190,6 +201,22 @@ script -qec "stty rows 45 cols 130; mecha tui" /dev/null
 ```
 
 A pty with no window size renders every frame into a 0x0 area.
+
+:::note[Why `^s` exists at all]
+The TUI captures the mouse, which is what makes the wheel scroll the
+transcript — and also what stops a drag from selecting text, since the terminal
+forwards the drag to mecha instead of drawing a selection. Most terminals let
+you hold shift to bypass that, which is a rule nobody remembers at the moment
+they need it. `^s` hands the mouse back until you press it again, and the
+status line says so while it is off, because a scroll wheel that has quietly
+stopped working reads as a broken session.
+
+**Any modal does this for you**: while one is up, the only thing capture buys
+is a wheel scrolling the transcript behind it, so the mouse is released
+automatically. `/docs` goes one step further — its authorization link is far
+too long for one row, and a drag across a wrapped, bordered box copies the
+border characters too, so `s` there shows the link alone at column 0.
+:::
 
 ## Cancel and steer are different things
 
@@ -269,6 +296,43 @@ run's queue.
 
 This is a property of the front end, not of the loop. Any caller that owns its
 own input can call `RunContext::with_queued_input` and get the same behaviour.
+
+### The remote control is that owner, from somewhere else
+
+The same argument decides the shape of
+[`/remote-control`](/docs/features/slack#remote-control-one-session-two-places),
+and it is worth following, because the obvious design is the wrong one.
+
+A `Conversation` — its messages *and* its taint — lives in the memory of the
+process running it, and a session's transcript has exactly one writer. So two
+processes cannot both hold one live conversation, and a symmetric design where
+Slack and the terminal each answer for the same session does not exist to be
+built. What exists instead: **the TUI keeps the agent, and the thread is a view
+plus an input channel.** Text typed in the thread is steering, or a new turn,
+exactly as though it had been typed at the keyboard — because it reaches the
+process that owns the input queue rather than starting a second one.
+
+The connector therefore must *not* answer for a mirrored thread. It used to,
+and the failure is instructive: it minted its own thread record and started a
+fresh conversation, in a different workspace under a different permission mode,
+answering into a scrollback it knew nothing about. Not a leak — that
+conversation was clean — but a stranger wearing the thread's clothes.
+
+Two consequences worth carrying:
+
+- **Inbound text is a prompt, never a command.** `/model`, `/clear` and `!`
+  escapes stay at the terminal. They are affordances of sitting at the machine,
+  and the gap between "the owner typed this" and "the owner is at the keyboard"
+  is where a remote surface stays narrow.
+- **Attachments are announced as paths, not injected as content**, so a file
+  dropped into the thread arms taint through `fs_read` — which already declares
+  `private_data` — rather than through a parallel route somebody has to
+  remember to label.
+
+`mecha slack connect` without an attachment is the other mode: the connector
+owns those threads, each thread is its own `Conversation`, and the interlock
+gets the right granularity for free — a new thread is an honest clean slate, a
+thread that read a hostile page on Monday still remembers on Tuesday.
 
 ## `mecha batch` — fan-out
 

@@ -31,13 +31,15 @@ use crate::message::{CompletionRequest, Usage};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// Below this many re-paid tokens, a drop is not worth a warning: small
-/// prompts and rounding wobble live here, and a warning that fires on them
+/// prompts and the tokenizer boundary a server keeps at the end of its
+/// cached block live here (llama-server returned 2,720 of a 2,724-token
+/// prefix on a measured round-trip), and a warning that fires on them
 /// teaches the reader to ignore it.
 const DROP_FLOOR_TOKENS: u64 = 1_024;
 
 /// A drop is only called when the re-paid portion exceeds this fraction of
-/// the previous request's whole prompt — reuse degrading, not the ordinary
-/// uncached tail of one appended turn.
+/// the previous request's whole prompt — reuse degrading, not the few
+/// tokens a server trims off the end of the block it hands back.
 const DROP_FRACTION: f64 = 0.25;
 
 /// What one request's cache behaviour looked like, and why.
@@ -58,10 +60,12 @@ pub enum Verdict {
     /// No nonzero cache figure has ever been reported, so reuse cannot be
     /// judged — a local server without cache accounting, or caching off.
     Unobservable,
-    /// Nothing changed, the transcript only grew, and the request still
-    /// re-paid a large share of the prompt: the invariant this lens exists
-    /// to watch has failed somewhere.
-    Drop { uncached: u64, prev_total: u64 },
+    /// Nothing changed, the transcript only grew, and the previous prompt
+    /// still did not come back from the cache: the invariant this lens
+    /// exists to watch has failed somewhere. `repaid` is the part of the
+    /// previous prompt that had to be paid for again — never this turn's
+    /// new content, however large that is.
+    Drop { repaid: u64, prev_total: u64 },
 }
 
 struct Prev {
@@ -111,16 +115,28 @@ impl CacheLens {
                 } else if !self.reporting_seen && !cached_reported {
                     Verdict::Unobservable
                 } else {
-                    let uncached = usage.input_tokens;
-                    let repaid_share = uncached as f64 / prev.total_input.max(1) as f64;
-                    if uncached > DROP_FLOOR_TOKENS && repaid_share > DROP_FRACTION {
+                    // The question is whether the *previous* prompt came
+                    // back, so the only figure that answers it is what was
+                    // read. `input_tokens` cannot: it is everything not
+                    // read, which on this workload is overwhelmingly the
+                    // turn's new content — one mail thread or search result
+                    // dwarfs the prompt it was appended to, and scoring that
+                    // as re-payment made the lens shout loudest exactly when
+                    // tool results were biggest. It also scored the real
+                    // failure — a small prompt re-paid in full because
+                    // something destabilised the prefix — as stable.
+                    let repaid = prev
+                        .total_input
+                        .saturating_sub(usage.cache_read_input_tokens);
+                    let repaid_share = repaid as f64 / prev.total_input.max(1) as f64;
+                    if repaid > DROP_FLOOR_TOKENS && repaid_share > DROP_FRACTION {
                         Verdict::Drop {
-                            uncached,
+                            repaid,
                             prev_total: prev.total_input,
                         }
                     } else {
                         Verdict::Stable {
-                            uncached,
+                            uncached: usage.input_tokens,
                             read: usage.cache_read_input_tokens,
                         }
                     }
@@ -231,7 +247,7 @@ mod tests {
     }
 
     /// The verdict the lens exists for: same surface, appended-only, and the
-    /// request re-paid most of the prompt anyway.
+    /// previous prompt did not come back from the cache.
     #[test]
     fn an_unexplained_repayment_is_a_drop() {
         let mut lens = CacheLens::new();
@@ -239,7 +255,47 @@ mod tests {
         assert_eq!(
             lens.observe(&request(convo(2)), &usage(17_500, 600, 0)),
             Verdict::Drop {
-                uncached: 17_500,
+                repaid: 18_008,
+                prev_total: 18_008
+            }
+        );
+    }
+
+    /// The regression: a turn whose tool result dwarfs the prompt it was
+    /// appended to, with the prefix reused in full. These are the figures a
+    /// live llama-server returned — 2,720 of a 2,724-token prefix read back,
+    /// 6,319 tokens of genuinely new content — and judging the new content as
+    /// re-payment called it a drop at a share of 2.32. Every warning a real
+    /// session produced was this shape, which is how a detector stops being
+    /// read.
+    #[test]
+    fn a_large_appended_tool_result_is_not_a_repayment() {
+        let mut lens = CacheLens::new();
+        lens.observe(&request(convo(1)), &usage(2_724, 0, 0));
+        assert_eq!(
+            lens.observe(&request(convo(2)), &usage(6_319, 0, 2_720)),
+            Verdict::Stable {
+                uncached: 6_319,
+                read: 2_720
+            }
+        );
+    }
+
+    /// And the inverse, which is the case the lens exists for and the one it
+    /// could not see. On a two-tier provider a lost prefix is not re-paid as
+    /// *uncached* input — it is re-**written**, so the whole history lands in
+    /// `cache_creation` at a write premium while `input_tokens` stays at the
+    /// same handful of tokens an ordinary turn pays. Judging on
+    /// `input_tokens` therefore scored a total cache rebuild, every turn, as
+    /// stable: the most expensive failure available, reported as health.
+    #[test]
+    fn a_silently_rewritten_cache_block_is_a_drop() {
+        let mut lens = CacheLens::new();
+        lens.observe(&request(convo(1)), &usage(8, 18_000, 0));
+        assert_eq!(
+            lens.observe(&request(convo(2)), &usage(8, 18_400, 0)),
+            Verdict::Drop {
+                repaid: 18_008,
                 prev_total: 18_008
             }
         );

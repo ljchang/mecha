@@ -73,6 +73,36 @@ It prints a URL, you open it on any machine, and you paste back the
 though nothing is listening. No tunnel, no forwarded port, and no browser on
 the machine holding the grant.
 
+### Without leaving the session
+
+`/docs` in the [TUI](/docs/features/interfaces) is that same split flow with
+the copying done for you. It lists what is in scope, and:
+
+| Key | What it does |
+|---|---|
+| `enter` | put a reference to the file — kind, name and **id** — in the message box |
+| `p` | pick: fetch a chooser link and open the picking pane |
+| `y` | copy the selected file's link to your own clipboard, over OSC 52 |
+| `r` `a` | re-read what is in scope · next account |
+
+The picking pane shows the authorization link and takes the redirect address
+back, so the two halves of `--url` / `--redirect` happen without a second
+terminal. `s` shows the link alone at column 0 to select with the mouse, `o`
+hands it to `$BROWSER` when the browser is on this machine, `y` copies it over
+OSC 52, and pasting the address the browser landed on fills the field —
+whitespace stripped, because a wrapped address bar copies with newlines in it.
+
+Two things it does not do, both deliberate. **The picking still happens in
+Google's own UI**, outside this process and outside the model's context — a
+modal that picked *for* you would be an argument for widening the scope this
+page is about. And **`enter` writes into the input box rather than sending
+anything**: the point of seeing the list is to be able to ask about a document,
+and the id is the only part of a reference a person could not have retyped.
+
+Every action is a `mecha-docs …` child process, so nothing the modal can do is
+missing from the command line — which is what lets a trigger or a script do it
+too.
+
 ## The tools
 
 ```toml

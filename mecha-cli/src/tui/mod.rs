@@ -330,6 +330,15 @@ struct App {
     asking: Option<ask::Question>,
     /// Open modal list, if any. Takes every key while it is up.
     picker: Option<Picker>,
+    /// Selection mode: the mouse belongs to the terminal until it is turned
+    /// off again, so a drag over the transcript selects instead of scrolling.
+    ///
+    /// A toggle rather than the default because the wheel is what capture
+    /// buys, and losing it permanently to make copying possible is trading a
+    /// thing used every minute for a thing used every hour. Explicit and
+    /// visible in the status line for the same reason: "why has my wheel
+    /// stopped scrolling" has to be answerable from the screen.
+    selecting: bool,
     /// The help overlay is up. It exists to be glanced at and dismissed, so
     /// any key closes it — except the ones that scroll it, because the list
     /// is longer than a short terminal and a reference card that silently
@@ -445,6 +454,54 @@ struct App {
 }
 
 impl App {
+    /// True while the terminal should own the mouse, so a drag selects text
+    /// instead of being swallowed as a mouse event.
+    ///
+    /// Two cases, and they are priced differently.
+    ///
+    /// **Any modal that is up.** Capture buys exactly one thing here — the
+    /// wheel scrolling the transcript — and while a modal covers the screen
+    /// that scrolling happens behind it, where nobody can see it. So the
+    /// mouse costs nothing to hand back and buys the thing every one of these
+    /// panes is full of: an authorization link, a staged draft, somebody
+    /// else's email, a doctor finding with a command in it. Asked as "is
+    /// something up" rather than enumerated per modal, because a modal added
+    /// later would otherwise be the one that quietly cannot be copied from.
+    ///
+    /// **Selection mode**, which is the transcript's answer and is a toggle
+    /// for the reason `selecting` gives.
+    ///
+    /// Note what this does *not* fix: a bordered pane wraps long text between
+    /// two `│`, and a drag across the rows takes them with it. That is what
+    /// the picker's bare view (`s`) exists for, and any other pane wanting
+    /// clean multi-line copy needs the same thing.
+    fn wants_the_mouse_back(&self) -> bool {
+        self.selecting || self.a_modal_is_up()
+    }
+
+    /// Is a full-screen pane covering the transcript?
+    ///
+    /// Deliberately not the key-routing chain in `handle_key`: that chain is
+    /// ordered, because two modals up at once must resolve to one owner of
+    /// the keyboard, and this question has no order to it. Kept beside the
+    /// field list so a new modal is one line in both places.
+    fn a_modal_is_up(&self) -> bool {
+        self.help
+            || self.pending.is_some()
+            || self.asking.is_some()
+            || self.picker.is_some()
+            || self.tools.is_some()
+            || self.skills.is_some()
+            || self.scheduled.is_some()
+            || self.staged.is_some()
+            || self.requests.is_some()
+            || self.mail.is_some()
+            || self.documents.is_some()
+            || self.tasks.is_some()
+            || self.poll_monitor.is_some()
+            || self.health.is_some()
+    }
+
     fn status(&self, model: &str, provider: &str, tools: usize) -> Line<'static> {
         let mut spans = vec![
             Span::styled(
@@ -473,6 +530,17 @@ impl App {
             spans.push(Span::styled(
                 format!(" outbox {} ", self.outbox_pending),
                 Style::new().fg(Color::Black).bg(Color::Yellow),
+            ));
+        }
+
+        // The same rule again, and here it is load-bearing rather than
+        // informative: selection mode takes the scroll wheel away, and a wheel
+        // that has stopped working with nothing on screen to explain it reads
+        // as the session having broken.
+        if self.selecting {
+            spans.push(Span::styled(
+                " select ^S ",
+                Style::new().fg(Color::Black).bg(Color::Blue),
             ));
         }
 
@@ -643,6 +711,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         phase: Phase::default(),
         asking: None,
         picker: None,
+        selecting: false,
         help: false,
         help_scroll: 0,
         tools: None,
@@ -878,6 +947,10 @@ async fn run_loop(
         // arbitrary packet-sized pieces — without this, visibly torn.
         // Terminals that do not know the mode ignore it by spec, so there is
         // nothing to probe.
+        // Before the frame, not after: the pane that wants the mouse back is
+        // the one about to be drawn, and a user reaching for the mouse the
+        // instant it appears must not find it still captured.
+        sync_mouse_capture(!app.wants_the_mouse_back());
         crossterm::queue!(
             std::io::stdout(),
             crossterm::terminal::BeginSynchronizedUpdate
@@ -1719,6 +1792,9 @@ fn on_terminal_event(
         // left the laptop — and it is why the Slack conduit exists.
         Event::Paste(text) => {
             app.quit_armed = false;
+            if paste_into_pick(app, &text) {
+                return Ok(());
+            }
             let insert = match dropped_images(app, &text, live) {
                 Some(chips) => chips,
                 None => text,
@@ -2145,6 +2221,25 @@ fn on_key(
         },
 
         KeyCode::Char('d') if ctrl && app.input.is_empty() => app.should_quit = true,
+
+        // Give the mouse back to the terminal so a drag selects the
+        // transcript. `^S` and not a slash command: it is wanted at the
+        // moment something worth copying appears, and a command means typing
+        // into the box while looking at the thing you are about to lose. The
+        // notice says how to get the wheel back, because a scroll wheel that
+        // has stopped working is not a state anyone will guess the cause of.
+        //
+        // Safe as a chord despite its flow-control history: raw mode clears
+        // IXON, so the terminal delivers it here rather than freezing output.
+        KeyCode::Char('s') if ctrl => {
+            app.selecting = !app.selecting;
+            app.transcript.push(Entry::Notice(if app.selecting {
+                "selecting — drag to select, your terminal's own copy · ^S gives the wheel back"
+                    .into()
+            } else {
+                "selecting off — the wheel scrolls again".into()
+            }));
+        }
 
         // Compose in $EDITOR. Deferred to the event loop; what comes back
         // lands in the input box, not on the wire — sending is still Enter.
@@ -3224,23 +3319,52 @@ fn handle_outbox_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     };
 
-    // A pending send confirmation swallows the keyboard: y sends, anything
-    // else keeps the draft pending.
-    if let Some(confirm) = modal.confirm.take() {
+    // A pending approval swallows the keyboard: y releases, anything else
+    // keeps the draft pending.
+    if let Some(confirm) = modal.confirm.as_mut() {
+        // Scrolling is not answering. A tainted draft's arguments can run far
+        // past the box, so the reviewer has to move through them without the
+        // keypress counting as "anything else" and quietly dropping the
+        // confirmation — which would make a long draft the one you can
+        // neither read nor approve.
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                confirm.scroll = confirm.scroll.saturating_sub(1);
+                return Ok(());
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                confirm.scroll = confirm.scroll.saturating_add(1);
+                return Ok(());
+            }
+            KeyCode::PageUp => {
+                confirm.scroll = confirm.scroll.saturating_sub(10);
+                return Ok(());
+            }
+            KeyCode::PageDown => {
+                confirm.scroll = confirm.scroll.saturating_add(10);
+                return Ok(());
+            }
+            KeyCode::Home => {
+                confirm.scroll = 0;
+                return Ok(());
+            }
+            _ => {}
+        }
+        let confirm = modal.confirm.take().expect("checked above");
         if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
             // Detached, like a trigger's "run now": the release builds a tool
             // surface (MCP servers included), which has no place on the event
             // loop. `--yes` is safe *because* the confirmation just happened
             // here — the item's status and error field are where the result
             // lands, and the watch below reports it when it does.
-            let outcome = spawn_detached(&["outbox", "send", &confirm.id, "--yes"]);
+            let outcome = spawn_detached(&["outbox", "approve", &confirm.id, "--yes"]);
             let watch = outcome.is_ok();
             modal.status = Some(match outcome {
                 Ok(_) => format!(
                     "releasing `{}` — the result will be reported here",
                     confirm.id
                 ),
-                Err(e) => format!("could not start the send: {e}"),
+                Err(e) => format!("could not start the release: {e}"),
             });
             if watch {
                 app.watches.push(Watch::Send {
@@ -3325,10 +3449,15 @@ fn handle_outbox_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // is about one item, and a filter that silently changed which item
         // is under the cursor is the accident this modal must not have.
         KeyCode::Char('h') if !modal.detail => modal.toggle_history(),
-        KeyCode::Char('s') => {
+        // `a` for approve, beside `e` edit and `r` reject. `s` still works:
+        // it meant this same action until 2026-08-21, it cannot mean
+        // anything else here, and muscle memory on the one key that
+        // releases an outbound action is worth keeping.
+        KeyCode::Char('a') | KeyCode::Char('s') => {
             if let Some(row) = modal.selected_row() {
                 if row.pending() {
                     modal.confirm = Some(outbox::SendConfirm {
+                        scroll: 0,
                         id: row.id.clone(),
                         summary: row.summary.clone(),
                         tainted: row.tainted,
@@ -4431,6 +4560,7 @@ fn with_terminal_suspended<T>(
         DisableMouseCapture,
         DisableBracketedPaste
     )?;
+    MOUSE_CAPTURED.store(false, std::sync::atomic::Ordering::SeqCst);
 
     let result = f();
 
@@ -4441,6 +4571,9 @@ fn with_terminal_suspended<T>(
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
+    // The next frame reconciles this against what is on screen, so a pane
+    // that had handed the mouse back gets it back again without asking.
+    MOUSE_CAPTURED.store(true, std::sync::atomic::Ordering::SeqCst);
     if kitty_pushed() {
         crossterm::execute!(
             std::io::stdout(),
@@ -5411,6 +5544,10 @@ fn draw_help(frame: &mut Frame, kitty: bool, scroll: u16) -> u16 {
         ("tab", "complete a /command or an @path".into()),
         ("shift+tab", "toggle planning (writing tools hidden)".into()),
         ("^o", "show or hide thinking and tool output".into()),
+        (
+            "^s",
+            "select text with the mouse (the wheel stops until you press it again)".into(),
+        ),
         ("^c", "stop the run · twice at idle to quit".into()),
         ("^d", "quit, when the input is empty".into()),
         ("esc", "jump back to the newest output".into()),
@@ -5669,6 +5806,37 @@ fn kitty_pushed() -> bool {
     KITTY_PUSHED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// Whether the terminal is currently reporting mouse events to us.
+///
+/// Mouse capture is what makes the scroll wheel scroll the transcript — and it
+/// is also what stops a drag from selecting text, because the terminal
+/// forwards the drag here instead of drawing a selection. Most terminals let
+/// you hold shift to bypass that, which is a rule nobody knows at the moment
+/// they need it: the documents picker's own fallback ("the URL stays on screen
+/// to be selected by hand as well") was, for exactly this reason, not
+/// available at all. So a pane whose whole content is text meant to be copied
+/// gives the mouse back for as long as it is up.
+static MOUSE_CAPTURED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Reconcile the terminal's mouse mode with what is on screen.
+///
+/// Called once a frame from the drawn state rather than at the points that
+/// open and close a pane, on the `/outbox` reload rule: there are several ways
+/// out of a pane (a key, a finished child process, a cancelled pick) and a
+/// mode that has to be restored by remembering is a mode that eventually is
+/// not. Idempotent, so the ordinary frame writes nothing.
+fn sync_mouse_capture(want: bool) {
+    use std::sync::atomic::Ordering::SeqCst;
+    if MOUSE_CAPTURED.swap(want, SeqCst) == want {
+        return;
+    }
+    let _ = if want {
+        crossterm::execute!(std::io::stdout(), EnableMouseCapture)
+    } else {
+        crossterm::execute!(std::io::stdout(), DisableMouseCapture)
+    };
+}
+
 /// Take over the terminal, and make sure a panic gives it back.
 ///
 /// Without the hook, a panic in raw mode leaves the user with an unusable shell
@@ -5712,6 +5880,7 @@ fn enter() -> Result<(Terminal<CrosstermBackend<std::io::Stdout>>, bool)> {
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
+    MOUSE_CAPTURED.store(true, std::sync::atomic::Ordering::SeqCst);
 
     // The kitty keyboard protocol is what makes Shift+Enter a different key
     // from Enter. Only where the terminal reports it: pushed blind, terminals
@@ -5751,6 +5920,7 @@ fn leave(terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>) ->
         DisableMouseCapture,
         DisableBracketedPaste
     )?;
+    MOUSE_CAPTURED.store(false, std::sync::atomic::Ordering::SeqCst);
     terminal.show_cursor()?;
     println!();
     Ok(())
@@ -6156,6 +6326,65 @@ fn write_escape(seq: &str) {
     let _ = out.flush();
 }
 
+/// Put a paste into the documents picker's field, and say whether it went
+/// there.
+///
+/// A modal that owns the keyboard owns a paste too — typing is typing — and
+/// this field is the one whose whole purpose is receiving one: the pane says
+/// "paste it here". Without this the address went into the message box
+/// *behind* the modal, where nothing showed it until the pick was cancelled,
+/// so the only way to fill a two-hundred-character redirect was to type it.
+/// A function rather than an arm of the event match so it can be tested
+/// without a live agent, which is what `Live` would otherwise require.
+fn paste_into_pick(app: &mut App, text: &str) -> bool {
+    let Some(pick) = app.documents.as_mut().and_then(|d| d.pick.as_mut()) else {
+        return false;
+    };
+    // Mid-exchange the field is not accepting input; swallowing the paste is
+    // still right, because the alternative is typing it into the prompt.
+    if !pick.working {
+        // Whitespace is stripped rather than inserted: an address copied out
+        // of a wrapped terminal or a wrapped address bar arrives with newlines
+        // in it, and a URL never legitimately contains a space — an encoded
+        // one is `%20`.
+        let clean: String = text.split_whitespace().collect();
+        pick.buffer.insert_str(pick.cursor, &clean);
+        pick.cursor += clean.len();
+        // A paste means the browser leg is done, so the link view has served
+        // its purpose and the field is what matters.
+        pick.bare = false;
+    }
+    true
+}
+
+/// Hand a URL to whatever opens links on *this* machine.
+///
+/// The shortest path when the browser and the TUI are on the same box, and no
+/// path at all when they are not — which is the case the picker was designed
+/// around, so this is an extra door rather than the door. Spawned detached
+/// with its output discarded: an opener that writes to a terminal in raw mode
+/// draws over the frame, and one that lingers must not hold up the loop.
+fn open_locally(url: &str) -> Result<()> {
+    let opener = std::env::var("BROWSER")
+        .ok()
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                "open".into()
+            } else {
+                "xdg-open".into()
+            }
+        });
+    std::process::Command::new(&opener)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("cannot run {opener}"))?;
+    Ok(())
+}
+
 /// Keys for the `/docs` modal.
 ///
 /// Every action is a `mecha-docs …` child process, on the `/triggers` rule:
@@ -6220,6 +6449,29 @@ fn handle_docs_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         "link sent to your clipboard — if your terminal allows OSC 52                          (tmux needs set-clipboard on)"
                             .into(),
                     );
+                    return Ok(());
+                }
+                // `s` and `o` follow the same empty-field rule as `y`, and for
+                // the same reason: once an address is being typed the letters
+                // are letters.
+                if c == 's' && pick.buffer.is_empty() {
+                    pick.bare = !pick.bare;
+                    modal.status = None;
+                    return Ok(());
+                }
+                if c == 'o' && pick.buffer.is_empty() {
+                    let url = pick.url.clone();
+                    modal.status = Some(match open_locally(&url) {
+                        // Hedged, like the clipboard write: an opener exits 0
+                        // having handed the URL to a desktop that may not be
+                        // there. Over SSH the browser is on the other machine
+                        // and this cannot reach it — which is why the link
+                        // stays on screen either way.
+                        Ok(()) => "asked this machine to open it — nothing happens here if the \
+                                   browser is on the machine you are sitting at"
+                            .into(),
+                        Err(e) => format!("cannot open it here: {e} — use s or y instead"),
+                    });
                     return Ok(());
                 }
                 pick.buffer.insert(pick.cursor, c);
@@ -6328,6 +6580,7 @@ fn install_docs_answer(app: &mut App, job: DocsJob, answer: Result<String>) {
                         buffer: String::new(),
                         cursor: 0,
                         working: false,
+                        bare: false,
                     });
                 }
                 None => modal.status = Some("mecha-docs did not return a link".into()),
@@ -6520,6 +6773,93 @@ mod tests {
 
     use super::Picker;
 
+    fn picking_app() -> App {
+        let mut app = test_app();
+        let mut modal = docs::DocsModal::new("personal".into(), vec!["personal".into()]);
+        modal.pick = Some(docs::Pick {
+            url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=949".into(),
+            buffer: String::new(),
+            cursor: 0,
+            working: false,
+            bare: false,
+        });
+        app.documents = Some(modal);
+        app
+    }
+
+    #[test]
+    fn a_pane_of_text_to_copy_hands_the_mouse_back_to_the_terminal() {
+        // Mouse capture is why a drag never selected the authorization URL:
+        // the terminal forwarded it here instead of drawing a selection, and
+        // the pane's documented fallback — "the URL stays on screen to be
+        // selected by hand" — was therefore not available at all.
+        assert!(picking_app().wants_the_mouse_back());
+        // Every modal, not just that one: while a pane covers the screen the
+        // only thing capture buys is a wheel scrolling the transcript behind
+        // it, which nobody can see.
+        let mut listing = picking_app();
+        listing.documents.as_mut().unwrap().pick = None;
+        assert!(listing.wants_the_mouse_back());
+        let mut helping = test_app();
+        helping.help = true;
+        assert!(helping.wants_the_mouse_back());
+        // And with nothing up the wheel is the transcript's, until asked for.
+        assert!(!test_app().wants_the_mouse_back());
+    }
+
+    #[test]
+    fn selection_mode_takes_the_mouse_and_says_so_on_the_strip() {
+        let mut app = test_app();
+        app.selecting = true;
+        assert!(app.wants_the_mouse_back());
+        // The badge is not decoration: selection mode is the state in which
+        // the scroll wheel stops working, and a wheel that has stopped with
+        // nothing on screen to explain it reads as a broken session.
+        let strip: String = app
+            .status("claude-opus-5", "anthropic", 10)
+            .spans
+            .iter()
+            .map(|s| s.content.clone().into_owned())
+            .collect();
+        assert!(strip.contains("select ^S"), "{strip}");
+        app.selecting = false;
+        let off: String = app
+            .status("claude-opus-5", "anthropic", 10)
+            .spans
+            .iter()
+            .map(|s| s.content.clone().into_owned())
+            .collect();
+        assert!(!off.contains("select"), "{off}");
+    }
+
+    #[test]
+    fn a_paste_while_picking_lands_in_the_field_and_not_the_message_box() {
+        let mut app = picking_app();
+        // As it arrives from a browser's address bar copied out of a wrapped
+        // display: one address, broken across lines.
+        assert!(paste_into_pick(
+            &mut app,
+            "http://127.0.0.1:8765/callback?state=pEykz\n6Jtni&code=4/0AX"
+        ));
+        let pick = app.documents.as_ref().unwrap().pick.as_ref().unwrap();
+        assert_eq!(
+            pick.buffer,
+            "http://127.0.0.1:8765/callback?state=pEykz6Jtni&code=4/0AX"
+        );
+        assert_eq!(pick.cursor, pick.buffer.len());
+        assert!(
+            app.input.is_empty(),
+            "it went to the prompt: {:?}",
+            app.input
+        );
+    }
+
+    #[test]
+    fn a_paste_with_no_pick_up_is_still_the_message_box_s() {
+        let mut app = test_app();
+        assert!(!paste_into_pick(&mut app, "some prose"));
+    }
+
     /// An `App` with nothing going on, for frame tests. Fields that need a
     /// live agent stay inert: `running` is `None`, channels dangle unused.
     pub(super) fn test_app() -> App {
@@ -6547,6 +6887,7 @@ mod tests {
             phase: Phase::default(),
             asking: None,
             picker: None,
+            selecting: false,
             help: false,
             help_scroll: 0,
             tools: None,
@@ -6793,6 +7134,89 @@ mod tests {
         assert!(badged.contains("outbox 3"), "{badged}");
     }
 
+    fn pending_row(id: &str) -> outbox::OutboxRow {
+        outbox::OutboxRow {
+            id: id.into(),
+            status: "pending".into(),
+            kind: mecha_core::outbox::OutboxKind::Message,
+            summary: "docs__docs_replace".into(),
+            tainted: true,
+            edited: false,
+            args_text: "find  Spring 2024".into(),
+            error: None,
+            detail: Vec::new(),
+            raw: Vec::new(),
+        }
+    }
+
+    fn press(app: &mut App, c: char) {
+        handle_outbox_key(
+            app,
+            KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers: crossterm::event::KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            },
+        )
+        .unwrap();
+    }
+
+    /// `a` for approve, beside `e` edit and `r` reject — and `s`, which meant
+    /// this same action before the rename, still works. A key that releases
+    /// an outbound action is the wrong one to retire out from under someone's
+    /// fingers, and here it cannot mean anything else.
+    #[test]
+    fn approve_answers_to_a_and_still_to_s() {
+        for key in ['a', 's'] {
+            let mut app = test_app();
+            app.staged = Some(outbox::OutboxModal::new(vec![pending_row("abc123")]));
+            press(&mut app, key);
+            let confirm = &app.staged.as_ref().unwrap().confirm;
+            assert!(
+                confirm.as_ref().is_some_and(|c| c.id == "abc123"),
+                "`{key}` did not open the approval"
+            );
+        }
+    }
+
+    /// Scrolling a long draft's arguments is not answering the question. Any
+    /// other key still keeps it pending — that half must not regress.
+    #[test]
+    fn scroll_keys_do_not_dismiss_the_approval() {
+        let mut app = test_app();
+        app.staged = Some(outbox::OutboxModal::new(vec![pending_row("abc123")]));
+        press(&mut app, 'a');
+
+        let scroll = |app: &App| {
+            app.staged
+                .as_ref()
+                .unwrap()
+                .confirm
+                .as_ref()
+                .map(|c| c.scroll)
+        };
+
+        press(&mut app, 'j');
+        assert_eq!(scroll(&app), Some(1), "`j` did not scroll down");
+        press(&mut app, 'j');
+        assert_eq!(scroll(&app), Some(2), "`j` did not keep scrolling");
+        press(&mut app, 'k');
+        assert_eq!(scroll(&app), Some(1), "`k` did not scroll back up");
+        // Floors rather than wrapping to u16::MAX.
+        for _ in 0..5 {
+            press(&mut app, 'k');
+        }
+        assert_eq!(scroll(&app), Some(0), "scrolling up past the top wrapped");
+
+        // And the guard it must not weaken.
+        press(&mut app, 'z');
+        assert!(
+            app.staged.as_ref().unwrap().confirm.is_none(),
+            "an unrelated key must still keep the draft pending"
+        );
+    }
+
     /// A tainted draft's send confirmation puts the arguments on screen —
     /// what is approved must be what was read, through the real draw path.
     #[test]
@@ -6800,6 +7224,7 @@ mod tests {
         let mut app = test_app();
         app.staged = Some(outbox::OutboxModal {
             confirm: Some(outbox::SendConfirm {
+                scroll: 0,
                 id: "abc123".into(),
                 summary: "mail to a@example.com".into(),
                 tainted: true,
@@ -6811,11 +7236,12 @@ mod tests {
         let frame = frame_text(&mut app, 110, 35, None);
         assert!(frame.contains("attacker"), "{frame}");
         assert!(frame.contains("a@example.com"), "{frame}");
-        assert!(frame.contains("y sends it for real"), "{frame}");
+        assert!(frame.contains("y approve"), "{frame}");
 
-        // Untainted: no warning, but still a confirmation — a send is the one
-        // keystroke here that cannot be taken back.
+        // Untainted: no warning, but still a confirmation — an approval is the
+        // one keystroke here that cannot be taken back.
         app.staged.as_mut().unwrap().confirm = Some(outbox::SendConfirm {
+            scroll: 0,
             id: "abc123".into(),
             summary: "mail to a@example.com".into(),
             tainted: false,
@@ -6824,7 +7250,7 @@ mod tests {
         });
         let frame = frame_text(&mut app, 110, 35, None);
         assert!(!frame.contains("attacker"), "{frame}");
-        assert!(frame.contains("send abc123"), "{frame}");
+        assert!(frame.contains("approve abc123"), "{frame}");
     }
 
     #[test]

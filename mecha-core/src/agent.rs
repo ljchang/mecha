@@ -1373,25 +1373,21 @@ impl Agent {
             if self.cfg.cache_prompt {
                 use crate::cache_lens::Verdict;
                 match cache_lens.observe(&request, &response.usage) {
-                    Verdict::Drop {
-                        uncached,
+                    Verdict::Drop { repaid, prev_total } if self.cache_contended => {
+                        tracing::info!(
+                            repaid,
+                            prev_total,
+                            "prompt cache reuse dropped: expected here — this agent shares \
+                             the server's cache slots with interleaved conversations, and \
+                             each evicts the others' prefix"
+                        )
+                    }
+                    Verdict::Drop { repaid, prev_total } => tracing::warn!(
+                        repaid,
                         prev_total,
-                    } if self.cache_contended => tracing::info!(
-                        uncached,
-                        prev_total,
-                        "prompt cache reuse dropped: expected here — this agent shares \
-                         the server's cache slots with interleaved conversations, and \
-                         each evicts the others' prefix"
-                    ),
-                    Verdict::Drop {
-                        uncached,
-                        prev_total,
-                    } => tracing::warn!(
-                        uncached,
-                        prev_total,
-                        "prompt cache reuse dropped: this request re-paid {uncached} input \
-                         tokens against a previous prompt of {prev_total}, with no change \
-                         in tools, system prompt, or transcript prefix — something is \
+                        "prompt cache reuse dropped: {repaid} of the previous prompt's \
+                         {prev_total} tokens had to be paid for again, with no change in \
+                         tools, system prompt, or transcript prefix — something is \
                          destabilising the cached prefix"
                     ),
                     verdict => tracing::debug!(?verdict, "cache lens"),

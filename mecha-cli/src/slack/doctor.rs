@@ -559,7 +559,7 @@ mod tests {
     fn a_near_miss_of_the_doorway_shape_stays_copyable_text() {
         for argv in [
             vec!["mecha", "outbox", "review", "--all"],
-            vec!["mecha", "outbox", "send"],
+            vec!["mecha", "outbox", "approve"],
             vec!["mecha", "frontdoor", "list", "--state", "closed"],
             vec!["mecha", "frontdoor", "triage"],
         ] {

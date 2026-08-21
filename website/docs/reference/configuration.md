@@ -469,7 +469,23 @@ makes stacking two free tiers viable. Registers the `web_search` tool.
 | `api_key_env` | string | unset | Environment variable holding the key. Preferred over `api_key`. |
 | `api_key` | string | unset | Inline key. |
 | `base_url` | string | unset | Required for `searxng` (your instance); an optional override elsewhere. |
+| `prefer_deep` | bool | `false` | Try this backend first when the caller asked for a deep search. |
 | `disabled` | bool | `false` | Skip this backend without deleting its config. |
+
+`prefer_deep` is how config says "this backend earns its price on the hard
+ones". Depth used to change only *how* a backend searched, never *which* one
+ran, so a research question went to whatever was cheapest and first — and a paid
+backend chosen precisely for hard questions was reached only when the free one
+came up empty. It **reorders and never filters**: a preferred backend that is
+rate-limited still falls through to the free one, and a quick query still
+reaches the paid backend as a fallback when the free one is down. The move is a
+stable partition, so config order decides everything within each group.
+
+A chain whose backends all answer and all find nothing returns *no results*,
+which is an answer. Only a chain where nothing answered is an error — including
+a SearXNG instance whose engines are all suspended or CAPTCHA'd, which returns
+an empty page with HTTP 200 and would otherwise be indistinguishable from a
+genuinely empty web.
 
 `web_search` declares both `untrusted_input` and `external_send`: results are
 attacker-influenceable, and the query itself is an exfiltration channel because the

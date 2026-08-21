@@ -7,6 +7,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-08-21
+
+### Added
+
+- **The outbox verb is `approve`, on the `a` key.** The queue holds more than
+  mail — a `docs_replace` is approved, not *sent* — and `a` sits beside `e`
+  edit and `r` reject where `s` never belonged. `mecha outbox send` is kept as
+  an alias and `s` still works in the modal: both meant this same action, they
+  cannot mean anything else here, and a key that releases an outbound action is
+  the wrong one to retire out from under someone's fingers. The stored status
+  stays `"sent"`, on the rule that already governs `OutboxKind` and `Proposed`:
+  it is a value in an append-only store, `mineable_as_writing` keys on it, and
+  renaming it would orphan every item already resolved.
+
+- **A search backend can be preferred for deep searches.** `[[search]]
+  prefer_deep = true` moves a backend to the front of the chain when the caller
+  asked for a deep search. `Depth` used to change only *how* a backend searched
+  and never *which* one ran, so a research question went to whatever was
+  cheapest and first — and a paid backend chosen precisely for hard questions
+  was reached only when the free one came up empty. It **reorders and never
+  filters**, deliberately: a preferred backend that is rate-limited must still
+  fall through to the free one, and a quick query must still reach the paid
+  backend as a fallback when the free one is down — the arrangement that kept
+  working through a total searxng outage. A stable partition, so config order
+  still decides everything within each group.
+
+### Fixed
+
+- **A long draft could be neither read nor approved.** The approval
+  confirmation put a tainted draft's arguments on screen "in full" and rendered
+  them with an unscrolled `Paragraph`, which draws from the top — so a
+  `docs_replace` whose `find` was a whole syllabus section pushed the question
+  and the `y` prompt off the bottom, and every other key dismissed the
+  confirmation, so there was no way to scroll to them. The box was also sized
+  from `body.len()`, which counts *logical* lines: one long argument is a single
+  `Line` and many rendered rows, so the height reported "it fits" precisely when
+  it did not.
+
+  The arguments now scroll (`↑↓`/`jk`, PgUp/PgDn, Home), the prompt is pinned to
+  the bottom border where nothing can push it off, the height is measured with
+  `Paragraph::line_count` *after* wrapping, and scroll keys no longer count as
+  "anything else". This is the review surface's own standard — *a field the
+  reviewer cannot see is a field they approved unread* — failing the moment an
+  argument outgrew the terminal.
+
+- **The mouse can select text again.** The TUI enables mouse capture for the
+  whole session, which is what makes the wheel scroll the transcript — and also
+  what stops a drag from selecting anything, because the terminal forwards the
+  drag to mecha rather than drawing a selection. That made the `/docs` picker's
+  own documented fallback ("the URL stays on screen to be selected by hand as
+  well") one that had never existed: the authorization link is 420 characters,
+  and its only other route off the screen was an OSC 52 write no terminal
+  acknowledges.
+
+  The mouse is now handed back whenever what is on screen is meant to be
+  copied. **Any modal** releases it automatically — while one covers the
+  screen, capture buys only a wheel scrolling the transcript behind it —
+  and **`^s`** toggles selection mode in the main view, with a `select ^S`
+  badge on the status strip, because a wheel that has silently stopped
+  working reads as a broken session. Reconciled once a frame from the drawn
+  state rather than at each pane's exits, on the reasoning that a mode
+  restored by remembering is a mode that eventually is not.
+
+- **The `/docs` picker can be finished from a terminal.** Three separate
+  things stood between the link and the browser. Handing the mouse back is one;
+  the other two: the link is now shown alone at column 0 on `s`, since a drag
+  across a wrapped, bordered box copies the `│` at each end of every row, and
+  `o` hands it to `$BROWSER`/`xdg-open` when the browser is on this machine.
+  And **a paste while the picker is up now lands in the picker's field** — it
+  went to the message box behind the modal, so the pane said "paste it here"
+  while the only way to fill it was to type two hundred characters by hand.
+  Whitespace is stripped on the way in, because an address copied out of a
+  wrapped display arrives with newlines in it.
+
+- **"Nothing found" is an answer, and now arrives as one.** A chain whose
+  backends all answered and all found nothing reported `every search backend
+  failed`. The model read that as broken infrastructure and reworded the same
+  query eight times. An exhausted chain of empties is now a successful `no
+  results for "…"`; a chain where nothing *answered* is still an error, and one
+  broken backend no longer hides another's honest empty.
+
+- **A searxng instance with every engine down no longer reads as an empty web.**
+  The measured case: every engine behind the instance suspended or CAPTCHA'd,
+  `results: []`, HTTP 200 — byte-identical to a genuine no-match, so a total
+  search outage reported as "the web has nothing". The `unresponsive_engines`
+  field is now read and makes it a failure. Read defensively: an unexpected
+  shape from a third-party instance reports nothing rather than panicking a
+  search.
+
+- **The cache lens stopped crying wolf on large tool results.** `Verdict::Drop`
+  scored re-payment from `input_tokens`, which is everything *not* read from
+  cache — overwhelmingly the turn's new content on this workload, where one mail
+  thread or search result dwarfs the prompt it was appended to. So the lens
+  shouted loudest exactly when tool results were biggest, and scored the real
+  failure — a small prompt re-paid in full because something destabilised the
+  prefix — as stable. It now measures what did not come back
+  (`prev_total - cache_read_input_tokens`); the field is renamed `repaid` to
+  say so. Measured against a live llama-server: 2,720 of a 2,724-token prefix
+  read back with 6,319 tokens of new content, previously called a drop at a
+  share of 2.32.
+
 ## [0.1.10] - 2026-08-21
 
 ### Added

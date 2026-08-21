@@ -289,7 +289,7 @@ impl SearchBackend for Searxng {
         }
 
         let v: Value = serde_json::from_str(&text).context("searxng returned malformed JSON")?;
-        let results = v
+        let results: Vec<SearchResult> = v
             .get("results")
             .and_then(Value::as_array)
             .map(|rs| {
@@ -306,12 +306,61 @@ impl SearchBackend for Searxng {
             })
             .unwrap_or_default();
 
+        // A SearXNG instance answers 200 with an empty `results` list whether
+        // the web has nothing or every engine behind it is rate-limited, and
+        // the difference is only in `unresponsive_engines`. Ignoring it made
+        // an outage indistinguishable from an answer — measured live, with
+        // all four engines reporting `Suspended: too many requests` and
+        // `CAPTCHA` while the tool reported no results. So an empty page with
+        // an unresponsive engine behind it is a backend *failure*: it falls
+        // through to the next backend and, if there is none, says the search
+        // broke rather than that the web is silent.
+        let unresponsive = unresponsive_engines(&v);
+        if results.is_empty() && !unresponsive.is_empty() {
+            bail!(
+                "searxng asked no working engine — {}",
+                unresponsive.join("; ")
+            );
+        }
+        // Partial degradation still answers, but the operator should see it:
+        // results thinned to one surviving engine look like a quiet web.
+        if !unresponsive.is_empty() {
+            tracing::warn!(
+                unresponsive = unresponsive.join("; "),
+                returned = results.len(),
+                "searxng answered with engines missing"
+            );
+        }
+
         Ok(SearchResponse {
             results,
             answer: None,
             backend: "searxng".into(),
         })
     }
+}
+
+/// `[["brave", "Suspended: too many requests"], ["duckduckgo", "CAPTCHA"]]` —
+/// read defensively, because this is a third-party instance's shape and an
+/// unexpected one must read as "nothing to report", never panic a search.
+fn unresponsive_engines(v: &Value) -> Vec<String> {
+    v.get("unresponsive_engines")
+        .and_then(Value::as_array)
+        .map(|es| {
+            es.iter()
+                .map(|e| match e.as_array() {
+                    Some(pair) => {
+                        let name = pair.first().and_then(Value::as_str).unwrap_or("?");
+                        match pair.get(1).and_then(Value::as_str) {
+                            Some(why) => format!("{name}: {why}"),
+                            None => name.to_string(),
+                        }
+                    }
+                    None => e.as_str().unwrap_or("?").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn str_field(v: &Value, key: &str) -> Option<String> {
@@ -331,31 +380,91 @@ fn str_field(v: &Value, key: &str) -> Option<String> {
 /// 429 or 402 because the month's allowance is gone, the next one answers, and
 /// the agent never sees a failure.
 pub struct SearchChain {
-    backends: Vec<Box<dyn SearchBackend>>,
+    entries: Vec<ChainEntry>,
+}
+
+/// One backend and the one thing the chain needs to know about it beyond how
+/// to call it.
+pub struct ChainEntry {
+    pub backend: Box<dyn SearchBackend>,
+    /// Move this backend to the front when the caller asked for [`Depth::Deep`].
+    ///
+    /// `Depth` used to change only *how* a backend searched, never *which* one
+    /// ran, so a research question went to whatever was cheapest and first —
+    /// and a paid backend chosen precisely for hard questions was reached only
+    /// when the free one came up empty. This is the other half: config says
+    /// which backends are worth their price on a hard question, and the chain
+    /// puts them first for exactly those.
+    ///
+    /// It reorders rather than filters, deliberately. A preferred backend that
+    /// is rate-limited must still fall through to the free one, and a quick
+    /// query must still be able to reach the paid backend as a *fallback* when
+    /// the free one is down — which is the arrangement that kept working
+    /// through a total searxng outage.
+    pub prefer_deep: bool,
 }
 
 impl SearchChain {
     pub fn new(backends: Vec<Box<dyn SearchBackend>>) -> Self {
-        SearchChain { backends }
+        SearchChain {
+            entries: backends
+                .into_iter()
+                .map(|backend| ChainEntry {
+                    backend,
+                    prefer_deep: false,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn with_entries(entries: Vec<ChainEntry>) -> Self {
+        SearchChain { entries }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.backends.is_empty()
+        self.entries.is_empty()
     }
 
     pub fn ids(&self) -> Vec<&str> {
-        self.backends.iter().map(|b| b.id()).collect()
+        self.entries.iter().map(|e| e.backend.id()).collect()
+    }
+
+    /// The order this depth should try backends in. A stable partition, so
+    /// config order still decides everything within each group — the only
+    /// thing depth moves is which group goes first.
+    fn order_for(&self, depth: Depth) -> Vec<&ChainEntry> {
+        match depth {
+            Depth::Quick => self.entries.iter().collect(),
+            Depth::Deep => self
+                .entries
+                .iter()
+                .filter(|e| e.prefer_deep)
+                .chain(self.entries.iter().filter(|e| !e.prefer_deep))
+                .collect(),
+        }
     }
 
     pub async fn search(&self, query: &str, limit: usize, depth: Depth) -> Result<SearchResponse> {
         let mut failures = Vec::new();
+        // A backend that answered, even with nothing, is the difference
+        // between "the web does not have this" and "the search is broken",
+        // and only the second is an error. Exhausting the chain on empties
+        // used to report the first as the second, which is worse than
+        // useless: a model told its tools are broken rewords and retries —
+        // eight times in one recorded run — where a model told there are no
+        // results moves on. `bail!` is reserved for the case where nothing
+        // answered at all, which is the one the model genuinely cannot route
+        // around.
+        let mut empty_from: Option<String> = None;
 
-        for backend in &self.backends {
+        for entry in self.order_for(depth) {
+            let backend = &entry.backend;
             match backend.search(query, limit, depth).await {
                 // A backend that answers with nothing is not an error, but it
                 // is worth trying the next one before giving up.
                 Ok(r) if r.results.is_empty() && r.answer.is_none() => {
                     failures.push(format!("{}: no results", backend.id()));
+                    empty_from.get_or_insert_with(|| backend.id().to_string());
                 }
                 Ok(r) => return Ok(r),
                 Err(e) => {
@@ -363,6 +472,15 @@ impl SearchChain {
                     failures.push(format!("{}: {e}", backend.id()));
                 }
             }
+        }
+
+        if let Some(backend) = empty_from {
+            // Whichever backends did break are in the operator's log above;
+            // the model gets the answer the working ones gave.
+            return Ok(SearchResponse {
+                backend,
+                ..Default::default()
+            });
         }
 
         bail!("every search backend failed — {}", failures.join("; "))
@@ -524,6 +642,166 @@ mod tests {
             }),
             calls,
         )
+    }
+
+    /// The measured case: every engine behind the instance suspended or
+    /// CAPTCHA'd, `results: []`, HTTP 200. Without reading
+    /// `unresponsive_engines` this is byte-identical to a genuine no-match,
+    /// so a total search outage would report as "the web has nothing" — the
+    /// silently-degrading shape, arriving through a third party's JSON.
+    #[test]
+    fn an_instance_with_every_engine_suspended_is_a_failure_not_an_empty_web() {
+        let v: Value = serde_json::json!({
+            "results": [],
+            "unresponsive_engines": [
+                ["brave", "Suspended: too many requests"],
+                ["duckduckgo", "CAPTCHA"],
+            ],
+        });
+        let reasons = unresponsive_engines(&v);
+        assert_eq!(
+            reasons,
+            vec![
+                "brave: Suspended: too many requests".to_string(),
+                "duckduckgo: CAPTCHA".to_string()
+            ]
+        );
+    }
+
+    /// And the honest empty: engines answered, the web had nothing. Nothing
+    /// to report, so the chain is free to call it an answer.
+    #[test]
+    fn an_empty_page_with_every_engine_healthy_reports_nothing_unresponsive() {
+        let v: Value = serde_json::json!({ "results": [], "unresponsive_engines": [] });
+        assert!(unresponsive_engines(&v).is_empty());
+    }
+
+    /// A third-party instance is free to change this shape; an unexpected one
+    /// must read as "nothing to report" rather than panicking a search.
+    #[test]
+    fn an_unexpected_unresponsive_shape_is_read_defensively() {
+        assert!(unresponsive_engines(&serde_json::json!({})).is_empty());
+        assert!(
+            unresponsive_engines(&serde_json::json!({"unresponsive_engines": "brave"})).is_empty()
+        );
+        assert_eq!(
+            unresponsive_engines(&serde_json::json!({"unresponsive_engines": ["brave", ["ddg"]]})),
+            vec!["brave".to_string(), "ddg".to_string()]
+        );
+    }
+
+    /// The recorded failure: one configured backend, a query the web has no
+    /// answer for, and the model told `every search backend failed` — which
+    /// it read as broken infrastructure and answered by rewording the query
+    /// eight times. "Nothing found" is an answer and must arrive as one.
+    #[tokio::test]
+    async fn an_exhausted_chain_of_empties_is_an_answer_not_a_failure() {
+        let (only, calls) = stub("searxng", Behaviour::Empty);
+        let chain = SearchChain::new(vec![only]);
+
+        let r = chain.search("q", 5, Depth::Quick).await.unwrap();
+        assert!(r.results.is_empty() && r.answer.is_none());
+        assert_eq!(r.backend, "searxng");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// A broken backend beside an empty one still yields the empty one's
+    /// answer: the breakage is the operator's to see in the log, and hiding
+    /// a real "nothing found" behind it tells the model to retry.
+    #[tokio::test]
+    async fn one_broken_backend_does_not_hide_anothers_empty_answer() {
+        let (first, _) = stub("exa", Behaviour::Fail);
+        let (second, _) = stub("searxng", Behaviour::Empty);
+        let chain = SearchChain::new(vec![first, second]);
+
+        let r = chain.search("q", 5, Depth::Quick).await.unwrap();
+        assert_eq!(r.backend, "searxng");
+        assert!(r.results.is_empty());
+    }
+
+    /// And the case `bail!` is reserved for: nothing answered at all.
+    #[tokio::test]
+    async fn a_chain_where_nothing_answered_is_still_an_error() {
+        let (first, _) = stub("exa", Behaviour::Fail);
+        let (second, _) = stub("tavily", Behaviour::Fail);
+        let chain = SearchChain::new(vec![first, second]);
+
+        let e = chain.search("q", 5, Depth::Quick).await.unwrap_err();
+        assert!(format!("{e:#}").contains("every search backend failed"));
+    }
+
+    fn entry(id: &'static str, behaviour: Behaviour, prefer_deep: bool) -> ChainEntry {
+        ChainEntry {
+            backend: stub(id, behaviour).0,
+            prefer_deep,
+        }
+    }
+
+    /// An ordinary lookup takes config order, so the free backend stays the
+    /// head and the paid one is never reached while it is answering.
+    #[tokio::test]
+    async fn a_quick_search_keeps_config_order() {
+        let chain = SearchChain::with_entries(vec![
+            entry("searxng", Behaviour::One, false),
+            entry("exa", Behaviour::One, true),
+        ]);
+        let r = chain.search("q", 5, Depth::Quick).await.unwrap();
+        assert_eq!(r.backend, "searxng");
+    }
+
+    /// A research question goes to the backend that was configured for one,
+    /// even though it sits second. This is the half `Depth` was missing: it
+    /// chose how a backend searched and never which one ran.
+    #[tokio::test]
+    async fn a_deep_search_promotes_the_preferred_backend() {
+        let chain = SearchChain::with_entries(vec![
+            entry("searxng", Behaviour::One, false),
+            entry("exa", Behaviour::One, true),
+        ]);
+        let r = chain.search("q", 5, Depth::Deep).await.unwrap();
+        assert_eq!(r.backend, "exa");
+    }
+
+    /// Promotion reorders and never filters, in both directions — otherwise a
+    /// rate-limited preferred backend would take a deep query down with it,
+    /// and a quick query could not reach the paid backend during the free
+    /// one's outage, which is the arrangement that survived a real searxng
+    /// blackout.
+    #[tokio::test]
+    async fn every_backend_stays_reachable_at_either_depth() {
+        let deep = SearchChain::with_entries(vec![
+            entry("searxng", Behaviour::One, false),
+            entry("exa", Behaviour::Fail, true),
+        ]);
+        assert_eq!(
+            deep.search("q", 5, Depth::Deep).await.unwrap().backend,
+            "searxng",
+            "a broken preferred backend must fall through, not fail the query"
+        );
+
+        let quick = SearchChain::with_entries(vec![
+            entry("searxng", Behaviour::Fail, false),
+            entry("exa", Behaviour::One, true),
+        ]);
+        assert_eq!(
+            quick.search("q", 5, Depth::Quick).await.unwrap().backend,
+            "exa",
+            "a quick query must still reach the paid backend when the free one is down"
+        );
+    }
+
+    /// Config order still decides within each group: promotion moves a group,
+    /// not an individual backend past its peers.
+    #[tokio::test]
+    async fn promotion_is_a_stable_partition() {
+        let chain = SearchChain::with_entries(vec![
+            entry("free-a", Behaviour::Empty, false),
+            entry("paid-a", Behaviour::Empty, true),
+            entry("paid-b", Behaviour::One, true),
+        ]);
+        // paid-a and paid-b both promote, and paid-a still precedes paid-b.
+        let r = chain.search("q", 5, Depth::Deep).await.unwrap();
+        assert_eq!(r.backend, "paid-b");
     }
 
     #[tokio::test]

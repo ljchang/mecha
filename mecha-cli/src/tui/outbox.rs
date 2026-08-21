@@ -84,6 +84,18 @@ pub struct SendConfirm {
     /// The item's error at confirm time, handed to the watch that reports the
     /// release's outcome: only an error that *changed* is the new attempt's.
     pub error_before: Option<String>,
+    /// How far down the arguments the reviewer has read.
+    ///
+    /// A tainted draft puts its arguments on screen in full, and "in full"
+    /// was doing no work: a `docs_replace` whose `find` is a whole syllabus
+    /// section overflowed the box, and an unscrolled `Paragraph` renders from
+    /// the top — so the tail was dropped silently, taking the question and
+    /// the `y` prompt with it. The reviewer saw an attacker warning, an
+    /// unreadable wall, and no way forward. Approving what you cannot see is
+    /// the one failure this surface exists to prevent, so the arguments
+    /// scroll and the prompt is pinned to the border where nothing can push
+    /// it off.
+    pub scroll: u16,
 }
 
 /// A rejection's reason being typed. Optional, as on the CLI — but the input
@@ -209,7 +221,7 @@ impl OutboxModal {
                     (false, n) => format!("h shows {n} resolved · "),
                 };
                 format!(
-                    " {scope}{pending} pending · {history}enter detail · s send · e edit · r reject · esc "
+                    " {scope}{pending} pending · {history}enter detail · a approve · e edit · r reject · esc "
                 )
             }
         }
@@ -311,7 +323,7 @@ impl OutboxModal {
                         .borders(Borders::ALL)
                         .border_style(Style::new().fg(Color::Cyan))
                         .title(format!(
-                            " {} · ↑↓ scroll · s send · e edit · r reject · {what} · esc back ",
+                            " {} · ↑↓ scroll · a approve · e edit · r reject · {what} · esc back ",
                             row.id
                         )),
                 ),
@@ -319,8 +331,9 @@ impl OutboxModal {
         );
     }
 
-    /// The send confirmation. Red when tainted, and then the arguments are on
-    /// screen in full: what is being approved must be what was read.
+    /// The approval confirmation. Red when tainted, and then the arguments
+    /// are on screen in full — scrollable, because "in full" has to survive
+    /// an argument longer than the terminal.
     fn draw_confirm(&self, frame: &mut Frame, confirm: &SendConfirm) {
         let mut body: Vec<Line> = Vec::new();
         if confirm.tainted {
@@ -339,23 +352,35 @@ impl OutboxModal {
                     Style::new().fg(Color::White),
                 ));
             }
-            body.push(Line::raw(""));
         }
-        body.push(Line::styled(
-            format!("send {} — {}?", confirm.id, confirm.summary),
-            Style::new().fg(Color::White),
-        ));
-        body.push(Line::raw(""));
-        body.push(Line::styled(
-            "y sends it for real · anything else keeps it pending",
-            Style::new().fg(Color::DarkGray),
-        ));
 
-        let height = (body.len() as u16 + 2).min(frame.area().height.saturating_sub(4));
-        let area = super::centered(frame.area(), 90, height);
+        // Full height, like the detail view: a confirmation sized to its
+        // content is a confirmation that overflows the moment the content is
+        // large, which is exactly when reading it matters most.
+        let area = super::centered(frame.area(), 90, frame.area().height.saturating_sub(4));
+        let inner_width = area.width.saturating_sub(2);
+        let inner_height = area.height.saturating_sub(2);
+
+        let paragraph = Paragraph::new(body).wrap(Wrap { trim: false });
+        // Measured after wrapping, never from `body.len()`: one long argument
+        // is a single `Line` and many rendered rows, so counting logical lines
+        // reports a box that fits when it does not.
+        let drawn = paragraph.line_count(inner_width) as u16;
+        let max_scroll = drawn.saturating_sub(inner_height);
+        let scroll = confirm.scroll.min(max_scroll);
+
+        let hint = if max_scroll > 0 {
+            format!(
+                " y approve · ↑↓ scroll ({} more line(s) below) · any other key keeps it pending ",
+                max_scroll.saturating_sub(scroll)
+            )
+        } else {
+            " y approve · any other key keeps it pending ".to_string()
+        };
+
         frame.render_widget(Clear, area);
         frame.render_widget(
-            Paragraph::new(body).wrap(Wrap { trim: false }).block(
+            paragraph.scroll((scroll, 0)).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::new().fg(if confirm.tainted {
@@ -363,7 +388,8 @@ impl OutboxModal {
                     } else {
                         Color::Yellow
                     }))
-                    .title(" confirm send "),
+                    .title(format!(" approve {} — {}? ", confirm.id, confirm.summary))
+                    .title_bottom(hint),
             ),
             area,
         );
@@ -674,7 +700,7 @@ mod tests {
         // said — a filter nobody can see is a queue that looks shorter than
         // it is.
         assert!(title.contains("h shows 1 resolved"), "{title}");
-        for key in ["enter", "s send", "e edit", "r reject", "esc"] {
+        for key in ["enter", "a approve", "e edit", "r reject", "esc"] {
             assert!(title.contains(key), "{key} missing from {title}");
         }
 
@@ -907,5 +933,88 @@ mod tests {
             // The draw itself is the assertion: the old code panicked here.
             terminal.draw(|f| modal.draw(f)).unwrap();
         }
+    }
+
+    fn rendered(modal: &OutboxModal, w: u16, h: u16) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| modal.draw(f)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    fn confirming(args: &str) -> OutboxModal {
+        OutboxModal {
+            confirm: Some(SendConfirm {
+                id: "aaa1".into(),
+                summary: "docs__docs_replace".into(),
+                tainted: true,
+                args_text: args.into(),
+                error_before: None,
+                scroll: 0,
+            }),
+            ..OutboxModal::new(rows())
+        }
+    }
+
+    /// The recorded bug: a `docs_replace` whose `find` was a whole syllabus
+    /// section overflowed the confirmation, and an unscrolled `Paragraph`
+    /// renders from the top — so the tail was dropped, taking the question
+    /// and the `y` prompt with it. The reviewer saw an attacker warning, a
+    /// wall of text, and no way forward.
+    ///
+    /// Fails on the old body-inlined prompt, which is clipped away here.
+    #[test]
+    fn the_prompt_survives_arguments_longer_than_the_terminal() {
+        let long = (0..200)
+            .map(|i| format!("schedule line {i} with enough width to wrap on a narrow box"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let screen = rendered(&confirming(&long), 100, 24);
+        assert!(
+            screen.contains("y approve"),
+            "the approve prompt was pushed off screen"
+        );
+        assert!(
+            screen.contains("more line(s) below"),
+            "nothing told the reviewer there was more to read"
+        );
+    }
+
+    /// Scrolling has to actually move the arguments, or "review these in
+    /// full" is a claim the box cannot honour.
+    #[test]
+    fn scrolling_moves_through_the_arguments() {
+        let long = (0..200)
+            .map(|i| format!("schedule line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let top = rendered(&confirming(&long), 100, 24);
+        assert!(top.contains("schedule line 0"), "top should show the start");
+
+        let mut scrolled = confirming(&long);
+        scrolled.confirm.as_mut().unwrap().scroll = 60;
+        let lower = rendered(&scrolled, 100, 24);
+        assert!(
+            !lower.contains("schedule line 0 "),
+            "scrolling did not move the view"
+        );
+        assert!(
+            lower.contains("y approve"),
+            "the prompt must stay pinned while scrolling"
+        );
+    }
+
+    /// A short draft needs no scroll furniture — the hint would be a lie.
+    #[test]
+    fn a_short_draft_gets_no_scroll_hint() {
+        let screen = rendered(&confirming("find  Spring 2024"), 100, 24);
+        assert!(screen.contains("y approve"));
+        assert!(!screen.contains("more line(s) below"));
     }
 }
