@@ -231,6 +231,36 @@ Four decisions, each a bug if undone:
   *prose* call, so the payload could only arrive as literal text in a request
   whose whole purpose is to be smaller than what it replaces.
 
+**Three doors, and which one you can use is decided by where you are
+sitting.** The Slack connector and the remote-control inbox attach an image to
+the turn after landing the file in the workspace; `mecha run --image` is the
+scripted one; and **dropping a file on the TUI prompt** is the local one.
+
+That last is not a drop protocol: a terminal converts a drop into a *bracketed
+paste of the path*, which is why one `Event::Paste` arm serves both — and why
+it **cannot work over SSH, ever**. The path pasted is the path on the laptop
+and the process resolves it on the box at the other end. The bytes never left
+the laptop. Nothing in the harness can fix that, and it is the reason the
+Slack conduit exists.
+
+Two rules on the drop path:
+
+- **Every token must resolve to an existing image, or it is not a drop.** A
+  paste is also a paragraph somebody copied off a web page, and a rule that
+  attached any file whose path appeared *somewhere* in pasted prose would let
+  copied text pull bytes off the disk into a request. Requiring the whole
+  paste to be paths and nothing else makes "was this a drop" decidable rather
+  than guessed. The whole paste is tried as one path *before* splitting,
+  because terminals disagree about escaping and a raw `/shots/a shot.png` is
+  indistinguishable from two files by splitting alone — asking the filesystem
+  settles it, and a bare space is what every macOS screenshot has.
+- **The chip is the handle, so deleting it detaches.** Base64 cannot live in a
+  `String` edited with arrow keys, so the bytes sit beside the input and
+  `[image: shot.png]` stands in. An entry is sent only if its chip survives to
+  submit — otherwise a dropped image is unreachable by backspace and the only
+  visible sign of it is text that does nothing. A non-image file inserts its
+  path unchanged, which is what a dropped `.csv` wants.
+
 **Whether the model has eyes is declared, and verified against the server.**
 `[providers.X] vision` defaults to true for `kind = "anthropic"` and false
 everywhere else — false is the safe direction for a local server, because the
