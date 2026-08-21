@@ -379,6 +379,32 @@ impl Taint {
         self.private && self.untrusted
     }
 
+    /// Arm the private leg for content that entered the conversation without
+    /// a tool call — today, an image the user attached.
+    ///
+    /// **A screenshot is captured, not composed, and that is the whole
+    /// argument.** Inbound *text* arms nothing because the user chose every
+    /// word of it; the same reasoning does not reach a screenshot, where the
+    /// user chose the window and not everything in it. Incidental private
+    /// data is the normal case rather than the exception — it is most of why
+    /// people screenshot instead of retyping.
+    ///
+    /// It also keeps the posture of an unchanged user action unchanged.
+    /// Before images existed, attaching one in Slack armed `private` because
+    /// the model had to `fs_read` it; putting the pixels on the user turn
+    /// removed the tool call and, with it, the taint. A feature that
+    /// silently loosens the interlock as a side effect is the shape this
+    /// project keeps finding, and the fix belongs here rather than in a note
+    /// asking front-ends to remember.
+    pub fn arm_for_content(&mut self, messages: &[Message]) {
+        if messages
+            .iter()
+            .any(|m| m.content.iter().any(|b| matches!(b, Block::Image { .. })))
+        {
+            self.private = true;
+        }
+    }
+
     pub fn merge(&mut self, other: Taint) {
         self.private |= other.private;
         self.untrusted |= other.untrusted;
@@ -941,6 +967,15 @@ impl Agent {
             ..cx.clone()
         };
         let cx = &stamped;
+
+        // **Read off the messages at run start, never armed by whoever added
+        // them.** `Conversation::push` would be the tidy place and is not the
+        // safe one: `slack/connector.rs` appends to `messages` directly, so
+        // arming there would have left the Slack path — the one people
+        // actually attach screenshots from — unarmed. Recomputed every run
+        // rather than tracked, which costs a walk of the block types and is
+        // idempotent because taint only ever grows.
+        convo.taint.arm_for_content(&convo.messages);
 
         let mut usage = Usage::default();
         let mut turns = 0;
@@ -3375,6 +3410,54 @@ mod tests {
             "a private-data reader must never be suggested: {refusal}"
         );
         assert!(!refusal.contains("Or delegate"), "{refusal}");
+    }
+
+    /// An image the user attached is private data, and the interlock has to
+    /// see it. Verified to fail on the behaviour this replaced: with the
+    /// pixels on the user turn and no `fs_read`, nothing armed at all, so a
+    /// screenshot plus a fetched page plus an outbound call was allowed —
+    /// where the same screenshot, before images existed, armed `private`
+    /// because the model had to read the file.
+    #[test]
+    fn an_attached_image_arms_the_private_leg() {
+        let mut taint = Taint::default();
+        taint.arm_for_content(&[Message {
+            role: Role::User,
+            content: vec![
+                Block::text("what is wrong here?"),
+                Block::image("image/png", b"pixels", Some("shot.png".into())),
+            ],
+        }]);
+        assert!(taint.private, "a screenshot is the user's data");
+        assert!(
+            !taint.untrusted,
+            "and it is the user speaking, so it is not third-party content"
+        );
+    }
+
+    /// The rule is about images, not about user turns. Typed text stays free,
+    /// because the user composed every word of it — which is exactly the
+    /// distinction a screenshot does not get.
+    #[test]
+    fn ordinary_text_still_arms_nothing() {
+        let mut taint = Taint::default();
+        taint.arm_for_content(&[
+            Message::user("my password is hunter2"),
+            Message::assistant(vec![Block::text("noted")]),
+        ]);
+        assert!(!taint.private);
+        assert!(!taint.untrusted);
+    }
+
+    /// Idempotent and monotone, because the loop recomputes it every run.
+    #[test]
+    fn arming_for_content_never_clears_what_was_already_there() {
+        let mut taint = Taint {
+            private: true,
+            untrusted: true,
+        };
+        taint.arm_for_content(&[Message::user("nothing here")]);
+        assert!(taint.private && taint.untrusted, "taint only ever grows");
     }
 
     #[tokio::test]

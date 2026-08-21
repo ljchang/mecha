@@ -283,6 +283,25 @@ jailed to a **real project directory** puts `inbox/` in that project, where
 nothing sweeps it. That is the cost of the workspace being somewhere real, and
 it is the same trade `[work] keep` cannot make on the user's behalf.
 
+**An attached image arms `private_data`, and the reason it is not free the
+way typed text is.** `Taint::arm_for_content` is read off the messages by the
+loop at run start — deliberately not by `Conversation::push`, which would be
+the tidy place and is not the safe one: the Slack connector appends to
+`messages` directly, so arming there would have left the path people actually
+attach screenshots from unarmed. Recomputed per run rather than tracked, which
+is idempotent because taint only ever grows.
+
+The argument is that **a screenshot is captured, not composed**. Inbound text
+arms nothing because the user chose every word; that reasoning does not reach
+an image, where they chose the window and not everything in it — incidental
+private data is the normal case, and most of why people screenshot instead of
+retyping. It also keeps an unchanged user action's posture unchanged: before
+images existed, a Slack attachment armed `private` because the model had to
+`fs_read` it, and putting the pixels on the user turn removed the tool call
+and the taint with it. A feature that silently loosens the interlock as a side
+effect is the shape this project keeps finding, and it was found here by
+reading the recorded taint of a working run, not by reasoning about the code.
+
 **Whether the model has eyes is declared, and verified against the server.**
 `[providers.X] vision` defaults to true for `kind = "anthropic"` and false
 everywhere else — false is the safe direction for a local server, because the
