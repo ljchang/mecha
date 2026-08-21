@@ -1207,6 +1207,92 @@ browser leg split into `pick --url` and `pick --redirect` so it can span two
 commands minutes apart, which is what lets a document enter `drive.file` scope
 from a headless box with no tunnel and no forwarded port. `cfa2cc2`.
 
+**2026-08-21 (later) — the model had eyes, and the file being served held
+half of it.** A screenshot sent from Slack was answered with "I don't have the
+ability to view image files directly", which reads as a limitation and was a
+misconfiguration. Qwen3.6-35B-A3B is multimodal — `general.tags` says
+`image-text-to-text`, `rope.dimension_sections` is `[11, 11, 10, 0]` (mRoPE,
+which a text-only model does not have), and the chat template emits
+`<|vision_start|>` — but the GGUF holds 750 `blk.*` tensors and no vision tower
+at all. That ships separately as `mmproj-*.gguf`, and nothing had downloaded it.
+Four of four multimodal models on the machine were being served text-only, one
+of them with its projector already on disk, unused, since the day it arrived.
+
+Both halves shipped. On the server, `scripts/mmproj.sh` is sourced by every
+start script and *refuses to start* without a projector, printing the `curl`
+that fetches it. In the harness, `Block::Image` is a fifth block variant —
+user turns only, because Anthropic accepts an image inside a `tool_result` and
+the OpenAI dialect's `role: "tool"` messages carry a string and nothing else,
+so a tool returning pixels would work on one backend and silently lose them on
+the other. Both backends degrade to a named line rather than failing and are
+tested to word it *identically*, because a conversation crossing a `/model`
+switch must not tell two stories about its own history. The parts array is
+built only when an image is present: the cached prefix is a byte-prefix match,
+so making it the uniform shape would invalidate every run that never sends one.
+
+`mecha_core::image` caps at the door rather than per turn — the transcript is
+append-only and every turn resends the whole history, so a resize is paid once
+and collected forever after. Measured on the screenshot that started it:
+2222x1548 / 5.7 MB → 1568x1092 / 179 KB, with llama-server reporting
+`prompt_tokens` 294 **either way**, because it tiles to a fixed count
+regardless. 32x off the wire and out of the session file for nothing in
+context. An image already under the caps passes through byte for byte, since
+re-encoding a crisp screenshot of text is a real loss and that is the case this
+exists for.
+
+Four doors reach it: the Slack connector, the remote-control inbox,
+`mecha run --image`, and a file **dropped on the TUI prompt** — which turned
+out to be half-built already, since a terminal converts a drop into a bracketed
+paste of the path and the `Event::Paste` arm had always inserted it. What it
+never did was look at what the path was. Now a paste whose every token resolves
+to an existing image becomes a chip, `[image: shot.png]`, with the bytes held
+beside the input; an image is sent only if its chip survives to submit, which
+is the only undo there is for something backspace cannot reach. That
+conjunction is the safety property rather than a convenience: a paste is also a
+paragraph off a web page, and attaching any file whose path appeared *somewhere*
+in pasted prose would let copied text pull bytes off the disk into a request.
+It cannot work over SSH and never will — the path pasted is the laptop's and
+the process resolving it is on the far box, which is precisely what the Slack
+conduit is for.
+
+`provider::preflight` is the thing that stops this recurring: one `GET /props`
+at startup, compared against config in **both** directions, because they fail
+differently — declared-but-not-served silently degrades every image to text,
+while served-but-not-declared means a projector is loaded, paid for in memory,
+and never used. The same request checks `context_window` against the per-slot
+`n_ctx` (so the `-c` versus `-c / -np` rule is read rather than restated) and
+the configured model against `model_alias`. It warns and never refuses — the
+opposite of the sandbox's bargain, and for the opposite reason: there, falling
+through means running unconfined; here a mismatch means compacting at the wrong
+moment, and a preflight that can stop a working machine from booting is one
+people turn off.
+
+`mecha setup` generalises that into onboarding, on the finding that
+documentation had already stated all of this correctly while the machine stayed
+wrong for months. It does not ask what you meant; it reads `/props` and writes
+down what the server reports, and `--write` edits the table in place rather
+than reserialising, because a round trip through a TOML parser discards every
+comment and in this project the comments are most of the file. Its planner is
+pure and tested without a machine, on the `compact.rs` split: getting
+onboarding wrong is silent. Two boundaries have tests naming them — the
+knowledge graph is *named and never driven*, since spawning `mecha-graph
+source` would be exactly the coupling the MCP-only rule prevents, and nothing
+schedules anything, with the runner offered only once a trigger already exists.
+
+The last finding came from a run that **worked**. The fixed Slack test answered
+correctly and recorded `taint {private: false}`, where the same user action
+before the arc recorded `{private: true}` — because the model used to have to
+`fs_read` the attachment, and putting the pixels on the user turn removed the
+tool call and the taint with it. A feature that loosens the interlock as a side
+effect, with a correct-looking answer sitting on top of it. `Taint::
+arm_for_content` now arms the private leg for an attached image, enforced in
+the loop rather than in `Conversation::push` — `slack/connector.rs` appends to
+`messages` directly, so arming at the tidy place would have left unarmed
+precisely the surface people attach screenshots from. The argument for treating
+an image differently from typed text is that **a screenshot is captured, not
+composed**: you choose every word you type, and you choose the window rather
+than everything in it.
+
 **2026-08-21 — the remote control.** A live TUI session and a named Slack
 thread became the same conversation. `/remote-control <name>` claims a durable
 name, opens or re-opens its thread in the owner's DM, and tees the run's
@@ -1458,6 +1544,17 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**The bug was only visible in a run that worked.** After images shipped, a
+Slack screenshot was answered correctly — and the run recorded
+`taint {private: false}` where the same user action had previously recorded
+`{private: true}`, because the model no longer needed `fs_read` to see the
+file. A feature had loosened the interlock as a side effect, with a correct
+answer sitting on top of it: no error, no warning, nothing in the trace. The
+only evidence was a boolean in the outcome record. **Read the run's recorded
+state after a change, not only its answer — a success is where a silent
+regression hides.**
+
 
 - **A value that only means something in a frame of reference, copied into a
   context that dropped the frame.** Three separate TUI bugs on 2026-08-20 were
@@ -2134,6 +2231,47 @@ All found by pre-push review or by running it.
   the test has to be repeated on the far side of them.
 
 ### Environment
+
+**An install is not a restart, for anything already running.** `cargo install`
+replaced `~/.cargo/bin/mecha` while a TUI session begun two hours earlier kept
+executing the inode it was launched from — `/proc/<pid>/exe` reads
+`mecha (deleted)`, which is the only visible sign. The session had none of the
+new code and looked like the feature failing. The check that catches a stale
+*process* is not the one that catches a stale *file*: walk `/proc/*/exe`, never
+`pgrep` for the install path, because a binary launched off `$PATH` has argv
+`mecha tui` and the first version of that check missed exactly the interactive
+session it was written for. **A check must be run against the case that
+motivated it before it is trusted.**
+
+**A version string is not evidence when the change did not bump one.** The same
+install left `mecha --version` reading `0.1.9` before and after, which is
+indistinguishable from having skipped it entirely. What proved it was a
+behaviour the change introduced (`mecha run --help` carrying `--image`) and
+cargo's own line reporting it had replaced an install made from a *different
+worktree*. **Verify a behaviour, not a proxy for one.**
+
+**Adding a config key breaks every binary that predates it, including one
+already running.** `ProviderConfig` carries `deny_unknown_fields`, deliberately,
+so a typo'd setting fails loudly rather than being ignored — which makes
+`~/.mecha/config.toml` a *wire format between versions*, not just a type, the
+same lesson `Proposed` and `OutboxKind` already carry one layer down. The
+failure is deferred and partial, which is what makes it expensive: the old
+process parsed the config at startup before the edit and kept working, then
+failed hours later on a path that *re-reads* config — here `show_file`, which
+loads the whole global config at call time for one number — and reported a
+config parse error in a subsystem with no visible connection to what changed.
+The model went off reading `config.toml` to investigate. **Install before
+editing config, and restart anything long-lived after.**
+
+**`--mmproj-auto` is enabled by default and does nothing where it is needed.**
+It only fires for `-hf` downloads, and every start script here uses
+`-m <path>`, so a multimodal model was served with no vision tower for months
+while the flag list looked handled. Nothing errored: the server started,
+answered well, reported `modalities.vision: false`, and the model told anyone
+who sent it a screenshot that it could not see images. **A default that is a
+no-op in your configuration is worse than an absent one — it reads as
+handled.**
+
 
 - **A working copy can be a running service's `ExecStart`, and then every git
   reflex is a deploy.** `~/.config/systemd/user/llama-local.service` names
