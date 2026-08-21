@@ -300,10 +300,13 @@ fn encode_message(m: &Message, out: &mut Vec<Value>, vision: bool) {
                     // transcript renders as pixels to one backend and as a
                     // line of prose to the other, with nothing lost from
                     // the record either way.
+                    // `..` rather than binding `source`: it is not sent to a
+                    // provider, and binding it unused is an error under CI's
+                    // `-D warnings` on the MSRV toolchain even though newer
+                    // rustc lets it pass — which is exactly what the 1.89 job
+                    // is for.
                     Block::Image {
-                        media_type,
-                        data,
-                        source,
+                        media_type, data, ..
                     } if vision => images.push(json!({
                         "type": "image_url",
                         "image_url": {"url": format!("data:{media_type};base64,{data}")},
