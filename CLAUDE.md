@@ -261,6 +261,28 @@ Two rules on the drop path:
   visible sign of it is text that does nothing. A non-image file inserts its
   path unchanged, which is what a dropped `.csv` wants.
 
+**What lands on disk differs by door, and the difference is an affordance
+rather than an inconsistency.** The Slack and remote-control doors write the
+**original** into `<workspace>/inbox/` and *also* name the path in the prompt,
+so the model gets both bytes it can look at and a path it can `shell`. The
+terminal doors copy nothing: the file stays where the person had it, and — for
+a drop from outside the run's workspace — it is beyond the path jail, so the
+model gets pixels and no way to reach the file. Worth knowing before asking a
+run to "crop that".
+
+The resized image is **never written to disk**. It exists in the message and
+therefore in the transcript, and the original on disk is always the original.
+Which is the whole argument for capping at the door, in one measurement: a
+single screenshot was **99% of a session file** (244,120 of 246,472 bytes),
+and every turn resends the whole history — so that is the per-turn wire cost
+for the rest of the conversation, and uncapped it would have been 7.5 MB.
+
+Known and accepted: `~/.mecha/work/slack/<thread>/inbox/` is swept by
+`mecha work clean` like any other producer entry, but a remote-control session
+jailed to a **real project directory** puts `inbox/` in that project, where
+nothing sweeps it. That is the cost of the workspace being somewhere real, and
+it is the same trade `[work] keep` cannot make on the user's behalf.
+
 **Whether the model has eyes is declared, and verified against the server.**
 `[providers.X] vision` defaults to true for `kind = "anthropic"` and false
 everywhere else — false is the safe direction for a local server, because the
