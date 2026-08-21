@@ -1,6 +1,6 @@
 ---
 title: First run
-sidebar_position: 3
+sidebar_position: 4
 description: Start mecha three ways — one-shot, as a REPL, and full-screen — and know where it writes things and what to do when a run goes wrong.
 ---
 

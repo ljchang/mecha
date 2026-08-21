@@ -225,6 +225,8 @@ the [configuration reference](/docs/reference/configuration).
 
 ## Next
 
-[Setting up](/docs/getting-started/setting-up) — point mecha at a model, let it
-read the settings back off the server, and wire in the context you want it to
-have.
+- [Choosing hardware](/docs/getting-started/hardware) — if you are still
+  deciding what to run the model on, or what will fit in the memory you have.
+- [Setting up](/docs/getting-started/setting-up) — point mecha at a model, let
+  it read the settings back off the server, and wire in the context you want it
+  to have.

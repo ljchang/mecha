@@ -12,16 +12,20 @@ The suit does not think for the pilot. It is built, maintained, and answerable
 to the person inside it, and it is the difference between someone who could help
 and someone who can.
 
-mecha is that suit for a language model.
+**mecha is that suit, and what you strap into it for is the daily grind** — the
+long tail of academic and professional administration that is tedious rather
+than difficult, arrives faster than it leaves, and is nobody's actual work.
 
-The model it is built for is a **local open-weight model** — one running on
-hardware you own, reading data that never leaves it. Such a model is entirely
-capable of being an excellent personal assistant, and is nowhere near being one
-out of the box. It has no memory of you. It cannot see your mail or your
-calendar. It can produce text and nothing else. And it has no defence at all
-against the first web page that tells it to forward your inbox to a stranger.
+The pilot is a **local open-weight model**, running on hardware you own and
+reading data that never leaves it. Such a model is entirely capable of being an
+excellent assistant, and is nowhere near being one out of the box. It has no
+memory of you. It cannot see your mail or your calendar. It can produce text
+and nothing else. And it has no defence at all against the first web page that
+tells it to forward your inbox to a stranger.
 
-Everything in mecha closes one of those four gaps without opening a fifth.
+Everything in mecha closes one of those four gaps without opening a fifth: it
+gives the model **your context**, a **reviewed way to act**, and the **armour**
+that makes handing it that much private information a reasonable thing to do.
 
 ## The problem it is pointed at
 
@@ -40,6 +44,47 @@ then have to rewrite, which is slower than doing it yourself.
 
 So the assistant that would actually help is one that can see a great deal about
 you. And that is precisely the assistant it is most dangerous to build.
+
+## What it plugs into
+
+Context is the whole differentiator, so it is worth being concrete about where
+it comes from. None of this is required — mecha is useful with none of it — and
+each is wired in separately.
+
+| | What it gives the model | How |
+|---|---|---|
+| **Mail and calendar** | Gmail and Outlook behind one surface. The model names an *account*, never a provider, and reads fan out across every mailbox. | [`mecha-mail`](/docs/features/mail) |
+| **Documents** | Google Docs, Sheets and Slides — but only files it created or you handed it in Google's own picker. | [`mecha-docs`](/docs/features/documents) |
+| **A knowledge graph** | Who people are, what happened when, what you already promised. Fed by ambient conversation capture (Bee), a calendar feed, Slack, messages and mail exports. | [Memory](/docs/features/memory) |
+| **Slack** | A remote control: watch a run from a phone, approve what it wants to send, pass files both ways. | [Slack](/docs/features/slack) |
+| **Anything else** | Connecting a new source is configuration, not a code change. | [MCP](/docs/features/tools-and-mcp) |
+
+The knowledge graph is the piece that makes the rest add up. Mail and calendar
+tell the model what is *happening*; the graph is what lets it know who these
+people are to you and what you said last time.
+
+## Three things that make this safe enough to do
+
+An assistant worth having is one you have handed your mail, your calendar and
+your memory. Three properties are what make that a reasonable trade rather than
+a reckless one, and each is structural rather than promised.
+
+**The model is local.** Not a fallback for when the API budget runs out — the
+target. Your mail is read by weights on your own machine, and the data has no
+occasion to leave it. What that costs in hardware is a shorter answer than
+people expect: see [Choosing hardware](/docs/getting-started/hardware). That choice also shapes the engineering: the binding
+constraint on a small model in a loop is tool-call reliability rather than
+intelligence, which is why [the eval rig](/docs/features/evaluation) grades the
+tool-call trace before the prose.
+
+**The memory is encrypted at rest.** The knowledge graph is
+**SQLCipher-encrypted**, with the key resolved from an environment variable, a
+keyfile, or a local file at mode 0600 — and the keyfile is meant to be backed
+up separately from the database, because without it the graph is unrecoverable
+and with it alone an attacker still needs the file.
+
+**The lethal trifecta is refused, not discouraged.** Which is the next section,
+because it is the decision the rest of the design hangs off.
 
 ## Why the security model is the centre of the design
 
@@ -130,16 +175,15 @@ which means a third-party MCP server is covered by it without knowing it exists.
 Plenty of agent harnesses exist. These are the choices that are actually
 unusual, rather than the ones everybody makes.
 
-**It is built for local open-weight models first.** Not as a fallback for when
-the API budget runs out — as the target. That changes what the engineering is
-about: the binding constraint on a small model in a loop is not intelligence but
-**tool-call reliability**, so [the eval rig](/docs/features/evaluation) grades
-the tool-call trace before it grades the prose. A model that is five percent
-smarter but malforms its arguments one call in twenty is worse in a loop,
-because every bad call costs a recovery turn. It is also why context accounting
-is explicit: nothing in any provider's API reports how much context is *left*,
-so mecha is told the window and derives its compaction threshold, its per-turn
-tool-output budget, and its gauge from it.
+**Local-first changes what the engineering is about.** Beyond the privacy
+argument above: a model that is five percent smarter but malforms its arguments
+one call in twenty is *worse* in a loop, because every bad call costs a recovery
+turn. It is also why context accounting is explicit — nothing in any provider's
+API reports how much context is *left*, so mecha is told the window and derives
+its compaction threshold, its per-turn tool-output budget and its gauge from it.
+Which is exactly the number people get wrong, and why
+[`mecha setup`](/docs/getting-started/setting-up) reads it back off the server
+instead of asking you.
 
 **Security is structural, not prompted.** The trifecta interlock lives in the
 type system and the loop, not in the system prompt. Taint is a property of the
@@ -195,6 +239,8 @@ applies itself.
 ## Where to go next
 
 - [Installation](/docs/getting-started/installation) — build it from source.
+- [Choosing hardware](/docs/getting-started/hardware) — what memory actually buys
+  you, and recommended configurations by tier.
 - [Setting up](/docs/getting-started/setting-up) — point it at a model, and let
   `mecha setup` read the settings back off the server rather than typing them.
 - [First run](/docs/getting-started/first-run) — one-shot, a REPL, and
