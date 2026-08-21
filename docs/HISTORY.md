@@ -1232,9 +1232,9 @@ Two code reviews found twenty-two defects across the arc, four of them real
 bugs in code that already had passing tests, and **two that predated the arc
 entirely**: a `/model`, `/provider` or `/mcp` switch had always rebuilt the
 agent from config alone, silently dropping `ask_user` and `recall`, and had
-always reverted the permission mode to *ask* while the status line went on
-claiming `read-only`. Both are fixed; `install_frontend_tools` and
-`approver_for` exist so the two call sites cannot disagree again. `d266fe8`.
+always ignored the permission mode in force (see *Containment and state*).
+Both are fixed; `install_frontend_tools` and `approver_for` exist so the two
+call sites cannot disagree again. `d266fe8`, `d0a1499`.
 
 ## The measurement record
 
@@ -2002,6 +2002,26 @@ All found by pre-push review or by running it.
   at the seam where a path is *read*, not where it is used — and when a
   subsystem changes its working directory, grep for every relative join that
   was betting on the old one.
+
+- **A rebuild ignored the permission mode, and the status line kept asserting
+  it anyway.** `apply_switch` passed the *retained* ask-mode approver into
+  every `/model`, `/provider` and `/mcp` rebuild without consulting `app.mode`,
+  so the mode silently reverted to `ask` — and it fails in **both** directions,
+  which is what makes the symptom hard to recognise. From `allow` it goes to
+  asking: tighter, merely annoying, and the version that actually showed up in
+  testing as an approval prompt thirty seconds after `/mode allow`. From
+  `read-only` it also goes to asking, and *that* one loosens — read-only
+  refuses outright, where asking lets a human be talked into yes, which is what
+  an injection is for. Common to both, and the sharpest part: the status line
+  went on displaying the old mode, so the interface asserted a posture the
+  harness was no longer holding. The silently-degrading-sandbox shape, in the
+  one surface whose entire job is to say what the harness will currently allow.
+  **An interface that displays a security posture must read it from the same
+  value the enforcement reads** — here that meant making the mapping a function
+  (`approver_for`) used by both, and asserting it with `Arc::ptr_eq`, because
+  "did it reuse the retained one" is the only question that distinguishes a
+  reinstated approver from a fresh one. Invisible to unit tests, which build
+  the types directly and never take the switch path.
 
 - **Claiming deleted the work before anything delivered it, and one path out
   did not deliver.** Text typed into a mirrored Slack thread was removed from
