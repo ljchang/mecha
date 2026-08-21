@@ -40,7 +40,7 @@ use crossterm::terminal::{
 use futures::StreamExt;
 use mecha_core::agent::{Agent, AgentEvent, Conversation, Phase, RunOutcome};
 use mecha_core::config::PermissionMode;
-use mecha_core::message::{Message, Usage};
+use mecha_core::message::{Block as MsgBlock, Message, Usage};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use mecha_core::tool::{Approver, ModeApprover};
 use ratatui::prelude::*;
@@ -1061,7 +1061,7 @@ async fn run_loop(
                     // `from_remote` suppresses the echo: whatever queued this
                     // already announced itself when it arrived.
                     if let Err(e) =
-                        submit(app, carried, &mut events_tx, &mut events_rx, live, session, true)
+                        submit(app, carried, Vec::new(), &mut events_tx, &mut events_rx, live, session, true)
                     {
                         app.transcript
                             .push(Entry::Error(format!("could not carry steering over: {e:#}")));
@@ -2029,7 +2029,16 @@ fn on_key(
                 app.cursor = 0;
                 app.history.push(text.clone());
                 app.history_pos = None;
-                submit(app, text, events_tx, events_rx, live, session, false)?;
+                submit(
+                    app,
+                    text,
+                    Vec::new(),
+                    events_tx,
+                    events_rx,
+                    live,
+                    session,
+                    false,
+                )?;
             }
         }
 
@@ -2686,6 +2695,12 @@ fn run_command(
 fn submit(
     app: &mut App,
     text: String,
+    // Images to put in front of the model on this turn, already bounded by
+    // `mecha_core::image`. Separate from `text` rather than folded into it
+    // because everything above — the steering queue, the slash-command check,
+    // the echo — is about the sentence, and only the message built at the end
+    // is about the pixels.
+    images: Vec<MsgBlock>,
     events_tx: &mut mpsc::UnboundedSender<AgentEvent>,
     events_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
     live: &Live,
@@ -2729,7 +2744,18 @@ fn submit(
         return Ok(());
     }
 
-    let user = Message::user(&text);
+    // Text first, images after: the order both provider families document,
+    // and the one `encode_message` preserves.
+    let user = if images.is_empty() {
+        Message::user(&text)
+    } else {
+        let mut content = vec![MsgBlock::text(&text)];
+        content.extend(images);
+        Message {
+            role: mecha_core::message::Role::User,
+            content,
+        }
+    };
     app.convo.push(user.clone());
     if let Some(s) = session {
         s.append(&Record::Message(user))?;
@@ -4464,6 +4490,34 @@ fn deliver_inbound(
                 Vec::new()
             }
         };
+        // **The file lands either way; the pixels are the extra.** Writing it
+        // into the workspace is the durable half — it is what `fs_read`,
+        // `shell` and tomorrow's run reach. Putting the image *into the turn*
+        // is what makes it a feature, and it is conditional on there being
+        // eyes: a text-only model would be handed a resized JPEG only to
+        // render it as its own filename.
+        let mut images = Vec::new();
+        if live.agent.vision() {
+            for rel in &landed {
+                let path = workspace.join(rel.trim_start_matches("./"));
+                match mecha_core::image::block_from_path(&path) {
+                    Ok(Some(block)) => images.push(block),
+                    Ok(None) => {}
+                    // Reported in the thread as well as the terminal, on the
+                    // rule two lines up: from the phone's side a picture was
+                    // sent, and a picture that silently did not arrive is
+                    // indistinguishable from one the session ignored.
+                    Err(e) => {
+                        app.transcript
+                            .push(Entry::Error(format!("could not look at {rel}: {e:#}")));
+                        spawn_note(
+                            &attached,
+                            &format!("Saved {rel}, but could not look at it: {e:#}"),
+                        );
+                    }
+                }
+            }
+        }
         if !landed.is_empty() {
             app.transcript
                 .push(Entry::Notice(format!("⇄ saved {}", landed.join(", "))));
@@ -4520,7 +4574,9 @@ fn deliver_inbound(
         // remaining lines with it — they are gone from disk and would never be
         // delivered anywhere. One line failing is a line to report, not a
         // reason to stop reading the rest.
-        if let Err(e) = submit(app, prompt, events_tx, events_rx, live, session, true) {
+        if let Err(e) = submit(
+            app, prompt, images, events_tx, events_rx, live, session, true,
+        ) {
             app.transcript.push(Entry::Error(format!(
                 "could not deliver a Slack line: {e:#}"
             )));
