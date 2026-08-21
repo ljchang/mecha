@@ -66,6 +66,7 @@ pub mod mail_triage;
 pub mod mailbox;
 pub mod mcp;
 pub mod message;
+pub mod onboarding;
 pub mod outbox;
 pub mod outbox_source;
 pub mod provider;

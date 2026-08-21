@@ -1,6 +1,6 @@
 ---
 title: The outbox
-sidebar_position: 8
+sidebar_position: 9
 description: Routing outbound tool calls to a review queue — draft-only, never send, made structural.
 ---
 

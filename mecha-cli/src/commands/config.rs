@@ -84,11 +84,23 @@ api_key_env = "ANTHROPIC_API_KEY"
 # input_price_per_mtok = 5.0
 # output_price_per_mtok = 25.0
 
-# A local OpenAI-compatible server (llama-server, vLLM, Ollama):
+# A local OpenAI-compatible server (llama-server, vLLM, Ollama).
+#
+# Do not type the last three by hand — `mecha setup` reads them off the
+# server's own /props and `mecha setup --write` fills them in. Each is a
+# setting nothing can check afterwards, because each degrades quietly rather
+# than failing.
 # [providers.local]
 # kind = "local"
 # base_url = "http://127.0.0.1:8080"
-# model = "qwen3-14b"
+# model = "qwen3-14b"          # what /props reports as model_alias
+# context_window = 32768       # the PER-SLOT window, not `-c`: llama-server
+#                              # divides -c across slots and recent builds
+#                              # default to more than one. Four things derive
+#                              # from this and all four degrade in silence.
+# vision = true                # only if a projector is loaded. A multimodal
+#                              # model served without --mmproj reports
+#                              # vision:false and simply says it cannot see.
 
 [agent]
 # system_prompt_file = "prompts/agent.md"

@@ -1,6 +1,6 @@
 ---
 title: Triggers
-sidebar_position: 10
+sidebar_position: 11
 description: Prompts that run unattended on a cron schedule, and the five decisions that make an unwatched agent run safe.
 ---
 
@@ -63,7 +63,12 @@ sleep to the next minute boundary. `scripts/mecha-triggers.service` is that
 daemon as a systemd user unit:
 
 ```bash
+# From a source checkout:
 cp scripts/mecha-triggers.service ~/.config/systemd/user/
+
+# Installed from crates.io? There is no `scripts/` directory — the crate ships
+# none — so have mecha print the unit instead:
+mecha trigger daemon --print-unit > ~/.config/systemd/user/mecha-triggers.service
 systemctl --user daemon-reload
 systemctl --user enable --now mecha-triggers
 loginctl enable-linger "$USER"     # so it runs while logged out

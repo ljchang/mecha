@@ -115,7 +115,10 @@ for line in open('eval/cases.jsonl'):
 print(f'{n} cases, {len(t)} tags')"
 
 # Machine state, if the handoff's Environment section claims it
-curl -s localhost:8080/props | jq .total_slots     # must be 1
+# What the server is actually serving. `n_ctx` is the PER-SLOT figure, which
+# is what `context_window` must equal — never `-c`, which is divided across
+# slots. `mecha setup` compares all of this against the config for you.
+curl -s localhost:8080/props | jq '{total_slots, n_ctx: .default_generation_settings.n_ctx, vision: .modalities.vision}'
 systemctl --user list-unit-files | grep mecha
 ```
 

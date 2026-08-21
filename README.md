@@ -94,6 +94,7 @@ cargo build --release                     # ./target/release/mecha
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...       # or point at a local server
 mecha config init                         # writes ~/.mecha/config.toml
+mecha setup                               # what is still missing, and the fix for each
 
 mecha run "summarise what changed in this repo today"
 mecha chat                                # interactive
@@ -138,6 +139,7 @@ server. Connecting a new source is configuration, not a code change.
 | `mecha replay <session>` | Re-drive a recorded session against today's code, reporting where it diverged. |
 | `mecha tools` | List the tool surface. `--schema` shows exactly what the model sees. |
 | `mecha sessions` | Inspect saved transcripts: `list` / `show` / `path` / `stats`. |
+| `mecha setup` | What this install still needs, and the way to each. Reads the local server's own `/props`, so `context_window`, `vision` and `model` come off the wire rather than being typed. `--write` fills them in. |
 | `mecha config` | See what settings are in effect: `show` / `path` / `init`. |
 | **Review and release** | |
 | `mecha outbox` | Review staged sends: `list` / `show` / `edit` / `review` / `send` / `reject`. Tools named in `[outbox]` stage drafts instead of executing. |

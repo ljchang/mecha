@@ -18,6 +18,7 @@ pub mod replay;
 pub mod rules;
 pub mod run;
 pub mod sessions;
+pub mod setup;
 pub mod skills;
 pub mod slack;
 pub mod tasks;

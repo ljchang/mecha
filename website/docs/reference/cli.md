@@ -746,7 +746,7 @@ mecha trigger [list|add|show|edit|rm|enable|disable|next|run|tick|daemon|cancel|
 | `next` | `[NAME]`, `-n`, `--count <N>` | Upcoming fire times, without running anything. Default `5`. |
 | `run` | `<NAME>` | Run one trigger now, whatever its schedule says. |
 | `tick` | `--dry-run` | Say what would fire, and fire nothing. |
-| `daemon` | | Tick once a minute until stopped. |
+| `daemon` | `--print-unit` | Tick once a minute until stopped. `--print-unit` prints a systemd user unit naming this binary by absolute path and exits, running nothing — the path for a crates.io install, which has no `scripts/` directory to copy from. |
 | `cancel` | `<NAME>` | Stop the run in flight, if there is one. |
 | `runs` | `[NAME]`, `-n`, `--count <N>` | The run ledger, newest first. Default `20`. |
 
@@ -946,6 +946,52 @@ on the episode's metadata instead. Idempotent at both ends.
 mecha distill --dry-run
 mecha distill -p local --limit 10 --server graph
 ```
+
+## `setup`
+
+What this install still needs, and the one command that fixes each.
+
+```
+mecha setup [--json] [--write]
+```
+
+Where it differs from [`doctor`](#doctor), and why both exist: doctor answers
+*what is silently broken about a working install*, in one pass with no network
+and no model. Every question `setup` asks needs to **ask a server something**,
+and its answers change a config file. Folding them together would put a network
+call inside the one command whose whole contract is that it has none.
+
+For a local provider it reads `GET /props` and compares three settings against
+what is actually being served — and each is one nothing can check afterwards,
+because each degrades quietly rather than failing:
+
+| Setting | Wrong how |
+|---|---|
+| `context_window` | naming `-c` rather than the per-slot `-c / -np`, so a run compacts at a threshold nobody chose |
+| `vision` | unset against a multimodal server, so every image arrives as a line of text |
+| `model` | naming weights llama-server is not serving, so every session record and scorecard says the wrong thing answered |
+
+`--write` rewrites those three from what the server reports. It edits the
+table **in place**, preserving comments — a round trip through a TOML parser is
+shorter and discards them, and in a config the comments are usually why a
+number is what it is. It asks first at a terminal and refuses to act when
+nothing is watching; the previous file is kept as `config.toml.bak`.
+
+It also inventories the integrations — mail, documents, Slack, the knowledge
+graph — reporting each as ok, not set up, or **unknown**, and offering the next
+command for the ones it can. Unknown is deliberately not "not set up": a
+credential store that could not be read offers nothing, because telling someone
+their mail is unconfigured when it is merely unreadable sends them through an
+OAuth flow they did not need.
+
+Two things it will not do. The knowledge graph's own sources are **named and
+never driven** — mecha reaches the graph through its MCP tools and nothing
+else, and spawning `mecha-graph source` would be exactly the coupling that rule
+prevents. And nothing is scheduled: a trigger runner is offered only once a
+trigger already exists, and it is the runner, never a schedule.
+
+`--json` prints the plan and never prompts. Exit 1 when anything is
+outstanding, like doctor, so a script can act on it.
 
 ## `doctor`
 
