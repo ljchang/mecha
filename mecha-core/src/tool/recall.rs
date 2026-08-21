@@ -169,6 +169,18 @@ fn block_text(block: &Block) -> (&'static str, String) {
         Block::Thinking { text, .. } => ("thinking", text.clone()),
         Block::ToolUse { name, input, .. } => ("tool_use", format!("{name} {input}")),
         Block::ToolResult { content, .. } => ("tool_result", content.clone()),
+        // **The filename, never the payload.** Base64 is a haystack of every
+        // alphanumeric substring there is, so returning `data` would make a
+        // one-letter query match every image in the transcript and print a
+        // megabyte of it back into the context this tool exists to protect.
+        // What a person searching for a screenshot actually types is its
+        // name.
+        Block::Image {
+            media_type, source, ..
+        } => (
+            "image",
+            Block::image_placeholder(media_type, source.as_deref()),
+        ),
     }
 }
 
