@@ -225,5 +225,6 @@ the [configuration reference](/docs/reference/configuration).
 
 ## Next
 
-[First run](/docs/getting-started/first-run) — point mecha at a provider and get
-an answer out of it.
+[Setting up](/docs/getting-started/setting-up) — point mecha at a model, let it
+read the settings back off the server, and wire in the context you want it to
+have.

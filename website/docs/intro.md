@@ -195,8 +195,10 @@ applies itself.
 ## Where to go next
 
 - [Installation](/docs/getting-started/installation) — build it from source.
-- [First run](/docs/getting-started/first-run) — point it at a provider and get
-  an answer.
+- [Setting up](/docs/getting-started/setting-up) — point it at a model, and let
+  `mecha setup` read the settings back off the server rather than typing them.
+- [First run](/docs/getting-started/first-run) — one-shot, a REPL, and
+  full-screen.
 - [Configuration](/docs/getting-started/configuration) — the layered TOML, and
   the settings that matter early.
 - [Design principles](/docs/principles) — the rules the code keeps, and what
