@@ -1,64 +1,18 @@
 ---
 title: Serving a local model
 sidebar_position: 3
-description: How many processes there are, which one holds the weights, what a server slot is, and why two agents sharing one slot get slower without anything reporting an error.
+description: What a server slot is, what `-c` actually divides, why two agents sharing one slot get slower without anything reporting an error, and the four numbers that have to agree.
 ---
 
 # Serving a local model
 
-A question that comes up the first time a second agent starts: *if I run the
-TUI, a Slack connector and a trigger daemon, am I running three copies of the
-model?*
+Everything on this page is about the process that holds the weights. How many
+*agent* processes you run, and what each costs, is
+[Interfaces](/docs/features/interfaces) — the answer there is that they are
+ordinary HTTP clients and none of them holds a model.
 
-No. **"Agent" and "model" are different processes, and only one of them holds
-weights.**
-
-```mermaid
-flowchart LR
-  subgraph box["one machine"]
-    direction LR
-    subgraph procs["agent processes"]
-      tui["mecha tui"]
-      slack["mecha slack connect"]
-      trig["mecha trigger daemon"]
-      cron["mecha frontdoor<br/>(hourly, transient)"]
-    end
-    server[("llama-server<br/>weights + one KV cache")]
-    tui -->|HTTP| server
-    slack -->|HTTP| server
-    trig -->|HTTP| server
-    cron -->|HTTP| server
-  end
-  style server fill:#2d3748,stroke:#4a5568,color:#fff
-```
-
-Every box on the left is an ordinary process holding no model at all. A
-`Provider` is an HTTP client — see [Providers](/docs/features/providers) for
-the trait — so starting another agent starts another client, never another
-copy of the weights.
-
-## What an agent actually costs
-
-Two resources, and they are wildly different sizes:
-
-| | Cost |
-|---|---|
-| Model memory | **Zero.** The weights and the KV cache belong to the server process. |
-| Host RAM | Tens of megabytes. The harness is a thin client; a long-running agent typically sits in the 10–25 MB range resident. |
-| MCP servers | One set **per agent process**, spawned once with the agent. Each is its own subprocess, typically another 10 MB apiece. |
-
-That last row is the only one that scales in a way worth thinking about: two
-agents configured with the same three MCP servers run six server processes, not
-three, because a server is spawned by the agent that owns it and cannot be
-shared across processes.
-
-:::note[Subagents are cheaper than they look]
-A [subagent](/docs/features/tools-and-mcp) does **not** repeat any of this. Its
-registry is built by `Arc::clone`-ing the parent's tool instances, so it shares
-the parent's MCP servers rather than starting its own. What it constructs is a
-new HTTP client — which is why a subagent may point at an entirely different
-provider or model for one narrow step without costing a second model load.
-:::
+The rest of this page is llama-server specific: slots, what `-c` really
+divides, and the numbers that have to agree.
 
 ## Slots, and what `-np` really does
 
