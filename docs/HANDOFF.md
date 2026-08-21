@@ -1405,6 +1405,20 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
     started this: quoted back verbatim, and with no preflight warning, because
     config and server now agree.
 
+  One trap found on the first live retest, and now in the `update` skill's
+  ordering constraints: **a TUI started before the install kept running the
+  old inode** (`/proc/<pid>/exe` → `mecha (deleted)`), and because the config
+  had meanwhile gained `vision`, its *call-time* config re-read in `show_file`
+  failed with a parse error two hours after the change. `deny_unknown_fields`
+  is right and is why — the cost is that config is a wire format between
+  versions, and long-lived processes must be restarted after a config key is
+  added, not only after an install.
+
+  Worth a look if it recurs: `show_file` loads the **whole global config** at
+  call time for one number (`slack.max_upload_mb`), which is what couples an
+  unrelated section's strictness to a tool call mid-run. Capturing it at
+  registration would decouple them.
+
   **`~/.mecha/config.toml` gained `vision = true` on `[providers.local]`**, and
   that file is in no repository — a fresh clone gets the code, the projector
   guard and the preflight, and still sends no image until somebody writes that
