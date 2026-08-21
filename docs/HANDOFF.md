@@ -722,45 +722,6 @@ both directions, files included. Built and merged 2026-08-21 (`d266fe8`), live
 on this machine. `docs/REMOTE-CONTROL-DESIGN.md` is the design; the arc is in
 [`HISTORY.md`](HISTORY.md) under 2026-08-21. What remains:
 
-- **The onboarding documentation is wrong in five places, and `mecha setup`
-  only covers three of them.** Audited 2026-08-21 against a genuinely fresh
-  `MECHA_HOME`. What the command now catches at startup: `context_window`,
-  `vision` and `model` disagreeing with the server. What is left is prose, and
-  each is a defect a new user hits before they ever reach the command:
-
-  - `website/docs/getting-started/first-run.md` says `context_window = 32768
-    # the -c the server was started with`, which `features/serving.md` calls
-    *"the trap worth knowing before you meet it"*. The beginner page and the
-    reference page disagree about one number and the beginner page loses.
-  - `website/docs/features/triggers.md` says `cp scripts/mecha-triggers.service
-    ~/.config/systemd/user/`. `cargo package --list -p mecha-cli` ships **zero**
-    files under `scripts/`, so that instruction cannot be followed by anyone who
-    installed the way the docs lead with. Either ship the units somewhere a
-    crates.io install can reach, or have `mecha trigger daemon --print-unit`
-    emit one.
-  - **No page mentions vision, `mmproj`, multimodal or images at all**, so the
-    thing that cost 2026-08-21 is undiscoverable for a new reader.
-  - `mecha config init`'s commented `[providers.local]` block carries neither
-    `context_window` — which the docs elsewhere call "not optional in
-    practice" — nor `vision`.
-  - ~~The site documents Ollama for embeddings~~ — **withdrawn, and the
-    withdrawal is the lesson.** `website/docs/graph/*` is *synced* from the
-    mecha-graph repository at build time and gitignored here, like the
-    gallery. That repository had already replaced Ollama with llama-server on
-    2026-08-20; what was read was a **stale local build artifact**, which one
-    `node scripts/sync-graph-docs.mjs` corrected. **A gitignored synced file
-    is a cache, not a source** — grep it and you are auditing your own last
-    build. Check `website/.gitignore` before filing a defect against anything
-    under `docs/graph/` or `docs/factory/gallery/`.
-  - **Nothing anywhere says how to obtain llama-server or a model.** The
-    README's whole local story is the clause "or point at a local server", and
-    there is no page covering fetching a GGUF, let alone its projector.
-
-  What was verified *good* in the same pass, so nobody re-audits it:
-  `cargo install mecha-graph-mcp` plus the `[[mcp]]` block from
-  `features/memory.md` brings the `kg_*` tools up unprefixed against a fresh
-  store, with no errors.
-
 - **`show_file` reads the whole global config at call time** for one number
   (`slack.max_upload_mb`, `slack/show.rs:124`). That is what coupled an
   unrelated config section's strictness to a tool call two hours into a

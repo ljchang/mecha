@@ -1293,6 +1293,43 @@ an image differently from typed text is that **a screenshot is captured, not
 composed**: you choose every word you type, and you choose the window rather
 than everything in it.
 
+**2026-08-21 (later still) — onboarding, audited by running it.** The
+new-user path was walked against a genuinely fresh `MECHA_HOME` rather than
+read, which is the only reason five defects turned up. `first-run.md` — the
+page a beginner follows — taught `context_window = 32768  # the -c the server
+was started with`, the exact mistake `features/serving.md` calls "the trap
+worth knowing before you meet it": two pages describing one number, and the
+beginner's page lost. `triggers.md` said `cp scripts/mecha-triggers.service`,
+which `cargo package --list` shows ships **zero** files, so it could not be
+followed by anyone installing the way the docs lead with. Nothing anywhere
+mentioned vision, `mmproj` or images, so the day's expensive bug was
+undiscoverable. `config init` wrote a local block with neither
+`context_window` nor `vision`. And nothing at all said how to obtain
+llama-server, a GGUF, or a projector — the README's whole local story was the
+clause "or point at a local server".
+
+`mecha setup` is the answer to the half of that which documentation had
+already failed at: the docs stated these settings correctly and the machine
+stayed wrong for months, because each degrades quietly instead of failing. So
+it does not ask what you meant — it reads `/props` and writes down what the
+server reports. `mecha trigger daemon --print-unit` is the answer to the
+other half, emitting a unit that names the binary by `current_exe` rather than
+the string `mecha`, because a unit resolving against systemd's `PATH` is the
+version-skew trap one layer down. That flag is also this arc's neatest
+process lesson: it was *documented before it existed*, and the only reason a
+commit fixing a broken instruction did not ship the identical defect is that
+the next step was to check whether the command was real.
+
+One filed defect was withdrawn, and the withdrawal is the transferable part.
+`website/docs/graph/*` is synced from the mecha-graph repository at build time
+and gitignored here; that repo had replaced Ollama with llama-server the day
+before. What had been read was a **stale local build artifact** — one
+`sync-graph-docs.mjs` corrected it. **A gitignored synced file is a cache, not
+a source:** grep it and you are auditing your own last build, not the truth.
+Verified good in the same pass, so nobody re-audits it: `cargo install
+mecha-graph-mcp` plus the `[[mcp]]` block from `features/memory.md` brings the
+`kg_*` tools up unprefixed against a fresh store with no errors.
+
 **2026-08-21 — the remote control.** A live TUI session and a named Slack
 thread became the same conversation. `/remote-control <name>` claims a durable
 name, opens or re-opens its thread in the owner's DM, and tees the run's
