@@ -1,6 +1,6 @@
 ---
 title: Hooks
-sidebar_position: 7
+sidebar_position: 8
 description: Commands that attach policy, redaction and logging to the loop's lifecycle points without editing the loop.
 ---
 

@@ -183,6 +183,40 @@ knowledge graph. The real one answers from live machine-local data, and a case
 graded against that measures nothing repeatable. See
 [Evaluation](/docs/features/evaluation).
 
+### A local model, if you want one
+
+mecha talks to any OpenAI-compatible endpoint, so this is optional — an
+Anthropic key is enough to start. If you want the model on your own machine,
+there are two pieces and the second is the one people miss.
+
+**The server.** [`llama.cpp`](https://github.com/ggml-org/llama.cpp) is what
+these docs assume; vLLM and Ollama also work. Build it or take a release
+binary, and check `llama-server --version` runs.
+
+**The weights, and the projector.** Model files are GGUFs from Hugging Face.
+Fetch one, and — if the model is multimodal — **fetch its `mmproj-*.gguf`
+too**, from the same repository:
+
+```bash
+REPO=unsloth/Qwen3.6-35B-A3B-MTP-GGUF        # whatever you chose
+curl -L -O "https://huggingface.co/$REPO/resolve/main/mmproj-BF16.gguf"
+```
+
+That second file is the vision tower, it is not inside the weights, and
+without it the server runs happily and the model simply says it cannot see
+images. [Images](/docs/features/images) is the whole story; if you only
+remember one thing, remember that a multimodal model is two files.
+
+Then start it and let mecha read the settings off it rather than typing them:
+
+```bash
+llama-server -m model.gguf --mmproj mmproj-BF16.gguf --host 127.0.0.1 --port 8080 --jinja
+mecha setup --write        # writes model, context_window and vision from /props
+```
+
+[Serving a local model](/docs/features/serving) covers slots, what `-c`
+actually divides, and how to measure whether a restart made things slower.
+
 ### Everything else
 
 Search backends, MCP servers, and mail accounts are configured rather than

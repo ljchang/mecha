@@ -1,6 +1,6 @@
 ---
 title: Skills
-sidebar_position: 15
+sidebar_position: 16
 description: Procedures you write as files, that the agent loads when it decides one is relevant — and why it can never install one itself.
 ---
 
