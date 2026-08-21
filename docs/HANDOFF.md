@@ -92,11 +92,11 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,192 tests**, no failures — re-measured 2026-08-21 on `main` at
-`d266fe8` (629 in the `mecha-core` lib suite, 349 in `mecha-cli`, 122 in
-`mecha-mail`, 75 in `mecha-slack`, and 17 across the two integration suites
-that need real backends). The 2026-08-20 counts were 1,140 at `cfa2cc2` and
-1,105 at 0.1.9,
+Expect **1,222 tests**, no failures — re-measured 2026-08-21 on the vision arc
+(654 in the `mecha-core` lib suite, 354 in `mecha-cli`, 123 in `mecha-mail`,
+75 in `mecha-slack`, 15 across the two integration suites that need real
+backends, and 1 doctest). Earlier 2026-08-21 counts were 1,213, 1,210 and
+1,192; the 2026-08-20 counts were 1,140 at `cfa2cc2` and 1,105 at 0.1.9,
 the 2026-08-19 count was 989 and the 2026-08-18 one 936; the growth from 707 (2026-08-10) spans the 0.1.3–0.1.9 arcs, and each
 release's CHANGELOG entry names what its tests pin. **A flake has now been seen twice and is still unidentified.** Once in
 `mecha-core` on 2026-08-08, and again on 2026-08-19 (`cargo test --workspace`
@@ -112,12 +112,12 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 472 |
-| `mecha-cli` unit | 223 |
-| `mecha-mail` unit | 101 |
+| `mecha-core` unit | 654 |
+| `mecha-cli` unit | 354 |
+| `mecha-mail` unit | 123 |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
-| doctest | 2 |
+| doctest | 1 |
 
 The integration tests need docker (with `debian:stable-slim` and `python:3-slim`
 pulled) and `python3`; without them they skip and say so. CI sets
@@ -175,42 +175,42 @@ A working agent harness, used and measured rather than just compiled.
 
 > **This checkout is a live service's `ExecStart`. Do not `git stash`, `git
 > checkout --`, `git restore` — or `git checkout <branch>`.**
-> As of 2026-08-20 the clone is parked on **`llama-server-arc`**, deliberately,
-> because that branch holds the parameterised script the running unit executes.
-> `git checkout main` is therefore the dangerous gesture rather than the tidy
-> one: `main` still carries the old hardcoded `-c 262144 -np 1`, so the routine
-> cleanup reflex is what reverts the server. **Work on `main` from a separate
-> worktree instead** — which is the correct application of the worktree advice,
-> not a contradiction of it: the arc that owns the service-referenced path is
-> the one that must stay put, and everyone else moves. That is how the three
-> docs commits above `d72e82d` were made.
 > `~/.config/systemd/user/llama-local.service` names
-> `/home/ljchang/Github/mecha/scripts/start-moe-mtp.sh` literally, and the unit
-> is active (verified 2026-08-20, started 15:30 UTC). The working copy is
-> parameterised — `NP=4`, `CTX=1048576`, `--cache-idle-slots` deliberately
-> absent with a "do not add it back" note — and is **uncommitted**. `HEAD`'s
-> copy hardcodes `-c 262144 -np 1` and re-adds `--cache-idle-slots`, so any
-> reflex that reverts a dirty file silently rewrites the server's launch
-> command; it comes back healthy on the next restart and just behaves
-> differently. Precisely: the per-slot window is 262144 either way, so
-> `context_window` stays correct — what is lost is the four slots (every
-> fan-out serializes again) and the deliberate absence of a flag. The wider
-> lesson is in HISTORY under Environment: **"move it to a worktree" assumes
-> nothing outside the repository points at a path inside it**, and here systemd
-> does, so relocating would break the running server rather than protect it.
-> Three arcs shared this checkout on 2026-08-20 and all three staged by path.
+> `/home/ljchang/Github/mecha/scripts/start-moe-mtp.sh` **literally**, so the
+> file in this working copy *is* the server's launch command. Anything that
+> rewrites it — a branch switch, a revert, a stash — changes how the model is
+> served on the next restart, and it comes back healthy and merely behaves
+> differently, which is the worst way for it to be wrong.
+>
+> As of 2026-08-21 the clone is on **`main`** and the script is **committed**,
+> so the sharper 2026-08-20 hazard (a parameterised but uncommitted script that
+> a routine `git checkout main` would have reverted) is retired. The standing
+> rule is not: **work on `main` from a separate worktree** and leave this
+> checkout where the unit points. That is the correct application of the
+> worktree advice rather than a contradiction of it — the arc that owns the
+> service-referenced path stays put and everyone else moves.
+>
+> The general lesson is in HISTORY under Environment: **"move it to a worktree"
+> assumes nothing outside the repository points at a path inside it**, and here
+> systemd does.
 
 Running on the DGX Spark (GB10, aarch64, 128GB unified). **Re-verified
-2026-08-20** (8080 answering with `total_slots=1`; 8081, 8082 **and 8083** all
-down; SearXNG up). **The installed binaries are at 0.1.8 and the repository is
-at 0.1.9** — `~/.cargo/bin/mecha` was last built 2026-08-20 00:26, before the
-four arcs of that night, so nothing in this release is in the binary the
-machine actually runs until the `update` skill is run.
+2026-08-21**: 8080 up with `total_slots=4`, `n_ctx` 262,144 per slot and
+`modalities.vision: true`; 8081 up serving embeddings; 8082 and 8083 down;
+SearXNG up on 8888. `~/.cargo/bin/mecha` was reinstalled 2026-08-21 03:33 from
+this arc and the three long-running services restarted onto it.
+
+**A version string is not evidence here.** The repository and the binary both
+say 0.1.9 and the reinstall changed no version, so `mecha --version` cannot
+distinguish a current install from a skipped one — check a behaviour the change
+introduced (`mecha run --help` carrying `--image`), and check
+`/proc/<pid>/exe` for `(deleted)` to catch a *process* still running a replaced
+inode. The `update` skill carries both checks.
 
 | Port | Model | State |
 |---|---|---|
-| 8080 | Qwen3.6-35B-A3B | up, `total_slots=1`, **`-c 262144`** — the model's whole trained window (`qwen35moe.context_length`), raised from 32768 on 2026-08-10 after re-measuring. **`-c` costs nothing in speed**: 32k/64k/128k/256k are within noise of each other (~92 tok/s at a 1k prompt, ~80 at 30k), and the 50x slowdown recorded on 2026-08-07 was that day's OOM, not the flag. It costs memory as a startup *reservation* — 21.4 GB at 32k to 28.5 GB at 256k, i.e. weights ~20.7 GB plus ~32 KiB/token. **The full tables, the needle test at 188k, the `-np` trade-off and the two traps live in `scripts/start-moe-mtp.sh`** — read it before touching any of this. **`--reasoning-budget 4096`** (2026-08-07) was believed to be the mitigation for this model's "non-terminating reasoning" — **that diagnosis was wrong and is retired as of 2026-08-10 evening**: the empty turns were tool calls emitted before `</think>` closed, one of them 120 characters long, so no token budget was ever involved. The flag is harmless and stays; the real cause and fix are in `CHANGELOG.md` under 0.1.2. The nudge-retry allowance still resets on productive turns, which remains correct for its own reasons. `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` and `max_tokens` (**above** the budget; 8192) — four numbers that move together. **`context_window` is `-c / -np`, not `-c`** — llama-server divides the context across slots, so the rule this line used to state was right only by accident of `-np 1`. Read it off `/props` (`default_generation_settings.n_ctx`) or the startup line's `n_ctx_slot`, never by arithmetic on the flag. **This row's numbers are stale and a live arc is rewriting them** — see the open item under *What to do next*. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **A transient unit** — now `llama-local.service` (`systemctl --user status llama-local`; it was `llama-qwen` when this was written, and that name no longer resolves), not a tmux pane — see below |
-| 8081 | gemma-4-E4B | down; nothing currently depends on it |
+| 8080 | Qwen3.6-35B-A3B | up, **`total_slots=4`**, `-c 1048576` → **262,144 per slot**, and **`--mmproj` loaded since 2026-08-21 so `modalities.vision` is true** — the per-slot figure is the model's whole trained window (`qwen35moe.context_length`), raised from 32768 on 2026-08-10 after re-measuring. **`-c` costs nothing in speed**: 32k/64k/128k/256k are within noise of each other (~92 tok/s at a 1k prompt, ~80 at 30k), and the 50x slowdown recorded on 2026-08-07 was that day's OOM, not the flag. It costs memory as a startup *reservation* — 21.4 GB at 32k to 28.5 GB at 256k, i.e. weights ~20.7 GB plus ~32 KiB/token. **The full tables, the needle test at 188k, the `-np` trade-off and the two traps live in `scripts/start-moe-mtp.sh`** — read it before touching any of this. **`--reasoning-budget 4096`** (2026-08-07) was believed to be the mitigation for this model's "non-terminating reasoning" — **that diagnosis was wrong and is retired as of 2026-08-10 evening**: the empty turns were tool calls emitted before `</think>` closed, one of them 120 characters long, so no token budget was ever involved. The flag is harmless and stays; the real cause and fix are in `CHANGELOG.md` under 0.1.2. The nudge-retry allowance still resets on productive turns, which remains correct for its own reasons. `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` and `max_tokens` (**above** the budget; 8192) — four numbers that move together. **`context_window` is `-c / -np`, not `-c`** — llama-server divides the context across slots, so the rule this line used to state was right only by accident of `-np 1`. Read it off `/props` (`default_generation_settings.n_ctx`) or the startup line's `n_ctx_slot`, never by arithmetic on the flag. **A vision model is two files.** The weights carry the language model and the vision tower is a separate `mmproj-*.gguf` that `--mmproj` must name; without it the server starts, answers well, reports `modalities.vision: false`, and the model tells anyone who sends it a screenshot that it cannot see images — which reads as a limitation of the weights. `scripts/mmproj.sh` now refuses to start without one. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **A transient unit** — now `llama-local.service` (`systemctl --user status llama-local`; it was `llama-qwen` when this was written, and that name no longer resolves), not a tmux pane — see below |
+| 8081 | harrier-oss-v1-0.6b | **up, serving embeddings** (`--embeddings --pooling last --embd-normalize 2`). This is where the graph's embeddings come from — they moved off Ollama onto llama-server, so any doc still naming `MECHA_GRAPH_OLLAMA_URL` is stale. One model per process, so this cannot be the chat port as well: pointing both at 8080 sends embedding requests to the chat model. |
 | 8083 | Qwen3.8-27B | **down as of 2026-08-20** (was up on 2026-08-16). Nothing in config depends on it, so nothing is broken by it — noted because the previous pass recorded it up and a reader would otherwise assume it still is |
 | 8082 | gemma-4-26B-A4B | **down — restart it before any judged run.** The eval judge and nightly validate's judge both point here, so `mecha eval` with a `judge` rubric and the nightly validate will fail without it. `scripts/start-gemma26.sh` |
 | 8888 | SearXNG | up (docker, JSON format enabled) |
@@ -722,24 +722,20 @@ both directions, files included. Built and merged 2026-08-21 (`d266fe8`), live
 on this machine. `docs/REMOTE-CONTROL-DESIGN.md` is the design; the arc is in
 [`HISTORY.md`](HISTORY.md) under 2026-08-21. What remains:
 
-- **The connector's attachment download has never actually run.** Everything
-  from the staging directory onward is verified end to end — a staged file
-  lands at `./inbox/<name>`, the model reads it, the run records
-  `taint {private: true, untrusted: false}` — but the half that turns a real
-  Slack attachment into staged bytes (`connector.rs`, `event.files` →
-  `files::download` → `stage_file`) has only ever been simulated, by writing
-  the inbox record and the bytes directly. It cannot be exercised from this
-  side: a file posted with the bot token arrives as a bot message and
-  `is_from_a_human()` filters it, which is correct. **Closing this costs one
-  human gesture** — attach a session, drop any file into the thread from
-  Slack, and read `journalctl --user -u mecha-slack` plus the workspace.
-- **A screenshot arrives as a file the model cannot look at.** `Block` is
-  `Text | Thinking | ToolUse | ToolResult`; there is no image variant, so the
-  conduit works and the understanding does not. A `.txt`, a log or a CSV is
-  useful today. Interim options are a local vision model over `shell`
-  (`scripts/start-e4b.sh` starts multimodal weights) or OCR; the real fix is
-  `Block::Image` plus rendering on both backends, which is the large piece and
-  is unrelated to Slack.
+- **`show_file` reads the whole global config at call time** for one number
+  (`slack.max_upload_mb`, `slack/show.rs:124`). That is what coupled an
+  unrelated config section's strictness to a tool call two hours into a
+  session when a new key was added — see the trap in HISTORY under
+  Environment. Capturing the number at registration would decouple them.
+
+- **A top-level DM starts a connector run even while a session is attached.**
+  Working as designed — the thread is the unit — but the observed failure mode
+  is a person posting a screenshot into the DM rather than the attached
+  thread, and getting a fresh connector conversation in a different workspace
+  with no sign that the live session exists. The cheap fix is a line in the
+  connector's reply naming the live attach; routing it is a bigger decision
+  that §2 of the design already settled the other way.
+
 - **Approvals cannot be answered from the thread.** The run says *waiting for
   you at the terminal* and stops there. Answering from either surface is a race
   needing an atomic claim; design §15.
@@ -749,52 +745,6 @@ on this machine. `docs/REMOTE-CONTROL-DESIGN.md` is the design; the arc is in
   IPC in the project, which is why it is not first. Design §15.
 
 ### Cheap, and worth doing first
-
-- **`context_window` is `-c / -np` and four derived numbers trusted the wrong
-  rule.** Verified 2026-08-20: `/props` on :8080 reports `total_slots: 4` and
-  `default_generation_settings.n_ctx: 262144`, against `-c 1048576` in
-  `scripts/start-moe-mtp.sh` — so the per-slot window is a quarter of the flag.
-  The Environment row above stated `context_window` (= `-c`) and `-np 1`, which
-  was true when written and became wrong the moment slots were added; the
-  *current* `~/.mecha/config.toml` value (262144) happens to be right, so
-  nothing is broken today and the rule was still wrong. It matters because
-  **four things derive from `context_window` and all four degrade silently if
-  it is wrong**: `AgentConfig::compact_at` (two thirds of the window),
-  `ToolsConfig::resolved_output_budget` (an eighth, clamped), the TUI fuel
-  gauge, and overflow recovery's expectations. At `-np 4` a stale `= -c` value
-  would have set the compaction threshold four times too high — meaning no
-  reactive compaction at all, and every long run discovering the limit as a
-  raw 400 instead. CLAUDE.md's Context section still states the `-c` rule too.
-  **This is somebody else's live arc**, uncommitted as of `cfa2cc2`
-  (`CLAUDE.md`, `scripts/start-moe-mtp.sh`, and a new `docs/LLAMA-SERVER.md`
-  that is not yet in git), and it already carries the correction. What is left
-  for whoever lands it: refresh the Environment row above, and build the check
-  below.
-
-- **Nothing verifies `context_window`, and two sessions have already believed
-  something did.** This is the unbuilt half of the item above, split out
-  because it kept being read as done: `git grep -nEi
-  'n_ctx_slot|total_slots|/props' -- '*.rs'` returns nothing on `main` as of
-  `d72e82d`. The argument for it lives in HISTORY under Environment, and
-  putting it there was the mistake — a proposal filed under completed work is
-  indistinguishable from completed work, and within an hour one session had
-  stood down from the area to avoid duplicating a feature that does not exist.
-  **The shape**, which is not novel because this project already has it:
-  `Sandbox::preflight` runs a real command through the real backend at startup
-  rather than trusting what config claims, on the reasoning that a configured
-  sandbox which does not work is worse than none — the tool's declared
-  capabilities narrow and the interlock believes it. `context_window` is the
-  same bargain one layer up: `compact_at`, `resolved_output_budget`, the fuel
-  gauge and overflow recovery all narrow around a number nothing checks.
-  **`/props` is the `preflight` of this fact** — one request, reporting
-  `total_slots` and the real per-slot `n_ctx`, so the check never
-  reimplements llama-server's slot arithmetic. **Warn, do not refuse**
-  (`unrouted_domains`' precedent, not `preflight`'s): a wrong `context_window`
-  makes a run compact at the wrong moment, which is not a reason to refuse to
-  start, where an unconfined `shell` believed to be confined is. Scope: the
-  OpenAI-compatible backend only — `/props` is a llama-server endpoint, and a
-  provider that does not answer it must be silent rather than warning, or the
-  check becomes noise on every Anthropic run.
 
 - **Decide whether replayed reasoning stays unbounded.** As of 0.1.2 the
   OpenAI-compatible backend sends every `Block::Thinking` back, which is what

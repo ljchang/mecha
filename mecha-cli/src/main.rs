@@ -277,6 +277,13 @@ pub enum Command {
     #[command(subcommand)]
     Sessions(commands::sessions::Args),
 
+    /// What this install still needs, and the way to each.
+    ///
+    /// Reads the local server's own `/props` rather than trusting config, so
+    /// `context_window`, `vision` and `model` come off the wire instead of
+    /// being typed — which is the class of mistake nothing can detect later.
+    Setup(commands::setup::Args),
+
     /// Show or create configuration.
     #[command(subcommand)]
     Config(commands::config::Args),
@@ -320,6 +327,7 @@ async fn dispatch() -> Result<()> {
         Command::Outbox(args) => commands::outbox::execute(&cli.global, args).await,
         Command::Msg(args) => commands::msg::execute(args).await,
         Command::Work(args) => commands::work::execute(args).await,
+        Command::Setup(args) => commands::setup::execute(&cli.global, args).await,
         Command::Doctor(args) => commands::doctor::execute(args).await,
         Command::Diagnose(args) => commands::diagnose::execute(&cli.global, args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,

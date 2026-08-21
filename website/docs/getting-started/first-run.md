@@ -78,13 +78,41 @@ file can add a local endpoint without restating the Anthropic one.
 kind = "local"                     # "local", "openai", "openai-compatible" — same backend
 base_url = "http://127.0.0.1:8080" # no /v1 suffix; the path is appended
 model = "qwen3-14b"
-context_window = 32768             # the -c the server was started with
+context_window = 32768             # per slot — see below, this is not `-c`
+vision = true                      # only if the server has a projector loaded
 ```
 
+:::tip Do not type these three — read them back
+
+```bash
+mecha setup            # what disagrees with the server
+mecha setup --write    # rewrite model, context_window and vision from /props
+```
+
+`mecha setup` asks the server what it is actually serving and writes that down.
+All three of these settings are ones nothing can check afterwards, because each
+degrades quietly instead of failing, so reading them off the wire is the only
+way to be sure.
+:::
+
 `context_window` is not optional in practice even though the field is. Nothing
-can discover it — a provider reports what a prompt *cost*, never what is left —
-and three things degrade silently without it. See
-[Configuration](/docs/getting-started/configuration).
+can discover it from a completion — a provider reports what a prompt *cost*,
+never what is left — and four things degrade silently without it.
+
+**It is the per-slot window, which is not `-c`.** llama-server divides the
+context it was given across its slots, and recent builds default to more than
+one, so `-c 32768` with four slots hands each request 8,192 tokens while your
+config promises 32,768. Past that the server *context-shifts instead of
+erroring*: the model sees a mangled transcript and the symptom is an empty
+completion that looks like a model failure. Read the real figure from
+`/props` rather than doing arithmetic on the flag:
+
+```bash
+curl -s localhost:8080/props | jq .default_generation_settings.n_ctx
+```
+
+See [Serving a local model](/docs/features/serving) for the full story, and
+[Configuration](/docs/getting-started/configuration) for what derives from it.
 
 Then either make it the default:
 
