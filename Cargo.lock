@@ -1538,6 +1538,7 @@ dependencies = [
  "clap",
  "crossterm",
  "futures",
+ "image",
  "libc",
  "mecha-core",
  "mecha-slack",
