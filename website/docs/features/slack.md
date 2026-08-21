@@ -108,7 +108,9 @@ what it is doing rather than a spinner.
   and it needed no home-side server at all.
 - **Files go both ways.** An attachment lands in the thread's workspace and is
   named to the model as a path — so it arms taint through `fs_read`, the route
-  that already exists — and what a run creates is uploaded back.
+  that already exists — and what a run creates is uploaded back. An
+  [image](/docs/features/images) also goes on the turn itself, so "what is
+  wrong with this chart" is a question you can ask from a phone.
 - **`mecha slack notify`** reads stdin and DMs it to you, which puts a
   [trigger's](/docs/features/triggers) morning briefing on your phone for the
   price of a config line.
@@ -210,9 +212,13 @@ Inbound needs `mecha slack connect` running; output does not. `mecha slack
 remote` lists what this machine mirrors, and `--sweep` cools any attachment
 whose session has gone.
 
-Note the one thing this cannot do yet: mecha is text-only end to end, so a
-screenshot arrives as a *file* the model cannot look at. A `.txt`, a log or a
-CSV works today.
+**A screenshot dropped into the thread is looked at, not merely filed.** The
+TUI that owns the session downloads it into the workspace under `inbox/` and
+puts the image on the turn, so the model gets both: pixels, and a path it can
+`shell` or `fs_read`. This is the door that exists *because* the terminal's own
+one cannot work over SSH — a file dropped on the prompt pastes the path on your
+laptop, which the machine at the other end resolves to nothing. See
+[Images](/docs/features/images#from-slack).
 
 ## Two things it deliberately does not do
 

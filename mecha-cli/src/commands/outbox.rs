@@ -94,8 +94,17 @@ pub enum Cmd {
         #[command(flatten)]
         selection: Selection,
     },
-    /// Execute the tool call for real, and mark it sent.
-    Send {
+    /// Approve the draft: execute the tool call for real, and mark it resolved.
+    ///
+    /// `send` is kept as an alias. The verb was renamed because the queue
+    /// holds more than mail — a `docs_replace` is approved, not sent — but
+    /// the old name is in the docs, in doctor's remedy argv, and in whatever
+    /// anyone has scripted, so it keeps working. The stored status stays
+    /// `"sent"` for the same class of reason `OutboxKind` defaults on load:
+    /// it is a value in an append-only store, `mineable_as_writing` keys on
+    /// it, and renaming it would orphan every item already resolved.
+    #[command(alias = "send")]
+    Approve {
         #[command(flatten)]
         selection: Selection,
         /// Skip the confirmation. Also skips the one shown for drafts written
@@ -124,7 +133,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         Cmd::Show { id, json } => show(&store, &id, json),
         Cmd::Edit { id, json } => edit(&store, &id, json),
         Cmd::Review { selection } => review(global, &store, &selection).await,
-        Cmd::Send { selection, yes } => send(global, &store, &selection, yes).await,
+        Cmd::Approve { selection, yes } => send(global, &store, &selection, yes).await,
         Cmd::Reject { selection, reason } => reject(&store, &selection, reason),
     }
 }
@@ -420,11 +429,11 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
     if item.status == "pending" {
         match item.kind {
             OutboxKind::Message => println!(
-                "\nrelease with `mecha outbox send {}`, or `edit` / `reject` it",
+                "\nrelease with `mecha outbox approve {}`, or `edit` / `reject` it",
                 item.id
             ),
             OutboxKind::Publish => println!(
-                "\nrelease with `mecha outbox send {}`, or `reject` it. To change \
+                "\nrelease with `mecha outbox approve {}`, or `reject` it. To change \
                  the content, edit the source and re-render — that stages a new item.",
                 item.id
             ),

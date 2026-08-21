@@ -81,6 +81,14 @@ pub struct Pick {
     /// The exchange is running. A second `enter` while it is would start a
     /// second one against the same one-use code.
     pub working: bool,
+    /// Show the link and nothing else, for selecting it with the mouse.
+    ///
+    /// A bordered box is unselectable for a string this long: the URL is hard
+    /// wrapped over four rows, and a drag across them takes the `│` at each
+    /// end of every row with it, so what lands on the clipboard is not a URL.
+    /// The bare view puts each row at column 0 with nothing else on the line,
+    /// which is the only shape a terminal's own selection can copy correctly.
+    pub bare: bool,
 }
 
 pub struct DocsModal {
@@ -321,6 +329,10 @@ impl DocsModal {
     /// took it, and a pane that hid the URL on that assumption would strand
     /// anyone whose terminal refuses. It is the fallback and the record.
     fn draw_pick(&self, frame: &mut Frame, pick: &Pick) {
+        if pick.bare {
+            self.draw_bare(frame, pick);
+            return;
+        }
         let area = frame.area();
         let width = area.width.saturating_sub(6).min(100);
         // Four lines of URL is enough for the ~420 characters this one runs to
@@ -365,7 +377,8 @@ impl DocsModal {
             match (&self.status, pick.working) {
                 (_, true) => "  exchanging…".to_string(),
                 (Some(s), _) => format!("  {s}"),
-                (None, _) => "  y copy the link · enter finish · esc cancel".to_string(),
+                (None, _) => "  s select it · o open it here · y copy · enter finish · esc cancel"
+                    .to_string(),
             },
             dim,
         ));
@@ -381,12 +394,45 @@ impl DocsModal {
         );
     }
 
+    /// The link, alone, at column 0.
+    ///
+    /// No border and no other text on any row the URL occupies, because a
+    /// terminal's selection is rectangular over what is on screen: anything
+    /// sharing those rows is copied too. The hint sits below the blank line
+    /// after the link, far enough that an over-long drag catches nothing.
+    /// The mouse is the terminal's while a pick is up (`wants_the_mouse_back`
+    /// in the TUI's own module), so a drag here selects rather than being
+    /// swallowed as a mouse event.
+    fn draw_bare(&self, frame: &mut Frame, pick: &Pick) {
+        let area = frame.area();
+        frame.render_widget(Clear, area);
+
+        let mut lines: Vec<Line> = Vec::new();
+        // The full width, and a generous row cap: this view exists so the
+        // whole link is reachable, and a truncation here would be the exact
+        // failure it was written to fix.
+        for chunk in wrap_hard(&pick.url, area.width.max(1) as usize, 40) {
+            lines.push(Line::styled(chunk, Style::new().fg(Color::Cyan)));
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "drag to select · your terminal's own copy · s back · esc cancel",
+            Style::new().fg(Color::DarkGray),
+        ));
+        frame.render_widget(Paragraph::new(lines), area);
+    }
+
     fn draw_help(&self, frame: &mut Frame) {
         let keys = [
             ("↑ ↓ / j k", "move"),
             ("enter", "put a reference to it in the message box"),
             ("p", "pick a document: opens Google's own chooser"),
             ("y", "copy its link to your clipboard (OSC 52)"),
+            (
+                "s",
+                "while picking: the link alone, to select with the mouse",
+            ),
+            ("o", "while picking: open the link on this machine"),
             ("r", "re-read what is in scope"),
             ("a", "next account"),
             ("esc q", "close"),
@@ -547,12 +593,68 @@ mod tests {
             buffer: String::new(),
             cursor: 0,
             working: false,
+            bare: false,
         });
         let text = frame_text(&m, 100, 24);
         assert!(text.contains("Open this in any browser"), "{text}");
         // Too long to show in full at this size, and it says so rather than
         // letting someone copy three quarters of an authorization URL.
         assert!(text.contains("more characters"), "{text}");
+    }
+
+    fn picking(url: &str) -> DocsModal {
+        let mut m = modal();
+        m.pick = Some(Pick {
+            url: url.to_string(),
+            buffer: String::new(),
+            cursor: 0,
+            working: false,
+            bare: false,
+        });
+        m
+    }
+
+    #[test]
+    fn the_pick_pane_says_the_link_can_be_selected_and_opened() {
+        // The pane used to offer `y` and nothing else, and `y` is an OSC 52
+        // write with no reply — so a terminal that refuses it left a person
+        // looking at a link with no way to reach it.
+        let text = frame_text(
+            &picking("https://accounts.google.com/o/oauth2/v2/auth?x=1"),
+            100,
+            24,
+        );
+        assert!(text.contains("s select it"), "{text}");
+        assert!(text.contains("o open it here"), "{text}");
+    }
+
+    #[test]
+    fn the_bare_view_is_the_link_and_nothing_a_selection_could_catch() {
+        // The point of the view: every row the URL occupies holds the URL and
+        // nothing else, so a drag across four wrapped rows copies a URL rather
+        // than a URL with a border character every eightieth column.
+        let url = format!(
+            "https://accounts.google.com/o/oauth2/v2/auth?client_id=949095882298&{}",
+            "x".repeat(300)
+        );
+        let mut m = picking(&url);
+        m.pick.as_mut().unwrap().bare = true;
+        let text = frame_text(&m, 100, 24);
+        let rows: Vec<&str> = text.lines().collect();
+        assert!(rows[0].starts_with("https://accounts.google.com"), "{text}");
+        assert!(
+            !text.contains('│'),
+            "a border shares a row with the link: {text}"
+        );
+        assert!(!text.contains("Open this in any browser"), "{text}");
+        // And all of it is there: this view exists so the whole link is
+        // reachable, and a truncation would be the failure it was written for.
+        let on_screen: String = rows
+            .iter()
+            .take_while(|r| !r.trim().is_empty())
+            .map(|r| r.trim_end())
+            .collect();
+        assert_eq!(on_screen, url, "{text}");
     }
 
     #[test]

@@ -21,8 +21,8 @@ maps which document holds what.
 
 ## Where the work is
 
-Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.10**
-(2026-08-20; 0.1.7 and 0.1.8 shipped 2026-08-19 and 2026-08-20 after the mail
+Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.11**
+(2026-08-21; 0.1.10 shipped 2026-08-20; 0.1.7 and 0.1.8 shipped 2026-08-19 and 2026-08-20 after the mail
 hold lifted). **Four** crates are on crates.io — `mecha-core`, `mecha-mail`,
 `mecha-slack`, `mecha-cli` (the bare name `mecha` was taken, so the CLI
 crate installs the `mecha` binary) — published through the tag-driven
@@ -92,11 +92,12 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,222 tests**, no failures — re-measured 2026-08-21 on the vision arc
-(654 in the `mecha-core` lib suite, 354 in `mecha-cli`, 123 in `mecha-mail`,
-75 in `mecha-slack`, 15 across the two integration suites that need real
-backends, and 1 doctest). Earlier 2026-08-21 counts were 1,213, 1,210 and
-1,192; the 2026-08-20 counts were 1,140 at `cfa2cc2` and 1,105 at 0.1.9,
+Expect **1,246 tests**, no failures — re-measured 2026-08-21 at 0.1.11
+(666 in the `mecha-core` lib suite, 366 in `mecha-cli` with 1 ignored, 123 in
+`mecha-mail`, 75 in `mecha-slack`, 15 across the two integration suites that
+need real backends, and 1 doctest). The 24 added over the same day's 1,222 are
+the search-chain, cache-lens and outbox-approval arcs. Earlier 2026-08-21 counts were 1,222,
+1,213, 1,210 and 1,192; the 2026-08-20 counts were 1,140 at `cfa2cc2` and 1,105 at 0.1.9,
 the 2026-08-19 count was 989 and the 2026-08-18 one 936; the growth from 707 (2026-08-10) spans the 0.1.3–0.1.9 arcs, and each
 release's CHANGELOG entry names what its tests pin. **A flake has now been seen twice and is still unidentified.** Once in
 `mecha-core` on 2026-08-08, and again on 2026-08-19 (`cargo test --workspace`
@@ -143,7 +144,7 @@ A working agent harness, used and measured rather than just compiled.
 | MCP | stdio client; per-server on/off; capability overrides that only widen; `prefix_tools = false` for a server whose tools carry their own namespace (collision fails startup loudly) |
 | Memory | mecha-graph (the artist formerly known as pkg, now public) wired as MCP server `graph`, unprefixed `kg_*` tools — the user's mail, Slack, calendar, conversations |
 | Subagents | `Agent` wrapped as a `Tool`, allowlisted registry, per-profile model |
-| Search | `SearchBackend` trait — Exa, Tavily, SearXNG — with fall-through |
+| Search | `SearchBackend` trait — Exa, Tavily, SearXNG — a preference-ordered chain, first to *answer* wins. An exhausted chain of genuine empties is an answer; only a chain where nothing answered is an error. `prefer_deep` promotes a backend to the head on `depth: "deep"`, reordering and never filtering, so every backend stays reachable as a fallback at either depth |
 | Security | Path jail, SSRF guard, trifecta interlock, leak guard, capability model |
 | Sandbox | `shell` and MCP servers confined via bubblewrap, docker, or landlock (no-privilege file confinement; never narrows `external_send` — UDP is unrestrictable, and the preflight plants a home file and requires the confined read to fail) |
 | Budgets | `max_turns`, `max_output_tokens`, `max_cost_usd`, cost accounting |
@@ -197,8 +198,9 @@ A working agent harness, used and measured rather than just compiled.
 Running on the DGX Spark (GB10, aarch64, 128GB unified). **Re-verified
 2026-08-21**: 8080 up with `total_slots=4`, `n_ctx` 262,144 per slot and
 `modalities.vision: true`; 8081 up serving embeddings; 8082 and 8083 down;
-SearXNG up on 8888. `~/.cargo/bin/mecha` was reinstalled 2026-08-21 03:33 from
-this arc and the three long-running services restarted onto it.
+SearXNG up on 8888. `~/.cargo/bin/mecha` was reinstalled 2026-08-21 (03:33, then again at
+~15:00 and ~17:00 for the search and outbox arcs) and the three long-running
+services restarted onto it each time.
 
 **A version string is not evidence here.** The repository and the binary both
 say 0.1.9 and the reinstall changed no version, so `mecha --version` cannot
@@ -213,7 +215,7 @@ inode. The `update` skill carries both checks.
 | 8081 | harrier-oss-v1-0.6b | **up, serving embeddings** (`--embeddings --pooling last --embd-normalize 2`). This is where the graph's embeddings come from — they moved off Ollama onto llama-server, so any doc still naming `MECHA_GRAPH_OLLAMA_URL` is stale. One model per process, so this cannot be the chat port as well: pointing both at 8080 sends embedding requests to the chat model. |
 | 8083 | Qwen3.8-27B | **down as of 2026-08-20** (was up on 2026-08-16). Nothing in config depends on it, so nothing is broken by it — noted because the previous pass recorded it up and a reader would otherwise assume it still is |
 | 8082 | gemma-4-26B-A4B | **down — restart it before any judged run.** The eval judge and nightly validate's judge both point here, so `mecha eval` with a `judge` rubric and the nightly validate will fail without it. `scripts/start-gemma26.sh` |
-| 8888 | SearXNG | up (docker, JSON format enabled) |
+| 8888 | SearXNG | up (docker, JSON format enabled) — **but every *general* engine was refusing this IP on 2026-08-21**: brave and google cse `Suspended: too many requests`, duckduckgo and startpage `CAPTCHA`, mojeek `access denied`. The specialist engines (lib.rs, crossref, arxiv, openalex, stackoverflow) answer fine. Partially recovered the same afternoon. This is why Exa and Tavily were added — a scraping metasearch loses the anti-bot race, and the answer is a backend contractually entitled to the data, not a better scraper |
 
 **Start model servers as transient units, not from a tmux pane.** Both
 llama-servers were killed on 2026-08-07 as collateral: a runaway test OOMed,
@@ -270,6 +272,32 @@ operationally is that the `update` sequence must not restart
 under `mecha-graph extract`, say — because a server that loads under contention
 stays slow and never recovers. Check tok/s afterwards, not just that the unit
 came back up. Liveness is the check that cannot see this failure.
+
+**Web search is three backends now, and none of it is in any repository.**
+As of 2026-08-21 `~/.mecha/config.toml` carries three `[[search]]` blocks in
+preference order — `searxng` (`base_url = "http://127.0.0.1:8888"`), `exa`
+(`api_key_env = "EXA_API_KEY"`, `prefer_deep = true`), `tavily`
+(`api_key_env = "TAVILY_API_KEY"`, no `prefer_deep`, a pure fallback). Ordering
+was measured rather than assumed: a quick Exa search bills **$0.007** against
+Tavily's $0.008, read off Exa's own `costDollars` in the response, and Exa's
+recurring free tier is the larger (~1,430/month against 1,000). The
+`contents: {text: …}` block mecha sends adds **nothing** — text extracts are
+bundled into a search call, though Exa's price list bills Contents separately
+at $1/1k pages and predicts otherwise.
+
+**The keys are in a third place that is also in no repository.**
+`~/.config/environment.d/mecha.conf`, mode 0600, holding `EXA_API_KEY` and
+`TAVILY_API_KEY`. That path rather than `~/.bashrc` because **only
+`environment.d` is read by the systemd user manager** — and unattended search
+happens inside `mecha-slack` and `mecha-triggers`, so a key exported from
+`.bashrc` works perfectly when tested by hand and is invisible to every run
+that matters. `.bashrc` now *sources* that file instead of duplicating the
+value, so one edit reaches both; non-interactive shells still miss it, which
+is why the units read `environment.d` directly. Verified by reading
+`/proc/<pid>/environ` of each service, never by assuming the restart inherited
+it. `ANTHROPIC_API_KEY` is still `.bashrc`-only and has therefore never been
+visible to any unit — harmless today only because every unit runs
+`provider = "local"`.
 
 **Two live config changes exist in no repository.** `~/.mecha/` is not a git
 repo, so `config.toml` is on one disk and in no history. As of 2026-08-20 it
@@ -727,6 +755,10 @@ on this machine. `docs/REMOTE-CONTROL-DESIGN.md` is the design; the arc is in
   unrelated config section's strictness to a tool call two hours into a
   session when a new key was added — see the trap in HISTORY under
   Environment. Capturing the number at registration would decouple them.
+  **It recurred on 2026-08-21** when `[[search]] prefer_deep` was added to
+  config before the binary that knew the key was installed, which is the same
+  ordering the `update` skill warns about. Twice in one day is the argument
+  for the fix rather than for remembering the ordering.
 
 - **A top-level DM starts a connector run even while a session is attached.**
   Working as designed — the thread is the unit — but the observed failure mode
@@ -1044,10 +1076,14 @@ are worth reading together because one absence produced all three:
   steers one already going; there is no way to queue a follow-up instead.
 - **No `/export` or copy.** `NAMES` lists twenty-one commands (2026-08-21,
   after `/docs`, `/send` and `/remote-control`) and none of them get the
-  transcript out. `/docs` does put a link on
-  the system clipboard over OSC 52 (`tui/docs.rs`, `clipboard_escape`), which
-  is the mechanism an export would use — it survives SSH because the escape
-  travels back down the same connection the screen does.
+  transcript out. **OSC 52 is no longer the answer to assume.** `/docs` writes
+  the link to the system clipboard that way (`tui/docs.rs`,
+  `clipboard_escape`), and this file used to record it as the mechanism an
+  export would use because the escape rides back down the SSH connection — but
+  the 0.1.11 arc found no terminal acknowledges the write, which is why that
+  release had to hand the mouse back and add `^s` selection mode instead. The
+  working route off the screen today is a human selecting text, so an export
+  wants a file, not a clipboard escape.
 - **`NO_COLOR` is honoured only by the plain CLI renderer.** The TUI hardcodes
   colours inline; there is no semantic colour table.
 - **No keymap configuration.**
@@ -1142,6 +1178,33 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   mecha's CLAUDE.md still says "pkg" in narrative spots.
 
 ### Larger, and deliberately not started
+
+- **Canvas — researched 2026-08-21, blocked on a credential, and the
+  unblocking action is a five-minute form.** `docs/CANVAS-RESEARCH.md` is the
+  authority. The shape is settled: a **fifth binary on `mecha-mail`** (not
+  core, not a fifth crate, and *not* a third-party MCP server — the capability
+  override in `mecha-core/src/config.rs:804` is per **server**, so forcing
+  `external_send` to cover a grading tool makes every read a send sink and the
+  interlock blocks reads the moment a submission arms taint), OAuth2 over
+  `urn:ietf:wg:oauth:2.0:oob`, ~16 tools, credentials at
+  `~/.mecha/canvas/<account>/oauth.json` on its own root.
+
+  **Nothing can start until Dartmouth issues a credential.** Self-service
+  tokens were decommissioned 2025-06-18 and the probe on 2026-08-21 confirmed
+  the `+ New Access Token` button is greyed out for faculty, not just students —
+  so the service request form is the only door, at roughly five business days.
+  Ask for a scoped developer key *and* name a manual token as fallback in one
+  submission, and ask for **"Allow Include Parameters"** on the key or scoped
+  tokens silently ignore `include[]` and return 200 with the data missing.
+
+  The design decision that makes the rest affordable: **assistive, never
+  evaluative**, with completion checking as the sole exception. No verb accepts
+  a numeric or letter grade. Two things to verify against the real key before
+  relying on them, both recorded as §8 questions: that a scoped key genuinely
+  cannot reach GraphQL (which is what makes posting grades structurally
+  impossible, and rests on undocumented Instructure behaviour), and whether a
+  manual post policy hides submission *comments* or only grades.
+
 
 - **`mecha-factory` — the public surface. It is deployed, it sends mail, and
   it is self-serve.** Its own repository, public at
