@@ -909,6 +909,56 @@ against a configuration error, so the run ends instead. Acks happen *before*
 the handler runs, because the three-second ack budget is Slack's and a handler's
 time belongs to an agent turn that may take twenty minutes.
 
+## The remote control
+
+`/remote-control <name>` makes a live TUI session and a named Slack thread the
+same conversation. `docs/REMOTE-CONTROL-DESIGN.md` is the design; what belongs
+here is why it resists the obvious changes.
+
+**One owner, many terminals.** A `Conversation` — messages *and* taint — lives
+in the running process's memory and the session JSONL has one writer, so two
+processes cannot both hold a live conversation. The TUI keeps the agent and
+Slack is a view plus an input channel. There is no symmetric design to look
+for, and this is why the connector must *not* answer for a mirrored thread: it
+used to mint a thread record and start a fresh conversation in a different
+workspace under a different permission mode, answering in a scrollback it knew
+nothing about. Not a leak — that conversation is clean — a stranger wearing the
+thread's clothes.
+
+**The destination is never an argument.** `send_file` and `show_file` take a
+path and read the thread from this process's own attach record; there is no
+channel parameter and deliberately no way to add one. That is the whole reason
+`show_file` can sit in the third quadrant beside `mail_triage` — not
+`external_send`, never outbox-routed — despite putting bytes on the network: it
+reaches the owner's own two-party DM and nothing the model says can move it.
+The test asserts the *absence* of any destination field, because that is where
+the property is either true or not.
+
+**A name is durable and its thread is forever**, so detaching marks the record
+cold rather than deleting it — the record is *how the thread is found again*.
+And a name is reserved in `attaching` before its thread exists: writing `live`
+first would leave a failed attach routing inbound lines into an inbox nothing
+reads, and writing nothing first would let two terminals claim one name.
+
+**Two stores, one writer each.** `ThreadStore` is the connector's and
+`~/.mecha/remote/` is the TUI's, so neither has to trust the other's
+discipline. The routing lookup reads that store itself rather than going
+through `list()`, because `list()` swallows errors — right for a listing, and
+catastrophic for the answer that decides whether to start a run. It fails
+closed on a record it cannot read and skips a thing that was never a record;
+conflating those two is one stray `.DS_Store` disabling the whole feature.
+
+**Inbound text is a prompt, never a command.** `/model` rebuilds the agent,
+`/clear` drops the conversation and its taint, and `!` runs a shell command
+with no approver in front of it. Those are affordances of sitting at the
+machine, and the gap between "the owner typed this" and "the owner is at the
+keyboard" is where a remote surface stays narrow.
+
+**Attachments are announced as paths, never injected as content**, so the taint
+arms through `fs_read` — which already declares `private_data` — rather than a
+parallel route someone has to label by hand. Verified in a transcript rather
+than asserted: the run records `taint {private: true, untrusted: false}`.
+
 ## Hooks
 
 `[[hook]]` commands run at `pre_tool`, `post_tool` and `session_end`, with the
