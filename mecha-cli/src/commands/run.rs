@@ -30,6 +30,20 @@ pub struct Args {
     /// Don't write a transcript.
     #[arg(long)]
     pub no_session: bool,
+
+    /// Put an image in front of the model. Repeatable.
+    ///
+    /// The terminal's counterpart to attaching a screenshot in Slack. Not a
+    /// path the model is told about — `fs_read` already does that and cannot
+    /// read a PNG — but the pixels themselves, on the user turn.
+    ///
+    /// Resolved against the working directory rather than the run's
+    /// workspace, and deliberately: this is the *user* handing something
+    /// over, exactly like typing a prompt, and the path jail exists to bound
+    /// what the **model** can reach. The same reasoning `/send <path>` uses
+    /// one direction over.
+    #[arg(long = "image", value_name = "PATH")]
+    pub images: Vec<std::path::PathBuf>,
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
@@ -92,7 +106,43 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     }
 
-    let user = Message::user(&prompt);
+    // Read before the run rather than lazily: a path that does not exist, or
+    // an image too large to send, is a mistake the person can fix now — and
+    // failing here costs nothing, where failing mid-run costs the turn.
+    let mut images = Vec::new();
+    for path in &args.images {
+        match mecha_core::image::block_from_path(path)? {
+            Some(block) => images.push(block),
+            None => anyhow::bail!(
+                "{} is not an image this can send (png, jpeg, gif, webp)",
+                path.display()
+            ),
+        }
+    }
+    // Said once, at the point it can still be acted on. The alternative is a
+    // model that answers about a file it was never shown, which is the exact
+    // failure this whole path was built to end.
+    if !images.is_empty() && !prepared.agent.vision() {
+        eprintln!(
+            "warning: {} cannot see images, so {} will arrive as a line of text naming the \
+             file. Check `[providers.*] vision` and whether the server was started with \
+             --mmproj.",
+            prepared.model,
+            if images.len() == 1 { "it" } else { "they" },
+        );
+    }
+
+    // Text first, images after — the order both provider families document.
+    let user = if images.is_empty() {
+        Message::user(&prompt)
+    } else {
+        let mut content = vec![mecha_core::message::Block::text(&prompt)];
+        content.extend(images);
+        Message {
+            role: mecha_core::message::Role::User,
+            content,
+        }
+    };
     convo.push(user.clone());
     if let Some(s) = &session {
         s.append(&Record::Message(user))?;
