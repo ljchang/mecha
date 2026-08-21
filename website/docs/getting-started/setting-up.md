@@ -1,6 +1,6 @@
 ---
 title: Setting up
-sidebar_position: 2
+sidebar_position: 3
 description: Point mecha at a model, let it read the settings back off the server rather than typing them, and wire in the personal context you want it to have.
 ---
 
