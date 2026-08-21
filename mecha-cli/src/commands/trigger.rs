@@ -91,7 +91,20 @@ pub enum Cmd {
     },
 
     /// Tick once a minute until stopped.
-    Daemon,
+    Daemon {
+        /// Print a systemd user unit for this daemon and exit, running
+        /// nothing.
+        ///
+        /// Exists because the alternative instruction — "copy
+        /// `scripts/mecha-triggers.service`" — cannot be followed by anyone
+        /// who installed from crates.io: the crate ships no `scripts/`
+        /// directory, and a documented step that silently does not apply to
+        /// the install path the docs lead with is worse than no step. The
+        /// unit is printed rather than installed, because a scheduler is
+        /// something to read before you let it run unattended.
+        #[arg(long)]
+        print_unit: bool,
+    },
 
     /// Stop the run in flight, if there is one.
     ///
@@ -190,7 +203,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             tick(global, dry_run, None).await?;
             Ok(())
         }
-        Cmd::Daemon => daemon(global).await,
+        Cmd::Daemon { print_unit } => {
+            if print_unit {
+                print!("{}", systemd_unit()?);
+                return Ok(());
+            }
+            daemon(global).await
+        }
         Cmd::Cancel { name } => cancel(&name),
         Cmd::Runs { name, count } => runs(name.as_deref(), count),
     }
@@ -718,6 +737,39 @@ async fn tick(
 /// overlapped by it. That is the honest trade for an unattended scheduler
 /// sharing one local model server: predictable load, and nothing lost, because
 /// due-ness is computed from slots rather than from tick timing.
+/// A systemd user unit naming *this* binary by absolute path.
+///
+/// `current_exe` rather than the string "mecha": the whole point is to be
+/// runnable by someone whose install is not on the PATH systemd will see, and
+/// a unit that resolves to a different binary than the one printing it is the
+/// version-skew trap one layer down.
+fn systemd_unit() -> anyhow::Result<String> {
+    let exe = std::env::current_exe()
+        .context("resolving this binary's own path")?
+        .display()
+        .to_string();
+    Ok(format!(
+        "[Unit]\n\
+         Description=mecha triggers: scheduled agent runs\n\
+         After=network-online.target\n\
+         \n\
+         [Service]\n\
+         Type=simple\n\
+         ExecStart={exe} trigger daemon\n\
+         Restart=on-failure\n\
+         RestartSec=30\n\
+         \n\
+         [Install]\n\
+         WantedBy=default.target\n\
+         \n\
+         # Install with:\n\
+         #   systemctl --user daemon-reload\n\
+         #   systemctl --user enable --now mecha-triggers\n\
+         # And, so it survives logout:\n\
+         #   loginctl enable-linger $USER\n"
+    ))
+}
+
 async fn daemon(global: &GlobalOpts) -> Result<()> {
     let store = open()?;
     let (triggers, problems) = store.list()?;
@@ -1157,6 +1209,30 @@ fn indent(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// The unit has to name the binary that printed it, by absolute path.
+    ///
+    /// A unit saying `ExecStart=mecha` resolves against whatever PATH systemd
+    /// happens to have, which is rarely the one the person installing it had —
+    /// and a scheduler pointed at a different binary than the one printing its
+    /// own unit is the version-skew trap that cost 2026-08-21, one layer down.
+    #[test]
+    fn the_printed_unit_names_this_binary_absolutely() {
+        let unit = super::systemd_unit().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let exe = exe.display().to_string();
+        assert!(
+            unit.contains(&format!("ExecStart={exe} trigger daemon")),
+            "unit must name this binary by absolute path:\n{unit}"
+        );
+        for required in ["[Unit]", "[Service]", "[Install]", "WantedBy="] {
+            assert!(unit.contains(required), "missing {required}:\n{unit}");
+        }
+        // Linger, because a user unit dies at logout otherwise and the
+        // symptom is a scheduler that works until you close the ssh session.
+        assert!(unit.contains("enable-linger"), "{unit}");
+    }
+
     use super::*;
     use clap::CommandFactory;
 

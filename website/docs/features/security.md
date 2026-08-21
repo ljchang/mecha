@@ -1,6 +1,6 @@
 ---
 title: Security model
-sidebar_position: 5
+sidebar_position: 6
 description: The path jail and the lethal-trifecta interlock — what mecha enforces structurally rather than by prompting.
 ---
 

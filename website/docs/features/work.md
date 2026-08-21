@@ -1,6 +1,6 @@
 ---
 title: The work directory
-sidebar_position: 9
+sidebar_position: 10
 description: Where a run's generated output goes, why it is also the run's path jail, and how retention keeps it from becoming a pile.
 ---
 

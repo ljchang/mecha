@@ -1,6 +1,6 @@
 ---
 title: Sandbox
-sidebar_position: 6
+sidebar_position: 7
 description: Confining shell with bwrap, docker, or landlock, and the three rules that make the confinement mean something.
 ---
 

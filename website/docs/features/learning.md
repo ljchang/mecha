@@ -1,6 +1,6 @@
 ---
 title: Learning
-sidebar_position: 14
+sidebar_position: 15
 description: How mecha mines your corrections into rules, gates them on provenance, and keeps measuring whether they still earn their place in the prompt.
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: Compaction
-sidebar_position: 17
+sidebar_position: 18
 description: Making a long conversation fit — eviction first, a legal cut, a validated summary, and what must survive all of it.
 ---
 
