@@ -841,6 +841,18 @@ impl Agent {
         self.provider.id()
     }
 
+    /// Whether this agent's provider will put an image in front of the model.
+    ///
+    /// For a front-end deciding what to do with a file somebody attached: an
+    /// image goes into the turn when the model can see, and is named as a
+    /// path when it cannot. Asked here rather than answered by the encoders
+    /// alone because the difference is whether a megabyte gets read,
+    /// resized, base64'd and written into an append-only transcript for a
+    /// model that will only ever be shown its filename.
+    pub fn vision(&self) -> bool {
+        self.provider.vision()
+    }
+
     /// Install lifecycle hooks on the agent's own context. Copy-on-write like
     /// [`Agent::set_approver`], and for the same reason.
     pub fn set_hooks(&mut self, hooks: Arc<crate::hooks::HookSet>) {
