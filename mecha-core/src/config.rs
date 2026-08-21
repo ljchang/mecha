@@ -379,7 +379,7 @@ impl ProviderConfig {
     /// is knowable from config alone.
     pub fn vision_enabled(&self) -> bool {
         self.vision
-            .unwrap_or_else(|| matches!(self.kind.as_str(), "anthropic"))
+            .unwrap_or(matches!(self.kind.as_str(), "anthropic"))
     }
 
     /// Prices, if configured. Both halves are required: knowing one is worse

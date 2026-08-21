@@ -188,6 +188,93 @@ whatever placement decision is made at load is never revisited.
 - **`-np 1` is not the defence against the `-c` division trap.** Setting `-c`
   to `slots × window` deliberately is.
 
+## Vision — a model is two files
+
+**Every model this repository serves is multimodal, and on 2026-08-21 every
+one of them was being served text-only.** The symptom is a model that answers
+"I don't have the ability to view image files directly", which reads as a
+limitation of the weights. It is a flag nobody passed.
+
+The weights hold the language model. The vision tower ships beside them as a
+separate **`mmproj-*.gguf`** in the same repository, and `--mmproj` must name
+it. Three things conspire to hide this:
+
+- **`--mmproj-auto` defaults to enabled**, so the flag list looks handled. It
+  only fires for `-hf` downloads. Every script here uses `-m <path>`, so the
+  default does nothing exactly where it is needed.
+- **`GET /props` answers a different question than the one being asked.**
+  `modalities.vision` reports what is *loaded*, never what the architecture
+  supports. A multimodal model with no projector reports `false` and is
+  indistinguishable from a text-only one.
+- **Nothing fails.** The server starts, answers, and serves well. There is no
+  error to find.
+
+### How to tell a multimodal GGUF from its metadata
+
+Three independent tells, none of which requires loading the model:
+
+| Key | Multimodal |
+|---|---|
+| `general.tags` | contains `image-text-to-text` |
+| `<arch>.rope.dimension_sections` | present — mRoPE, e.g. `[11, 11, 10, 0]`. A text-only model has none. |
+| `tokenizer.chat_template` | handles `image_url` items and emits `<\|vision_start\|><\|image_pad\|><\|vision_end\|>` |
+
+And the confirming absence: **no vision tensors in the file.** Qwen3.6-35B-A3B
+carries 750 `blk.*`, `token_embd`, `output`, `output_norm` and nothing else.
+All three tells said "multimodal"; the tensor list said "half of it is
+missing".
+
+### What it costs, measured
+
+Sending the screenshot that started this (a photo of a laptop screen) through
+`/v1/chat/completions` as an `image_url` data URI:
+
+| | raw | resized |
+|---|---|---|
+| file | 2222x1548, 5.7 MB PNG | 1568x1092, 179 KB JPEG |
+| `prompt_tokens` | **294** | **294** |
+| wall clock | 9.4 s | 5.9 s |
+| text read back | correct, verbatim | correct, verbatim |
+
+**The token cost is identical**, because the server tiles the image to a fixed
+count before the model sees it. So resizing buys nothing in context and 32x on
+the wire and in the session file — which is why `mecha_core::image` caps at
+the door rather than per turn: the transcript is append-only and every turn
+resends the whole history, so the resize is paid once and the saving is
+collected on every turn afterwards.
+
+- **`--image-min-tokens` / `--image-max-tokens`** bound what one image may
+  cost, if the default tiling is ever the wrong trade.
+- **The `max_tokens` trap above is worse here.** Vision prompts reason
+  longer: at `max_tokens: 300` this returned 300 tokens of
+  `reasoning_content` and an empty `content`. The rule is unchanged and bites
+  sooner.
+- **`--mmproj` and `--spec-type draft-mtp` coexist.** Verified on gemma-4-E4B
+  with a control: the `[spec] failed to measure draft model memory` warning
+  appears with and without `--mmproj`, so it is not caused by the projector.
+
+### The guard
+
+`scripts/mmproj.sh` is sourced by every start script here. It resolves
+`mmproj-BF16.gguf` then `mmproj-F16.gguf`, and when neither is present it
+**exits with the `curl` that fetches it** rather than starting. Refusing is
+the decision: starting anyway is what produced four servers quietly without
+eyes. `--no-mmproj` is the explicit way to ask for a text-only arm.
+
+A shared function rather than a line per script, because a line per script is
+precisely how gemma-4-26B ended up with its projector sitting on disk, unused,
+from the day it was downloaded.
+
+### And config has to agree
+
+`[providers.X] vision = true` is what makes mecha *send* an image; a loaded
+projector alone changes nothing. `provider::preflight` reads `/props` once at
+startup and warns in **both** directions, because they fail differently:
+declared-but-not-served silently degrades every image to a line of text, and
+served-but-not-declared means a projector is loaded, paid for in memory, and
+never used. Warning rather than refusing — a preflight that can stop a working
+machine from starting is one people turn off.
+
 ## The request contract
 
 - **`max_tokens` must exceed `--reasoning-budget` (4096), comfortably.** Below
@@ -232,6 +319,8 @@ whatever placement decision is made at load is never revisited.
 ## Related
 
 - `scripts/start-moe-mtp.sh` — the flags, and the history behind each number
+- `scripts/mmproj.sh` — the projector guard every start script sources
+- `provider/preflight.rs` — one `GET /props`, checked against config
 - `scripts/bench-slots.sh` — throughput
 - `scripts/affinity-test.py` — prefix reuse
 - `cache_lens.rs` — the per-run observer that caught the affinity regression

@@ -47,6 +47,7 @@ the benchmark both run *release* paths that a debug build never touches.
 
 ```
 message.rs   provider-agnostic Message/Block/Usage/StopReason types
+image.rs     a file on disk to a bounded image block, capped at the door
 provider/    Provider trait + anthropic.rs (raw HTTP) + openai.rs (compatible)
 tool/        Tool trait, Registry, Approver, builtin.rs
 mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
@@ -189,6 +190,57 @@ The model is **hybrid attention** — 11 of 41 layers hold a KV cache, the other
 30 carry a constant-size recurrent state — which is why long context is cheap
 here (63 tok/s at 108k against 92 at 1k) and why the KV cost is 22 KiB/token
 rather than the 82 the naive per-layer arithmetic predicts.
+
+## Images
+
+`Block::Image` is a fifth variant on `message.rs`'s block type, and it is
+**user turns only**. Anthropic accepts an image inside a `tool_result`; the
+OpenAI dialect's `role: "tool"` messages carry a string and nothing else. A
+tool returning pixels would work on one backend and silently lose them on the
+other, in the one place where the missing thing is what the whole turn was
+about. So an image enters the way a person hands one over — the connector and
+the TUI attach it to the turn — and "look at the chart you just made" is
+deliberately not built.
+
+Four decisions, each a bug if undone:
+
+- **Both backends degrade to a named line rather than failing**, and a test
+  asserts they word it *identically*. A conversation is one object that
+  survives a `/model` switch, so two renderings that drift apart would have a
+  transcript telling two stories about its own history depending on who was
+  asked. It also means a run against a text-only model behaves exactly as it
+  did before the variant existed.
+- **The parts array is built only when an image is present.** The cached
+  prefix is a byte-prefix match, so making `{"content": [...]}` the uniform
+  shape would invalidate the prefix of every run that never sends an image —
+  and plenty of OpenAI-compatible shims accept only the string form.
+- **Caps are applied at the door, never per turn** (`image.rs`). The
+  transcript is append-only and every turn resends the whole history, so a
+  resize is paid once and collected on every turn afterwards. `MAX_EDGE`
+  1568 and `MAX_BYTES` 5 MB — Anthropic's hard per-image limit, applied to
+  local servers too because a conversation is one object. An image that
+  already fits is passed through **byte for byte**: re-encoding a crisp
+  screenshot of text is a real loss, and that is the case this exists for.
+  Measured: 5.7 MB → 179 KB with `prompt_tokens` identical at 294, because
+  llama-server tiles to a fixed count regardless.
+- **`recall` returns the filename, never the payload.** Base64 is a haystack
+  of every alphanumeric substring there is, so returning `data` would make a
+  one-letter query match every image and print a megabyte back into the
+  context that tool exists to protect. `render_for_summary` does the same,
+  for the same reason plus a sharper one: the summariser is a tool-less
+  *prose* call, so the payload could only arrive as literal text in a request
+  whose whole purpose is to be smaller than what it replaces.
+
+**Whether the model has eyes is declared, and verified against the server.**
+`[providers.X] vision` defaults to true for `kind = "anthropic"` and false
+everywhere else — false is the safe direction for a local server, because the
+failure it prevents is a rejected request where the other is merely a model
+that cannot see, which is what it already was. `provider::preflight` reads
+`GET /props` once at startup and warns in **both** directions; the reasoning
+and the mmproj trap behind it are `docs/LLAMA-SERVER.md`'s to hold. The rule
+worth carrying: **a vision model is two files**, and the second one is
+invisible when missing — nothing errors, `/props` reports what is *loaded*
+rather than what is supported, and the model simply says it cannot see.
 
 ## Security model
 
