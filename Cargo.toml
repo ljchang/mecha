@@ -12,6 +12,17 @@ repository = "https://github.com/ljchang/mecha"
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
+# Images cross both provider wires as base64 and nothing else — Anthropic
+# wants it bare, the OpenAI dialect wants it behind a `data:` prefix. Already
+# in the tree transitively; named here so the one encoder in `message.rs` is
+# not reaching for somebody else's transitive dependency.
+base64 = "0.22"
+# Decoding an image only to re-encode it smaller. Feature-pared to the four
+# formats `message::image_media_type` will accept — the default set drags in
+# AVIF, EXR, TIFF and a dozen more decoders, which is a lot of parser surface
+# to expose to a file a stranger attached in Slack for formats no provider
+# on the other end would have taken anyway.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 chrono = { version = "0.4", features = ["serde"] }
 # IANA zones, so "3pm Thursday" survives a DST boundary. A fixed offset in
 # config would be wrong twice a year, silently.

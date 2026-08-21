@@ -89,10 +89,46 @@ impl Tool for FsRead {
         let text = match tokio::fs::read_to_string(&path).await {
             Ok(t) => t,
             Err(e) => {
+                // **A binary file is a different failure and has to say so.**
+                // `read_to_string` reports "stream did not contain valid
+                // UTF-8", which names the mechanism and not the problem, so a
+                // model handed a screenshot reads it as "that read failed"
+                // and retries the same idea through `shell` — measured
+                // 2026-08-21, where `file` and `ls -la` each cost the user an
+                // approval card on a phone before the run concluded what the
+                // first error already knew. The convention this repository
+                // states for tool errors is that the error says what to do
+                // instead; this one said nothing.
+                //
+                // Named by extension rather than by sniffing, because the
+                // answer only has to be good enough to redirect: what a model
+                // needs here is "stop trying to read this as text", and for
+                // an image, who *can* look at it.
+                if e.kind() == std::io::ErrorKind::InvalidData {
+                    let size = tokio::fs::metadata(&path)
+                        .await
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    let what = crate::message::image_media_type(&path)
+                        .map(|m| format!("an image ({m})"))
+                        .unwrap_or_else(|| "a binary file".to_string());
+                    let advice = if crate::message::image_media_type(&path).is_some() {
+                        " Nothing you can call will turn it into text. If it was attached to \
+                         this conversation you can already see it; if it was not, say so rather \
+                         than describing it."
+                    } else {
+                        ""
+                    };
+                    return Ok(ToolOutput::err(format!(
+                        "{} is {what}, {size} bytes — not a UTF-8 text file, so there is nothing \
+                         here to read.{advice}",
+                        path.display(),
+                    )));
+                }
                 return Ok(ToolOutput::err(format!(
                     "cannot read {}: {e}",
                     path.display()
-                )))
+                )));
             }
         };
 
