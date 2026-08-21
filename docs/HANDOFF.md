@@ -1379,6 +1379,40 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
   record and a triage run. See `CLAUDE.md`.
 
+- **Images: built and proven on a scratch port; two deploy steps outstanding.**
+  `Block::Image`, both provider encoders, `image.rs`'s caps, `provider::preflight`,
+  the `scripts/mmproj.sh` guard and three entry points (Slack connector,
+  remote-control inbox, `mecha run --image`) are on the `vision-and-images`
+  branch, 1,205 tests green. Verified end to end against a real llama-server
+  with a projector loaded: the screenshot that started this was read back
+  verbatim through the release binary. What is **not** done, and neither is
+  safe for an agent to do unattended:
+
+  - **`:8080` is still text-only.** `llama-local.service` has
+    `ExecStart=/home/ljchang/Github/mecha/scripts/start-moe-mtp.sh` — the
+    development checkout is the running service's ExecStart, the trap already
+    recorded on 2026-08-20 — so the `--mmproj` flag reaches the server only
+    once this branch is on that checkout's `main`. Then
+    `systemctl --user restart llama-local`, and the standing rule from that
+    script applies: **measure tok/s afterwards, not just that it came back
+    up.** The projectors for qwen3.6, qwen3.8 and gemma-4-E4B are already
+    downloaded; gemma-4-26B's always was.
+  - **The Slack connector runs the installed binary.** `mecha-slack.service`
+    is `~/.cargo/bin/mecha`, so attaching an image from Slack needs a
+    reinstall — the `update` skill, whose whole point is that a tag is not an
+    install.
+
+  **Drag-and-drop onto the TUI prompt works locally** and is the third door.
+  It is structurally impossible over SSH — a terminal pastes the *laptop's*
+  path and the TUI resolves it on the far box — so testing it means a local
+  terminal, which is what made it look absent.
+
+  Also deliberately not built, and named so it is not rediscovered: **an image
+  cannot join a run already in flight.** The steering queue is
+  `VecDeque<String>` and a mid-run attachment still lands on disk and still
+  has its path named in the steered text, so nothing is lost — but the pixels
+  wait for the next turn. Widening the queue is a `RunContext` change.
+
 - **Slack as a remote control — built and verified live; two things left.**
   The arc merged on 2026-08-09 (**PR #25**) and is described in
   [`HISTORY.md`](HISTORY.md) under 2026-08-09; the design authority is

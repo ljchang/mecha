@@ -258,6 +258,11 @@ impl Default for Config {
                 temperature: None,
                 seed: None,
                 context_window: None,
+                // `None`, not `Some(true)`: the per-kind default in
+                // `vision_enabled` is the one place that decision is made,
+                // and writing it here too would be a second copy that can
+                // drift from it.
+                vision: None,
                 max_retries: None,
                 retry_after_cap_secs: None,
                 fallbacks: Vec::new(),
@@ -322,6 +327,30 @@ pub struct ProviderConfig {
     /// With it, [`AgentConfig::compact_at`] derives a threshold and the CLI
     /// can show how much room is left.
     pub context_window: Option<u64>,
+    /// Whether the model on the other end can see an image.
+    ///
+    /// Declared rather than discovered, for the same reason `context_window`
+    /// is: the Anthropic API has no endpoint that answers it. llama-server
+    /// *does* — `GET /props` reports `modalities.vision` — so preflight
+    /// checks the two against each other and warns on a disagreement in
+    /// **either** direction. Both directions matter and for different
+    /// reasons: declared-but-not-served means every image silently degrades
+    /// to a line of text, and served-but-not-declared means a projector is
+    /// loaded, paid for in memory, and never used.
+    ///
+    /// Unset defaults to `true` for `kind = "anthropic"` (every Claude model
+    /// in the family sees) and `false` everywhere else. False is the safe
+    /// default for a local server because the failure it prevents is the
+    /// expensive one: an `image_url` part sent to a text-only llama-server is
+    /// a failed request, where an image rendered as text is merely a model
+    /// that cannot see — which is what it was before.
+    ///
+    /// **A vision model is two files.** The weights carry the language model;
+    /// the vision tower ships beside them as a separate `mmproj-*.gguf` that
+    /// `--mmproj` must name. `--mmproj-auto` is on by default and only fires
+    /// for `-hf` downloads, so every start script here using `-m <path>` gets
+    /// nothing from it. See `docs/LLAMA-SERVER.md`.
+    pub vision: Option<bool>,
     /// Retries per request on transient failures — 429, 5xx, transport. 0
     /// disables. Unset means 3. Auth, billing, invalid-request and
     /// context-overflow errors are never retried: the same payload fails the
@@ -342,6 +371,17 @@ pub struct ProviderConfig {
 }
 
 impl ProviderConfig {
+    /// Whether to render images onto this provider's wire.
+    ///
+    /// The default is per-kind rather than a flat `false` because the two
+    /// kinds know different amounts: every model in the Anthropic family
+    /// this harness speaks to has vision, and nothing about a local server
+    /// is knowable from config alone.
+    pub fn vision_enabled(&self) -> bool {
+        self.vision
+            .unwrap_or(matches!(self.kind.as_str(), "anthropic"))
+    }
+
     /// Prices, if configured. Both halves are required: knowing one is worse
     /// than knowing neither, because it silently under-reports.
     pub fn pricing(&self) -> Option<crate::message::Pricing> {

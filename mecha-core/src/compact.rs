@@ -170,6 +170,22 @@ pub fn render_for_summary(messages: &[Message], max_result_chars: usize) -> Stri
                     };
                     out.push_str(&format!("[{label}] {}\n", clip(content, max_result_chars)));
                 }
+                // Named, never carried. The summariser is a *tool-less
+                // prose* call, so the base64 could only arrive as a
+                // megabyte of literal text in a request whose whole purpose
+                // is to be smaller than what it replaces — and the model
+                // reading it has no way to know it is looking at an image.
+                // What survives a compaction is that one was here and what
+                // it was called, which is exactly what `recall` then needs
+                // to find the turn again.
+                Block::Image {
+                    media_type, source, ..
+                } => {
+                    out.push_str(&format!(
+                        "[{who}] {}\n",
+                        Block::image_placeholder(media_type, source.as_deref())
+                    ));
+                }
                 // Reasoning is the model talking to itself and does not survive
                 // into the next turn anyway.
                 Block::Thinking { .. } | Block::Text { .. } => {}

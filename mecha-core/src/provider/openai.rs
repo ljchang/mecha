@@ -44,6 +44,7 @@ pub struct OpenAiCompatible {
     temperature: Option<f64>,
     seed: Option<u64>,
     id: String,
+    vision: bool,
     retry: crate::provider::retry::RetryPolicy,
 }
 
@@ -66,6 +67,7 @@ impl OpenAiCompatible {
             temperature: cfg.temperature,
             seed: cfg.seed,
             id: cfg.kind.clone(),
+            vision: cfg.vision_enabled(),
             retry: crate::provider::retry::RetryPolicy::from_config(cfg),
         })
     }
@@ -76,7 +78,7 @@ impl OpenAiCompatible {
             messages.push(json!({"role": "system", "content": system}));
         }
         for m in &req.messages {
-            encode_message(m, &mut messages);
+            encode_message(m, &mut messages, self.vision);
         }
 
         let mut body = json!({
@@ -137,6 +139,10 @@ impl Provider for OpenAiCompatible {
         &self.default_model
     }
 
+    fn vision(&self) -> bool {
+        self.vision
+    }
+
     async fn complete(
         &self,
         req: &CompletionRequest,
@@ -193,7 +199,15 @@ impl Provider for OpenAiCompatible {
 /// Expand our block list into however many OpenAI messages it takes: an
 /// assistant turn carries its tool calls inline, but every tool result is its
 /// own `role: "tool"` message.
-fn encode_message(m: &Message, out: &mut Vec<Value>) {
+/// Visible to `anthropic.rs`'s test that the two backends word an unseen
+/// image identically. Two renderings of the same block that drift apart is
+/// exactly the kind of thing no single-backend test can see.
+#[cfg(test)]
+pub(crate) fn encode_message_for_test(m: &Message, out: &mut Vec<Value>, vision: bool) {
+    encode_message(m, out, vision)
+}
+
+fn encode_message(m: &Message, out: &mut Vec<Value>, vision: bool) {
     match m.role {
         Role::Assistant => {
             let mut text = String::new();
@@ -234,6 +248,12 @@ fn encode_message(m: &Message, out: &mut Vec<Value>) {
                     })),
                     // A result is its own message, never part of the turn.
                     Block::ToolResult { .. } => {}
+                    // Nothing constructs one on an assistant turn — a model
+                    // returns text, thinking and calls, never pixels — and
+                    // the type cannot say so. Dropped rather than rendered,
+                    // because inventing a place for it here would be
+                    // inventing a shape no server accepts.
+                    Block::Image { .. } => {}
                 }
             }
             let mut msg = json!({"role": "assistant"});
@@ -259,6 +279,7 @@ fn encode_message(m: &Message, out: &mut Vec<Value>) {
         }
         Role::User => {
             let mut text = String::new();
+            let mut images = Vec::new();
             for b in &m.content {
                 match b {
                     Block::Text { text: t } => text.push_str(t),
@@ -271,11 +292,56 @@ fn encode_message(m: &Message, out: &mut Vec<Value>) {
                         "tool_call_id": tool_use_id,
                         "content": content,
                     })),
+                    // A model with no eyes is told what it was handed, in
+                    // words. That keeps a run against a text-only server
+                    // behaving exactly as it did before images existed —
+                    // and, more importantly, keeps the *conversation* the
+                    // same object across a `/model` switch: the same
+                    // transcript renders as pixels to one backend and as a
+                    // line of prose to the other, with nothing lost from
+                    // the record either way.
+                    Block::Image {
+                        media_type,
+                        data,
+                        source,
+                    } if vision => images.push(json!({
+                        "type": "image_url",
+                        "image_url": {"url": format!("data:{media_type};base64,{data}")},
+                    })),
+                    Block::Image {
+                        media_type, source, ..
+                    } => {
+                        if !text.is_empty() && !text.ends_with('\n') {
+                            text.push('\n');
+                        }
+                        text.push_str(&Block::image_placeholder(media_type, source.as_deref()));
+                    }
                     _ => {}
                 }
             }
-            if !text.is_empty() {
-                out.push(json!({"role": "user", "content": text}));
+            // **A parts array only when there is an image**, never as the
+            // uniform shape. `{"content": "..."}` is what every request this
+            // backend has ever sent looks like, plenty of OpenAI-compatible
+            // shims accept nothing else, and a prompt cache is a prefix
+            // match over bytes — so changing the encoding of every message
+            // in order to support the rare one would invalidate the cached
+            // prefix of every run that never sends an image.
+            if images.is_empty() {
+                if !text.is_empty() {
+                    out.push(json!({"role": "user", "content": text}));
+                }
+            } else {
+                let mut parts = Vec::with_capacity(images.len() + 1);
+                // Text first. Measured on gemma-4 through llama-server, and
+                // it is also what both providers' own documentation shows:
+                // the question is what the image is being looked at *for*,
+                // and a model that meets the pixels first has to hold them
+                // with no idea what to attend to.
+                if !text.is_empty() {
+                    parts.push(json!({"type": "text", "text": text}));
+                }
+                parts.append(&mut images);
+                out.push(json!({"role": "user", "content": parts}));
             }
         }
     }
@@ -333,7 +399,11 @@ fn produced_output(blocks: &[Block]) -> bool {
     blocks.iter().any(|b| match b {
         Block::Text { text } => !text.trim().is_empty(),
         Block::ToolUse { .. } => true,
-        Block::Thinking { .. } | Block::ToolResult { .. } => false,
+        // An image is something handed *to* the model, so it is no more
+        // output than a tool result is. It also only ever rides on a user
+        // turn, so this arm is unreachable in practice and exists to keep
+        // the definition honest rather than to be hit.
+        Block::Thinking { .. } | Block::ToolResult { .. } | Block::Image { .. } => false,
     })
 }
 
@@ -773,7 +843,7 @@ mod tests {
         let decoded = decode_response(&v).unwrap();
 
         let mut out = Vec::new();
-        encode_message(&decoded.message, &mut out);
+        encode_message(&decoded.message, &mut out, false);
         assert_eq!(out.len(), 1);
         assert_eq!(
             out[0]["reasoning_content"], "I should list the directory first.",
@@ -840,7 +910,11 @@ mod tests {
         // also what keeps the round trip self-gating: an endpoint that never
         // sends `reasoning_content` never receives one.
         let mut out = Vec::new();
-        encode_message(&Message::assistant(vec![Block::text("done")]), &mut out);
+        encode_message(
+            &Message::assistant(vec![Block::text("done")]),
+            &mut out,
+            false,
+        );
         assert!(
             out[0].get("reasoning_content").is_none(),
             "an unrelated endpoint must not be sent a field it never spoke"
@@ -1188,6 +1262,7 @@ mod tests {
                 Block::text("actually, focus on X"),
             ]),
             &mut out,
+            false,
         );
 
         assert_eq!(out.len(), 3);
@@ -1200,6 +1275,69 @@ mod tests {
     }
 
     #[test]
+    fn an_image_rides_as_a_parts_array_only_when_the_model_can_see() {
+        let msg = Message {
+            role: Role::User,
+            content: vec![
+                Block::text("what is this?"),
+                Block::image("image/png", b"\x89PNG-ish", Some("shot.png".into())),
+            ],
+        };
+
+        let mut seeing = Vec::new();
+        encode_message(&msg, &mut seeing, true);
+        assert_eq!(seeing.len(), 1);
+        let parts = seeing[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        // Text first: a model that meets the pixels before the question has
+        // nothing to attend to.
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "what is this?");
+        assert_eq!(parts[1]["type"], "image_url");
+        let url = parts[1]["image_url"]["url"].as_str().unwrap();
+        assert!(
+            url.starts_with("data:image/png;base64,"),
+            "the `data:` prefix is this dialect's, added at the wire: {url}"
+        );
+
+        // The same conversation against a text-only server. This is the arm
+        // that has to keep working: it is what every local model here did
+        // before a projector was loaded, and what they do again the moment
+        // one is not.
+        let mut blind = Vec::new();
+        encode_message(&msg, &mut blind, false);
+        assert_eq!(blind.len(), 1);
+        let content = blind[0]["content"].as_str().expect("a plain string");
+        assert!(content.contains("what is this?"));
+        assert!(
+            content.contains("shot.png"),
+            "a model that cannot see is still told what it was handed: {content}"
+        );
+        assert!(
+            !content.contains("base64") && !content.contains("PNG-ish"),
+            "and never the payload: {content}"
+        );
+    }
+
+    /// The cached prefix is a byte-prefix match, so the encoding of a message
+    /// with no image must not change at all. Verified to fail on the obvious
+    /// wrong implementation — making the parts array the uniform shape.
+    #[test]
+    fn a_message_with_no_image_is_encoded_exactly_as_it_always_was() {
+        let msg = Message::user("ordinary text");
+        for vision in [true, false] {
+            let mut out = Vec::new();
+            encode_message(&msg, &mut out, vision);
+            assert_eq!(out.len(), 1);
+            assert_eq!(
+                out[0]["content"],
+                json!("ordinary text"),
+                "a bare string, never a one-element parts array (vision={vision})"
+            );
+        }
+    }
+
+    #[test]
     fn an_assistant_turn_carries_its_tool_calls_inline_with_arguments_as_a_string() {
         let mut out = Vec::new();
         encode_message(
@@ -1209,6 +1347,7 @@ mod tests {
                 input: json!({"path": "a.md"}),
             }]),
             &mut out,
+            false,
         );
 
         assert_eq!(out.len(), 1);

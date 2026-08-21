@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use mecha_core::agent::{Agent, AgentEvent, Budget, Conversation, RunOutcome};
-use mecha_core::message::Message;
+use mecha_core::message::{Block, Message};
 use mecha_core::outbox::OutboxRoute;
 use mecha_core::session::{Record, Session, SessionMeta};
 use mecha_core::tool::ToolCtx;
@@ -772,8 +772,12 @@ impl State {
             "[This thread's workspace is {}. Relative paths resolve there.]\n\n{prompt}",
             cx.tools.workspace.display()
         );
+        let mut attached_images = Vec::new();
         if !files.is_empty() {
-            let landed = self.fetch_attachments(&files, &cx.tools.workspace).await;
+            let (landed, images) = self
+                .fetch_attachments(&files, &cx.tools.workspace, self.agent.vision())
+                .await;
+            attached_images = images;
             if !landed.is_empty() {
                 // Named as paths rather than injected as content: the agent
                 // reaches the bytes with `fs_read`, which already declares
@@ -798,7 +802,15 @@ impl State {
         let files_before = workspace_snapshot(&cx.tools.workspace);
 
         let mut conversation = self.conversations.remove(&key).unwrap_or_default();
-        conversation.messages.push(Message::user(&prompt));
+        // Text first, images after — the order both provider families
+        // document and the one `encode_message` preserves. A model that meets
+        // the pixels before the question has nothing to attend to.
+        let mut content = vec![Block::text(&prompt)];
+        content.extend(attached_images);
+        conversation.messages.push(Message {
+            role: mecha_core::message::Role::User,
+            content,
+        });
 
         // The spawned task takes ownership of these; the controls message is
         // posted after it starts, so it needs its own copies.
@@ -893,13 +905,15 @@ impl State {
         &self,
         files: &[FileRef],
         workspace: &std::path::Path,
-    ) -> Vec<String> {
+        vision: bool,
+    ) -> (Vec<String>, Vec<Block>) {
         let inbox = workspace.join("inbox");
         if let Err(e) = std::fs::create_dir_all(&inbox) {
             tracing::warn!("could not make an inbox directory: {e}");
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
         let mut landed = Vec::new();
+        let mut images = Vec::new();
         for file in files {
             let name = safe_filename(file.name.as_deref().unwrap_or(&file.id));
             match mecha_slack::files::download(
@@ -912,14 +926,43 @@ impl State {
                 Ok(bytes) => {
                     let path = inbox.join(&name);
                     match std::fs::write(&path, &bytes) {
-                        Ok(()) => landed.push(format!("./inbox/{name}")),
+                        Ok(()) => {
+                            landed.push(format!("./inbox/{name}"));
+                            // **The file lands either way, and the pixels are
+                            // extra.** Writing it to the workspace is the
+                            // durable half — it is what `fs_read`, `shell` and
+                            // a later run reach, and it is what the design
+                            // called a conduit. Putting the image *into the
+                            // turn* is what makes it a feature, and it is
+                            // conditional on there being eyes to see it: a
+                            // text-only model would be handed a resized JPEG
+                            // to render as its own filename.
+                            if vision {
+                                match mecha_core::image::block_from_path(&path) {
+                                    Ok(Some(block)) => images.push(block),
+                                    Ok(None) => {}
+                                    // Named, never silent, and never fatal to
+                                    // the attachment: the bytes are already on
+                                    // disk and the model can still be told
+                                    // where. An image too large to send is a
+                                    // thing the person should hear about,
+                                    // because from their side they sent one.
+                                    Err(e) => {
+                                        tracing::warn!("could not put {name} in the turn: {e}");
+                                        landed.push(format!(
+                                            "  (too large to look at directly: {e})"
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                         Err(e) => tracing::warn!("could not save {name}: {e}"),
                     }
                 }
                 Err(e) => tracing::warn!("could not fetch {}: {e}", file.id),
             }
         }
-        landed
+        (landed, images)
     }
 
     async fn on_completion(&mut self, done: Completion) {
