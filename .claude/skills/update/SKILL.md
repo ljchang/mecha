@@ -172,6 +172,31 @@ a different repository on a different version line.
 
 - **Install before restarting.** Reversing them restarts the old binary and
   looks like success.
+- **Install before editing `~/.mecha/config.toml`, and restart anything
+  long-lived after.** A key a binary does not know is a *fatal parse error* —
+  `ProviderConfig` and friends carry `deny_unknown_fields`, deliberately, so a
+  typo'd setting fails loudly rather than being silently ignored. The cost is
+  that a new key breaks every older binary, including one **already running**.
+
+  That failure is deferred and partial, which is what makes it expensive.
+  A long-lived process parsed the config at startup, before the edit, so it
+  keeps working — until it hits a path that **re-reads** config, which then
+  fails in a subsystem with no apparent connection to what changed. Measured
+  2026-08-21: a TUI session started at 01:20 kept running after the 03:07
+  install (`/proc/<pid>/exe` showed `mecha (deleted)` — a process executes the
+  inode it was launched from, so an install is invisible to it), and the
+  symptom was `show_file` reporting a config parse error two hours later,
+  which sent the model reading `config.toml` to investigate a version skew.
+
+  **`/proc/<pid>/exe` ending in `(deleted)` is the check**, and it is the one
+  that catches a stale *process* where `mecha --version` catches a stale
+  *file*:
+
+  ```bash
+  for p in $(pgrep -f '^/home/.*/mecha '); do
+    ls -l /proc/$p/exe | grep -q '(deleted)' && echo "stale: pid $p"
+  done
+  ```
 - **Never build while a benchmark is running.** This host has unified memory
   and llama.cpp inference is bandwidth-bound; a parallel `cargo` build starves
   it. `scripts/start-moe-mtp.sh` records the day a "50x slowdown" was blamed on
