@@ -192,11 +192,23 @@ a different repository on a different version line.
   that catches a stale *process* where `mecha --version` catches a stale
   *file*:
 
+  Walk `exe`, never `argv`. A process launched off `$PATH` has argv `mecha
+  tui`, so any `pgrep` for the install path misses precisely the interactive
+  session most likely to be stale — which the first version of this check did:
+
   ```bash
-  for p in $(pgrep -f '^/home/.*/mecha '); do
-    ls -l /proc/$p/exe | grep -q '(deleted)' && echo "stale: pid $p"
+  for p in $(ls /proc | grep -E '^[0-9]+$'); do
+    t=$(readlink /proc/$p/exe 2>/dev/null) || continue
+    case "$t" in
+      "$HOME"/.cargo/bin/*"(deleted)") echo "stale: pid $p -> $t";;
+    esac
   done
   ```
+
+  The services in step 2 clear themselves, since restarting them re-execs.
+  What this finds is everything *else*: a TUI, a `mecha chat`, anything a
+  person left open in another terminal — none of which any `systemctl` line
+  reaches.
 - **Never build while a benchmark is running.** This host has unified memory
   and llama.cpp inference is bandwidth-bound; a parallel `cargo` build starves
   it. `scripts/start-moe-mtp.sh` records the day a "50x slowdown" was blamed on
