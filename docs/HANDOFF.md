@@ -1088,6 +1088,41 @@ are worth reading together because one absence produced all three:
 mecha-graph shipped 2026-08-16 (repo public, three crates at 0.1.0, tools
 unprefixed, store at `~/.mecha-graph/`). What that arc left open:
 
+- **Notes have a home and no way in.** The graph already treats notes as a
+  first-class *user-authored* source — `reflect.note` is an episode kind keyed
+  by the note's stable id, `content_hash` catches an edited note as an update
+  rather than a duplicate, and `reflect-process` promotes a structured note
+  (`Type: #person/#company/#book`) into entities with identifiers and facts.
+  That is the hard half and it is built. What is missing is **ingestion**:
+  Reflect appears nowhere in `INTEGRATIONS.md`'s sources table, so notes reach
+  the graph only if something else puts them there, and no other note
+  application is understood at all.
+
+  Worth doing because notes are the highest-confidence source the graph has —
+  they are the user's own words about their own world, where mail and Slack are
+  other people's — and because the mecha side already advertises the graph as
+  holding "who people are and what you already promised", which is exactly what
+  people put in notes.
+
+  **The machinery already exists in both shapes this needs.** `imessage` reads
+  a local SQLite file with a path argument, and `slack` authenticates with a
+  user token — so a notes importer is a question of *which application*, not of
+  new source infrastructure. The two families to price:
+
+  - **Local-file apps** (Obsidian, Logseq — markdown vaults; Apple Notes and
+    Bear — local SQLite) follow the `imessage` pattern: a path, a reader, and
+    on Apple's stores the same Full Disk Access caveat that one already
+    carries. No credential, no network, no rate limit.
+  - **API apps** (Notion, Reflect) follow the `slack` pattern: a token, and
+    whatever the vendor's export granularity turns out to be.
+
+  The first step is a survey of which of these actually expose a stable read
+  path today rather than a guess at it — the `mecha-graph source add <kind>`
+  surface is the same either way, so the work is deciding what to support, not
+  how. **Do not let this be advertised before it is built**: the
+  mecha introduction's integration table deliberately omits notes for exactly
+  that reason, and should gain a row only when a source exists.
+
 - **No release workflow.** The three crates were hand-published; the repo has
   no CI at all. mecha's tag-driven workflow with Trusted Publishing is the
   template, and the half-published-workspace trap it documents applies
