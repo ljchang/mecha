@@ -1,6 +1,6 @@
 ---
 title: Configuration
-sidebar_position: 3
+sidebar_position: 4
 description: The layered TOML config — where the files live, how layers merge, and the four settings worth getting right early.
 ---
 
