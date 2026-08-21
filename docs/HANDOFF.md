@@ -1402,6 +1402,11 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
     reinstall — the `update` skill, whose whole point is that a tag is not an
     install.
 
+  **Drag-and-drop onto the TUI prompt works locally** and is the third door.
+  It is structurally impossible over SSH — a terminal pastes the *laptop's*
+  path and the TUI resolves it on the far box — so testing it means a local
+  terminal, which is what made it look absent.
+
   Also deliberately not built, and named so it is not rediscovered: **an image
   cannot join a run already in flight.** The steering queue is
   `VecDeque<String>` and a mid-run attachment still lands on disk and still
