@@ -1207,6 +1207,35 @@ browser leg split into `pick --url` and `pick --redirect` so it can span two
 commands minutes apart, which is what lets a document enter `drive.file` scope
 from a headless box with no tunnel and no forwarded port. `cfa2cc2`.
 
+**2026-08-21 — the remote control.** A live TUI session and a named Slack
+thread became the same conversation. `/remote-control <name>` claims a durable
+name, opens or re-opens its thread in the owner's DM, and tees the run's
+`AgentEvent`s into `slack::pump` — which needed no change at all, because it
+had been written as a standalone consumer months earlier. What the run does and
+what you type appear in both places; typing in the thread steers a run in
+flight or starts a turn; files move both directions, out through `/send` and
+`show_file` and in through a staging directory the connector owns. The design
+is `docs/REMOTE-CONTROL-DESIGN.md`, written before any of it and settled the
+same day.
+
+The shape came from one constraint: a `Conversation` — messages *and* taint —
+lives in the running process's memory and the session JSONL has one writer, so
+there is no symmetric design to look for. One owner, many terminals. The
+connector consequently stopped answering for a mirrored thread, which it had
+been doing invisibly: a reply used to mint a thread record and start a fresh
+conversation in a different workspace under a different permission mode,
+answering in a scrollback it knew nothing about. Never a leak — that
+conversation is clean, taint and all — but a stranger wearing the thread's
+clothes, which reads worse and is just as wrong to act on.
+
+Two code reviews found twenty-two defects across the arc, four of them real
+bugs in code that already had passing tests, and **two that predated the arc
+entirely**: a `/model`, `/provider` or `/mcp` switch had always rebuilt the
+agent from config alone, silently dropping `ask_user` and `recall`, and had
+always reverted the permission mode to *ask* while the status line went on
+claiming `read-only`. Both are fixed; `install_frontend_tools` and
+`approver_for` exist so the two call sites cannot disagree again. `d266fe8`.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -1973,6 +2002,41 @@ All found by pre-push review or by running it.
   at the seam where a path is *read*, not where it is used — and when a
   subsystem changes its working directory, grep for every relative join that
   was betting on the old one.
+
+- **Claiming deleted the work before anything delivered it, and one path out
+  did not deliver.** Text typed into a mirrored Slack thread was removed from
+  its inbox, pushed onto the run's steering queue, and lost — because the queue
+  drains at the *top of the next turn* and a run with no tool calls never has
+  one. Nothing anywhere held a copy. Latent in keyboard steering the whole time;
+  the remote path only made it likely, because lines arrive on a poll decoupled
+  from run boundaries. If a handler removes work from a store before handing it
+  on, every exit from that handler must either deliver it or put it back —
+  including the exits you did not write, like a run that simply ends.
+
+- **`read_only` decides approval, never ordering.** `show_file` called in the
+  same turn as the `fs_write` that made the file found nothing there:
+  `agent.rs`'s `join_all` runs every *approved* call in a turn concurrently, and
+  `read_only` only decides whether approval is asked for. `fs_read` has always
+  had this. A flag named for one property will be read as guaranteeing a second
+  one — the fix was the tool description, because there is no tool-level lever
+  for ordering at all.
+
+- **Failing closed on a thing that was never a record.** The connector's
+  routing lookup iterated `~/.mecha/remote/` and joined `record.json` onto each
+  entry, treating only `NotFound` as skippable. A stray file there — a
+  `.DS_Store`, an editor backup — makes that `ENOTDIR`, so the fail-closed arm
+  fired for *every* owner message in *every* thread and took the whole remote
+  control down until someone found the file. Fail closed on a record you cannot
+  read; skip a thing that was never a record. The two are not the same
+  question, and one directory listing conflates them.
+
+- **A test that asserts prose freezes the prose.** The thread header said
+  "nothing typed here reaches this session" — true when it was written, false
+  one rung later, and posted to every reader in between. The test asserting
+  that exact sentence is what kept it alive through the change that falsified
+  it. Where a message states a *capability*, assert the capability's current
+  shape and assert the old wording is **gone**, or the test becomes the reason
+  the lie survives.
 
 ### Unattended runs
 

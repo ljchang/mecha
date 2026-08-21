@@ -92,10 +92,11 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,140 tests**, no failures — re-measured 2026-08-20 on `main` at
-`cfa2cc2` (629 in the `mecha-core` lib suite, 297 in `mecha-cli`, 122 in
+Expect **1,192 tests**, no failures — re-measured 2026-08-21 on `main` at
+`d266fe8` (629 in the `mecha-core` lib suite, 349 in `mecha-cli`, 122 in
 `mecha-mail`, 75 in `mecha-slack`, and 17 across the two integration suites
-that need real backends). The earlier 2026-08-20 count was 1,105 at 0.1.9,
+that need real backends). The 2026-08-20 counts were 1,140 at `cfa2cc2` and
+1,105 at 0.1.9,
 the 2026-08-19 count was 989 and the 2026-08-18 one 936; the growth from 707 (2026-08-10) spans the 0.1.3–0.1.9 arcs, and each
 release's CHANGELOG entry names what its tests pin. **A flake has now been seen twice and is still unidentified.** Once in
 `mecha-core` on 2026-08-08, and again on 2026-08-19 (`cargo test --workspace`
@@ -160,6 +161,7 @@ A working agent harness, used and measured rather than just compiled.
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed. **`mail_triage`** (2026-08-18) adds archive/read/unread/spam/trash as a closed `TriageAction` enum, thread-level, in a third capability quadrant — `destructive` but *not* `external_send`, so it never routes through the outbox and a read-only run cannot reach it. Tagging is deliberately absent: a tag is mecha's own, on the triage record, not a Gmail label or a Graph category |
 | Tasks | `mecha tasks` list/add/set and the `/tasks` modal onto the graph's GTD board, reached only over `kg_task_*` — no dependency on mecha-graph and no second reader of its schema. Status letters match `mecha-graph tui` screen 6; nothing confirms (the board reaches nobody and has no delete); a reload re-finds the cursor by id because a status change reorders the board |
 | Documents | `mecha-docs`, the fourth binary on `mecha-mail` — Google Docs/Sheets/Slides under **`drive.file` and nothing else**, so only files mecha created or the user picked in Google's own chooser are reachable, and no instruction inside a run can widen that. Reads are `untrusted_input` and never `openWorldHint`; writes are outbox-routed, because writing into a document a third party can read is a publish. No permanent-delete and no sharing verb, with tests on the absences |
+| Remote control | `/remote-control <name>` in the TUI mirrors a live session into a named Slack thread, both directions. Store `~/.mecha/remote/<name>/` (record + inbox + staged files), written by the TUI and read by the connector, which no longer starts its own run in a mirrored thread. Out: `/send <path>`, `mecha slack send`, and the `show_file` tool — whose destination is not an argument and cannot be made one. In: attachments land at `./inbox/`, announced as paths so the taint arms through `fs_read`. Slash commands and `!` stay at the terminal. `mecha slack remote [--sweep]`. `docs/REMOTE-CONTROL-DESIGN.md` |
 | Front door | `mecha frontdoor` list/show/extract/next/**triage**/**needs-info**/**close** over `~/.mecha/requests/` — the quarantine between a stranger's request and a run with tools, and the state machine that lets one reach an answer. The extractor is issued no tools and no history; `Record::for_privileged_run` has no argument that returns the prose; an extraction failure routes to a human. `triage` drafts into the outbox and refuses to run unrouted; `reconcile` closes the loop from released items on its own, with no verb to remember. `mecha-factory-publish drain` fills the directory |
 | Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, **the daemon is installed and running here**; a failed `notify` is recorded on the run |
 | Skills | `~/.mecha/skills/<name>/SKILL.md` in the Agent Skills format, loaded by a `skill` tool call at three levels of disclosure. User-authored with no mechanism for anything else — no install, no registry, no remote body, none derived from a session — which is why loading one arms no taint. `tools:` narrows the surface and can never widen it; a loaded skill crosses compaction verbatim; `mecha eval` forces them off |
@@ -713,6 +715,39 @@ What is genuinely unbuilt, and deliberately so until step 3 answers:
   eventually argue well, and the metric agrees with it, because a run that can
   reach the network fails fewer calls.
 
+### The remote control — built, with one path nobody has been able to run
+
+`/remote-control <name>` mirrors a live TUI session into a named Slack thread,
+both directions, files included. Built and merged 2026-08-21 (`d266fe8`), live
+on this machine. `docs/REMOTE-CONTROL-DESIGN.md` is the design; the arc is in
+[`HISTORY.md`](HISTORY.md) under 2026-08-21. What remains:
+
+- **The connector's attachment download has never actually run.** Everything
+  from the staging directory onward is verified end to end — a staged file
+  lands at `./inbox/<name>`, the model reads it, the run records
+  `taint {private: true, untrusted: false}` — but the half that turns a real
+  Slack attachment into staged bytes (`connector.rs`, `event.files` →
+  `files::download` → `stage_file`) has only ever been simulated, by writing
+  the inbox record and the bytes directly. It cannot be exercised from this
+  side: a file posted with the bot token arrives as a bot message and
+  `is_from_a_human()` filters it, which is correct. **Closing this costs one
+  human gesture** — attach a session, drop any file into the thread from
+  Slack, and read `journalctl --user -u mecha-slack` plus the workspace.
+- **A screenshot arrives as a file the model cannot look at.** `Block` is
+  `Text | Thinking | ToolUse | ToolResult`; there is no image variant, so the
+  conduit works and the understanding does not. A `.txt`, a log or a CSV is
+  useful today. Interim options are a local vision model over `shell`
+  (`scripts/start-e4b.sh` starts multimodal weights) or OCR; the real fix is
+  `Block::Image` plus rendering on both backends, which is the large piece and
+  is unrelated to Slack.
+- **Approvals cannot be answered from the thread.** The run says *waiting for
+  you at the terminal* and stops there. Answering from either surface is a race
+  needing an atomic claim; design §15.
+- **`mecha serve`** — a hosted agent process both front-ends are thin clients
+  of. It is the honest endgame: it survives an SSH drop without tmux and is the
+  only shape that reaches a second machine. It costs the first non-filesystem
+  IPC in the project, which is why it is not first. Design §15.
+
 ### Cheap, and worth doing first
 
 - **`context_window` is `-c / -np` and four derived numbers trusted the wrong
@@ -1057,8 +1092,9 @@ are worth reading together because one absence produced all three:
 
 - **Steering and queuing are the same key.** Enter starts a run when idle and
   steers one already going; there is no way to queue a follow-up instead.
-- **No `/export` or copy.** `NAMES` lists nineteen commands (2026-08-20, after
-  `/docs`) and none of them get the transcript out. `/docs` does put a link on
+- **No `/export` or copy.** `NAMES` lists twenty-one commands (2026-08-21,
+  after `/docs`, `/send` and `/remote-control`) and none of them get the
+  transcript out. `/docs` does put a link on
   the system clipboard over OSC 52 (`tui/docs.rs`, `clipboard_escape`), which
   is the mechanism an export would use — it survives SSH because the escape
   travels back down the same connection the screen does.
