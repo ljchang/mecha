@@ -1,5 +1,16 @@
 #!/bin/bash
-M=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/*/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf)
+S=$(ls -d ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/*/)
+M="$S/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+# **A vision model is two files, and this one is multimodal.** The weights
+# carry the language model; the vision tower ships beside them as a separate
+# mmproj-*.gguf. Without --mmproj the server loads, answers, reports
+# modalities.vision:false, and a model asked about a screenshot says it cannot
+# see images — which reads as a limitation of the model rather than a flag
+# nobody passed. --mmproj-auto is enabled by default and only fires for -hf
+# downloads, so it does nothing for any script here, all of which use -m.
+# mecha's startup preflight reads GET /props and warns in both directions.
+source "$(dirname "$0")/mmproj.sh"
+MMPROJ=$(mmproj_or_die "$S" unsloth/Qwen3.6-35B-A3B-MTP-GGUF)
 # **`-c` is divided across slots, and that is the trap to keep in mind.**
 # `-c 262144 -np 4` is four slots of 65,536, not four of 262,144 — which is why
 # the build's own 4-slot default was dangerous: it silently gave each request an
@@ -192,6 +203,7 @@ CRAM="${MECHA_LLAMA_CRAM:-32768}"
 # is `prompt eval time = ... / N tokens` staying small, not tok/s.
 
 exec ${LLAMA_SERVER:-llama-server} -m "$M" \
+  --mmproj "$MMPROJ" \
   --host 127.0.0.1 --port 8080 -ngl 999 -c "$CTX" -np "$NP" --alias qwen3.6-35b-a3b --jinja \
   -cram "$CRAM" \
   --reasoning-budget 4096 \

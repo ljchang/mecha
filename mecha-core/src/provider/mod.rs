@@ -6,6 +6,7 @@
 
 pub mod anthropic;
 pub mod openai;
+pub mod preflight;
 pub mod retry;
 pub(crate) mod sse;
 

@@ -68,7 +68,44 @@ pub struct PreparedTools {
 /// Build an agent. `interactive` decides whether an un-approved tool call can
 /// prompt a human or must fall back to the configured [`PermissionMode`].
 pub async fn prepare(opts: &GlobalOpts, interactive: bool) -> Result<Prepared> {
-    build(prepare_tools(opts, interactive).await?, opts)
+    let tools = prepare_tools(opts, interactive).await?;
+    preflight_provider(&tools.config, opts).await;
+    build(tools, opts)
+}
+
+/// Ask a local server whether it is serving what config says it is.
+///
+/// One `GET /props`, on the `Sandbox::preflight` argument: config makes
+/// claims a run then narrows around, and reading them back is cheaper and
+/// more correct than reimplementing llama-server's slot arithmetic or
+/// remembering that a vision model is two files.
+///
+/// Warns and never refuses — a mismatch makes a run compact at the wrong
+/// moment or quietly not send a picture, and a preflight that can stop a
+/// working machine from starting is one people turn off. Scoped to
+/// `kind = "local"`: llama-server is the only server here known to answer
+/// this endpoint, and a 404 from somebody else's would be noise on every
+/// start.
+async fn preflight_provider(cfg: &mecha_core::config::Config, opts: &GlobalOpts) {
+    let Ok((name, pcfg)) = cfg.provider(opts.provider.as_deref()) else {
+        return;
+    };
+    if pcfg.kind != "local" {
+        return;
+    }
+    let Some(base_url) = pcfg.base_url.as_deref() else {
+        return;
+    };
+    // Silent when the server is simply not up: that is a failure the next
+    // request reports far better than a startup line can, and printing it
+    // here would put a warning in front of every command on a machine whose
+    // model is not running yet.
+    let Some(props) = mecha_core::provider::preflight::fetch(base_url).await else {
+        return;
+    };
+    for line in mecha_core::provider::preflight::disagreements(&name, pcfg, &props) {
+        eprintln!("warning: {line}");
+    }
 }
 
 /// Build an agent that asks a caller-supplied approver.
@@ -85,6 +122,7 @@ pub async fn prepare_with_approver(
     if tools.config.tools.permission_mode == PermissionMode::Ask {
         tools.approver = approver;
     }
+    preflight_provider(&tools.config, opts).await;
     build(tools, opts)
 }
 
