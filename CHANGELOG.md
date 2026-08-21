@@ -7,7 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-08-21
+
 ### Added
+
+- **Images.** `Block::Image` is a fifth block variant, so a screenshot can be
+  put in front of the model rather than only landing on disk. It rides the
+  **user turn only**: Anthropic accepts an image inside a `tool_result` and the
+  OpenAI dialect's `role: "tool"` messages carry a string and nothing else, so
+  a tool returning pixels would work on one backend and silently lose them on
+  the other — in the one place where the missing thing is what the whole turn
+  was about.
+
+  Four doors reach it: the Slack connector, the remote-control inbox,
+  `mecha run --image <path>`, and **a file dropped on the TUI prompt**. That
+  last was half-built already — a terminal converts a drop into a bracketed
+  paste of the path, and the paste handler had always inserted it; what it
+  never did was look at what the path was. A paste whose every token resolves
+  to an existing image now becomes a chip, `[image: shot.png]`, and the image
+  is sent only if its chip survives to submit — the only undo there is for
+  bytes backspace cannot reach. Requiring the *whole* paste to be paths is the
+  safety property rather than a convenience: a paste is also a paragraph
+  copied off a web page, and attaching any file whose path appeared somewhere
+  in prose would let copied text pull bytes off the disk into a request. It
+  cannot work over SSH and never will, because the path pasted is the laptop's.
+
+  Both backends **degrade to a named line** rather than failing when the model
+  has no eyes, and are tested to word it identically — a conversation crossing
+  a `/model` switch must not tell two stories about its own history. The parts
+  array is built only when an image is present, because the cached prefix is a
+  byte-prefix match and making it the uniform shape would invalidate every run
+  that never sends one.
+
+  Capped at the door rather than per turn (`mecha_core::image`): 1568px long
+  edge, 5 MB encoded, and an image already within them passes through byte for
+  byte. Measured on the screenshot that motivated this: 5.7 MB → 179 KB with
+  `prompt_tokens` **294 either way**, because the server tiles to a fixed count
+  regardless — so the resize buys nothing in context and 32x on the wire and in
+  an append-only session file. One un-resized screenshot was 99% of a
+  transcript, re-sent whole every turn.
+
+- **`[providers.X] vision`, and a preflight that checks it.**
+  `provider::preflight` makes one `GET /props` at startup and compares config
+  against what is served, in **both** directions — declared-but-not-served
+  silently degrades every image to text, served-but-not-declared means a
+  projector is loaded, paid for in memory, and never used. The same request
+  checks `context_window` against the per-slot `n_ctx`, so the `-c` versus
+  `-c / -np` rule is *read* rather than restated, and the configured model
+  against `model_alias`. Warns, never refuses.
+
+- **`mecha setup`.** What an install still needs, and the one command that
+  fixes each. For a local provider it does not ask what you meant — it reads
+  `/props` and `--write` writes down what the server reports, editing the table
+  in place so comments survive. It also inventories mail, documents, Slack and
+  the knowledge graph, reporting **unknown** distinctly from *not set up*,
+  because telling someone their mail is unconfigured when the store is merely
+  unreadable sends them through an OAuth flow they did not need. The graph's
+  own sources are named and never driven, and nothing is scheduled.
+
+- **`mecha trigger daemon --print-unit`.** Prints a systemd user unit naming
+  this binary by absolute path. The documented alternative — copy
+  `scripts/mecha-triggers.service` — cannot be followed by anyone who installed
+  from crates.io, because the crate ships no `scripts/` directory.
+
+- **`scripts/mmproj.sh`.** Every start script sources it, and it refuses to
+  start a multimodal model without its projector, printing the `curl` that
+  fetches it. A vision model is two files; `--mmproj-auto` is on by default and
+  only fires for `-hf`, so it does nothing for a server started with
+  `-m <path>` — which is how four of four local models were being served
+  text-only while the flag list looked handled.
 
 - **`/send <path>` in the TUI, and `mecha slack send`.** A file goes from a
   session into the owner's Slack DM, where a phone can open it. The problem it
@@ -51,6 +119,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `mecha slack remote` lists what this machine mirrors; `--sweep` cools an
   attachment whose session has gone.
+
+### Changed
+
+- **An attached image arms the `private_data` taint leg.** Before images, a
+  Slack attachment armed it because the model had to `fs_read` the file;
+  putting the pixels on the user turn removed the tool call and the taint with
+  it, which loosened the interlock as a side effect of a feature. Typed text
+  still arms nothing — the distinction is that **a screenshot is captured, not
+  composed**: you choose every word you type, and you choose the window rather
+  than everything in it. Enforced in the loop rather than in
+  `Conversation::push`, because the Slack connector appends to `messages`
+  directly.
+
+### Fixed
+
+- **`fs_read` says what a binary file is.** It reported "stream did not contain
+  valid UTF-8", which names the mechanism and not the problem, so a model
+  handed a screenshot retried the same idea through `shell` — costing two
+  approval prompts before concluding what the first error already knew.
+
+### Documentation
+
+- New `features/images.md`; `getting-started/installation.md` gains the
+  local-model section that did not exist; `first-run.md` stops teaching
+  `context_window = -c`, which `features/serving.md` calls the trap worth
+  knowing before you meet it; `config init`'s local block gains
+  `context_window` and `vision`.
 
 ## [0.1.9] - 2026-08-20
 

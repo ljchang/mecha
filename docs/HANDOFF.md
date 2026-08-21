@@ -21,7 +21,7 @@ maps which document holds what.
 
 ## Where the work is
 
-Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.9**
+Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.10**
 (2026-08-20; 0.1.7 and 0.1.8 shipped 2026-08-19 and 2026-08-20 after the mail
 hold lifted). **Four** crates are on crates.io — `mecha-core`, `mecha-mail`,
 `mecha-slack`, `mecha-cli` (the bare name `mecha` was taken, so the CLI
