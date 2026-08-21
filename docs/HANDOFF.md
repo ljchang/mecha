@@ -1379,28 +1379,37 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
   record and a triage run. See `CLAUDE.md`.
 
-- **Images: built and proven on a scratch port; two deploy steps outstanding.**
+- **Images: built, merged and deployed 2026-08-21.**
   `Block::Image`, both provider encoders, `image.rs`'s caps, `provider::preflight`,
-  the `scripts/mmproj.sh` guard and three entry points (Slack connector,
-  remote-control inbox, `mecha run --image`) are on the `vision-and-images`
-  branch, 1,205 tests green. Verified end to end against a real llama-server
-  with a projector loaded: the screenshot that started this was read back
-  verbatim through the release binary. What is **not** done, and neither is
-  safe for an agent to do unattended:
+  the `scripts/mmproj.sh` guard and four entry points (Slack connector,
+  remote-control inbox, `mecha run --image`, and a file dropped on the TUI
+  prompt) are on `main`, 1,210 tests green. Deployed the same day, in the
+  `update` skill's order:
 
-  - **`:8080` is still text-only.** `llama-local.service` has
-    `ExecStart=/home/ljchang/Github/mecha/scripts/start-moe-mtp.sh` — the
-    development checkout is the running service's ExecStart, the trap already
-    recorded on 2026-08-20 — so the `--mmproj` flag reaches the server only
-    once this branch is on that checkout's `main`. Then
-    `systemctl --user restart llama-local`, and the standing rule from that
-    script applies: **measure tok/s afterwards, not just that it came back
-    up.** The projectors for qwen3.6, qwen3.8 and gemma-4-E4B are already
-    downloaded; gemma-4-26B's always was.
-  - **The Slack connector runs the installed binary.** `mecha-slack.service`
-    is `~/.cargo/bin/mecha`, so attaching an image from Slack needs a
-    reinstall — the `update` skill, whose whole point is that a tag is not an
-    install.
+  - **`:8080` serves vision.** `llama-local.service`'s ExecStart is the
+    development checkout, so the merge is what delivered `--mmproj`; the
+    startup line now reads `loaded multimodal model, …/mmproj-BF16.gguf` and
+    `/props` reports `modalities.vision: true` with `n_ctx_slot = 262144`
+    unchanged. Measured after the restart rather than assumed: **72–79 tok/s**
+    on a short prompt against the 70.5 the script records for `-np 4`, so the
+    projector costs nothing in generation and the server did not load under
+    memory pressure — the failure that would have left it permanently slow.
+  - **The binary is reinstalled** and `mecha-slack`, `mecha-triggers` and
+    `mecha-drain` restarted onto it, each verified from its own log line
+    rather than from `is-active`. Worth keeping from this one: **the version
+    string did not change**, because the arc bumped no version — so
+    `mecha --version` proved nothing, and what proved it was `mecha run
+    --help` carrying `--image` plus cargo reporting that it had replaced an
+    install made from the *remote-control worktree*.
+  - **Verified live** on the production config against the screenshot that
+    started this: quoted back verbatim, and with no preflight warning, because
+    config and server now agree.
+
+  **`~/.mecha/config.toml` gained `vision = true` on `[providers.local]`**, and
+  that file is in no repository — a fresh clone gets the code, the projector
+  guard and the preflight, and still sends no image until somebody writes that
+  line. Backup at `config.toml.pre-vision`. The projectors for qwen3.6,
+  qwen3.8 and gemma-4-E4B were downloaded; gemma-4-26B's always was, unused.
 
   **Drag-and-drop onto the TUI prompt works locally** and is the third door.
   It is structurally impossible over SSH — a terminal pastes the *laptop's*
