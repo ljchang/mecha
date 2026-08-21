@@ -6,6 +6,7 @@
 
 pub mod anthropic;
 pub mod openai;
+pub mod preflight;
 pub mod retry;
 pub(crate) mod sse;
 
@@ -43,6 +44,22 @@ pub trait Provider: Send + Sync {
 
     /// Model used when the caller doesn't name one.
     fn default_model(&self) -> &str;
+
+    /// Whether this provider will actually put an image in front of a model.
+    ///
+    /// Asked by whatever is about to *build* an image block — the Slack
+    /// connector, the TUI — so it can name a file instead of reading and
+    /// base64-encoding one that would only be rendered as text anyway. The
+    /// encoders degrade correctly without this; what it saves is a megabyte
+    /// of base64 written into a transcript for nothing.
+    ///
+    /// Defaults to `false`, so a provider added later is text-only until
+    /// somebody says otherwise — the direction that fails safe, on the
+    /// `unrouted_domains` reasoning: forgetting costs a feature that does
+    /// not fire, and the alternative costs a failed request.
+    fn vision(&self) -> bool {
+        false
+    }
 
     /// Run one turn. With `sink`, stream and emit deltas as they arrive; the
     /// accumulated response is still returned.

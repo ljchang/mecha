@@ -40,7 +40,7 @@ use crossterm::terminal::{
 use futures::StreamExt;
 use mecha_core::agent::{Agent, AgentEvent, Conversation, Phase, RunOutcome};
 use mecha_core::config::PermissionMode;
-use mecha_core::message::{Message, Usage};
+use mecha_core::message::{Block as MsgBlock, Message, Usage};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use mecha_core::tool::{Approver, ModeApprover};
 use ratatui::prelude::*;
@@ -401,6 +401,16 @@ struct App {
     /// that vanished when you changed model would be the `todo` handle bug in
     /// a surface where the loss is both silent and outbound.
     attached: Option<crate::slack::remote::Attached>,
+    /// Images dropped onto the prompt and not yet sent, as
+    /// `(chip text, block)`.
+    ///
+    /// Held here rather than folded into `input` because the input is a
+    /// `String` a person edits with the arrow keys, and base64 is not
+    /// something anyone should be able to put a cursor in the middle of.
+    /// The chip is the handle: an entry is attached on submit **only if its
+    /// chip is still in the text**, so deleting the chip really does detach
+    /// the image, which is the only way a person can undo a drop.
+    dropped: Vec<(String, MsgBlock)>,
     /// When the thread was last told a run is waiting on the terminal. A run
     /// in `ask` mode making several gated calls would otherwise post one DM
     /// each — flooding the scrollback and pushing the transport toward the
@@ -665,6 +675,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         shell_tx,
         attach_tx,
         attached: None,
+        dropped: Vec::new(),
         attaching: None,
         last_waiting_note: None,
         providers: prepared
@@ -1061,7 +1072,7 @@ async fn run_loop(
                     // `from_remote` suppresses the echo: whatever queued this
                     // already announced itself when it arrived.
                     if let Err(e) =
-                        submit(app, carried, &mut events_tx, &mut events_rx, live, session, true)
+                        submit(app, carried, Vec::new(), &mut events_tx, &mut events_rx, live, session, true)
                     {
                         app.transcript
                             .push(Entry::Error(format!("could not carry steering over: {e:#}")));
@@ -1700,10 +1711,20 @@ fn on_terminal_event(
         // Inserted whole, never submitted. Dropping a file onto the terminal
         // arrives here too: terminals send the *path* as pasted text, so a drop
         // is a paste as far as this is concerned.
+        //
+        // Which is also why a drop cannot work over SSH, and that is worth
+        // knowing rather than debugging: the path pasted is the path on the
+        // *laptop*, and this process resolves it on the box at the other end,
+        // where it does not exist. Nothing here can fix that — the bytes never
+        // left the laptop — and it is why the Slack conduit exists.
         Event::Paste(text) => {
             app.quit_armed = false;
-            app.input.insert_str(app.cursor, &text);
-            app.cursor += text.len();
+            let insert = match dropped_images(app, &text, live) {
+                Some(chips) => chips,
+                None => text,
+            };
+            app.input.insert_str(app.cursor, &insert);
+            app.cursor += insert.len();
             Ok(())
         }
         Event::Mouse(mouse) => {
@@ -1716,6 +1737,173 @@ fn on_terminal_event(
         }
         _ => Ok(()),
     }
+}
+
+/// Is this paste a file drop of images, and if so, take them.
+///
+/// Returns the chip text to insert in place of the paths, or `None` to insert
+/// the paste unchanged.
+///
+/// **Every token must resolve to an existing image**, and that conjunction is
+/// the safety property. A paste is not always a drop — it is also a paragraph
+/// somebody copied off a web page — and a rule that attached any file whose
+/// path appeared *somewhere* in pasted prose would let copied text pull bytes
+/// off this disk into a request. Requiring the whole paste to be nothing but
+/// paths makes "this was a drop" a decidable question rather than a guess.
+///
+/// A non-image file inserts its path unchanged, deliberately: that is already
+/// useful, because `fs_read` can read it and the model needs to know where it
+/// is. Only an image needs the other treatment, because only an image is
+/// something no tool here can turn into text.
+fn dropped_images(app: &mut App, paste: &str, live: &Live) -> Option<String> {
+    let paths = drop_paths(paste)?;
+    // Nothing is read or resized when the model has no eyes: that is a
+    // megabyte of work whose only product would be a chip standing in for a
+    // picture nobody can look at. The path goes in as it always did.
+    if !live.agent.vision() {
+        app.transcript.push(Entry::Notice(format!(
+            "{} cannot see images — dropped the path instead. See `[providers.*] vision`.",
+            live.agent.model()
+        )));
+        return None;
+    }
+
+    let mut chips = String::new();
+    let mut attached = 0usize;
+    let mut bytes = 0usize;
+    for path in &paths {
+        match mecha_core::image::block_from_path(path) {
+            Ok(Some(block)) => {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                if let MsgBlock::Image { data, .. } = &block {
+                    // Base64 is 4 characters per 3 bytes; the figure shown is
+                    // the encoded size, because that is what is actually
+                    // carried in every subsequent turn.
+                    bytes += data.len() / 4 * 3;
+                }
+                let chip = format!("[image: {name}]");
+                if !chips.is_empty() {
+                    chips.push(' ');
+                }
+                chips.push_str(&chip);
+                app.dropped.push((chip, block));
+                attached += 1;
+            }
+            // Not an image: fall back to inserting the paste as typed, which
+            // is what a dropped `.md` or `.csv` wants anyway.
+            Ok(None) => return None,
+            Err(e) => {
+                app.transcript.push(Entry::Error(format!(
+                    "could not take {}: {e:#}",
+                    path.display()
+                )));
+                return None;
+            }
+        }
+    }
+    if attached == 0 {
+        return None;
+    }
+    app.transcript.push(Entry::Notice(format!(
+        "⇄ {attached} image{} attached · {}",
+        if attached == 1 { "" } else { "s" },
+        human_bytes(bytes)
+    )));
+    Some(chips)
+}
+
+/// Split a paste into paths, or `None` if it is not one.
+///
+/// Terminals do not agree on how a dropped path is escaped: some quote the
+/// whole thing, some backslash-escape the spaces, most do nothing at all
+/// because most paths have no spaces in them. All three are handled, because
+/// the one that is not handled is the one with a space in it — which is every
+/// screenshot macOS has ever named.
+fn drop_paths(paste: &str) -> Option<Vec<std::path::PathBuf>> {
+    let trimmed = paste.trim();
+    if trimmed.is_empty() || trimmed.contains('\n') {
+        return None;
+    }
+    // **The whole paste as one path, first.** Terminals disagree about
+    // escaping and some paste a dropped path raw, which makes
+    // `/shots/a shot.png` indistinguishable from two files by splitting
+    // alone. Asking the filesystem settles it: if the entire paste names a
+    // file, it is one file, and no split can be more right than that.
+    let whole = std::path::PathBuf::from(trimmed);
+    if whole.is_file() {
+        return Some(vec![whole]);
+    }
+
+    let mut out = Vec::new();
+    for token in split_drop_tokens(trimmed) {
+        let path = std::path::PathBuf::from(&token);
+        // Must already exist. A path that does not is a person talking about
+        // a file, not handing one over.
+        if !path.is_file() {
+            return None;
+        }
+        out.push(path);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Quote-aware and backslash-aware whitespace split.
+fn split_drop_tokens(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for c in s.chars() {
+        if escaped {
+            cur.push(c);
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            } else {
+                cur.push(c);
+            }
+        } else if c == '\'' || c == '"' {
+            quote = Some(c);
+        } else if c.is_whitespace() {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(c);
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn human_bytes(b: usize) -> String {
+    if b >= 1024 * 1024 {
+        format!("{:.1} MB", b as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.0} KB", b as f64 / 1024.0)
+    }
+}
+
+/// Take the dropped images whose chips survived editing.
+///
+/// Anything whose chip was deleted is dropped on the floor rather than
+/// carried to the next turn: the person removed it from the sentence they
+/// were writing, and an image that reappeared on a later prompt would be the
+/// most confusing possible reading of that.
+fn take_dropped(app: &mut App, text: &str) -> Vec<MsgBlock> {
+    std::mem::take(&mut app.dropped)
+        .into_iter()
+        .filter(|(chip, _)| text.contains(chip.as_str()))
+        .map(|(_, block)| block)
+        .collect()
 }
 
 fn on_key(
@@ -2029,7 +2217,16 @@ fn on_key(
                 app.cursor = 0;
                 app.history.push(text.clone());
                 app.history_pos = None;
-                submit(app, text, events_tx, events_rx, live, session, false)?;
+                // **The chip is the handle, so deleting it detaches.** A
+                // dropped image is otherwise impossible to take back: the
+                // bytes are not in the input line, so no amount of
+                // backspacing reaches them, and the only visible sign of the
+                // attachment would be a piece of text that did nothing. What
+                // is on screen has to be what gets sent.
+                let images = take_dropped(app, &text);
+                submit(
+                    app, text, images, events_tx, events_rx, live, session, false,
+                )?;
             }
         }
 
@@ -2686,6 +2883,12 @@ fn run_command(
 fn submit(
     app: &mut App,
     text: String,
+    // Images to put in front of the model on this turn, already bounded by
+    // `mecha_core::image`. Separate from `text` rather than folded into it
+    // because everything above — the steering queue, the slash-command check,
+    // the echo — is about the sentence, and only the message built at the end
+    // is about the pixels.
+    images: Vec<MsgBlock>,
     events_tx: &mut mpsc::UnboundedSender<AgentEvent>,
     events_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
     live: &Live,
@@ -2729,7 +2932,18 @@ fn submit(
         return Ok(());
     }
 
-    let user = Message::user(&text);
+    // Text first, images after: the order both provider families document,
+    // and the one `encode_message` preserves.
+    let user = if images.is_empty() {
+        Message::user(&text)
+    } else {
+        let mut content = vec![MsgBlock::text(&text)];
+        content.extend(images);
+        Message {
+            role: mecha_core::message::Role::User,
+            content,
+        }
+    };
     app.convo.push(user.clone());
     if let Some(s) = session {
         s.append(&Record::Message(user))?;
@@ -4464,6 +4678,34 @@ fn deliver_inbound(
                 Vec::new()
             }
         };
+        // **The file lands either way; the pixels are the extra.** Writing it
+        // into the workspace is the durable half — it is what `fs_read`,
+        // `shell` and tomorrow's run reach. Putting the image *into the turn*
+        // is what makes it a feature, and it is conditional on there being
+        // eyes: a text-only model would be handed a resized JPEG only to
+        // render it as its own filename.
+        let mut images = Vec::new();
+        if live.agent.vision() {
+            for rel in &landed {
+                let path = workspace.join(rel.trim_start_matches("./"));
+                match mecha_core::image::block_from_path(&path) {
+                    Ok(Some(block)) => images.push(block),
+                    Ok(None) => {}
+                    // Reported in the thread as well as the terminal, on the
+                    // rule two lines up: from the phone's side a picture was
+                    // sent, and a picture that silently did not arrive is
+                    // indistinguishable from one the session ignored.
+                    Err(e) => {
+                        app.transcript
+                            .push(Entry::Error(format!("could not look at {rel}: {e:#}")));
+                        spawn_note(
+                            &attached,
+                            &format!("Saved {rel}, but could not look at it: {e:#}"),
+                        );
+                    }
+                }
+            }
+        }
         if !landed.is_empty() {
             app.transcript
                 .push(Entry::Notice(format!("⇄ saved {}", landed.join(", "))));
@@ -4520,7 +4762,9 @@ fn deliver_inbound(
         // remaining lines with it — they are gone from disk and would never be
         // delivered anywhere. One line failing is a line to report, not a
         // reason to stop reading the rest.
-        if let Err(e) = submit(app, prompt, events_tx, events_rx, live, session, true) {
+        if let Err(e) = submit(
+            app, prompt, images, events_tx, events_rx, live, session, true,
+        ) {
             app.transcript.push(Entry::Error(format!(
                 "could not deliver a Slack line: {e:#}"
             )));
@@ -6165,6 +6409,110 @@ fn spawn_draft(app: &mut App, verb: &str, thread: &str, account: &str, to: Optio
 }
 
 #[cfg(test)]
+mod drop_tests {
+    use super::*;
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "mecha-drop-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d.join(name)
+    }
+
+    fn png_at(p: &std::path::Path) {
+        let img = image::RgbImage::from_fn(8, 8, |_, _| image::Rgb([1, 2, 3]));
+        image::DynamicImage::ImageRgb8(img)
+            .save_with_format(p, image::ImageFormat::Png)
+            .unwrap();
+    }
+
+    /// The plain case, and the three escapings a terminal might apply to it.
+    /// The one that matters is the space: every screenshot macOS names has
+    /// one, so a splitter that only handles bare paths handles almost no real
+    /// drops.
+    #[test]
+    fn a_dropped_path_is_recognised_however_the_terminal_escaped_it() {
+        let p = tmp("a shot.png");
+        png_at(&p);
+        let d = p.display().to_string();
+        for paste in [
+            d.to_string(),
+            format!("'{d}'"),
+            format!("\"{d}\""),
+            d.replace(' ', "\\ "),
+        ] {
+            let got = drop_paths(&paste).unwrap_or_else(|| panic!("not parsed: {paste}"));
+            assert_eq!(got, vec![p.clone()], "from {paste}");
+        }
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// **The safety property.** A paste is not always a drop, and prose that
+    /// merely contains a real path must never pull bytes off this disk into a
+    /// request. Verified to fail on the looser rule — "attach any existing
+    /// image path found in the paste" — which would match here.
+    #[test]
+    fn pasted_prose_that_merely_mentions_a_real_image_is_not_a_drop() {
+        let p = tmp("mentioned.png");
+        png_at(&p);
+        let prose = format!("the bug is visible in {} near the top", p.display());
+        assert!(
+            drop_paths(&prose).is_none(),
+            "a sentence is not a drop, even when a path in it resolves"
+        );
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A path that does not exist is somebody talking about a file.
+    #[test]
+    fn a_path_that_does_not_exist_is_not_a_drop() {
+        assert!(drop_paths("/no/such/shot.png").is_none());
+        assert!(drop_paths("look at shot.png").is_none());
+    }
+
+    /// Several files at once is one drop, not several.
+    #[test]
+    fn two_files_dropped_together_are_both_taken() {
+        let (a, b) = (tmp("one.png"), tmp("two.png"));
+        png_at(&a);
+        png_at(&b);
+        let paste = format!("{} {}", a.display(), b.display());
+        assert_eq!(drop_paths(&paste).unwrap().len(), 2);
+        std::fs::remove_file(&a).ok();
+        std::fs::remove_file(&b).ok();
+    }
+
+    /// The chip is the handle, so deleting it has to actually detach — a
+    /// dropped image cannot be reached with backspace, so this is the only
+    /// undo there is.
+    #[test]
+    fn deleting_the_chip_detaches_the_image_and_keeping_it_does_not() {
+        let block = MsgBlock::image("image/png", b"xx", Some("shot.png".into()));
+        let mut app = crate::tui::tests::test_app();
+
+        app.dropped = vec![("[image: shot.png]".into(), block.clone())];
+        assert_eq!(
+            take_dropped(&mut app, "what is this? [image: shot.png]").len(),
+            1,
+            "chip still in the text: the image is sent"
+        );
+
+        app.dropped = vec![("[image: shot.png]".into(), block)];
+        assert!(
+            take_dropped(&mut app, "never mind").is_empty(),
+            "chip deleted: the image is not sent"
+        );
+        assert!(
+            app.dropped.is_empty(),
+            "and it does not linger to surprise the next turn"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::input_layout;
     use super::*;
@@ -6174,7 +6522,7 @@ mod tests {
 
     /// An `App` with nothing going on, for frame tests. Fields that need a
     /// live agent stay inert: `running` is `None`, channels dangle unused.
-    fn test_app() -> App {
+    pub(super) fn test_app() -> App {
         let (shell_tx, _shell_rx) = mpsc::unbounded_channel();
         // The receiver is dropped; frame tests never run a `!command`.
         std::mem::forget(_shell_rx);
@@ -6225,6 +6573,7 @@ mod tests {
             shell_tx,
             attach_tx: mpsc::unbounded_channel().0,
             attached: None,
+            dropped: Vec::new(),
             attaching: None,
             last_waiting_note: None,
             providers: Vec::new(),

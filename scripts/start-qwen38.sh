@@ -16,6 +16,8 @@
 # ~2026-08-12. Days old at the time of writing, so treat quirks as unmapped
 # rather than absent.
 M=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--Qwen3.8-27B-GGUF/snapshots/*/Qwen3.8-27B-Q4_K_M.gguf)
+source "$(dirname "$0")/mmproj.sh"
+MMPROJ=$(mmproj_or_die "$(dirname "$M")" unsloth/Qwen3.8-27B-GGUF)
 
 # MTP is IN THE FILE, exactly like the 3.6 MoE — an earlier version of this
 # script was wrong about that, and the correction is worth its history.
@@ -189,6 +191,7 @@ M=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--Qwen3.8-27B-GGUF
 # temperature` OVERRIDES the value below. The two are pinned to 1.0 together
 # and must move together.
 exec ${LLAMA_SERVER:-llama-server} -m "$M" \
+  --mmproj "$MMPROJ" \
   --host 127.0.0.1 --port 8083 -ngl 999 -c 262144 -np 1 --alias qwen3.8-27b --jinja \
   --reasoning-budget 4096 \
   --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 \

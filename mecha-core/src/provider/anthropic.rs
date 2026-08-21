@@ -28,6 +28,7 @@ pub struct Anthropic {
     api_key: String,
     base_url: String,
     default_model: String,
+    vision: bool,
     retry: crate::provider::retry::RetryPolicy,
 }
 
@@ -59,6 +60,7 @@ impl Anthropic {
                 .model
                 .clone()
                 .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+            vision: cfg.vision_enabled(),
             retry: crate::provider::retry::RetryPolicy::from_config(cfg),
         })
     }
@@ -78,7 +80,11 @@ impl Anthropic {
     }
 
     fn body(&self, req: &CompletionRequest, stream: bool) -> Result<Value> {
-        let mut messages: Vec<Value> = req.messages.iter().map(encode_message).collect();
+        let mut messages: Vec<Value> = req
+            .messages
+            .iter()
+            .map(|m| encode_message(m, self.vision))
+            .collect();
 
         // A second, *moving* breakpoint on the last content block. The static
         // one below pins tools+system; without this one the entire message
@@ -199,6 +205,10 @@ impl Provider for Anthropic {
         &self.default_model
     }
 
+    fn vision(&self) -> bool {
+        self.vision
+    }
+
     async fn complete(
         &self,
         req: &CompletionRequest,
@@ -273,16 +283,20 @@ fn api_error(text: &str) -> String {
         .unwrap_or_else(|| text.chars().take(500).collect())
 }
 
-fn encode_message(m: &Message) -> Value {
+fn encode_message(m: &Message, vision: bool) -> Value {
     let role = match m.role {
         Role::User => "user",
         Role::Assistant => "assistant",
     };
-    let content: Vec<Value> = m.content.iter().filter_map(encode_block).collect();
+    let content: Vec<Value> = m
+        .content
+        .iter()
+        .filter_map(|b| encode_block(b, vision))
+        .collect();
     json!({"role": role, "content": content})
 }
 
-fn encode_block(b: &Block) -> Option<Value> {
+fn encode_block(b: &Block, vision: bool) -> Option<Value> {
     Some(match b {
         Block::Text { text } => json!({"type": "text", "text": text}),
         Block::Thinking { text, signature } => {
@@ -303,6 +317,24 @@ fn encode_block(b: &Block) -> Option<Value> {
             "tool_use_id": tool_use_id,
             "content": content,
             "is_error": is_error,
+        }),
+        // `data` is bare base64 in the type, because this is the dialect
+        // that wants it bare — the `data:` prefix belongs to the other one.
+        Block::Image {
+            media_type, data, ..
+        } if vision => json!({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        }),
+        // Same degrade as the OpenAI backend, and it has to be the same
+        // words: a conversation carried across a `/model` switch would
+        // otherwise describe its own history differently depending on who
+        // was asked, which is two answers to "what was in this turn".
+        Block::Image {
+            media_type, source, ..
+        } => json!({
+            "type": "text",
+            "text": Block::image_placeholder(media_type, source.as_deref()),
         }),
     })
 }
@@ -616,6 +648,7 @@ mod tests {
             api_key: "test-key".into(),
             base_url: base_url.into(),
             default_model: DEFAULT_MODEL.into(),
+            vision: true,
             // Fast retries: these tests measure counts and outcomes, not
             // wall clock.
             retry: crate::provider::retry::RetryPolicy {
@@ -875,19 +908,69 @@ mod tests {
     fn a_thinking_block_with_no_signature_is_dropped_rather_than_replayed() {
         // Signatures are opaque and checked. Sending a reconstructed one 400s
         // the *next* turn, which is a confusing place to discover it.
-        let dropped = encode_block(&Block::Thinking {
-            text: "reasoning".into(),
-            signature: None,
-        });
+        let dropped = encode_block(
+            &Block::Thinking {
+                text: "reasoning".into(),
+                signature: None,
+            },
+            true,
+        );
         assert!(dropped.is_none());
 
-        let kept = encode_block(&Block::Thinking {
-            text: "reasoning".into(),
-            signature: Some("sig-abc".into()),
-        })
+        let kept = encode_block(
+            &Block::Thinking {
+                text: "reasoning".into(),
+                signature: Some("sig-abc".into()),
+            },
+            true,
+        )
         .unwrap();
         assert_eq!(kept["signature"], "sig-abc");
         assert_eq!(kept["thinking"], "reasoning");
+    }
+
+    #[test]
+    fn an_image_is_a_base64_source_block_when_seen_and_a_named_line_when_not() {
+        let block = Block::image("image/png", b"\x89PNG-ish", Some("shot.png".into()));
+
+        let seen = encode_block(&block, true).unwrap();
+        assert_eq!(seen["type"], "image");
+        assert_eq!(seen["source"]["type"], "base64");
+        assert_eq!(seen["source"]["media_type"], "image/png");
+        let data = seen["source"]["data"].as_str().unwrap();
+        assert!(
+            !data.starts_with("data:"),
+            "bare base64 here — the `data:` prefix is the other dialect's: {data}"
+        );
+
+        let blind = encode_block(&block, false).unwrap();
+        assert_eq!(blind["type"], "text", "degrades to text, never dropped");
+        let text = blind["text"].as_str().unwrap();
+        assert!(text.contains("shot.png"), "{text}");
+        assert!(!text.contains("PNG-ish"), "and never the payload: {text}");
+    }
+
+    /// The two backends must describe the same block the same way, or a
+    /// conversation carried across a `/model` switch tells two stories about
+    /// its own history.
+    #[test]
+    fn both_backends_name_an_unseen_image_identically() {
+        let block = Block::image("image/png", b"x", Some("shot.png".into()));
+        let mine = encode_block(&block, false).unwrap();
+
+        let mut theirs = Vec::new();
+        crate::provider::openai::encode_message_for_test(
+            &Message {
+                role: Role::User,
+                content: vec![block],
+            },
+            &mut theirs,
+            false,
+        );
+        assert_eq!(
+            mine["text"].as_str().unwrap(),
+            theirs[0]["content"].as_str().unwrap()
+        );
     }
 
     #[test]
@@ -895,14 +978,17 @@ mod tests {
         // There is no legal slot for a user message between a `tool_use` and
         // its result, so steering text has to travel as another block of the
         // message already carrying the results.
-        let encoded = encode_message(&Message::tool_results(vec![
-            Block::ToolResult {
-                tool_use_id: "t1".into(),
-                content: "42".into(),
-                is_error: false,
-            },
-            Block::text("actually, focus on X"),
-        ]));
+        let encoded = encode_message(
+            &Message::tool_results(vec![
+                Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "42".into(),
+                    is_error: false,
+                },
+                Block::text("actually, focus on X"),
+            ]),
+            true,
+        );
 
         assert_eq!(encoded["role"], "user");
         let content = encoded["content"].as_array().unwrap();

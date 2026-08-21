@@ -47,6 +47,7 @@ the benchmark both run *release* paths that a debug build never touches.
 
 ```
 message.rs   provider-agnostic Message/Block/Usage/StopReason types
+image.rs     a file on disk to a bounded image block, capped at the door
 provider/    Provider trait + anthropic.rs (raw HTTP) + openai.rs (compatible)
 tool/        Tool trait, Registry, Approver, builtin.rs
 mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
@@ -189,6 +190,109 @@ The model is **hybrid attention** — 11 of 41 layers hold a KV cache, the other
 30 carry a constant-size recurrent state — which is why long context is cheap
 here (63 tok/s at 108k against 92 at 1k) and why the KV cost is 22 KiB/token
 rather than the 82 the naive per-layer arithmetic predicts.
+
+## Images
+
+`Block::Image` is a fifth variant on `message.rs`'s block type, and it is
+**user turns only**. Anthropic accepts an image inside a `tool_result`; the
+OpenAI dialect's `role: "tool"` messages carry a string and nothing else. A
+tool returning pixels would work on one backend and silently lose them on the
+other, in the one place where the missing thing is what the whole turn was
+about. So an image enters the way a person hands one over — the connector and
+the TUI attach it to the turn — and "look at the chart you just made" is
+deliberately not built.
+
+Four decisions, each a bug if undone:
+
+- **Both backends degrade to a named line rather than failing**, and a test
+  asserts they word it *identically*. A conversation is one object that
+  survives a `/model` switch, so two renderings that drift apart would have a
+  transcript telling two stories about its own history depending on who was
+  asked. It also means a run against a text-only model behaves exactly as it
+  did before the variant existed.
+- **The parts array is built only when an image is present.** The cached
+  prefix is a byte-prefix match, so making `{"content": [...]}` the uniform
+  shape would invalidate the prefix of every run that never sends an image —
+  and plenty of OpenAI-compatible shims accept only the string form.
+- **Caps are applied at the door, never per turn** (`image.rs`). The
+  transcript is append-only and every turn resends the whole history, so a
+  resize is paid once and collected on every turn afterwards. `MAX_EDGE`
+  1568 and `MAX_BYTES` 5 MB — Anthropic's hard per-image limit, applied to
+  local servers too because a conversation is one object. An image that
+  already fits is passed through **byte for byte**: re-encoding a crisp
+  screenshot of text is a real loss, and that is the case this exists for.
+  Measured: 5.7 MB → 179 KB with `prompt_tokens` identical at 294, because
+  llama-server tiles to a fixed count regardless.
+- **`recall` returns the filename, never the payload.** Base64 is a haystack
+  of every alphanumeric substring there is, so returning `data` would make a
+  one-letter query match every image and print a megabyte back into the
+  context that tool exists to protect. `render_for_summary` does the same,
+  for the same reason plus a sharper one: the summariser is a tool-less
+  *prose* call, so the payload could only arrive as literal text in a request
+  whose whole purpose is to be smaller than what it replaces.
+
+**Three doors, and which one you can use is decided by where you are
+sitting.** The Slack connector and the remote-control inbox attach an image to
+the turn after landing the file in the workspace; `mecha run --image` is the
+scripted one; and **dropping a file on the TUI prompt** is the local one.
+
+That last is not a drop protocol: a terminal converts a drop into a *bracketed
+paste of the path*, which is why one `Event::Paste` arm serves both — and why
+it **cannot work over SSH, ever**. The path pasted is the path on the laptop
+and the process resolves it on the box at the other end. The bytes never left
+the laptop. Nothing in the harness can fix that, and it is the reason the
+Slack conduit exists.
+
+Two rules on the drop path:
+
+- **Every token must resolve to an existing image, or it is not a drop.** A
+  paste is also a paragraph somebody copied off a web page, and a rule that
+  attached any file whose path appeared *somewhere* in pasted prose would let
+  copied text pull bytes off the disk into a request. Requiring the whole
+  paste to be paths and nothing else makes "was this a drop" decidable rather
+  than guessed. The whole paste is tried as one path *before* splitting,
+  because terminals disagree about escaping and a raw `/shots/a shot.png` is
+  indistinguishable from two files by splitting alone — asking the filesystem
+  settles it, and a bare space is what every macOS screenshot has.
+- **The chip is the handle, so deleting it detaches.** Base64 cannot live in a
+  `String` edited with arrow keys, so the bytes sit beside the input and
+  `[image: shot.png]` stands in. An entry is sent only if its chip survives to
+  submit — otherwise a dropped image is unreachable by backspace and the only
+  visible sign of it is text that does nothing. A non-image file inserts its
+  path unchanged, which is what a dropped `.csv` wants.
+
+**What lands on disk differs by door, and the difference is an affordance
+rather than an inconsistency.** The Slack and remote-control doors write the
+**original** into `<workspace>/inbox/` and *also* name the path in the prompt,
+so the model gets both bytes it can look at and a path it can `shell`. The
+terminal doors copy nothing: the file stays where the person had it, and — for
+a drop from outside the run's workspace — it is beyond the path jail, so the
+model gets pixels and no way to reach the file. Worth knowing before asking a
+run to "crop that".
+
+The resized image is **never written to disk**. It exists in the message and
+therefore in the transcript, and the original on disk is always the original.
+Which is the whole argument for capping at the door, in one measurement: a
+single screenshot was **99% of a session file** (244,120 of 246,472 bytes),
+and every turn resends the whole history — so that is the per-turn wire cost
+for the rest of the conversation, and uncapped it would have been 7.5 MB.
+
+Known and accepted: `~/.mecha/work/slack/<thread>/inbox/` is swept by
+`mecha work clean` like any other producer entry, but a remote-control session
+jailed to a **real project directory** puts `inbox/` in that project, where
+nothing sweeps it. That is the cost of the workspace being somewhere real, and
+it is the same trade `[work] keep` cannot make on the user's behalf.
+
+**Whether the model has eyes is declared, and verified against the server.**
+`[providers.X] vision` defaults to true for `kind = "anthropic"` and false
+everywhere else — false is the safe direction for a local server, because the
+failure it prevents is a rejected request where the other is merely a model
+that cannot see, which is what it already was. `provider::preflight` reads
+`GET /props` once at startup and warns in **both** directions; the reasoning
+and the mmproj trap behind it are `docs/LLAMA-SERVER.md`'s to hold. The rule
+worth carrying: **a vision model is two files**, and the second one is
+invisible when missing — nothing errors, `/props` reports what is *loaded*
+rather than what is supported, and the model simply says it cannot see.
 
 ## Security model
 

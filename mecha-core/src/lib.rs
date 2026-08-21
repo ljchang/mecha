@@ -60,6 +60,7 @@ pub mod eval;
 pub mod frontdoor;
 pub mod gossip;
 pub mod hooks;
+pub mod image;
 pub mod learning;
 pub mod mail_triage;
 pub mod mailbox;

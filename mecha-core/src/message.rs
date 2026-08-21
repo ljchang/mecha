@@ -43,12 +43,93 @@ pub enum Block {
         #[serde(default)]
         is_error: bool,
     },
+    /// An image the user put in front of the model.
+    ///
+    /// **User turns only, and that is a portability decision rather than a
+    /// simplification.** Anthropic accepts an image inside a `tool_result`;
+    /// the OpenAI dialect's `role: "tool"` messages carry a string and
+    /// nothing else, and llama-server is the same. A tool that returned
+    /// pixels would therefore work on one backend and silently lose them on
+    /// the other — the shape of failure this project keeps finding, in the
+    /// one place where the missing thing is what the whole turn was about.
+    /// So an image enters the conversation the way a person hands one over,
+    /// and `encode_message` renders it only on a user message.
+    ///
+    /// Not every model has eyes. `Provider::vision` says whether the one on
+    /// the other end does, and a backend that cannot see renders this block
+    /// as a line of text naming the file instead — so a run against a
+    /// text-only model behaves exactly as it did before this variant
+    /// existed, rather than failing on a request it cannot serve.
+    Image {
+        /// An IANA media type: `image/png`, `image/jpeg`, `image/gif`,
+        /// `image/webp`. Both providers require it and neither sniffs.
+        media_type: String,
+        /// Base64, with **no `data:` prefix**. The prefix is a rendering
+        /// detail of the OpenAI dialect — `anthropic.rs` wants the payload
+        /// bare — so it belongs to the backend that needs it and not to the
+        /// type every backend shares.
+        data: String,
+        /// What the file was called where it came from.
+        ///
+        /// Never sent to a provider. It exists because every *human*-facing
+        /// reader of a transcript — `mecha sessions`, the TUI, `recall` —
+        /// otherwise has a megabyte of base64 and no way to say what it was.
+        /// It is also what the text-only rendering names.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+    },
 }
 
 impl Block {
     pub fn text(s: impl Into<String>) -> Self {
         Block::Text { text: s.into() }
     }
+
+    /// An image block from raw file bytes.
+    ///
+    /// One encoder, so the `data:` prefix question is answered once: what
+    /// goes in is bare base64, and the one dialect that wants a prefix adds
+    /// it at the wire.
+    pub fn image(media_type: impl Into<String>, bytes: &[u8], source: Option<String>) -> Self {
+        use base64::Engine as _;
+        Block::Image {
+            media_type: media_type.into(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            source,
+        }
+    }
+
+    /// How a person, or a model with no eyes, is told an image was here.
+    ///
+    /// Shared so the text-only provider rendering and every transcript
+    /// reader say the same thing. A reader that invented its own wording
+    /// would be a second answer to "what was in this turn".
+    pub fn image_placeholder(media_type: &str, source: Option<&str>) -> String {
+        match source {
+            Some(name) => format!("[image: {name} ({media_type})]"),
+            None => format!("[image: {media_type}]"),
+        }
+    }
+}
+
+/// The media type for a path, or `None` when it is not an image this system
+/// will send.
+///
+/// An allowlist keyed on extension, deliberately, and deliberately short: it
+/// is the intersection of what Anthropic accepts and what llama-server's
+/// mtmd stack decodes. Sniffing the bytes would be more general and would
+/// answer the wrong question — the point is not "is this an image" but "will
+/// the thing on the other end take it", and a TIFF is an image that neither
+/// backend will read.
+pub fn image_media_type(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
