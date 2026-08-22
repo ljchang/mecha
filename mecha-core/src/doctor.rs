@@ -116,6 +116,7 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_triggers(&home.join("triggers"), now));
     findings.extend(check_runs(&home.join("sessions")));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
+    findings.extend(check_learning(&home.join("learning"), now));
     // The graph store is `~/.mecha-graph`, a hidden sibling of the mecha home
     // by that store's own convention — resolved relative to `home` so a test
     // (or a relocated home) carries its sibling with it.
@@ -1274,6 +1275,121 @@ const GRAPH_NIGHTLIES: &[(&str, &str)] = &[
 /// over. Not blocking anything, hence the longer leash.
 const STALE_CANDIDATE_AFTER: chrono::Duration = chrono::Duration::hours(72);
 
+/// Below this many origin-excluded reflections, a learner that has not run is
+/// a young install, not a starved one — the silence carries no information.
+/// High on the doctor rule: a finding that fires on every fresh setup trains
+/// the reader to skip the component it names.
+const STARVED_LEARNER_MIN_EXCLUDED: usize = 10;
+
+/// The starved learner: reflections keep arriving, the origin gate keeps
+/// excluding them, and no domain ever reaches `learn`'s floor — so the rule
+/// learner reports success every night and has produced nothing for weeks.
+///
+/// This is the null-run bug one layer up from the trigger version: every
+/// stage exits 0, the ledger says `ok`, and the only evidence is a
+/// distribution across a file nothing was reading. The check counts and
+/// never judges the gate itself — the exclusions are the provenance design
+/// working as specified — so the finding proposes a *decision*, not a
+/// command: accept the rate, or change what evidence the loop can use. That
+/// is why its remedy is the dry-run that shows the classifications, never
+/// anything that loosens the gate.
+fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let path = root.join("reflections.jsonl");
+    if !path.is_file() {
+        return out;
+    }
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            out.push(Finding::unreadable(
+                "learning",
+                "the reflections archive",
+                format!("{}: {e}", path.display()),
+            ));
+            return out;
+        }
+    };
+
+    let mut total = 0usize;
+    let mut excluded = 0usize;
+    let mut newest_excluded: Option<DateTime<Utc>> = None;
+    // domain → clean unprocessed count.
+    let mut waiting: std::collections::BTreeMap<String, usize> = Default::default();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(r) = serde_json::from_str::<crate::learning::Reflexion>(line) else {
+            // One torn line is not the archive; the counts below are still
+            // a lower bound, which is the fail-quiet direction for a check
+            // whose finding asks a person to make a decision.
+            continue;
+        };
+        total += 1;
+        if r.origin == crate::learning::Origin::Clean {
+            if !r.is_processed {
+                *waiting.entry(r.domain.clone()).or_default() += 1;
+            }
+        } else {
+            excluded += 1;
+            if let Ok(t) = DateTime::parse_from_rfc3339(&r.created_at) {
+                let t = t.with_timezone(&Utc);
+                if newest_excluded.is_none_or(|n| t > n) {
+                    newest_excluded = Some(t);
+                }
+            }
+        }
+    }
+
+    let floor = crate::learning::LEARN_MIN_REFLECTIONS;
+    // Any domain at the floor means learn will consolidate on its next pass:
+    // not starved, whatever the exclusion count says.
+    if waiting.values().any(|&n| n >= floor) {
+        return out;
+    }
+    if excluded < STARVED_LEARNER_MIN_EXCLUDED {
+        return out;
+    }
+    // A loop nothing has fed for a month is dormant, not starved — the
+    // distinction matters because the remedy for dormant is elsewhere
+    // (triggers, reflect itself), and this finding must not shadow it.
+    let alive = newest_excluded.is_some_and(|t| now.signed_duration_since(t).num_days() <= 30);
+    if !alive {
+        return out;
+    }
+
+    let pool = if waiting.is_empty() {
+        "none clean and unprocessed".to_string()
+    } else {
+        waiting
+            .iter()
+            .map(|(d, n)| format!("{d} {n}/{floor}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    out.push(Finding {
+        component: "learning".to_string(),
+        severity: Severity::Attention,
+        summary: format!(
+            "the rule learner is starved: {excluded} of {total} reflections excluded by \
+             origin, and no domain reaches the learn floor of {floor}"
+        ),
+        detail: format!(
+            "reflect keeps mining and the provenance gate keeps excluding — the gate working \
+             as designed, every night, with nothing downstream to show for it. Clean pool: \
+             {pool}. The excluded evidence stays readable in {}; the decision this proposes \
+             is yours, not a command's: accept the rate, or change what evidence the loop \
+             may consolidate.",
+            path.display()
+        ),
+        remedy: Some(Remedy {
+            description: "see how new interventions classify — doctor never loosens the gate"
+                .to_string(),
+            argv: vec!["mecha".into(), "reflect".into(), "--dry-run".into()],
+            needs_terminal: false,
+        }),
+    });
+    out
+}
+
 /// Scan `<learning>/harness/candidates` for staged candidates waiting on the
 /// user. Quiet when the store has never existed — the loop not being wired is
 /// not a finding. Reads the files directly, on the rule that an examination
@@ -1777,6 +1893,121 @@ mod tests {
             serde_json::to_string_pretty(&cand).unwrap(),
         )
         .unwrap();
+    }
+
+    fn reflection_line(id: &str, origin: &str, processed: bool, created_at: &str) -> String {
+        serde_json::json!({
+            "id": id,
+            "domain": "behavior",
+            "session_id": "s",
+            "trigger": "steer",
+            "context": "",
+            "intervention": "",
+            "reflexion_text": "test",
+            "is_processed": processed,
+            "created_at": created_at,
+            "origin": origin,
+        })
+        .to_string()
+    }
+
+    fn write_reflections(home: &Path, lines: &[String]) {
+        let dir = home.join("learning");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("reflections.jsonl"), lines.join("\n")).unwrap();
+    }
+
+    #[test]
+    fn a_learner_fed_only_excluded_evidence_is_starved_and_a_met_floor_is_not() {
+        let home = home("learning-starved");
+        // 12 recent exclusions, one clean reflection stuck below the floor.
+        let mut lines: Vec<String> = (0..12)
+            .map(|i| reflection_line(&format!("u{i}"), "untrusted", false, "2026-08-13T12:00:00Z"))
+            .collect();
+        lines.push(reflection_line(
+            "c1",
+            "clean",
+            false,
+            "2026-08-05T00:00:00Z",
+        ));
+        write_reflections(&home, &lines);
+
+        let findings = examine(&home, utc(NOW));
+        let learning = of(&findings, "learning");
+        assert_eq!(learning.len(), 1, "{findings:#?}");
+        assert_eq!(learning[0].severity, Severity::Attention);
+        assert!(
+            learning[0].summary.contains("starved"),
+            "{}",
+            learning[0].summary
+        );
+        assert!(
+            learning[0].summary.contains("12 of 13"),
+            "{}",
+            learning[0].summary
+        );
+        assert_eq!(
+            learning[0].remedy.as_ref().unwrap().argv,
+            vec!["mecha", "reflect", "--dry-run"],
+            "the remedy shows classifications; nothing may loosen the gate"
+        );
+
+        // A domain at the floor means learn runs tonight: not starved.
+        lines.push(reflection_line(
+            "c2",
+            "clean",
+            false,
+            "2026-08-06T00:00:00Z",
+        ));
+        lines.push(reflection_line(
+            "c3",
+            "clean",
+            false,
+            "2026-08-07T00:00:00Z",
+        ));
+        write_reflections(&home, &lines);
+        let findings = examine(&home, utc(NOW));
+        assert!(of(&findings, "learning").is_empty(), "{findings:#?}");
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn thin_or_dormant_exclusion_is_not_starvation() {
+        let home = home("learning-thin");
+        // Nine exclusions: below the evidence floor, silence means nothing yet.
+        let lines: Vec<String> = (0..9)
+            .map(|i| reflection_line(&format!("u{i}"), "untrusted", false, "2026-08-13T12:00:00Z"))
+            .collect();
+        write_reflections(&home, &lines);
+        assert!(of(&examine(&home, utc(NOW)), "learning").is_empty());
+
+        // Twelve exclusions, all long stale: a dormant loop, not a starved one
+        // — the newest excluded reflection is months before NOW.
+        let lines: Vec<String> = (0..12)
+            .map(|i| reflection_line(&format!("u{i}"), "untrusted", false, "2026-05-01T12:00:00Z"))
+            .collect();
+        write_reflections(&home, &lines);
+        assert!(of(&examine(&home, utc(NOW)), "learning").is_empty());
+
+        // Processed clean reflections do not count toward the waiting pool —
+        // consumed evidence is not a pool the floor can be met from.
+        let mut lines: Vec<String> = (0..12)
+            .map(|i| reflection_line(&format!("u{i}"), "untrusted", false, "2026-08-13T12:00:00Z"))
+            .collect();
+        for i in 0..3 {
+            lines.push(reflection_line(
+                &format!("p{i}"),
+                "clean",
+                true,
+                "2026-08-05T00:00:00Z",
+            ));
+        }
+        write_reflections(&home, &lines);
+        let findings = examine(&home, utc(NOW));
+        assert_eq!(of(&findings, "learning").len(), 1, "{findings:#?}");
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
