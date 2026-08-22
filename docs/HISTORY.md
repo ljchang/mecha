@@ -1427,6 +1427,45 @@ Exa too; it would have collapsed the chain to one link whose only backend
 cannot report why it failed; and it would have kept the appearance of "the
 query never leaves your network" while destroying the fact.
 
+**2026-08-22 — the self-improvement loop closed, on the owner's ruling.** The
+three gaps that had kept detect→diagnose→measure→gate a set of parts — no
+nightly stage, no session-corpus measurement arm, no accept path — closed in
+one arc (`69ac0e9`), after Luke ruled for §13.3 auto-accept in so many words:
+verified improvements apply themselves, architecture reaches him, and the
+loop must be useful without adding work. `mecha harness ruminate` runs
+nightly from `ruminate.sh`: diagnose one change from the run corpus, persist
+it as a candidate (`~/.mecha/learning/harness/candidates/`), measure it by
+counterfactual replay of recent sessions — both arms replayed whole under the
+recorded config, the candidate arm differing only by the change, divergent
+episodes dropped rather than scored — and dispose through `candidate::judge`.
+A confirmed config win lands in an override layer applied *between* config
+defaults and every file layer, so the user's own config wins by assignment
+order and revert is deleting a line; the closed override set moved to
+`mecha_core::harness` with `eval --ab-config` parsing through it, so the two
+arms cannot drift. The brief now carries prior candidates as
+do-not-re-propose history, doctor flags one staged past 72h, and the first
+live run the same evening had the diagnostician correctly decline on a
+healthy corpus. Deployed the same day: binary installed, services restarted,
+the nightly's `ExecStart` confirmed to run the repo script.
+
+**2026-08-22 (later) — doctor sees the starved learner.** The morning's
+investigation had found the *rule* learner reporting `ok` every night for
+seventeen days while producing nothing: 14 of 16 reflections excluded by the
+origin gate, the clean pool stuck at 2 below the learn floor of 3 — the
+null-run bug one layer up from the trigger version doctor already catches.
+The classification itself was verified precise (positional, per-intervention,
+`timeline.covering(at)`), and the excluded sessions had genuinely read the
+open web (`http_fetch`, `research`) before their interventions, so the gate
+was doing exactly its job on exactly its content. What was missing was a
+reader: `check_learning` (`52a0755`) fires when ten or more exclusions have
+piled up, no domain reaches the floor, and new ones keep arriving — quiet on
+young installs, met floors, and dormant loops — and its finding proposes a
+decision rather than a command, because the only throughput levers (steer-
+text-only reflections, a custodied-source origin subclass, a lower floor) all
+cross the recorded fail-closed ruling and were surveyed and left untaken. The
+floor became `learning::LEARN_MIN_REFLECTIONS`, shared by `learn --min` and
+the check, on the `MAX_ACTIVE_RULES_PER_DOMAIN` lesson.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own

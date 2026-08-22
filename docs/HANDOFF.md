@@ -92,11 +92,13 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,246 tests**, no failures — re-measured 2026-08-21 at 0.1.11
-(666 in the `mecha-core` lib suite, 366 in `mecha-cli` with 1 ignored, 123 in
-`mecha-mail`, 75 in `mecha-slack`, 15 across the two integration suites that
-need real backends, and 1 doctest). The 24 added over the same day's 1,222 are
-the search-chain, cache-lens and outbox-approval arcs. Earlier 2026-08-21 counts were 1,222,
+Expect **1,255 tests**, no failures — re-measured 2026-08-22 after the
+harness-rumination and starved-learner arcs (675 in the `mecha-core` lib
+suite, 366 in `mecha-cli` with 1 ignored, 123 in `mecha-mail`, 75 in
+`mecha-slack`, 15 across the two integration suites that need real backends,
+and 1 doctest). The 9 added over 2026-08-21's 1,246 are the harness store,
+override layer, and doctor's harness/starved-learner checks; the 24 before
+that were the search-chain, cache-lens and outbox-approval arcs. Earlier 2026-08-21 counts were 1,222,
 1,213, 1,210 and 1,192; the 2026-08-20 counts were 1,140 at `cfa2cc2` and 1,105 at 0.1.9,
 the 2026-08-19 count was 989 and the 2026-08-18 one 936; the growth from 707 (2026-08-10) spans the 0.1.3–0.1.9 arcs, and each
 release's CHANGELOG entry names what its tests pin. **A flake has now been seen twice and is still unidentified.** Once in
@@ -113,8 +115,8 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 654 |
-| `mecha-cli` unit | 354 |
+| `mecha-core` unit | 675 |
+| `mecha-cli` unit | 366 |
 | `mecha-mail` unit | 123 |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
@@ -167,7 +169,7 @@ A working agent harness, used and measured rather than just compiled.
 | Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, **the daemon is installed and running here**; a failed `notify` is recorded on the run |
 | Skills | `~/.mecha/skills/<name>/SKILL.md` in the Agent Skills format, loaded by a `skill` tool call at three levels of disclosure. User-authored with no mechanism for anything else — no install, no registry, no remote body, none derived from a session — which is why loading one arms no taint. `tools:` narrows the surface and can never widen it; a loaded skill crosses compaction verbatim; `mecha eval` forces them off |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B). Budget is 25 active rules and 2600 chars **per domain**, and a run carries only `RUN_DOMAINS` (`behavior` + `writing`) — new domains are opt-in and `unrouted_domains` warns at startup on any that ride in no prompt |
-| Run quality | `Record::Outcome(RunStats)` per finished run from every front-end; `runlog.rs` reads the corpus back (`mecha sessions health`, rates split by model, `—` where a denominator is zero); three population checks in `doctor`; `candidate.rs` gates a proposed change on a paired comparison with a deterministic holdout and a work guardrail; `mecha eval --ab-config KEY=VALUE` is the content-sensitive arm; `mecha diagnose` proposes one change from the corpus and prints the command that would falsify it. **Nothing is applied automatically and the corpus was empty at build time** — see below |
+| Run quality | `Record::Outcome(RunStats)` per finished run from every front-end; `runlog.rs` reads the corpus back (`mecha sessions health`, rates split by model, `—` where a denominator is zero); three population checks in `doctor`; `candidate.rs` gates a proposed change on a paired comparison with a deterministic holdout and a work guardrail; `mecha eval --ab-config KEY=VALUE` is the content-sensitive arm; `mecha diagnose` proposes one change from the corpus and prints the command that would falsify it; `mecha harness` (2026-08-22) closes the loop nightly — candidates persisted, measured by session replay, a holdout-confirmed config win auto-accepted into a revertible override layer beneath the user's config, everything else staged for review — see the self-improvement section |
 | Eval | 36 cases, 15 tags (both re-counted 2026-08-20, unchanged), scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `graph-cases.jsonl` — 10 memory/interlock cases against fixture MCP servers (`--mcp-file`), renamed with the graph and expecting the bare `kg_*` names production serves (scorecards across the rename are not comparable) |
 
 `cargo clippy --all-targets` is clean and should stay that way.
@@ -355,10 +357,12 @@ is exactly the set holding a long-lived process.
 - **Nightly rumination**: `mecha-ruminate.timer` (systemd user, 03:30,
   `Persistent=true`, linger on) runs `scripts/ruminate.sh`: reflect → distill →
   validate `--unprocessed-only` (judge: gemma26) → learn
-  `--holdout 0.25 --propose` → `rules propose-retirements` → `work clean`.
-  Logs land in
+  `--holdout 0.25 --propose` → `rules propose-retirements` → `work clean` →
+  `harness ruminate --sessions 16` (added 2026-08-22: the self-improvement
+  pass — see that section). Logs land in
   `~/.mecha/learning/logs/<date>.log`; pending proposals wait in
-  `mecha proposals`. **Confirmed enabled 2026-08-05.**
+  `mecha proposals`, harness candidates in `mecha harness list`.
+  **Confirmed enabled 2026-08-05; unit `ExecStart` re-verified 2026-08-22.**
 - **The trigger daemon is installed and running.** `mecha-triggers.service`
   (systemd user, linger on), enabled 2026-08-06 and confirmed firing on its own.
   `morning.toml` is jailed to `~/.mecha/work/morning`, and its `notify` writes
@@ -669,86 +673,49 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
 - **Cosmetic:** `factory-publish type push` prints a `/f/<handle>/<id>` URL
   for booking manifests; a booking's page is `/s/…`.
 
-### The self-improvement loop — built, and waiting on its own data
+### The self-improvement loop — closed 2026-08-22, now producing its own record
 
-Every stage exists as tested code and **nothing acts on the numbers**. The
-open item is not code, it is evidence: run outcomes are recorded from this
-version on, so at build time `mecha sessions health` read 178 sessions and
-found 0 outcomes. `docs/SELF-IMPROVEMENT-RESEARCH.md` is the authority and §13
-records decisions already made — do not re-ask them.
+`mecha harness ruminate` runs nightly from `ruminate.sh` (after `work clean`):
+diagnose one change from the run corpus → persist it as a candidate → measure
+it by counterfactual replay of recent sessions → dispose through
+`candidate::judge`. A holdout-confirmed config win auto-accepts into the
+override layer (`~/.mecha/learning/harness/overrides.toml`, applied beneath
+every config file so the user always wins; `mecha harness revert` undoes);
+prose and architecture stage for a person; security-class stages with the
+standing warning and is never measured. CLAUDE.md "Harness rumination" holds
+the design; `docs/SELF-IMPROVEMENT-RESEARCH.md` §13 records the rulings —
+auto-accept per §13.3 is Luke's explicit 2026-08-22 instruction, do not
+re-ask it. The corpus is live (64 runs of qwen3.6-35b-a3b across 280 sessions
+as of 2026-08-22), and the first nightly pass ran the same evening: the
+diagnostician declined on a healthy corpus, which is the designed answer.
 
-The reason to wait rather than to finish it is in that document's §2: agents
-measurably update their harnesses without benefiting, and the fourth named
-failure mode is optimizing for update *frequency*. Building the autonomous
-driver before knowing whether these findings are worth acting on is that
-failure mode by name.
+What is actually open now:
 
-**Two clocks start at install, not at the date this was written**, and the
-shared trap is that both features look finished and measure nothing. Anyone
-reading `0 rows` a week from now will reasonably assume something broke.
-
-- **The run-quality corpus.** Triggers, the Slack service and the nightly all
-  run release paths, so no build that writes `Record::Outcome` is in service
-  until the deploy and every run before it records nothing.
-- **The mail correction ledger**, per the parallel mail arc, for the same
-  reason plus a second: the loop needs *corrections*, and the button that
-  produces one (`mecha mail correct`) is likewise only in an uninstalled
-  build. Its `mecha mail score` says so in words rather than printing an empty
-  table.
-
-As of 2026-08-19 the 0.1.7 release **and any install** are held for mail phase
-6 (~25% done at that point), chosen deliberately over an install-now-tag-later
-option. So an empty corpus and an empty correction ledger are the expected
-readings for the length of the hold. The checks below begin at install.
-
-**Check as data accumulates, in this order.** Each step is cheap and each one
-can retire the next:
-
-1. `mecha sessions health --days 30` — does the corpus say anything yet? Is the
-   per-model split meaningful, or is everything one model?
-2. `mecha doctor` — do the three run-quality checks fire? When one does, the
-   question is not whether the number is right but **whether you would have
-   acted on it**. A finding you would ignore is a threshold set wrong, not a
-   problem you have; the thresholds are deliberately high
-   (`ENDED_ON_FAILURE_RATE`, `TOOL_ERROR_RATE`, `CUT_SHORT_RATE` in
-   `doctor.rs`) because rule-based evaluators are measured to over-flag.
-3. `mecha diagnose --dry-run` — is the brief enough to diagnose from, or is it
-   missing a signal that is not being recorded? That answer is worth more than
-   any change the diagnostician would propose, because it is a gap in the
-   sensor rather than in the model.
-4. Only then `mecha diagnose` for real, and `mecha eval --ab-config` on
-   whatever it proposes.
-
-The three gaps below were closed on 2026-08-22 (`mecha harness`,
-`mecha-core/src/harness.rs`, `mecha-cli/src/harness_probe.rs`; CLAUDE.md
-"Harness rumination" is the reasoning). Kept as written for the record of why
-they were once deliberate:
-
-- ~~**No nightly stage.**~~ `mecha harness ruminate` now runs from
-  `ruminate.sh` after `work clean`, on the "a skipped night is not a failed
-  night" contract. The "nobody reads it" objection is answered by
-  persistence: every candidate lands in
-  `~/.mecha/learning/harness/candidates/`, `mecha harness list` is the queue,
-  and doctor flags one staged past 72h.
-- ~~**The arms run over eval cases, not over replayed sessions.**~~ The
-  session-corpus arm exists (`harness_probe.rs`): recent sessions of the
-  diagnosed model, both arms replayed, paired `RunStats` through
-  `candidate::judge`. The §8 limit is enforced structurally rather than
-  remembered — only the closed override set is measurable at all, and an
-  episode either arm diverges on is dropped, not scored, so a change replay
-  cannot hold reaches a human as thin evidence instead of a verdict.
-- ~~**No auto-accept path.**~~ `Disposition::Accept` now writes the override
-  layer (`~/.mecha/learning/harness/overrides.toml`), applied between config
-  defaults and every file layer so the user's own config always wins;
-  `mecha harness revert <id|key>` is the recorded reversal. Prose and
-  architecture still stage for a person; security-class is staged with the
-  standing warning and never measured.
-- **Security boundaries are gated, not excluded.** Luke's ruling (§13.2) makes
-  interlock, path jail, sandbox and outbox routing human-gated like any other
-  architecture change. The recommendation on record is that they stay
-  unproposable: a loop that can argue for widening its own confinement will
-  eventually argue well, and the metric agrees with it, because a run that can
-  reach the network fails fewer calls.
+- **Read the record, weekly at first.** `mecha harness list --all` and the
+  nightly log. §2's failure mode (harness updating without benefiting) is now
+  answerable from the store instead of from impression — but only if someone
+  reads it. Doctor flags a candidate staged past 72h; nothing flags a month
+  of rejections that should have been declines, which is the pattern worth
+  looking for by eye.
+- **The content-sensitive arm is still a human spend.** A prose-class
+  candidate stages with its `mecha eval --ab-config` command attached and
+  waits; nothing runs eval arms unattended, deliberately (a judge-graded arm
+  costs real runs and grades what the model *said*, which replay cannot see).
+  If prose candidates accumulate, decide then whether that spend gets a
+  budget.
+- **Divergence rate is unmeasured.** Replay under a pinned seed
+  (`seed = 42` on `[providers.local]`) is reproducible, but a
+  behaviour-visible change diverges from the recording by design and drops
+  the episode. If most episodes drop on real candidates, the session arm
+  yields thin evidence and everything routes to review — which is safe, and
+  worth knowing before trusting the loop is "measuring". The candidate
+  records carry `diverged` lists, so the answer accumulates on its own.
+- **Security boundaries stay unproposable** per §13.2 — interlock, path
+  jail, sandbox and outbox routing reach a human however anything scores,
+  and the standing recommendation is that they are never proposed at all: a
+  loop that can argue for widening its own confinement will eventually argue
+  well, and the metric agrees with it, because a run that can reach the
+  network fails fewer calls.
 
 ### The remote control — built, with one path nobody has been able to run
 
@@ -866,7 +833,22 @@ on this machine. `docs/REMOTE-CONTROL-DESIGN.md` is the design; the arc is in
 
 ### The learning system
 
-The arc is complete and running nightly. What is missing is refinement:
+The arc is complete and running nightly — and, measured on 2026-08-22,
+**starved by provenance**: 14 of 16 reflections ever mined are
+origin-excluded (the sessions had read the open web, shared docs or mail
+before the interventions), the clean pool has sat at 2 — below the learn
+floor of 3 — since 2026-08-05, and so `learn` has consolidated nothing while
+every nightly stage exits 0. Doctor now names this (`check_learning`,
+attention severity) rather than anyone noticing by reading logs. The
+classification was verified precise (positional, per-intervention), so this
+is a *decision* pending, not a bug: every throughput lever — steer-text-only
+reflections, a custodied-source origin subclass, a lower floor — crosses the
+recorded fail-closed ruling, and the surveyed trade-offs are in the
+2026-08-22 HISTORY entry. Until that ruling is wanted, skills and user rules
+remain the designed pressure valve for prompt-riding knowledge, and the
+harness loop learns from `RunStats`, which no origin gate touches.
+
+What is missing beyond that is refinement:
 
 - **The sliding window of recent raw reflections never shipped.** Prompt assembly
   chains user rules then consolidated rules; the third leg — a window of recent
