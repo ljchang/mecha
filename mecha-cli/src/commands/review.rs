@@ -1,0 +1,782 @@
+//! `mecha review` — one place to see everything waiting on a human, and to
+//! decide the knowledge graph's half of it.
+//!
+//! Five stores accumulate work for the owner and each grew its own verb:
+//! `mecha outbox`, `mecha frontdoor`, `mecha proposals`, `mecha harness`, and
+//! — in another repository entirely — the graph's merge queue. Knowing what is
+//! waiting meant remembering five commands, which is how a queue reaches 6,434
+//! items without anybody deciding to let it.
+//!
+//! This is the aggregator, and it is doctor's shape rather than a sixth store:
+//! it reads what the others own and holds nothing of its own. `queues` is the
+//! summary; the graph verbs below are here because the graph is the one queue
+//! mecha could not previously touch at all.
+//!
+//! ## Why this one command shells out, when `mecha tasks` does not
+//!
+//! `mecha tasks` reaches the graph through the MCP tool surface, and says why:
+//! reaching past the tools into the SQLite file would be a second
+//! implementation of a schema owned by another repository. That argument still
+//! holds, and this module does not break it — it never opens the database.
+//!
+//! But the tool surface **cannot accept a fact candidate**, and that is a
+//! decision rather than a gap. `kg_pending` reads and `kg_verdict` files an
+//! opinion that decides nothing; there is deliberately no `kg_accept`, because
+//! every MCP tool lands in the model's registry, and a model that can accept
+//! candidates can accept the ones its own extractor proposed.
+//! `ladder.rs` states the rule this protects: *a lane must not promote itself.*
+//!
+//! So the decision is driven the way a person drives it — by running the
+//! owner's own `mecha-graph` binary as a child process, the `/triggers` rule
+//! one repository over. Nothing new becomes reachable from a prompt: the
+//! model's surface is unchanged, and the only new capability belongs to
+//! whoever is at the keyboard.
+//!
+//! The cost is honest and worth stating: `mecha` now has a *runtime, optional*
+//! dependency on `mecha-graph` being installed. Optional is load-bearing —
+//! every verb here degrades to a named error rather than a failure, and
+//! `queues` still reports the four mecha-owned stores when the graph binary is
+//! missing. A summary that vanished because one of five stores was unreachable
+//! would be worse than one that says so.
+
+use anyhow::{bail, Context, Result};
+use serde_json::{json, Value};
+
+use mecha_core::frontdoor::{self, Frontdoor};
+use mecha_core::learning::LearningStore;
+use mecha_core::outbox::OutboxStore;
+
+#[derive(clap::Args, Debug)]
+pub struct Args {
+    #[command(subcommand)]
+    pub cmd: Option<Cmd>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum Cmd {
+    /// What is waiting, across every store (default).
+    Queues {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pending graph fact candidates.
+    List {
+        /// Only this proposing mechanism, e.g. `llm`, `bee:suggested`.
+        #[arg(long)]
+        proposer: Option<String>,
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// The graph queue rolled up by proposing mechanism, with each one's
+    /// human accept rate — which automated system is proposing well.
+    Proposers {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Individual candidates from one class, drawn at random.
+    ///
+    /// **The default way to look at items, and the reason is the whole
+    /// point.** The queue has an order, every order it could have is
+    /// correlated with something, and judging the first dozen then reading
+    /// the result as the class's accept rate measures the order instead of
+    /// the class. A random draw is the only selection that makes those
+    /// verdicts evidence about the class — which is what the queue is short
+    /// of: 40.5% of it sits in classes nobody has judged once.
+    Sample {
+        #[arg(long)]
+        proposer: Option<String>,
+        /// The cluster key — a bare predicate, or `(commitment)`.
+        #[arg(long)]
+        predicate: Option<String>,
+        #[arg(long, short = 'n', default_value_t = 12)]
+        count: usize,
+        /// Redraw an earlier sample. Omit and one is drawn and printed.
+        #[arg(long)]
+        seed: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Individual candidates in queue order — the whole class, not a sample.
+    ///
+    /// Here for completeness and for working a class you have already
+    /// decided to clear. Do not read verdicts collected this way as a rate:
+    /// see `sample`.
+    Items {
+        #[arg(long)]
+        proposer: Option<String>,
+        #[arg(long)]
+        predicate: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Accept graph fact candidates, by id or by class.
+    Accept {
+        ids: Vec<i64>,
+        /// Bulk: every pending candidate from this proposer. Substring, as
+        /// the graph matches it — pair it with `--predicate`.
+        #[arg(long)]
+        proposer: Option<String>,
+        /// Bulk: exact match on the payload predicate. **Not** the cluster
+        /// key: `(commitment)` classes have no `predicate` field and cannot
+        /// be verdicted in bulk at all, by design — they materialize tasks.
+        #[arg(long)]
+        predicate: Option<String>,
+        /// Cap on how many a bulk filter may take. The graph defaults to
+        /// 500; passing it explicitly is how a caller learns it was capped.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// What a bulk filter would hit, changing nothing. The proposer
+        /// filter is a *substring* on the graph's side, so what a class
+        /// verdict actually covers is worth seeing before it is applied.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Reject graph fact candidates, by id or by class.
+    Reject {
+        ids: Vec<i64>,
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        proposer: Option<String>,
+        #[arg(long)]
+        predicate: Option<String>,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+pub async fn execute(args: Args) -> Result<()> {
+    match args.cmd.unwrap_or(Cmd::Queues { json: false }) {
+        Cmd::Queues { json } => queues(json),
+        Cmd::List {
+            proposer,
+            limit,
+            json,
+        } => list(proposer.as_deref(), limit, json),
+        Cmd::Proposers { json } => proposers(json),
+        Cmd::Sample {
+            proposer,
+            predicate,
+            count,
+            seed,
+            json,
+        } => items(
+            proposer.as_deref(),
+            predicate.as_deref(),
+            Draw::Sample { count, seed },
+            json,
+        ),
+        Cmd::Items {
+            proposer,
+            predicate,
+            limit,
+            json,
+        } => items(
+            proposer.as_deref(),
+            predicate.as_deref(),
+            Draw::Head { limit },
+            json,
+        ),
+        Cmd::Accept {
+            ids,
+            proposer,
+            predicate,
+            limit,
+            dry_run,
+        } => decide(
+            "accept",
+            &ids,
+            None,
+            proposer.as_deref(),
+            predicate.as_deref(),
+            limit,
+            dry_run,
+        ),
+        Cmd::Reject {
+            ids,
+            reason,
+            proposer,
+            predicate,
+            limit,
+            dry_run,
+        } => decide(
+            "reject",
+            &ids,
+            reason.as_deref(),
+            proposer.as_deref(),
+            predicate.as_deref(),
+            limit,
+            dry_run,
+        ),
+    }
+}
+
+// ─── The graph binary ────────────────────────────────────────────────────────
+
+/// Where `mecha-graph` lives.
+///
+/// `$MECHA_GRAPH_BIN` first, matching the nightly scripts that already read
+/// it, then the name on `PATH`. Resolution is deliberately not cached and not
+/// configured in `mecha.toml`: a project file arrives with a cloned
+/// repository, and a project that could name the binary mecha runs as a child
+/// process has been handed arbitrary execution — the same reasoning that keeps
+/// `[[trigger]]` out of the layered config.
+fn graph_bin() -> String {
+    std::env::var("MECHA_GRAPH_BIN").unwrap_or_else(|_| "mecha-graph".into())
+}
+
+/// Run `mecha-graph <args>` and hand back stdout.
+///
+/// A missing binary is reported by name with the variable that fixes it —
+/// "No such file or directory" from a child process nobody mentioned is the
+/// least actionable error there is.
+fn graph_cli(args: &[&str]) -> Result<String> {
+    let bin = graph_bin();
+    let out = std::process::Command::new(&bin)
+        .args(args)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!(
+                    "`{bin}` not found — install mecha-graph, or set MECHA_GRAPH_BIN \
+                     to its path. Everything else in `mecha review` works without it."
+                )
+            } else {
+                anyhow::Error::new(e).context(format!("running {bin}"))
+            }
+        })?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    bail!(
+        "{bin} {}: {}",
+        args.first().unwrap_or(&""),
+        err.trim().lines().next().unwrap_or("failed")
+    )
+}
+
+fn graph_json(args: &[&str]) -> Result<Value> {
+    let raw = graph_cli(args)?;
+    serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "mecha-graph {} did not answer JSON",
+            args.first().unwrap_or(&"")
+        )
+    })
+}
+
+// ─── queues ──────────────────────────────────────────────────────────────────
+
+/// One store's backlog.
+///
+/// `depth` is `None` when the store could not be read — distinct from
+/// `Some(0)`, because "nothing waiting" and "could not look" are opposite
+/// findings and rendering them alike is how a broken reader reads as a healthy
+/// queue. The same rule `sessions health` applies to a rate over no
+/// denominator.
+struct Queue {
+    name: &'static str,
+    depth: Option<usize>,
+    detail: String,
+    /// The verb that opens it, for the line under the table.
+    opens: &'static str,
+}
+
+fn collect_queues() -> Vec<Queue> {
+    let mut out = Vec::new();
+
+    // The graph's merge queue, via the binary. Unreachable is a reported
+    // state, never a reason to drop the other four.
+    let (depth, detail) = match graph_json(&["review", "--proposers", "--json"]) {
+        Ok(v) => {
+            let rows = v.as_array().cloned().unwrap_or_default();
+            let total: usize = rows
+                .iter()
+                .filter_map(|r| r["pending"].as_u64())
+                .map(|n| n as usize)
+                .sum();
+            let unjudged: usize = rows
+                .iter()
+                .filter(|r| r["accept_lb"].is_null())
+                .filter_map(|r| r["pending"].as_u64())
+                .map(|n| n as usize)
+                .sum();
+            (
+                Some(total),
+                format!(
+                    "{} proposer(s); {unjudged} from mechanisms you have never judged",
+                    rows.len()
+                ),
+            )
+        }
+        Err(e) => (None, format!("{e:#}")),
+    };
+    out.push(Queue {
+        name: "graph candidates",
+        depth,
+        detail,
+        opens: "mecha review list",
+    });
+
+    let (depth, detail) = match OutboxStore::default_root().and_then(OutboxStore::open) {
+        Ok(store) => match store.items() {
+            Ok(items) => {
+                let pending: Vec<_> = items.iter().filter(|i| i.status == "pending").collect();
+                let tainted = pending
+                    .iter()
+                    .filter(|i| i.taint.private && i.taint.untrusted)
+                    .count();
+                let d = if tainted > 0 {
+                    format!("{tainted} drafted with the trifecta armed")
+                } else {
+                    format!("{} resolved on file", items.len() - pending.len())
+                };
+                (Some(pending.len()), d)
+            }
+            Err(e) => (None, format!("{e:#}")),
+        },
+        Err(e) => (None, format!("{e:#}")),
+    };
+    out.push(Queue {
+        name: "outbox drafts",
+        depth,
+        detail,
+        opens: "mecha outbox",
+    });
+
+    let (depth, detail) = match Frontdoor::open_default().and_then(|s| s.records()) {
+        Ok(records) => {
+            // Anything not closed is still somebody's problem; extraction
+            // failures are called out because they wait on a human by design
+            // rather than by backlog.
+            let open: Vec<_> = records
+                .iter()
+                .filter(|r| r.state != frontdoor::CLOSED)
+                .collect();
+            let failed = open
+                .iter()
+                .filter(|r| r.state == frontdoor::EXTRACTION_FAILED)
+                .count();
+            let d = if failed > 0 {
+                format!("{failed} whose extraction failed — those need you by design")
+            } else {
+                format!("{} closed", records.len() - open.len())
+            };
+            (Some(open.len()), d)
+        }
+        Err(e) => (None, format!("{e:#}")),
+    };
+    out.push(Queue {
+        name: "front-door requests",
+        depth,
+        detail,
+        opens: "mecha frontdoor list",
+    });
+
+    let (depth, detail) = match LearningStore::default_root()
+        .and_then(LearningStore::open)
+        .and_then(|s| s.proposals())
+    {
+        Ok(ps) => {
+            let pending: Vec<_> = ps.iter().filter(|p| p.status == "pending").collect();
+            let domains: std::collections::BTreeSet<_> =
+                pending.iter().map(|p| p.domain.as_str()).collect();
+            let d = if domains.is_empty() {
+                format!("{} decided", ps.len())
+            } else {
+                format!(
+                    "domains: {}",
+                    domains.into_iter().collect::<Vec<_>>().join(", ")
+                )
+            };
+            (Some(pending.len()), d)
+        }
+        Err(e) => (None, format!("{e:#}")),
+    };
+    out.push(Queue {
+        name: "rule proposals",
+        depth,
+        detail,
+        opens: "mecha proposals",
+    });
+
+    // The other half of the self-improvement loop. Rule proposals come out of
+    // `mecha learn`; these come out of `mecha harness ruminate` — a
+    // diagnostician's proposed change to the harness itself, each carrying a
+    // falsifiable prediction and a measurement it did not run.
+    //
+    // Called out separately rather than summed with rule proposals because
+    // they are decided on different evidence and one of them is not decided
+    // on evidence at all: `Security` and `Architecture` reach a person however
+    // well they scored, so a count that blurred the two would hide the ones a
+    // score can never clear.
+    let (depth, detail) =
+        match mecha_core::harness::HarnessStore::open_default().and_then(|s| s.all()) {
+            Ok(cs) => {
+                let pending: Vec<_> = cs.iter().filter(|c| c.pending()).collect();
+                let measured = pending.iter().filter(|c| c.measurement.is_some()).count();
+                let d = if pending.is_empty() {
+                    format!("{} resolved", cs.len())
+                } else {
+                    format!(
+                        "{measured} already measured; {} awaiting a run",
+                        pending.len() - measured
+                    )
+                };
+                (Some(pending.len()), d)
+            }
+            Err(e) => (None, format!("{e:#}")),
+        };
+    out.push(Queue {
+        name: "harness changes",
+        depth,
+        detail,
+        opens: "mecha harness list",
+    });
+
+    out
+}
+
+fn queues(as_json: bool) -> Result<()> {
+    let qs = collect_queues();
+    if as_json {
+        let rows: Vec<Value> = qs
+            .iter()
+            .map(|q| {
+                json!({ "queue": q.name, "depth": q.depth, "detail": q.detail, "opens": q.opens })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    let total: usize = qs.iter().filter_map(|q| q.depth).sum();
+    let unread = qs.iter().filter(|q| q.depth.is_none()).count();
+    println!("{total} item(s) waiting on you\n");
+    for q in &qs {
+        match q.depth {
+            Some(n) => println!("{n:>6}  {:<22} {}", q.name, q.detail),
+            // A dash, never a zero.
+            None => println!("{:>6}  {:<22} unreadable: {}", "—", q.name, q.detail),
+        }
+    }
+    println!();
+    for q in &qs {
+        println!("        {:<22} {}", q.name, q.opens);
+    }
+    if unread > 0 {
+        println!("\n{unread} store(s) could not be read — the counts above are a floor.");
+    }
+    Ok(())
+}
+
+// ─── the graph's half ────────────────────────────────────────────────────────
+
+fn proposers(as_json: bool) -> Result<()> {
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&graph_json(&["review", "--proposers", "--json"])?)?
+        );
+        return Ok(());
+    }
+    print!("{}", graph_cli(&["review", "--proposers", "--text"])?);
+    Ok(())
+}
+
+fn list(proposer: Option<&str>, limit: usize, as_json: bool) -> Result<()> {
+    // One sample per cluster: the modal renders it, and it is the only thing
+    // on the classes screen saying what a class actually contains before you
+    // verdict the whole of it. `0` here made that column blank on every row.
+    let v = graph_json(&["review", "--clusters", "--samples", "1", "--json"])?;
+    let clusters = v.as_array().cloned().unwrap_or_default();
+    let rows: Vec<&Value> = clusters
+        .iter()
+        .filter(|c| proposer.is_none_or(|p| c["proposed_by"].as_str() == Some(p)))
+        .take(limit)
+        .collect();
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        println!(
+            "nothing pending{}",
+            match proposer {
+                Some(p) => format!(" from {p}"),
+                None => String::new(),
+            }
+        );
+        return Ok(());
+    }
+    let total: u64 = rows.iter().filter_map(|c| c["pending"].as_u64()).sum();
+    println!("{total} pending in {} class(es)\n", rows.len());
+    for c in &rows {
+        let (a, r) = (
+            c["accepted_hist"].as_i64().unwrap_or(0),
+            c["rejected_hist"].as_i64().unwrap_or(0),
+        );
+        // No rate without a denominator — see `queues`.
+        let hist = match a + r {
+            0 => "unjudged".to_string(),
+            n => format!("{:.0}% of {n}", 100.0 * a as f64 / n as f64),
+        };
+        println!(
+            "{:>6}  {} · {}  [{hist}]",
+            c["pending"].as_u64().unwrap_or(0),
+            c["proposed_by"].as_str().unwrap_or("?"),
+            c["predicate"].as_str().unwrap_or("?"),
+        );
+    }
+    println!("\nDecide: mecha review accept|reject <id>…  ·  browse: mecha review proposers");
+    Ok(())
+}
+
+/// How the items were chosen. Named rather than a bare bool, because which
+/// one produced a set of verdicts decides whether those verdicts are evidence
+/// about the class or only about its head.
+pub enum Draw {
+    Sample { count: usize, seed: Option<u64> },
+    Head { limit: usize },
+}
+
+/// Individual candidates from one class.
+///
+/// The selection happens in `mecha-graph`, which owns the queue — pulling
+/// 6,434 payloads across a pipe to pick twelve would be this process holding
+/// a second, staler copy of a store it does not own.
+fn items(proposer: Option<&str>, predicate: Option<&str>, draw: Draw, as_json: bool) -> Result<()> {
+    let (count, seed, limit) = match &draw {
+        Draw::Sample { count, seed } => (Some(count.to_string()), *seed, None),
+        Draw::Head { limit } => (None, None, Some(limit.to_string())),
+    };
+    let seed_s = seed.map(|s| s.to_string());
+    let mut args: Vec<&str> = vec!["review"];
+    if let Some(p) = proposer {
+        args.push("--proposer");
+        args.push(p);
+    }
+    if let Some(p) = predicate {
+        args.push("--predicate");
+        args.push(p);
+    }
+    if let Some(c) = &count {
+        args.push("--sample");
+        args.push(c);
+    }
+    if let Some(s) = &seed_s {
+        args.push("--seed");
+        args.push(s);
+    }
+    if let Some(l) = &limit {
+        args.push("--top");
+        args.push(l);
+    }
+    if as_json {
+        args.push("--json");
+        println!("{}", serde_json::to_string_pretty(&graph_json(&args)?)?);
+        return Ok(());
+    }
+    args.push("--text");
+    // The child signs off with its own verbs, which are the wrong ones from
+    // here — a reader who followed them would leave the surface they are
+    // standing in. Only the footer is rewritten; nothing about the candidates
+    // or the outcome is touched, which is the line this module holds
+    // elsewhere too.
+    let out = graph_cli(&args)?;
+    print!(
+        "{}",
+        out.replace("mecha-graph accept", "mecha review accept")
+            .replace("mecha-graph reject", "mecha review reject")
+    );
+    if matches!(draw, Draw::Head { .. }) {
+        println!(
+            "\nThese are the head of the queue, not a sample — verdicts collected\n\
+             this way describe the ordering. Use `mecha review sample` for a rate."
+        );
+    }
+    Ok(())
+}
+
+/// How many candidates a verdict actually landed on, read off the child's
+/// own report.
+///
+/// The graph prints one line per candidate (`#123 accepted → fact …`), not a
+/// total, so neither the last line nor the row's own `pending` answers "how
+/// many". The row is the wrong source twice over: the graph's bulk proposer
+/// filter is a *substring*, and `--limit` caps the set at 500 by default — so
+/// a class showing 1,084 pending can report "accepted 1084" after 500 landed.
+/// Counting the child's outcome lines is the only account that matches what
+/// happened.
+pub fn tally_report(report: &str) -> (usize, usize) {
+    let mut done = 0;
+    let mut failed = 0;
+    for line in report.lines() {
+        let l = line.trim();
+        if !l.starts_with('#') {
+            continue;
+        }
+        if l.contains("FAILED") {
+            failed += 1;
+        } else if l.contains(" accepted") || l.contains(" rejected") {
+            done += 1;
+        }
+    }
+    (done, failed)
+}
+
+/// Drive the graph's own accept/reject.
+///
+/// Ids are passed through untouched and the child's own report is printed
+/// rather than re-worded: this process is a driver, and a driver that
+/// paraphrases its child's outcome is a second account of what happened.
+fn decide(
+    verb: &str,
+    ids: &[i64],
+    reason: Option<&str>,
+    proposer: Option<&str>,
+    predicate: Option<&str>,
+    limit: Option<usize>,
+    dry_run: bool,
+) -> Result<()> {
+    print!(
+        "{}",
+        decide_report(verb, ids, reason, proposer, predicate, limit, dry_run)?
+    );
+    Ok(())
+}
+
+/// Drive the graph's own accept/reject and hand back what it said.
+///
+/// Ids and the child's report are passed through untouched: this process is a
+/// driver, and a driver that paraphrases its child's outcome is a second
+/// account of what happened. The modal reads the returned text for the count
+/// rather than assuming its own row was the whole match — the graph's bulk
+/// proposer filter is a *substring* and its `--limit` caps the set, so the
+/// number acted on is the child's to report.
+pub fn decide_report(
+    verb: &str,
+    ids: &[i64],
+    reason: Option<&str>,
+    proposer: Option<&str>,
+    predicate: Option<&str>,
+    limit: Option<usize>,
+    dry_run: bool,
+) -> Result<String> {
+    if ids.is_empty() && proposer.is_none() && predicate.is_none() {
+        bail!("give candidate ids, or --proposer / --predicate for a whole class");
+    }
+    // A cluster key in parentheses is not a payload predicate. `(commitment)`
+    // candidates carry `kind`, never `predicate`, so a bulk filter on it
+    // matches nothing — silently, which is the worst possible answer for a
+    // verdict. Refused by name instead.
+    if let Some(p) = predicate {
+        if p.starts_with('(') {
+            bail!(
+                "`{p}` is a cluster kind, not a predicate — these materialize tasks and are reviewed one at a time (mecha review sample)"
+            );
+        }
+    }
+    let id_strings: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
+    let limit_s = limit.map(|l| l.to_string());
+    let mut args: Vec<&str> = vec![verb];
+    args.extend(id_strings.iter().map(|s| s.as_str()));
+    if verb == "reject" {
+        if let Some(r) = reason {
+            args.push("--reason");
+            args.push(r);
+        }
+    }
+    if let Some(p) = proposer {
+        args.push("--proposer");
+        args.push(p);
+    }
+    if let Some(p) = predicate {
+        args.push("--predicate");
+        args.push(p);
+    }
+    if let Some(l) = &limit_s {
+        args.push("--limit");
+        args.push(l);
+    }
+    if dry_run {
+        args.push("--dry-run");
+    }
+    graph_cli(&args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The count comes off the child's report, not off the row.
+    ///
+    /// Found by review: the modal formatted `"accepted {n}"` from the class's
+    /// own `pending`, while the graph caps a bulk filter at 500 and matches
+    /// proposers by *substring* — so a 1,084-item class would report 1,084
+    /// after 500 landed. A verdict that misreports its own size is the kind
+    /// of number somebody quotes.
+    #[test]
+    fn the_tally_counts_the_childs_outcomes_not_the_rows() {
+        let report = "\
+#601 accepted → fact 3f2a
+#602 accepted → task task-9
+#603 FAILED: no pending candidate 603
+#604 accepted → fact 8b1c
+";
+        assert_eq!(tally_report(report), (3, 1));
+
+        let rejects = "#1 rejected\n#2 rejected\n";
+        assert_eq!(tally_report(rejects), (2, 0));
+
+        // A dry run reports a total and no per-candidate outcomes, so nothing
+        // is counted as done — which is correct: nothing was.
+        let dry =
+            "would match #7411 [linker:knn] …\n56 candidates match (dry run — nothing changed)\n";
+        assert_eq!(tally_report(dry), (0, 0));
+
+        assert_eq!(tally_report(""), (0, 0));
+    }
+
+    /// A cluster kind is refused by name rather than passed to a filter that
+    /// would match nothing.
+    ///
+    /// `precheck::cluster_key` returns `(commitment)` for commitments, while
+    /// the graph's bulk `--predicate` reads `payload["predicate"]` — a field
+    /// commitments do not have. The two conventions share a flag name, so the
+    /// mismatch is silent: zero rows, no error, and a reviewer believing a
+    /// class was cleared.
+    #[test]
+    fn a_cluster_kind_is_refused_rather_than_silently_matching_nothing() {
+        let err = decide_report(
+            "accept",
+            &[],
+            None,
+            Some("llm"),
+            Some("(commitment)"),
+            None,
+            true,
+        )
+        .expect_err("must refuse");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("cluster kind"), "{msg}");
+        assert!(
+            msg.contains("one at a time"),
+            "names the way through: {msg}"
+        );
+    }
+
+    /// Neither ids nor filters is an error, never a silent no-op.
+    #[test]
+    fn a_verdict_with_no_target_is_refused() {
+        let err =
+            decide_report("accept", &[], None, None, None, None, false).expect_err("must refuse");
+        assert!(format!("{err:#}").contains("candidate ids"));
+    }
+}
