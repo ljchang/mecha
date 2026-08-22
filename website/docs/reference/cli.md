@@ -136,6 +136,7 @@ Slash commands:
 | `/tools` | Tools this agent can call. |
 | `/triggers` | Scheduled prompts: see, edit, run, cancel. |
 | `/outbox` | Staged sends and publishes: show, edit, send, reject. |
+| `/queues` | Every store waiting on you — incl. the graph's merge queue, reviewed in place. |
 | `/frontdoor` | Inbound requests: extract, triage, close. |
 | `/polls` | Open polls, their tallies, and the lecture controls. |
 | `/review [now\|later\|auto]` | What happens to drafts a run stages. |
@@ -399,6 +400,40 @@ mecha outbox show 3f2a
 mecha outbox edit 3f2a && mecha outbox send 3f2a
 mecha outbox review --all --kind message
 mecha outbox reject 3f2a --reason "wrong recipient"
+```
+
+## `review`
+
+Everything waiting on a human, across every store — and the knowledge graph's
+merge queue, decidable from mecha. `queues` is the default subcommand. See
+[The queues](/docs/features/queues) for the design.
+
+```
+mecha review [queues|proposers|list|sample|items|accept|reject] [ARGS]
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `queues` | | What is waiting, across every store. An unreadable store shows `—`, never 0. |
+| `proposers` | | The graph queue by proposing mechanism, with each one's **human** accept rate and Wilson lower bound. Machine rejects reported beside the rate, never inside it. |
+| `list` | `--proposer <P>` | Pending classes, optionally one mechanism's. |
+| `sample` | `--proposer <P> --predicate <PRED>` | Individual candidates drawn **uniformly at random** — the default way to look at items, because judging the head of an ordered queue measures the ordering. |
+| `sample` | `-n <N>`, `--seed <S>` | Sample size (default 12) and the seed. Omit the seed and one is drawn and printed, so any sample can be redrawn and checked. |
+| `items` | `--proposer <P> --predicate <PRED>` | Queue order, for a class already decided about. Says outright its verdicts are not a rate. |
+| `accept` | `[IDS]...` | Accept candidates by id. |
+| `accept` | `--proposer <P> --predicate <PRED>` | A whole class. A cluster kind like `(commitment)` is refused by name rather than matching nothing. |
+| `accept` | `--limit <N>`, `--dry-run` | Cap the bulk match (the graph defaults to 500), or see what would be hit without changing anything. |
+| `reject` | | Same shapes as `accept`, plus `--reason`. |
+
+Every subcommand takes `--json`. The graph verbs drive the `mecha-graph`
+binary as a child process (`$MECHA_GRAPH_BIN`, else `PATH`) — deliberately
+not an MCP tool, so nothing a model can call accepts a fact candidate.
+
+```bash
+mecha review
+mecha review proposers
+mecha review sample --proposer bee:suggested --predicate related_to -n 12
+mecha review accept --proposer linker:knn --predicate related_to --dry-run
 ```
 
 ## `msg`
