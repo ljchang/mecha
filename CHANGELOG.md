@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-08-22
+
+### Added
+
+- **`/queues` and `mecha review` — every store waiting on you, in one list.**
+  Five stores accumulate work for the owner and each grew its own verb: the
+  outbox, the front door, staged rule changes, harness candidates, and — in
+  another repository — the knowledge graph's merge queue. Knowing what was
+  waiting meant remembering five commands, which is how that last one reached
+  6,434 items without anybody deciding to let it. `mecha review queues` is the
+  summary and `/queues` is its modal; four rows hand off to the modal that
+  already owns them, because `/outbox` and `/frontdoor` hold the confirmations
+  and taint warnings that make their approvals safe.
+
+  It is **not** `/review` — that is already the outbox's release policy, and
+  two things called review one word apart is a trap.
+
+  An unreadable store reports as a dash, never a zero: "nothing waiting" and
+  "could not look" are opposite findings, and a reader rendering its own
+  failure as an empty queue would reproduce exactly the bug this exists to
+  catch.
+
+- **The graph's merge queue is reviewable from mecha, three levels deep.**
+  Mechanism → class → items, with `a`/`r` verdicting and `t` filtering by
+  evidence tier (`all → unjudged → thin → some → solid`). This is the one
+  place mecha shells out to `mecha-graph`, and the reason is a boundary rather
+  than convenience: the MCP tool surface has `kg_pending` and `kg_verdict` and
+  deliberately **no `kg_accept`**, because every MCP tool lands in the model's
+  registry and a model that can accept fact candidates can accept the ones its
+  own extractor proposed. The decision is driven the way a person drives it —
+  `$MECHA_GRAPH_BIN` as a child process, resolved from the environment and
+  never from `mecha.toml`, since a project file arrives with a cloned
+  repository. The dependency is runtime and optional: every verb degrades to a
+  named error, and `queues` still reports the four mecha-owned stores when the
+  binary is missing.
+
+- **Item review is a random sample, and that is the default.** `mecha review
+  sample` draws twelve candidates uniformly at random from a class, seeded and
+  printed so the draw can be redrawn and checked. The queue has an order,
+  every order it could have is correlated with something, and judging the
+  first dozen then reading the result as the class's accept rate measures the
+  ordering — which matters because 40.5% of that queue sits in classes with no
+  human verdict at all. A verdict drops the item locally rather than
+  resampling, so a sitting's twelve verdicts describe one sample; `n` asks for
+  a new draw explicitly. `mecha review items` is the queue-order alternative
+  and says outright that its verdicts are not a rate.
+
+- **`mecha review accept|reject` takes a whole class**, via `--proposer` /
+  `--predicate`, with `--limit` and `--dry-run`. A cluster kind such as
+  `(commitment)` is refused by name rather than passed to a filter that would
+  match nothing, and the count reported is the child's own — the graph matches
+  proposers by substring and caps a bulk filter at 500, so the row's pending
+  figure is the wrong number twice over.
+
+
 ## [0.1.11] - 2026-08-21
 
 ### Added
