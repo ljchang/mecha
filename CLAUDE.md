@@ -871,6 +871,116 @@ An edit form offers due, defer and context and *not* the name, because
 `kg_task_update` has no rename — a box that silently discarded what was typed
 in it would be worse than not offering one.
 
+## The unified queue — `/queues`
+
+Five stores accumulate work for the owner, and each grew its own verb: the
+outbox, the front door, staged rule proposals, harness candidates, and — in
+another repository — the knowledge graph's merge queue. Knowing what was
+waiting meant remembering five commands, which is how that last one reached
+**6,434 items** without anybody deciding to let it.
+
+`mecha review` is the aggregator and `/queues` is its modal, on the `/tasks`
+rule: every read and every mutation drives `mecha review …` as a child
+process, so there is one implementation per verb. It is doctor's shape rather
+than a sixth store — it reads what the others own and holds nothing.
+
+Three decisions carry it:
+
+- **It is `/queues`, not `/review`.** `/review now|later|auto` is already the
+  outbox's release policy and `app.review` is already a `ReviewMode`. Two
+  things called review, one word apart, is a trap; the modal is named for the
+  stores rather than for the act.
+- **The graph queue is reviewed in place; the other rows hand off.** `/outbox`
+  and `/frontdoor` own the confirmations and taint warnings that make their
+  approvals safe, and a second copy of those here would be a second thing to
+  keep correct. The graph is in place because nothing in mecha could reach it
+  at all before.
+- **An unreadable store reports as a dash, never as zero.** "Nothing waiting"
+  and "could not look" are opposite findings, and a reader that rendered its
+  own failure as an empty queue would reproduce exactly the bug this surface
+  exists to catch. `queues` still reports the four mecha-owned stores when the
+  graph binary is missing.
+
+**And this is the one place mecha shells out to `mecha-graph`.** The rule
+above — mecha reaches the graph *only* through the MCP tool surface — still
+holds for reads and is not broken here: nothing opens the database. But the
+tool surface **cannot accept a fact candidate**, and that is a decision rather
+than a gap. `kg_pending` reads and `kg_verdict` files an opinion that decides
+nothing; there is deliberately no `kg_accept`, because every MCP tool lands in
+the model's registry, and a model that can accept candidates can accept the
+ones its own extractor proposed — which is `ladder.rs`'s oldest rule, *a lane
+must not promote itself*, defeated structurally.
+
+So the decision is driven the way a person drives it: `$MECHA_GRAPH_BIN` (else
+`mecha-graph` on `PATH`) as a child process, the `/triggers` rule one
+repository over. Nothing new becomes reachable from a prompt. The binary is
+resolved from the environment and deliberately **not** from `mecha.toml` — a
+project file arrives with a cloned repository, and a project that could name
+a binary mecha runs as a child process has been handed arbitrary execution,
+the same reasoning that keeps `[[trigger]]` out of the layered config. The
+dependency is runtime and optional, and every verb degrades to a named error.
+
+**`t` filters by evidence tier**, at the proposer and class levels: `all →
+unjudged → thin → some → solid`, bucketed by how many verdicts of the owner's
+own the rate rests on (0 / 1–9 / 10–29 / 30+). `Tier::of` is the single
+definition behind both the printed label and the filter — two would drift, and
+a filter disagreeing with the word beside it is worse than none, since you
+would verdict a class believing it sat in a tier it did not. The cursor
+returns to the top on every change: a filtered list is a different list, and
+at the class level the next keypress verdicts everything in the row. Purely a
+display toggle — the rows are already loaded, so it costs no subprocess.
+
+**Item review is a random sample, and that is the default rather than an
+option.** `Enter` on a class draws twelve candidates uniformly at random
+(`mecha review sample`, `mecha-graph review --sample`); `a`/`r` verdict one at
+a time. The queue has an order, every order it could have is correlated with
+something — age, id, confidence — so judging the first dozen and reading the
+result as the class's accept rate measures the ordering. Not a theoretical
+worry: 40.5% of the queue sits in classes with no human verdict at all, and
+the only cheap way to learn whether they are worth keeping is a draw
+uncorrelated with the content.
+
+Three rules on the draw:
+
+- **The seed is chosen by the caller and printed.** A sample nobody can redraw
+  is a sample nobody can check, and these exist to produce a number somebody
+  will quote. The TUI picks the seed rather than letting the graph pick one,
+  because `--json` does not report the seed it drew.
+- **A verdict does not resample.** The item is dropped from the list locally
+  and the seed is unchanged, so a sitting's twelve verdicts describe *one*
+  sample. `n` asks for a new draw, explicitly. Re-running the draw after each
+  keystroke would spread a sitting across a dozen samples and quietly destroy
+  the property the sampling was for.
+- **A partial Fisher-Yates, not shuffle-and-take**, with a unit test asserting
+  uniformity over 4,000 draws — it fails on `items.truncate(k)`, which is
+  exactly the bias the flag exists to escape. The PRNG is four lines of
+  splitmix64 rather than a dependency: nothing here needs cryptographic
+  randomness, and `rand` would be a new dependency in the one binary that
+  reads the owner's encrypted graph.
+
+`mecha review items` is the queue-order alternative, for a class already
+decided about. It prints a line saying its verdicts are not a rate.
+
+**`review --proposers` is the evaluation surface underneath it** (in
+`mecha-graph`): the queue rolled up by proposing mechanism, with each one's
+**human** accept rate, so "is this mechanism worth running" is answerable
+without reading 733 (proposer, predicate) rows. Two rules there, both learned
+the expensive way on 2026-08-22:
+
+- **Machine rejects are never counted as the owner's.** `precheck`'s own dedup
+  and ephemeral rejections used to land in the cluster view's `rejected_hist`,
+  which is the number a person reads immediately before verdicting a whole
+  class. It displayed `llm/has` at 18% against a true 67% over 48 human
+  verdicts, `llm/has_role` at 7% against 53%, and showed three classes at 0%
+  on which no human had ever voted. `ladder::human_record` had the correct
+  filter all along; the view did not. They are reported side by side now,
+  because a class that mostly repeats itself is a different problem from one
+  that is mostly wrong.
+- **An unjudged class has no rate, not a rate of zero.** 40.5% of that queue
+  sits in 660 classes with no human verdict at all, and rendering that as 0%
+  makes an untouched mechanism indistinguishable from a rejected one. Every
+  surface prints a dash.
+
 ## Skills
 
 `~/.mecha/skills/<name>/SKILL.md` is a procedure the **user** wrote, that the
