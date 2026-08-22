@@ -156,35 +156,20 @@ pub struct Args {
 /// whose effect is not measurable by this comparison — or worse, security
 /// settings, which are never a measurement's to decide.
 fn apply_override(opts: &mut GlobalOpts, spec: &str) -> Result<()> {
-    let (key, value) = spec
-        .split_once('=')
-        .with_context(|| format!("--ab-config expects KEY=VALUE, got `{spec}`"))?;
-    let num = |what: &str| -> Result<u64> {
-        value
-            .parse::<u64>()
-            .with_context(|| format!("{what} takes a number, got `{value}`"))
-    };
-    match key {
-        "compact_at_tokens" => opts.compact_at = Some(num("compact_at_tokens")?),
-        "max_turns" => {
-            // `as u32` wraps, and this function's whole job is to be the
-            // closed, validated set of knobs an automated proposer may move.
-            opts.max_turns = Some(
-                u32::try_from(num("max_turns")?)
-                    .with_context(|| format!("max_turns is out of range: `{value}`"))?,
-            )
+    // The closed set itself lives in `mecha_core::harness` — one definition,
+    // because `mecha harness` measures candidates by replay and applies them
+    // through the same parse, and a second spelling of the set here is how
+    // the two arms would silently stop being comparable.
+    use mecha_core::harness::{parse_change, OverrideKey};
+    let change =
+        parse_change(spec).with_context(|| format!("--ab-config could not use `{spec}`"))?;
+    match change.key {
+        OverrideKey::CompactAtTokens => opts.compact_at = Some(change.value.parse()?),
+        OverrideKey::MaxTurns => opts.max_turns = Some(change.value.parse()?),
+        OverrideKey::MaxOutputTokens => opts.max_output_tokens = Some(change.value.parse()?),
+        OverrideKey::Effort => {
+            opts.effort = Some(change.value.parse().map_err(|e| anyhow::anyhow!("{e}"))?)
         }
-        "max_output_tokens" => opts.max_output_tokens = Some(num("max_output_tokens")?),
-        "effort" => {
-            opts.effort = Some(
-                value
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("unknown effort `{value}`"))?,
-            )
-        }
-        other => anyhow::bail!(
-            "`{other}` is not an overridable key; try compact_at_tokens, max_turns, max_output_tokens or effort"
-        ),
     }
     Ok(())
 }

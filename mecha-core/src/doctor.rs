@@ -115,6 +115,7 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_frontdoor(&home.join("requests"), now));
     findings.extend(check_triggers(&home.join("triggers"), now));
     findings.extend(check_runs(&home.join("sessions")));
+    findings.extend(check_harness(&home.join("learning").join("harness"), now));
     // The graph store is `~/.mecha-graph`, a hidden sibling of the mecha home
     // by that store's own convention — resolved relative to `home` so a test
     // (or a relocated home) carries its sibling with it.
@@ -1268,6 +1269,98 @@ const GRAPH_NIGHTLIES: &[(&str, &str)] = &[
     ("mecha-nightly-", "the mecha half (vet, precheck, gossip)"),
 ];
 
+/// A staged harness candidate older than this is the nightly loop waiting on
+/// a review nobody knows is due — the same shape as a stuck draft, one store
+/// over. Not blocking anything, hence the longer leash.
+const STALE_CANDIDATE_AFTER: chrono::Duration = chrono::Duration::hours(72);
+
+/// Scan `<learning>/harness/candidates` for staged candidates waiting on the
+/// user. Quiet when the store has never existed — the loop not being wired is
+/// not a finding. Reads the files directly, on the rule that an examination
+/// must not heal (or create) what it reports on.
+fn check_harness(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let dir = root.join("candidates");
+    if !dir.is_dir() {
+        return out;
+    }
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            out.push(Finding::unreadable(
+                "harness",
+                "the harness candidate directory",
+                format!("{}: {e}", dir.display()),
+            ));
+            return out;
+        }
+    };
+    let mut stale: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let cand: crate::harness::HarnessCandidate =
+            match std::fs::read_to_string(&path).map(|t| serde_json::from_str(&t)) {
+                Ok(Ok(cand)) => cand,
+                Ok(Err(e)) => {
+                    out.push(Finding::unreadable(
+                        "harness",
+                        &format!(
+                            "candidate {} did not parse",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ),
+                        format!("{}: {e}", path.display()),
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    out.push(Finding::unreadable(
+                        "harness",
+                        &format!(
+                            "candidate {} could not be read",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ),
+                        format!("{}: {e}", path.display()),
+                    ));
+                    continue;
+                }
+            };
+        if !cand.pending() {
+            continue;
+        }
+        let old_enough = chrono::DateTime::parse_from_rfc3339(&cand.created_at)
+            .map(|t| {
+                now.signed_duration_since(t.with_timezone(&chrono::Utc)) > STALE_CANDIDATE_AFTER
+            })
+            // An unparseable stamp cannot prove the candidate is fresh.
+            .unwrap_or(true);
+        if old_enough {
+            stale.push(format!("{} · {:?} {}", cand.id, cand.class, cand.change));
+        }
+    }
+    if !stale.is_empty() {
+        stale.sort();
+        out.push(Finding {
+            component: "harness".to_string(),
+            severity: Severity::Attention,
+            summary: format!(
+                "{} harness candidate(s) staged for more than {}h",
+                stale.len(),
+                STALE_CANDIDATE_AFTER.num_hours()
+            ),
+            detail: stale.join("\n"),
+            remedy: Some(Remedy {
+                description: "review the staged candidates — doctor never accepts one".to_string(),
+                argv: vec!["mecha".into(), "harness".into(), "list".into()],
+                needs_terminal: false,
+            }),
+        });
+    }
+    out
+}
+
 /// Scan `<graph store>/logs` for each nightly family's newest dated log.
 ///
 /// Quiet when the store, the logs directory, or a family has never existed —
@@ -1660,6 +1753,62 @@ mod tests {
         assert!(of(&findings, "outbox").is_empty(), "{findings:#?}");
 
         let _ = std::fs::remove_dir_all(&fresh);
+    }
+
+    fn harness_candidate(home: &Path, id: &str, created_at: &str, status: &str) {
+        let dir = home.join("learning").join("harness").join("candidates");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cand = crate::harness::HarnessCandidate {
+            id: id.into(),
+            created_at: created_at.into(),
+            class: crate::candidate::ChangeClass::Config,
+            change: "compact_at_tokens=24000".into(),
+            metric: crate::candidate::Metric::CutShort,
+            rationale: "test".into(),
+            evidence: String::new(),
+            model: None,
+            status: status.into(),
+            measurement: None,
+            resolved_at: None,
+            reason: None,
+        };
+        std::fs::write(
+            dir.join(format!("{id}.json")),
+            serde_json::to_string_pretty(&cand).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_staged_harness_candidate_is_stale_at_73_hours_and_not_at_71() {
+        let home = home("harness-stale");
+        // 73h before NOW.
+        harness_candidate(&home, "hc-old", "2026-08-11T11:00:00Z", "staged");
+        // Resolved candidates never nag, however old.
+        harness_candidate(&home, "hc-done", "2026-08-01T00:00:00Z", "rejected");
+        let findings = examine(&home, utc(NOW));
+        let harness = of(&findings, "harness");
+        assert_eq!(harness.len(), 1, "{findings:#?}");
+        assert_eq!(harness[0].severity, Severity::Attention);
+        assert!(harness[0].summary.contains("staged for more than 72h"));
+        assert!(
+            harness[0].detail.contains("hc-old"),
+            "{}",
+            harness[0].detail
+        );
+        assert_eq!(
+            harness[0].remedy.as_ref().unwrap().argv,
+            vec!["mecha", "harness", "list"],
+            "the remedy is the review surface, never accept"
+        );
+
+        // 71h old: the person may simply not have looked yet.
+        let _ = std::fs::remove_dir_all(home.join("learning"));
+        harness_candidate(&home, "hc-new", "2026-08-11T13:00:00Z", "staged");
+        let findings = examine(&home, utc(NOW));
+        assert!(of(&findings, "harness").is_empty(), "{findings:#?}");
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

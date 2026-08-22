@@ -65,6 +65,8 @@ compact.rs   the cut, the rebuild, and the state carried across one
 cron.rs      five-field cron, resolved in an IANA zone (both DST directions)
 trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
 frontdoor.rs inbound requests from strangers, and the quarantine over them
+harness.rs   the self-improvement record: candidates, their judgements, and
+             the override layer an accepted config change rides in
 learning.rs  the reflection/rule store behind reflect, learn, validate
 counterfactual.rs  did the rules change the answer at the recorded moment?
 distill.rs   session → episode, staged to the knowledge graph over MCP
@@ -1652,10 +1654,65 @@ precedes the thinking.
 
 The corpus is the sensor `docs/SELF-IMPROVEMENT-RESEARCH.md` is built around:
 rumination's only input is a human stepping in, so a harness problem produces
-no intervention, no reflection, and nothing downstream ever sees it. Nothing
-acts on these numbers yet, deliberately — §2 there is the finding that agents
-update their harnesses without benefiting, so the next thing to learn is
-whether these findings would have been acted on.
+no intervention, no reflection, and nothing downstream ever sees it. Since
+2026-08-22 the numbers are acted on nightly — see the next section — with §2's
+finding (agents update their harnesses without benefiting) answered
+structurally: nothing lands without a measurement, and every disposition is on
+the record, so "is this loop actually helping" is a query, not an impression.
+
+### Harness rumination
+
+`mecha harness ruminate` (`commands/harness.rs`, nightly from `ruminate.sh`)
+closes the loop the pieces above left open: diagnose one change from the
+corpus → record it as a candidate (`harness.rs`,
+`~/.mecha/learning/harness/candidates/`, one pretty JSON per candidate on the
+proposals-store conventions) → measure it by **counterfactual replay of
+recent sessions** (`harness_probe.rs`: up to `--sessions` recent sessions of
+the diagnosed model, each driven twice — recorded config against recorded
+config plus the candidate change, recorded tool results both times, whole
+trajectory, `RunStats` as the label) → judge through `candidate::judge` →
+dispose. A config change that wins on selection, is confirmed on the holdout,
+and holds the work guardrail **auto-accepts** (§13.3, the owner ruling);
+everything else stages for review or is rejected with the evidence attached.
+
+The decisions that carry it, each a bug if undone:
+
+- **An accepted change lives in an override layer, never in config.toml.**
+  `overrides.toml` applies between defaults and every file layer
+  (`harness::apply_accepted_overrides`, called by `Config::load` and
+  `load_global`), so a key the user names anywhere wins by assignment order —
+  reversibility is structural, not promised. `mecha harness revert <id|key>`
+  removes the entry; the candidate record survives as evidence. Overrides are
+  re-validated against the closed set **on every load**, and an unknown key
+  in the file is skipped loudly — machine-written is not trusted.
+- **One closed set, one definition.** `harness::OverrideKey` is the same four
+  knobs `eval --ab-config` accepts, and eval's `apply_override` now delegates
+  to `harness::parse_change` — a second spelling of the set is how the
+  measurement arm and the acceptance arm silently stop being comparable.
+- **A divergent episode is dropped, not scored.** Replay answers from the
+  recording; once an arm structurally departs, its remaining stats describe a
+  run against tool results nobody asked for. Dropping fails safe: thin
+  evidence can only ever *propose*, and a behaviour-visible change that
+  diverges everywhere reaches a human instead of a verdict.
+- **Both arms replay.** Comparing the live recording's stats against one
+  replayed arm would measure replay artifacts, not the change.
+- **Class routing is structural.** Only `Config`-class changes inside the
+  closed set are measured; `Prose` and `Architecture` stage unmeasured (prose
+  needs the content-sensitive eval arm, which is a human's spend to authorize);
+  `Security` stages with the standing warning and is never measured at all —
+  a loop that can argue for widening its own confinement will eventually
+  argue well, and the metric will agree with it.
+- **The brief carries history.** Every prior candidate rides in the evidence
+  as "already tried — do not re-propose" (the retired-rules precedent), and a
+  re-derived change is refused by canonical-spec comparison before anything
+  is stored or measured, so a rejection stays paid for.
+- **A quoted proposal is refused before it becomes a record.** The
+  `carries_over` check runs before the store is touched: a candidate file is
+  a place changes wait to be applied, which is the one place lifted
+  third-party text must not sit.
+- **Doctor watches the queue.** A candidate staged past 72h is an Attention
+  finding with `mecha harness list` as the remedy — the review this loop
+  depends on must not be discoverable only by reading a 03:30 log.
 
 ## The doctor
 

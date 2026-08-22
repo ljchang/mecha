@@ -8,6 +8,7 @@ pub mod doctor;
 pub mod eval;
 pub mod frontdoor;
 pub mod gossip;
+pub mod harness;
 pub mod learn;
 pub mod mail;
 pub mod msg;

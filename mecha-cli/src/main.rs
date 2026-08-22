@@ -3,6 +3,7 @@
 mod approve;
 mod commands;
 mod editor;
+mod harness_probe;
 mod interrupt;
 mod logs;
 mod probe;
@@ -224,6 +225,13 @@ pub enum Command {
     /// arranged so that being wrong costs one measurement.
     Diagnose(commands::diagnose::Args),
 
+    /// The harness improving itself, on the record: `ruminate` diagnoses one
+    /// change nightly, measures it by counterfactual replay of recent
+    /// sessions, and auto-applies only a measured, holdout-confirmed config
+    /// win — reversibly, through an override layer your own config always
+    /// beats. Everything else stages here for review.
+    Harness(commands::harness::Args),
+
     /// Requests that arrived through the public surface, and the quarantine
     /// they pass through before any run with tools is told about them.
     /// `factory-publish drain` fetches them; this is what happens next.
@@ -330,6 +338,7 @@ async fn dispatch() -> Result<()> {
         Command::Setup(args) => commands::setup::execute(&cli.global, args).await,
         Command::Doctor(args) => commands::doctor::execute(args).await,
         Command::Diagnose(args) => commands::diagnose::execute(&cli.global, args).await,
+        Command::Harness(args) => commands::harness::execute(&cli.global, args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
         Command::Mail(args) => commands::mail::run(&cli.global, args).await,
         Command::Tasks(args) => commands::tasks::run(&cli.global, args).await,
