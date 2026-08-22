@@ -1,6 +1,6 @@
 ---
 name: update
-description: Update and restart everything after a change — installed binaries, the long-running services, the pkg MCP server, the benchmark binary, the factory client, and the droplet. Use when asked to "update everything", "deploy", "restart the services", after cutting a release, or whenever something running looks older than the repo.
+description: Update and restart everything after a change — installed binaries, the long-running services, the mecha-graph MCP server, the benchmark binary, the factory client, and the droplet. Use when asked to "update everything", "deploy", "restart the services", after cutting a release, or whenever something running looks older than the repo.
 ---
 
 # Updating everything
@@ -49,9 +49,22 @@ cargo install --path mecha-cli  --locked --force   # mecha
 cargo install --path mecha-mail --locked --force   # mecha-mail, mecha-google, mecha-outlook
 ```
 
-And the graph, from `~/Github/personalized_knowledge_graph` (the mecha-graph
-repo — installed *with* mecha since 2026-08-16, because
-`~/.mecha/config.toml` runs `~/.cargo/bin/mecha-graph-mcp`, not a repo path):
+And the graph, from `~/Github/personalized_knowledge_graph` — installed *with*
+mecha since 2026-08-16, because `~/.mecha/config.toml` runs
+`~/.cargo/bin/mecha-graph-mcp`, not a repo path.
+
+**That path is right, and it is not the `mecha-graph` checkout beside it.**
+The project is called mecha-graph and its crates are `mecha-graph*`, so
+`~/Github/mecha-graph` looks like the obvious source and is not one: it is a
+**generated artifact**, `git archive HEAD` from the private repo minus a
+hardcoded exclusion list, run through `check-public-denylist.sh` — a gate that
+*deletes* the tree it refuses rather than flagging it. The two histories are
+disjoint. Building from the public mirror would drop `eval/gold.jsonl`, the
+operational docs and the export tooling, and would put authoring on the far
+side of the gate that keeps life-derived text out of a public repo. Develop in
+the private repo; export to publish. Confirmed 2026-08-22, after this
+parenthetical's earlier wording ("the mecha-graph repo") sent a session looking
+for which of the two was authoritative.
 
 ```bash
 cargo install --path mecha-graph     --locked --force   # mecha-graph (CLI)
