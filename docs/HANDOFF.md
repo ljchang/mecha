@@ -92,11 +92,12 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,255 tests**, no failures — re-measured 2026-08-22 after the
-harness-rumination and starved-learner arcs (675 in the `mecha-core` lib
-suite, 366 in `mecha-cli` with 1 ignored, 123 in `mecha-mail`, 75 in
-`mecha-slack`, 15 across the two integration suites that need real backends,
-and 1 doctest). The 9 added over 2026-08-21's 1,246 are the harness store,
+Expect **1,266 tests**, no failures — re-measured 2026-08-22 after the
+unified-queues arc (675 in the `mecha-core` lib suite, 377 in `mecha-cli` with
+1 ignored, 122 in `mecha-mail`, 75 in `mecha-slack`, 15 across the two
+integration suites that need real backends, and 1 doctest). The 11 added over
+the morning's 1,255 are `mecha review`'s tally and refusals (3) and the
+`/queues` modal's parsing, tier filter and tiny-size draw (8). The 9 added over 2026-08-21's 1,246 are the harness store,
 override layer, and doctor's harness/starved-learner checks; the 24 before
 that were the search-chain, cache-lens and outbox-approval arcs. Earlier 2026-08-21 counts were 1,222,
 1,213, 1,210 and 1,192; the 2026-08-20 counts were 1,140 at `cfa2cc2` and 1,105 at 0.1.9,
@@ -152,8 +153,8 @@ A working agent harness, used and measured rather than just compiled.
 | Budgets | `max_turns`, `max_output_tokens`, `max_cost_usd`, cost accounting |
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
 | Context | Two-pass compaction: thin tool results, then summarise. Taint preserved, a tool's own state (the todo list) crosses verbatim, the states a mid-run rewrite replaced ride `Conversation::rewritten` into the session record, and a per-run cache lens watches whether the cached prefix is actually reused (warns only on unexplained re-payment) |
-| Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep, and `slack` for the remote control |
-| TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/outbox`, `/frontdoor`, `/mail`, `/tasks`, `/skills`, `/polls` and `/doctor` modals drive the CLI like `/triggers` does, the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
+| Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `review` / `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep, and `slack` for the remote control |
+| TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/queues`, `/outbox`, `/frontdoor`, `/mail`, `/tasks`, `/skills`, `/polls` and `/doctor` modals drive the CLI like `/triggers` does, the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
 | Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`. **Merged 2026-08-09 (PR #25) and running as `mecha-slack.service`** |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
@@ -170,6 +171,7 @@ A working agent harness, used and measured rather than just compiled.
 | Skills | `~/.mecha/skills/<name>/SKILL.md` in the Agent Skills format, loaded by a `skill` tool call at three levels of disclosure. User-authored with no mechanism for anything else — no install, no registry, no remote body, none derived from a session — which is why loading one arms no taint. `tools:` narrows the surface and can never widen it; a loaded skill crosses compaction verbatim; `mecha eval` forces them off |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B). Budget is 25 active rules and 2600 chars **per domain**, and a run carries only `RUN_DOMAINS` (`behavior` + `writing`) — new domains are opt-in and `unrouted_domains` warns at startup on any that ride in no prompt |
 | Run quality | `Record::Outcome(RunStats)` per finished run from every front-end; `runlog.rs` reads the corpus back (`mecha sessions health`, rates split by model, `—` where a denominator is zero); three population checks in `doctor`; `candidate.rs` gates a proposed change on a paired comparison with a deterministic holdout and a work guardrail; `mecha eval --ab-config KEY=VALUE` is the content-sensitive arm; `mecha diagnose` proposes one change from the corpus and prints the command that would falsify it; `mecha harness` (2026-08-22) closes the loop nightly — candidates persisted, measured by session replay, a holdout-confirmed config win auto-accepted into a revertible override layer beneath the user's config, everything else staged for review — see the self-improvement section |
+| Queues | `mecha review` + the `/queues` modal — every store waiting on a human in one list: the graph's merge queue, the outbox, the front door, staged rule changes, harness candidates. Four hand off to the modal that owns them; the graph queue is reviewed in place, three levels deep (mechanism → class → a *random* sample of items), `t` filtering by evidence tier and `a`/`r` verdicting. An unreadable store prints a dash, never a zero. **The one place mecha shells out to `mecha-graph`** — the MCP surface has no `kg_accept` and must not gain one |
 | Eval | 36 cases, 15 tags (both re-counted 2026-08-20, unchanged), scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `graph-cases.jsonl` — 10 memory/interlock cases against fixture MCP servers (`--mcp-file`), renamed with the graph and expecting the bare `kg_*` names production serves (scorecards across the rename are not comparable) |
 
 `cargo clippy --all-targets` is clean and should stay that way.
@@ -1158,6 +1160,83 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   the friction the move ends. The sorting rule: a command belongs to the repo
   whose store it curates; `distill` stays (it reads mecha's sessions and is
   the bridge). Move `gossip` first; it builds on published `mecha-core`.
+
+  **`mecha review` (2026-08-22) runs against that rule on purpose, and the
+  next person should not read it as an oversight.** By the sorting rule its
+  graph half belongs in mecha-graph. It is in mecha-cli because the thing
+  asked for was a *unified* surface — one list holding the graph's queue
+  beside the outbox, the front door and the staged rule changes, none of
+  which mecha-graph knows about. It touches no schema and holds no store; it
+  drives `mecha-graph` as a child process, so the coupling is a binary name
+  and a flag set rather than a crate. If the inversion happens, `review`'s
+  graph verbs are the part that stays, and what moves is whatever
+  `mecha-graph review` grows to make them thinner.
+- **The queue is a ratchet, and now the instruments say so.** 91.2% of the
+  6,434 pending candidates can never reach the accept gate: it wants a
+  `(proposer, predicate)` on `DURABLE_CLASSES` (`precheck.rs:837`) or an
+  earned rung, and `ladder.rs:120` has `Staged → Sampled → Trusted` with **no
+  rung below Staged** — a class earns its way into autonomy and can never earn
+  its way out of the queue. The symmetric fix is a `Rung::Suppressed` entered
+  on the Wilson *upper* bound, mirroring the promotion rule and reusing
+  `wilson_lower_bound`'s own arithmetic.
+
+  **Do not ship it yet, and the reason is the finding.** On human verdicts
+  alone, with a floor of ten, that rule currently suppresses **nothing** —
+  there is no class the owner has judged often enough and rejected
+  consistently enough to condemn. 40.5% of the queue sits in 660 classes with
+  no human verdict at all. The prerequisite is evidence, which is what
+  `review --sample` was built for: twelve random items across the ten largest
+  unjudged classes is 120 decisions covering 1,597 queued items. Suppression
+  is the last step, not the first.
+
+- **The ladder is never reconciled, so rungs are stale in both directions.**
+  `note_verdict` is called only when a human decides an item (`fact.rs:1258`,
+  `fact.rs:1342`), so a class's rung freezes until it is next touched — and
+  the Wilson thresholds that replaced the streak rule on 2026-08-16 were never
+  backfilled. `class_ledger` holds **57 rows for 733 classes**. Measured
+  2026-08-22: `llm/member_of` is 39-for-39 (LB 0.910) and still `staged`,
+  while `llm/works_at` sits at `sampled` on an LB of **0.486** — under the
+  0.65 floor, auto-accepting nine in ten on evidence that no longer justifies
+  it. A `ladder reconcile` pass run nightly before precheck fixes both
+  directions and makes any future threshold change take effect without a
+  review session. This is the cheapest item here and the only one with a live
+  correctness cost.
+
+- **The nightly alert reports depth, not rate.** `ALERTS: merge queue 6491`
+  reads identically whether the accept lane admits 5% of inflow or 95%, which
+  is why the queue grew 1,035 → 6,434 over nineteen days unremarked. Print the
+  delta and the admit rate (`admitted 56 of 971 added`), and have `doctor`
+  raise a finding when admitted trails inflow three nights running. Related:
+  vet's ceiling is `VET_LIMIT` × 10 predicates = 400 a night against 500–970
+  candidates arriving, so the drain is specified slower than the fill.
+
+- **Extraction progress is unobservable, and the number standing in for it
+  measures something else.** `HealthStats` has no backlog field, so
+  `~/.mecha-graph/nightly.env` justifies `EXTRACT_LIMIT=400` by citing
+  `enriched_pct` — which counts rows in `episode_enrichment`, written from
+  exactly one place, `sources/bee.rs`, with `model = "bee-native"`. It equals
+  2,411/20,501 = 11.7604%, the Bee share of the corpus, to the digit, and
+  moves only when Bee ingests. The real backlog is episodes absent from
+  `extract_state` at the current `prompt_version` (`extract.rs:229`) — roughly
+  17,600, about 44 nights — and bumping `PROMPT_VERSION` re-queues the whole
+  corpus. Add the field; fix the comment before it sizes another batch.
+
+- **`mecha-graph fork` is broken**, which matters because it is the documented
+  test bed for anything that mutates. `fork --out …` fails with `Dimension
+  mismatch for inserted vector … Expected 768 dimensions but received 1024` —
+  the harrier embedding switch (2026-08-20) moved the live vectors and the
+  copy path still declares the old width. Found 2026-08-22 while looking for a
+  safe place to exercise a write path.
+
+- **Gossip's rotation cannot fill its quota.** `probe-targets` returns exactly
+  10 candidates; `GOSSIP_ENTITIES=3` with `GOSSIP_COOLDOWN_DAYS=7` demands 21
+  distinct targets a week from those 10, so nights silently under-fill (2 on
+  08-22, 1 on 08-17, 2 on 08-16). Either drop to 2 a night, cut the cooldown
+  to 3 days, or do the upstream fix `nightly-mecha.sh` already names — stop
+  counting gossip's own reads as `retrieval_touch` demand. The
+  self-reinforcement it warns about is visible in the current ranking: Frank
+  Chang leads at 26 touches *because* he was probed.
+
 - **A stranger-facing README pass.** The public README still reads like the
   private repo's; nothing in it walks a person from `cargo install
   mecha-graph` to a populated graph.

@@ -1466,6 +1466,55 @@ cross the recorded fail-closed ruling and were surveyed and left untaken. The
 floor became `learning::LEARN_MIN_REFLECTIONS`, shared by `learn --min` and
 the check, on the `MAX_ACTIVE_RULES_PER_DOMAIN` lesson.
 
+**2026-08-22 (evening) — the queue could not be read, and then could be.**
+The knowledge graph's merge queue had grown 1,035 → 6,434 in nineteen days and
+the nightly alert printed only its depth, which reads identically whether the
+accept lane admits 5% or 95%. Reading across it turned up an ordinary
+structural gap and one genuinely misleading number.
+
+The gap: the queue is a ratchet. Auto-accept requires a `(proposer, predicate)`
+class on a hand-maintained allowlist or an earned ladder rung, and 91.2% of the
+queue can reach neither — the ladder has `Staged → Sampled → Trusted` and *no
+rung below Staged*, so a class can earn its way into autonomy and never earn
+its way out of the queue. Vet's ceiling (40 × 10 predicates) also sits below
+extraction's output (500–970 candidates a night), so the drain was specified
+slower than the fill, against a slice that is 8.8% of the problem.
+
+The number: `precheck::review_clusters` counted the pipeline's own dedup and
+ephemeral rejections as the owner's, in the one view a person reads
+*immediately before verdicting a whole class*. `llm/has` displayed 18% against
+a true 67% over 48 human verdicts; `llm/has_role` 7% against 53%; three classes
+displayed 0% on which nobody had ever voted. `ladder::human_record` had carried
+the correct filter (`reject_reason NOT LIKE 'precheck:%'`) all along — two
+queries, one filtered, one not, and the unfiltered one was the one on screen.
+A first pass of the analysis reached the confident conclusion that half the
+queue was demonstrably unwanted and a Wilson-upper-bound suppression rule would
+clear 31.3% of it; recomputed on human verdicts alone the same rule clears
+**nothing**, because there is no class the owner has judged often enough and
+rejected consistently enough to condemn. The queue is not full of junk; it is
+full of unknowns — 40.5% of it in 660 classes with no human verdict at all.
+
+What shipped from it: `review --proposers` and the TUI's `p` roll the queue up
+by proposing mechanism (the level a decision is actually made at — the LLM
+extractor measures 59% over 1,984 verdicts, `linker:knn` 16% over 57);
+`review --sample` draws uniformly at random, seeded and printed, because the
+queue has an order and judging its head measures the ordering; and on mecha's
+side `mecha review` plus the `/queues` modal put all five human-facing stores
+in one list. The graph half of that modal shells out to `mecha-graph`, which is
+a departure from "reach the graph only through MCP" taken deliberately: the
+tool surface has no `kg_accept` and must not gain one, since every MCP tool
+lands in the model's registry and a model that can accept candidates can accept
+the ones its own extractor proposed.
+
+Six review findings were fixed before the merge, one of them severe: the
+class-level verdict passed `--proposer`/`--predicate` to a `mecha review
+accept` that declared neither, so the headline "one decision worth hundreds"
+could never have worked. It shipped that way because the mutating path was
+never exercised — the live graph was deliberately left alone and no scratch
+fork was made instead. `mecha-graph fork` turned out to be broken anyway
+(768-vs-1024 vector dimensions, from the harrier embedding switch), which is
+its own finding and still open.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -1688,6 +1737,35 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**Two queries computed the same statistic and only one was filtered — the
+unfiltered one was the one on screen.** `ladder::human_record` excluded the
+pipeline's own rejects (`reject_reason NOT LIKE 'precheck:%'`) with a comment
+explaining why; `precheck::review_clusters`, which feeds the cluster review UI
+and `review --clusters`, had no such filter. So machine dedup rejections were
+displayed as the owner's verdicts in the one view a person reads immediately
+before verdicting a whole class: `llm/has` shown at 18% against a true 67%,
+three classes shown at 0% on which nobody had ever voted. A whole analysis was
+built on the wrong number and reached a confident, wrong conclusion — that
+half the queue was demonstrably unwanted — before the second query was found.
+**When a statistic has two implementations, the one with the careful comment
+is evidence that the other one is wrong.** Grep for the filter, not for the
+column name.
+
+**And the correction has a second half worth keeping: an absent rate is not a
+zero.** With machine rejects excluded, 40.5% of that queue turned out to sit in
+classes with *no human verdict at all* — which the display rendered as "0%",
+indistinguishable from a class rejected every time it was seen. Every surface
+now prints a dash. "Nothing went wrong" and "nothing happened" are different
+answers, and the same rule already governs `sessions health`; it is worth
+re-checking wherever a rate reaches a human.
+
+**A random sample and the head of a queue are not interchangeable.** Judging
+the first dozen candidates in a class and reading the result as the class's
+accept rate measures the *ordering*, which is correlated with age, id and
+confidence. The fix is a seeded uniform draw whose seed is printed, so the
+sample can be redrawn and checked — and a verdict must not resample, or a
+sitting's twelve verdicts describe twelve different samples instead of one.
 
 **A truncating pipe turned a partial test run into a plausible total.**
 `cargo test --workspace 2>&1 | tail -30` was sent to the background on
@@ -2132,6 +2210,19 @@ All found by pre-push review or by running it.
   wrong answer is the one you were hoping for.
 
 ### Containment and state
+
+**A mutating path that was never exercised shipped broken, because the live
+store was correctly left alone and no scratch copy was made instead.** The
+`/queues` class verdict passed `--proposer`/`--predicate` to a `mecha review
+accept` that declared neither, so clap rejected it and the headline feature —
+"one decision worth hundreds on instances" — could never have worked. Every
+read path was tested against the real graph; the write path was skipped to
+avoid mutating real data, and skipped entirely rather than redirected. **The
+answer to "I must not test this against production" is a fixture, a fork, or a
+`--dry-run` flag — never nothing.** (`mecha-graph fork` exists for exactly this
+and turned out to be broken itself, 768-vs-1024 vector dimensions after the
+harrier embedding switch; `--dry-run` was added to `mecha review` in its place
+and is what finally exercised the path.)
 
 - **Per-run jails and shared subprocesses do not mix, and the model finds out
   first.** MCP servers are spawned once with the agent, so a Slack connector
