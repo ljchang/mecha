@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// Only run when a domain has at least this many unprocessed reflections.
-    #[arg(long, default_value_t = 3)]
+    #[arg(long, default_value_t = mecha_core::learning::LEARN_MIN_REFLECTIONS)]
     pub min: usize,
 
     /// Hold out this fraction of unprocessed reflections from the pass, so

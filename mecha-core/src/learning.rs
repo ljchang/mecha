@@ -1456,6 +1456,13 @@ pub const RULES_CHAR_BUDGET: usize = 2600;
 /// User rules are not counted: they are the user's own budget to spend.
 pub const MAX_ACTIVE_RULES_PER_DOMAIN: usize = 25;
 
+/// How many unprocessed reflections a domain needs before `mecha learn`
+/// consolidates — the default behind `learn --min`, and the floor doctor's
+/// starved-learner check measures against. One constant, two readers, on the
+/// `MAX_ACTIVE_RULES_PER_DOMAIN` lesson: a check that names one number while
+/// the gate applies another fails silently, and looks like a healthy loop.
+pub const LEARN_MIN_REFLECTIONS: usize = 3;
+
 /// The domains whose rules ride in an ordinary agent run's system prompt.
 ///
 /// `behavior` is general conduct and belongs everywhere. `writing` is here

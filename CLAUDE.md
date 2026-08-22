@@ -1731,7 +1731,15 @@ other signal — measured against the trigger's own earlier runs and never an
 absolute floor, or a prompt that legitimately needs no tools would read as the
 broken one, and suppressed when the run also errored, because that already has
 a finding), failed
-`mecha-*` units, graph nightlies that stopped writing their daily log, and the
+`mecha-*` units, graph nightlies that stopped writing their daily log, a rule
+learner starved by provenance (every domain below the learn floor while ten or
+more reflections sit excluded by origin and new ones keep arriving — the gate
+working exactly as designed, nightly, with nothing downstream to show for it,
+which no per-night `ok` line can distinguish from a healthy quiet night; the
+floor is `LEARN_MIN_REFLECTIONS`, shared with `learn --min` so the check and
+the gate cannot drift, and the finding proposes a *decision* rather than a
+command — its remedy shows classifications and nothing may loosen the gate),
+harness candidates staged past 72h, and the
 population signals in the run-quality corpus — a model finishing a fifth of
 its runs over a failed call, failing a quarter of its tool calls, or having a
 quarter of its runs cut short by a ceiling (thresholds deliberately **high**,
