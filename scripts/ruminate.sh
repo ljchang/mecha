@@ -78,7 +78,16 @@ echo "· retirements (deterministic ledger scan; staged for review like any rule
 echo "· work clean (retention on generated output; a published bundle's source is never removed)"
 "$MECHA" work clean
 
+echo "· harness (diagnose one change from the run corpus, measure it by counterfactual"
+echo "  replay of recent sessions, and dispose through the candidate gate — a measured,"
+echo "  holdout-confirmed config win auto-applies to the override layer, reversibly;"
+echo "  prose, architecture and anything unmeasurable stages for review)"
+"$MECHA" harness ruminate -p "$PROVIDER" --sessions 16
+
 echo "· proposals awaiting review"
 "$MECHA" proposals
+
+echo "· harness candidates awaiting review"
+"$MECHA" harness list
 
 echo "── rumination done $(date -Is) ──"

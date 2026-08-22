@@ -90,6 +90,12 @@ pub struct Evidence {
     pub stop_causes: Vec<(String, usize)>,
     /// What `doctor` said, verbatim — machine-authored text, not third-party.
     pub findings: Vec<String>,
+    /// What earlier passes already tried, one line each — machine-authored
+    /// from the harness candidate store, the way the learner is shown retired
+    /// rules. Without it a nightly diagnostician re-derives the same rejected
+    /// change forever, and every night costs a measurement that was already
+    /// paid for.
+    pub history: Vec<String>,
 }
 
 impl Evidence {
@@ -121,6 +127,7 @@ impl Evidence {
                 })
                 .collect(),
             findings: Vec::new(),
+            history: Vec::new(),
         }
     }
 
@@ -157,6 +164,15 @@ impl Evidence {
             out.push_str("\nwhat the health check reported:\n");
             for f in &self.findings {
                 out.push_str(&format!("- {f}\n"));
+            }
+        }
+        if !self.history.is_empty() {
+            out.push_str(
+                "\nalready proposed by earlier passes — do not propose any of these again; \
+                 a measured rejection is evidence, not an invitation to retry:\n",
+            );
+            for h in &self.history {
+                out.push_str(&format!("- {h}\n"));
             }
         }
         out

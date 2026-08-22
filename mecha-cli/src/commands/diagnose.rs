@@ -1,22 +1,25 @@
 //! `mecha diagnose` — read the run corpus and propose one change to try.
 //!
-//! The stage between `doctor` (something is wrong) and `eval --ab-config`
+//! The stage between `doctor` (something is wrong) and a measurement
 //! (did the fix help). It is the only place in this loop a model authors
 //! anything, and everything about how it is run is arranged around the fact
 //! that it will usually be wrong: the proposal is typed, it carries a
 //! prediction, and it is printed with the exact command that would falsify it
 //! rather than applied.
 //!
-//! **It does not measure, and it does not apply.** Running the arms costs a
-//! real model run per case per arm, so making that automatic would put an
+//! **This verb does not measure, and does not apply.** Running the arms costs
+//! a real model run per case per arm, so making that automatic would put an
 //! hour of inference behind a command whose output is a suggestion. The
-//! measurement is one line away and the human decides to spend it.
+//! measurement is one line away and the human decides to spend it. The
+//! nightly counterpart is `mecha harness ruminate`, which runs the same pass
+//! through the same functions below and *does* measure — by counterfactual
+//! replay, against the candidate gate, with the judgement recorded.
 
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::agent::Conversation;
 use mecha_core::diagnose::{
-    carries_over, parse_proposal, Evidence, DIAGNOSE_INSTRUCTION, DIAGNOSE_SYSTEM,
+    carries_over, parse_proposal, Evidence, Proposal, DIAGNOSE_INSTRUCTION, DIAGNOSE_SYSTEM,
 };
 use mecha_core::message::Block;
 use mecha_core::runlog::{Corpus, Scan};
@@ -45,34 +48,35 @@ pub struct Args {
     pub dry_run: bool,
 }
 
-pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
+/// Scan the run corpus and pick one model's slice — one model, because a rate
+/// blended across two describes neither. `Ok(None)` means the corpus holds no
+/// recorded outcomes at all, which callers report in their own register: an
+/// error at a terminal, a quiet skip at 03:30.
+pub fn corpus_slice(
+    want: Option<&str>,
+    days: Option<i64>,
+    limit: usize,
+) -> Result<Option<(String, Corpus, usize)>> {
     let dir = Session::default_dir()?;
-    let since = args
-        .days
-        .map(|d| chrono::Utc::now() - chrono::Duration::days(d));
+    let since = days.map(|d| chrono::Utc::now() - chrono::Duration::days(d));
     let corpus = Corpus::scan(
         &dir,
         &Scan {
-            max_sessions: Some(args.limit),
+            max_sessions: Some(limit),
             since,
         },
     )?;
-    anyhow::ensure!(
-        !corpus.is_empty(),
-        "no recorded run outcomes in {} ({} session(s) read) — outcomes are recorded from \
-         the release that added the record, so the corpus fills as you use it",
-        dir.display(),
-        corpus.sessions_read
-    );
-
-    // One model, because a rate blended across two describes neither.
+    let sessions_read = corpus.sessions_read;
+    if corpus.is_empty() {
+        return Ok(None);
+    }
     let by_model = corpus.by_model();
-    let (model, slice) = match &args.model {
+    let picked = match want {
         Some(want) => {
             let slice = by_model
                 .get(want)
                 .with_context(|| format!("no recorded runs for model `{want}`"))?;
-            (want.clone(), slice.clone())
+            (want.to_string(), slice.clone())
         }
         None => {
             let (model, slice) = by_model
@@ -82,10 +86,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             (model.clone(), slice.clone())
         }
     };
+    Ok(Some((picked.0, picked.1, sessions_read)))
+}
 
-    let mut evidence = Evidence::of(&model, &slice);
-    // Doctor's own words, which are machine-authored — the findings are the
-    // only text in the brief and they were written by this program.
+/// Build the evidence brief for one model's slice: counters, plus doctor's
+/// own findings about runs and triggers — machine-authored text, the only
+/// prose in the brief — plus whatever history the caller wants the
+/// diagnostician to not re-derive.
+pub fn evidence_for(model: &str, slice: &Corpus, history: Vec<String>) -> Evidence {
+    let mut evidence = Evidence::of(model, slice);
     if let Ok(home) = mecha_core::work::mecha_home() {
         for finding in mecha_core::doctor::examine(&home, chrono::Utc::now())
             .into_iter()
@@ -96,14 +105,36 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 .push(format!("{} — {}", finding.summary, finding.detail));
         }
     }
+    evidence.history = history;
+    evidence
+}
 
-    let brief = evidence.brief();
-    if args.dry_run {
-        println!("{brief}");
-        return Ok(());
-    }
+/// What one diagnostic pass produced.
+pub struct Diagnosis {
+    /// The model's full reply, reasoning included.
+    pub reply: String,
+    pub outcome: DiagnosisOutcome,
+}
 
-    // Read-only, and the workspace is wherever the user is standing: the
+pub enum DiagnosisOutcome {
+    /// It declined to propose, or wrote a block that could not be measured.
+    /// Both are better than a change nobody can falsify.
+    NoProposal,
+    /// Refused: the proposal reproduced a run of words from what it read.
+    /// The quoted run rides along for the human-facing explanation.
+    Quoted {
+        run: String,
+    },
+    Proposal(Proposal),
+}
+
+/// Run the diagnostician once over an evidence brief and vet what came back.
+///
+/// One code path for `mecha diagnose` and the nightly, because two spellings
+/// of "read-only, no outbox, no learned rules" is how one of them silently
+/// stops being true.
+pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Result<Diagnosis> {
+    // Read-only, and the workspace is wherever the caller is standing: the
     // diagnostician's most useful input is this repository's own
     // documentation, which records why each mechanism exists and is what
     // stops a proposal unpicking something load-bearing.
@@ -118,24 +149,19 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let prepared = setup::prepare(&opts, false).await?;
 
     eprintln!(
-        "diagnosing {} run(s) of `{model}` · {} ({})",
-        slice.len(),
-        prepared.model,
-        prepared.provider_name
+        "diagnosing {} run(s) of `{}` · {} ({})",
+        evidence.runs, evidence.model, prepared.model, prepared.provider_name
     );
 
+    let brief = evidence.brief();
     let mut convo = Conversation::user(format!("{brief}\n---\n{DIAGNOSE_INSTRUCTION}"));
     let outcome = prepared.agent.run(&mut convo, None).await?;
 
-    println!("{}\n", outcome.text.trim());
-
     let Some(proposal) = parse_proposal(&outcome.text) else {
-        println!(
-            "no proposal — the diagnostician either found nothing worth changing or wrote a \
-             block that could not be measured. Both are better than a change nobody can \
-             falsify."
-        );
-        return Ok(());
+        return Ok(Diagnosis {
+            reply: outcome.text,
+            outcome: DiagnosisOutcome::NoProposal,
+        });
     };
 
     // What it read, so a lifted sentence can be caught. Every tool result in
@@ -154,43 +180,116 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let quoted =
         carries_over(&proposal.rationale, &refs).or_else(|| carries_over(&proposal.change, &refs));
 
-    println!("── proposal ──");
-    println!("class:     {:?}", proposal.class);
-    println!("change:    {}", proposal.change);
-    println!("predicts:  lower {:?}", proposal.metric);
-    println!("because:   {}", proposal.rationale);
+    Ok(Diagnosis {
+        reply: outcome.text,
+        outcome: match quoted {
+            Some(run) => DiagnosisOutcome::Quoted { run },
+            None => DiagnosisOutcome::Proposal(proposal),
+        },
+    })
+}
 
-    if let Some(run) = quoted {
-        println!(
-            "\nREFUSED: the proposal reproduces what it read — \"{run}\". A conclusion drawn \
-             from a source is a proposal; a sentence lifted from one is the source's, and a \
-             sentence in the prompt prefix is the longest-lived thing in this system."
+pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
+    let Some((model, slice, _)) = corpus_slice(args.model.as_deref(), args.days, args.limit)?
+    else {
+        let dir = Session::default_dir()?;
+        anyhow::bail!(
+            "no recorded run outcomes in {} — outcomes are recorded from the release that \
+             added the record, so the corpus fills as you use it",
+            dir.display(),
         );
+    };
+
+    // The interactive verb shows history too: a person about to spend a
+    // measurement deserves to know what already failed one.
+    let history = harness_history().unwrap_or_default();
+    let evidence = evidence_for(&model, &slice, history);
+
+    if args.dry_run {
+        println!("{}", evidence.brief());
         return Ok(());
     }
 
-    println!("\nnothing to do here yet — measure it:");
-    // Shell-quoted, because `change` is model-authored and the diagnostician
-    // runs with `web_search` and `http_fetch`: a proposal that clears the
-    // reproduction check can still carry shell metacharacters, and this line
-    // is printed to be pasted. `max_turns=40; curl … | sh #` reads as a
-    // plausible command otherwise.
-    println!(
-        "  mecha eval --ab-config {} eval/cases.jsonl",
-        shell_quote(&proposal.change)
-    );
-    println!(
-        "\nthat runs the case set twice and judges the difference against a holdout. Until it \
-         does, this is a guess: automated failure attribution is right about which step failed \
-         roughly one time in seven, which is exactly why nothing here is applied."
-    );
+    let diagnosis = run_diagnostician(global, &evidence).await?;
+    println!("{}\n", diagnosis.reply.trim());
+
+    match diagnosis.outcome {
+        DiagnosisOutcome::NoProposal => {
+            println!(
+                "no proposal — the diagnostician either found nothing worth changing or wrote a \
+                 block that could not be measured. Both are better than a change nobody can \
+                 falsify."
+            );
+        }
+        DiagnosisOutcome::Quoted { run } => {
+            println!("── proposal ──");
+            println!(
+                "REFUSED: the proposal reproduces what it read — \"{run}\". A conclusion drawn \
+                 from a source is a proposal; a sentence lifted from one is the source's, and a \
+                 sentence in the prompt prefix is the longest-lived thing in this system."
+            );
+        }
+        DiagnosisOutcome::Proposal(proposal) => {
+            println!("── proposal ──");
+            println!("class:     {:?}", proposal.class);
+            println!("change:    {}", proposal.change);
+            println!("predicts:  lower {:?}", proposal.metric);
+            println!("because:   {}", proposal.rationale);
+
+            println!("\nnothing to do here yet — measure it:");
+            // Shell-quoted, because `change` is model-authored and the
+            // diagnostician runs with `web_search` and `http_fetch`: a
+            // proposal that clears the reproduction check can still carry
+            // shell metacharacters, and this line is printed to be pasted.
+            // `max_turns=40; curl … | sh #` reads as a plausible command
+            // otherwise.
+            println!(
+                "  mecha eval --ab-config {} eval/cases.jsonl",
+                shell_quote(&proposal.change)
+            );
+            println!(
+                "\nthat runs the case set twice and judges the difference against a holdout — \
+                 or `mecha harness ruminate` measures it against replayed sessions overnight. \
+                 Until one of them does, this is a guess: automated failure attribution is \
+                 right about which step failed roughly one time in seven, which is exactly why \
+                 nothing here is applied."
+            );
+        }
+    }
     Ok(())
+}
+
+/// One line per already-disposed candidate, for the brief. Best-effort: a
+/// missing store is an empty history, not an error. Newest 20 only — the
+/// brief rides in a real request every night, and the dedupe in `harness
+/// ruminate` catches an exact re-derivation regardless of age.
+pub fn harness_history() -> Result<Vec<String>> {
+    let store = mecha_core::harness::HarnessStore::open_default()?;
+    let all = store.all()?;
+    let newest_20 = all.len().saturating_sub(20);
+    Ok(all[newest_20..]
+        .iter()
+        .map(|c| {
+            let verdict = match c.status.as_str() {
+                mecha_core::harness::STATUS_REJECTED => {
+                    format!(
+                        "rejected: {}",
+                        c.reason.as_deref().unwrap_or("measured worse")
+                    )
+                }
+                mecha_core::harness::STATUS_REVERTED => "accepted, then reverted by hand".into(),
+                mecha_core::harness::STATUS_ACCEPTED => "accepted and live".into(),
+                _ => "staged, awaiting a person".into(),
+            };
+            format!("{} ({:?}) — {verdict}", c.change, c.class)
+        })
+        .collect())
 }
 
 /// Single-quote a value for a shell, so a printed command cannot become a
 /// different command. POSIX-portable: end the quoted run, emit an escaped
 /// quote, start a new one.
-fn shell_quote(value: &str) -> String {
+pub fn shell_quote(value: &str) -> String {
     if !value.is_empty()
         && value
             .chars()

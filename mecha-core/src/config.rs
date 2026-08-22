@@ -818,6 +818,10 @@ impl Config {
     /// Load defaults, then the global file, then the project file, then env.
     pub fn load(project_dir: &Path) -> Result<Self> {
         let mut cfg = Config::default();
+        // Harness overrides sit between defaults and every file layer: an
+        // accepted, measured change applies everywhere, and anything the
+        // user writes in a config file overwrites it. See `harness.rs`.
+        crate::harness::apply_accepted_overrides(&mut cfg);
         if let Some(path) = Self::global_path() {
             if path.exists() {
                 cfg.merge_file(&path, LayerTrust::Global)?;
@@ -841,6 +845,9 @@ impl Config {
     /// [`crate::trigger`] firing at 03:00 with nobody watching.
     pub fn load_global() -> Result<Self> {
         let mut cfg = Config::default();
+        // Same override layer as `load`: a trigger run benefits from an
+        // accepted change exactly as an interactive one does.
+        crate::harness::apply_accepted_overrides(&mut cfg);
         if let Some(path) = Self::global_path() {
             if path.exists() {
                 cfg.merge_file(&path, LayerTrust::Global)?;

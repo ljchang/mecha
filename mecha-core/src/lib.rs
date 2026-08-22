@@ -59,6 +59,7 @@ pub mod doctor;
 pub mod eval;
 pub mod frontdoor;
 pub mod gossip;
+pub mod harness;
 pub mod hooks;
 pub mod image;
 pub mod learning;

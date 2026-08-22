@@ -719,23 +719,30 @@ can retire the next:
 4. Only then `mecha diagnose` for real, and `mecha eval --ab-config` on
    whatever it proposes.
 
-What is genuinely unbuilt, and deliberately so until step 3 answers:
+The three gaps below were closed on 2026-08-22 (`mecha harness`,
+`mecha-core/src/harness.rs`, `mecha-cli/src/harness_probe.rs`; CLAUDE.md
+"Harness rumination" is the reasoning). Kept as written for the record of why
+they were once deliberate:
 
-- **No nightly stage.** `scripts/ruminate.sh` does not run any of this. It
-  belongs there eventually, after `validate`, on the same "a skipped night is
-  not a failed night" contract — but a nightly that proposes changes nobody
-  reads is worse than no nightly.
-- **The arms run over eval cases, not over replayed sessions.**
-  `eval --ab-config` is the content-sensitive arm and it is the one that
-  exists. `replay_run::drive` now returns `RunStats`
-  (`mecha-core/src/replay_run.rs`), so the pieces for a session-corpus arm are
-  present and unassembled. Know the limit before building it: replay holds tool
-  results fixed, so it can grade a compaction threshold or a rule but is blind
-  by construction to `output_budget_bytes`, sandbox, retries and failover —
-  §8 of the research has the table.
-- **No auto-accept path.** `candidate::Disposition::Accept` is computed and
-  nothing consumes it. Wiring it means deciding where the applied change is
-  written and how it is reverted, neither of which exists.
+- ~~**No nightly stage.**~~ `mecha harness ruminate` now runs from
+  `ruminate.sh` after `work clean`, on the "a skipped night is not a failed
+  night" contract. The "nobody reads it" objection is answered by
+  persistence: every candidate lands in
+  `~/.mecha/learning/harness/candidates/`, `mecha harness list` is the queue,
+  and doctor flags one staged past 72h.
+- ~~**The arms run over eval cases, not over replayed sessions.**~~ The
+  session-corpus arm exists (`harness_probe.rs`): recent sessions of the
+  diagnosed model, both arms replayed, paired `RunStats` through
+  `candidate::judge`. The §8 limit is enforced structurally rather than
+  remembered — only the closed override set is measurable at all, and an
+  episode either arm diverges on is dropped, not scored, so a change replay
+  cannot hold reaches a human as thin evidence instead of a verdict.
+- ~~**No auto-accept path.**~~ `Disposition::Accept` now writes the override
+  layer (`~/.mecha/learning/harness/overrides.toml`), applied between config
+  defaults and every file layer so the user's own config always wins;
+  `mecha harness revert <id|key>` is the recorded reversal. Prose and
+  architecture still stage for a person; security-class is staged with the
+  standing warning and never measured.
 - **Security boundaries are gated, not excluded.** Luke's ruling (§13.2) makes
   interlock, path jail, sandbox and outbox routing human-gated like any other
   architecture change. The recommendation on record is that they stay
