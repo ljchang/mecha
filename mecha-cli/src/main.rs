@@ -266,6 +266,10 @@ pub enum Command {
     /// Review, accept, or reject rule changes staged by `mecha learn --propose`.
     Proposals(commands::proposals::Args),
 
+    /// Everything waiting on you, across every store — and the graph's
+    /// merge queue, which nothing in mecha could reach before.
+    Review(commands::review::Args),
+
     /// Rule tenure: ledger tallies per rule, retire/restore, and staging
     /// retirements for rules the validation ledger keeps convicting.
     Rules(commands::rules::Args),
@@ -348,6 +352,7 @@ async fn dispatch() -> Result<()> {
         Command::Slack(args) => commands::slack::run(&cli.global, args).await,
         Command::Trigger(args) => commands::trigger::execute(&cli.global, args).await,
         Command::Proposals(args) => commands::proposals::execute(args).await,
+        Command::Review(args) => commands::review::execute(args).await,
         Command::Rules(args) => commands::rules::execute(args).await,
         Command::Replay(args) => commands::replay::execute(&cli.global, args).await,
         Command::Tools(args) => commands::tools::execute(&cli.global, args).await,

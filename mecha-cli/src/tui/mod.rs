@@ -20,6 +20,7 @@ mod frontdoor;
 mod mail;
 mod outbox;
 mod polls;
+mod queues;
 mod skills;
 mod tasks;
 mod tools;
@@ -367,6 +368,12 @@ struct App {
     documents: Option<docs::DocsModal>,
     /// The /tasks modal, when open. Takes every key while it is up.
     tasks: Option<tasks::TasksModal>,
+    /// The /queues modal — every store waiting on a human, including the
+    /// graph's merge queue. Takes every key while it is up, like its
+    /// siblings. Named for the stores rather than for the act, because
+    /// `app.review` is already the outbox's release policy and two fields
+    /// called review would be two different things one word away.
+    queues: Option<queues::QueuesModal>,
     /// The /polls modal, when open. Takes every key while it is up.
     poll_monitor: Option<polls::PollsModal>,
     /// The /doctor modal, when open. Takes every key while it is up.
@@ -498,6 +505,7 @@ impl App {
             || self.mail.is_some()
             || self.documents.is_some()
             || self.tasks.is_some()
+            || self.queues.is_some()
             || self.poll_monitor.is_some()
             || self.health.is_some()
     }
@@ -733,6 +741,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         mail: None,
         documents: None,
         tasks: None,
+        queues: None,
         poll_monitor: None,
         health: None,
         pending_doctor_remedy: None,
@@ -1743,6 +1752,7 @@ fn open_scoped_review(app: &mut App, ids: Vec<String>) {
         || app.mail.is_some()
         || app.documents.is_some()
         || app.tasks.is_some()
+        || app.queues.is_some()
         || app.poll_monitor.is_some()
         || app.health.is_some()
         || app.help;
@@ -2140,6 +2150,9 @@ fn on_key(
     }
     if app.documents.is_some() {
         return handle_docs_key(app, key);
+    }
+    if app.queues.is_some() {
+        return handle_queues_key(app, key);
     }
     if app.tasks.is_some() {
         return handle_tasks_key(app, key);
@@ -2675,7 +2688,7 @@ fn run_command(
         },
 
         Command::Review(None) => say(format!(
-            "review {} — {}. /review now|later|auto switches",
+            "review {} — {}. /review now|later|auto switches; /queues is the backlog",
             app.review.name(),
             app.review.describe()
         )),
@@ -2721,6 +2734,11 @@ fn run_command(
         Command::Tasks => match load_tasks(false) {
             Ok(modal) => app.tasks = Some(modal),
             Err(e) => say(format!("tasks: {e:#}")),
+        },
+
+        Command::Queues => match load_queues() {
+            Ok(modal) => app.queues = Some(modal),
+            Err(e) => say(format!("queues: {e:#}")),
         },
 
         Command::Polls => match polls::load() {
@@ -4276,6 +4294,400 @@ fn tasks_cli(args: &[&str]) -> Result<String> {
     self_cli(&full)
 }
 
+// ─── /queues ─────────────────────────────────────────────────────────────────
+
+/// Drive `mecha review …` — the `/tasks` rule: one implementation per verb,
+/// and nothing the modal can do that the command line cannot.
+fn review_cli(args: &[&str]) -> Result<String> {
+    let mut full = vec!["review"];
+    full.extend_from_slice(args);
+    self_cli(&full)
+}
+
+/// A seed for a sample draw, from the clock.
+///
+/// Chosen on this side so the modal can name it and redraw it — the graph
+/// will pick one if asked, but does not report it through `--json`.
+fn fresh_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9E37_79B9_7F4A_7C15)
+}
+
+fn load_queues() -> Result<queues::QueuesModal> {
+    let rows = queues::queues_from_json(&review_cli(&["queues", "--json"])?)?;
+    Ok(queues::QueuesModal::new(rows))
+}
+
+/// Re-read whichever level is showing, keeping the cursor where it was.
+///
+/// The cursor is carried by index rather than by identity, which is right
+/// here and would not be in `/outbox`: these lists are stable orderings of
+/// classes and mechanisms, and a reload after `a` removes the row that was
+/// under it — so landing on the next row is the behaviour somebody working
+/// down a list wants. Nothing on the next keypress is irreversible: `a` and
+/// `r` both stage a decision the graph records and neither sends anything.
+fn reload_queues(app: &mut App, status: Option<String>) {
+    let Some(old) = &app.queues else { return };
+    let (level, filter, selected) = (old.level, old.filter.clone(), old.selected);
+    let (item_class, item_seed, tier) = (old.item_class.clone(), old.item_seed, old.tier);
+    let loaded = match level {
+        queues::Level::Queues => {
+            queues::queues_from_json(&match review_cli(&["queues", "--json"]) {
+                Ok(t) => t,
+                Err(e) => return fail_queues(app, e),
+            })
+            .map(|rows| {
+                let mut m = queues::QueuesModal::new(rows);
+                m.level = queues::Level::Queues;
+                m
+            })
+        }
+        queues::Level::Proposers => match review_cli(&["proposers", "--json"]) {
+            Ok(t) => queues::proposers_from_json(&t).map(|rows| {
+                let mut m = queues::QueuesModal::new(vec![]);
+                m.level = queues::Level::Proposers;
+                m.proposers = rows;
+                m
+            }),
+            Err(e) => return fail_queues(app, e),
+        },
+        queues::Level::Items => {
+            // A reload at the item level REDRAWS the same seed rather than
+            // taking a fresh sample: after `a` on one item the other eleven
+            // must still be the eleven that were drawn, or a sitting's
+            // verdicts stop describing one sample. `n` is how you ask for a
+            // new one, explicitly.
+            let Some((pb, pred)) = old.item_class.clone() else {
+                return;
+            };
+            let seed = old.item_seed;
+            let seed_s = seed.map(|x| x.to_string());
+            let mut args = vec!["sample", "--proposer", &pb, "--predicate", &pred, "--json"];
+            if let Some(sd) = &seed_s {
+                args.push("--seed");
+                args.push(sd);
+            }
+            match review_cli(&args) {
+                Ok(t) => queues::items_from_json(&t).map(|rows| {
+                    let mut m = queues::QueuesModal::new(vec![]);
+                    m.level = queues::Level::Items;
+                    m.items = rows;
+                    m.item_class = Some((pb.clone(), pred.clone()));
+                    m.item_seed = seed;
+                    m
+                }),
+                Err(e) => return fail_queues(app, e),
+            }
+        }
+        queues::Level::Candidates => {
+            let mut args = vec!["list", "--json"];
+            if let Some(f) = &filter {
+                args.push("--proposer");
+                args.push(f);
+            }
+            match review_cli(&args) {
+                Ok(t) => queues::candidates_from_json(&t).map(|rows| {
+                    let mut m = queues::QueuesModal::new(vec![]);
+                    m.level = queues::Level::Candidates;
+                    m.candidates = rows;
+                    m
+                }),
+                Err(e) => return fail_queues(app, e),
+            }
+        }
+    };
+    match loaded {
+        Ok(mut m) => {
+            m.filter = filter;
+            if m.item_class.is_none() {
+                m.item_class = item_class;
+                m.item_seed = item_seed;
+            }
+            // The tier filter must be restored BEFORE the cursor: `len()`
+            // counts the filtered list, so clamping against an unfiltered
+            // one puts the cursor on a row the user cannot see — and the
+            // next key there verdicts a whole class.
+            m.tier = tier;
+            m.selected = selected.min(m.len().saturating_sub(1));
+            m.status = status;
+            app.queues = Some(m);
+        }
+        Err(e) => fail_queues(app, e),
+    }
+}
+
+/// A reload that cannot read closes the modal and says so in the transcript.
+///
+/// Leaving a stale list on screen would be worse: every key in it acts on
+/// rows that may no longer be what the store holds.
+fn fail_queues(app: &mut App, e: impl std::fmt::Display) {
+    app.queues = None;
+    app.transcript
+        .push(transcript::Entry::Error(format!("queues: {e:#}")));
+}
+
+/// Keys for the /queues modal.
+///
+/// `a` and `r` verdict a whole CLASS, which is the unit the graph's own
+/// review works in — one decision worth hundreds on instances. They drive
+/// `mecha review accept|reject`, which drives `mecha-graph`; no model-facing
+/// tool accepts a candidate, and that split is the point.
+fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let Some(modal) = &mut app.queues else {
+        return Ok(());
+    };
+    if modal.help {
+        // Any key leaves help — the same as its siblings.
+        modal.help = false;
+        return Ok(());
+    }
+    match key.code {
+        KeyCode::Char('?') => modal.help = true,
+        // Evidence filter. Display-only — the rows are already loaded, so a
+        // toggle costs no subprocess.
+        KeyCode::Char('t') if modal.tier_applies() => {
+            modal.cycle_tier();
+            let n = modal.len();
+            modal.status = Some(match modal.tier {
+                Some(t) => format!("{n} at `{}`", t.as_str()),
+                None => format!("{n}, all tiers"),
+            });
+        }
+        KeyCode::Char('j') | KeyCode::Down => modal.move_sel(1),
+        KeyCode::Char('k') | KeyCode::Up => modal.move_sel(-1),
+        KeyCode::Char('g') | KeyCode::Home => modal.selected = 0,
+        KeyCode::Char('G') | KeyCode::End => modal.selected = modal.len().saturating_sub(1),
+        KeyCode::Esc | KeyCode::Char('q') => match modal.level {
+            // Esc peels one level at a time, never two.
+            queues::Level::Items => {
+                modal.level = queues::Level::Candidates;
+                modal.item_class = None;
+                modal.item_seed = None;
+                modal.selected = 0;
+                modal.status = None;
+                reload_queues(app, None);
+            }
+            queues::Level::Candidates => {
+                modal.level = queues::Level::Proposers;
+                modal.filter = None;
+                modal.selected = 0;
+                modal.status = None;
+                reload_queues(app, None);
+            }
+            queues::Level::Proposers => {
+                modal.level = queues::Level::Queues;
+                modal.selected = 0;
+                modal.status = None;
+                reload_queues(app, None);
+            }
+            queues::Level::Queues => app.queues = None,
+        },
+        KeyCode::Enter => match modal.level {
+            queues::Level::Queues => {
+                let Some(q) = modal.selected_queue() else {
+                    return Ok(());
+                };
+                if q.is_graph() {
+                    modal.level = queues::Level::Proposers;
+                    modal.selected = 0;
+                    reload_queues(app, None);
+                } else {
+                    // Hand off to the modal that owns this queue — it holds
+                    // the confirmations and taint warnings that make its
+                    // approvals safe, and a second copy of those here would
+                    // be a second thing to keep correct.
+                    let opens = q.opens.clone();
+                    app.queues = None;
+                    match opens.as_str() {
+                        "mecha outbox" => match outbox::load() {
+                            Ok(rows) => app.staged = Some(outbox::OutboxModal::new(rows)),
+                            Err(e) => app
+                                .transcript
+                                .push(transcript::Entry::Error(format!("outbox: {e:#}"))),
+                        },
+                        "mecha frontdoor list" => match frontdoor::load() {
+                            Ok(rows) => app.requests = Some(frontdoor::FrontdoorModal::new(rows)),
+                            Err(e) => app
+                                .transcript
+                                .push(transcript::Entry::Error(format!("frontdoor: {e:#}"))),
+                        },
+                        other => app.transcript.push(transcript::Entry::Notice(format!(
+                            "no modal for that one yet — run `{other}`"
+                        ))),
+                    }
+                }
+            }
+            queues::Level::Proposers => {
+                let Some(p) = modal.selected_proposer() else {
+                    return Ok(());
+                };
+                let name = p.proposer.clone();
+                modal.level = queues::Level::Candidates;
+                modal.filter = Some(name.clone());
+                modal.selected = 0;
+                reload_queues(app, Some(format!("classes proposed by {name}")));
+            }
+            queues::Level::Candidates => {
+                // Drilling into a class draws a RANDOM sample, not its head.
+                // The queue has an order and every order is correlated with
+                // something, so verdicts collected off the top describe the
+                // ordering rather than the class — which is the whole reason
+                // 40.5% of this queue has no rate anybody should trust.
+                let Some(c) = modal.selected_candidate() else {
+                    return Ok(());
+                };
+                // The cluster key VERBATIM, parentheses and all: `sample`
+                // filters on `precheck::cluster_key`, which returns
+                // `(commitment)` *with* them. Trimming produced a filter
+                // matching nothing, and an empty list looks exactly like an
+                // empty class.
+                let (pb, pred) = (c.proposer.clone(), c.predicate.clone());
+                // The seed is chosen HERE and passed down, never left to
+                // the child: `--json` does not report the seed it drew, so a
+                // sample we did not seed is one we cannot redraw — and a
+                // reload after each verdict would then quietly resample,
+                // leaving a sitting's verdicts spread across a dozen
+                // different samples instead of describing one.
+                let seed = fresh_seed();
+                let seed_s = seed.to_string();
+                match review_cli(&[
+                    "sample",
+                    "--proposer",
+                    &pb,
+                    "--predicate",
+                    &pred,
+                    "--seed",
+                    &seed_s,
+                    "--json",
+                ]) {
+                    Ok(t) => match queues::items_from_json(&t) {
+                        Ok(rows) => {
+                            modal.level = queues::Level::Items;
+                            modal.items = rows;
+                            modal.item_class = Some((pb.clone(), pred.clone()));
+                            modal.item_seed = Some(seed);
+                            modal.selected = 0;
+                            modal.status = Some(format!(
+                                "random sample of {} from {pb} · {pred}",
+                                modal.items.len()
+                            ));
+                        }
+                        Err(e) => modal.status = Some(format!("sample: {e:#}")),
+                    },
+                    Err(e) => modal.status = Some(format!("sample failed: {e:#}")),
+                }
+            }
+            queues::Level::Items => {}
+        },
+        // Item level: one verdict, one candidate. Distinct from the class
+        // verdict a level up, and the key strip says which you are holding.
+        KeyCode::Char('a') | KeyCode::Char('r') if modal.level == queues::Level::Items => {
+            let Some(it) = modal.selected_item() else {
+                return Ok(());
+            };
+            let (id, stmt) = (it.id, it.statement.clone());
+            let accept = key.code == KeyCode::Char('a');
+            let verb = if accept { "accept" } else { "reject" };
+            let id_s = id.to_string();
+            match review_cli(&[verb, &id_s]) {
+                Ok(_) => {
+                    // Drop it locally rather than refetching: the sample is
+                    // fixed for this sitting, and re-running the draw would
+                    // hand back a set that no longer matches what is on
+                    // screen under the cursor.
+                    if let Some(m) = &mut app.queues {
+                        m.items.retain(|r| r.id != id);
+                        m.selected = m.selected.min(m.items.len().saturating_sub(1));
+                        m.status = Some(format!(
+                            "{verb}ed #{id} — {}",
+                            stmt.chars().take(48).collect::<String>()
+                        ));
+                    }
+                }
+                Err(e) => {
+                    if let Some(m) = &mut app.queues {
+                        m.status = Some(format!("{verb} #{id} failed: {e:#}"));
+                    }
+                }
+            }
+        }
+        // A fresh draw, explicitly asked for. Never automatic — see the
+        // reload comment.
+        KeyCode::Char('n') if modal.level == queues::Level::Items => {
+            let Some((pb, pred)) = modal.item_class.clone() else {
+                return Ok(());
+            };
+            let seed = fresh_seed();
+            let seed_s = seed.to_string();
+            match review_cli(&[
+                "sample",
+                "--proposer",
+                &pb,
+                "--predicate",
+                &pred,
+                "--seed",
+                &seed_s,
+                "--json",
+            ]) {
+                Ok(t) => match queues::items_from_json(&t) {
+                    Ok(rows) => {
+                        modal.items = rows;
+                        modal.item_seed = Some(seed);
+                        modal.selected = 0;
+                        modal.status = Some(format!("new sample of {}", modal.items.len()));
+                    }
+                    Err(e) => modal.status = Some(format!("sample: {e:#}")),
+                },
+                Err(e) => modal.status = Some(format!("sample failed: {e:#}")),
+            }
+        }
+        KeyCode::Char('a') | KeyCode::Char('r') if modal.level == queues::Level::Candidates => {
+            let Some(c) = modal.selected_candidate() else {
+                return Ok(());
+            };
+            let (proposer, predicate, n) = (c.proposer.clone(), c.predicate.clone(), c.pending);
+            let accept = key.code == KeyCode::Char('a');
+            let _ = n;
+            let verb = if accept { "accept" } else { "reject" };
+            // Verbatim again, and the CLI refuses a cluster kind by name
+            // rather than passing a filter that would match nothing. The
+            // graph's bulk `--predicate` reads `payload["predicate"]`, which
+            // a commitment does not have.
+            let outcome = crate::commands::review::decide_report(
+                verb,
+                &[],
+                None,
+                Some(&proposer),
+                Some(&predicate),
+                None,
+                false,
+            );
+            match outcome {
+                // The CHILD's count, never the row's: the graph's bulk
+                // proposer filter is a substring and `--limit` caps the set,
+                // so how many were acted on is not this row's `pending`.
+                Ok(report) => {
+                    let (done, failed) = crate::commands::review::tally_report(&report);
+                    let mut said = format!("{verb}ed {done} × {proposer} · {predicate}");
+                    if failed > 0 {
+                        said.push_str(&format!(" ({failed} failed)"));
+                    }
+                    reload_queues(app, Some(said))
+                }
+                Err(e) => {
+                    if let Some(m) = &mut app.queues {
+                        m.status = Some(format!("{verb} failed: {e:#}"));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Keys for the /tasks modal. Every mutation drives `mecha tasks …` — the
 /// board's own CLI, one implementation per verb, and no way for the TUI to do
 /// something the command line cannot.
@@ -5450,6 +5862,9 @@ fn draw(
         modal.draw(frame);
     }
     if let Some(modal) = &app.tasks {
+        modal.draw(frame);
+    }
+    if let Some(modal) = &app.queues {
         modal.draw(frame);
     }
     if let Some(modal) = &app.poll_monitor {
@@ -6903,6 +7318,7 @@ mod tests {
             mail: None,
             documents: None,
             tasks: None,
+            queues: None,
             poll_monitor: None,
             health: None,
             pending_doctor_remedy: None,
@@ -7091,7 +7507,11 @@ mod tests {
         // the commands do.
         let mut app = test_app();
         app.help = true;
-        let text = frame_text(&mut app, 120, 40, None);
+        // Tall enough to hold every HELP line at once. The overlay itself
+        // scrolls, so a user never loses one — but this test asserts on the
+        // rendered text, and a line that scrolled off is indistinguishable
+        // here from a line that was truncated. Grow this with HELP.
+        let text = frame_text(&mut app, 120, 60, None);
         for line in command::HELP.lines() {
             assert!(
                 text.contains(line.trim_end()),
