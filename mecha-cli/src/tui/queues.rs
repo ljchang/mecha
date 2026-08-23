@@ -216,6 +216,9 @@ pub struct QueuesModal {
     pub proposers: Vec<ProposerRow>,
     pub candidates: Vec<CandidateRow>,
     pub groups: Vec<GroupRow>,
+    /// The cosine floor the current `groups` were computed at — the child's
+    /// own report, which is what `[`/`]` step from. Zero until a load lands.
+    pub group_threshold: f64,
     pub items: Vec<ItemRow>,
     pub selected: usize,
     /// The class the item level is drawn from.
@@ -255,6 +258,7 @@ impl QueuesModal {
             proposers: vec![],
             candidates: vec![],
             groups: vec![],
+            group_threshold: 0.0,
             items: vec![],
             selected: 0,
             item_class: None,
@@ -386,8 +390,9 @@ impl QueuesModal {
                     .unwrap_or_else(|| "groups".into());
                 let covered: usize = self.groups.iter().map(|g| g.size()).sum();
                 format!(
-                    " {cls} — {} group(s) covering {covered} ",
-                    self.groups.len()
+                    " {cls} — {} group(s) covering {covered} · cosine ≥ {:.2} ",
+                    self.groups.len(),
+                    self.group_threshold,
                 )
             }
             Level::Items => {
@@ -421,7 +426,7 @@ impl QueuesModal {
                     .into()
             }
             Level::Groups => {
-                "j/k · Enter items · a/r verdict whole group · b bind subject · A accept new"
+                "j/k · Enter items · a/r whole group · b bind · A accept new · [/] threshold"
                     .into()
             }
             Level::Items => {
@@ -881,37 +886,43 @@ pub fn queues_from_json(text: &str) -> anyhow::Result<Vec<QueueRow>> {
         .unwrap_or_default())
 }
 
-/// Groups as `mecha review groups --json` reports them — the graph's
-/// `SimilarGroup` array: `members` is `[[id, cosine], …]`, and only the ids
-/// matter here (the cosine is the child's working, shown nowhere).
-pub fn groups_from_json(text: &str) -> anyhow::Result<Vec<GroupRow>> {
+/// Groups as `mecha review groups --json` reports them: an envelope of
+/// `{threshold, groups}`, where `members` is `[[id, cosine], …]` and only
+/// the ids matter here. The threshold comes back so `[`/`]` step from the
+/// value that actually ran, never from a local copy of the constant.
+pub fn groups_from_json(text: &str) -> anyhow::Result<(f64, Vec<GroupRow>)> {
     let v: serde_json::Value = serde_json::from_str(text)?;
-    Ok(v.as_array()
-        .map(|rows| {
-            rows.iter()
-                .map(|r| GroupRow {
-                    leader_id: r["leader_id"].as_i64().unwrap_or(0),
-                    statement: r["leader_statement"].as_str().unwrap_or("?").to_string(),
-                    member_ids: r["members"]
-                        .as_array()
-                        .map(|ms| {
-                            ms.iter()
-                                .filter_map(|m| m.get(0).and_then(|x| x.as_i64()))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    sample: r["sample"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|s| s.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                })
-                .collect()
-        })
-        .unwrap_or_default())
+    let threshold = v["threshold"].as_f64().unwrap_or(0.0);
+    Ok((
+        threshold,
+        v["groups"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .map(|r| GroupRow {
+                        leader_id: r["leader_id"].as_i64().unwrap_or(0),
+                        statement: r["leader_statement"].as_str().unwrap_or("?").to_string(),
+                        member_ids: r["members"]
+                            .as_array()
+                            .map(|ms| {
+                                ms.iter()
+                                    .filter_map(|m| m.get(0).and_then(|x| x.as_i64()))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        sample: r["sample"]
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|s| s.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    ))
 }
 
 pub fn proposers_from_json(text: &str) -> anyhow::Result<Vec<ProposerRow>> {
@@ -1220,11 +1231,13 @@ mod tests {
             }
         }
         m.groups = groups_from_json(
-            r#"[{"leader_id":9281,"leader_statement":"Luke has a child named Emmy",
+            r#"{"v":1,"threshold":0.83,"groups":[
+                {"leader_id":9281,"leader_statement":"Luke has a child named Emmy",
                  "members":[[9302,0.91],[9310,0.88]],
-                 "sample":["Luke has a child named Sage"]}]"#,
+                 "sample":["Luke has a child named Sage"]}]}"#,
         )
-        .unwrap();
+        .unwrap()
+        .1;
         for level in [Level::Candidates, Level::Groups, Level::Items] {
             m.level = level;
             for h in 1..=6u16 {
@@ -1257,12 +1270,17 @@ mod tests {
     /// and parses the graph's `[[id, cosine], …]` member shape.
     #[test]
     fn a_group_parses_and_names_its_ids_leader_first() {
-        let rows = groups_from_json(
-            r#"[{"leader_id":9281,"leader_statement":"Luke has a child named Emmy",
+        let (threshold, rows) = groups_from_json(
+            r#"{"v":1,"threshold":0.83,"groups":[
+                {"leader_id":9281,"leader_statement":"Luke has a child named Emmy",
                  "members":[[9302,0.91],[9310,0.88]],
-                 "sample":["Luke has a child named Sage"]}]"#,
+                 "sample":["Luke has a child named Sage"]}]}"#,
         )
         .unwrap();
+        assert!(
+            (threshold - 0.83).abs() < 1e-9,
+            "the envelope reports what ran"
+        );
         assert_eq!(rows[0].size(), 3);
         assert_eq!(rows[0].member_ids, vec![9302, 9310]);
         assert_eq!(rows[0].all_ids_csv(), "9281,9302,9310");

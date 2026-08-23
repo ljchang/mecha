@@ -255,6 +255,10 @@ pub enum Command {
     /// The same board `/tasks` shows and the model reads through `kg_task_*`
     /// — one store, reached through the tool surface from every side.
     Tasks(commands::tasks::Args),
+
+    /// The knowledge graph from the terminal: search it, read an entity,
+    /// capture a note — through the same `kg_*` tool surface the model uses.
+    Kg(commands::kg::Args),
     /// Two readers with different sources ask each other about one entity.
     Gossip(commands::gossip::GossipArgs),
     /// Judge whether queued generalisations hold beyond their one source.
@@ -355,6 +359,7 @@ async fn dispatch() -> Result<()> {
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
         Command::Mail(args) => commands::mail::run(&cli.global, args).await,
         Command::Tasks(args) => commands::tasks::run(&cli.global, args).await,
+        Command::Kg(args) => commands::kg::run(&cli.global, args).await,
         Command::Gossip(args) => commands::gossip::run(&cli.global, &args).await,
         Command::Corroborate(args) => commands::corroborate::run(&cli.global, &args).await,
         Command::Vet(args) => commands::vet::run(&cli.global, &args).await,
