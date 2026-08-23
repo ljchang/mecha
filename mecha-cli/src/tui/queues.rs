@@ -150,6 +150,14 @@ pub struct ItemRow {
     pub id: i64,
     pub statement: String,
     pub confidence: f64,
+    /// The candidate's full payload, pretty-printed. The list shows one
+    /// truncated line; this is where the rest of it lives — the same split
+    /// `/tasks` makes, and for the same reason: a verdict on text you could
+    /// not read is the approving-unread failure the outbox exists to
+    /// prevent, one store over.
+    pub payload: String,
+    /// When the graph recorded the proposal.
+    pub created_at: String,
 }
 
 /// One pending class, as `mecha review list --json` reports it. The graph
@@ -185,6 +193,15 @@ pub struct QueuesModal {
     /// The seed that produced `items`, so the footer can name it — a sample
     /// nobody can redraw is a sample nobody can check.
     pub item_seed: Option<u64>,
+    /// Full view of the selected item (`Enter` at the item level). j/k keep
+    /// working and flip through items in place, so a sitting can be reviewed
+    /// entirely from the detail — which is the reading a one-line truncation
+    /// cannot give.
+    pub item_detail: bool,
+    /// How far the detail is scrolled. Reset on every move: an offset
+    /// carried onto another item is a position in a different document —
+    /// the `/tasks` detail_scroll lesson.
+    pub detail_scroll: u16,
     /// Show only classes/mechanisms at this evidence tier. `None` is
     /// everything. Applied at render, not at load: the rows are already in
     /// hand, and a filter that re-ran the child process would make a display
@@ -207,6 +224,8 @@ impl QueuesModal {
             selected: 0,
             item_class: None,
             item_seed: None,
+            item_detail: false,
+            detail_scroll: 0,
             tier: None,
             filter: None,
             status: None,
@@ -346,7 +365,7 @@ impl QueuesModal {
                 "j/k · Enter sample · a/r verdict WHOLE class · t filter · Esc back".into()
             }
             Level::Items => {
-                "j/k move · a accept · r reject · n new sample · Esc back · ? help".into()
+                "j/k move · Enter full item · a accept · r reject · n new sample · Esc back".into()
             }
         }
     }
@@ -354,6 +373,13 @@ impl QueuesModal {
     pub fn draw(&self, frame: &mut Frame) {
         if self.help {
             self.draw_help(frame);
+            return;
+        }
+        // Only while there is an item to show: a verdict can empty the
+        // sample from inside the detail, and a blank box would strand the
+        // keys — fall through to the list, which says what happened.
+        if self.level == Level::Items && self.item_detail && self.selected_item().is_some() {
+            self.draw_item_detail(frame);
             return;
         }
         let strip_text = format!("  {}", self.key_strip());
@@ -534,6 +560,66 @@ impl QueuesModal {
             .collect()
     }
 
+    /// The whole candidate: full statement, then the payload the graph
+    /// holds. What a verdict is actually about, readable before it is given.
+    fn draw_item_detail(&self, frame: &mut Frame) {
+        let Some(it) = self.selected_item() else {
+            return;
+        };
+        let strip = "  j/k next item · a accept · r reject · Esc back · PgUp/PgDn scroll";
+        let mut body: Vec<Line> = vec![
+            Line::styled(strip.to_string(), Style::new().fg(Color::Cyan)),
+            Line::raw(""),
+        ];
+        // The statement first and wrapped — it is the thing being judged.
+        for chunk in wrap_text(&it.statement, 96) {
+            body.push(Line::styled(
+                format!("  {chunk}"),
+                Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
+            ));
+        }
+        body.push(Line::raw(""));
+        let mut meta = format!("  #{} · confidence {:.2}", it.id, it.confidence);
+        if !it.created_at.is_empty() {
+            meta.push_str(&format!(" · proposed {}", it.created_at));
+        }
+        body.push(Line::styled(meta, Style::new().fg(Color::DarkGray)));
+        body.push(Line::raw(""));
+        body.push(Line::styled(
+            "  ─ payload ─",
+            Style::new().fg(Color::DarkGray),
+        ));
+        for l in it.payload.lines() {
+            body.push(Line::styled(format!("  {l}"), Style::new().fg(Color::Gray)));
+        }
+        let width = 110u16.min(frame.area().width);
+        let height = super::list_height(body.len() as u16, frame.area().height);
+        let area = super::centered(frame.area(), width, height);
+        frame.render_widget(Clear, area);
+        let title = format!(
+            " #{} — item {} of {} · {} ",
+            it.id,
+            self.selected + 1,
+            self.items.len(),
+            self.item_class
+                .as_ref()
+                .map(|(p, pr)| format!("{p} · {pr}"))
+                .unwrap_or_default()
+        );
+        frame.render_widget(
+            Paragraph::new(body)
+                .wrap(Wrap { trim: false })
+                .scroll((self.detail_scroll, 0))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::new().fg(Color::Cyan))
+                        .title(title),
+                ),
+            area,
+        );
+    }
+
     fn draw_help(&self, frame: &mut Frame) {
         let body: Vec<Line> = HELP
             .lines()
@@ -588,6 +674,8 @@ const HELP: &str = "
     To learn whether a class is any good, sample it.
 
   ITEMS  (a random sample, seeded so it can be redrawn)
+    Enter    the full item — whole statement and payload; j/k flips
+             through items without leaving it
     a        accept this one
     r        reject this one
     n        draw a new sample
@@ -613,6 +701,31 @@ fn style_row(text: String, selected: bool, unreadable: bool, dim: bool) -> Line<
     } else {
         Line::styled(text, Style::new().fg(Color::White))
     }
+}
+
+/// Greedy word wrap. `Paragraph::wrap` exists, but the statement needs its
+/// own lines so the styling (bold) survives — a single styled Line wraps as
+/// one span and keeps its style, so this is belt over braces only for the
+/// indent staying even on continuation lines.
+fn wrap_text(s: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut line = String::new();
+    for word in s.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            out.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -686,6 +799,9 @@ pub fn items_from_json(text: &str) -> anyhow::Result<Vec<ItemRow>> {
                         .unwrap_or("(no statement)")
                         .to_string(),
                     confidence: r["confidence"].as_f64().unwrap_or(0.0),
+                    payload: serde_json::to_string_pretty(&r["payload"])
+                        .unwrap_or_else(|_| "{}".into()),
+                    created_at: r["created_at"].as_str().unwrap_or("").to_string(),
                 })
                 .collect()
         })
@@ -794,6 +910,37 @@ mod tests {
         );
         assert_eq!(rows[2].statement, "(no statement)", "and never blank");
         assert_eq!(rows[0].id, 12);
+        assert!(
+            rows[0].payload.contains("works_at"),
+            "the detail view gets the whole payload: {}",
+            rows[0].payload
+        );
+    }
+
+    /// The detail shows the full statement the list truncated.
+    ///
+    /// The list clips at ~96 characters, and a verdict on text you could not
+    /// read is the approving-unread failure the outbox exists to prevent —
+    /// this is the screenshot bug: an item whose statement ended in "and pe…"
+    /// with no way to see the rest.
+    #[test]
+    fn the_detail_carries_what_the_list_truncates() {
+        let long = "Possible duplicate: person node person-5ef7b325 (Grace Choi) and person node person-9a1b2c3d (Grace H. Choi) share an email identifier and forty-one overlapping calendar events".to_string();
+        let rows = items_from_json(&format!(
+            r#"[{{"id":1737,"confidence":0.8,"payload":{{"statement":"{long}"}}}}]"#
+        ))
+        .unwrap();
+        assert_eq!(
+            rows[0].statement, long,
+            "nothing lost between JSON and detail"
+        );
+        let wrapped = wrap_text(&rows[0].statement, 96);
+        assert!(wrapped.len() > 1, "and it wraps rather than clips");
+        assert_eq!(
+            wrapped.join(" "),
+            long,
+            "wrapping reflows; it never drops a word"
+        );
     }
 
     fn proposer(name: &str, pending: usize, a: i64, r: i64) -> ProposerRow {
@@ -929,5 +1076,23 @@ mod tests {
                 term.draw(|f| m.draw(f)).unwrap();
             }
         }
+        // The item detail, including at sizes where the naive clamp panics,
+        // and the emptied-sample fall-through.
+        m.level = Level::Items;
+        m.items = items_from_json(
+            r#"[{"id":9,"confidence":0.8,"created_at":"2026-08-22 04:54:25",
+                 "payload":{"statement":"A very long statement that will need wrapping across several lines to be read in full","predicate":"related_to","subject":"A","object":"B"}}]"#,
+        )
+        .unwrap();
+        m.item_detail = true;
+        for h in 1..=8u16 {
+            let backend = ratatui::backend::TestBackend::new(40, h);
+            let mut term = Terminal::new(backend).unwrap();
+            term.draw(|f| m.draw(f)).unwrap();
+        }
+        m.items.clear();
+        let backend = ratatui::backend::TestBackend::new(40, 8);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| m.draw(f)).unwrap(); // detail open, nothing left — must not blank
     }
 }

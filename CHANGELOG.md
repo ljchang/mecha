@@ -52,7 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   human verdict at all. A verdict drops the item locally rather than
   resampling, so a sitting's twelve verdicts describe one sample; `n` asks for
   a new draw explicitly. `mecha review items` is the queue-order alternative
-  and says outright that its verdicts are not a rate.
+  and says outright that its verdicts are not a rate. `Enter` on an item opens
+  the whole of it — full statement, payload, confidence, when it was proposed —
+  with `j`/`k` flipping through the sample without leaving the view, because a
+  verdict on a line that ends in `…` is the approving-unread failure the outbox
+  exists to prevent, one store over.
 
 - **`mecha review accept|reject` takes a whole class**, via `--proposer` /
   `--predicate`, with `--limit` and `--dry-run`. A cluster kind such as

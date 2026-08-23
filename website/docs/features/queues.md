@@ -118,6 +118,11 @@ Two details protect that property:
 - **`mecha review items` is the queue-order alternative**, for a class you
   have already decided to clear — and it says outright that verdicts
   collected that way are not a rate.
+- **`Enter` opens the whole item** — full statement, the payload the graph
+  holds, confidence, and when it was proposed — and `j`/`k` flip through the
+  sample without leaving the view. The list truncates to one line; a verdict
+  on text you could not read is the approving-unread failure the
+  [outbox](./outbox) exists to prevent, one store over.
 
 ## The one place mecha shells out to the graph
 
