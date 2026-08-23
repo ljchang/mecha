@@ -1515,6 +1515,80 @@ fork was made instead. `mecha-graph fork` turned out to be broken anyway
 (768-vs-1024 vector dimensions, from the harrier embedding switch), which is
 its own finding and still open.
 
+**2026-08-23 — the queue became workable, and the learner finally learned.**
+The morning's question was "how did nightly go", and the answer was: cleanly,
+and with three systems quietly not working. What followed was two sessions in
+one checkout (coordinated by cross-session messages; the morning one wired the
+item-review `b`/`A` keys and taught a stale session to spawn children through
+its own `/proc/self/exe`) and, by evening, all three fixed and a set of
+surfaces that did not exist at breakfast.
+
+The learner: nineteen nights of correct provenance exclusions had produced
+zero rules ever — structural, not a bug, since any session touching mail,
+docs or the web is untrusted and those are exactly the sessions where
+corrections happen. The recorded fail-closed ruling was kept and the evidence
+moved to its trusted side instead: `learning::evidence_for` hands the
+reflector the user's own typed words plus registry-owned tool names, with
+every assistant-authored byte withheld — the front door's split, except the
+withheld half is never read at all — so the reflection's inputs are clean by
+construction and it classifies learnable (`Evidence::UserTurns` records what
+was shown). `mecha reflect --remine-untrusted` re-mined the archive: 11
+lessons recovered, `learn` staged the store's **first-ever proposal** (5
+rules from 10 reflections), and doctor's starved-learner finding cleared the
+same afternoon.
+
+The ladder: promotion fired only inside `note_verdict` — at the instant a
+human filed a verdict, and at no other moment — so classes whose strong
+records predate the 2026-08-16 Wilson switch sat at `staged` indefinitely,
+invisible because no CLI printed a rung. `mecha-graph ladder` shows every
+class (union of ledger rows and verdict history, since pre-ladder classes
+have no row), and `ladder --promote` applies a one-rung-per-pass recompute —
+never demoting, exactly `note_verdict`'s arithmetic minus the verdict. Run
+live it promoted `works_on` to trusted and `member_of`/`located_in` to
+sampled, and with the day's review work the queue fell 7,296 → 6,569.
+
+Under it, provenance the cascade made unaffordable to skip: an accepted
+candidate row carried no record of who accepted it, so machine accepts —
+the durable lane's, a cascade's — counted toward the human rate that
+promotes classes, the accept-side twin of the 2026-08-22 cluster-view
+contamination, running in the direction that widens autonomy. V017 adds
+`fact_candidate.reviewed_by` ('user' / 'auto' / 'cascade:<seed>'), and
+`HUMAN_VERDICT_SQL` is the one predicate — ladder promotion and the
+cluster/proposer views share it, legacy NULLs keep counting as they did
+(rewriting history would gut the record the ladder runs on), and every row
+since is exact.
+
+On top of that, the queue's repetition became reviewable as repetition:
+`similar.rs` groups a class's pending candidates by semantic similarity
+(deterministic leader clustering at precheck's own flag threshold), the
+listing covers the whole class — groups largest-first, singletons after,
+since a view that hides most of the work is a view people leave — and one
+keystroke verdicts a whole group as **one human verdict**: the seed is the
+owner's, the members cascade machine-labeled, and the fan-out lands on the
+explicit ids that were on screen (`--cascade`, vetted per-id against the
+seed's class), never a re-derivation of a queue that may have moved. `b`
+binds a group's unresolvable subject, `A` accepts creating it (the cascade
+then resolves against the node the seed just made), and `[`/`]` re-group at
+a threshold stepped from the value the child reports it ran at. The first
+live grouping justified the feature by itself: bee's largest group was
+fifteen hallucinated family members.
+
+The TUI stopped freezing while children work: `/mail`'s archive/spam/task
+ran an MCP server plus a network call inline per keystroke (the code's own
+comment admitted it), and grouping embeds a whole class — both now spawn on
+threads and land through watches. The graph reached the person at the
+keyboard: `mecha kg search|entity|note` over the same `kg_*` MCP surface the
+model uses, `/find` as the search modal (entities open their full record,
+facts and episodes open in place), `/note` as deterministic capture with
+entities linked on landing. Slack gained `note` and `queues` as owner-gated
+command words on the doctor pattern — a capture matched before the text can
+become a prompt, because a capture that depends on a model's mood is not a
+capture, and a read-only backlog rollup whose verdict buttons are
+deliberately a future design pass. The morning trigger's daily
+subagent-skip warning went quiet under a trigger's own durable allowlist,
+on the outbox warning's own reasoning, and one bug was shipped and fixed
+within the hour — the NULL predicate, recorded under Traps.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -1737,6 +1811,17 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+A SQL predicate written for a `WHERE` clause was reused inside `SUM()`, and
+the `OR` that had silently filtered NULLs began returning them:
+`reviewed_by = 'user'` on a legacy NULL row is NULL, `NULL OR false` is NULL,
+and one class whose decided rows were all machine rejects made the aggregate
+NULL — which errored the cluster view, the proposer rollup and the `/queues`
+modal within an hour of shipping, while every test on the `WHERE`-side
+consumer stayed green, because there NULL merely fails the row. A predicate
+shared between filtering and aggregation must be NULL-total — COALESCE every
+nullable comparison — and the regression test that matters seeds the
+all-NULL group.
 
 **Two queries computed the same statistic and only one was filtered — the
 unfiltered one was the one on screen.** `ladder::human_record` excluded the

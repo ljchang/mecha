@@ -92,13 +92,16 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,269 tests**, no failures — re-measured 2026-08-23 after the
-unified-queues arc and its first field reports (675 in the `mecha-core` lib
-suite, 380 in `mecha-cli` with 1 ignored, 122 in `mecha-mail`, 75 in
-`mecha-slack`, 15 across the two integration suites that need real backends,
-and 1 doctest). The 14 added over 2026-08-22's 1,255: `mecha review`'s tally
-and refusals (3), the `/queues` modal's parsing, tier filter, item detail and
-tiny-size draws (9), and `exe::self_exe` (2). The 9 added over 2026-08-21's 1,246 are the harness store,
+Expect **1,281 tests**, no failures — re-measured the evening of 2026-08-23
+after the groups/cascade, clean-evidence-learner and graph-surfaces arcs (679
+in the `mecha-core` lib suite, 388 in `mecha-cli` with 1 ignored, 122 in
+`mecha-mail`, 75 in `mecha-slack`, 15 across the two integration suites that
+need real backends, and 1 doctest). The 12 added over the morning's 1,269:
+the clean-evidence reflector (4 in core), the cascade/Fan refusals and tally
+(3), the groups envelope/parser and /find modal (3), and the Slack `note`
+and `queues` command words (2). The morning's 14 over 2026-08-22's 1,255
+were `mecha review`'s tally and refusals, the `/queues` modal's parsing,
+tier filter, item detail and tiny-size draws, and `exe::self_exe`. The 9 added over 2026-08-21's 1,246 are the harness store,
 override layer, and doctor's harness/starved-learner checks; the 24 before
 that were the search-chain, cache-lens and outbox-approval arcs. Earlier 2026-08-21 counts were 1,222,
 1,213, 1,210 and 1,192; the 2026-08-20 counts were 1,140 at `cfa2cc2` and 1,105 at 0.1.9,
@@ -117,9 +120,9 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 675 |
-| `mecha-cli` unit | 366 |
-| `mecha-mail` unit | 123 |
+| `mecha-core` unit | 679 |
+| `mecha-cli` unit | 388 |
+| `mecha-mail` unit | 122 |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
 | doctest | 1 |
@@ -155,8 +158,8 @@ A working agent harness, used and measured rather than just compiled.
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
 | Context | Two-pass compaction: thin tool results, then summarise. Taint preserved, a tool's own state (the todo list) crosses verbatim, the states a mid-run rewrite replaced ride `Conversation::rewritten` into the session record, and a per-run cache lens watches whether the cached prefix is actually reused (warns only on unexplained re-payment) |
 | Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `review` / `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep, and `slack` for the remote control |
-| TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/queues`, `/outbox`, `/frontdoor`, `/mail`, `/tasks`, `/skills`, `/polls` and `/doctor` modals drive the CLI like `/triggers` does, the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
-| Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`. **Merged 2026-08-09 (PR #25) and running as `mecha-slack.service`** |
+| TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/queues`, `/outbox`, `/frontdoor`, `/mail`, `/tasks`, `/skills`, `/polls`, `/doctor` and (2026-08-23) `/find` modals drive the CLI like `/triggers` does — plus `/note` for one-line graph capture — the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
+| Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`; owner-gated command words `doctor`, `triggers`, `review now|later|auto`, and (2026-08-23) `note <text>` — a deterministic capture matched before the text can become a prompt — and `queues`, the read-only backlog rollup. **Merged 2026-08-09 (PR #25) and running as `mecha-slack.service`** |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
@@ -165,6 +168,7 @@ A working agent harness, used and measured rather than just compiled.
 | Workspaces | `~/.mecha/work/<producer>/` is a run's workspace and its output directory; `mecha work list/path/clean`, retention nightly. A workspace containing the mecha home is refused |
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed. **`mail_triage`** (2026-08-18) adds archive/read/unread/spam/trash as a closed `TriageAction` enum, thread-level, in a third capability quadrant — `destructive` but *not* `external_send`, so it never routes through the outbox and a read-only run cannot reach it. Tagging is deliberately absent: a tag is mecha's own, on the triage record, not a Gmail label or a Graph category |
 | Tasks | `mecha tasks` list/add/set and the `/tasks` modal onto the graph's GTD board, reached only over `kg_task_*` — no dependency on mecha-graph and no second reader of its schema. Status letters match `mecha-graph tui` screen 6; nothing confirms (the board reaches nobody and has no delete); a reload re-finds the cursor by id because a status change reorders the board |
+| Graph reads | `mecha kg search\|entity\|note` (2026-08-23) — the graph for the person at the keyboard, over the same `kg_search`/`kg_entity`/`kg_upsert` surface the model uses. `/find` is the modal (entities open their full record, facts/episodes open in place, `/` re-edits the query); `/note` (or `/notes`) captures an episode with entities linked on landing, identically to `mecha-graph note`. All fetches off the event loop through watches |
 | Documents | `mecha-docs`, the fourth binary on `mecha-mail` — Google Docs/Sheets/Slides under **`drive.file` and nothing else**, so only files mecha created or the user picked in Google's own chooser are reachable, and no instruction inside a run can widen that. Reads are `untrusted_input` and never `openWorldHint`; writes are outbox-routed, because writing into a document a third party can read is a publish. No permanent-delete and no sharing verb, with tests on the absences |
 | Remote control | `/remote-control <name>` in the TUI mirrors a live session into a named Slack thread, both directions. Store `~/.mecha/remote/<name>/` (record + inbox + staged files), written by the TUI and read by the connector, which no longer starts its own run in a mirrored thread. Out: `/send <path>`, `mecha slack send`, and the `show_file` tool — whose destination is not an argument and cannot be made one. In: attachments land at `./inbox/`, announced as paths so the taint arms through `fs_read`. Slash commands and `!` stay at the terminal. `mecha slack remote [--sweep]`. `docs/REMOTE-CONTROL-DESIGN.md` |
 | Front door | `mecha frontdoor` list/show/extract/next/**triage**/**needs-info**/**close** over `~/.mecha/requests/` — the quarantine between a stranger's request and a run with tools, and the state machine that lets one reach an answer. The extractor is issued no tools and no history; `Record::for_privileged_run` has no argument that returns the prose; an extraction failure routes to a human. `triage` drafts into the outbox and refuses to run unrouted; `reconcile` closes the loop from released items on its own, with no verb to remember. `mecha-factory-publish drain` fills the directory |
@@ -172,7 +176,7 @@ A working agent harness, used and measured rather than just compiled.
 | Skills | `~/.mecha/skills/<name>/SKILL.md` in the Agent Skills format, loaded by a `skill` tool call at three levels of disclosure. User-authored with no mechanism for anything else — no install, no registry, no remote body, none derived from a session — which is why loading one arms no taint. `tools:` narrows the surface and can never widen it; a loaded skill crosses compaction verbatim; `mecha eval` forces them off |
 | Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B). Budget is 25 active rules and 2600 chars **per domain**, and a run carries only `RUN_DOMAINS` (`behavior` + `writing`) — new domains are opt-in and `unrouted_domains` warns at startup on any that ride in no prompt |
 | Run quality | `Record::Outcome(RunStats)` per finished run from every front-end; `runlog.rs` reads the corpus back (`mecha sessions health`, rates split by model, `—` where a denominator is zero); three population checks in `doctor`; `candidate.rs` gates a proposed change on a paired comparison with a deterministic holdout and a work guardrail; `mecha eval --ab-config KEY=VALUE` is the content-sensitive arm; `mecha diagnose` proposes one change from the corpus and prints the command that would falsify it; `mecha harness` (2026-08-22) closes the loop nightly — candidates persisted, measured by session replay, a holdout-confirmed config win auto-accepted into a revertible override layer beneath the user's config, everything else staged for review — see the self-improvement section |
-| Queues | `mecha review` + the `/queues` modal — every store waiting on a human in one list: the graph's merge queue, the outbox, the front door, staged rule changes, harness candidates. Four hand off to the modal that owns them; the graph queue is reviewed in place, three levels deep (mechanism → class → a *random* sample of items), `t` filtering by evidence tier and `a`/`r` verdicting. An unreadable store prints a dash, never a zero. **The one place mecha shells out to `mecha-graph`** — the MCP surface has no `kg_accept` and must not gain one |
+| Queues | `mecha review` + the `/queues` modal — every store waiting on a human in one list: the graph's merge queue, the outbox, the front door, staged rule changes, harness candidates. Four hand off to the modal that owns them; the graph queue is reviewed in place, four levels deep (mechanism → class → similarity groups or a *random* sample → items), `t` filtering by evidence tier and `a`/`r` verdicting. `s` on a class groups its whole queue by semantic similarity (2026-08-23) — every pending item, largest groups first, singletons after — and a group verdict is ONE human verdict: the seed is the owner's, members cascade machine-labeled (`reviewed_by = cascade:<seed>`, invisible to the ladder) onto the exact ids that were on screen; `b` binds a group's subject, `A` accepts creating it, `[`/`]` re-group at a threshold stepped from the value the child reports. An unreadable store prints a dash, never a zero. **The one place mecha shells out to `mecha-graph`** — the MCP surface has no `kg_accept` and must not gain one |
 | Eval | 36 cases, 15 tags (both re-counted 2026-08-20, unchanged), scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `graph-cases.jsonl` — 10 memory/interlock cases against fixture MCP servers (`--mcp-file`), renamed with the graph and expecting the bare `kg_*` names production serves (scorecards across the rename are not comparable) |
 
 `cargo clippy --all-targets` is clean and should stay that way.
@@ -206,6 +210,15 @@ Running on the DGX Spark (GB10, aarch64, 128GB unified). **Re-verified
 SearXNG up on 8888. `~/.cargo/bin/mecha` was reinstalled 2026-08-21 (03:33, then again at
 ~15:00 and ~17:00 for the search and outbox arcs) and the three long-running
 services restarted onto it each time.
+
+**2026-08-23 evening**: `mecha`, `mecha-graph` and `mecha-graph-mcp` all
+reinstalled from that day's HEADs (several times; the `update` skill's
+stale-process sweep run after each) and the three long-running services
+restarted onto the final install. The graph DB migrated to V017
+(`reviewed_by`). Operationally pending: **one class has an earned ladder
+promotion unapplied** (`mecha-graph ladder --promote` shows and applies it),
+and the graph queue stood at **6,569** after the day's review work, down
+from 7,296 at breakfast.
 
 **A version string is not evidence here.** The repository and the binary both
 say 0.1.9 and the reinstall changed no version, so `mecha --version` cannot
@@ -836,20 +849,17 @@ on this machine. `docs/REMOTE-CONTROL-DESIGN.md` is the design; the arc is in
 
 ### The learning system
 
-The arc is complete and running nightly — and, measured on 2026-08-22,
-**starved by provenance**: 14 of 16 reflections ever mined are
-origin-excluded (the sessions had read the open web, shared docs or mail
-before the interventions), the clean pool has sat at 2 — below the learn
-floor of 3 — since 2026-08-05, and so `learn` has consolidated nothing while
-every nightly stage exits 0. Doctor now names this (`check_learning`,
-attention severity) rather than anyone noticing by reading logs. The
-classification was verified precise (positional, per-intervention), so this
-is a *decision* pending, not a bug: every throughput lever — steer-text-only
-reflections, a custodied-source origin subclass, a lower floor — crosses the
-recorded fail-closed ruling, and the surveyed trade-offs are in the
-2026-08-22 HISTORY entry. Until that ruling is wanted, skills and user rules
-remain the designed pressure valve for prompt-riding knowledge, and the
-harness loop learns from `RunStats`, which no origin gate touches.
+The arc is complete, running nightly, and — as of 2026-08-23 — **producing
+rules**. The provenance starvation measured on 2026-08-22 was resolved by
+moving the evidence to the trusted side of the ruling rather than loosening
+it: `learning::evidence_for` (`mecha-core/src/learning.rs`) hands the
+reflector only user-typed words plus registry-owned tool names when coverage
+cannot prove clean, `Evidence::UserTurns` records what was shown, and the
+fail-closed gate is untouched — there is still no knob that lets a
+full-context reflection out of an untrusted conversation. The
+`--remine-untrusted` backfill recovered 11 lessons from the archive and the
+store's first-ever proposal (5 rules) is staged; doctor's starved-learner
+finding has cleared. The arc is in HISTORY under 2026-08-23.
 
 What is missing beyond that is refinement:
 
@@ -1190,18 +1200,19 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   unjudged classes is 120 decisions covering 1,597 queued items. Suppression
   is the last step, not the first.
 
-- **The ladder is never reconciled, so rungs are stale in both directions.**
-  `note_verdict` is called only when a human decides an item (`fact.rs:1258`,
-  `fact.rs:1342`), so a class's rung freezes until it is next touched — and
-  the Wilson thresholds that replaced the streak rule on 2026-08-16 were never
-  backfilled. `class_ledger` holds **57 rows for 733 classes**. Measured
-  2026-08-22: `llm/member_of` is 39-for-39 (LB 0.910) and still `staged`,
-  while `llm/works_at` sits at `sampled` on an LB of **0.486** — under the
-  0.65 floor, auto-accepting nine in ten on evidence that no longer justifies
-  it. A `ladder reconcile` pass run nightly before precheck fixes both
-  directions and makes any future threshold change take effect without a
-  review session. This is the cheapest item here and the only one with a live
-  correctness cost.
+- **The ladder reconcile shipped its promote half; the demote half is a
+  decision still open.** `mecha-graph ladder` (2026-08-23) prints every
+  class's rung, human record, Wilson LB and pending count, and
+  `ladder --promote` re-derives rungs one rung per pass — run live, it
+  unstuck `works_on`/`member_of`/`located_in` and the queue fell 7,296 →
+  6,569 the same day. Deliberately **never demotes**: demotion stays
+  correction-driven (D3), so `llm/works_at` still sits at `sampled` on an LB
+  of ~0.49 — under the 0.65 floor, auto-accepting nine in ten on evidence
+  that no longer justifies it. What remains is that ruling (statistical
+  demotion, or leave D3 as the only path down) and wiring `--promote` into
+  the nightly before precheck so threshold changes take effect without a
+  review session. Note `reviewed_by` (V017, same day) now labels machine
+  accepts, so the human record the recompute reads is exact going forward.
 
 - **The nightly alert reports depth, not rate.** `ALERTS: merge queue 6491`
   reads identically whether the accept lane admits 5% of inflow or 95%, which
@@ -1210,6 +1221,23 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   raise a finding when admitted trails inflow three nights running. Related:
   vet's ceiling is `VET_LIMIT` × 10 predicates = 400 a night against 500–970
   candidates arriving, so the drain is specified slower than the fill.
+
+- **A queue verdict has no undo, and the cascade raised the stakes.** One
+  keystroke now decides up to a couple hundred items and nothing can walk it
+  back: `mecha-graph undo` covers only episode delete/edit, a reject keeps
+  its row (`status='rejected'`) but no verb flips it, and an accept asserted
+  a live fact. The `reviewed_by = 'cascade:<seed>'` label makes the natural
+  undo unit cheap to find: an `undecide <seed>` that returns the seed and
+  its labeled fan-out to `proposed` (retracting accept-created facts only
+  while nothing has built on them), a `mecha review` passthrough, and `u` in
+  the `/queues` modal for the sitting's last verdict. Designed in
+  conversation 2026-08-23, not built.
+
+- **Slack verdict cards are deliberately unbuilt.** The `queues` command
+  word is read-only; mail-triage cards and queue-verdict buttons each need a
+  design pass against `SLACK-ACTIONS-DESIGN.md` first (closed Action enum,
+  confirmation ladder — a group cascade from a phone is one tap with a
+  two-hundred-item blast radius). Write the design before the code.
 
 - **Extraction progress is unobservable, and the number standing in for it
   measures something else.** `HealthStats` has no backlog field, so
