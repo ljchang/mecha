@@ -4879,6 +4879,17 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 return Ok(());
             };
             let (leader, stmt) = (g.leader_id, g.statement.clone());
+            // The cascade lands on the EXPLICIT member list this listing
+            // showed — never a re-derivation: the ids on screen are what the
+            // verdict is about, the graph vets them against the seed's
+            // class, and no embedder runs, so the keystroke answers at
+            // store speed. A singleton is the plain single-id path.
+            let member_csv = g
+                .member_ids
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
             // `A` is the item level's escape hatch at group scale: the seed's
             // unknown subject becomes a new topic node, and the cascade then
             // resolves its members against the node the seed just created.
@@ -4886,6 +4897,11 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
             let create = key.code == KeyCode::Char('A');
             let accept = create || key.code == KeyCode::Char('a');
             let verb = if accept { "accept" } else { "reject" };
+            let fan = if member_csv.is_empty() {
+                crate::commands::review::Fan::None
+            } else {
+                crate::commands::review::Fan::Ids(&member_csv)
+            };
             let outcome = crate::commands::review::decide_report(
                 verb,
                 &[leader],
@@ -4895,8 +4911,7 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 None,
                 create,
                 false,
-                true,
-                None,
+                fan,
             );
             match outcome {
                 Ok(report) => {
@@ -5146,8 +5161,7 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 None,
                 false,
                 false,
-                false,
-                None,
+                crate::commands::review::Fan::None,
             );
             match outcome {
                 // The CHILD's count, never the row's: the graph's bulk
