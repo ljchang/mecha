@@ -2211,6 +2211,21 @@ All found by pre-push review or by running it.
 
 ### Containment and state
 
+**`current_exe` of a replaced binary is a path that does not exist, so a
+long-lived TUI lost every child it tried to spawn.** Rust's `current_exe`
+resolves `/proc/self/exe` to its target, and after `cargo install` swaps the
+file, a running process's target reads `…/mecha (deleted)` — so `/queues`
+died with `os error 2` and an outbox release failed *quietly*, the item
+sitting `pending` as though the review surface were broken. Both reported by
+the owner within the hour of the install, from the one session the
+stale-process sweep had already named. The fix execs the `/proc/self/exe`
+link itself, which the kernel resolves to the deleted inode: a session
+drives the version it *is*. The general shape: **anything a long-lived
+process re-derives from the filesystem — its own path included — can change
+under it at an install; prefer handles that pin the inode.** Two sites keep
+`current_exe` deliberately (a systemd unit's path, a sibling-binary lookup),
+annotated so they are not "fixed".
+
 **A mutating path that was never exercised shipped broken, because the live
 store was correctly left alone and no scratch copy was made instead.** The
 `/queues` class verdict passed `--proposer`/`--predicate` to a `mecha review

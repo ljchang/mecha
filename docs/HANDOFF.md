@@ -92,12 +92,13 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,266 tests**, no failures — re-measured 2026-08-22 after the
-unified-queues arc (675 in the `mecha-core` lib suite, 377 in `mecha-cli` with
-1 ignored, 122 in `mecha-mail`, 75 in `mecha-slack`, 15 across the two
-integration suites that need real backends, and 1 doctest). The 11 added over
-the morning's 1,255 are `mecha review`'s tally and refusals (3) and the
-`/queues` modal's parsing, tier filter and tiny-size draw (8). The 9 added over 2026-08-21's 1,246 are the harness store,
+Expect **1,269 tests**, no failures — re-measured 2026-08-23 after the
+unified-queues arc and its first field reports (675 in the `mecha-core` lib
+suite, 380 in `mecha-cli` with 1 ignored, 122 in `mecha-mail`, 75 in
+`mecha-slack`, 15 across the two integration suites that need real backends,
+and 1 doctest). The 14 added over 2026-08-22's 1,255: `mecha review`'s tally
+and refusals (3), the `/queues` modal's parsing, tier filter, item detail and
+tiny-size draws (9), and `exe::self_exe` (2). The 9 added over 2026-08-21's 1,246 are the harness store,
 override layer, and doctor's harness/starved-learner checks; the 24 before
 that were the search-chain, cache-lens and outbox-approval arcs. Earlier 2026-08-21 counts were 1,222,
 1,213, 1,210 and 1,192; the 2026-08-20 counts were 1,140 at `cfa2cc2` and 1,105 at 0.1.9,

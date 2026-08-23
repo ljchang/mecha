@@ -676,8 +676,8 @@ const HELP: &str = "
   ITEMS  (a random sample, seeded so it can be redrawn)
     Enter    the full item — whole statement and payload; j/k flips
              through items without leaving it
-    a        accept this one
-    r        reject this one
+    a        accept this one (returns to the list, row removed)
+    r        reject this one (same)
     n        draw a new sample
     The draw is random because the queue is ordered, and every order it
     could have is correlated with something. Judging the first dozen and

@@ -4622,8 +4622,15 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     if let Some(m) = &mut app.queues {
                         m.items.retain(|r| r.id != id);
                         m.selected = m.selected.min(m.items.len().saturating_sub(1));
-                        // The detail stays open on the next item — a sitting
-                        // reviews from the detail — but at its own top.
+                        // A verdict closes the detail and lands back on the
+                        // list. The first cut stayed in the detail and
+                        // silently advanced to the next item, which read as
+                        // the keypress having done nothing — different text
+                        // under an unchanged frame is not feedback. The list
+                        // is where the change is visible: one row gone, the
+                        // verdict in the status line. Flipping through items
+                        // without deciding is what j/k in the detail is for.
+                        m.item_detail = false;
                         m.detail_scroll = 0;
                         m.status = Some(format!(
                             "{verb}ed #{id} — {}",
