@@ -4637,7 +4637,7 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                                 .trim()
                                 .to_string();
                             m.status = Some(format!(
-                                "{why} — fix the subject in mecha-graph tui (e edits, b binds)"
+                                "{why} — b binds the subject here; A accepts it as a new topic"
                             ));
                             return Ok(());
                         }
@@ -4717,6 +4717,7 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 Some(&proposer),
                 Some(&predicate),
                 None,
+                false,
                 false,
             );
             match outcome {

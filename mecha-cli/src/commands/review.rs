@@ -113,6 +113,16 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Rebind a candidate's unresolvable subject to a real entity — the way
+    /// through `cannot resolve subject 'X'`, the commonest accept failure.
+    /// The old spelling is learned as an alias, so the next candidate
+    /// carrying it resolves on its own.
+    Bind {
+        id: i64,
+        /// Exact display name of the target (else: the graph's top suggestion).
+        #[arg(long)]
+        to: Option<String>,
+    },
     /// Accept graph fact candidates, by id or by class.
     Accept {
         ids: Vec<i64>,
@@ -129,6 +139,10 @@ pub enum Cmd {
         /// 500; passing it explicitly is how a caller learns it was capped.
         #[arg(long)]
         limit: Option<usize>,
+        /// A subject the graph does not know becomes a new topic node
+        /// instead of a failure.
+        #[arg(long)]
+        create_subjects: bool,
         /// What a bulk filter would hit, changing nothing. The proposer
         /// filter is a *substring* on the graph's side, so what a class
         /// verdict actually covers is worth seeing before it is applied.
@@ -183,11 +197,22 @@ pub async fn execute(args: Args) -> Result<()> {
             Draw::Head { limit },
             json,
         ),
+        Cmd::Bind { id, to } => {
+            let id_s = id.to_string();
+            let mut args = vec!["bind", id_s.as_str()];
+            if let Some(t) = &to {
+                args.push("--to");
+                args.push(t);
+            }
+            print!("{}", graph_cli(&args)?);
+            Ok(())
+        }
         Cmd::Accept {
             ids,
             proposer,
             predicate,
             limit,
+            create_subjects,
             dry_run,
         } => decide(
             "accept",
@@ -196,6 +221,7 @@ pub async fn execute(args: Args) -> Result<()> {
             proposer.as_deref(),
             predicate.as_deref(),
             limit,
+            create_subjects,
             dry_run,
         ),
         Cmd::Reject {
@@ -212,6 +238,7 @@ pub async fn execute(args: Args) -> Result<()> {
             proposer.as_deref(),
             predicate.as_deref(),
             limit,
+            false,
             dry_run,
         ),
     }
@@ -254,12 +281,22 @@ fn graph_cli(args: &[&str]) -> Result<String> {
     if out.status.success() {
         return Ok(String::from_utf8_lossy(&out.stdout).to_string());
     }
-    let err = String::from_utf8_lossy(&out.stderr);
-    bail!(
-        "{bin} {}: {}",
-        args.first().unwrap_or(&""),
-        err.trim().lines().next().unwrap_or("failed")
-    )
+    // The reason may be on either stream: mecha-graph reports per-item
+    // failures as `#id FAILED: …` on STDOUT and exits non-zero, while a
+    // clap error or panic lands on stderr. An error that reads "failed"
+    // because it looked at the empty stream is no error report at all —
+    // `bind 2951` said exactly that while stdout held the whole answer.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let reason = stderr
+        .trim()
+        .lines()
+        .next()
+        .filter(|l| !l.trim().is_empty())
+        .or_else(|| stdout.trim().lines().last())
+        .unwrap_or("failed")
+        .to_string();
+    bail!("{bin} {}: {}", args.first().unwrap_or(&""), reason)
 }
 
 fn graph_json(args: &[&str]) -> Result<Value> {
@@ -643,11 +680,21 @@ fn decide(
     proposer: Option<&str>,
     predicate: Option<&str>,
     limit: Option<usize>,
+    create_subjects: bool,
     dry_run: bool,
 ) -> Result<()> {
     print!(
         "{}",
-        decide_report(verb, ids, reason, proposer, predicate, limit, dry_run)?
+        decide_report(
+            verb,
+            ids,
+            reason,
+            proposer,
+            predicate,
+            limit,
+            create_subjects,
+            dry_run
+        )?
     );
     Ok(())
 }
@@ -667,6 +714,7 @@ pub fn decide_report(
     proposer: Option<&str>,
     predicate: Option<&str>,
     limit: Option<usize>,
+    create_subjects: bool,
     dry_run: bool,
 ) -> Result<String> {
     if ids.is_empty() && proposer.is_none() && predicate.is_none() {
@@ -704,6 +752,9 @@ pub fn decide_report(
     if let Some(l) = &limit_s {
         args.push("--limit");
         args.push(l);
+    }
+    if create_subjects {
+        args.push("--create-subjects");
     }
     if dry_run {
         args.push("--dry-run");
@@ -761,6 +812,7 @@ mod tests {
             Some("llm"),
             Some("(commitment)"),
             None,
+            false,
             true,
         )
         .expect_err("must refuse");
@@ -775,8 +827,8 @@ mod tests {
     /// Neither ids nor filters is an error, never a silent no-op.
     #[test]
     fn a_verdict_with_no_target_is_refused() {
-        let err =
-            decide_report("accept", &[], None, None, None, None, false).expect_err("must refuse");
+        let err = decide_report("accept", &[], None, None, None, None, false, false)
+            .expect_err("must refuse");
         assert!(format!("{err:#}").contains("candidate ids"));
     }
 }
