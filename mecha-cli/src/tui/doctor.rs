@@ -309,7 +309,7 @@ fn draw_confirm(frame: &mut Frame, confirm: &RemedyConfirm) {
 /// "examining…" meanwhile.
 pub fn spawn_examination() -> anyhow::Result<std::process::Child> {
     use anyhow::Context;
-    let exe = std::env::current_exe().context("cannot find my own binary")?;
+    let exe = crate::exe::self_exe();
     std::process::Command::new(exe)
         .args(["doctor", "--json"])
         .stdin(std::process::Stdio::null())

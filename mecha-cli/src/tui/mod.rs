@@ -4147,7 +4147,7 @@ fn install_doctor_rows(app: &mut App, rows: Vec<doctor::FindingRow>) {
 fn spawn_remedy(argv: &[String]) -> Result<std::process::Child> {
     let (program, rest) = argv.split_first().context("a remedy with an empty argv")?;
     let program: std::path::PathBuf = if program.as_str() == "mecha" {
-        std::env::current_exe().context("cannot find my own binary")?
+        crate::exe::self_exe()
     } else {
         program.into()
     };
@@ -4201,7 +4201,7 @@ fn suspend_and_run_remedy(
 fn run_remedy_interactive(argv: &[String]) -> Result<()> {
     let (program, rest) = argv.split_first().context("a remedy with an empty argv")?;
     let program: std::path::PathBuf = if program.as_str() == "mecha" {
-        std::env::current_exe().context("cannot find my own binary")?
+        crate::exe::self_exe()
     } else {
         program.into()
     };
@@ -4939,7 +4939,7 @@ fn submit_task_form(app: &mut App) -> Result<()> {
 /// implementation of each verb, and no way for the TUI to do something the
 /// command line cannot.
 fn self_cli(args: &[&str]) -> Result<String> {
-    let exe = std::env::current_exe().context("cannot find my own binary")?;
+    let exe = crate::exe::self_exe();
     let out = std::process::Command::new(exe)
         .args(args)
         .output()
@@ -4966,7 +4966,7 @@ fn trigger_cli(args: &[&str]) -> Result<String> {
 /// gets EOF, and EOF means "no" on every surface here — so a detached send
 /// or triage can never sit blocked on a confirmation nobody can see.
 fn spawn_detached(args: &[&str]) -> Result<()> {
-    let exe = std::env::current_exe().context("cannot find my own binary")?;
+    let exe = crate::exe::self_exe();
     std::process::Command::new(exe)
         .args(args)
         .stdin(std::process::Stdio::null())
@@ -5028,7 +5028,7 @@ fn with_terminal_suspended<T>(
 /// vim a pipe for a screen and a closed stdin for a keyboard. Only stderr is
 /// captured, so a refusal's text can reach the modal's status line.
 fn self_cli_interactive(args: &[&str]) -> Result<()> {
-    let exe = std::env::current_exe().context("cannot find my own binary")?;
+    let exe = crate::exe::self_exe();
     let child = std::process::Command::new(exe)
         .args(args)
         .stderr(std::process::Stdio::piped())
@@ -6676,6 +6676,10 @@ fn spawn_mail_read(app: &mut App, thread: &str, account: &str, handle: &str) {
 /// MIME strings and a URL shape with a crate edge would be the wrong trade,
 /// and `tui/docs.rs` carries its own copy of both for that reason.
 fn docs_bin() -> std::path::PathBuf {
+    // current_exe, not `exe::self_exe()`: this wants the *directory* beside
+    // the binary, and `/proc/self/exe` has no useful parent. The "(deleted)"
+    // suffix an install adds lives in the file name, so `.parent()` still
+    // answers correctly on a stale session.
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|d| d.join("mecha-docs")))
@@ -7067,15 +7071,7 @@ fn install_docs_answer(app: &mut App, job: DocsJob, answer: Result<String>) {
 /// `/outbox`, which is where it is reviewed; this only reports that the run
 /// started.
 fn spawn_draft(app: &mut App, verb: &str, thread: &str, account: &str, to: Option<&str>) {
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(e) => {
-            if let Some(m) = &mut app.mail {
-                m.status = Some(format!("cannot find my own binary: {e}"));
-            }
-            return;
-        }
-    };
+    let exe = crate::exe::self_exe();
     let mut args: Vec<String> = vec![
         "mail".into(),
         verb.into(),

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.12] - 2026-08-22
 
+### Fixed
+
+- **A TUI outlives an install without its child processes dying.** Every
+  modal that drives `mecha <verb>` as a child resolved its own binary with
+  `current_exe`, which on Linux reads `/proc/self/exe` — and after
+  `cargo install` replaces the file, that target reads `…/mecha (deleted)`,
+  a path that does not exist. `/queues` failed by name (`os error 2`) and an
+  outbox release failed *quietly*: the confirmation ran, the release child
+  never started, and the item sat `pending` looking like the review surface
+  was broken. Children now exec the `/proc/self/exe` link itself, which the
+  kernel resolves to the deleted inode — so a long-lived session keeps
+  driving the version it *is*, rather than failing, and rather than picking
+  up a newer binary whose flags may have moved. The path written into
+  systemd units deliberately still uses the real file.
+
 ### Added
 
 - **`/queues` and `mecha review` — every store waiting on you, in one list.**

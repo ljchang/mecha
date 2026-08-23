@@ -48,10 +48,7 @@ pub fn is_doctor_command(text: &str) -> bool {
 /// both documented codes, and only unparseable output is reported as doctor
 /// itself being unwell.
 pub async fn report() -> (String, Option<Vec<serde_json::Value>>) {
-    let exe = match std::env::current_exe() {
-        Ok(exe) => exe,
-        Err(e) => return (format!("doctor could not run: {e}"), None),
-    };
+    let exe = crate::exe::self_exe();
     let out = match tokio::process::Command::new(exe)
         .args(["doctor", "--json"])
         .stdin(std::process::Stdio::null())
