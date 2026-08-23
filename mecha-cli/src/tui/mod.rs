@@ -4455,12 +4455,29 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 None => format!("{n}, all tiers"),
             });
         }
-        KeyCode::Char('j') | KeyCode::Down => modal.move_sel(1),
-        KeyCode::Char('k') | KeyCode::Up => modal.move_sel(-1),
+        KeyCode::Char('j') | KeyCode::Down => {
+            modal.move_sel(1);
+            modal.detail_scroll = 0;
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            modal.move_sel(-1);
+            modal.detail_scroll = 0;
+        }
+        KeyCode::PageDown if modal.level == queues::Level::Items && modal.item_detail => {
+            modal.detail_scroll = modal.detail_scroll.saturating_add(5);
+        }
+        KeyCode::PageUp if modal.level == queues::Level::Items && modal.item_detail => {
+            modal.detail_scroll = modal.detail_scroll.saturating_sub(5);
+        }
         KeyCode::Char('g') | KeyCode::Home => modal.selected = 0,
         KeyCode::Char('G') | KeyCode::End => modal.selected = modal.len().saturating_sub(1),
         KeyCode::Esc | KeyCode::Char('q') => match modal.level {
-            // Esc peels one level at a time, never two.
+            // Esc peels one level at a time, never two — and the item
+            // detail is a layer of its own.
+            queues::Level::Items if modal.item_detail => {
+                modal.item_detail = false;
+                modal.detail_scroll = 0;
+            }
             queues::Level::Items => {
                 modal.level = queues::Level::Candidates;
                 modal.item_class = None;
@@ -4579,7 +4596,12 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     Err(e) => modal.status = Some(format!("sample failed: {e:#}")),
                 }
             }
-            queues::Level::Items => {}
+            queues::Level::Items => {
+                if modal.selected_item().is_some() {
+                    modal.item_detail = !modal.item_detail;
+                    modal.detail_scroll = 0;
+                }
+            }
         },
         // Item level: one verdict, one candidate. Distinct from the class
         // verdict a level up, and the key strip says which you are holding.
@@ -4600,6 +4622,9 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     if let Some(m) = &mut app.queues {
                         m.items.retain(|r| r.id != id);
                         m.selected = m.selected.min(m.items.len().saturating_sub(1));
+                        // The detail stays open on the next item — a sitting
+                        // reviews from the detail — but at its own top.
+                        m.detail_scroll = 0;
                         m.status = Some(format!(
                             "{verb}ed #{id} — {}",
                             stmt.chars().take(48).collect::<String>()
@@ -4636,6 +4661,7 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         modal.items = rows;
                         modal.item_seed = Some(seed);
                         modal.selected = 0;
+                        modal.detail_scroll = 0;
                         modal.status = Some(format!("new sample of {}", modal.items.len()));
                     }
                     Err(e) => modal.status = Some(format!("sample: {e:#}")),
