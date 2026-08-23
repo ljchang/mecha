@@ -175,6 +175,34 @@ enum Watch {
         handle: String,
         since: std::time::Instant,
     },
+    /// A `mecha mail archive|spam|task …` triage action for the /mail modal.
+    ///
+    /// The same exception `MailRead` takes, and it was overdue: these each
+    /// start an MCP server and make a network call, and running them inline
+    /// froze the interface for a second or two per keystroke — the module's
+    /// own comment admitted the contradiction. The child's answer is the cue
+    /// (nothing durable records a triage action's completion); the refresh
+    /// on landing is a local store read.
+    MailAction {
+        rx: std::sync::mpsc::Receiver<Result<String>>,
+        /// For the status line: which verb is in flight, on which handle.
+        verb: String,
+        handle: String,
+        since: std::time::Instant,
+    },
+    /// A `mecha review groups …` load for the /queues modal.
+    ///
+    /// Grouping embeds every pending candidate of the class, which is
+    /// seconds on a thousand-item class — the one slow child the queues
+    /// modal drives. The answer is the group JSON, installed only if the
+    /// modal is still sitting at the class list it was asked from; a person
+    /// who moved on is not yanked to a level they left.
+    QueuesGroups {
+        rx: std::sync::mpsc::Receiver<Result<String>>,
+        proposer: String,
+        predicate: String,
+        since: std::time::Instant,
+    },
     /// A `mecha-docs …` child answering for the /docs modal.
     ///
     /// The same exception `MailRead` takes: listing the scope is a Drive
@@ -1564,6 +1592,110 @@ fn poll_watches(app: &mut App) {
                     if let Some(modal) = &mut app.mail {
                         modal.loading = None;
                         modal.status = Some(format!("the read of {handle} was lost"));
+                    }
+                }
+            },
+            Watch::MailAction {
+                rx,
+                verb,
+                handle,
+                since,
+            } => match rx.try_recv() {
+                Ok(out) => {
+                    let line = match out {
+                        Ok(o) => o.lines().next().unwrap_or("done").to_string(),
+                        Err(e) => format!("{verb} {handle}: {e:#}"),
+                    };
+                    match &mut app.mail {
+                        Some(modal) => modal.status = Some(line),
+                        None => app.transcript.push(Entry::Notice(line)),
+                    }
+                    refresh_mail(app);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if since.elapsed() > doctor::EXAMINE_CAP {
+                        if let Some(modal) = &mut app.mail {
+                            modal.status =
+                                Some(format!("{verb} {handle} never answered — check /doctor"));
+                        }
+                    } else {
+                        app.watches.push(Watch::MailAction {
+                            rx,
+                            verb,
+                            handle,
+                            since,
+                        });
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if let Some(modal) = &mut app.mail {
+                        modal.status = Some(format!("{verb} {handle} was lost"));
+                    }
+                }
+            },
+            Watch::QueuesGroups {
+                rx,
+                proposer,
+                predicate,
+                since,
+            } => match rx.try_recv() {
+                Ok(Ok(text)) => {
+                    // Install only into a modal still sitting at the class
+                    // list: a person who dove into a sample meanwhile keeps
+                    // their place, and the status says the work finished.
+                    match &mut app.queues {
+                        Some(m) if m.level == queues::Level::Candidates => {
+                            match queues::groups_from_json(&text) {
+                                Ok(rows) => {
+                                    let n = rows.len();
+                                    m.level = queues::Level::Groups;
+                                    m.groups = rows;
+                                    m.item_class = Some((proposer, predicate));
+                                    m.selected = 0;
+                                    m.status = Some(match n {
+                                        0 => "nothing repeats above the threshold".into(),
+                                        n => format!(
+                                            "{n} group(s) — a/r verdicts a whole group at once"
+                                        ),
+                                    });
+                                }
+                                Err(e) => m.status = Some(format!("groups: {e:#}")),
+                            }
+                        }
+                        Some(m) => {
+                            m.status = Some(format!(
+                                "groups of {proposer} · {predicate} ready — s re-opens them"
+                            ));
+                        }
+                        None => app.transcript.push(Entry::Notice(format!(
+                            "grouping {proposer} · {predicate} finished after /queues closed"
+                        ))),
+                    }
+                }
+                Ok(Err(e)) => {
+                    let line = format!("grouping {proposer} · {predicate} failed: {e:#}");
+                    match &mut app.queues {
+                        Some(m) => m.status = Some(line),
+                        None => app.transcript.push(Entry::Error(line)),
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if since.elapsed() > doctor::EXAMINE_CAP {
+                        if let Some(m) = &mut app.queues {
+                            m.status = Some("grouping never answered — is :8081 up?".into());
+                        }
+                    } else {
+                        app.watches.push(Watch::QueuesGroups {
+                            rx,
+                            proposer,
+                            predicate,
+                            since,
+                        });
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if let Some(m) = &mut app.queues {
+                        m.status = Some("the grouping was lost".into());
                     }
                 }
             },
@@ -4774,28 +4906,39 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 return Ok(());
             };
             let (pb, pred) = (c.proposer.clone(), c.predicate.clone());
+            let pending = c.pending;
             if pred.starts_with('(') {
                 modal.status =
                     Some("commitments do not group — they are reviewed one at a time".into());
                 return Ok(());
             }
-            match review_cli(&["groups", "--proposer", &pb, "--predicate", &pred, "--json"]) {
-                Ok(t) => match queues::groups_from_json(&t) {
-                    Ok(rows) => {
-                        let n = rows.len();
-                        modal.level = queues::Level::Groups;
-                        modal.groups = rows;
-                        modal.item_class = Some((pb, pred));
-                        modal.selected = 0;
-                        modal.status = Some(match n {
-                            0 => "nothing repeats above the threshold".into(),
-                            n => format!("{n} group(s) — a/r verdicts a whole group at once"),
-                        });
-                    }
-                    Err(e) => modal.status = Some(format!("groups: {e:#}")),
-                },
-                Err(e) => modal.status = Some(format!("groups failed: {e:#}")),
-            }
+            // Off the event loop: grouping embeds every pending candidate of
+            // the class, which is seconds on a thousand-item class. The
+            // status says what is running; `Watch::QueuesGroups` installs
+            // the answer if the modal is still at this list.
+            modal.status = Some(format!(
+                "grouping {pending} pending in {pb} · {pred} — embedding…"
+            ));
+            let args: Vec<String> = vec![
+                "review".into(),
+                "groups".into(),
+                "--proposer".into(),
+                pb.clone(),
+                "--predicate".into(),
+                pred.clone(),
+                "--json".into(),
+            ];
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+                let _ = tx.send(self_cli(&borrowed));
+            });
+            app.watches.push(Watch::QueuesGroups {
+                rx,
+                proposer: pb,
+                predicate: pred,
+                since: std::time::Instant::now(),
+            });
         }
         // Item level: one verdict, one candidate. Distinct from the class
         // verdict a level up, and the key strip says which you are holding.
@@ -6806,13 +6949,12 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
         let Some(row) = modal.rows.get(modal.selected) else {
             return Ok(());
         };
-        let (thread, account) = (row.thread_id.clone(), row.account.clone());
-        let out = self_cli(&["mail", "spam", &thread, "--account", &account]);
-        modal.status = Some(match out {
-            Ok(o) => o.lines().next().unwrap_or("marked spam").to_string(),
-            Err(e) => format!("{e:#}"),
-        });
-        refresh_mail(app);
+        let (thread, account, handle) = (
+            row.thread_id.clone(),
+            row.account.clone(),
+            row.handle.clone(),
+        );
+        spawn_mail_action(app, "spam", &thread, &account, &handle);
         return Ok(());
     }
 
@@ -6862,22 +7004,13 @@ fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     modal.input = Some(mail::MailInput::text(label, verb));
                 }
                 mail::Action::Now(verb) => {
-                    // **These block the event loop**, and only `dismiss` is
-                    // genuinely local — `archive`, `spam` and `task` each
-                    // start an MCP server and make a network call, so the
-                    // interface is frozen for a second or two with no redraw.
-                    // That contradicts this module's own rule about slow work
-                    // spawning detached, and the honest fix is to watch them
-                    // like `/outbox` watches a release rather than to hide the
-                    // pause. Until then the status line says what is happening
-                    // so a freeze is legible rather than mysterious.
-                    modal.status = Some(format!("{verb}…"));
-                    let out = self_cli(&["mail", verb, &thread, "--account", &account]);
-                    modal.status = Some(match out {
-                        Ok(o) => o.lines().next().unwrap_or("done").to_string(),
-                        Err(e) => format!("{e:#}"),
-                    });
-                    refresh_mail(app);
+                    // Off the event loop: `archive` and `task` start an MCP
+                    // server and make a network call, which inline froze the
+                    // interface for a second or two per keystroke — this
+                    // module's own rule, finally applied to its own verbs.
+                    // `Watch::MailAction` collects the answer and refreshes.
+                    let handle = row.handle.clone();
+                    spawn_mail_action(app, verb, &thread, &account, &handle);
                 }
                 mail::Action::Recipients(verb) => {
                     // Candidates from the store, loaded once when the input
@@ -6924,6 +7057,33 @@ fn refresh_mail(app: &mut App) {
 /// A thread on purpose rather than a detached child: what is wanted back is
 /// the text, and `self_cli` already knows how to get it. The watch collects
 /// it a tick later and installs it into the modal.
+/// Run one triage verb (`archive`, `spam`, `task`) on its own thread and
+/// collect the outcome through `Watch::MailAction`. Each of these starts an
+/// MCP server and reaches the provider, so none may run on the event loop.
+fn spawn_mail_action(app: &mut App, verb: &str, thread: &str, account: &str, handle: &str) {
+    let args: Vec<String> = vec![
+        "mail".into(),
+        verb.into(),
+        thread.into(),
+        "--account".into(),
+        account.into(),
+    ];
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = tx.send(self_cli(&borrowed));
+    });
+    if let Some(modal) = &mut app.mail {
+        modal.status = Some(format!("{verb} {handle}…"));
+    }
+    app.watches.push(Watch::MailAction {
+        rx,
+        verb: verb.to_string(),
+        handle: handle.to_string(),
+        since: std::time::Instant::now(),
+    });
+}
+
 fn spawn_mail_read(app: &mut App, thread: &str, account: &str, handle: &str) {
     let args: Vec<String> = vec![
         "mail".into(),
