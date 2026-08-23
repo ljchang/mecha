@@ -36,6 +36,7 @@ pub enum Level {
     Queues,
     Proposers,
     Candidates,
+    Groups,
     Items,
 }
 
@@ -160,6 +161,34 @@ pub struct ItemRow {
     pub created_at: String,
 }
 
+/// One similarity group, as `mecha review groups --json` reports it.
+///
+/// Its face is the leader's own statement — a real member, never a
+/// model-written summary: a verdict lands on these rows, and approving a
+/// paraphrase is approving unread (the outbox rule, one store over).
+pub struct GroupRow {
+    pub leader_id: i64,
+    pub statement: String,
+    /// Members beyond the leader.
+    pub member_ids: Vec<i64>,
+    /// A few member statements, shown under the selected row.
+    pub sample: Vec<String>,
+}
+
+impl GroupRow {
+    pub fn size(&self) -> usize {
+        self.member_ids.len() + 1
+    }
+    /// Leader first — the id list a dive fetches, and the order it shows.
+    pub fn all_ids_csv(&self) -> String {
+        std::iter::once(self.leader_id)
+            .chain(self.member_ids.iter().copied())
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
 /// One pending class, as `mecha review list --json` reports it. The graph
 /// clusters by (proposer, predicate), so a row here is a class rather than a
 /// single fact — which is the unit the queue is actually decidable in.
@@ -186,10 +215,15 @@ pub struct QueuesModal {
     pub queues: Vec<QueueRow>,
     pub proposers: Vec<ProposerRow>,
     pub candidates: Vec<CandidateRow>,
+    pub groups: Vec<GroupRow>,
     pub items: Vec<ItemRow>,
     pub selected: usize,
     /// The class the item level is drawn from.
     pub item_class: Option<(String, String)>,
+    /// When the item level was entered from a similarity group: the ids it
+    /// shows (leader first). Esc returns to the groups, and a reload
+    /// re-fetches these ids instead of redrawing a sample.
+    pub from_group: Option<String>,
     /// The seed that produced `items`, so the footer can name it — a sample
     /// nobody can redraw is a sample nobody can check.
     pub item_seed: Option<u64>,
@@ -220,9 +254,11 @@ impl QueuesModal {
             queues,
             proposers: vec![],
             candidates: vec![],
+            groups: vec![],
             items: vec![],
             selected: 0,
             item_class: None,
+            from_group: None,
             item_seed: None,
             item_detail: false,
             detail_scroll: 0,
@@ -258,6 +294,7 @@ impl QueuesModal {
             Level::Queues => self.queues.len(),
             Level::Proposers => self.visible_proposers().len(),
             Level::Candidates => self.visible_candidates().len(),
+            Level::Groups => self.groups.len(),
             Level::Items => self.items.len(),
         }
     }
@@ -296,6 +333,9 @@ impl QueuesModal {
     }
     pub fn selected_candidate(&self) -> Option<&CandidateRow> {
         self.visible_candidates().get(self.selected).copied()
+    }
+    pub fn selected_group(&self) -> Option<&GroupRow> {
+        self.groups.get(self.selected)
     }
     pub fn selected_item(&self) -> Option<&ItemRow> {
         self.items.get(self.selected)
@@ -338,18 +378,33 @@ impl QueuesModal {
                     None => format!(" review · classes — {total} pending{sfx} "),
                 }
             }
+            Level::Groups => {
+                let cls = self
+                    .item_class
+                    .as_ref()
+                    .map(|(p, pr)| format!("{p} · {pr}"))
+                    .unwrap_or_else(|| "groups".into());
+                let covered: usize = self.groups.iter().map(|g| g.size()).sum();
+                format!(
+                    " {cls} — {} group(s) covering {covered} ",
+                    self.groups.len()
+                )
+            }
             Level::Items => {
                 let cls = self
                     .item_class
                     .as_ref()
                     .map(|(p, pr)| format!("{p} · {pr}"))
                     .unwrap_or_else(|| "items".into());
-                match self.item_seed {
-                    Some(sd) => format!(
+                match (self.item_seed, &self.from_group) {
+                    (Some(sd), _) => format!(
                         " {cls} — random sample of {} · seed {sd} ",
                         self.items.len()
                     ),
-                    None => format!(" {cls} — {} item(s) ", self.items.len()),
+                    (None, Some(_)) => {
+                        format!(" {cls} — one group, {} item(s) ", self.items.len())
+                    }
+                    (None, None) => format!(" {cls} — {} item(s) ", self.items.len()),
                 }
             }
         }
@@ -362,7 +417,12 @@ impl QueuesModal {
                 "j/k move · Enter classes · t evidence filter · Esc back · ? help".into()
             }
             Level::Candidates => {
-                "j/k · Enter sample · a/r verdict WHOLE class · t filter · Esc back".into()
+                "j/k · Enter sample · s similar groups · a/r verdict WHOLE class · t filter · Esc"
+                    .into()
+            }
+            Level::Groups => {
+                "j/k · Enter items · a/r verdict whole group — one human verdict, the rest cascade"
+                    .into()
             }
             Level::Items => {
                 "j/k · Enter full · a accept · r reject · b bind subject · A accept new · n resample".into()
@@ -388,6 +448,7 @@ impl QueuesModal {
             Level::Queues => self.queue_lines(),
             Level::Proposers => self.proposer_lines(),
             Level::Candidates => self.candidate_lines(),
+            Level::Groups => self.group_lines(),
             Level::Items => self.item_lines(),
         };
 
@@ -536,6 +597,38 @@ impl QueuesModal {
             .collect()
     }
 
+    fn group_lines(&self) -> Vec<Line<'static>> {
+        if self.groups.is_empty() {
+            return vec![Line::styled(
+                "  nothing here repeats above the threshold — review the class item by item",
+                Style::new().fg(Color::DarkGray),
+            )];
+        }
+        let mut out = Vec::new();
+        for (i, g) in self.groups.iter().enumerate() {
+            let sel = i == self.selected;
+            let marker = if sel { "›" } else { " " };
+            let text = format!(
+                "{marker} ×{:<4} #{:<7} {}",
+                g.size(),
+                g.leader_id,
+                truncate(&g.statement, 92)
+            );
+            out.push(style_row(text, sel, false, false));
+            // The selected group's samples, under it: what the fan-out
+            // covers, readable before the keystroke that covers it.
+            if sel {
+                for sm in &g.sample {
+                    out.push(Line::styled(
+                        format!("            ~ {}", truncate(sm, 96)),
+                        Style::new().fg(Color::DarkGray),
+                    ));
+                }
+            }
+        }
+        out
+    }
+
     fn item_lines(&self) -> Vec<Line<'static>> {
         if self.items.is_empty() {
             return vec![Line::styled(
@@ -668,10 +761,24 @@ const HELP: &str = "
 
   CLASSES
     Enter    a RANDOM sample of this class, to review one at a time
+    s        the class grouped by SEMANTIC SIMILARITY — the queue's bulk
+             is the same thing said many ways, and this is the filter
+             that shows it
     a        accept the whole class
     r        reject the whole class
     Verdicts on a whole class are for one you have already decided about.
     To learn whether a class is any good, sample it.
+
+  GROUPS  (one class, its near-repeats gathered)
+    A group's face is a real member's own words plus samples — never a
+    model-written summary, because a verdict lands on these rows and
+    approving a paraphrase is approving unread.
+    Enter    the group's items in full, one at a time
+    a        accept the whole group
+    r        reject the whole group
+    A group verdict is ONE human verdict — yours, on the top item — and
+    the rest follow as a labeled machine cascade the autonomy ladder
+    never counts. One keystroke must not manufacture N verdicts.
 
   ITEMS  (a random sample, seeded so it can be redrawn)
     Enter    the full item — whole statement and payload; j/k flips
@@ -762,6 +869,39 @@ pub fn queues_from_json(text: &str) -> anyhow::Result<Vec<QueueRow>> {
                     depth: r["depth"].as_u64().map(|n| n as usize),
                     detail: r["detail"].as_str().unwrap_or("").to_string(),
                     opens: r["opens"].as_str().unwrap_or("").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Groups as `mecha review groups --json` reports them — the graph's
+/// `SimilarGroup` array: `members` is `[[id, cosine], …]`, and only the ids
+/// matter here (the cosine is the child's working, shown nowhere).
+pub fn groups_from_json(text: &str) -> anyhow::Result<Vec<GroupRow>> {
+    let v: serde_json::Value = serde_json::from_str(text)?;
+    Ok(v.as_array()
+        .map(|rows| {
+            rows.iter()
+                .map(|r| GroupRow {
+                    leader_id: r["leader_id"].as_i64().unwrap_or(0),
+                    statement: r["leader_statement"].as_str().unwrap_or("?").to_string(),
+                    member_ids: r["members"]
+                        .as_array()
+                        .map(|ms| {
+                            ms.iter()
+                                .filter_map(|m| m.get(0).and_then(|x| x.as_i64()))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    sample: r["sample"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|s| s.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 })
                 .collect()
         })
@@ -1073,7 +1213,13 @@ mod tests {
                 term.draw(|f| m.draw(f)).unwrap();
             }
         }
-        for level in [Level::Candidates, Level::Items] {
+        m.groups = groups_from_json(
+            r#"[{"leader_id":9281,"leader_statement":"Luke has a child named Emmy",
+                 "members":[[9302,0.91],[9310,0.88]],
+                 "sample":["Luke has a child named Sage"]}]"#,
+        )
+        .unwrap();
+        for level in [Level::Candidates, Level::Groups, Level::Items] {
             m.level = level;
             for h in 1..=6u16 {
                 let backend = ratatui::backend::TestBackend::new(30, h);
@@ -1099,5 +1245,21 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(40, 8);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| m.draw(f)).unwrap(); // detail open, nothing left — must not blank
+    }
+
+    /// A group row carries the ids a cascade will land on, leader first —
+    /// and parses the graph's `[[id, cosine], …]` member shape.
+    #[test]
+    fn a_group_parses_and_names_its_ids_leader_first() {
+        let rows = groups_from_json(
+            r#"[{"leader_id":9281,"leader_statement":"Luke has a child named Emmy",
+                 "members":[[9302,0.91],[9310,0.88]],
+                 "sample":["Luke has a child named Sage"]}]"#,
+        )
+        .unwrap();
+        assert_eq!(rows[0].size(), 3);
+        assert_eq!(rows[0].member_ids, vec![9302, 9310]);
+        assert_eq!(rows[0].all_ids_csv(), "9281,9302,9310");
+        assert_eq!(rows[0].sample, vec!["Luke has a child named Sage"]);
     }
 }
