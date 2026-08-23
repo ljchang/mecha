@@ -83,6 +83,14 @@ pub struct GlobalOpts {
     #[arg(long = "tool", global = true)]
     pub tools: Vec<String>,
 
+    /// Set by the trigger runner, never by a flag: the allowlist above came
+    /// from a trigger file's `tools` line — durable, deliberate config. The
+    /// subagent-skip notice stays quiet then, on the outbox warning's own
+    /// reasoning: a warning that fires every scheduled morning on a
+    /// deliberately narrowed run is how a real typo later gets ignored.
+    #[arg(skip)]
+    pub tools_from_trigger: bool,
+
     /// Only carry these skills (repeatable). Names are matched exactly.
     ///
     /// Narrows what `[skills]` already selected; it cannot enable a skill the

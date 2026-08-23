@@ -932,6 +932,7 @@ async fn run_agent(
         max_output_tokens: t.max_output_tokens,
         max_cost: t.max_cost_usd,
         tools: t.tools.clone(),
+        tools_from_trigger: !t.tools.is_empty(),
         // Default closed: a scheduled run carries only the skills its file
         // names. See `Trigger::skills` for why this is the opposite of the
         // `tools` allowlist directly above it.
