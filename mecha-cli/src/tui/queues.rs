@@ -421,7 +421,7 @@ impl QueuesModal {
                     .into()
             }
             Level::Groups => {
-                "j/k · Enter items · a/r verdict whole group — one human verdict, the rest cascade"
+                "j/k · Enter items · a/r verdict whole group · b bind subject · A accept new"
                     .into()
             }
             Level::Items => {
@@ -776,6 +776,12 @@ const HELP: &str = "
     Enter    the group's items in full, one at a time
     a        accept the whole group
     r        reject the whole group
+    b        an accept failed on `cannot resolve subject`? bind the
+             seed's subject to the graph's closest entity — the group
+             shares its subject (that is what made it a group), so one
+             bind unblocks the whole cascade
+    A        accept creating the subject as a NEW topic node, for a
+             subject that is genuinely new rather than misspelled
     A group verdict is ONE human verdict — yours, on the top item — and
     the rest follow as a labeled machine cascade the autonomy ladder
     never counts. One keystroke must not manufacture N verdicts.

@@ -4850,12 +4850,41 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // the rest of the group following as a labeled machine cascade the
         // ladder never counts. The status line reports the child's own
         // numbers, never the row's size.
-        KeyCode::Char('a') | KeyCode::Char('r') if modal.level == queues::Level::Groups => {
+        // `b` binds the SEED's subject — the group shares its subject far
+        // more often than not (that is what made it a group), so fixing the
+        // one spelling unblocks the whole cascade: the alias is learned, and
+        // every member resolves through it on the next `a`.
+        KeyCode::Char('b') if modal.level == queues::Level::Groups => {
+            let Some(g) = modal.selected_group() else {
+                return Ok(());
+            };
+            let id_s = g.leader_id.to_string();
+            match review_cli(&["bind", &id_s]) {
+                Ok(report) => {
+                    if let Some(m) = &mut app.queues {
+                        m.status = Some(format!("{} — a cascades the group", report.trim()));
+                    }
+                }
+                Err(e) => {
+                    if let Some(m) = &mut app.queues {
+                        m.status = Some(format!("bind #{id_s} failed: {e:#}"));
+                    }
+                }
+            }
+        }
+        KeyCode::Char('a') | KeyCode::Char('r') | KeyCode::Char('A')
+            if modal.level == queues::Level::Groups =>
+        {
             let Some(g) = modal.selected_group() else {
                 return Ok(());
             };
             let (leader, stmt) = (g.leader_id, g.statement.clone());
-            let accept = key.code == KeyCode::Char('a');
+            // `A` is the item level's escape hatch at group scale: the seed's
+            // unknown subject becomes a new topic node, and the cascade then
+            // resolves its members against the node the seed just created.
+            // The human pressing it is the review that creation requires.
+            let create = key.code == KeyCode::Char('A');
+            let accept = create || key.code == KeyCode::Char('a');
             let verb = if accept { "accept" } else { "reject" };
             let outcome = crate::commands::review::decide_report(
                 verb,
@@ -4864,7 +4893,7 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 None,
                 None,
                 None,
-                false,
+                create,
                 false,
                 true,
                 None,
@@ -4890,11 +4919,20 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 Err(e) => {
                     // The seed's verdict could not land (an unresolvable
                     // subject, most often), so nothing cascaded and the
-                    // group stays — Enter dives in, where b binds subjects.
+                    // group stays. The hint names both ways through, on the
+                    // item level's precedent — a failure that only says
+                    // "failed" strands the person exactly where a key would
+                    // have carried them. Circular after `A`, so that one
+                    // gets the reason alone.
                     if let Some(m) = &mut app.queues {
-                        m.status = Some(format!(
-                            "{verb} failed, nothing cascaded: {e:#} — Enter opens the group"
-                        ));
+                        m.status = Some(if create {
+                            format!("{verb} failed, nothing cascaded: {e:#}")
+                        } else {
+                            format!(
+                                "{verb} failed, nothing cascaded: {e:#} — b binds the subject \
+                                 here; A accepts it as a new topic"
+                            )
+                        });
                     }
                 }
             }
