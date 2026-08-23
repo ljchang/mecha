@@ -110,6 +110,29 @@ pub enum Cmd {
         predicate: Option<String>,
         #[arg(long, default_value_t = 50)]
         limit: usize,
+        /// Only these candidate ids, comma-separated, in the order given —
+        /// how a similarity group's members are read in full.
+        #[arg(long)]
+        ids: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// One class's pending candidates grouped by semantic similarity,
+    /// largest groups first — where one verdict fans out furthest.
+    ///
+    /// The group's face is its leader statement plus samples, never a
+    /// model-written summary: the reviewable object is a real member of
+    /// the group, on the outbox's rule that approving a paraphrase is
+    /// approving unread.
+    Groups {
+        #[arg(long)]
+        proposer: String,
+        /// The cluster key — a bare predicate. Commitments do not group.
+        #[arg(long)]
+        predicate: String,
+        /// Cosine floor; omitted, the graph's calibrated default applies.
+        #[arg(long)]
+        threshold: Option<f64>,
         #[arg(long)]
         json: bool,
     },
@@ -148,6 +171,14 @@ pub enum Cmd {
         /// verdict actually covers is worth seeing before it is applied.
         #[arg(long)]
         dry_run: bool,
+        /// Cascade: the one named id is YOUR verdict; every same-class
+        /// candidate semantically similar to it follows as a machine
+        /// cascade the ladder never counts.
+        #[arg(long, conflicts_with_all = ["proposer", "predicate"])]
+        like: bool,
+        /// Cosine floor for --like; omitted, the graph's default applies.
+        #[arg(long)]
+        threshold: Option<f64>,
     },
     /// Reject graph fact candidates, by id or by class.
     Reject {
@@ -162,6 +193,12 @@ pub enum Cmd {
         limit: Option<usize>,
         #[arg(long)]
         dry_run: bool,
+        /// Cascade — see `accept --like`.
+        #[arg(long, conflicts_with_all = ["proposer", "predicate"])]
+        like: bool,
+        /// Cosine floor for --like; omitted, the graph's default applies.
+        #[arg(long)]
+        threshold: Option<f64>,
     },
 }
 
@@ -190,13 +227,23 @@ pub async fn execute(args: Args) -> Result<()> {
             proposer,
             predicate,
             limit,
+            ids,
             json,
         } => items(
             proposer.as_deref(),
             predicate.as_deref(),
-            Draw::Head { limit },
+            match ids {
+                Some(ids) => Draw::Ids { ids },
+                None => Draw::Head { limit },
+            },
             json,
         ),
+        Cmd::Groups {
+            proposer,
+            predicate,
+            threshold,
+            json,
+        } => groups(&proposer, &predicate, threshold, json),
         Cmd::Bind { id, to } => {
             let id_s = id.to_string();
             let mut args = vec!["bind", id_s.as_str()];
@@ -214,6 +261,8 @@ pub async fn execute(args: Args) -> Result<()> {
             limit,
             create_subjects,
             dry_run,
+            like,
+            threshold,
         } => decide(
             "accept",
             &ids,
@@ -223,6 +272,8 @@ pub async fn execute(args: Args) -> Result<()> {
             limit,
             create_subjects,
             dry_run,
+            like,
+            threshold,
         ),
         Cmd::Reject {
             ids,
@@ -231,6 +282,8 @@ pub async fn execute(args: Args) -> Result<()> {
             predicate,
             limit,
             dry_run,
+            like,
+            threshold,
         } => decide(
             "reject",
             &ids,
@@ -240,6 +293,8 @@ pub async fn execute(args: Args) -> Result<()> {
             limit,
             false,
             dry_run,
+            like,
+            threshold,
         ),
     }
 }
@@ -575,12 +630,73 @@ fn list(proposer: Option<&str>, limit: usize, as_json: bool) -> Result<()> {
     Ok(())
 }
 
+/// One class's queue grouped by semantic similarity — the graph does the
+/// embedding and clustering; this process only renders. Largest first, so
+/// the top row is where one verdict resolves the most items.
+fn groups(proposer: &str, predicate: &str, threshold: Option<f64>, as_json: bool) -> Result<()> {
+    let t_s = threshold.map(|t| t.to_string());
+    let mut args: Vec<&str> = vec![
+        "review",
+        "--groups",
+        "--proposer",
+        proposer,
+        "--predicate",
+        predicate,
+    ];
+    if let Some(t) = &t_s {
+        args.push("--threshold");
+        args.push(t);
+    }
+    let rows = graph_json(&args)?;
+    let rows = rows.as_array().cloned().unwrap_or_default();
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        println!("no groups: nothing in {proposer} · {predicate} repeats above the threshold");
+        return Ok(());
+    }
+    let covered: u64 = rows
+        .iter()
+        .map(|g| 1 + g["members"].as_array().map_or(0, |m| m.len() as u64))
+        .sum();
+    println!(
+        "{} group(s) covering {covered} candidate(s) in {proposer} · {predicate}\n",
+        rows.len()
+    );
+    for g in &rows {
+        let n = 1 + g["members"].as_array().map_or(0, |m| m.len());
+        println!(
+            "  ×{n:<4} #{:<7} {}",
+            g["leader_id"].as_i64().unwrap_or(0),
+            g["leader_statement"].as_str().unwrap_or("?"),
+        );
+        for sm in g["sample"].as_array().into_iter().flatten() {
+            println!("           ~ {}", sm.as_str().unwrap_or("?"));
+        }
+    }
+    println!("\nOne verdict per group: mecha review accept|reject <leader-id> --like");
+    Ok(())
+}
+
 /// How the items were chosen. Named rather than a bare bool, because which
 /// one produced a set of verdicts decides whether those verdicts are evidence
 /// about the class or only about its head.
 pub enum Draw {
-    Sample { count: usize, seed: Option<u64> },
-    Head { limit: usize },
+    Sample {
+        count: usize,
+        seed: Option<u64>,
+    },
+    Head {
+        limit: usize,
+    },
+    /// An explicit id list — a similarity group's members. Not a sample and
+    /// not the head: the set was named by the caller, so its verdicts are
+    /// about exactly those items.
+    Ids {
+        ids: String,
+    },
 }
 
 /// Individual candidates from one class.
@@ -589,9 +705,10 @@ pub enum Draw {
 /// 6,434 payloads across a pipe to pick twelve would be this process holding
 /// a second, staler copy of a store it does not own.
 fn items(proposer: Option<&str>, predicate: Option<&str>, draw: Draw, as_json: bool) -> Result<()> {
-    let (count, seed, limit) = match &draw {
-        Draw::Sample { count, seed } => (Some(count.to_string()), *seed, None),
-        Draw::Head { limit } => (None, None, Some(limit.to_string())),
+    let (count, seed, limit, ids) = match &draw {
+        Draw::Sample { count, seed } => (Some(count.to_string()), *seed, None, None),
+        Draw::Head { limit } => (None, None, Some(limit.to_string()), None),
+        Draw::Ids { ids } => (None, None, None, Some(ids.clone())),
     };
     let seed_s = seed.map(|s| s.to_string());
     let mut args: Vec<&str> = vec!["review"];
@@ -614,6 +731,10 @@ fn items(proposer: Option<&str>, predicate: Option<&str>, draw: Draw, as_json: b
     if let Some(l) = &limit {
         args.push("--top");
         args.push(l);
+    }
+    if let Some(i) = &ids {
+        args.push("--ids");
+        args.push(i);
     }
     if as_json {
         args.push("--json");
@@ -651,6 +772,23 @@ fn items(proposer: Option<&str>, predicate: Option<&str>, draw: Draw, as_json: b
 /// a class showing 1,084 pending can report "accepted 1084" after 500 landed.
 /// Counting the child's outcome lines is the only account that matches what
 /// happened.
+/// The cascade summary out of a `--like` report: (cascaded, left pending).
+///
+/// The seed's own line is `tally_report`'s to count; the fan-out is reported
+/// once by the graph ("cascade: N accepted, M left pending — …") and read
+/// from that line rather than re-counted here, because the child is the only
+/// process that knows what it did.
+pub fn cascade_tally(report: &str) -> Option<(usize, usize)> {
+    let line = report
+        .lines()
+        .find(|l| l.trim_start().starts_with("cascade:"))?;
+    let mut nums = line
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<usize>().ok());
+    Some((nums.next()?, nums.next().unwrap_or(0)))
+}
+
 pub fn tally_report(report: &str) -> (usize, usize) {
     let mut done = 0;
     let mut failed = 0;
@@ -673,6 +811,7 @@ pub fn tally_report(report: &str) -> (usize, usize) {
 /// Ids are passed through untouched and the child's own report is printed
 /// rather than re-worded: this process is a driver, and a driver that
 /// paraphrases its child's outcome is a second account of what happened.
+#[allow(clippy::too_many_arguments)]
 fn decide(
     verb: &str,
     ids: &[i64],
@@ -682,6 +821,8 @@ fn decide(
     limit: Option<usize>,
     create_subjects: bool,
     dry_run: bool,
+    like: bool,
+    threshold: Option<f64>,
 ) -> Result<()> {
     print!(
         "{}",
@@ -693,7 +834,9 @@ fn decide(
             predicate,
             limit,
             create_subjects,
-            dry_run
+            dry_run,
+            like,
+            threshold,
         )?
     );
     Ok(())
@@ -707,6 +850,7 @@ fn decide(
 /// rather than assuming its own row was the whole match — the graph's bulk
 /// proposer filter is a *substring* and its `--limit` caps the set, so the
 /// number acted on is the child's to report.
+#[allow(clippy::too_many_arguments)]
 pub fn decide_report(
     verb: &str,
     ids: &[i64],
@@ -716,7 +860,16 @@ pub fn decide_report(
     limit: Option<usize>,
     create_subjects: bool,
     dry_run: bool,
+    like: bool,
+    threshold: Option<f64>,
 ) -> Result<String> {
+    // A cascade fans out from exactly one human verdict; a seed set would
+    // make "whose verdict was this" unanswerable in the record. Checked
+    // first: `--like` with no id should hear about the seed, not about
+    // class filters it must not combine with.
+    if like && ids.len() != 1 {
+        bail!("--like takes exactly one candidate id (the seed)");
+    }
     if ids.is_empty() && proposer.is_none() && predicate.is_none() {
         bail!("give candidate ids, or --proposer / --predicate for a whole class");
     }
@@ -758,6 +911,14 @@ pub fn decide_report(
     }
     if dry_run {
         args.push("--dry-run");
+    }
+    let t_s = threshold.map(|t| t.to_string());
+    if like {
+        args.push("--like");
+        if let Some(t) = &t_s {
+            args.push("--threshold");
+            args.push(t);
+        }
     }
     graph_cli(&args)
 }
@@ -814,6 +975,8 @@ mod tests {
             None,
             false,
             true,
+            false,
+            None,
         )
         .expect_err("must refuse");
         let msg = format!("{err:#}");
@@ -827,8 +990,42 @@ mod tests {
     /// Neither ids nor filters is an error, never a silent no-op.
     #[test]
     fn a_verdict_with_no_target_is_refused() {
-        let err = decide_report("accept", &[], None, None, None, None, false, false)
-            .expect_err("must refuse");
+        let err = decide_report(
+            "accept",
+            &[],
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            false,
+            None,
+        )
+        .expect_err("must refuse");
         assert!(format!("{err:#}").contains("candidate ids"));
+    }
+
+    /// A `--like` cascade fans out from exactly one seed — a seed set would
+    /// make "whose verdict was this" unanswerable in the record.
+    #[test]
+    fn a_cascade_takes_exactly_one_seed() {
+        for ids in [vec![], vec![1, 2]] {
+            let err = decide_report(
+                "accept", &ids, None, None, None, None, false, false, true, None,
+            )
+            .expect_err("must refuse");
+            assert!(format!("{err:#}").contains("exactly one"), "{ids:?}");
+        }
+    }
+
+    /// The fan-out count comes off the child's own cascade line — the only
+    /// process that knows what it did — and absence reads as absence.
+    #[test]
+    fn the_cascade_tally_reads_the_childs_line() {
+        let report = "#9281 rejected (your verdict)\n\
+                      cascade: 14 rejected, 2 left pending — one human verdict on the ladder\n";
+        assert_eq!(cascade_tally(report), Some((14, 2)));
+        assert_eq!(cascade_tally("#9281 rejected\n"), None);
     }
 }

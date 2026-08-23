@@ -4332,7 +4332,38 @@ fn reload_queues(app: &mut App, status: Option<String>) {
     let Some(old) = &app.queues else { return };
     let (level, filter, selected) = (old.level, old.filter.clone(), old.selected);
     let (item_class, item_seed, tier) = (old.item_class.clone(), old.item_seed, old.tier);
+    let from_group = old.from_group.clone();
     let loaded = match level {
+        queues::Level::Groups => {
+            let Some((pb, pred)) = old.item_class.clone() else {
+                return;
+            };
+            match review_cli(&["groups", "--proposer", &pb, "--predicate", &pred, "--json"]) {
+                Ok(t) => queues::groups_from_json(&t).map(|rows| {
+                    let mut m = queues::QueuesModal::new(vec![]);
+                    m.level = queues::Level::Groups;
+                    m.groups = rows;
+                    m.item_class = Some((pb.clone(), pred.clone()));
+                    m
+                }),
+                Err(e) => return fail_queues(app, e),
+            }
+        }
+        queues::Level::Items if from_group.is_some() => {
+            // A group's items are a named set: re-fetch exactly those ids,
+            // never a redraw — the set is what the sitting is about.
+            let csv = from_group.clone().unwrap_or_default();
+            match review_cli(&["items", "--ids", &csv, "--json"]) {
+                Ok(t) => queues::items_from_json(&t).map(|rows| {
+                    let mut m = queues::QueuesModal::new(vec![]);
+                    m.level = queues::Level::Items;
+                    m.items = rows;
+                    m.from_group = Some(csv.clone());
+                    m
+                }),
+                Err(e) => return fail_queues(app, e),
+            }
+        }
         queues::Level::Queues => {
             queues::queues_from_json(&match review_cli(&["queues", "--json"]) {
                 Ok(t) => t,
@@ -4478,10 +4509,67 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 modal.item_detail = false;
                 modal.detail_scroll = 0;
             }
+            queues::Level::Items if modal.from_group.is_some() => {
+                // Back to the groups, updated LOCALLY from what remains: the
+                // items list already dropped every verdicted row, so the
+                // group is rebuilt from the survivors rather than re-embedded
+                // — no child call, and the listing cannot disagree with what
+                // was just done in front of the user.
+                let remaining: Vec<i64> = modal.items.iter().map(|r| r.id).collect();
+                let csv = modal.from_group.take().unwrap_or_default();
+                let ids: Vec<i64> = csv
+                    .split(',')
+                    .filter_map(|t| t.trim().parse().ok())
+                    .collect();
+                if let Some(pos) = modal
+                    .groups
+                    .iter()
+                    .position(|g| ids.first() == Some(&g.leader_id))
+                {
+                    let survivors: Vec<i64> = ids
+                        .iter()
+                        .copied()
+                        .filter(|i| remaining.contains(i))
+                        .collect();
+                    match survivors.split_first() {
+                        Some((lead, rest)) => {
+                            let g = &mut modal.groups[pos];
+                            if *lead != g.leader_id {
+                                g.statement = modal
+                                    .items
+                                    .iter()
+                                    .find(|r| r.id == *lead)
+                                    .map(|r| r.statement.clone())
+                                    .unwrap_or_else(|| g.statement.clone());
+                            }
+                            g.leader_id = *lead;
+                            g.member_ids = rest.to_vec();
+                            g.sample.retain(|_| false);
+                        }
+                        None => {
+                            modal.groups.remove(pos);
+                        }
+                    }
+                }
+                modal.level = queues::Level::Groups;
+                modal.items.clear();
+                modal.item_detail = false;
+                modal.detail_scroll = 0;
+                modal.selected = modal.selected.min(modal.groups.len().saturating_sub(1));
+                modal.status = None;
+            }
             queues::Level::Items => {
                 modal.level = queues::Level::Candidates;
                 modal.item_class = None;
                 modal.item_seed = None;
+                modal.selected = 0;
+                modal.status = None;
+                reload_queues(app, None);
+            }
+            queues::Level::Groups => {
+                modal.level = queues::Level::Candidates;
+                modal.groups.clear();
+                modal.item_class = None;
                 modal.selected = 0;
                 modal.status = None;
                 reload_queues(app, None);
@@ -4596,6 +4684,29 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     Err(e) => modal.status = Some(format!("sample failed: {e:#}")),
                 }
             }
+            queues::Level::Groups => {
+                // Dive: the group's members in full, leader first. A named
+                // set, not a sample — its verdicts are about exactly these.
+                let Some(g) = modal.selected_group() else {
+                    return Ok(());
+                };
+                let csv = g.all_ids_csv();
+                match review_cli(&["items", "--ids", &csv, "--json"]) {
+                    Ok(t) => match queues::items_from_json(&t) {
+                        Ok(rows) => {
+                            modal.level = queues::Level::Items;
+                            modal.items = rows;
+                            modal.from_group = Some(csv);
+                            modal.item_seed = None;
+                            modal.selected = 0;
+                            modal.status =
+                                Some("this group, one at a time — Esc returns to groups".into());
+                        }
+                        Err(e) => modal.status = Some(format!("items: {e:#}")),
+                    },
+                    Err(e) => modal.status = Some(format!("items failed: {e:#}")),
+                }
+            }
             queues::Level::Items => {
                 if modal.selected_item().is_some() {
                     modal.item_detail = !modal.item_detail;
@@ -4603,6 +4714,89 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
             }
         },
+        // Group level: one keystroke, one HUMAN verdict — the seed — with
+        // the rest of the group following as a labeled machine cascade the
+        // ladder never counts. The status line reports the child's own
+        // numbers, never the row's size.
+        KeyCode::Char('a') | KeyCode::Char('r') if modal.level == queues::Level::Groups => {
+            let Some(g) = modal.selected_group() else {
+                return Ok(());
+            };
+            let (leader, stmt) = (g.leader_id, g.statement.clone());
+            let accept = key.code == KeyCode::Char('a');
+            let verb = if accept { "accept" } else { "reject" };
+            let outcome = crate::commands::review::decide_report(
+                verb,
+                &[leader],
+                None,
+                None,
+                None,
+                None,
+                false,
+                false,
+                true,
+                None,
+            );
+            match outcome {
+                Ok(report) => {
+                    let (cascaded, left) =
+                        crate::commands::review::cascade_tally(&report).unwrap_or((0, 0));
+                    if let Some(m) = &mut app.queues {
+                        m.groups.retain(|x| x.leader_id != leader);
+                        m.selected = m.selected.min(m.groups.len().saturating_sub(1));
+                        let mut said = format!(
+                            "{verb}ed ×{} — {}",
+                            1 + cascaded,
+                            stmt.chars().take(48).collect::<String>()
+                        );
+                        if left > 0 {
+                            said.push_str(&format!(" ({left} similar left pending)"));
+                        }
+                        m.status = Some(said);
+                    }
+                }
+                Err(e) => {
+                    // The seed's verdict could not land (an unresolvable
+                    // subject, most often), so nothing cascaded and the
+                    // group stays — Enter dives in, where b binds subjects.
+                    if let Some(m) = &mut app.queues {
+                        m.status = Some(format!(
+                            "{verb} failed, nothing cascaded: {e:#} — Enter opens the group"
+                        ));
+                    }
+                }
+            }
+        }
+        // Class level: `s` groups the class by semantic similarity — the
+        // filter for a queue whose bulk is the same thing said many ways.
+        KeyCode::Char('s') if modal.level == queues::Level::Candidates => {
+            let Some(c) = modal.selected_candidate() else {
+                return Ok(());
+            };
+            let (pb, pred) = (c.proposer.clone(), c.predicate.clone());
+            if pred.starts_with('(') {
+                modal.status =
+                    Some("commitments do not group — they are reviewed one at a time".into());
+                return Ok(());
+            }
+            match review_cli(&["groups", "--proposer", &pb, "--predicate", &pred, "--json"]) {
+                Ok(t) => match queues::groups_from_json(&t) {
+                    Ok(rows) => {
+                        let n = rows.len();
+                        modal.level = queues::Level::Groups;
+                        modal.groups = rows;
+                        modal.item_class = Some((pb, pred));
+                        modal.selected = 0;
+                        modal.status = Some(match n {
+                            0 => "nothing repeats above the threshold".into(),
+                            n => format!("{n} group(s) — a/r verdicts a whole group at once"),
+                        });
+                    }
+                    Err(e) => modal.status = Some(format!("groups: {e:#}")),
+                },
+                Err(e) => modal.status = Some(format!("groups failed: {e:#}")),
+            }
+        }
         // Item level: one verdict, one candidate. Distinct from the class
         // verdict a level up, and the key strip says which you are holding.
         KeyCode::Char('a') | KeyCode::Char('r') | KeyCode::Char('A')
@@ -4717,6 +4911,11 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // A fresh draw, explicitly asked for. Never automatic — see the
         // reload comment.
         KeyCode::Char('n') if modal.level == queues::Level::Items => {
+            // A group's items are a named set, not a draw — there is
+            // nothing to resample.
+            if modal.from_group.is_some() {
+                return Ok(());
+            }
             let Some((pb, pred)) = modal.item_class.clone() else {
                 return Ok(());
             };
@@ -4766,6 +4965,8 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 None,
                 false,
                 false,
+                false,
+                None,
             );
             match outcome {
                 // The CHILD's count, never the row's: the graph's bulk
