@@ -36,6 +36,12 @@ pub enum Command {
     Docs,
     /// The GTD board in the knowledge graph: see it, capture, move a task on.
     Tasks,
+    /// Capture a note into the knowledge graph, from wherever you are.
+    /// The argument is the note; entities named in it link on landing.
+    Note(Option<String>),
+    /// Search the graph — entities, facts, episodes — in a modal. The
+    /// argument, when given, is the first query.
+    Find(Option<String>),
     /// Open polls on the gate: tallies, close with an outcome, export.
     Polls,
     /// Every store's distress in one pass, with the way out beside each.
@@ -137,6 +143,10 @@ pub fn parse(line: &str) -> Option<Command> {
         // Both spellings again: the command is `mecha tasks`, and "task" is
         // what a person types when they have one in mind.
         "tasks" | "task" => Command::Tasks,
+        // Both spellings, like tasks: one of them is whatever you type first.
+        "note" | "notes" => Command::Note(arg.map(str::to_string)),
+        // `find` for the act; `search` and `kg` because both get typed.
+        "find" | "search" | "kg" => Command::Find(arg.map(str::to_string)),
         "polls" | "poll" => Command::Polls,
         "doctor" => Command::Doctor,
         "model" | "m" => Command::Model(arg.map(str::to_string)),
@@ -296,7 +306,7 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 22] = [
+pub const NAMES: [&str; 24] = [
     "help",
     "tools",
     "skills",
@@ -305,6 +315,8 @@ pub const NAMES: [&str; 22] = [
     "queues",
     "frontdoor",
     "tasks",
+    "note",
+    "find",
     "polls",
     "doctor",
     "docs",
@@ -382,6 +394,8 @@ pub const HELP: &str = "\
   /outbox                staged outbound drafts: read, edit, send, reject
   /frontdoor             inbound requests: read, extract, triage, close
   /tasks                 the graph's task board: see, capture, edit, move on
+  /note <text>           capture a note into the knowledge graph
+  /find [query]          search the graph: entities, facts, episodes
   /polls                 open polls on the gate: tallies, close, export
   /doctor                what is silently wrong across the stores, and the way out
   /docs                  documents in scope, and how to put one there

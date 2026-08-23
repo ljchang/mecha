@@ -662,12 +662,14 @@ fn groups(proposer: &str, predicate: &str, threshold: Option<f64>, as_json: bool
         args.push("--threshold");
         args.push(t);
     }
-    let rows = graph_json(&args)?;
-    let rows = rows.as_array().cloned().unwrap_or_default();
+    let answer = graph_json(&args)?;
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+        // The envelope verbatim — the threshold inside is what a TUI's
+        // adjustment steps from.
+        println!("{}", serde_json::to_string_pretty(&answer)?);
         return Ok(());
     }
+    let rows = answer["groups"].as_array().cloned().unwrap_or_default();
     if rows.is_empty() {
         println!("no groups: nothing in {proposer} · {predicate} repeats above the threshold");
         return Ok(());

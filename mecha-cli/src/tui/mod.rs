@@ -16,6 +16,7 @@ mod ask;
 mod command;
 mod docs;
 mod doctor;
+mod find;
 mod frontdoor;
 mod mail;
 mod outbox;
@@ -188,6 +189,24 @@ enum Watch {
         /// For the status line: which verb is in flight, on which handle.
         verb: String,
         handle: String,
+        since: std::time::Instant,
+    },
+    /// A `mecha kg note …` capture. Fire-and-notice: a note has no modal,
+    /// so the answer lands in the transcript wherever the person is now.
+    KgNote {
+        rx: std::sync::mpsc::Receiver<Result<String>>,
+        since: std::time::Instant,
+    },
+    /// A `mecha kg search --json` for the /find modal.
+    KgSearch {
+        rx: std::sync::mpsc::Receiver<Result<String>>,
+        query: String,
+        since: std::time::Instant,
+    },
+    /// A `mecha kg entity --json` fetch for the /find modal's detail.
+    KgEntity {
+        rx: std::sync::mpsc::Receiver<Result<String>>,
+        name: String,
         since: std::time::Instant,
     },
     /// A `mecha review groups …` load for the /queues modal.
@@ -392,6 +411,8 @@ struct App {
     /// The /frontdoor modal, when open. Takes every key while it is up.
     requests: Option<frontdoor::FrontdoorModal>,
     mail: Option<mail::MailModal>,
+    /// The /find modal: search the knowledge graph.
+    find: Option<find::FindModal>,
     /// The /docs modal, when open. Takes every key while it is up.
     documents: Option<docs::DocsModal>,
     /// The /tasks modal, when open. Takes every key while it is up.
@@ -767,6 +788,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         staged: None,
         requests: None,
         mail: None,
+        find: None,
         documents: None,
         tasks: None,
         queues: None,
@@ -1633,6 +1655,88 @@ fn poll_watches(app: &mut App) {
                     }
                 }
             },
+            Watch::KgNote { rx, since } => match rx.try_recv() {
+                Ok(out) => app.transcript.push(match out {
+                    Ok(o) => Entry::Notice(o.lines().next().unwrap_or("noted").to_string()),
+                    Err(e) => Entry::Error(format!("note failed: {e:#}")),
+                }),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if since.elapsed() > doctor::EXAMINE_CAP {
+                        app.transcript.push(Entry::Error(
+                            "the note never answered — check /doctor".into(),
+                        ));
+                    } else {
+                        app.watches.push(Watch::KgNote { rx, since });
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    app.transcript
+                        .push(Entry::Error("the note was lost".into()));
+                }
+            },
+            Watch::KgSearch { rx, query, since } => match rx.try_recv() {
+                Ok(out) => {
+                    let Some(m) = &mut app.find else { continue };
+                    m.loading = false;
+                    match out.and_then(|t| find::rows_from_pack(&t)) {
+                        Ok(rows) => {
+                            m.status = Some(match rows.len() {
+                                0 => format!("nothing found for `{query}`"),
+                                n => format!("{n} result(s) for `{query}`"),
+                            });
+                            m.rows = rows;
+                            m.selected = 0;
+                            m.typing = false;
+                        }
+                        Err(e) => m.status = Some(format!("search failed: {e:#}")),
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if since.elapsed() > doctor::EXAMINE_CAP {
+                        if let Some(m) = &mut app.find {
+                            m.loading = false;
+                            m.status = Some("the search never answered — check /doctor".into());
+                        }
+                    } else {
+                        app.watches.push(Watch::KgSearch { rx, query, since });
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if let Some(m) = &mut app.find {
+                        m.loading = false;
+                        m.status = Some("the search was lost".into());
+                    }
+                }
+            },
+            Watch::KgEntity { rx, name, since } => match rx.try_recv() {
+                Ok(out) => {
+                    let Some(m) = &mut app.find else { continue };
+                    m.loading = false;
+                    match out.and_then(|t| find::entity_detail(&t)) {
+                        Ok((title, lines)) => {
+                            m.detail = Some((title, lines));
+                            m.scroll = 0;
+                        }
+                        Err(e) => m.status = Some(format!("entity {name}: {e:#}")),
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if since.elapsed() > doctor::EXAMINE_CAP {
+                        if let Some(m) = &mut app.find {
+                            m.loading = false;
+                            m.status = Some(format!("{name} never answered — check /doctor"));
+                        }
+                    } else {
+                        app.watches.push(Watch::KgEntity { rx, name, since });
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if let Some(m) = &mut app.find {
+                        m.loading = false;
+                        m.status = Some("the fetch was lost".into());
+                    }
+                }
+            },
             Watch::QueuesGroups {
                 rx,
                 proposer,
@@ -1640,22 +1744,29 @@ fn poll_watches(app: &mut App) {
                 since,
             } => match rx.try_recv() {
                 Ok(Ok(text)) => {
-                    // Install only into a modal still sitting at the class
-                    // list: a person who dove into a sample meanwhile keeps
-                    // their place, and the status says the work finished.
+                    // Install into a modal at the class list (the `s` entry)
+                    // or already at the groups of the same class (a `[`/`]`
+                    // threshold re-run). Anywhere else, a person moved on and
+                    // keeps their place; the status says the work finished.
                     match &mut app.queues {
-                        Some(m) if m.level == queues::Level::Candidates => {
+                        Some(m)
+                            if m.level == queues::Level::Candidates
+                                || (m.level == queues::Level::Groups
+                                    && m.item_class.as_ref()
+                                        == Some(&(proposer.clone(), predicate.clone()))) =>
+                        {
                             match queues::groups_from_json(&text) {
-                                Ok(rows) => {
+                                Ok((threshold, rows)) => {
                                     let n = rows.len();
                                     m.level = queues::Level::Groups;
                                     m.groups = rows;
+                                    m.group_threshold = threshold;
                                     m.item_class = Some((proposer, predicate));
                                     m.selected = 0;
                                     m.status = Some(match n {
-                                        0 => "nothing repeats above the threshold".into(),
+                                        0 => "nothing pending in this class".into(),
                                         n => format!(
-                                            "{n} group(s) — a/r verdicts a whole group at once"
+                                            "{n} group(s) at cosine ≥ {threshold:.2} —                                              a/r verdicts a whole group, [/] adjusts"
                                         ),
                                     });
                                 }
@@ -1882,6 +1993,7 @@ fn open_scoped_review(app: &mut App, ids: Vec<String>) {
         || app.staged.is_some()
         || app.requests.is_some()
         || app.mail.is_some()
+        || app.find.is_some()
         || app.documents.is_some()
         || app.tasks.is_some()
         || app.queues.is_some()
@@ -2279,6 +2391,9 @@ fn on_key(
     }
     if app.mail.is_some() {
         return handle_mail_key(app, key);
+    }
+    if app.find.is_some() {
+        return handle_find_key(app, key);
     }
     if app.documents.is_some() {
         return handle_docs_key(app, key);
@@ -2842,6 +2957,33 @@ fn run_command(
             Ok(rows) => app.mail = Some(mail::MailModal::new(rows)),
             Err(e) => say(format!("mail: {e:#}")),
         },
+
+        // A capture, not a modal: the note goes where you are, off the event
+        // loop (it starts an MCP server), and the landing is a notice.
+        Command::Note(text) => match text {
+            None => say("usage: /note <what happened> — it lands as a graph episode".into()),
+            Some(text) => {
+                app.transcript
+                    .push(Entry::Notice(format!("noting: {text}")));
+                spawn_kg_note(app, &text);
+            }
+        },
+
+        // The modal opens at once — empty or already searching — because a
+        // box that appears only after the network answers reads as a key
+        // that did nothing (the /docs rule).
+        Command::Find(query) => {
+            let mut modal = find::FindModal::new(query.clone());
+            if let Some(q) = query.filter(|q| !q.trim().is_empty()) {
+                modal.typing = false;
+                modal.loading = true;
+                modal.status = Some(format!("searching `{q}`…"));
+                app.find = Some(modal);
+                spawn_kg_search(app, &q);
+            } else {
+                app.find = Some(modal);
+            }
+        }
 
         // Opened at once in a loading state, with the listing fetched off the
         // event loop: it is a Drive request, and a modal that appears only
@@ -4471,10 +4613,11 @@ fn reload_queues(app: &mut App, status: Option<String>) {
                 return;
             };
             match review_cli(&["groups", "--proposer", &pb, "--predicate", &pred, "--json"]) {
-                Ok(t) => queues::groups_from_json(&t).map(|rows| {
+                Ok(t) => queues::groups_from_json(&t).map(|(threshold, rows)| {
                     let mut m = queues::QueuesModal::new(vec![]);
                     m.level = queues::Level::Groups;
                     m.groups = rows;
+                    m.group_threshold = threshold;
                     m.item_class = Some((pb.clone(), pred.clone()));
                     m
                 }),
@@ -4972,26 +5115,25 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
             modal.status = Some(format!(
                 "grouping {pending} pending in {pb} · {pred} — embedding…"
             ));
-            let args: Vec<String> = vec![
-                "review".into(),
-                "groups".into(),
-                "--proposer".into(),
-                pb.clone(),
-                "--predicate".into(),
-                pred.clone(),
-                "--json".into(),
-            ];
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-                let _ = tx.send(self_cli(&borrowed));
-            });
-            app.watches.push(Watch::QueuesGroups {
-                rx,
-                proposer: pb,
-                predicate: pred,
-                since: std::time::Instant::now(),
-            });
+            spawn_group_load(app, pb, pred, None);
+        }
+        // Adjust the grouping threshold and re-group. Steps from the value
+        // the child reported it ran at — never from a local copy of the
+        // constant — and re-embeds, so it goes through the same watch.
+        KeyCode::Char('[') | KeyCode::Char(']') if modal.level == queues::Level::Groups => {
+            let Some((pb, pred)) = modal.item_class.clone() else {
+                return Ok(());
+            };
+            let step = if key.code == KeyCode::Char(']') {
+                0.02
+            } else {
+                -0.02
+            };
+            // Coarser than 0.60 groups the unrelated; finer than 0.97 is
+            // past the dedup line, where precheck already removed them.
+            let next = (modal.group_threshold + step).clamp(0.60, 0.97);
+            modal.status = Some(format!("re-grouping at cosine ≥ {next:.2}…"));
+            spawn_group_load(app, pb, pred, Some(next));
         }
         // Item level: one verdict, one candidate. Distinct from the class
         // verdict a level up, and the key strip says which you are holding.
@@ -6357,6 +6499,9 @@ fn draw(
     if let Some(modal) = &app.mail {
         modal.draw(frame);
     }
+    if let Some(modal) = &app.find {
+        modal.draw(frame);
+    }
     if let Some(modal) = &app.documents {
         modal.draw(frame);
     }
@@ -6845,6 +6990,89 @@ fn leave(terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>) ->
 /// Every mutation is `mecha mail …` in a child process — see `tui/mail.rs` for
 /// why. Nothing here touches the store directly, so a thing the modal can do
 /// is a thing a script or a trigger can do.
+/// Keys for the /find modal. Two states, search-tool shaped: typing edits
+/// the query, results navigate — and `/` returns to the query, because that
+/// is what every search surface teaches the hand.
+fn handle_find_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let Some(modal) = &mut app.find else {
+        return Ok(());
+    };
+    // The detail is its own layer: scroll and leave.
+    if modal.detail.is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                modal.detail = None;
+                modal.scroll = 0;
+            }
+            KeyCode::Up | KeyCode::Char('k') => modal.scroll = modal.scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => modal.scroll = modal.scroll.saturating_add(1),
+            KeyCode::PageUp => modal.scroll = modal.scroll.saturating_sub(10),
+            KeyCode::PageDown => modal.scroll = modal.scroll.saturating_add(10),
+            _ => {}
+        }
+        return Ok(());
+    }
+    if modal.typing {
+        match key.code {
+            KeyCode::Esc => app.find = None,
+            KeyCode::Backspace => {
+                modal.query.pop();
+            }
+            KeyCode::Enter => {
+                let q = modal.query.trim().to_string();
+                if q.is_empty() || modal.loading {
+                    return Ok(());
+                }
+                modal.typing = false;
+                modal.loading = true;
+                modal.status = Some(format!("searching `{q}`…"));
+                spawn_kg_search(app, &q);
+            }
+            _ => {
+                if let Some(c) = typed_char(&key) {
+                    modal.query.push(c);
+                }
+            }
+        }
+        return Ok(());
+    }
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.find = None,
+        KeyCode::Char('/') => {
+            modal.typing = true;
+        }
+        KeyCode::Up | KeyCode::Char('k') => modal.move_sel(-1),
+        KeyCode::Down | KeyCode::Char('j') => modal.move_sel(1),
+        KeyCode::Enter => {
+            if modal.loading {
+                return Ok(());
+            }
+            let Some(row) = modal.selected_row() else {
+                return Ok(());
+            };
+            match &row.entity {
+                // An entity opens its full record — a fetch, so a watch.
+                Some(name) => {
+                    let name = name.clone();
+                    modal.loading = true;
+                    modal.status = Some(format!("fetching {name}…"));
+                    spawn_kg_entity(app, &name);
+                }
+                // A fact or episode opens in place: the pack already
+                // carried its text, and a detail from memory costs nothing.
+                None => {
+                    let title = format!("{} · {}", row.kind, row.when);
+                    let lines: Vec<String> = row.full.lines().map(|l| l.to_string()).collect();
+                    modal.detail = Some((title, lines));
+                    modal.scroll = 0;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn handle_mail_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let Some(modal) = &mut app.mail else {
         return Ok(());
@@ -7109,6 +7337,79 @@ fn refresh_mail(app: &mut App) {
 /// A thread on purpose rather than a detached child: what is wanted back is
 /// the text, and `self_cli` already knows how to get it. The watch collects
 /// it a tick later and installs it into the modal.
+/// Load one class's similarity groups on a thread, at an optional explicit
+/// threshold, collected through `Watch::QueuesGroups`.
+fn spawn_group_load(app: &mut App, pb: String, pred: String, threshold: Option<f64>) {
+    let mut args: Vec<String> = vec![
+        "review".into(),
+        "groups".into(),
+        "--proposer".into(),
+        pb.clone(),
+        "--predicate".into(),
+        pred.clone(),
+        "--json".into(),
+    ];
+    if let Some(t) = threshold {
+        args.push("--threshold".into());
+        args.push(format!("{t:.2}"));
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = tx.send(self_cli(&borrowed));
+    });
+    app.watches.push(Watch::QueuesGroups {
+        rx,
+        proposer: pb,
+        predicate: pred,
+        since: std::time::Instant::now(),
+    });
+}
+
+/// Capture one note through `mecha kg note`, collected as a notice.
+fn spawn_kg_note(app: &mut App, text: &str) {
+    let args: Vec<String> = vec!["kg".into(), "note".into(), text.into()];
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = tx.send(self_cli(&borrowed));
+    });
+    app.watches.push(Watch::KgNote {
+        rx,
+        since: std::time::Instant::now(),
+    });
+}
+
+/// Run one graph search for the /find modal, off the event loop.
+fn spawn_kg_search(app: &mut App, query: &str) {
+    let args: Vec<String> = vec!["kg".into(), "search".into(), query.into(), "--json".into()];
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = tx.send(self_cli(&borrowed));
+    });
+    app.watches.push(Watch::KgSearch {
+        rx,
+        query: query.to_string(),
+        since: std::time::Instant::now(),
+    });
+}
+
+/// Fetch one entity's record for the /find modal's detail.
+fn spawn_kg_entity(app: &mut App, name: &str) {
+    let args: Vec<String> = vec!["kg".into(), "entity".into(), name.into(), "--json".into()];
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = tx.send(self_cli(&borrowed));
+    });
+    app.watches.push(Watch::KgEntity {
+        rx,
+        name: name.to_string(),
+        since: std::time::Instant::now(),
+    });
+}
+
 /// Run one triage verb (`archive`, `spam`, `task`) on its own thread and
 /// collect the outcome through `Watch::MailAction`. Each of these starts an
 /// MCP server and reaches the provider, so none may run on the event loop.
@@ -7828,6 +8129,7 @@ mod tests {
             staged: None,
             requests: None,
             mail: None,
+            find: None,
             documents: None,
             tasks: None,
             queues: None,
@@ -7993,11 +8295,11 @@ mod tests {
     fn the_help_overlay_advertises_the_newline_key_only_where_it_exists() {
         // On a terminal without the kitty protocol, Shift+Enter *submits* —
         // help that teaches it as a newline is worse than no help.
-        // 36 rows: the whole card, keys plus every HELP line, has to fit —
+        // 40 rows: the whole card, keys plus every HELP line, has to fit —
         // the /clear assertion below reads the far end of it.
         let mut app = test_app();
         app.help = true;
-        let plain = frame_text(&mut app, 100, 36, None);
+        let plain = frame_text(&mut app, 100, 40, None);
         assert!(plain.contains("alt+enter"), "{plain}");
         assert!(!plain.contains("shift+enter"), "{plain}");
         assert!(
@@ -8006,7 +8308,7 @@ mod tests {
         );
 
         app.kitty_keyboard = true;
-        let kitty = frame_text(&mut app, 100, 36, None);
+        let kitty = frame_text(&mut app, 100, 40, None);
         assert!(kitty.contains("shift+enter"), "{kitty}");
     }
 
