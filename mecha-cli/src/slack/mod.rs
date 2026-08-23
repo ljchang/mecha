@@ -10,6 +10,7 @@ pub mod approve;
 pub mod connector;
 pub mod doctor;
 pub mod frontdoor;
+mod kg;
 pub mod pump;
 pub mod remote;
 pub mod review;

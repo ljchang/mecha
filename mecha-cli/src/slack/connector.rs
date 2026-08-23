@@ -469,6 +469,35 @@ impl State {
             return;
         }
 
+        // The `note` command word — a deterministic capture into the
+        // knowledge graph, matched before the text can become a prompt: a
+        // capture that depends on a model's mood is not a capture. The gate
+        // above proved the speaker is an owner, which is what makes the
+        // note's provenance the owner's own words. Spawned: it starts an
+        // MCP server, and the ack budget is Slack's.
+        if let Some(body) = super::kg::note_command(&text) {
+            let slack = self.slack.clone();
+            let (channel, thread_ts) = (channel.clone(), thread_ts.clone());
+            tokio::spawn(async move {
+                let reply = super::kg::capture(&body).await;
+                let _ = chat::post_message(&slack, &channel, Some(&thread_ts), &reply, None).await;
+            });
+            return;
+        }
+
+        // The `queues` command word — the review backlog rollup, read-only,
+        // on the `doctor` pattern: gated before the word is matched, the
+        // stores read in spawned work.
+        if super::kg::is_queues_command(&text) {
+            let slack = self.slack.clone();
+            let (channel, thread_ts) = (channel.clone(), thread_ts.clone());
+            tokio::spawn(async move {
+                let reply = super::kg::queues_report().await;
+                let _ = chat::post_message(&slack, &channel, Some(&thread_ts), &reply, None).await;
+            });
+            return;
+        }
+
         // The `review` command word — the explicit owner gesture, and the
         // only thing that can set a thread's release policy. Matched with the
         // same precedence as `doctor`, before the text can become a prompt or
