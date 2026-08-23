@@ -3,6 +3,7 @@
 mod approve;
 mod commands;
 mod editor;
+mod exe;
 mod harness_probe;
 mod interrupt;
 mod logs;

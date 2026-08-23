@@ -649,7 +649,7 @@ impl Executor {
         let argv = action.argv();
         let (program, rest) = argv.split_first().expect("argv() is never empty");
         let program: PathBuf = if program == "mecha" {
-            std::env::current_exe().unwrap_or_else(|_| "mecha".into())
+            crate::exe::self_exe()
         } else if let Some(sibling) = std::env::current_exe()
             .ok()
             .and_then(|exe| Some(exe.parent()?.join(program)))

@@ -744,6 +744,9 @@ async fn tick(
 /// a unit that resolves to a different binary than the one printing it is the
 /// version-skew trap one layer down.
 fn systemd_unit() -> anyhow::Result<String> {
+    // Deliberately NOT `exe::self_exe()`: this path is written into a unit
+    // file, where `/proc/self/exe` would name whatever process systemd
+    // spawns — the one place the magic link is exactly wrong.
     let exe = std::env::current_exe()
         .context("resolving this binary's own path")?
         .display()
