@@ -179,6 +179,10 @@ pub enum Cmd {
         /// Cosine floor for --like; omitted, the graph's default applies.
         #[arg(long)]
         threshold: Option<f64>,
+        /// Cascade over an explicit member list (comma-separated ids from a
+        /// groups listing) instead of re-deriving similarity.
+        #[arg(long, conflicts_with_all = ["like", "proposer", "predicate"])]
+        cascade: Option<String>,
     },
     /// Reject graph fact candidates, by id or by class.
     Reject {
@@ -199,6 +203,9 @@ pub enum Cmd {
         /// Cosine floor for --like; omitted, the graph's default applies.
         #[arg(long)]
         threshold: Option<f64>,
+        /// Cascade over an explicit member list — see `accept --cascade`.
+        #[arg(long, conflicts_with_all = ["like", "proposer", "predicate"])]
+        cascade: Option<String>,
     },
 }
 
@@ -263,6 +270,7 @@ pub async fn execute(args: Args) -> Result<()> {
             dry_run,
             like,
             threshold,
+            cascade,
         } => decide(
             "accept",
             &ids,
@@ -272,8 +280,11 @@ pub async fn execute(args: Args) -> Result<()> {
             limit,
             create_subjects,
             dry_run,
-            like,
-            threshold,
+            match (&cascade, like) {
+                (Some(csv), _) => Fan::Ids(csv),
+                (None, true) => Fan::Similar(threshold),
+                (None, false) => Fan::None,
+            },
         ),
         Cmd::Reject {
             ids,
@@ -284,6 +295,7 @@ pub async fn execute(args: Args) -> Result<()> {
             dry_run,
             like,
             threshold,
+            cascade,
         } => decide(
             "reject",
             &ids,
@@ -293,8 +305,11 @@ pub async fn execute(args: Args) -> Result<()> {
             limit,
             false,
             dry_run,
-            like,
-            threshold,
+            match (&cascade, like) {
+                (Some(csv), _) => Fan::Ids(csv),
+                (None, true) => Fan::Similar(threshold),
+                (None, false) => Fan::None,
+            },
         ),
     }
 }
@@ -811,6 +826,22 @@ pub fn tally_report(report: &str) -> (usize, usize) {
 /// Ids are passed through untouched and the child's own report is printed
 /// rather than re-worded: this process is a driver, and a driver that
 /// paraphrases its child's outcome is a second account of what happened.
+/// How far one verdict reaches. Named rather than a pair of flags, because
+/// `like: bool` beside `cascade: Option<…>` invites the combination that
+/// means nothing.
+#[derive(Clone, Copy)]
+pub enum Fan<'a> {
+    /// Exactly the named ids or class filters.
+    None,
+    /// Seed plus the similar set the graph re-derives by embedding, at an
+    /// optional cosine floor.
+    Similar(Option<f64>),
+    /// Seed plus this explicit member list (comma-separated ids) from a
+    /// groups listing — the set the person actually read. No embedder runs,
+    /// and the graph vets every id against the seed's class.
+    Ids(&'a str),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn decide(
     verb: &str,
@@ -821,8 +852,7 @@ fn decide(
     limit: Option<usize>,
     create_subjects: bool,
     dry_run: bool,
-    like: bool,
-    threshold: Option<f64>,
+    fan: Fan,
 ) -> Result<()> {
     print!(
         "{}",
@@ -835,8 +865,7 @@ fn decide(
             limit,
             create_subjects,
             dry_run,
-            like,
-            threshold,
+            fan,
         )?
     );
     Ok(())
@@ -860,15 +889,14 @@ pub fn decide_report(
     limit: Option<usize>,
     create_subjects: bool,
     dry_run: bool,
-    like: bool,
-    threshold: Option<f64>,
+    fan: Fan,
 ) -> Result<String> {
     // A cascade fans out from exactly one human verdict; a seed set would
     // make "whose verdict was this" unanswerable in the record. Checked
-    // first: `--like` with no id should hear about the seed, not about
-    // class filters it must not combine with.
-    if like && ids.len() != 1 {
-        bail!("--like takes exactly one candidate id (the seed)");
+    // first: a fan with no id should hear about the seed, not about class
+    // filters it must not combine with.
+    if !matches!(fan, Fan::None) && ids.len() != 1 {
+        bail!("a cascade takes exactly one candidate id (the seed)");
     }
     if ids.is_empty() && proposer.is_none() && predicate.is_none() {
         bail!("give candidate ids, or --proposer / --predicate for a whole class");
@@ -912,12 +940,22 @@ pub fn decide_report(
     if dry_run {
         args.push("--dry-run");
     }
-    let t_s = threshold.map(|t| t.to_string());
-    if like {
-        args.push("--like");
-        if let Some(t) = &t_s {
-            args.push("--threshold");
-            args.push(t);
+    let t_s = match fan {
+        Fan::Similar(t) => t.map(|t| t.to_string()),
+        _ => None,
+    };
+    match fan {
+        Fan::None => {}
+        Fan::Similar(_) => {
+            args.push("--like");
+            if let Some(t) = &t_s {
+                args.push("--threshold");
+                args.push(t);
+            }
+        }
+        Fan::Ids(csv) => {
+            args.push("--cascade");
+            args.push(csv);
         }
     }
     graph_cli(&args)
@@ -975,8 +1013,7 @@ mod tests {
             None,
             false,
             true,
-            false,
-            None,
+            Fan::None,
         )
         .expect_err("must refuse");
         let msg = format!("{err:#}");
@@ -999,8 +1036,7 @@ mod tests {
             None,
             false,
             false,
-            false,
-            None,
+            Fan::None,
         )
         .expect_err("must refuse");
         assert!(format!("{err:#}").contains("candidate ids"));
@@ -1011,11 +1047,11 @@ mod tests {
     #[test]
     fn a_cascade_takes_exactly_one_seed() {
         for ids in [vec![], vec![1, 2]] {
-            let err = decide_report(
-                "accept", &ids, None, None, None, None, false, false, true, None,
-            )
-            .expect_err("must refuse");
-            assert!(format!("{err:#}").contains("exactly one"), "{ids:?}");
+            for fan in [Fan::Similar(None), Fan::Ids("7,8")] {
+                let err = decide_report("accept", &ids, None, None, None, None, false, false, fan)
+                    .expect_err("must refuse");
+                assert!(format!("{err:#}").contains("exactly one"), "{ids:?}");
+            }
         }
     }
 
