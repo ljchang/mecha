@@ -4605,15 +4605,25 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
         },
         // Item level: one verdict, one candidate. Distinct from the class
         // verdict a level up, and the key strip says which you are holding.
-        KeyCode::Char('a') | KeyCode::Char('r') if modal.level == queues::Level::Items => {
+        KeyCode::Char('a') | KeyCode::Char('r') | KeyCode::Char('A')
+            if modal.level == queues::Level::Items =>
+        {
             let Some(it) = modal.selected_item() else {
                 return Ok(());
             };
             let (id, stmt) = (it.id, it.statement.clone());
-            let accept = key.code == KeyCode::Char('a');
+            // `A` is accept with the escape hatch: a subject the graph does
+            // not know becomes a new topic node instead of a failure. The
+            // human pressing it is the review that creation requires.
+            let create = key.code == KeyCode::Char('A');
+            let accept = create || key.code == KeyCode::Char('a');
             let verb = if accept { "accept" } else { "reject" };
             let id_s = id.to_string();
-            match review_cli(&[verb, &id_s]) {
+            let mut cli_args = vec![verb, id_s.as_str()];
+            if create {
+                cli_args.push("--create-subjects");
+            }
+            match review_cli(&cli_args) {
                 // The exit code is not the verdict: mecha-graph reports a
                 // per-item failure as `#id FAILED: …` and exits 0, so a
                 // process-level Ok can carry an accept that did not happen.
@@ -4636,9 +4646,16 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                                 .unwrap_or("failed with no report")
                                 .trim()
                                 .to_string();
-                            m.status = Some(format!(
-                                "{why} — b binds the subject here; A accepts it as a new topic"
-                            ));
+                            // The hint would be circular on the keys it
+                            // names: a failed `A` gets the child's reason
+                            // and nothing more.
+                            m.status = Some(if create {
+                                why
+                            } else {
+                                format!(
+                                    "{why} — b binds the subject here; A accepts it as a new topic"
+                                )
+                            });
                             return Ok(());
                         }
                         // Drop it locally rather than refetching: the sample
@@ -4654,8 +4671,10 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         // j/k in the detail is for.
                         m.item_detail = false;
                         m.detail_scroll = 0;
+                        let did = if create { "accepted (new topic)" } else { verb };
                         m.status = Some(format!(
-                            "{verb}ed #{id} — {}",
+                            "{did}{} #{id} — {}",
+                            if create { "" } else { "ed" },
                             stmt.chars().take(48).collect::<String>()
                         ));
                     }
@@ -4663,6 +4682,34 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 Err(e) => {
                     if let Some(m) = &mut app.queues {
                         m.status = Some(format!("{verb} #{id} failed: {e:#}"));
+                    }
+                }
+            }
+        }
+        // Rebind the subject to the graph's top suggestion — the other way
+        // through `cannot resolve subject`, for a spelling the graph almost
+        // knows. The row STAYS: a bound candidate is still pending, and the
+        // child's own line says what moved and that `a` is the promotion.
+        // The old spelling becomes an alias on the graph side, so the fix
+        // outlives this one item.
+        KeyCode::Char('b') if modal.level == queues::Level::Items => {
+            let Some(it) = modal.selected_item() else {
+                return Ok(());
+            };
+            let id = it.id;
+            let id_s = id.to_string();
+            match review_cli(&["bind", &id_s]) {
+                // Pass the child's report through rather than re-wording it:
+                // `#id subject 'old' → New — accept to promote` is the whole
+                // answer, next keypress included.
+                Ok(report) => {
+                    if let Some(m) = &mut app.queues {
+                        m.status = Some(report.trim().to_string());
+                    }
+                }
+                Err(e) => {
+                    if let Some(m) = &mut app.queues {
+                        m.status = Some(format!("bind #{id} failed: {e:#}"));
                     }
                 }
             }
