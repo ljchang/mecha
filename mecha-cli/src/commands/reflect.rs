@@ -15,7 +15,8 @@ use crate::GlobalOpts;
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
 use mecha_core::learning::{
-    classify_origin, extract_interventions, Intervention, LearningStore, Origin, Reflector, Trigger,
+    evidence_for, extract_interventions, Evidence, Intervention, LearningStore, Origin, Reflector,
+    Trigger,
 };
 use mecha_core::session::{Session, TaintTimeline};
 use std::path::PathBuf;
@@ -33,6 +34,14 @@ pub struct Args {
     /// Mine at most this many sessions this run.
     #[arg(long)]
     pub limit: Option<usize>,
+
+    /// One-shot backfill: re-mine the sessions whose reflections the
+    /// provenance gate excluded, through the clean-evidence path — the
+    /// user's own words and tool names, with the tainted excerpts withheld.
+    /// Idempotent: an intervention already carrying a user-turns reflection
+    /// is skipped, and clean-covered interventions are never re-mined.
+    #[arg(long)]
+    pub remine_untrusted: bool,
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
@@ -53,10 +62,40 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     };
     let mined = store.mined_sessions()?;
 
+    // The backfill re-visits exactly the sessions whose lessons the gate
+    // excluded; its dedup key is (session, intervention text) against the
+    // user-turns reflections already on file, so running it twice is free.
+    let excluded_sessions: std::collections::HashSet<String> = if args.remine_untrusted {
+        store
+            .reflexions()?
+            .iter()
+            .filter(|r| r.origin != Origin::Clean && !r.session_id.is_empty())
+            .map(|r| r.session_id.clone())
+            .collect()
+    } else {
+        Default::default()
+    };
+    let already_user_turns: std::collections::HashSet<(String, String)> = if args.remine_untrusted {
+        store
+            .reflexions()?
+            .iter()
+            .filter(|r| r.evidence == Evidence::UserTurns)
+            .map(|r| (r.session_id.clone(), r.intervention.clone()))
+            .collect()
+    } else {
+        Default::default()
+    };
+
     let sessions = Session::list(&sessions_dir)?;
     let mut todo: Vec<_> = sessions
         .into_iter()
-        .filter(|(meta, _)| !mined.contains(&meta.id))
+        .filter(|(meta, _)| {
+            if args.remine_untrusted {
+                excluded_sessions.contains(&meta.id)
+            } else {
+                !mined.contains(&meta.id)
+            }
+        })
         .collect();
     if let Some(limit) = args.limit {
         todo.truncate(limit);
@@ -140,14 +179,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
         if args.dry_run {
             for i in &interventions {
+                let (_, origin, evidence) = evidence_for(timeline.covering(i.at), i);
                 println!(
                     "{} [{}] ({}) {}",
                     meta.id,
                     i.trigger.as_str(),
-                    match classify_origin(timeline.covering(i.at)) {
-                        Origin::Clean => "clean",
-                        Origin::Untrusted => "untrusted",
-                        Origin::Derived => "derived",
+                    match (origin, evidence) {
+                        (Origin::Clean, Evidence::Full) => "clean",
+                        (Origin::Clean, Evidence::UserTurns) => "clean, user-turns only",
+                        (Origin::Untrusted, _) => "untrusted",
+                        (Origin::Derived, _) => "derived",
                     },
                     i.text.lines().next().unwrap_or("")
                 );
@@ -167,10 +208,26 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let mut pending = Vec::new();
         let mut failed = false;
         for intervention in &interventions {
-            match reflector.reflect(intervention).await {
+            // What the reflector may see, decided per intervention: full
+            // excerpts under provably clean coverage, the user's own words
+            // and tool names otherwise. See `learning::evidence_for`.
+            let (input, origin, evidence) =
+                evidence_for(timeline.covering(intervention.at), intervention);
+            if args.remine_untrusted {
+                // Backfill visits only what the gate excluded: an
+                // intervention that was clean is already on file in full,
+                // and one already re-mined must not double.
+                if evidence != Evidence::UserTurns
+                    || already_user_turns.contains(&(meta.id.clone(), intervention.text.clone()))
+                {
+                    continue;
+                }
+            }
+            match reflector.reflect(&input).await {
                 Ok(Some(mut r)) => {
                     r.session_id = meta.id.clone();
-                    r.origin = classify_origin(timeline.covering(intervention.at));
+                    r.origin = origin;
+                    r.evidence = evidence;
                     pending.push(r);
                 }
                 Ok(None) => {
@@ -200,7 +257,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             println!("· [{}] {}", r.trigger, r.reflexion_text);
         }
 
-        store.mark_mined(&meta.id)?;
+        if !args.remine_untrusted {
+            store.mark_mined(&meta.id)?;
+        }
         sessions_mined += 1;
     }
 
@@ -294,5 +353,7 @@ fn outbox_intervention(item: &mecha_core::outbox::OutboxItem) -> Intervention {
         // Not a transcript position: an edit lives in the outbox item, and its
         // provenance comes from the item's taint snapshot, not a timeline.
         at: 0,
+        tools_before: Vec::new(),
+        tools_after: Vec::new(),
     }
 }

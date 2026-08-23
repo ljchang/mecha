@@ -212,11 +212,16 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         {
             let excluded = excluded_by_allowlist(&profile.tools, &opts.tools);
             if !excluded.is_empty() {
-                eprintln!(
-                    "mecha: subagent `{}` not registered — `--tool` excludes {}",
-                    profile.name,
-                    excluded.join(", ")
-                );
+                // Quiet under a trigger's own allowlist: that file names
+                // exactly what the run may carry, so the skip is the config
+                // working, not a surprise worth a journal line every morning.
+                if !opts.tools_from_trigger {
+                    eprintln!(
+                        "mecha: subagent `{}` not registered — `--tool` excludes {}",
+                        profile.name,
+                        excluded.join(", ")
+                    );
+                }
                 continue;
             }
         }

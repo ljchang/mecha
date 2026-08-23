@@ -1731,6 +1731,7 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
                         // it because triage rules reach only the classifier,
                         // not because the origin was laundered.
                         origin: mecha_core::learning::Origin::Untrusted,
+                        evidence: mecha_core::learning::Evidence::Full,
                     };
                     learning.append_reflexion(&refl)?;
                     learning.mark_correction_mined(&key)?;
