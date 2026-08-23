@@ -218,6 +218,11 @@ a different repository on a different version line.
   done
   ```
 
+  Since 0.1.12 a stale session *degrades less*: TUI modals spawn children via
+  the `/proc/self/exe` link (`mecha-cli/src/exe.rs`), so they keep working —
+  running the session's own version — instead of dying with `os error 2`.
+  The sweep still matters: a stale session is still running old code.
+
   The services in step 2 clear themselves, since restarting them re-execs.
   What this finds is everything *else*: a TUI, a `mecha chat`, anything a
   person left open in another terminal — none of which any `systemctl` line
