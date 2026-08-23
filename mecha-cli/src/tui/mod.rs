@@ -4614,22 +4614,44 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
             let verb = if accept { "accept" } else { "reject" };
             let id_s = id.to_string();
             match review_cli(&[verb, &id_s]) {
-                Ok(_) => {
-                    // Drop it locally rather than refetching: the sample is
-                    // fixed for this sitting, and re-running the draw would
-                    // hand back a set that no longer matches what is on
-                    // screen under the cursor.
+                // The exit code is not the verdict: mecha-graph reports a
+                // per-item failure as `#id FAILED: …` and exits 0, so a
+                // process-level Ok can carry an accept that did not happen.
+                // Trusting it showed "accepted #2951" on an item whose
+                // subject could not resolve — the row vanished locally, the
+                // store still held it pending, and the sample refilled with
+                // items the reviewer believed decided. Read the report.
+                Ok(report) => {
+                    let (done, _failed) = crate::commands::review::tally_report(&report);
                     if let Some(m) = &mut app.queues {
+                        if done == 0 {
+                            // The item stays: nothing changed in the store,
+                            // and a row that disappears on a failed verdict
+                            // is the lie this arm used to tell. The child's
+                            // own line says why; this surface cannot fix a
+                            // subject, so it says where that is done.
+                            let why = report
+                                .lines()
+                                .find(|l| l.contains("FAILED"))
+                                .unwrap_or("failed with no report")
+                                .trim()
+                                .to_string();
+                            m.status = Some(format!(
+                                "{why} — fix the subject in mecha-graph tui (e edits, b binds)"
+                            ));
+                            return Ok(());
+                        }
+                        // Drop it locally rather than refetching: the sample
+                        // is fixed for this sitting, and re-running the draw
+                        // would hand back a set that no longer matches what
+                        // is on screen under the cursor.
                         m.items.retain(|r| r.id != id);
                         m.selected = m.selected.min(m.items.len().saturating_sub(1));
                         // A verdict closes the detail and lands back on the
-                        // list. The first cut stayed in the detail and
-                        // silently advanced to the next item, which read as
-                        // the keypress having done nothing — different text
-                        // under an unchanged frame is not feedback. The list
-                        // is where the change is visible: one row gone, the
-                        // verdict in the status line. Flipping through items
-                        // without deciding is what j/k in the detail is for.
+                        // list — the list is where the change is visible:
+                        // one row gone, the verdict in the status line.
+                        // Flipping through items without deciding is what
+                        // j/k in the detail is for.
                         m.item_detail = false;
                         m.detail_scroll = 0;
                         m.status = Some(format!(
