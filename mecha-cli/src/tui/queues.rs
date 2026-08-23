@@ -365,7 +365,7 @@ impl QueuesModal {
                 "j/k · Enter sample · a/r verdict WHOLE class · t filter · Esc back".into()
             }
             Level::Items => {
-                "j/k move · Enter full item · a accept · r reject · n new sample · Esc back".into()
+                "j/k · Enter full · a accept · r reject · b bind subject · A accept new · n resample".into()
             }
         }
     }
@@ -566,7 +566,7 @@ impl QueuesModal {
         let Some(it) = self.selected_item() else {
             return;
         };
-        let strip = "  j/k next item · a accept · r reject · Esc back · PgUp/PgDn scroll";
+        let strip = "  j/k next · a accept · r reject · b bind subject · A accept new · Esc back";
         let mut body: Vec<Line> = vec![
             Line::styled(strip.to_string(), Style::new().fg(Color::Cyan)),
             Line::raw(""),
@@ -678,6 +678,11 @@ const HELP: &str = "
              through items without leaving it
     a        accept this one (returns to the list, row removed)
     r        reject this one (same)
+    b        an accept failed on `cannot resolve subject`? bind the
+             subject to the graph's closest entity — the old spelling
+             becomes an alias, so the fix outlives this item — then a
+    A        accept creating the subject as a NEW topic node, for a
+             subject that is genuinely new rather than misspelled
     n        draw a new sample
     The draw is random because the queue is ordered, and every order it
     could have is correlated with something. Judging the first dozen and
