@@ -539,9 +539,6 @@
             ></span>
           {/each}
         </div>
-        <div class="meter-label">
-          {vLevel > 0.02 ? 'hearing you' : vState.name === 'listening' ? 'mic is silent — speak, or check the mic permission' : 'mic'}
-        </div>
       </div>
       <div class="voice-pane" bind:this={voicePane}>
         {#each vEntries as entry}
@@ -1003,12 +1000,6 @@
   }
   .tick.lit {
     background: var(--accent-400);
-  }
-  .meter-label {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--text-muted);
-    min-height: 14px;
   }
   .vdot {
     width: 5px;
