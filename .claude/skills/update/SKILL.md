@@ -79,6 +79,23 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   | ~/.cargo/bin/mecha-graph-mcp | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["result"]["tools"]), "tools")'
 ```
 
+### 1b. The web app's assets
+
+`mecha serve` serves the UI from `[web] assets` in the live config, which
+points at **`~/.mecha/web/dist`** — a stable home, deliberately not a repo
+or worktree path (production once served from a Claude session's worktree,
+which is the deferred-failure shape: fine until the session directory is
+cleaned). The dist is a build artifact, not in git, so a binary install
+does not update it:
+
+```bash
+cd <clean worktree>/web && npm ci && npm run build
+rsync -a --delete dist/ ~/.mecha/web/dist/
+```
+
+Then restart `mecha-serve.service` (step 2). Verify the *served* page, not
+the directory: the 8443 door returning 200 with the new bundle hash.
+
 ### 2. The long-running services
 
 These hold an open file handle on the old binary and must be restarted *after*
