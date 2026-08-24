@@ -202,6 +202,19 @@ pub async fn act(State(state): St, Json(body): Json<ActBody>) -> Response {
     }
 }
 
+/// Where mail children run. The serve unit's working directory is the
+/// owner's home, which `mecha mail` *refuses* as a workspace — the jail
+/// must not be rooted over `~/.mecha` — so every child gets the web
+/// producer directory instead: inside the mecha home is fine (that is the
+/// workspace default now), containing it is what is refused. Without this,
+/// every read and triage verb 502s with "Run from a project directory",
+/// found by tapping a thread on a real phone.
+fn mail_child_cwd() -> Option<std::path::PathBuf> {
+    let dir = mecha_core::work::producer_dir("web").ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
 /// A quick verb: run it, wait, report. Archive and friends are one MCP
 /// startup plus one provider call — seconds, not minutes.
 async fn verb_now(state: &super::WebState, args: &[&str]) -> Response {
@@ -220,7 +233,11 @@ async fn verb_now(state: &super::WebState, args: &[&str]) -> Response {
 fn spawn_detached(args: &[&str]) -> Response {
     let mut argv = vec!["mail".to_string()];
     argv.extend(args.iter().map(|s| s.to_string()));
-    match std::process::Command::new(crate::exe::self_exe())
+    let mut cmd = std::process::Command::new(crate::exe::self_exe());
+    if let Some(dir) = mail_child_cwd() {
+        cmd.current_dir(dir);
+    }
+    match cmd
         .args(&argv)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -246,14 +263,13 @@ fn spawn_detached(args: &[&str]) -> Response {
 /// budget is minutes where review's is seconds.
 async fn self_text(state: &super::WebState, args: &[&str]) -> anyhow::Result<String> {
     let _ = state;
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        tokio::process::Command::new(crate::exe::self_exe())
-            .args(args)
-            .output(),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("timed out"))??;
+    let mut cmd = tokio::process::Command::new(crate::exe::self_exe());
+    if let Some(dir) = mail_child_cwd() {
+        cmd.current_dir(dir);
+    }
+    let output = tokio::time::timeout(std::time::Duration::from_secs(120), cmd.args(args).output())
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out"))??;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("{}", stderr.lines().last().unwrap_or("failed"));

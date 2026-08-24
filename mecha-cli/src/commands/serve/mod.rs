@@ -292,7 +292,8 @@ async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Res
         "content-security-policy",
         HeaderValue::from_static(
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
+             img-src 'self' data:; font-src 'self' data:; connect-src 'self'; \
+             frame-ancestors 'none'",
         ),
     );
     headers.insert(

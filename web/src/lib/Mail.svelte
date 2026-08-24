@@ -222,6 +222,11 @@
   header .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .backbtn { background: none; border: none; color: var(--text-muted); min-width: 44px; min-height: 44px; margin: -12px 0 -12px -12px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   .scroll { flex: 1; overflow-y: auto; padding: 14px 20px; display: flex; flex-direction: column; gap: 10px; }
+  /* A flex item with overflow!=visible has automatic min-size ZERO, so a
+     long list's cards silently shrink to fit the viewport and clip their
+     own text — 24 rows rendered as 30px slivers on a real phone. Never
+     let the scroll container's children shrink; scrolling is its job. */
+  .scroll > * { flex-shrink: 0; }
   .rowbtn { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; color: var(--text); font: inherit; overflow: hidden; }
   .rowtop { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .urgency-now { color: var(--hazard); border-color: var(--hazard); }
