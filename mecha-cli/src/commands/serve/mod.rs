@@ -42,6 +42,12 @@ pub struct Args {
     /// Override `[web] assets` (the built web app, `web/dist`) for this run.
     #[arg(long)]
     pub assets: Option<PathBuf>,
+    /// Loopback port for the mounted voice facade — the OpenAI endpoint
+    /// the Pipecat worker calls, sharing this process's agent and prompt
+    /// cache (the unification's whole argument). 0 disables it.
+    #[arg(long, default_value_t = 8990)]
+    pub voice_port: u16,
+
     /// Override `[web] owner_login` for this run. Same trust as the config
     /// field — a flag on the owner's own process — and what lets a branch
     /// build serve while the live config stays parseable by older binaries
@@ -97,6 +103,34 @@ pub async fn execute(args: Args) -> Result<()> {
         chat,
         review,
     };
+    // Mount the voice facade on the same agent: one provider connection,
+    // one cached prefix, two dialects. It rides this process's lifetime;
+    // its own graceful drain runs after axum returns.
+    let voice = match (&state.chat, args.voice_port) {
+        (Some(chat), port) if port != 0 => {
+            let (agent, provider, model, config, outbox_root) = chat.voice_parts();
+            match crate::voice::Facade::new(agent, provider, model, config, outbox_root, None, true)
+            {
+                Ok(f) => {
+                    let facade = Arc::new(f);
+                    let stop = tokio_util::sync::CancellationToken::new();
+                    let task = {
+                        let facade = Arc::clone(&facade);
+                        let stop = stop.clone();
+                        tokio::spawn(async move { facade.serve(port, stop).await })
+                    };
+                    println!("voice facade on http://127.0.0.1:{port} (shared agent)");
+                    Some((facade, stop, task))
+                }
+                Err(e) => {
+                    tracing::warn!("voice facade unavailable: {e:#}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+
     let app = router(state.clone(), assets.as_deref());
 
     // 127.0.0.1 by construction — the address is not configurable.
@@ -113,7 +147,13 @@ pub async fn execute(args: Args) -> Result<()> {
         state.owner_login
     );
 
-    axum::serve(listener, app).await.context("serving")?;
+    let served = axum::serve(listener, app).await.context("serving");
+    if let Some((facade, stop, task)) = voice {
+        stop.cancel();
+        facade.shutdown().await;
+        let _ = task.await;
+    }
+    served?;
     Ok(())
 }
 

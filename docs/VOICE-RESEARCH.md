@@ -805,3 +805,20 @@ progress, importing the module by relative path so the two shells cannot
 drift; their overlay honestly labels the in-chat call as its own
 conversation until process unification delivers D3's same-session
 promise.
+
+**Process unification — built, 2026-08-24.** D2's facade is now a
+mountable component: `voice::Facade` (new/serve/shutdown, signal handling
+deliberately the caller's), consumed two ways with one implementation —
+`mecha voice-serve` standalone as before, and **mounted inside `mecha
+serve`** (`--voice-port`, default 8990, 0 disables) on the web surface's
+own agent: one provider connection, one cached prefix, two dialects,
+which was the unification's whole argument. On a shared agent the D10
+block cannot ride the system prompt (web chat wants markdown), so it
+opens each voice conversation's first user message instead — one copy per
+conversation, cached thereafter; verified in the session record, and the
+mounted endpoint's first reply came back ear-shaped. The seam agreed with
+the remote-surface arc holds: `voice/` owns facade + session slots,
+`serve/` owns routes + app, `ChatState::voice_parts` is the handoff.
+Still ahead: switching production from the standalone units to unified
+serve (a deploy decision, after the reinstall), the app's local
+/api/offer proxy, and D3's same-session promise.
