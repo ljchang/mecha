@@ -1,0 +1,16 @@
+# The Pipecat voice worker: WebRTC page + VAD/STT/TTS pipeline, :7860.
+# Deliberately dumb - all judgment is behind the facade (D2).
+[Unit]
+Description=mecha voice worker (Pipecat, :7860)
+After=network.target mecha-voice-serve.service
+
+[Service]
+Environment=MECHA_VOICE_TTS=http://127.0.0.1:8881/v1
+Environment=MECHA_VOICE_TTS_VOICE=default
+WorkingDirectory=/home/ljchang/Github/mecha/.claude/worktrees/voice-arc
+ExecStart=/home/ljchang/models/voice-worker-venv/bin/python scripts/voice/worker.py --host 127.0.0.1 --port 7860
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
