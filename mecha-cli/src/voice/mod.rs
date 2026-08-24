@@ -62,7 +62,7 @@ const MAX_BODY_BYTES: usize = 8 << 20;
 /// It pays twice, because a short opener is also fewer tokens to generate
 /// before speech can start at all. Every other line here shapes the whole
 /// reply; this one is the only one on the critical path.
-const VOICE_BLOCK: &str = "\
+pub(crate) const VOICE_BLOCK: &str = "\
 Voice mode: everything you write is spoken aloud by a text-to-speech voice, \
 and the user is listening, not reading. Answer in short conversational \
 sentences. Make the first sentence a short one, a handful of words: \

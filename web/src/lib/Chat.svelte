@@ -26,19 +26,6 @@
   // toggled. Deliberately a stopgap — the real voice mode (Pipecat, the
   // chosen launch voice, barge-in) replaces this when the speech servers
   // land; until then it is the fail-to-a-lesser-mode shape, and marked so.
-  let speak = $state(false);
-
-  function speakText(text) {
-    if (!speak || !('speechSynthesis' in window)) return;
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.05;
-    speechSynthesis.speak(utterance);
-  }
-
-  function toggleSpeak() {
-    speak = !speak;
-    if (!speak) speechSynthesis?.cancel();
-  }
 
   function pushEntry(entry) {
     flushStreaming();
@@ -49,7 +36,6 @@
   function flushStreaming() {
     if (streaming.trim()) {
       entries.push({ kind: 'assistant', text: streaming });
-      speakText(streaming);
     }
     streaming = '';
   }
@@ -180,6 +166,48 @@
     usage = null;
     taint = null;
   }
+
+  // The drawer: every conversation this process holds, and the recorded
+  // ones from earlier — the pattern every multi-session app converges on,
+  // a left panel that expands and collapses. Voice sessions are here too:
+  // a brainstorm spoken on a walk resumes as a text chat, same
+  // conversation, same taint.
+  let drawer = $state(false);
+  let history = $state(null);
+
+  async function loadHistory() {
+    try {
+      const res = await fetch('/api/history');
+      if (res.ok) history = (await res.json()).sessions;
+    } catch {
+      // the drawer is a convenience; the transcript is the truth
+    }
+  }
+
+  function openDrawer() {
+    drawer = true;
+    loadRail();
+    loadHistory();
+  }
+
+  async function resumeSession(id) {
+    try {
+      const res = await fetch('/api/resume', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const data = await res.json();
+      drawer = false;
+      switchTo(data.key);
+    } catch (e) {
+      pushEntry({ kind: 'notice', text: `resume failed: ${e?.message ?? e}` });
+    }
+  }
+
+  const sessionLabel = (s) =>
+    (s.title ?? s.key).replace(/^(web|voice): /, '') || s.key;
 
   function newSession() {
     const name = prompt('Session name (lowercase, dashes):');
@@ -366,7 +394,10 @@
 
 <div class="chat">
   <header>
-    <span class="title">Chat</span>
+    <button class="menubtn" onclick={openDrawer} aria-label="sessions">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+    </button>
+    <span class="title">{key === 'main' ? 'Chat' : key}</span>
     <div class="meta">
       {#if taint?.untrusted || taint?.private}
         <span
@@ -383,32 +414,48 @@
         title="read_only: reads run, sends stage · ask: every other call becomes an approval card"
       >{mode === 'ask' ? 'ask' : 'read-only'}</button>
       <span class="chip">{model || '…'}</span>
-      <button
-        class="speakbtn"
-        class:on={speak}
-        onclick={toggleSpeak}
-        title="read replies aloud (interim browser voice)"
-      >
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 10v4h4l5 4V6L8 10z" />
-          {#if speak}<path d="M16 9a4 4 0 010 6M18.5 6.5a8 8 0 010 11" />{/if}
-        </svg>
-      </button>
     </div>
   </header>
 
-  <div class="rail">
-    {#each rail.length ? rail : [{ key: 'main', running: false }] as s}
-      <button class="railchip" class:active={s.key === key} onclick={() => switchTo(s.key)}>
-        <span class="raildot" class:on={s.running}></span>
-        {s.key}
-        {#if s.taint?.untrusted}<span class="railtaint">▲</span>{/if}
-      </button>
-    {/each}
-    <button class="railchip plus" onclick={newSession} title="new session">
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
-    </button>
-  </div>
+  {#if drawer}
+    <div class="scrim" onclick={() => (drawer = false)} aria-hidden="true"></div>
+    <aside class="drawer">
+      <div class="drawer-head">
+        <span class="drawer-title">Sessions</span>
+        <button class="newbtn" onclick={() => { drawer = false; newSession(); }}>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+          new
+        </button>
+      </div>
+      <div class="drawer-scroll">
+        <div class="dsection">open</div>
+        {#each rail.length ? rail : [{ key: 'main', running: false }] as s}
+          <button class="drow" class:dactive={s.key === key} onclick={() => { drawer = false; switchTo(s.key); }}>
+            <span class="raildot" class:on={s.running}></span>
+            <span class="dname">{sessionLabel(s)}</span>
+            {#if s.title?.startsWith('voice')}<span class="dkind">voice</span>{/if}
+            {#if s.taint?.untrusted}<span class="railtaint">▲</span>{/if}
+          </button>
+        {/each}
+        <div class="dsection">earlier</div>
+        {#if history === null}
+          <div class="dempty">reading the record…</div>
+        {:else}
+          {#each history.filter((h) => !h.attached_key) as h}
+            <button class="drow past" onclick={() => resumeSession(h.id)}>
+              <span class="dsnippet">{h.snippet}</span>
+              <span class="dmeta">
+                {#if h.kind === 'voice'}<span class="dkind">voice</span>{/if}
+                {h.created_at.slice(0, 10)}
+              </span>
+            </button>
+          {:else}
+            <div class="dempty">nothing recorded yet</div>
+          {/each}
+        {/if}
+      </div>
+    </aside>
+  {/if}
 
   <div class="transcript" bind:this={transcriptEl}>
     {#if error}
@@ -571,7 +618,7 @@
   {#if voiceOpen}
     <div class="voice-overlay">
       <div class="voice-top">
-        <span class="chip">grant-review is not this call — a voice call is its own session for now</span>
+        <span class="chip">this call is its own conversation — {key === 'main' ? 'your chat' : `“${key}”`} can't hear it yet</span>
       </div>
       <div class="voice-stage">
         <svg viewBox="0 0 63 54" width="112" height="96" role="img" aria-label="mecha {vState.label}">
@@ -651,51 +698,143 @@
   .chip.taint {
     color: var(--hazard);
   }
-  .speakbtn {
+  .menubtn {
     background: none;
     border: none;
     color: var(--text-muted);
     min-width: 44px;
     min-height: 44px;
-    margin: -12px -12px -12px 0;
+    margin: -10px 4px -10px -12px;
+    cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    cursor: pointer;
   }
-  .speakbtn.on {
-    color: var(--accent-400);
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 40;
   }
-  .rail {
+  .drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(320px, 85vw);
+    background: var(--bg);
+    border-right: 1px solid var(--accent-700);
+    z-index: 41;
     display: flex;
-    gap: 8px;
-    padding: 10px 20px 12px;
-    overflow-x: auto;
+    flex-direction: column;
+    padding-top: env(safe-area-inset-top);
+    animation: drawer-in 0.18s ease-out;
+  }
+  @keyframes drawer-in {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(0); }
+  }
+  .drawer-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 16px 12px;
     border-bottom: 1px solid var(--accent-900);
   }
-  .railchip {
+  .drawer-title {
+    font-weight: 500;
+    font-size: 16px;
+    letter-spacing: -0.02em;
+  }
+  .newbtn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    background: var(--accent-900);
+    border: 1px solid var(--accent-700);
+    border-radius: var(--radius-chip);
+    padding: 8px 12px;
+    min-height: 38px;
+    cursor: pointer;
+  }
+  .drawer-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 8px calc(12px + env(safe-area-inset-bottom));
+  }
+  .drawer-scroll > * { flex-shrink: 0; }
+  .dsection {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--accent-700);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 12px 10px 6px;
+  }
+  .drow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: var(--radius);
+    color: var(--text);
+    font: inherit;
+    padding: 11px 10px;
+    min-height: 44px;
+    cursor: pointer;
+  }
+  .drow.dactive {
+    background: var(--accent-900);
+  }
+  .drow.past {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+  .dname {
+    font-family: var(--mono);
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dsnippet {
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--text);
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow-wrap: anywhere;
+  }
+  .dmeta {
     display: flex;
     align-items: center;
     gap: 6px;
     font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+  .dkind {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--accent-400);
+    background: var(--accent-900);
+    border-radius: var(--radius-chip);
+    padding: 2px 6px;
+  }
+  .dempty {
     font-size: 12px;
     color: var(--text-muted);
-    background: var(--bg);
-    border: 1px solid var(--accent-900);
-    border-radius: var(--radius-chip);
-    padding: 8px 12px;
-    min-height: 40px;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .railchip.active {
-    color: var(--text);
-    background: var(--accent-900);
-    border-color: var(--accent-700);
-  }
-  .railchip.plus {
-    min-width: 44px;
-    justify-content: center;
+    padding: 10px;
   }
   .raildot {
     width: 5px;

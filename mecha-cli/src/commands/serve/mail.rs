@@ -97,6 +97,56 @@ pub async fn list(State(_state): St) -> Response {
     }
 }
 
+/// GET /api/mail/inbox — the plain inbox: `mecha mail recent --json`,
+/// which is `mail_recent`'s own rows verbatim. A slow child (an MCP
+/// startup and a provider fan-out), so it gets mail's minutes budget.
+pub async fn inbox(State(state): St) -> Response {
+    match self_text(&state, &["mail", "recent", "--max", "25", "--json"]).await {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(v) => Json(v).into_response(),
+            // The tool's no-match answer is prose; the page shows it as an
+            // empty inbox with the note.
+            Err(_) => Json(serde_json::json!({ "note": text.trim() })).into_response(),
+        },
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ComposeBody {
+    pub to: String,
+    pub subject: String,
+    pub body: String,
+    pub account: Option<String>,
+    pub cc: Option<String>,
+}
+
+/// POST /api/mail/compose — stage a new email for review. Nothing sends:
+/// the CLI stages under the routed send tool and the outbox page is where
+/// it goes out.
+pub async fn compose(State(state): St, Json(b): Json<ComposeBody>) -> Response {
+    let mut args = vec![
+        "mail".to_string(),
+        "compose".to_string(),
+        "--to".to_string(),
+        b.to,
+        "--subject".to_string(),
+        b.subject,
+        "--body".to_string(),
+        b.body,
+    ];
+    if let Some(a) = b.account.filter(|a| !a.trim().is_empty()) {
+        args.push("--account".to_string());
+        args.push(a);
+    }
+    if let Some(c) = b.cc.filter(|c| !c.trim().is_empty()) {
+        args.push("--cc".to_string());
+        args.push(c);
+    }
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    verb_now_named(&state, &argv).await
+}
+
 #[derive(Deserialize)]
 pub struct ReadQuery {
     pub thread: String,
@@ -207,7 +257,13 @@ pub async fn act(State(state): St, Json(body): Json<ActBody>) -> Response {
 async fn verb_now(state: &super::WebState, args: &[&str]) -> Response {
     let mut argv = vec!["mail"];
     argv.extend_from_slice(args);
-    match self_text(state, &argv).await {
+    verb_now_named(state, &argv).await
+}
+
+/// The same, taking the whole argv — the frontdoor page's verbs ride this
+/// too, so one implementation owns the run-wait-report shape.
+pub(super) async fn verb_now_named(state: &super::WebState, argv: &[&str]) -> Response {
+    match self_text(state, argv).await {
         Ok(out) => Json(serde_json::json!({ "ok": true, "output": out })).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
     }
@@ -220,12 +276,17 @@ async fn verb_now(state: &super::WebState, args: &[&str]) -> Response {
 fn spawn_detached(args: &[&str]) -> Response {
     let mut argv = vec!["mail".to_string()];
     argv.extend(args.iter().map(|s| s.to_string()));
+    spawn_detached_named(&argv)
+}
+
+/// The whole-argv detached spawn, shared with the frontdoor page.
+pub(super) fn spawn_detached_named(argv: &[String]) -> Response {
     let mut cmd = std::process::Command::new(crate::exe::self_exe());
     if let Some(dir) = super::child_cwd() {
         cmd.current_dir(dir);
     }
     match cmd
-        .args(&argv)
+        .args(argv)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -248,7 +309,7 @@ fn spawn_detached(args: &[&str]) -> Response {
 /// Like review's `self_json`, but the child's stdout is prose to pass
 /// through. Mail verbs reach a provider (MCP startup, OAuth refresh), so the
 /// budget is minutes where review's is seconds.
-async fn self_text(state: &super::WebState, args: &[&str]) -> anyhow::Result<String> {
+pub(super) async fn self_text(state: &super::WebState, args: &[&str]) -> anyhow::Result<String> {
     let _ = state;
     let mut cmd = tokio::process::Command::new(crate::exe::self_exe());
     if let Some(dir) = super::child_cwd() {

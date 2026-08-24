@@ -34,6 +34,7 @@ use mecha_core::config::Config;
 mod board;
 mod chat;
 mod files;
+mod frontdoor;
 mod mail;
 mod present;
 mod review;
@@ -220,6 +221,8 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/ping", get(ping))
         .route("/api/summary", get(summary))
         .route("/api/sessions", get(chat::sessions))
+        .route("/api/history", get(chat::history))
+        .route("/api/resume", axum::routing::post(chat::resume))
         .route("/api/chat/{key}", get(chat::transcript))
         .route("/api/chat/{key}/send", axum::routing::post(chat::send))
         .route("/api/chat/{key}/cancel", axum::routing::post(chat::cancel))
@@ -251,13 +254,26 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/queue/sample", axum::routing::post(review::sample))
         .route("/api/queue/verdict", axum::routing::post(review::verdict))
         .route("/api/mail", get(mail::list))
+        .route("/api/mail/inbox", get(mail::inbox))
+        .route("/api/mail/compose", axum::routing::post(mail::compose))
         .route("/api/mail/read", get(mail::read))
         .route("/api/mail/act", axum::routing::post(mail::act))
         .route("/api/tasks", get(board::tasks))
         .route("/api/tasks/set", axum::routing::post(board::task_set))
         .route("/api/tasks/add", axum::routing::post(board::task_add))
-        .route("/api/notes", axum::routing::post(board::note))
+        .route("/api/notes", get(board::notes).post(board::note))
+        .route("/api/frontdoor", get(frontdoor::list))
+        .route("/api/frontdoor/read", get(frontdoor::read))
+        .route("/api/frontdoor/act", axum::routing::post(frontdoor::act))
         .route("/api/find", get(board::find))
+        .route(
+            "/api/dictate",
+            axum::routing::post(dictate)
+                // A minute of 16 kHz mono 16-bit is ~2 MB; axum's default
+                // refuses at 2 MB exactly, which is the wrong place to cut
+                // off a long thought.
+                .layer(axum::extract::DefaultBodyLimit::max(8_388_608)),
+        )
         .route("/api/offer", axum::routing::post(offer_proxy));
 
     let app = match assets {
@@ -329,6 +345,62 @@ async fn ping() -> &'static str {
 /// and behind the owner guard like everything else; the runner's own
 /// origin allowlist still covers its direct door. Body passed through
 /// verbatim both ways — this is a pipe, not a participant.
+/// POST /api/dictate — a WAV clip in, its words out, via the local Parakeet
+/// STT (the transducer that CANNOT obey speech — see the voice research).
+/// The page encodes 16 kHz mono WAV itself, so no transcoder runs here; the
+/// audio never leaves the box, which is the whole argument against the
+/// browser speech APIs that ship the clip to a third party.
+async fn dictate(State(_state): State<WebState>, body: axum::body::Bytes) -> Response {
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, "empty audio\n").into_response();
+    }
+    // Multipart by hand: one part, one fixed server, and the workspace's
+    // reqwest deliberately carries few features. The boundary needs no
+    // randomness — nothing in a WAV clip can contain it.
+    let boundary = "mecha-dictate-7f3a9c51e2b8";
+    let mut form: Vec<u8> = Vec::with_capacity(body.len() + 256);
+    form.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; \
+             filename=\"clip.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    form.extend_from_slice(&body);
+    form.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let sent = reqwest::Client::new()
+        .post("http://127.0.0.1:8992/v1/audio/transcriptions")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(form)
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await;
+    match sent {
+        Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+            Ok(bytes) => (
+                StatusCode::OK,
+                [("content-type", "application/json")],
+                bytes.to_vec(),
+            )
+                .into_response(),
+            Err(e) => (StatusCode::BAD_GATEWAY, format!("reading answer: {e}\n")).into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("stt answered {}\n", resp.status()),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("stt unreachable — is mecha-parakeet up? {e}\n"),
+        )
+            .into_response(),
+    }
+}
+
 async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> Response {
     let Some(target) = &state.offer_target else {
         return (StatusCode::NOT_FOUND, "voice offers are disabled\n").into_response();
