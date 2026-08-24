@@ -297,7 +297,15 @@ const session = createVoiceSession({
   onLink(live) {
     linkEl.textContent = live ? "live" : "offline";
     linkEl.classList.toggle("live", live);
-    if (!live) { controls.classList.remove("ready"); restored = false; }
+    if (!live) {
+      // Clear the list, don't just hide it: a picker still holding the last
+      // connection's voices is a control that looks live and does nothing,
+      // and the next connect must repopulate from whatever THAT worker can
+      // actually speak as rather than from what the last one could.
+      controls.classList.remove("ready", "refused");
+      voiceSel.innerHTML = "";
+      restored = false;
+    }
   },
   onBotTurnEnd() {
     const last = scroll.lastElementChild;
