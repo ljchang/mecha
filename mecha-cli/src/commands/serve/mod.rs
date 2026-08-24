@@ -137,7 +137,10 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
             "/api/outbox/{id}/reject",
             axum::routing::post(review::reject),
         )
-        .route("/api/outbox/{id}/edit", axum::routing::post(review::edit));
+        .route("/api/outbox/{id}/edit", axum::routing::post(review::edit))
+        .route("/api/queue", get(review::queue))
+        .route("/api/queue/sample", axum::routing::post(review::sample))
+        .route("/api/queue/verdict", axum::routing::post(review::verdict));
 
     let app = match assets {
         Some(dir) => api.fallback_service(tower_http::services::ServeDir::new(dir)),

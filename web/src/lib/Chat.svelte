@@ -177,6 +177,13 @@
     });
   }
 
+  let vMuted = $state(false);
+  function toggleMute() {
+    if (!vSession) return;
+    vMuted = !vMuted;
+    vSession.setMicEnabled(!vMuted);
+  }
+
   function endVoice() {
     try {
       vSession?.end();
@@ -364,6 +371,13 @@
         {/each}
       </div>
       <div class="voice-controls">
+        <button class="mutebtn" class:muted={vMuted} onclick={toggleMute} title={vMuted ? 'unmute' : 'mute'}>
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="3" width="6" height="11" rx="3" />
+            <path d="M5 11a7 7 0 0014 0M12 18v3" />
+            {#if vMuted}<path d="M4 4l16 16" />{/if}
+          </svg>
+        </button>
         <button class="endcall" onclick={endVoice} title="end the call">
           <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="var(--hazard)" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
         </button>
@@ -668,7 +682,25 @@
   .voice-controls {
     display: flex;
     justify-content: center;
+    align-items: center;
+    gap: 24px;
     padding: 24px 0 34px;
+  }
+  .mutebtn {
+    width: 56px;
+    height: 56px;
+    border-radius: 14px;
+    background: var(--surface);
+    border: 1px solid var(--accent-900);
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .mutebtn.muted {
+    color: var(--hazard);
+    border-color: var(--accent-700);
   }
   .endcall {
     width: 68px;

@@ -1,0 +1,178 @@
+<script>
+  // The graph queue's sample deck. The rules are the CLI's, rendered:
+  // the seed is drawn server-side and printed here, a verdict never
+  // resamples (the card is dropped locally; these twelve stay one sample),
+  // and a new draw is an explicit button. An unjudged class shows a dash,
+  // never 0% — "untouched" and "rejected" are opposite findings.
+  let proposers = $state(null);
+  let error = $state(null);
+  let deck = $state(null); // { proposer, seed, items, judged }
+  let busy = $state(false);
+
+  async function load() {
+    try {
+      const res = await fetch('/api/queue');
+      if (!res.ok) throw new Error((await res.text()).trim());
+      proposers = await res.json();
+      error = null;
+    } catch (e) {
+      error = String(e?.message ?? e);
+    }
+  }
+  load();
+
+  async function draw(proposer, seed = null) {
+    busy = true;
+    try {
+      const res = await fetch('/api/queue/sample', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ proposer, seed }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const data = await res.json();
+      deck = { proposer, seed: data.seed, items: data.items, judged: 0, total: data.items.length };
+      error = null;
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function verdict(accept) {
+    const item = deck.items[0];
+    busy = true;
+    try {
+      const res = await fetch('/api/queue/verdict', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: item.id, accept }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      deck.items.shift();
+      deck.judged += 1;
+      error = null;
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function skip() {
+    deck.items.push(deck.items.shift());
+  }
+
+  const rate = (p) => {
+    const judged = p.accepted_hist + p.rejected_hist;
+    return judged > 0 ? `${Math.round((p.accepted_hist / judged) * 100)}%` : '—';
+  };
+  const tier = (p) => {
+    const n = p.accepted_hist + p.rejected_hist;
+    return n === 0 ? 'unjudged' : n < 10 ? 'thin' : n < 30 ? 'some' : 'solid';
+  };
+</script>
+
+{#snippet hazardGlyph(size = 13)}
+  <svg viewBox="0 0 24 24" width={size} height={size} style="flex-shrink: 0" fill="none" stroke="var(--hazard)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 4l9 16H3z" /><path d="M12 11v4M12 17.5v.5" />
+  </svg>
+{/snippet}
+
+<div class="pane">
+  {#if error}<div class="warnline">{@render hazardGlyph()}<span>{error}</span></div>{/if}
+
+  {#if !deck}
+    {#if proposers === null && !error}
+      <div class="empty">reading the queue…</div>
+    {:else if proposers}
+      {#each proposers as p}
+        <button class="card row" onclick={() => draw(p.proposer)} disabled={busy}>
+          <div class="rowtop">
+            <span class="pname">{p.proposer}</span>
+            <span class="chip">{tier(p)}</span>
+            <span class="pcount">{p.pending.toLocaleString('en-US')}</span>
+          </div>
+          <div class="rowsub">
+            <span>your accept rate {rate(p)} over {p.accepted_hist + p.rejected_hist} verdicts</span>
+            <span class="dim">{p.classes} class{p.classes === 1 ? '' : 'es'}</span>
+          </div>
+        </button>
+      {:else}
+        <div class="empty">The queue is empty.</div>
+      {/each}
+    {/if}
+  {:else}
+    <div class="deckhead">
+      <button class="backbtn" onclick={() => { deck = null; load(); }} aria-label="back to classes">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
+      </button>
+      <span class="pname">{deck.proposer}</span>
+      <span class="seed">sample of {deck.total} · seed {deck.seed}</span>
+    </div>
+    <div class="progress">
+      <div class="bar"><div class="fill" style:width="{(deck.judged / deck.total) * 100}%"></div></div>
+      <span class="seed">{deck.judged} / {deck.total}</span>
+    </div>
+
+    {#if deck.items.length === 0}
+      <div class="empty">
+        Sample done — {deck.judged} verdicts on one draw.
+        <button class="btn" onclick={() => draw(deck.proposer)}>New draw</button>
+      </div>
+    {:else}
+      {@const item = deck.items[0]}
+      <div class="card candidate">
+        <div class="kicker">proposed belief</div>
+        <div class="statement">
+          {item.payload?.statement ?? `${item.payload?.subject} — ${item.payload?.predicate} — ${item.payload?.object}`}
+        </div>
+        <div class="meta">
+          <span>confidence {item.confidence?.toFixed(2) ?? '—'}</span>
+          <span>·</span>
+          <span>{item.proposed_by}</span>
+          <span>·</span>
+          <span>{(item.created_at ?? '').slice(0, 10)}</span>
+        </div>
+      </div>
+      <div class="btnrow">
+        <button class="btn" disabled={busy} onclick={() => verdict(false)}>Reject</button>
+        <button class="btn primary" disabled={busy} onclick={() => verdict(true)}>Accept</button>
+      </div>
+      <div class="deckfoot">
+        <button class="ghost" onclick={skip}>Skip for now</button>
+        <button class="ghost" disabled={busy} onclick={() => draw(deck.proposer)}>New draw</button>
+      </div>
+      <div class="footnote">These verdicts describe one sample — the seed is printed above.</div>
+    {/if}
+  {/if}
+</div>
+
+<style>
+  .pane { display: flex; flex-direction: column; gap: 10px; }
+  .warnline { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; }
+  .row { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 7px; cursor: pointer; color: var(--text); font: inherit; }
+  .rowtop { display: flex; align-items: center; gap: 8px; }
+  .pname { font-family: var(--mono); font-size: 13px; color: var(--accent-400); }
+  .pcount { font-size: 16px; font-weight: 500; margin-left: auto; }
+  .rowsub { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); }
+  .dim { color: var(--accent-700); }
+  .empty { color: var(--text-muted); font-size: 14px; padding: 20px 0; text-align: center; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+  .deckhead { display: flex; align-items: center; gap: 10px; }
+  .backbtn { background: none; border: none; color: var(--text-muted); min-width: 44px; min-height: 44px; margin: -10px 0 -10px -12px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .seed { font-family: var(--mono); font-size: 11px; color: var(--text-muted); margin-left: auto; }
+  .progress { display: flex; align-items: center; gap: 10px; }
+  .bar { flex: 1; height: 3px; background: var(--accent-900); border-radius: 2px; overflow: hidden; }
+  .fill { height: 3px; background: var(--accent-400); }
+  .candidate { padding: 18px; display: flex; flex-direction: column; gap: 12px; background: var(--surface); border-color: var(--accent-700); }
+  .statement { font-size: 15px; line-height: 1.5; }
+  .meta { display: flex; gap: 8px; font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
+  .btnrow { display: flex; gap: 10px; }
+  .btn { flex: 1; min-height: 52px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 15px; cursor: pointer; }
+  .btn.primary { background: var(--accent-400); color: var(--void); font-weight: 500; border: none; }
+  .btn:disabled { opacity: 0.5; }
+  .deckfoot { display: flex; justify-content: space-between; }
+  .ghost { background: none; border: none; color: var(--text-muted); font-size: 13px; min-height: 44px; cursor: pointer; }
+  .footnote { font-size: 11px; color: var(--text-muted); text-align: center; }
+</style>

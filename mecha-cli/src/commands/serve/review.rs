@@ -219,6 +219,92 @@ fn detail_json(item: &OutboxItem, sources: &[outbox_source::SourceRead]) -> serd
     })
 }
 
+// ---------------------------------------------------------------------------
+// The graph queue: proposers rollup and the sample deck. The sampling rules
+// are the CLI's (`mecha review sample`): the seed is chosen here and
+// *returned*, so the sample a phone verdicts is redrawable and quotable; a
+// verdict never resamples (the page drops the card locally, seed unchanged);
+// a new draw is an explicit button and a new seed.
+
+/// GET /api/queue — the queue rolled up by proposing mechanism.
+pub async fn queue(State(state): St) -> Response {
+    match self_json(&state, &["review", "proposers", "--json"]).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct SampleBody {
+    pub proposer: Option<String>,
+    pub predicate: Option<String>,
+    pub seed: Option<u64>,
+}
+
+/// POST /api/queue/sample — twelve at random; the seed rides back with them.
+pub async fn sample(State(state): St, Json(body): Json<SampleBody>) -> Response {
+    let seed = body.seed.unwrap_or_else(|| {
+        // Uncorrelated with the content is all the draw needs; the *record*
+        // of which seed was drawn is what makes it checkable.
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64 ^ (d.as_secs() << 20))
+            .unwrap_or(1)
+    });
+    let seed_s = seed.to_string();
+    let mut args: Vec<&str> = vec!["review", "sample", "-n", "12", "--seed", &seed_s, "--json"];
+    if let Some(proposer) = &body.proposer {
+        args.push("--proposer");
+        args.push(proposer);
+    }
+    if let Some(predicate) = &body.predicate {
+        args.push("--predicate");
+        args.push(predicate);
+    }
+    match self_json(&state, &args).await {
+        Ok(items) => Json(serde_json::json!({ "seed": seed, "items": items })).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct VerdictBody {
+    pub id: i64,
+    pub accept: bool,
+    pub reason: Option<String>,
+}
+
+/// POST /api/queue/verdict — one candidate, one verdict, through the CLI.
+pub async fn verdict(State(state): St, Json(body): Json<VerdictBody>) -> Response {
+    let id = body.id.to_string();
+    if body.accept {
+        verb(&state, &["review", "accept", &id]).await
+    } else {
+        match body.reason.as_deref().filter(|r| !r.trim().is_empty()) {
+            Some(reason) => verb(&state, &["review", "reject", &id, "--reason", reason]).await,
+            None => verb(&state, &["review", "reject", &id]).await,
+        }
+    }
+}
+
+/// Like `verb`, but the child's stdout is JSON to pass through.
+async fn self_json(state: &super::WebState, args: &[&str]) -> anyhow::Result<serde_json::Value> {
+    let _ = state;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::process::Command::new(crate::exe::self_exe())
+            .args(args)
+            .output(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out"))??;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("{}", stderr.lines().last().unwrap_or("failed"));
+    }
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
 #[derive(serde::Deserialize)]
 pub struct RejectBody {
     pub reason: String,
