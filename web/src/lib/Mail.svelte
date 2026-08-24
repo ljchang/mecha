@@ -10,6 +10,14 @@
   // and the rest are one tap: reversible, private, and a confirmation on a
   // reversible private change teaches people to tap without reading.
   let rows = $state(null);
+  let pane = $state('queue'); // queue | inbox
+  let inbox = $state(null); // mail_recent rows, fetched on first open
+  let inboxNote = $state(null);
+  let composing = $state(false);
+  let cTo = $state('');
+  let cSubject = $state('');
+  let cBody = $state('');
+  let cAccount = $state('');
   let showParked = $state(false);
   let reading = $state(null); // { row, text } — the open thread
   let error = $state(null);
@@ -28,6 +36,57 @@
       error = null;
     } catch (e) {
       error = String(e?.message ?? e);
+    }
+  }
+
+  async function loadInbox() {
+    try {
+      const res = await fetch('/api/mail/inbox');
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        inbox = data;
+        inboxNote = null;
+      } else {
+        inbox = [];
+        inboxNote = data.note ?? null;
+      }
+      error = null;
+    } catch (e) {
+      error = String(e?.message ?? e);
+    }
+  }
+
+  function openInbox() {
+    pane = 'inbox';
+    if (inbox === null) loadInbox();
+  }
+
+  async function stageCompose() {
+    if (!cTo.trim() || !cSubject.trim() || !cBody.trim()) return;
+    busy = true;
+    try {
+      const res = await fetch('/api/mail/compose', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          to: cTo.trim(),
+          subject: cSubject.trim(),
+          body: cBody,
+          account: cAccount.trim() || null,
+        }),
+      });
+      const text = await res.text();
+      if (!res.ok) throw new Error(text.trim());
+      composing = false;
+      cTo = cSubject = cBody = cAccount = '';
+      toast = 'staged — review it in the Outbox before it sends';
+      setTimeout(() => (toast = null), 5000);
+      error = null;
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      busy = false;
     }
   }
 
@@ -169,26 +228,73 @@
   {#if !reading}
     <header>
       <span class="title">Mail</span>
-      <span class="chip">{needs.length} need you · {parked.length} parked</span>
+      <div class="tabs">
+        <button class="tab" class:on={pane === 'queue'} onclick={() => (pane = 'queue')}>Queue</button>
+        <button class="tab" class:on={pane === 'inbox'} onclick={openInbox}>Inbox</button>
+      </div>
     </header>
     <div class="scroll">
       {#if error}<div class="warnline">{@render hazardGlyph()}<span>{error}</span></div>{/if}
-      {#if rows === null && !error}
-        <div class="empty">reading the queue…</div>
-      {:else}
-        {#each needs as r}{@render mailRow(r)}{:else}
-          <div class="empty">Nothing needs you.</div>
-        {/each}
-        {#if parked.length}
-          <button class="ghost" onclick={() => (showParked = !showParked)}>
-            {showParked ? 'hide' : 'show'} {parked.length} handled / parked
-          </button>
-          {#if showParked}
-            {#each parked as r}{@render mailRow(r)}{/each}
+      {#if pane === 'queue'}
+        {#if rows === null && !error}
+          <div class="empty">reading the queue…</div>
+        {:else}
+          <div class="paneinfo">{needs.length} need you · {parked.length} parked</div>
+          {#each needs as r}{@render mailRow(r)}{:else}
+            <div class="empty">Nothing needs you.</div>
+          {/each}
+          {#if parked.length}
+            <button class="ghost" onclick={() => (showParked = !showParked)}>
+              {showParked ? 'hide' : 'show'} {parked.length} handled / parked
+            </button>
+            {#if showParked}
+              {#each parked as r}{@render mailRow(r)}{/each}
+            {/if}
           {/if}
+        {/if}
+      {:else}
+        {#if inbox === null && !error}
+          <div class="empty">reading the inbox — every account, newest first…</div>
+        {:else}
+          <div class="pull"><button class="ghost" onclick={loadInbox}>refresh</button></div>
+          {#each inbox ?? [] as m}
+            <button
+              class="card rowbtn"
+              onclick={() => open({ thread_id: m.thread_id, account: m.account, summary: m.subject })}
+            >
+              <div class="rowtop">
+                {#if m.unread}<span class="unread"></span>{/if}
+                <span class="from">{m.from}</span>
+                <span class="acct">{m.account}</span>
+              </div>
+              <div class="summary">{m.subject}</div>
+              {#if m.snippet}<div class="snippet">{m.snippet}</div>{/if}
+              <div class="rowfoot"><span class="tag">{(m.date ?? '').slice(0, 16).replace('T', ' ')}</span></div>
+            </button>
+          {:else}
+            <div class="empty">{inboxNote ?? 'The inbox is empty.'}</div>
+          {/each}
         {/if}
       {/if}
     </div>
+    <button class="fab" onclick={() => (composing = true)} title="write a new email — staged for review">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--void)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" /></svg>
+    </button>
+    {#if composing}
+      <div class="cscrim" onclick={() => (composing = false)} aria-hidden="true"></div>
+      <div class="sheet">
+        <div class="sheet-grip"></div>
+        <div class="sheet-text">New email — stages for review, never sends from here</div>
+        <input class="editline" bind:value={cTo} placeholder="to: who@example.edu" />
+        <input class="editline" bind:value={cSubject} placeholder="subject" />
+        <input class="editline" bind:value={cAccount} placeholder="from account (blank = default)" />
+        <textarea class="editbox" rows="5" bind:value={cBody} placeholder="the email, in your words (markdown ok)"></textarea>
+        <div class="btnrow">
+          <button class="btn" onclick={() => (composing = false)}>Back</button>
+          <button class="btn primary" disabled={busy || !cTo.trim() || !cSubject.trim() || !cBody.trim()} onclick={stageCompose}>Stage it</button>
+        </div>
+      </div>
+    {/if}
   {:else}
     <header>
       <button class="backbtn" onclick={back} aria-label="back">
@@ -327,5 +433,13 @@
   .sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-900); align-self: center; }
   .sheet-text { font-size: 15px; font-weight: 500; }
   .sheet-sub { font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
+  .tabs { display: flex; gap: 8px; }
+  .tab { font-family: var(--mono); font-size: 12px; color: var(--text-muted); background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); padding: 8px 13px; min-height: 38px; cursor: pointer; }
+  .tab.on { color: var(--text); background: var(--accent-900); border-color: var(--accent-700); }
+  .paneinfo { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+  .unread { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-400); flex-shrink: 0; }
+  .pull { display: flex; justify-content: flex-end; margin: -6px 0; }
+  .fab { position: absolute; right: 18px; bottom: 18px; width: 54px; height: 54px; border-radius: 50%; background: var(--accent-400); border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4); z-index: 4; }
+  .cscrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 5; }
   .toast { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 10px 16px; font-size: 13px; white-space: nowrap; max-width: 90%; overflow: hidden; text-overflow: ellipsis; }
 </style>

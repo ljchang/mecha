@@ -254,6 +254,8 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/queue/sample", axum::routing::post(review::sample))
         .route("/api/queue/verdict", axum::routing::post(review::verdict))
         .route("/api/mail", get(mail::list))
+        .route("/api/mail/inbox", get(mail::inbox))
+        .route("/api/mail/compose", axum::routing::post(mail::compose))
         .route("/api/mail/read", get(mail::read))
         .route("/api/mail/act", axum::routing::post(mail::act))
         .route("/api/tasks", get(board::tasks))

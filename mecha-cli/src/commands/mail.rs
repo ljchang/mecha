@@ -92,6 +92,39 @@ pub enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// The most recent messages across every account (or one), newest
+    /// first — the plain inbox, untriaged. Reads through the same
+    /// `mail_recent` tool the model uses; `--json` passes its rows through.
+    Recent {
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long, default_value_t = 15)]
+        max: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write a NEW email. **Stages into the outbox, never sends** — the
+    /// same review path as every model-drafted send, because the queue is
+    /// the one place outbound mail waits regardless of who wrote it.
+    ///
+    /// No model and no MCP server runs: the draft is the owner's own words,
+    /// staged verbatim under the routed send tool's configured name, so
+    /// `mecha outbox send` releases it exactly as it releases a drafted one.
+    Compose {
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        subject: String,
+        /// Markdown; converted to HTML at send time.
+        #[arg(long)]
+        body: String,
+        /// Omit to send from the default account (the send fails loudly at
+        /// release if none is set).
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        cc: Option<String>,
+    },
     /// Drop a thread from the queue without acting on it.
     Dismiss {
         thread_id: String,
@@ -346,6 +379,14 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             json,
         } => list(all, aged, aged_hours, surface, json),
         Cmd::Show { thread_id, account } => show(global, &thread_id, account.as_deref()).await,
+        Cmd::Recent { account, max, json } => recent(global, account.as_deref(), max, json).await,
+        Cmd::Compose {
+            to,
+            subject,
+            body,
+            account,
+            cc,
+        } => compose(&to, &subject, &body, account.as_deref(), cc.as_deref()),
         Cmd::Classify {
             account,
             limit,
@@ -600,6 +641,110 @@ fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) ->
 }
 
 /// Print the prose. The one verb that does, and it is for a person.
+/// The plain inbox: `mail_recent`'s own rows (already JSON), passed through
+/// for `--json` and rendered as lines for a terminal.
+async fn recent(global: &GlobalOpts, account: Option<&str>, max: u32, as_json: bool) -> Result<()> {
+    let prepared = setup::prepare_tools(global, false).await?;
+    let Some(tool) = find_tool(&prepared.registry, "mail_recent") else {
+        bail!("no mail server in this configuration — is `[[mcp]]` for mecha-mail enabled?");
+    };
+    let mut input = json!({ "max_results": max });
+    if let Some(a) = account {
+        input["account"] = json!(a);
+    }
+    let ctx = tool_ctx(&prepared);
+    let out = tool.call(input, &ctx).await?;
+    if out.is_error {
+        bail!("{}", out.content);
+    }
+    if as_json {
+        println!("{}", out.content);
+        return Ok(());
+    }
+    match serde_json::from_str::<Vec<Value>>(&out.content) {
+        Ok(rows) => {
+            for r in &rows {
+                println!(
+                    "  {} {:<10} {:<28} {}",
+                    if r["unread"].as_bool().unwrap_or(false) {
+                        "●"
+                    } else {
+                        " "
+                    },
+                    r["account"].as_str().unwrap_or(""),
+                    r["from"]
+                        .as_str()
+                        .unwrap_or("")
+                        .chars()
+                        .take(28)
+                        .collect::<String>(),
+                    r["subject"].as_str().unwrap_or(""),
+                );
+            }
+        }
+        // The tool's no-match answer is prose, not rows.
+        Err(_) => println!("{}", out.content),
+    }
+    Ok(())
+}
+
+/// Stage a new email under the routed send tool's configured name. The name
+/// comes from `[outbox] tools`, never from a guess: if `mail_send` is not
+/// routed there, composing refuses — an unrouted stage would be a draft no
+/// release path knows how to execute, and config reading as though sends
+/// were reviewed while one slipped past is the exact shape the startup
+/// warning exists for.
+fn compose(
+    to: &str,
+    subject: &str,
+    body: &str,
+    account: Option<&str>,
+    cc: Option<&str>,
+) -> Result<()> {
+    let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+    let cfg = mecha_core::config::Config::load(&cwd)?;
+    let Some(tool_name) = cfg
+        .outbox
+        .tools
+        .iter()
+        .find(|t| t.rsplit("__").next() == Some("mail_send"))
+        .cloned()
+    else {
+        bail!("mail_send is not outbox-routed in [outbox] tools — refusing to stage a draft nothing releases");
+    };
+    let mut args = json!({
+        "to": to,
+        "subject": subject,
+        "body_markdown": body,
+    });
+    if let Some(a) = account {
+        args["account"] = json!(a);
+    }
+    if let Some(c) = cc {
+        args["cc"] = json!(c);
+    }
+    let root = match cfg.outbox.dir.clone() {
+        Some(dir) => dir,
+        None => mecha_core::outbox::OutboxStore::default_root()?,
+    };
+    let store = mecha_core::outbox::OutboxStore::open(root)?;
+    // The owner's own words: a clean taint, honestly — nothing untrusted
+    // was in front of whoever typed this.
+    let item = store.stage(
+        &tool_name,
+        mecha_core::outbox::OutboxKind::Message,
+        args,
+        mecha_core::agent::Taint::default(),
+        None,
+        None,
+    )?;
+    println!(
+        "staged {} — review and send with `mecha outbox` (or the phone's Outbox)",
+        item.id
+    );
+    Ok(())
+}
+
 async fn show(global: &GlobalOpts, thread_id: &str, account: Option<&str>) -> Result<()> {
     // A handle from a briefing has to work here too, and the failure without
     // this is not local: the handle goes to the provider, which answers

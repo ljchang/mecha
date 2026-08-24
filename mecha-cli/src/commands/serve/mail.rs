@@ -97,6 +97,56 @@ pub async fn list(State(_state): St) -> Response {
     }
 }
 
+/// GET /api/mail/inbox — the plain inbox: `mecha mail recent --json`,
+/// which is `mail_recent`'s own rows verbatim. A slow child (an MCP
+/// startup and a provider fan-out), so it gets mail's minutes budget.
+pub async fn inbox(State(state): St) -> Response {
+    match self_text(&state, &["mail", "recent", "--max", "25", "--json"]).await {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(v) => Json(v).into_response(),
+            // The tool's no-match answer is prose; the page shows it as an
+            // empty inbox with the note.
+            Err(_) => Json(serde_json::json!({ "note": text.trim() })).into_response(),
+        },
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ComposeBody {
+    pub to: String,
+    pub subject: String,
+    pub body: String,
+    pub account: Option<String>,
+    pub cc: Option<String>,
+}
+
+/// POST /api/mail/compose — stage a new email for review. Nothing sends:
+/// the CLI stages under the routed send tool and the outbox page is where
+/// it goes out.
+pub async fn compose(State(state): St, Json(b): Json<ComposeBody>) -> Response {
+    let mut args = vec![
+        "mail".to_string(),
+        "compose".to_string(),
+        "--to".to_string(),
+        b.to,
+        "--subject".to_string(),
+        b.subject,
+        "--body".to_string(),
+        b.body,
+    ];
+    if let Some(a) = b.account.filter(|a| !a.trim().is_empty()) {
+        args.push("--account".to_string());
+        args.push(a);
+    }
+    if let Some(c) = b.cc.filter(|c| !c.trim().is_empty()) {
+        args.push("--cc".to_string());
+        args.push(c);
+    }
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    verb_now_named(&state, &argv).await
+}
+
 #[derive(Deserialize)]
 pub struct ReadQuery {
     pub thread: String,
