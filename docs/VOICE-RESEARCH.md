@@ -707,3 +707,14 @@ open http://localhost:7860 — localhost is a secure context, so the mic
 works. Remaining after the click: `tailscale serve --bg 7860`, an
 end-to-end phone test, earcons and the transcript pane (a custom page
 replacing the prebuilt one), Chatterbox pcm, systemd units.
+
+**First conversation: 2026-08-24.** Serve enabled, the page published at
+the tailnet HTTPS name, and the owner spoke to the agent from a phone and
+it answered — Voxtral ears, the local model with its full tool surface
+behind the facade, Chatterbox Turbo's voice, WebRTC inside the tailnet,
+no byte leaving the machine's own network. Owner verdict: "it did work" —
+more testing to come. Open polish, in order: the real page (D7 chimes,
+thinking loop, D9 transcript pane — the stock Pipecat debug UI serves
+today), turn-taking tuning against the §3.2 padding trap, systemd units
+for worker and facade (both run under nohup tonight; the Voxtral unit
+still awaits its sudo), and the cache-lens pass over a voice session.
