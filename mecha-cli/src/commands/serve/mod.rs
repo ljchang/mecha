@@ -32,6 +32,7 @@ use axum::{Json, Router};
 use mecha_core::config::Config;
 
 mod chat;
+mod review;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -50,6 +51,7 @@ struct WebState {
     /// the chat routes answer 503 naming the reason — fail to a lesser mode,
     /// never silently.
     chat: Option<Arc<chat::ChatState>>,
+    review: Arc<review::ReviewState>,
 }
 
 pub async fn execute(args: Args) -> Result<()> {
@@ -69,7 +71,7 @@ pub async fn execute(args: Args) -> Result<()> {
     };
 
     let port = args.port.unwrap_or(config.web.port);
-    let assets = args.assets.or(config.web.assets);
+    let assets = args.assets.or(config.web.assets.clone());
 
     let chat = match chat::ChatState::build().await {
         Ok(c) => Some(Arc::new(c)),
@@ -79,9 +81,11 @@ pub async fn execute(args: Args) -> Result<()> {
             None
         }
     };
+    let review = Arc::new(review::review_state(&config)?);
     let state = WebState {
         owner_login: Arc::new(owner),
         chat,
+        review,
     };
     let app = router(state.clone(), assets.as_deref());
 
@@ -112,7 +116,18 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/chat", get(chat::transcript))
         .route("/api/chat/send", axum::routing::post(chat::send))
         .route("/api/chat/cancel", axum::routing::post(chat::cancel))
-        .route("/api/chat/events", get(chat::events));
+        .route("/api/chat/events", get(chat::events))
+        .route("/api/outbox", get(review::list))
+        .route("/api/outbox/{id}", get(review::detail))
+        .route(
+            "/api/outbox/{id}/approve",
+            axum::routing::post(review::approve),
+        )
+        .route(
+            "/api/outbox/{id}/reject",
+            axum::routing::post(review::reject),
+        )
+        .route("/api/outbox/{id}/edit", axum::routing::post(review::edit));
 
     let app = match assets {
         Some(dir) => api.fallback_service(tower_http::services::ServeDir::new(dir)),
@@ -243,6 +258,10 @@ mod tests {
             WebState {
                 owner_login: Arc::new("owner@example.com".into()),
                 chat: None,
+                review: Arc::new(review::ReviewState {
+                    outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
+                    sessions_dir: None,
+                }),
             },
             None,
         )
