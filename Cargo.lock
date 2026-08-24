@@ -1610,6 +1610,7 @@ dependencies = [
  "mecha-core",
  "mecha-slack",
  "ratatui",
+ "reqwest",
  "rustyline",
  "serde",
  "serde_json",

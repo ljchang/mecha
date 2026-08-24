@@ -193,7 +193,9 @@
     vEntries = [];
     vState = { name: 'connecting', label: 'connecting' };
     vSession = createVoiceSession({
-      offerUrl: 'https://spark-8c43.tailc01fd2.ts.net/api/offer',
+      // Same-origin: serve proxies to the loopback runner, so the offer
+      // rides the owner guard and no cross-origin fetch exists to fail.
+      offerUrl: '/api/offer',
       onState: (name, label) => (vState = { name, label }),
       onTranscript,
       onLevel: (level) => (vLevel = level),
