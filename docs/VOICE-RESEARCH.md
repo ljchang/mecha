@@ -270,7 +270,8 @@ ambient-capture risk is the owner's own room, not a third party's rendered
 payload. Decision: transcripts enter as ordinary user text. **This is the
 one decision in this file that loosens nothing but should still be ratified
 by the owner before building** — it is recorded here so it is deliberate
-rather than incidental.
+rather than incidental. **Ratified 2026-08-24: the owner ruled voice is
+typed text — no taint.**
 
 **D6 — one serving family, plus one small exception (amended same day,
 owner ruling).** STT is Voxtral Mini 3B GGUF behind a **third llama-server
