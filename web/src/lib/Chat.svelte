@@ -10,6 +10,7 @@
   import { createVoiceSession } from '../../../scripts/voice/page/voice-core.js';
 
   let key = $state('main');
+  let mode = $state('read_only');
   let rail = $state([]);
   let entries = $state([]);
   let streaming = $state('');
@@ -70,6 +71,7 @@
       running = data.running;
       taint = data.taint;
       model = data.model;
+      mode = data.mode ?? 'read_only';
       if (data.usage?.prompt_tokens) {
         usage = { prompt: data.usage.prompt_tokens, window: data.usage.context_window };
       }
@@ -113,6 +115,23 @@
           break;
         case 'notice':
           pushEntry({ kind: 'notice', text: ev.text });
+          break;
+        case 'question':
+          pushEntry({
+            kind: 'question',
+            qid: ev.qid,
+            qkind: ev.kind,
+            tool: ev.tool,
+            args: ev.args,
+            question: ev.question,
+            options: ev.options ?? [],
+            freeText: '',
+            denying: false,
+            denyReason: '',
+          });
+          break;
+        case 'question_done':
+          entries = entries.filter((e) => !(e.kind === 'question' && e.qid === ev.qid));
           break;
         case 'done':
           flushStreaming();
@@ -255,6 +274,35 @@
     }
   }
 
+  async function respond(entry, payload) {
+    try {
+      const res = await fetch(`/api/chat/${key}/answer`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ qid: entry.qid, ...payload }),
+      });
+      // 410 = answered elsewhere or expired; the card is stale either way.
+      if (res.ok || res.status === 410) {
+        entries = entries.filter((e) => e !== entry);
+      }
+    } catch {
+      // leave the card; the timeout resolves it honestly server-side
+    }
+  }
+
+  async function setMode(next) {
+    try {
+      const res = await fetch(`/api/chat/${key}/mode`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: next }),
+      });
+      if (res.ok) mode = next;
+    } catch {
+      // header chip keeps showing the real mode from the last load
+    }
+  }
+
   async function cancel() {
     try {
       await fetch(`/api/chat/${key}/cancel`, { method: 'POST' });
@@ -281,6 +329,12 @@
           {taint.private ? 'private' : ''}{taint.private && taint.untrusted ? ' + ' : ''}{taint.untrusted ? 'untrusted' : ''}
         </span>
       {/if}
+      <button
+        class="chip modechip"
+        class:ask={mode === 'ask'}
+        onclick={() => setMode(mode === 'ask' ? 'read_only' : 'ask')}
+        title="read_only: reads run, sends stage · ask: every other call becomes an approval card"
+      >{mode === 'ask' ? 'ask' : 'read-only'}</button>
       <span class="chip">{model || '…'}</span>
       <button
         class="speakbtn"
@@ -331,6 +385,72 @@
         </div>
       {:else if entry.kind === 'notice'}
         <div class="notice">{entry.text}</div>
+      {:else if entry.kind === 'question' && entry.qkind === 'approval'}
+        <div class="qcard">
+          <div class="qhead">
+            <span class="qkicker">mecha wants to run</span>
+            <span class="qtool">{entry.tool}</span>
+          </div>
+          {#if entry.args}<pre class="qargs">{entry.args}</pre>{/if}
+          {#if entry.denying}
+            <input
+              class="qinput"
+              placeholder="why not? (recorded, and learned from)"
+              bind:value={entry.denyReason}
+            />
+            <div class="qrow">
+              <button class="qbtn" onclick={() => (entry.denying = false)}>Back</button>
+              <button
+                class="qbtn deny"
+                onclick={() => respond(entry, { allow: false, reason: entry.denyReason })}
+              >Deny</button>
+            </div>
+          {:else}
+            <div class="qrow">
+              <button class="qbtn" onclick={() => (entry.denying = true)}>Deny…</button>
+              <button class="qbtn primary" onclick={() => respond(entry, { allow: true })}>
+                Allow
+              </button>
+            </div>
+          {/if}
+          <div class="qfoot">unanswered in 2m → refused as machine policy, never as your no</div>
+        </div>
+      {:else if entry.kind === 'question'}
+        <div class="qcard">
+          <div class="qhead">
+            <span class="qkicker">mecha asks</span>
+          </div>
+          <div class="qtext">{entry.question}</div>
+          {#if entry.options.length}
+            <div class="qopts">
+              {#each entry.options as option}
+                <button class="qopt" onclick={() => respond(entry, { answer: option })}>
+                  {option}
+                </button>
+              {/each}
+            </div>
+          {/if}
+          <div class="qrow">
+            <input
+              class="qinput"
+              placeholder="something else…"
+              bind:value={entry.freeText}
+              onkeydown={(e) => {
+                if (e.key === 'Enter' && entry.freeText.trim()) {
+                  respond(entry, { answer: entry.freeText.trim() });
+                }
+              }}
+            />
+            <button
+              class="qbtn primary slim"
+              disabled={!entry.freeText.trim()}
+              onclick={() => respond(entry, { answer: entry.freeText.trim() })}
+            >Answer</button>
+          </div>
+          <button class="qdecline" onclick={() => respond(entry, { decline: true })}>
+            Decline — mecha proceeds without guessing
+          </button>
+        </div>
       {/if}
     {/each}
     {#if streaming}
@@ -591,6 +711,132 @@
     color: var(--hazard);
     display: flex;
     gap: 8px;
+  }
+  .modechip {
+    cursor: pointer;
+    background: var(--bg);
+    min-height: 28px;
+  }
+  .modechip.ask {
+    color: var(--accent-100);
+    background: var(--accent-900);
+    border-color: var(--accent-500);
+  }
+  .qcard {
+    background: var(--surface);
+    border: 1px solid var(--accent-500);
+    border-radius: var(--radius);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .qhead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .qkicker {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .qtool {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent-400);
+  }
+  .qtext {
+    font-size: 15px;
+    font-weight: 500;
+    line-height: 1.4;
+  }
+  .qargs {
+    background: var(--void);
+    border: 1px solid var(--accent-900);
+    border-radius: var(--radius-chip);
+    padding: 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-x: auto;
+    max-height: 180px;
+    margin: 0;
+  }
+  .qopts {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .qopt {
+    text-align: left;
+    background: var(--bg);
+    border: 1px solid var(--accent-900);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 14px;
+    padding: 12px 14px;
+    min-height: 48px;
+    cursor: pointer;
+  }
+  .qopt:active {
+    border-color: var(--accent-500);
+  }
+  .qrow {
+    display: flex;
+    gap: 8px;
+  }
+  .qbtn {
+    flex: 1;
+    min-height: 44px;
+    background: var(--bg);
+    border: 1px solid var(--accent-900);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .qbtn.primary {
+    background: var(--accent-400);
+    color: var(--void);
+    font-weight: 500;
+    border: none;
+  }
+  .qbtn.deny {
+    color: var(--hazard);
+    border-color: var(--accent-700);
+  }
+  .qbtn.slim {
+    flex: 0 0 88px;
+  }
+  .qbtn:disabled {
+    opacity: 0.5;
+  }
+  .qinput {
+    flex: 1;
+    background: var(--void);
+    border: 1px solid var(--accent-900);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 14px;
+    padding: 11px 12px;
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+  .qdecline {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 13px;
+    min-height: 44px;
+    cursor: pointer;
+  }
+  .qfoot {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-muted);
   }
   .thinking {
     display: flex;
