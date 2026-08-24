@@ -539,3 +539,45 @@ Phase 1 only.
    absorbs it properly, an all-llama.cpp STT+TTS stack becomes possible
    and the Kokoro sidecar exception (D6) could close. Re-check when
    revisiting the TTS leg — not before.
+
+
+---
+
+## 7. Build log — Phase 1 (2026-08-24, same day)
+
+**The STT leg is live.** llama-server (build a4ce259, 2026-07) on
+127.0.0.1:8082 with `bartowski/mistralai_Voxtral-Mini-3B-2507` Q8_0 +
+f16 audio mmproj, `-c 8192 -np 1`. Proof: whisper.cpp's canonical 11 s
+JFK sample transcribed **word-perfect, punctuation included, in 1.10 s**.
+The §D6 UNVERIFIED seam is settled: audio goes in as a chat-completions
+`input_audio` content part (base64 + format), and it works. Four findings,
+each of which cost something:
+
+- **Slot cache reuse mangles multimodal context, presenting as deafness.**
+  llama-server's LCP-similarity slot reuse spliced a new request onto a
+  partially-kept KV cache (`f_keep = 0.756`, 393 of 1611 tokens
+  evaluated), landing mid-audio — and the model answered "I don't have
+  the capability to transcribe audio," which reads exactly like a missing
+  mmproj. **The adapter must send `cache_prompt: false` on every
+  request.** Transcription has no reusable prefix, so this costs ~300 ms
+  and buys correctness.
+- **Prompt wording flips this model into refusal.** "Transcribe this
+  audio exactly. Output only the transcription." works; the same request
+  worded "transcribe the entire audio from beginning to end" refuses,
+  full audio context and all. The working string is part of the adapter
+  contract — pin it, and treat any rewording as a change to test, not a
+  paraphrase (the ask_user decline-wording lesson, again).
+- **An utterance costs ~1,611 prompt tokens flat.** A 6 s clip and an
+  11 s clip both tokenized to 1,611 — mtmd pads audio to its 30 s chunk,
+  so cost is per-chunk-constant, the image-tiling finding with ears. A
+  voice turn's STT cost is fixed and small; nothing to optimize.
+- **Synthetic TTS clips are unreliable ASR test fixtures.** ffmpeg's
+  flite voice rendered one sentence intelligibly and one not; Voxtral
+  transcribed the intelligible one and refused the garble — correct
+  behaviour that looks like a bug. Ground-truth clips must be real
+  speech (whisper.cpp's `jfk.wav` is the canonical one).
+
+Also landed: Kokoro-FastAPI arm64 CPU image pulled; NGC
+`nvcr.io/nvidia/pytorch:25.11-py3` (the tag NVIDIA's own DGX Spark
+playbook pins) is the Chatterbox runtime, pull pending. Not yet: the
+systemd unit for :8082, the Chatterbox container, the facade.
