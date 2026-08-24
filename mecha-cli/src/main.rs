@@ -13,6 +13,7 @@ mod review_policy;
 mod setup;
 mod slack;
 mod tui;
+mod voice;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -160,6 +161,13 @@ pub struct GlobalOpts {
     /// have been started in — see [`mecha_core::trigger`].
     #[arg(skip)]
     pub global_config_only: bool,
+
+    /// Not a flag: appended to the system prompt after the user's own
+    /// (never replacing it), ahead of the date stamp. Set by front-ends
+    /// that need a standing block inside the cached prefix — voice-serve's
+    /// speakable-output block is the first (docs/VOICE-RESEARCH.md, D10).
+    #[arg(skip)]
+    pub system_extra: Option<String>,
 }
 
 /// Same shape as `chat`, so switching between them is muscle memory.
@@ -185,6 +193,10 @@ pub enum Command {
     /// Full-screen session. The input line stays live while the agent works,
     /// so a message typed mid-run steers it instead of waiting for it.
     Tui(TuiArgs),
+
+    /// Serve the agent to the local voice worker: an OpenAI-compatible
+    /// chat endpoint on 127.0.0.1, one conversation per voice session.
+    VoiceServe(commands::voice_serve::Args),
 
     /// Run the same agent over a JSONL file of prompts.
     Batch(commands::batch::Args),
@@ -350,6 +362,7 @@ async fn dispatch() -> Result<()> {
         Command::Run(args) => commands::run::execute(&cli.global, args).await,
         Command::Chat(args) => commands::chat::execute(&cli.global, args).await,
         Command::Tui(args) => tui::execute(&cli.global, args.resume, args.no_session).await,
+        Command::VoiceServe(args) => commands::voice_serve::execute(&cli.global, args).await,
         Command::Batch(args) => commands::batch::execute(&cli.global, args).await,
         Command::Eval(args) => commands::eval::execute(&cli.global, args).await,
         Command::Reflect(args) => commands::reflect::execute(&cli.global, args).await,
