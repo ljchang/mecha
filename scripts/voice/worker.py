@@ -40,7 +40,15 @@ from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
 FACADE_URL = os.environ.get("MECHA_VOICE_LLM", "http://127.0.0.1:8990/v1")
-STT_URL = os.environ.get("MECHA_VOICE_STT", "http://127.0.0.1:8082/v1")
+# parakeet (default): the transducer - cannot answer, obey, or improvise.
+# voxtral: the chat model, kept for audio-understanding turns; as a
+# transcriber it answered question-shaped speech and obeyed spoken
+# instructions ("say the word banana" -> "banana"), so it lost the seat.
+STT_KIND = os.environ.get("MECHA_VOICE_STT_KIND", "parakeet")
+STT_URL = os.environ.get(
+    "MECHA_VOICE_STT",
+    "http://127.0.0.1:8992/v1" if STT_KIND == "parakeet" else "http://127.0.0.1:8082/v1",
+)
 TTS_URL = os.environ.get("MECHA_VOICE_TTS", "http://127.0.0.1:8880/v1")
 TTS_VOICE = os.environ.get("MECHA_VOICE_TTS_VOICE", "af_heart")
 
@@ -143,9 +151,14 @@ class VoxtralSTT(BaseWhisperSTTService):
             messages=[
                 {
                     "role": "user",
+                    # Instruction first, audio second - tested: with the
+                    # audio first the model treats it as the message and
+                    # answers question-shaped speech instead of writing it
+                    # down. Order does not fix the obeys-spoken-commands
+                    # class, which is why Parakeet holds the seat.
                     "content": [
-                        {"type": "input_audio", "input_audio": {"data": b64, "format": "wav"}},
                         {"type": "text", "text": TRANSCRIBE_PROMPT},
+                        {"type": "input_audio", "input_audio": {"data": b64, "format": "wav"}},
                     ],
                 }
             ],
@@ -175,6 +188,35 @@ class VoxtralSTT(BaseWhisperSTTService):
         elif is_probable_echo(text):
             logger.debug(f"voxtral echo filter: transcript matches recent bot speech: {text[:60]!r}")
             text = ""
+        return Transcription(text=text)
+
+
+class ParakeetSTT(VoxtralSTT):
+    """The structural transcriber: Parakeet TDT behind parakeet_server.py,
+    whisper-style multipart. Inherits Voxtral's gates (energy, duration,
+    echo, word-rate) - a faithful transcriber faithfully transcribes the
+    bot's own speaker when echo cancellation fails, so the text filter
+    stays load-bearing - but needs none of the prompt discipline, because
+    there is no prompt."""
+
+    async def _transcribe(self, audio: bytes) -> Transcription:
+        from loguru import logger
+
+        try:
+            duration, rms = self._segment_stats(audio)
+        except Exception:
+            duration, rms = 1.0, 1.0
+        if duration < MIN_SEGMENT_SECONDS or rms < MIN_SEGMENT_RMS:
+            logger.debug(f"parakeet segment gated: duration={duration:.2f}s rms={rms:.4f}")
+            return Transcription(text="")
+        r = await self._client.audio.transcriptions.create(
+            model="parakeet", file=("segment.wav", audio, "audio/wav")
+        )
+        text = (r.text or "").strip()
+        logger.debug(f"parakeet: duration={duration:.2f}s rms={rms:.4f} text={text[:100]!r}")
+        if is_probable_echo(text):
+            logger.debug(f"parakeet echo filter: {text[:60]!r}")
+            return Transcription(text="")
         return Transcription(text=text)
 
 
@@ -211,7 +253,8 @@ class LocalTTS(OpenAITTSService):
 
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
-    stt = VoxtralSTT(api_key="unused", base_url=STT_URL)
+    stt_cls = ParakeetSTT if STT_KIND == "parakeet" else VoxtralSTT
+    stt = stt_cls(api_key="unused", base_url=STT_URL)
     tts = LocalTTS(
         api_key="unused",
         base_url=TTS_URL,

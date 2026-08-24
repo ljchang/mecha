@@ -1,0 +1,19 @@
+# STT for mecha voice: Parakeet TDT 0.6B v3 (int8, CPU) behind an
+# OpenAI-compatible transcription endpoint. The structural transcriber -
+# a transducer cannot answer, obey, or improvise, which is why it holds
+# the seat the chat model lost (docs/VOICE-RESEARCH.md S7, 2026-08-24).
+# CPU on purpose: faster than real-time on the Grace cores (92ms per
+# utterance measured) and never starved by llama-server owning the GPU.
+[Unit]
+Description=mecha parakeet STT (:8992)
+After=network.target
+
+[Service]
+Environment=PARAKEET_DIR=/home/ljchang/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
+WorkingDirectory=/home/ljchang/Github/mecha
+ExecStart=/home/ljchang/models/voice-worker-venv/bin/uvicorn --app-dir scripts/voice parakeet_server:app --host 127.0.0.1 --port 8992
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
