@@ -1,0 +1,246 @@
+# The remote surface — design
+
+**2026-08-24.** One question: *how does the tailnet web surface get built
+without weakening anything the harness enforces — which process owns it, who
+it answers to, how its verbs reach the stores, and in what order the work
+lands?*
+
+`REMOTE-SURFACE-RESEARCH.md` (same day) is the why: the field survey, the
+platform comparison, and the owner's scope rulings. The mockup canvas ("mecha
+Remote", claude.ai artifact `e3afdf82`) is the look: nine phone screens held
+to `brand/brand.md`, with the owner's style rulings applied — no radio
+buttons, no left-accent card borders (the amber triangle glyph carries
+warnings; the amber gutter survives only as a quote marker on third-party
+text), chips and controls rectangular at 6px inside the 8px card family, and
+voice as an in-chat mode rather than a separate page. `VOICE-RESEARCH.md`
+D1–D11 are taken as given; nothing here reopens them.
+
+---
+
+## 0. The short answer
+
+| Question | Answer | Section |
+|---|---|---|
+| What process serves this? | **One front-end, working name `mecha serve`** — the voice facade's process grown sideways: static pages + JSON/SSE routes on the tailnet door, the OpenAI facade staying loopback for the Pipecat worker | §1 |
+| Who may connect? | The tailnet, verified: bind 127.0.0.1, `tailscale serve` fronts it, and the injected `Tailscale-User-Login` must equal the configured owner — absent or wrong fails closed | §2 |
+| What owns a web session? | `mecha serve` does — one agent, per-session `RunContext`, the Slack connector's proven shape. Live TUI sessions are not mirrored in v1 | §3 |
+| How do buttons reach stores? | **Every mutation is a `mecha …` child process**, exactly the TUI-modal rule; the build's CLI gaps (a non-interactive outbox body edit, missing `--json`) are closed as CLI features first | §4 |
+| Live prompts? | Yes — the page is the first front-end that can own a present human *and* fall back honestly to an absent one: `ask_user` routed per session, timeout is a recorded decline, never a guess | §5 |
+| Build order? | Dashboard (read-only) → chat → review verbs → multi-session + ask + files → voice merge + PWA | §10 |
+
+## 1. One front-end process — D1
+
+The voice plan already requires a long-lived front-end process holding an
+agent behind an OpenAI-compatible facade (`VOICE-RESEARCH.md` D2). The box already
+runs two long-lived agent-owning processes (the Slack connector and the
+trigger daemon) against llama-server's four slots, so a third is
+incremental rather than a doubling — the sharper argument is **prompt-cache
+affinity**: voice's whole latency budget is TTFT on a cached prefix, and a
+second front-end competing for the same slots splits the affinity that
+budget depends on (measure with `scripts/affinity-test.py`, not a
+throughput benchmark, which is structurally blind to affinity loss).
+So there is **one process** — working name **`mecha serve`**, and whether it
+is `voice-serve` renamed or `web-serve` absorbing it is a naming decision to
+settle with the voice build, not an architectural one. It owns:
+
+- **the agent** — one provider connection, one cached prefix, many runs via
+  `RunContext` (§3);
+- **the loopback facade** — `POST /v1/chat/completions` on 127.0.0.1 for the
+  Pipecat worker, byte-for-byte what voice D2 specifies;
+- **the tailnet routes** — static app, JSON reads, SSE streams, uploads —
+  on the port `tailscale serve` fronts.
+
+The code lives in **`mecha-cli/src/web/`**, beside `tui/` and `slack/`, on
+the standing rule: the front-end that knows both sides belongs in the CLI
+crate, and `mecha-core` never learns HTTP exists. The HTTP dependency
+(axum or bare hyper — decide at build; leaning axum, it is the smaller
+delta over hyper that tokio already implies) is therefore quarantined to
+the binary crate, checkable in `Cargo.toml` — the `mecha-slack` rule
+pattern.
+
+**The Svelte app is static output served by this process.** No Node at
+runtime, no SSR, no second server: `vite build` emits files, `mecha serve`
+serves them, and the page is a rendering of state the harness owns. The
+front-end source lives in-repo (`web/`), built at release time; the binary
+embeds or reads the build directory — decide at build, embedding preferred
+(one artifact to deploy, the update skill's kind of simplification).
+
+## 2. The door — D2
+
+- `mecha serve` binds **127.0.0.1 only**, like the facade. There is no flag
+  to bind wider — the DeepSeek `dsh` refusal, adopted. Reaching it from the
+  tailnet is `tailscale serve`'s job, and reaching it from the internet is
+  nobody's: **Funnel is never the answer** (research §3.4).
+- Every tailnet request must carry `Tailscale-User-Login` equal to
+  `[web] owner_login`. Absent header, wrong value, or unset config →
+  **refused**, not warned: a header that fails open is a login screen made
+  of paper. Loopback requests (the Pipecat worker) skip the check — they
+  never crossed the network the header describes.
+- No cookies, no sessions, no login page. Identity is the network plus the
+  header; a second device class someday is a config change, not a rebuild.
+
+## 3. Sessions — D3
+
+`mecha serve` owns web sessions the way the Slack connector owns threads:
+one agent, and per-session everything on `RunContext` — jail, budget,
+cancel token, steering queue, approver. A session's workspace is
+`~/.mecha/work/web/<name>/`, a subdirectory of the `web` producer root,
+so retention already governs it and the MCP fixed-root caveat carries over
+verbatim (servers are rooted at the producer directory; the absolute-path
+rule for staged publishes applies here too, and the session pages should
+surface it the way the Slack docs do).
+
+Sessions are ordinary session JSONLs — distill, `recall`, and the
+run-quality corpus see them for free (the voice D9 precedent). The rail
+lists live sessions first, then resumable recorded ones; resume is
+`mecha`'s existing resume, wired.
+
+**Not in v1: mirroring a live TUI session.** A `Conversation` has one
+owner (the `/remote-control` rule), and a web view of a TUI-owned session
+is the connector's mirror problem again. The v2 shape already exists on
+paper — voice D11's V2 generalises the remote-control attach so the owning
+process is a facade rather than the TUI — and this surface should inherit
+that design when it lands rather than inventing a competing one.
+
+## 4. Verbs — D4
+
+Every mutation the page offers **drives a `mecha …` CLI verb as a child
+process** — the `/tasks` and `/queues` rule, unchanged: one implementation
+per verb, nothing browser-reachable a script cannot do, and the TUI, the
+web, and cron all stay honest against the same commands. Reads use
+`--json` where it exists.
+
+The build therefore starts with the CLI gaps, each useful on its own:
+
+- **`mecha outbox edit --body <file>`** — the phone has no `$EDITOR`, so
+  the prose edit needs a non-interactive path writing through the same
+  `outbox::with_body` seam (the scratch-file round-trip rules — the
+  reference marker, refuse-when-marker-gone — apply to the web editor
+  identically).
+- **`--json` on any verb the pages read that lacks it** (survey at build:
+  outbox list/show have it; check review, frontdoor, tasks, doctor,
+  sessions).
+- **A notes verb** if `/note`'s path is TUI-only today — the capture bar
+  needs the same one-implementation rule.
+
+## 5. Ask and approvals — D5
+
+The web front-end owns a human, so it registers `ask_user` — the thing the
+Slack connector structurally cannot do. Three rules:
+
+- **Routing is the front-end's knowledge, not the tool's.** One agent, one
+  registry; the prompt reaches the page of the session whose run asked,
+  because `mecha serve` knows which `RunContext` is which. Options render
+  as cards (no radios — the owner's ruling, and the mockup's Ask screen is
+  the reference).
+- **Absence is honest.** Presence is the SSE/WebSocket connection state.
+  No page open, or no answer inside the timeout → the ask resolves as a
+  **recorded decline** with the measured wording discipline — never
+  "proceed with your best interpretation", which measurably makes models
+  invent.
+- **The approver can go live, and the outbox stays the default.** A
+  present owner may approve a tool call from the page (rendered with full
+  arguments, taint state visible); an absent one falls back to exactly
+  what the mode already says (read-only denies, outbox stages). Release
+  policy (`/review now|later|auto`) is set only by an explicit control on
+  the page — never inferred from anything sharing a context window with
+  third-party text.
+
+## 6. Files and images — D6
+
+- **Inbound**: upload lands in `<session-jail>/inbox/` and the path is
+  named in the prompt — the Slack door verbatim. An image also attaches to
+  the user turn as `Block::Image`, arming `private_data` (captured, not
+  composed).
+- **Outbound**: the page **pulls** over authenticated GET. Any path in a
+  download route resolves through the same containment proof as tool input
+  — a URL is model-adjacent data and `ToolCtx::resolve`'s rule applies to
+  it: never serve a raw path. No push exists, so "the destination is never
+  an argument" holds by construction.
+
+## 7. Security posture — D7
+
+The threat model in one sentence: **XSS in this page is an approval clicked
+by script.** The page renders third-party text (mail bodies, draft sources,
+strangers' extracted prose) inside an origin whose buttons release drafts.
+
+- Strict CSP: `default-src 'self'`, no external origins (fonts shipped
+  local rather than Google-hosted — the page must work with no internet at
+  all, and the tailnet is not the internet), no inline script, no eval.
+- All store-derived text renders as text; third-party text additionally
+  carries the amber gutter and its tool-provenance header (the outbox
+  source rules, ported). The model-facing `<untrusted-content>` envelope is
+  stripped for humans, as everywhere.
+- Mutations require a custom request header (CSRF belt over the
+  no-cookies suspenders) and confirm on the page for sends — tainted ones
+  with the full arguments on screen, EOF-equivalent (dismiss) = no.
+- The page never holds a credential: it *is* the credential's beneficiary,
+  and everything it can do, it does by asking `mecha serve`, which asks
+  the CLI.
+
+## 8. The stack — D8
+
+Svelte 5 (runes) — the owner's stack, ruled in the research doc. Static
+adapter, no SSR. One page family including the in-chat voice mode; the
+voice screen is the same session with the call overlay (mockup's Voice
+screen: the mark's slot as the state light, live verbatim transcript,
+mute / end / keyboard). PWA manifest from day one (it costs nothing);
+*installed*-PWA push and its iOS ceremony wait for Phase 5. Known iOS trap
+carried from research §3.5: installed-PWA `getUserMedia` regresses — the
+voice mode detects a dead mic and offers "open in Safari" rather than
+failing silently.
+
+## 9. What stays Slack's — D9
+
+The far door (works with the VPN down), the push nudge until Phase 5, and
+the off-tailnet file conduit. Voice D11's `push_to_slack` and the
+side-channel ruling are unchanged. Nothing is retired.
+
+## 10. Phases
+
+**Phase 1 — the door and the dashboard (read-only).** `mecha serve` with
+header auth, serving the static build; Home rendering store reads only
+(outbox/frontdoor/queues/tasks counts, doctor findings, today) via
+`--json` child processes. No agent in the process yet. *Verify: a request
+without the header is refused; a phone on the tailnet renders Home; a
+phone off the VPN gets nothing.*
+
+**Phase 2 — chat.** The agent moves in (or lands with voice's facade,
+whichever ships first — coordinate). One session: streaming over SSE,
+steering via queued input, cancel, the context gauge from reported usage,
+session recording. *Verify: a run started from the phone appears in
+`mecha sessions`; taint recorded; a second turn reads the cached prefix
+(cache lens).*
+
+**Phase 3 — the review verbs.** Outbox (list/show with `DraftView`, the
+source quote, taint banner; send/reject; edit via the new `--body` verb),
+graph-queue sample deck, tasks, frontdoor, notes capture. *Verify: every
+button's effect is reproducible as the CLI command it drives; a tainted
+send requires the on-screen confirm; nothing here works when the binary
+lacks the store (dash, never zero).*
+
+**Phase 4 — many sessions, ask, files.** The session rail over concurrent
+`RunContext`s; `ask_user` with options + decline-on-timeout; live approver
+mode; uploads to `inbox/`; authenticated downloads. *Verify: two sessions
+stream concurrently without cross-talk; an unanswered ask records a
+decline with the right wording; a download outside the jail 404s.*
+
+**Phase 5 — voice merge and the installed app.** The in-chat voice mode
+lands against the voice build's Pipecat worker (their Phases 1–3 are the
+dependency); PWA install; Web Push for staged-draft nudges (research
+§3.3), replacing nothing — Slack keeps carrying them too. *Verify: barge-in
+cancels at a safe point; the end chime fires on a killed connection; a
+push arrives with the VPN up and the page closed.*
+
+## 11. Open at build time
+
+- **Naming**: `mecha serve` vs growing `voice-serve` — settle with the
+  voice session before Phase 2 so the agent lands in one process. Whatever
+  name wins, `VOICE-RESEARCH.md` D2 names `voice-serve` explicitly and must
+  be amended in the same change — a tracked doc disagreeing with the code
+  about what exists is the stale-doc shape this repo treats as worse than
+  absence.
+- **axum vs hyper**, and **embedded static build vs directory** (§1).
+- **Presence transport**: SSE everywhere vs one WebSocket — decide when
+  the ask/approver work starts; SSE-first is the simpler default.
+- **Push timing** stays research O3: Phase 5, Slack carries nudges until.
