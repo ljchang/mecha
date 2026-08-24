@@ -677,3 +677,33 @@ voice the way SlackApprover made it usable from a phone.
 
 Remaining: Phase 3 (Pipecat worker + tailnet page + earcons + transcript
 pane), the systemd units, Phase 4 polish.
+
+**Phase 3 — the worker — running; the tailnet publish awaits one click.**
+`scripts/voice/worker.py` (Pipecat 1.7, venv at `~/models/voice-worker-venv`)
+serves the prebuilt client UI on 127.0.0.1:7860 and runs the pipeline:
+SmallWebRTC → Silero VAD → **VoxtralSTT** (a custom service — the stock
+OpenAI STT speaks `/v1/audio/transcriptions`, Voxtral speaks
+chat-completions `input_audio`; the pinned transcribe prompt and
+`cache_prompt: false` from §7 are encoded here, and an "I'm sorry"-shaped
+transcription is dropped rather than becoming a user turn) → the facade
+as the LLM → **LocalTTS** (a custom subclass — the stock service
+hard-validates `voice` against OpenAI's own list, rejecting every voice a
+local server actually has; same wire, pcm streaming) → back out. The
+three legs are env-configurable base URLs; Kokoro is the wired default,
+Chatterbox needs pcm added to its wrapper before it takes this seat.
+
+Found while building: the GitHub examples track unreleased main
+(`ProcessorUnusablePolicy` does not exist in 1.7.0), and the prebuilt UI
+moved packages — the runner imports `pipecat_ai_prebuilt`, not the older
+`pipecat-ai-small-webrtc-prebuilt`, and fails silently into 404s when
+only the old one is installed.
+
+**Blocked on the owner, deliberately:** `tailscale serve` is not enabled
+on the tailnet — enabling it is a one-click admin consent at the URL
+`tailscale serve` prints, and it is exactly the kind of decision the
+harness must not make for its owner. Until then the laptop path works
+today with no tailnet feature: `ssh -L 7860:localhost:7860 <box>` and
+open http://localhost:7860 — localhost is a secure context, so the mic
+works. Remaining after the click: `tailscale serve --bg 7860`, an
+end-to-end phone test, earcons and the transcript pane (a custom page
+replacing the prebuilt one), Chatterbox pcm, systemd units.
