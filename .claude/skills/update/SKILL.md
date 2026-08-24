@@ -71,6 +71,21 @@ cargo install --path mecha-graph     --locked --force   # mecha-graph (CLI)
 cargo install --path mecha-graph-mcp --locked --force   # mecha-graph-mcp (MCP server)
 ```
 
+**Both lines, every time — and the second one is the one that matters at
+runtime.** They are separate crates that both link `mecha-graph-core`, so
+installing `mecha-graph` alone leaves the MCP server running whatever
+library code it was last built against, silently. Found 2026-08-24: a
+session developing in the graph repo had been running
+`cargo install --path mecha-graph` all evening and left `mecha-graph-mcp`
+an hour stale — across an arc whose central fix was in
+`fact::normalize_predicate`, which had been auto-registering any predicate
+it could not alias (49 of 83 predicates arrived unreviewed that way). The
+CLI stopped doing it; the MCP server, which reaches that code through
+`kg_upsert` → `assert_fact`, would have gone on minting predicate fragments
+through the one write path nobody watches. **A stale MCP binary is worse
+than a stale CLI**, because everything mecha does at runtime goes through
+it and nothing about it announces its version.
+
 Verify: `mecha --version` matches mecha's workspace `Cargo.toml`, and the
 graph server answers from the *installed* path:
 

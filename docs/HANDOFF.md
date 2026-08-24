@@ -260,8 +260,13 @@ logging their startup lines. **The graph binaries were deliberately NOT
 reinstalled**: another session was mid-arc in the private graph checkout
 during the release freeze, and installing `mecha-graph`/`mecha-graph-mcp`
 from a working tree in flight is worse than leaving a known-good install
-alone — so `~/.cargo/bin/mecha-graph*` is that session's to update, not
-stale by accident. One `mecha tui` started ~15:10 is still on a deleted
+alone — so `~/.cargo/bin/mecha-graph*` was that session's to update, not
+stale by accident. **That arc has since landed** (graph main `f312eb0`) and
+both graph binaries are installed from it and verified answering twelve
+`kg_*` tools. The carve-out paid for itself: checking install times against
+the merge is what surfaced `mecha-graph-mcp` sitting an hour stale behind
+`mecha-graph` — two crates, two installs, and the MCP one is the only one
+mecha reaches at runtime. The update skill now says so in as many words. One `mecha tui` started ~15:10 is still on a deleted
 inode with its three MCP children; it degrades gracefully since 0.1.12 and
 needs its owner to restart it. Also not refreshed by this pass and
 independently stale: the musl benchmark binary (`target-musl/release/mecha`,
