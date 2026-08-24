@@ -17,6 +17,7 @@ The three legs are env-configurable base URLs (D6):
 
 import base64
 import os
+import uuid
 
 from openai.types.audio import Transcription
 
@@ -117,8 +118,19 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     )
     # The facade ignores the re-sent history (the Conversation is the
     # server's state) and the system prompt rides in mecha's cached prefix,
-    # so neither is configured here. `user` is the session key (D3).
-    llm = OpenAILLMService(api_key="unused", base_url=FACADE_URL, model="mecha")
+    # so neither is configured here. The session key (D3) travels as a
+    # header - pipecat's service has no `user` field, and without a key
+    # every call would share one eternal conversation and two clients
+    # would barge-in on each other forever. Per connection: one call, one
+    # taint slate, one transcript.
+    session_key = f"webrtc-{uuid.uuid4().hex[:8]}"
+    print(f"voice session key: {session_key}", flush=True)
+    llm = OpenAILLMService(
+        api_key="unused",
+        base_url=FACADE_URL,
+        model="mecha",
+        default_headers={"X-Voice-Session": session_key},
+    )
 
     context = LLMContext()
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(

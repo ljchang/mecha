@@ -47,6 +47,11 @@ use crate::GlobalOpts;
 /// Loopback, by design rather than default — see the module docs.
 const LISTEN_HOST: &str = "127.0.0.1";
 
+/// The largest request body honoured. An utterance is text; even a pasted
+/// document fits with room to spare, and a declared Content-Length must
+/// never size an allocation on its own say-so.
+const MAX_BODY_BYTES: usize = 8 << 20;
+
 /// D10: the one load-bearing prompt. Static byte-for-byte across sessions,
 /// because it rides in the cached prefix and TTFT is the latency budget.
 const VOICE_BLOCK: &str = "\
@@ -126,6 +131,11 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         prepared.workspace.display()
     );
 
+    // SIGTERM is how systemd stops this service, so it must mean what
+    // Ctrl-C means: cancel, let partial turns land in their transcripts,
+    // then go. A signal that just kills the process loses every in-flight
+    // run's recording.
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -137,20 +147,33 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
                     }
                 });
             }
-            _ = tokio::signal::ctrl_c() => {
-                // Cancel whatever is in flight so partial turns land in
-                // their transcripts before the process goes.
-                let slots = shared.slots.lock().await;
-                for state in slots.values() {
-                    if let SlotState::Running(tok) = state {
-                        tok.cancel();
-                    }
-                }
-                println!("\nvoice-serve: shutting down.");
-                return Ok(());
+            _ = tokio::signal::ctrl_c() => break,
+            _ = sigterm.recv() => break,
+        }
+    }
+    // Cancel everything in flight, then wait (bounded) for the handlers to
+    // record their runs and return the slots — returning immediately would
+    // tear down the runtime and abort them mid-record.
+    {
+        let slots = shared.slots.lock().await;
+        for state in slots.values() {
+            if let SlotState::Running(tok) = state {
+                tok.cancel();
             }
         }
     }
+    for _ in 0..150 {
+        let busy = {
+            let slots = shared.slots.lock().await;
+            slots.values().any(|s| matches!(s, SlotState::Running(_)))
+        };
+        if !busy {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    println!("\nvoice-serve: shutting down.");
+    Ok(())
 }
 
 // ---------------------------------------------------------------- HTTP
@@ -161,6 +184,7 @@ struct Head {
     path: String,
     content_length: usize,
     authorization: Option<String>,
+    session: Option<String>,
     body_start: usize,
 }
 
@@ -172,11 +196,14 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
         httparse::Status::Complete(body_start) => {
             let mut content_length = 0usize;
             let mut authorization = None;
+            let mut session = None;
             for h in req.headers.iter() {
                 if h.name.eq_ignore_ascii_case("content-length") {
                     content_length = std::str::from_utf8(h.value)?.trim().parse()?;
                 } else if h.name.eq_ignore_ascii_case("authorization") {
                     authorization = Some(String::from_utf8_lossy(h.value).into_owned());
+                } else if h.name.eq_ignore_ascii_case("x-voice-session") {
+                    session = Some(String::from_utf8_lossy(h.value).trim().to_string());
                 }
             }
             Ok(Some(Head {
@@ -184,6 +211,7 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
                 path: req.path.unwrap_or("").to_string(),
                 content_length,
                 authorization,
+                session,
                 body_start,
             }))
         }
@@ -213,6 +241,15 @@ async fn handle(mut stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
             anyhow::bail!("request head too large");
         }
     };
+    // Refusals that need only the head happen before the body is read: the
+    // token must gate the allocation, and a declared length is a claim, not
+    // an entitlement — the head is capped, so the body is too.
+    if head.method == "POST" && !auth_ok(&shared.token, &head.authorization) {
+        return write_json(&mut stream, 401, &json!({"error": "unauthorized"})).await;
+    }
+    if head.content_length > MAX_BODY_BYTES {
+        return write_json(&mut stream, 413, &json!({"error": "body too large"})).await;
+    }
     let mut body = buf[head.body_start..].to_vec();
     while body.len() < head.content_length {
         let mut chunk = [0u8; 8192];
@@ -225,12 +262,7 @@ async fn handle(mut stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
 
     match (head.method.as_str(), head.path.as_str()) {
         ("GET", "/health") => write_json(&mut stream, 200, &json!({"status": "ok"})).await,
-        ("POST", "/v1/chat/completions") => {
-            if !auth_ok(&shared.token, &head.authorization) {
-                return write_json(&mut stream, 401, &json!({"error": "unauthorized"})).await;
-            }
-            completion(&mut stream, &shared, &body).await
-        }
+        ("POST", "/v1/chat/completions") => completion(&mut stream, &shared, &head, &body).await,
         _ => write_json(&mut stream, 404, &json!({"error": "not found"})).await,
     }
 }
@@ -255,8 +287,16 @@ async fn write_json(stream: &mut TcpStream, status: u16, body: &Value) -> Result
 
 // ------------------------------------------------------- the completion
 
-/// The session id: OpenAI's `user` field, which every framework can set.
-fn session_key(body: &Value) -> String {
+/// The session id: the `X-Voice-Session` header when the client sends one
+/// (the worker stamps a per-connection key there — pipecat's LLM service
+/// exposes `default_headers` but no `user` field), else OpenAI's `user`
+/// field, else "default".
+fn session_key(body: &Value, header: &Option<String>) -> String {
+    if let Some(h) = header {
+        if !h.is_empty() {
+            return h.clone();
+        }
+    }
     body.get("user")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
@@ -312,15 +352,32 @@ async fn write_chunk(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()>
 }
 
 /// Take the session's slot, cancelling any run in flight (barge-in) and
-/// creating the session on first use. Returns the slot and the token the new
-/// run will honour.
-async fn take_slot(shared: &Arc<Shared>, key: &str) -> Result<(Box<Slot>, CancellationToken)> {
+/// creating the session on first use. `Ok(None)` means the slot never came
+/// free — the caller owes the client an answer, not a dropped connection.
+///
+/// The session file is created *outside* the lock: `Session::create` is
+/// synchronous disk I/O, and holding the one map mutex across it would
+/// stall every other session (and shutdown) behind a slow disk. The key is
+/// reserved as `Running` first so nobody else creates the same session.
+///
+/// Known and accepted: two requests barging in on the same key are not
+/// ordered — whichever waiter polls first wins. Pipecat's user aggregator
+/// serialises turns per connection and keys are per-connection, so
+/// concurrent same-key requests take a client that misbehaves; ordering
+/// machinery here would outweigh the failure it prevents.
+async fn take_slot(
+    shared: &Arc<Shared>,
+    key: &str,
+) -> Result<Option<(Box<Slot>, CancellationToken)>> {
     for _ in 0..200 {
         {
             let mut slots = shared.slots.lock().await;
             match slots.remove(key) {
                 None => {
-                    let session = Session::create(
+                    let token = CancellationToken::new();
+                    slots.insert(key.to_string(), SlotState::Running(token.clone()));
+                    drop(slots);
+                    let created = Session::create(
                         &shared.session_dir,
                         SessionMeta {
                             id: Session::new_id(),
@@ -330,29 +387,43 @@ async fn take_slot(shared: &Arc<Shared>, key: &str) -> Result<(Box<Slot>, Cancel
                             workspace: shared.agent.context().tools.workspace.clone(),
                             title: Some(format!("voice: {key}")),
                         },
-                    )?;
-                    session.append(&Record::Config(RunConfig::of(
-                        &shared.agent,
-                        &shared.config,
-                        &shared.provider_name,
-                    )))?;
-                    let token = CancellationToken::new();
-                    slots.insert(key.to_string(), SlotState::Running(token.clone()));
-                    return Ok((
-                        Box::new(Slot {
-                            convo: Conversation::new(),
-                            session,
-                        }),
-                        token,
-                    ));
+                    )
+                    .and_then(|session| {
+                        session.append(&Record::Config(RunConfig::of(
+                            &shared.agent,
+                            &shared.config,
+                            &shared.provider_name,
+                        )))?;
+                        Ok(session)
+                    });
+                    match created {
+                        Ok(session) => {
+                            return Ok(Some((
+                                Box::new(Slot {
+                                    convo: Conversation::new(),
+                                    session,
+                                }),
+                                token,
+                            )))
+                        }
+                        Err(e) => {
+                            // Release the reservation, or the key is dead
+                            // until the daemon restarts.
+                            shared.slots.lock().await.remove(key);
+                            return Err(e);
+                        }
+                    }
                 }
                 Some(SlotState::Idle(slot)) => {
                     let token = CancellationToken::new();
                     slots.insert(key.to_string(), SlotState::Running(token.clone()));
-                    return Ok((slot, token));
+                    return Ok(Some((slot, token)));
                 }
                 Some(SlotState::Running(tok)) => {
                     // Barge-in: cancel and wait for the slot to come back.
+                    // A tool call is never interrupted mid-call, so a long
+                    // one can outlast this whole window — that is the
+                    // Ok(None) the caller answers with a 503.
                     tok.cancel();
                     slots.insert(key.to_string(), SlotState::Running(tok));
                 }
@@ -360,23 +431,39 @@ async fn take_slot(shared: &Arc<Shared>, key: &str) -> Result<(Box<Slot>, Cancel
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    anyhow::bail!("session {key} is busy and did not yield within 20s")
+    Ok(None)
 }
 
-async fn completion(stream: &mut TcpStream, shared: &Arc<Shared>, body: &[u8]) -> Result<()> {
+async fn completion(
+    stream: &mut TcpStream,
+    shared: &Arc<Shared>,
+    head: &Head,
+    body: &[u8],
+) -> Result<()> {
     let body: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => {
             return write_json(stream, 400, &json!({"error": "invalid JSON body"})).await;
         }
     };
-    let key = session_key(&body);
+    let key = session_key(&body, &head.session);
     let Some(text) = last_user_text(&body) else {
         return write_json(stream, 400, &json!({"error": "no user message"})).await;
     };
     let want_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
 
-    let (mut slot, cancel) = take_slot(shared, &key).await?;
+    let Some((mut slot, cancel)) = take_slot(shared, &key).await? else {
+        // The in-flight run would not yield — usually a tool call longer
+        // than the barge-in window, which cancellation never interrupts
+        // mid-call. An answer the worker can speak beats a dropped socket
+        // that reads as the assistant ignoring the user.
+        return write_json(
+            stream,
+            503,
+            &json!({"error": "still finishing the previous step — try again in a moment"}),
+        )
+        .await;
+    };
 
     // From here the slot must always find its way back into the map, so
     // nothing below uses `?` until it has.
@@ -384,19 +471,28 @@ async fn completion(stream: &mut TcpStream, shared: &Arc<Shared>, body: &[u8]) -
     cx.cancel = Some(cancel.clone());
     // Its own outbox route carrying this session's id — the shared route is
     // one Arc across every session, and the stamp is what attributes a draft
-    // to the run that wrote it (the connector's rule).
+    // to the run that wrote it. Fail closed like the connector: a run that
+    // would stage drafts without attribution must not run at all.
     if let Some(shared_route) = &shared.agent.context().outbox {
-        if let Ok(store) = OutboxStore::open(&shared.outbox_root) {
-            let mine = OutboxRoute::new(
-                store,
-                shared_route.routed().map(String::from).collect::<Vec<_>>(),
-                shared_route
-                    .publishes()
-                    .map(String::from)
-                    .collect::<Vec<_>>(),
-            );
-            mine.set_session_id(&slot.session.meta.id);
-            cx.outbox = Some(Arc::new(mine));
+        match OutboxStore::open(&shared.outbox_root) {
+            Ok(store) => {
+                let mine = OutboxRoute::new(
+                    store,
+                    shared_route.routed().map(String::from).collect::<Vec<_>>(),
+                    shared_route
+                        .publishes()
+                        .map(String::from)
+                        .collect::<Vec<_>>(),
+                );
+                mine.set_session_id(&slot.session.meta.id);
+                cx.outbox = Some(Arc::new(mine));
+            }
+            Err(e) => {
+                tracing::error!("outbox store unavailable, refusing the turn: {e}");
+                shared.slots.lock().await.insert(key, SlotState::Idle(slot));
+                return write_json(stream, 503, &json!({"error": "outbox store unavailable"}))
+                    .await;
+            }
         }
     }
 
@@ -416,8 +512,8 @@ async fn completion(stream: &mut TcpStream, shared: &Arc<Shared>, body: &[u8]) -
     let mut disconnected = false;
 
     if want_stream {
-        let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n";
-        if stream.write_all(head.as_bytes()).await.is_err() {
+        let head_bytes = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n";
+        if stream.write_all(head_bytes.as_bytes()).await.is_err() {
             cancel.cancel();
             disconnected = true;
         }
@@ -460,7 +556,7 @@ async fn completion(stream: &mut TcpStream, shared: &Arc<Shared>, body: &[u8]) -
         while rx.recv().await.is_some() {}
     }
 
-    let (slot, outcome) = match run.await {
+    let (mut slot, outcome) = match run.await {
         Ok(pair) => pair,
         Err(e) => {
             tracing::error!("voice run task died: {e}");
@@ -473,15 +569,49 @@ async fn completion(stream: &mut TcpStream, shared: &Arc<Shared>, body: &[u8]) -
 
     match &outcome {
         Ok(o) => {
+            // A run cancelled before its first token keeps nothing, so the
+            // conversation still ends on the user message just pushed — and
+            // the next push would make two user turns in a row, which is
+            // invalid everywhere in this codebase. Pop it; record_run sees
+            // the divergence from `recorded` and writes a rewrite record,
+            // so the transcript stays honest about what happened.
+            if slot
+                .convo
+                .messages
+                .last()
+                .is_some_and(|m| matches!(m.role, mecha_core::message::Role::User))
+            {
+                slot.convo.messages.pop();
+            }
             let _ = slot.session.record_run(&recorded, &slot.convo);
             let _ = slot.session.record_outcome(o);
             let _ = slot.session.append(&Record::Taint(slot.convo.taint));
         }
-        Err(e) => tracing::error!("voice run failed: {e}"),
+        Err(e) => {
+            tracing::error!("voice run failed: {e}");
+            // The chat REPL's rule: drop the turn so a failed request does
+            // not leave a dangling user message the next request would
+            // collide with. Restored from the snapshot, not truncated — a
+            // mid-run compaction leaves the list shorter than it started.
+            slot.convo.messages = recorded.clone();
+            slot.convo.messages.pop();
+        }
     }
 
     if want_stream {
         if !disconnected {
+            // A failure must be audible: a clean "stop" after silence reads
+            // as the assistant ignoring the user, and the server-side log
+            // is the one place a voice user will never look.
+            if let Err(e) = &outcome {
+                let spoken = sse_chunk(
+                    &id,
+                    &shared.model,
+                    json!({"content": format!("I hit a problem and could not answer: {e:#}")}),
+                    None,
+                );
+                let _ = write_chunk(stream, spoken.as_bytes()).await;
+            }
             let done = sse_chunk(&id, &shared.model, json!({}), Some("stop"));
             let _ = write_chunk(stream, done.as_bytes()).await;
             let _ = write_chunk(stream, b"data: [DONE]\n\n").await;
@@ -574,13 +704,23 @@ mod tests {
     }
 
     #[test]
-    fn session_key_reads_the_user_field_and_defaults() {
+    fn session_key_prefers_header_then_user_field_then_default() {
+        let none = None;
         assert_eq!(
-            session_key(&serde_json::json!({"user": "call-7"})),
+            session_key(&serde_json::json!({"user": "call-7"}), &none),
             "call-7"
         );
-        assert_eq!(session_key(&serde_json::json!({})), "default");
-        assert_eq!(session_key(&serde_json::json!({"user": ""})), "default");
+        assert_eq!(session_key(&serde_json::json!({}), &none), "default");
+        assert_eq!(
+            session_key(&serde_json::json!({"user": ""}), &none),
+            "default"
+        );
+        // The worker's per-connection header outranks the body field.
+        let header = Some("conn-abc".to_string());
+        assert_eq!(
+            session_key(&serde_json::json!({"user": "call-7"}), &header),
+            "conn-abc"
+        );
     }
 
     #[test]
