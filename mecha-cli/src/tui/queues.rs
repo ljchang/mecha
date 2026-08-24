@@ -173,6 +173,9 @@ pub struct GroupRow {
     pub member_ids: Vec<i64>,
     /// A few member statements, shown under the selected row.
     pub sample: Vec<String>,
+    /// Class → member count, present only on cross-class (global) groups:
+    /// the blast radius, shown before the keystroke that covers it.
+    pub classes: Vec<(String, u64)>,
 }
 
 impl GroupRow {
@@ -387,7 +390,7 @@ impl QueuesModal {
                     .item_class
                     .as_ref()
                     .map(|(p, pr)| format!("{p} · {pr}"))
-                    .unwrap_or_else(|| "groups".into());
+                    .unwrap_or_else(|| "across all classes".into());
                 let covered: usize = self.groups.iter().map(|g| g.size()).sum();
                 format!(
                     " {cls} — {} group(s) covering {covered} · cosine ≥ {:.2} ",
@@ -419,7 +422,8 @@ impl QueuesModal {
         match self.level {
             Level::Queues => "j/k move · Enter open · ? help · Esc close".into(),
             Level::Proposers => {
-                "j/k move · Enter classes · t evidence filter · Esc back · ? help".into()
+                "j/k · Enter classes · s similar EVERYWHERE · t evidence filter · Esc · ? help"
+                    .into()
             }
             Level::Candidates => {
                 "j/k · Enter sample · s similar groups · a/r verdict WHOLE class · t filter · Esc"
@@ -621,8 +625,18 @@ impl QueuesModal {
             );
             out.push(style_row(text, sel, false, false));
             // The selected group's samples, under it: what the fan-out
-            // covers, readable before the keystroke that covers it.
+            // covers, readable before the keystroke that covers it. A
+            // cross-class group leads with the classes it spans — the
+            // verdict reaches every one of them.
             if sel {
+                if !g.classes.is_empty() {
+                    let span: Vec<String> =
+                        g.classes.iter().map(|(c, n)| format!("{c} ×{n}")).collect();
+                    out.push(Line::styled(
+                        format!("            spans: {}", truncate(&span.join(", "), 96)),
+                        Style::new().fg(Color::Yellow),
+                    ));
+                }
                 for sm in &g.sample {
                     out.push(Line::styled(
                         format!("            ~ {}", truncate(sm, 96)),
@@ -764,6 +778,13 @@ const HELP: &str = "
     to the top on every change, because a filtered list is a different
     list and the next keypress may verdict a whole class.
 
+  PROPOSERS
+    s        near-repeats grouped across the WHOLE queue, every class at
+             once — the top layer for clearing bulk. Stricter floor than
+             a class grouping (out there the class no longer vouches for
+             kinship), and every group names the classes it spans.
+             Embedding the queue runs a minute or two.
+
   CLASSES
     Enter    a RANDOM sample of this class, to review one at a time
     s        the class grouped by SEMANTIC SIMILARITY — the queue's bulk
@@ -774,7 +795,7 @@ const HELP: &str = "
     Verdicts on a whole class are for one you have already decided about.
     To learn whether a class is any good, sample it.
 
-  GROUPS  (one class, its near-repeats gathered)
+  GROUPS  (near-repeats gathered — one class's, or the whole queue's)
     A group's face is a real member's own words plus samples — never a
     model-written summary, because a verdict lands on these rows and
     approving a paraphrase is approving unread.
@@ -915,6 +936,14 @@ pub fn groups_from_json(text: &str) -> anyhow::Result<(f64, Vec<GroupRow>)> {
                             .map(|a| {
                                 a.iter()
                                     .filter_map(|s| s.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        classes: r["classes"]
+                            .as_object()
+                            .map(|o| {
+                                o.iter()
+                                    .map(|(k, n)| (k.clone(), n.as_u64().unwrap_or(0)))
                                     .collect()
                             })
                             .unwrap_or_default(),
@@ -1285,5 +1314,47 @@ mod tests {
         assert_eq!(rows[0].member_ids, vec![9302, 9310]);
         assert_eq!(rows[0].all_ids_csv(), "9281,9302,9310");
         assert_eq!(rows[0].sample, vec!["Luke has a child named Sage"]);
+    }
+    /// The global envelope's `classes` object becomes the spans line, and
+    /// its absence (a class grouping) parses to an empty blast radius —
+    /// one parser for both shapes, so the level cannot fork.
+    #[test]
+    fn a_global_group_carries_its_blast_radius_and_a_class_group_carries_none() {
+        let (t, rows) = groups_from_json(
+            r#"{"v":1,"threshold":0.9,"across_classes":true,"considered":6929,"groups":[
+                {"leader_id":1,"leader_statement":"Luke has twins",
+                 "leader_class":"llm . has",
+                 "members":[[2,0.95]],
+                 "classes":{"bee:suggested . family":1,"llm . has":1},
+                 "sample":["Luke has twin girls"]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(t, 0.9);
+        assert_eq!(
+            rows[0].classes,
+            vec![
+                ("bee:suggested . family".to_string(), 1),
+                ("llm . has".to_string(), 1)
+            ]
+        );
+        let (_, rows) = groups_from_json(
+            r#"{"v":1,"threshold":0.83,"groups":[
+                {"leader_id":1,"leader_statement":"x","members":[],"sample":[]}]}"#,
+        )
+        .unwrap();
+        assert!(rows[0].classes.is_empty());
+    }
+
+    /// The proposer level's strip names the global entry: a modal whose
+    /// actions are invisible is a modal with one action (the /mail rule).
+    #[test]
+    fn the_proposer_strip_names_the_global_similarity_key() {
+        let mut m = QueuesModal::new(vec![]);
+        m.level = Level::Proposers;
+        assert!(
+            m.key_strip().contains("s similar EVERYWHERE"),
+            "{}",
+            m.key_strip()
+        );
     }
 }

@@ -74,7 +74,9 @@
     groups = { all: true, threshold: null, rows: null, considered: null };
     try {
       const q = new URLSearchParams({ all: 'true' });
-      if (threshold != null) q.set('threshold', threshold.toFixed(2));
+      // Only a real number becomes a param — an event object handed by a
+      // bare onclick={openGlobal} must fall through to the server default.
+      if (typeof threshold === 'number' && isFinite(threshold)) q.set('threshold', threshold.toFixed(2));
       const res = await fetch(`/api/queue/groups?${q}`);
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
@@ -308,7 +310,7 @@
   {:else if proposers === null && !error}
     <div class="empty">reading the queue…</div>
   {:else if proposers}
-    <button class="card row global" onclick={openGlobal} disabled={busy}>
+    <button class="card row global" onclick={() => openGlobal()} disabled={busy}>
       <div class="rowtop">
         <span class="pname">similar across everything</span>
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--accent-400)" stroke-width="1.8" stroke-linecap="round"><path d="M13 3L4 14h6l-1 7 9-11h-6z" /></svg>
