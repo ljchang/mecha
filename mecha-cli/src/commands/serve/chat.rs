@@ -119,6 +119,29 @@ impl ChatState {
     }
 }
 
+impl ChatState {
+    /// What the mounted voice facade needs from the shared build — the
+    /// unification seam: one agent, one prefix, two dialects
+    /// (docs/VOICE-RESEARCH.md, the serve unification entry).
+    pub fn voice_parts(
+        &self,
+    ) -> (
+        Arc<Agent>,
+        String,
+        String,
+        mecha_core::config::Config,
+        PathBuf,
+    ) {
+        (
+            Arc::clone(&self.agent),
+            self.provider_name.clone(),
+            self.model.clone(),
+            self.config.clone(),
+            self.outbox_root.clone(),
+        )
+    }
+}
+
 fn producer_root() -> Result<PathBuf> {
     let root = work::producer_dir("web")?;
     std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
