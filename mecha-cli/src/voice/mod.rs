@@ -84,6 +84,12 @@ struct Shared {
     /// prompt, so it is prepended to each voice conversation's first user
     /// message instead — one copy per conversation, cached thereafter.
     inject_voice_block: bool,
+    /// The owner-present posture for voice runs. The shared agent carries
+    /// the config's approver — `Ask`, which a non-interactive run answers
+    /// with Blocked — so a mounted facade must say so explicitly or every
+    /// voice tool call is refused ("I don't have access to your calendar",
+    /// live, 2026-08-24). Outbox routing is untouched: sends still stage.
+    approve_all: bool,
     slots: Mutex<HashMap<String, SlotState>>,
     session_dir: PathBuf,
     outbox_root: PathBuf,
@@ -111,11 +117,13 @@ impl Facade {
         outbox_root: PathBuf,
         token: Option<String>,
         inject_voice_block: bool,
+        approve_all: bool,
     ) -> Result<Self> {
         Ok(Self {
             shared: Arc::new(Shared {
                 agent,
                 inject_voice_block,
+                approve_all,
                 slots: Mutex::new(HashMap::new()),
                 session_dir: Session::default_dir()?,
                 outbox_root,
@@ -214,7 +222,10 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         outbox_root,
         args.token.clone(),
         // Standalone: the voice block already rides this agent's system
-        // prompt via system_extra, so nothing to inject per conversation.
+        // prompt via system_extra, so nothing to inject per conversation —
+        // and the launch flags (--yes/--read-only) already shaped the
+        // agent's own approver, so no override either.
+        false,
         false,
     )?;
 
@@ -537,6 +548,11 @@ async fn completion(
     // nothing below uses `?` until it has.
     let mut cx = (**shared.agent.context()).clone();
     cx.cancel = Some(cancel.clone());
+    if shared.approve_all {
+        cx.approver = Arc::new(mecha_core::tool::ModeApprover {
+            mode: mecha_core::config::PermissionMode::Allow,
+        });
+    }
     // Its own outbox route carrying this session's id — the shared route is
     // one Arc across every session, and the stamp is what attributes a draft
     // to the run that wrote it. Fail closed like the connector: a run that

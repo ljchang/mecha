@@ -49,6 +49,14 @@ pub struct Args {
     #[arg(long, default_value_t = 8990)]
     pub voice_port: u16,
 
+    /// Voice runs act without per-call approval — the owner-present
+    /// posture the standalone voice-serve had via --yes. Without it a
+    /// mounted facade inherits the config's Ask, which a non-interactive
+    /// run answers with Blocked: every voice tool call refused. Outbox
+    /// routing is unaffected either way — sends still stage for review.
+    #[arg(long)]
+    pub voice_yes: bool,
+
     /// Override `[web] owner_login` for this run. Same trust as the config
     /// field — a flag on the owner's own process — and what lets a branch
     /// build serve while the live config stays parseable by older binaries
@@ -120,8 +128,16 @@ pub async fn execute(args: Args) -> Result<()> {
     let voice = match (&state.chat, args.voice_port) {
         (Some(chat), port) if port != 0 => {
             let (agent, provider, model, config, outbox_root) = chat.voice_parts();
-            match crate::voice::Facade::new(agent, provider, model, config, outbox_root, None, true)
-            {
+            match crate::voice::Facade::new(
+                agent,
+                provider,
+                model,
+                config,
+                outbox_root,
+                None,
+                true,
+                args.voice_yes,
+            ) {
                 Ok(f) => {
                     let facade = Arc::new(f);
                     // Bind before announcing: a claim about a port must be

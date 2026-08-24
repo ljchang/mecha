@@ -60,7 +60,7 @@ export function createVoiceSession(opts = {}) {
     } else if (!on && thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
   }
 
-  let pc = null, micStream = null, levelRAF = 0, ended = false;
+  let pc = null, micStream = null, meterTrack = null, levelRAF = 0, ended = false;
 
   function setState(name, label) { cfg.onState(name, label); }
 
@@ -101,7 +101,14 @@ export function createVoiceSession(opts = {}) {
       setState("idle", "microphone refused — tap to retry");
       return;
     }
-    const src = AC.createMediaStreamSource(micStream);
+    // The meter taps a CLONE of the mic track, never the one WebRTC
+    // sends: WebKit silently disables echo cancellation on a getUserMedia
+    // track once WebAudio attaches to it, and a phone that hears its own
+    // speaker becomes a bot talking to itself (observed in production,
+    // 2026-08-24: transcripts attributed to the owner that were the TTS).
+    meterTrack = micStream.getAudioTracks()[0].clone();
+    const meterStream = new MediaStream([meterTrack]);
+    const src = AC.createMediaStreamSource(meterStream);
     const analyser = AC.createAnalyser(); analyser.fftSize = 512;
     src.connect(analyser);
     const data = new Uint8Array(analyser.frequencyBinCount);
@@ -163,6 +170,7 @@ export function createVoiceSession(opts = {}) {
     cancelAnimationFrame(levelRAF);
     cfg.onLevel(0);
     if (micStream) micStream.getTracks().forEach(t => t.stop());
+    if (meterTrack) meterTrack.stop();
     if (pc) { try { pc.close(); } catch { /* already gone */ } }
     pc = null;
     cfg.onLink(false);
