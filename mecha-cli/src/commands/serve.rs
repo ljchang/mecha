@@ -1,0 +1,289 @@
+//! `mecha serve` — the tailnet web surface (Phase 1: read-only).
+//!
+//! One process serves the built web app and a JSON summary of the stores.
+//! Three rules carry the design (`docs/REMOTE-SURFACE-DESIGN.md`):
+//!
+//! - **The bind is 127.0.0.1 and there is no flag to widen it.** Reaching
+//!   this from a phone is `tailscale serve`'s job; reaching it from the
+//!   internet is nobody's.
+//! - **Identity is the network, verified.** Every request must carry
+//!   `Tailscale-User-Login` equal to `[web] owner_login` — the header
+//!   `tailscale serve` injects for the authenticated tailnet user. Absent
+//!   header, wrong value, or unset config fail closed: the server refuses to
+//!   *start* without an owner, because a door with no owner check must not
+//!   open at all.
+//! - **Reads drive the CLI.** The summary shells out to `mecha review queues
+//!   --json` and `mecha doctor --json` as child processes — one
+//!   implementation per verb, nothing reachable here that a script cannot
+//!   do, and the `depth: null` convention ("could not look" is not
+//!   "nothing waiting") arrives for free because the verb already speaks it.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use anyhow::{bail, Context, Result};
+use axum::extract::State;
+use axum::http::{HeaderValue, Request, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::{Json, Router};
+
+use mecha_core::config::Config;
+
+#[derive(clap::Args, Debug)]
+pub struct Args {
+    /// Override `[web] port` for this run.
+    #[arg(long)]
+    pub port: Option<u16>,
+    /// Override `[web] assets` (the built web app, `web/dist`) for this run.
+    #[arg(long)]
+    pub assets: Option<PathBuf>,
+}
+
+#[derive(Clone)]
+struct WebState {
+    owner_login: Arc<String>,
+}
+
+pub async fn execute(args: Args) -> Result<()> {
+    // Global config only, like a trigger run: this surface is the owner's
+    // door, and a project file must have no say in it (config.rs strips
+    // `[web]` from project layers as a second fence).
+    let config = Config::load_global()?;
+
+    let Some(owner) = config.web.owner_login.clone() else {
+        bail!(
+            "[web] owner_login is not set, and mecha serve will not open a door with no \
+             owner check.\nSet it in ~/.mecha/config.toml to the Tailscale login that may \
+             drive this box, e.g.\n\n  [web]\n  owner_login = \"you@example.com\"\n\n\
+             (`tailscale status --json | jq -r .Self.UserID` and the admin console list \
+             logins; `tailscale serve` injects the matching Tailscale-User-Login header.)"
+        );
+    };
+
+    let port = args.port.unwrap_or(config.web.port);
+    let assets = args.assets.or(config.web.assets);
+
+    let state = WebState {
+        owner_login: Arc::new(owner),
+    };
+    let app = router(state.clone(), assets.as_deref());
+
+    // 127.0.0.1 by construction — the address is not configurable.
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("binding {addr}"))?;
+    match &assets {
+        Some(dir) => tracing::info!(%addr, assets = %dir.display(), "mecha serve up"),
+        None => tracing::info!(%addr, "mecha serve up (API only — no [web] assets configured)"),
+    }
+    println!(
+        "mecha serve on http://{addr} (owner: {}) — front it with `tailscale serve {port}`",
+        state.owner_login
+    );
+
+    axum::serve(listener, app).await.context("serving")?;
+    Ok(())
+}
+
+/// The whole surface, auth included, as a value — which is what lets the
+/// guard be tested by driving the router directly instead of binding a port.
+fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
+    let api = Router::new()
+        .route("/api/ping", get(ping))
+        .route("/api/summary", get(summary));
+
+    let app = match assets {
+        Some(dir) => api.fallback_service(tower_http::services::ServeDir::new(dir)),
+        None => api,
+    };
+
+    app.layer(middleware::from_fn_with_state(state.clone(), owner_guard))
+        .layer(middleware::from_fn(security_headers))
+        .with_state(state)
+}
+
+/// The header `tailscale serve` injects for the authenticated tailnet user.
+const TAILSCALE_LOGIN: &str = "tailscale-user-login";
+
+/// Every request — static files included — must carry the owner's login.
+///
+/// There is deliberately no loopback exemption: everything that reaches this
+/// process arrives over loopback (`tailscale serve` proxies to it), so the
+/// header is the only thing distinguishing the owner's phone from anything
+/// else that found the port. Fail closed on absence, not just mismatch.
+async fn owner_guard(
+    State(state): State<WebState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let presented = request
+        .headers()
+        .get(TAILSCALE_LOGIN)
+        .and_then(|v| v.to_str().ok());
+    if presented != Some(state.owner_login.as_str()) {
+        return (StatusCode::FORBIDDEN, "not the owner\n").into_response();
+    }
+    next.run(request).await
+}
+
+/// The page renders third-party text next to buttons that will one day
+/// release drafts, so the CSP is load-bearing, not hygiene: XSS here is an
+/// approval clicked by script. `'unsafe-inline'` for styles only — Svelte
+/// writes style attributes; scripts stay `'self'` with no exceptions, and
+/// nothing may load from another origin (the page must work with no
+/// internet at all — the tailnet is not the internet).
+async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        "content-security-policy",
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
+        ),
+    );
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    response
+}
+
+async fn ping() -> &'static str {
+    "ok\n"
+}
+
+/// What the Home screen renders: the five queues and doctor's findings,
+/// each section independently `null` when its verb could not answer —
+/// "could not look" must never render as "nothing waiting".
+async fn summary(State(state): State<WebState>) -> Json<serde_json::Value> {
+    let (queues, doctor) = tokio::join!(
+        self_cli_json(&["review", "queues", "--json"], false),
+        // Doctor exits 1 *with findings on stdout* when something is wrong —
+        // that is an answer, not a failure.
+        self_cli_json(&["doctor", "--json"], true),
+    );
+    let mut errors = Vec::new();
+    let queues = queues.unwrap_or_else(|e| {
+        errors.push(format!("review queues: {e}"));
+        serde_json::Value::Null
+    });
+    let doctor = doctor.unwrap_or_else(|e| {
+        errors.push(format!("doctor: {e}"));
+        serde_json::Value::Null
+    });
+    Json(serde_json::json!({
+        "owner": state.owner_login.as_str(),
+        "queues": queues,
+        "doctor": doctor,
+        "errors": errors,
+    }))
+}
+
+/// Run our own binary with `args` and parse its stdout as JSON.
+///
+/// `exit_one_ok` admits commands whose exit 1 means "findings" rather than
+/// "failed" (doctor's contract). Ten seconds is generous for store reads and
+/// short enough that a wedged child cannot hang the page.
+async fn self_cli_json(args: &[&str], exit_one_ok: bool) -> Result<serde_json::Value> {
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::process::Command::new(crate::exe::self_exe())
+            .args(args)
+            .output(),
+    )
+    .await
+    .context("timed out")?
+    .context("spawning")?;
+
+    let ok = output.status.success() || (exit_one_ok && output.status.code() == Some(1));
+    if !ok {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "exit {:?}: {}",
+            output.status.code(),
+            stderr.lines().next().unwrap_or("no error output")
+        );
+    }
+    serde_json::from_slice(&output.stdout).context("parsing JSON output")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use tower::util::ServiceExt;
+
+    fn test_router() -> Router {
+        router(
+            WebState {
+                owner_login: Arc::new("owner@example.com".into()),
+            },
+            None,
+        )
+    }
+
+    fn request(header: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder().uri("/api/ping");
+        if let Some(v) = header {
+            builder = builder.header("Tailscale-User-Login", v);
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_request_without_the_login_header_is_refused() {
+        let response = test_router().oneshot(request(None)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_request_with_the_wrong_login_is_refused() {
+        let response = test_router()
+            .oneshot(request(Some("stranger@example.com")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn the_owner_gets_through_and_gets_the_security_headers() {
+        let response = test_router()
+            .oneshot(request(Some("owner@example.com")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let csp = response
+            .headers()
+            .get("content-security-policy")
+            .expect("CSP on every response")
+            .to_str()
+            .unwrap();
+        assert!(csp.contains("default-src 'self'"));
+        assert!(
+            !csp.contains("https:"),
+            "no external origin may ever appear in the CSP"
+        );
+    }
+
+    #[tokio::test]
+    async fn even_a_missing_route_is_refused_before_it_is_a_404() {
+        // The guard wraps everything, static fallback included: an
+        // unauthenticated probe learns nothing about what exists.
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .uri("/does-not-exist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+}

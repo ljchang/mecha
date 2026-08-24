@@ -39,8 +39,16 @@ tracing-subscriber.workspace = true
 # transcript knows its own wrapped height and therefore how far it can scroll.
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
+# The tailnet web surface (`mecha serve`). Quarantined to this binary crate on
+# the mecha-slack rule: mecha-core never learns HTTP exists. Serving static
+# files goes through tower-http's ServeDir rather than anything hand-rolled,
+# because path traversal is its test suite's job, not ours.
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs"] }
 
 [dev-dependencies]
+# `oneshot` on the serve router — auth is tested without binding a port.
+tower = { version = "0.5", features = ["util"] }
 # Only to write a real PNG for the drag-and-drop tests. Decoding belongs to
 # mecha-core; nothing in the CLI needs it at runtime.
 image.workspace = true
