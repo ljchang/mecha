@@ -1,0 +1,85 @@
+/* mecha web — tokens from brand/brand.md (that file is the source of truth).
+ * One accent hue; hazard amber is a signal — glyphs, thin lines and text,
+ * never an area fill. Fonts are self-hosted (no external origins: the page
+ * must work with no internet at all, and the tailnet is not the internet). */
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+
+:root {
+  --accent-100: #e7e5fe;
+  --accent-300: #d2cefd;
+  --accent-400: #b5abfc;
+  --accent-500: #9184d9;
+  --accent-700: #5d5294;
+  --accent-900: #2b2741;
+
+  --void: #12141f;
+  --bg: #161826;
+  --surface: #232532;
+
+  --text: #e9e9ed;
+  --text-muted: #9a9aa8;
+
+  --hazard: #e8a24a;
+
+  --radius: 8px;
+  --radius-chip: 6px;
+
+  --sans: Inter, system-ui, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--void);
+  color: var(--text);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent-400);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--accent-300);
+}
+
+.kicker {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.card {
+  background: var(--bg);
+  border: 1px solid var(--accent-900);
+  border-radius: var(--radius);
+}
+
+.chip {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--accent-900);
+  border-radius: var(--radius-chip);
+  padding: 2px 8px;
+}
+
+.mono {
+  font-family: var(--mono);
+}

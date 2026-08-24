@@ -20,6 +20,7 @@ pub mod replay;
 pub mod review;
 pub mod rules;
 pub mod run;
+pub mod serve;
 pub mod sessions;
 pub mod setup;
 pub mod skills;

@@ -49,6 +49,10 @@ pub struct Config {
     pub messages: MessagesConfig,
     /// Which of `~/.mecha/skills/` a run carries. See [`crate::skill`].
     pub skills: SkillsConfig,
+    /// The tailnet web surface (`mecha serve`). Global-file only, like
+    /// `[slack]`: it names a listening port and the one identity allowed
+    /// through the door.
+    pub web: WebConfig,
 }
 
 /// Which skills a run carries.
@@ -284,6 +288,7 @@ impl Default for Config {
             work: WorkConfig::default(),
             slack: SlackConfig::default(),
             messages: MessagesConfig::default(),
+            web: WebConfig::default(),
         }
     }
 }
@@ -883,6 +888,16 @@ impl Config {
                 path.display()
             );
         }
+        // `[web]` for the `[slack]` reason, in its web costume: the section
+        // names the remote control's door — a listening port and the one
+        // identity allowed through it.
+        if trust == LayerTrust::Project && layer.web.take().is_some() {
+            tracing::warn!(
+                "[web] in {} is ignored — the web surface loads from the \
+                 global config only",
+                path.display()
+            );
+        }
         // `[skills]` from a project layer may only ever *narrow*, and that is
         // enforced here rather than asked for. `dir` is dropped outright — a
         // project naming its own skill directory is the authoring hole
@@ -979,6 +994,46 @@ enum LayerTrust {
     Project,
 }
 
+/// Tunables for `mecha serve` — the tailnet web surface.
+///
+/// Global-file only, enforced in `merge_file`: a project file arrives with a
+/// cloned repository, and this section names a listening port and the one
+/// identity allowed through the door.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebConfig {
+    /// Port bound on 127.0.0.1 — `tailscale serve` fronts it, and there is
+    /// deliberately no setting to bind wider (the `dsh` refusal, adopted).
+    pub port: u16,
+    /// The Tailscale login every request must carry in
+    /// `Tailscale-User-Login`, which `tailscale serve` injects. Unset means
+    /// `mecha serve` refuses to start: a door with no owner check must not
+    /// open at all.
+    pub owner_login: Option<String>,
+    /// Directory holding the built web app (`web/dist`). Unset serves the
+    /// API routes only, which is what tests and a headless box want.
+    pub assets: Option<PathBuf>,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            // "mecha" typed on a phone keypad.
+            port: 63242,
+            owner_login: None,
+            assets: None,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WebLayer {
+    port: Option<u16>,
+    owner_login: Option<String>,
+    assets: Option<PathBuf>,
+}
+
 /// A partially-specified config file. Every field is optional so a project file
 /// can override one setting without restating the rest.
 #[derive(Debug, Default, Deserialize)]
@@ -1003,6 +1058,7 @@ struct ConfigLayer {
     slack: Option<SlackLayer>,
     messages: Option<MessagesLayer>,
     skills: Option<SkillsLayer>,
+    web: Option<WebLayer>,
 }
 
 /// A layer's opinion about which skills to carry.
@@ -1354,6 +1410,20 @@ impl ConfigLayer {
                 t.keep = v;
             }
         }
+        // Only ever reached from the global layer, like `[messages]` and
+        // `[slack]`: `merge_file` strips a project file's `[web]` first.
+        if let Some(x) = self.web {
+            let t = &mut cfg.web;
+            if let Some(v) = x.port {
+                t.port = v;
+            }
+            if x.owner_login.is_some() {
+                t.owner_login = x.owner_login;
+            }
+            if x.assets.is_some() {
+                t.assets = x.assets;
+            }
+        }
     }
 }
 
@@ -1492,6 +1562,42 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_layer_web_section_is_stripped_but_a_global_one_is_kept() {
+        // Same boundary as `[slack]`: the section names the web door's port
+        // and the identity allowed through it, and a mecha.toml arrives with
+        // a cloned repository.
+        let dir = std::env::temp_dir().join(format!("mecha-web-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(
+            &path,
+            "[web]\nport = 1\nowner_login = \"attacker@example.com\"\n",
+        )
+        .unwrap();
+
+        let mut from_project = Config::default();
+        from_project.merge_file(&path, LayerTrust::Project).unwrap();
+        assert_eq!(
+            from_project.web.port,
+            WebConfig::default().port,
+            "a project file must not move the web port"
+        );
+        assert_eq!(
+            from_project.web.owner_login, None,
+            "a project file must not name the owner"
+        );
+
+        let mut from_global = Config::default();
+        from_global.merge_file(&path, LayerTrust::Global).unwrap();
+        assert_eq!(from_global.web.port, 1);
+        assert_eq!(
+            from_global.web.owner_login.as_deref(),
+            Some("attacker@example.com")
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

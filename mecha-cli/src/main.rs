@@ -225,6 +225,13 @@ pub enum Command {
     /// anything.
     Doctor(commands::doctor::Args),
 
+    /// Serve the tailnet web surface — read-only in phase 1.
+    ///
+    /// Binds 127.0.0.1 only; `tailscale serve` is the door, and the injected
+    /// Tailscale-User-Login header must match `[web] owner_login` on every
+    /// request. Refuses to start with no owner configured.
+    Serve(commands::serve::Args),
+
     /// Read the run corpus and propose one change to try.
     ///
     /// The stage between `doctor` saying something is wrong and
@@ -354,6 +361,7 @@ async fn dispatch() -> Result<()> {
         Command::Work(args) => commands::work::execute(args).await,
         Command::Setup(args) => commands::setup::execute(&cli.global, args).await,
         Command::Doctor(args) => commands::doctor::execute(args).await,
+        Command::Serve(args) => commands::serve::execute(args).await,
         Command::Diagnose(args) => commands::diagnose::execute(&cli.global, args).await,
         Command::Harness(args) => commands::harness::execute(&cli.global, args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
