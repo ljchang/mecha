@@ -112,12 +112,16 @@
       {#each pending as item}
         <button class="card rowbtn" onclick={() => open(item.id)}>
           <div class="rowtop">
-            <span class="tool">{item.tool}</span>
+            <span class="label">{item.label}</span>
             {#if item.tainted}{@render hazardGlyph(12)}{/if}
             <span class="when">{age(item.created_at)}</span>
           </div>
-          <div class="summary">{item.summary}</div>
-          {#if item.edited}<span class="edited">edited</span>{/if}
+          {#if item.headline}<div class="headline">{item.headline}</div>{/if}
+          {#if item.snippet}<div class="snippet">{item.snippet}</div>{/if}
+          <div class="rowfoot">
+            <span class="tool">{item.tool}</span>
+            {#if item.edited}<span class="edited">edited</span>{/if}
+          </div>
         </button>
       {:else}
         <div class="empty">Nothing waiting on you.</div>
@@ -128,7 +132,7 @@
       <button class="backbtn" onclick={back} aria-label="back">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
       </button>
-      <span class="title">Draft</span>
+      <span class="title">{detail.label}</span>
       <span class="chip">{detail.tool}</span>
     </header>
     <div class="scroll">
@@ -207,8 +211,8 @@
           <div class="warnline">{@render hazardGlyph()}<span>This draft was written while the trifecta was armed. The exact arguments:</span></div>
           <pre class="argdump">{JSON.stringify(detail.args, null, 2)}</pre>
         {:else}
-          <div class="sheet-text">Approve and execute <span class="tool">{detail.tool}</span>?</div>
-          <div class="sheet-sub">{detail.summary}</div>
+          <div class="sheet-text">Approve this {detail.label.toLowerCase()}?</div>
+          <div class="sheet-sub">{detail.headline || detail.tool}</div>
         {/if}
         <div class="btnrow">
           <button class="btn" onclick={() => (confirming = false)}>Back</button>
@@ -239,12 +243,15 @@
   header .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; flex: 1; }
   .backbtn { background: none; border: none; color: var(--text-muted); min-width: 44px; min-height: 44px; margin: -12px 0 -12px -12px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   .scroll { flex: 1; overflow-y: auto; padding: 14px 20px; display: flex; flex-direction: column; gap: 10px; }
-  .rowbtn { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 7px; cursor: pointer; color: var(--text); font: inherit; }
+  .rowbtn { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; color: var(--text); font: inherit; overflow: hidden; }
   .rowtop { display: flex; align-items: center; gap: 8px; }
-  .tool { font-family: var(--mono); font-size: 12px; color: var(--accent-400); }
+  .label { font-size: 14px; font-weight: 500; color: var(--accent-400); }
   .when { font-family: var(--mono); font-size: 11px; color: var(--text-muted); margin-left: auto; }
-  .summary { font-size: 14px; line-height: 1.4; }
-  .edited { font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
+  .headline { font-size: 14px; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+  .snippet { font-size: 12px; line-height: 1.45; color: var(--text-muted); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow-wrap: anywhere; }
+  .rowfoot { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .tool { font-family: var(--mono); font-size: 10px; color: var(--accent-700); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .edited { font-family: var(--mono); font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
   .empty { color: var(--text-muted); font-size: 14px; padding: 24px 0; text-align: center; }
   .warnline { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; }
   .taintbanner { display: flex; gap: 10px; padding: 12px 14px; }
