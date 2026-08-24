@@ -2,7 +2,9 @@
   // The read-only dashboard: `mecha review queues --json` and
   // `mecha doctor --json`, rendered. A null depth is a dash — "nothing
   // waiting" and "could not look" are opposite findings.
+  let { navigate = () => {} } = $props();
   let summary = $state(null);
+  let mailNeeds = $state(null);
   let error = $state(null);
 
   async function load() {
@@ -13,6 +15,12 @@
       error = null;
     } catch (e) {
       error = String(e?.message ?? e);
+    }
+    try {
+      const res = await fetch('/api/mail');
+      if (res.ok) mailNeeds = (await res.json()).filter((r) => r.needs_me).length;
+    } catch {
+      mailNeeds = null; // a dash, never a zero
     }
   }
 
@@ -28,6 +36,13 @@
     'graph candidates': 'Graph queue',
     'rule proposals': 'Rule proposals',
     'harness changes': 'Harness',
+  };
+  // A card that has a surface on this phone navigates to it; the ones that
+  // are CLI-only stay flat rather than pretending.
+  const queueTargets = {
+    'outbox drafts': 'review/outbox',
+    'front-door requests': 'review/frontdoor',
+    'graph candidates': 'review/graph',
   };
 </script>
 
@@ -81,14 +96,31 @@
   <section>
     <div class="kicker">Waiting on you</div>
     <div class="grid">
-      {#each summary?.queues ?? [] as q}
-        <div class="card stat">
-          <div class="row">
-            <span class="label">{queueLabels[q.queue] ?? q.queue}</span>
-            <span class="count">{dash(q.depth)}</span>
-          </div>
-          <div class="sub" title={q.opens}>{q.detail}</div>
+      <button class="card stat tappable" onclick={() => navigate('mail')}>
+        <div class="row">
+          <span class="label">Mail</span>
+          <span class="count">{dash(mailNeeds)}</span>
         </div>
+        <div class="sub">threads that need you</div>
+      </button>
+      {#each summary?.queues ?? [] as q}
+        {#if queueTargets[q.queue]}
+          <button class="card stat tappable" onclick={() => navigate(queueTargets[q.queue])}>
+            <div class="row">
+              <span class="label">{queueLabels[q.queue] ?? q.queue}</span>
+              <span class="count">{dash(q.depth)}</span>
+            </div>
+            <div class="sub" title={q.opens}>{q.detail}</div>
+          </button>
+        {:else}
+          <div class="card stat">
+            <div class="row">
+              <span class="label">{queueLabels[q.queue] ?? q.queue}</span>
+              <span class="count">{dash(q.depth)}</span>
+            </div>
+            <div class="sub" title={q.opens}>{q.detail}</div>
+          </div>
+        {/if}
       {:else}
         {#if !error}
           <div class="card stat"><div class="sub">loading…</div></div>
@@ -171,6 +203,15 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+  .tappable {
+    text-align: left;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+  }
+  .tappable:active {
+    background: var(--accent-900);
   }
   .row {
     display: flex;

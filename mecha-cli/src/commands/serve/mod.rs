@@ -34,6 +34,7 @@ use mecha_core::config::Config;
 mod board;
 mod chat;
 mod files;
+mod frontdoor;
 mod mail;
 mod present;
 mod review;
@@ -258,7 +259,10 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/tasks", get(board::tasks))
         .route("/api/tasks/set", axum::routing::post(board::task_set))
         .route("/api/tasks/add", axum::routing::post(board::task_add))
-        .route("/api/notes", axum::routing::post(board::note))
+        .route("/api/notes", get(board::notes).post(board::note))
+        .route("/api/frontdoor", get(frontdoor::list))
+        .route("/api/frontdoor/read", get(frontdoor::read))
+        .route("/api/frontdoor/act", axum::routing::post(frontdoor::act))
         .route("/api/find", get(board::find))
         .route("/api/offer", axum::routing::post(offer_proxy));
 
