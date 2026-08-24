@@ -35,7 +35,7 @@ use mecha_core::config::{Config, PermissionMode};
 use mecha_core::message::{Block, Message, Role, Usage};
 use mecha_core::outbox::{OutboxRoute, OutboxStore};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
-use mecha_core::tool::{ModeApprover, ToolCtx};
+use mecha_core::tool::ToolCtx;
 use mecha_core::work;
 
 use crate::{setup, GlobalOpts};
@@ -56,8 +56,15 @@ fn valid_key(key: &str) -> bool {
         && !key.starts_with(['-', '_'])
 }
 
+/// The sync routing table `WebAsker` reads: session key → question plumbing.
+/// Separate from the async sessions map so a tool call can route without an
+/// async lock.
+type QuestionRoutes =
+    Arc<StdMutex<HashMap<String, (super::present::Questions, broadcast::Sender<WireEvent>)>>>;
+
 pub struct ChatState {
     agent: Arc<Agent>,
+    routes: QuestionRoutes,
     config: Config,
     provider_name: String,
     model: String,
@@ -79,6 +86,14 @@ struct WebSession {
     events: broadcast::Sender<WireEvent>,
     /// Last reported usage, for the context gauge on a fresh page load.
     last_usage: Arc<StdMutex<Option<Usage>>>,
+    /// Permission posture for this session's runs. Read-only is the default
+    /// (the trigger posture: reads run, sends stage); `ask` turns tool calls
+    /// into live approval cards. `allow` is deliberately not offered from
+    /// the page yet. Shared with the running approver, so a change lands on
+    /// the run's next call (the Slack mode-cell pattern).
+    mode: Arc<StdMutex<PermissionMode>>,
+    /// Outstanding approval/ask cards for this session.
+    questions: super::present::Questions,
 }
 
 struct Live {
@@ -107,8 +122,24 @@ impl ChatState {
             no_skills: true,
             ..GlobalOpts::default()
         };
-        // Not interactive: no terminal approver, no ask_user.
-        let prepared = setup::prepare(&opts, false).await?;
+        // Not interactive: no terminal approver — and then `ask_user` IS
+        // registered, against the Slack connector's precedent, because this
+        // front-end can do what that one could not: route the question to
+        // the human who owns the run that asked (the jail's directory name
+        // is the session key; see `present::WebAsker`). An unanswered card
+        // resolves as the tool's measured decline, never a guess.
+        let mut prepared = setup::prepare(&opts, false).await?;
+        let routes: QuestionRoutes = Arc::default();
+        let lookup: super::present::SessionLookup = {
+            let routes = Arc::clone(&routes);
+            Arc::new(move |key: &str| routes.lock().ok().and_then(|m| m.get(key).cloned()))
+        };
+        prepared
+            .agent
+            .registry_mut()
+            .insert(Arc::new(mecha_core::tool::ask::AskUserTool::new(Arc::new(
+                super::present::WebAsker { lookup },
+            ))));
         let outbox_root = match prepared.config.outbox.dir.clone() {
             Some(dir) => dir,
             None => OutboxStore::default_root()?,
@@ -120,6 +151,7 @@ impl ChatState {
             .and_then(|p| p.context_window);
         Ok(Self {
             agent: Arc::new(prepared.agent),
+            routes,
             provider_name: prepared.provider_name.clone(),
             model: prepared.model.clone(),
             context_window,
@@ -200,6 +232,18 @@ pub enum WireEvent {
     },
     Notice {
         text: String,
+    },
+    Question {
+        qid: u64,
+        kind: String,
+        tool: Option<String>,
+        args: Option<String>,
+        question: Option<String>,
+        options: Vec<String>,
+        timeout_secs: u64,
+    },
+    QuestionDone {
+        qid: u64,
     },
     Done {
         ok: bool,
@@ -373,6 +417,10 @@ fn ensure_session<'a>(
             &chat.provider_name,
         )))?;
         let (events, _) = broadcast::channel(512);
+        let questions = super::present::Questions::default();
+        if let Ok(mut routes) = chat.routes.lock() {
+            routes.insert(key.to_string(), (questions.clone(), events.clone()));
+        }
         sessions.insert(
             key.to_string(),
             WebSession {
@@ -382,6 +430,8 @@ fn ensure_session<'a>(
                 live: None,
                 events,
                 last_usage: Arc::new(StdMutex::new(None)),
+                mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                questions,
             },
         );
     }
@@ -412,9 +462,19 @@ pub async fn transcript(
         None => (Vec::new(), None),
     };
     let usage = ws.last_usage.lock().ok().and_then(|u| u.clone());
+    let mode = ws
+        .mode
+        .lock()
+        .map(|m| match *m {
+            PermissionMode::Ask => "ask",
+            PermissionMode::Allow => "allow",
+            PermissionMode::ReadOnly => "read_only",
+        })
+        .unwrap_or("read_only");
     Json(serde_json::json!({
         "session": ws.session.meta.id,
         "model": chat.model,
+        "mode": mode,
         "running": running,
         "held_by_run": ws.conversation.is_none(),
         "entries": entries,
@@ -507,8 +567,11 @@ pub async fn send(
         workspace: ws.workspace.clone(),
         ..(*chat.agent.ctx()).clone()
     });
-    cx.approver = Arc::new(ModeApprover {
-        mode: PermissionMode::ReadOnly,
+    cx.approver = Arc::new(super::present::WebApprover {
+        mode: Arc::clone(&ws.mode),
+        questions: ws.questions.clone(),
+        events: ws.events.clone(),
+        timeout: super::present::APPROVAL_TIMEOUT,
     });
     if cx.budget.max_turns.is_none() {
         cx.budget.max_turns = Some(40);
@@ -625,12 +688,18 @@ pub async fn cancel(
         Err(resp) => return resp,
     };
     let sessions = chat.sessions.lock().await;
-    match sessions.get(&key).and_then(|ws| ws.live.as_ref()) {
-        Some(live) => {
-            live.cancel.cancel();
+    match sessions.get(&key) {
+        Some(ws) if ws.live.is_some() => {
+            // Order matters: a run parked in `approve()` or `ask_user` never
+            // sees the token, so the pending cards are dropped first — each
+            // resolves as a machine refusal — and the token stops the rest.
+            ws.questions.drain();
+            if let Some(live) = &ws.live {
+                live.cancel.cancel();
+            }
             Json(serde_json::json!({ "cancelled": true })).into_response()
         }
-        None => Json(serde_json::json!({ "cancelled": false })).into_response(),
+        _ => Json(serde_json::json!({ "cancelled": false })).into_response(),
     }
 }
 
@@ -675,6 +744,99 @@ pub async fn events(
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct AnswerBody {
+    pub qid: u64,
+    /// approval cards: allow / deny (+ optional reason)
+    pub allow: Option<bool>,
+    pub reason: Option<String>,
+    /// ask cards: the answer text, or decline
+    pub answer: Option<String>,
+    pub decline: Option<bool>,
+}
+
+/// POST /api/chat/{key}/answer — one endpoint for both card kinds.
+pub async fn answer(
+    State(state): Chat,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Json(body): Json<AnswerBody>,
+) -> axum::response::Response {
+    let chat = match chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let sessions = chat.sessions.lock().await;
+    let Some(ws) = sessions.get(&key) else {
+        return (StatusCode::NOT_FOUND, "no such session\n").into_response();
+    };
+    let answer = if body.decline == Some(true) {
+        super::present::Answer::Decline
+    } else if let Some(text) = body.answer {
+        super::present::Answer::Text(text)
+    } else if body.allow == Some(true) {
+        super::present::Answer::Approve
+    } else if body.allow == Some(false) {
+        super::present::Answer::Deny(body.reason.unwrap_or_default())
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "an answer needs allow, answer, or decline\n",
+        )
+            .into_response();
+    };
+    if ws.questions.answer(body.qid, answer) {
+        Json(serde_json::json!({ "ok": true })).into_response()
+    } else {
+        // Already answered from another device, expired, or never existed —
+        // the card is gone either way, and the page should drop it.
+        (StatusCode::GONE, "that question is no longer waiting\n").into_response()
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct ModeBody {
+    pub mode: String,
+}
+
+/// POST /api/chat/{key}/mode — read_only | ask, an explicit control only.
+pub async fn set_mode(
+    State(state): Chat,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Json(body): Json<ModeBody>,
+) -> axum::response::Response {
+    let chat = match chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let mode = match body.mode.as_str() {
+        "ask" => PermissionMode::Ask,
+        "read_only" | "read-only" => PermissionMode::ReadOnly,
+        "allow" => {
+            return (
+                StatusCode::FORBIDDEN,
+                "allow is deliberately not offered from the page yet — approve calls \
+                 one at a time in ask mode\n",
+            )
+                .into_response()
+        }
+        other => {
+            return (StatusCode::BAD_REQUEST, format!("unknown mode {other:?}\n")).into_response()
+        }
+    };
+    let mut sessions = chat.sessions.lock().await;
+    let ws = match ensure_session(chat, &mut sessions, &key) {
+        Ok(ws) => ws,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+    };
+    if let Ok(mut cell) = ws.mode.lock() {
+        *cell = mode;
+    }
+    let _ = ws.events.send(WireEvent::Notice {
+        text: format!("mode set to {}", body.mode),
+    });
+    Json(serde_json::json!({ "ok": true })).into_response()
 }
 
 /// GET /api/sessions — the rail: live sessions in this process, the default

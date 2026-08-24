@@ -33,6 +33,7 @@ use mecha_core::config::Config;
 
 mod board;
 mod chat;
+mod present;
 mod review;
 
 #[derive(clap::Args, Debug)]
@@ -179,6 +180,8 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/chat/{key}/send", axum::routing::post(chat::send))
         .route("/api/chat/{key}/cancel", axum::routing::post(chat::cancel))
         .route("/api/chat/{key}/events", get(chat::events))
+        .route("/api/chat/{key}/answer", axum::routing::post(chat::answer))
+        .route("/api/chat/{key}/mode", axum::routing::post(chat::set_mode))
         .route("/api/outbox", get(review::list))
         .route("/api/outbox/{id}", get(review::detail))
         .route(
