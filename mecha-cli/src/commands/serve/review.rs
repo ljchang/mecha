@@ -440,11 +440,13 @@ pub(super) async fn self_json_within(
     secs: u64,
 ) -> anyhow::Result<serde_json::Value> {
     let _ = state;
+    let mut cmd = tokio::process::Command::new(crate::exe::self_exe());
+    if let Some(dir) = super::child_cwd() {
+        cmd.current_dir(dir);
+    }
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(secs),
-        tokio::process::Command::new(crate::exe::self_exe())
-            .args(args)
-            .output(),
+        cmd.args(args).output(),
     )
     .await
     .map_err(|_| anyhow::anyhow!("timed out"))??;
@@ -509,24 +511,24 @@ pub async fn edit(
 /// stderr line with a 409 on refusal — the CLI's error *is* the API's.
 pub(super) async fn verb(state: &super::WebState, args: &[&str]) -> Response {
     let _ = state; // state carries nothing the child needs; the store is the meeting point
-    let output = match tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        tokio::process::Command::new(crate::exe::self_exe())
-            .args(args)
-            .output(),
-    )
-    .await
-    {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("spawning: {e:#}\n"),
-            )
-                .into_response()
-        }
-        Err(_) => return (StatusCode::GATEWAY_TIMEOUT, "the verb timed out\n").into_response(),
-    };
+    let mut cmd = tokio::process::Command::new(crate::exe::self_exe());
+    if let Some(dir) = super::child_cwd() {
+        cmd.current_dir(dir);
+    }
+    let output =
+        match tokio::time::timeout(std::time::Duration::from_secs(120), cmd.args(args).output())
+            .await
+        {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("spawning: {e:#}\n"),
+                )
+                    .into_response()
+            }
+            Err(_) => return (StatusCode::GATEWAY_TIMEOUT, "the verb timed out\n").into_response(),
+        };
     if output.status.success() {
         Json(serde_json::json!({
             "ok": true,

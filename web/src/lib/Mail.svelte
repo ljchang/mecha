@@ -98,6 +98,45 @@
 
   load();
 
+  // Presentation-only parse of `mecha mail show`'s text: the leading
+  // `key:   value` block, then messages split on `--- ` separators. The
+  // CLI's text stays the one renderer of a thread — this shapes it for a
+  // phone and falls back to the raw text verbatim on any drift, so a
+  // format change degrades to yesterday's display, never to a wrong one.
+  function parseThread(text) {
+    const lines = text.split('\n');
+    let i = 0;
+    const header = [];
+    while (i < lines.length && lines[i].trim() !== '') {
+      const m = lines[i].match(/^([a-z]+):\s+(.*)$/);
+      if (!m) return null;
+      header.push([m[1], m[2]]);
+      i++;
+    }
+    const chunks = lines
+      .slice(i)
+      .join('\n')
+      .split(/\n(?=--- )/)
+      .map((c) => c.trim())
+      .filter(Boolean);
+    const messages = [];
+    for (const c of chunks) {
+      if (!c.startsWith('--- ')) continue;
+      const ls = c.split('\n');
+      const meta = ls[0].replace(/^---\s*/, '');
+      let j = 1;
+      let subject = null;
+      while (j < ls.length && ls[j].trim() !== '') {
+        // The message-id line is addressed to the model, not the reader.
+        if (ls[j].startsWith('Subject: ')) subject = ls[j].slice(9);
+        j++;
+      }
+      const body = ls.slice(j).join('\n').trim();
+      messages.push({ meta, subject, body });
+    }
+    return messages.length ? { header, messages } : null;
+  }
+
   const urgencyRank = { now: 'now', today: 'today', week: 'week' };
   const needs = $derived((rows ?? []).filter((r) => r.needs_me));
   const parked = $derived((rows ?? []).filter((r) => !r.needs_me));
@@ -162,24 +201,42 @@
       {#if reading.text === null}
         <div class="empty">reading thread…</div>
       {:else}
-        <!-- Third-party text: the gutter marks every line, the outbox
-             source-read rule — a heading scrolls off, a per-line marker
-             cannot. -->
-        <div class="quoted"><span class="gutter"></span><div class="qtext">{reading.text}</div></div>
+        {@const parsed = parseThread(reading.text)}
+        {#if parsed}
+          <div class="card headers">
+            {#each parsed.header as [k, v]}
+              <div class="hrow"><span class="hkey">{k}</span><span class="hval">{v}</span></div>
+            {/each}
+          </div>
+          {#each parsed.messages as msg}
+            <div class="msg">
+              <div class="msg-meta">{msg.meta}</div>
+              {#if msg.subject}<div class="msg-subject">{msg.subject}</div>{/if}
+              <!-- Third-party text: the gutter marks every line, the outbox
+                   source-read rule — a heading scrolls off, a per-line
+                   marker cannot. Plain text on purpose: a rendered link in
+                   a stranger's mail is a tap onto a stranger's URL. -->
+              <div class="quoted"><span class="gutter"></span><div class="mailbody">{msg.body}</div></div>
+            </div>
+          {/each}
+        {:else}
+          <div class="quoted"><span class="gutter"></span><div class="qtext">{reading.text}</div></div>
+        {/if}
       {/if}
-
-      <div class="btngrid">
-        <button class="btn" disabled={busy} onclick={() => quick('archive', reading.row)}>Archive</button>
-        <button class="btn" disabled={busy} onclick={() => (confirmSpam = reading.row)}>Spam…</button>
-        <button class="btn" disabled={busy} onclick={() => quick('task', reading.row)}>→ Task</button>
-        <button class="btn" disabled={busy} onclick={() => quick('dismiss', reading.row)}>Dismiss</button>
-        <button class="btn" disabled={busy} onclick={() => prompt('needs-info', 'What are you waiting for?', 'their dates, before I can book')}>Park…</button>
-        <button class="btn" disabled={busy} onclick={() => prompt('schedule', 'Steering for the calendar draft (optional)', 'propose Thursday afternoon')}>Calendar…</button>
-        <button class="btn" disabled={busy} onclick={() => prompt('forward', 'Forward to (comma-separated) + covering note', 'FYI — this is the one I mentioned', true)}>Forward…</button>
-        <button class="btn primary" disabled={busy} onclick={() => prompt('reply', 'Steering for the draft (optional)', 'decline politely; ask for the deadline')}>Draft reply…</button>
-      </div>
-      <div class="footnote">Drafts land in the outbox for review — nothing sends from here.</div>
     </div>
+    {#if reading.text !== null}
+      <div class="actionbar">
+        <button class="abtn primary" disabled={busy} onclick={() => prompt('reply', 'Steering for the draft (optional)', 'decline politely; ask for the deadline')}>Draft reply…</button>
+        <button class="abtn" disabled={busy} onclick={() => quick('archive', reading.row)}>Archive</button>
+        <button class="abtn" disabled={busy} onclick={() => quick('task', reading.row)}>→ Task</button>
+        <button class="abtn" disabled={busy} onclick={() => prompt('needs-info', 'What are you waiting for?', 'their dates, before I can book')}>Park…</button>
+        <button class="abtn" disabled={busy} onclick={() => prompt('schedule', 'Steering for the calendar draft (optional)', 'propose Thursday afternoon')}>Calendar…</button>
+        <button class="abtn" disabled={busy} onclick={() => prompt('forward', 'Forward to (comma-separated) + covering note', 'FYI — this is the one I mentioned', true)}>Forward…</button>
+        <button class="abtn" disabled={busy} onclick={() => quick('dismiss', reading.row)}>Dismiss</button>
+        <button class="abtn" disabled={busy} onclick={() => (confirmSpam = reading.row)}>Spam…</button>
+      </div>
+      <div class="barnote">Drafts land in the outbox for review — nothing sends from here.</div>
+    {/if}
 
     {#if confirmSpam}
       <div class="sheet">
@@ -243,7 +300,20 @@
   .quoted { display: flex; gap: 10px; }
   .gutter { width: 2px; background: var(--hazard); flex-shrink: 0; }
   .qtext { font-size: 13px; line-height: 1.55; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
-  .btngrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .headers { padding: 12px 14px; display: flex; flex-direction: column; gap: 7px; }
+  .hrow { display: flex; gap: 10px; font-size: 13px; }
+  .hkey { font-family: var(--mono); font-size: 11px; color: var(--accent-700); min-width: 68px; padding-top: 1px; flex-shrink: 0; }
+  .hval { overflow-wrap: anywhere; line-height: 1.45; }
+  .msg { display: flex; flex-direction: column; gap: 8px; }
+  .msg-meta { font-family: var(--mono); font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+  .msg-subject { font-size: 15px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
+  .mailbody { font-size: 15px; line-height: 1.6; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .actionbar { display: flex; gap: 8px; overflow-x: auto; padding: 10px 20px 4px; border-top: 1px solid var(--accent-900); background: var(--bg); -webkit-overflow-scrolling: touch; }
+  .actionbar::-webkit-scrollbar { display: none; }
+  .abtn { flex-shrink: 0; min-height: 44px; padding: 0 16px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; cursor: pointer; white-space: nowrap; }
+  .abtn.primary { background: var(--accent-400); color: var(--void); font-weight: 500; border: none; }
+  .abtn:disabled { opacity: 0.5; }
+  .barnote { font-size: 10px; color: var(--text-muted); text-align: center; padding: 4px 20px calc(6px + env(safe-area-inset-bottom)); background: var(--bg); }
   .btnrow { display: flex; gap: 10px; }
   .btn { min-height: 48px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; cursor: pointer; }
   .btnrow .btn { flex: 1; }
