@@ -21,9 +21,17 @@ maps which document holds what.
 
 ## Where the work is
 
-Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.11**
-(2026-08-21; 0.1.10 shipped 2026-08-20; 0.1.7 and 0.1.8 shipped 2026-08-19 and 2026-08-20 after the mail
-hold lifted). **Four** crates are on crates.io — `mecha-core`, `mecha-mail`,
+Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.13**
+(2026-08-24 night — the web surface, voice, and the graph queue's similarity
+groups; 0.1.12 shipped 2026-08-22, 0.1.11 on 2026-08-21, 0.1.10 on 2026-08-20,
+and 0.1.7/0.1.8 on 2026-08-19/20 after the mail hold lifted).
+
+**0.1.13 is a patch bump carrying two whole subsystems**, which is worth
+knowing rather than discovering: 91 commits, including everything the voice
+stack and `mecha serve` are made of. That follows this project's own
+practice for 0.x — every release since 0.1.1 has shipped features under a
+patch bump — but if the version line is ever meant to signal size, this is
+the release that argues for it. **Four** crates are on crates.io — `mecha-core`, `mecha-mail`,
 `mecha-slack`, `mecha-cli` (the bare name `mecha` was taken, so the CLI
 crate installs the `mecha` binary) — published through the tag-driven
 `release` workflow with Trusted Publishing, so no registry token exists
@@ -92,7 +100,8 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,343 tests**, no failures — re-measured on `main` at f6a39a5, the
+Expect **1,343 tests**, no failures — re-measured at the v0.1.13 tag
+(068a659); the same number was measured earlier at f6a39a5, the
 night of 2026-08-24, after the voice-controls and web-surface-arcs merges
 (680 in the `mecha-core` lib suite, 442 in `mecha-cli` with 1 ignored, 129 in
 `mecha-mail`, 75 in `mecha-slack`, 15 across the two integration suites that
@@ -241,6 +250,24 @@ distinguish a current install from a skipped one — check a behaviour the chang
 introduced (`mecha run --help` carrying `--image`), and check
 `/proc/<pid>/exe` for `(deleted)` to catch a *process* still running a replaced
 inode. The `update` skill carries both checks.
+
+**2026-08-24 (re-verified after the 0.1.13 release, ~21:45)**: `mecha
+--version` reports **0.1.13** from `~/.cargo/bin`, `mecha-mail` reinstalled
+beside it, web assets rebuilt and rsynced to `~/.mecha/web/dist` (the served
+door returns the current bundle), and `mecha-serve`, `mecha-slack`,
+`mecha-triggers` and `mecha-drain` all restarted onto the new inode and
+logging their startup lines. **The graph binaries were deliberately NOT
+reinstalled**: another session was mid-arc in the private graph checkout
+during the release freeze, and installing `mecha-graph`/`mecha-graph-mcp`
+from a working tree in flight is worse than leaving a known-good install
+alone — so `~/.cargo/bin/mecha-graph*` is that session's to update, not
+stale by accident. One `mecha tui` started ~15:10 is still on a deleted
+inode with its three MCP children; it degrades gracefully since 0.1.12 and
+needs its owner to restart it. Also not refreshed by this pass and
+independently stale: the musl benchmark binary (`target-musl/release/mecha`,
+built 2026-08-23), so **re-run `bench/build-portable.sh` before trusting any
+scorecard against 0.1.13**. The factory client is current at 0.2.7 and the
+droplet was not touched.
 
 **2026-08-24 (re-verified this date, evening)**: `~/.cargo/bin/mecha`
 reinstalled again for the web-review-surfaces arc (final at merge `cfab345`)
