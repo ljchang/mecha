@@ -54,7 +54,7 @@ const MAX_BODY_BYTES: usize = 8 << 20;
 
 /// D10: the one load-bearing prompt. Static byte-for-byte across sessions,
 /// because it rides in the cached prefix and TTFT is the latency budget.
-const VOICE_BLOCK: &str = "\
+pub(crate) const VOICE_BLOCK: &str = "\
 Voice mode: everything you write is spoken aloud by a text-to-speech voice, \
 and the user is listening, not reading. Answer in short conversational \
 sentences. Never use markdown, bullet lists, headings, tables or code \
