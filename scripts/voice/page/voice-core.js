@@ -52,11 +52,32 @@ export function createVoiceSession(opts = {}) {
   }
   const chimeStart = () => { const t = AC.currentTime; tone(659, t, .18); tone(880, t + .12, .28); };
   const chimeEnd = () => { const t = AC.currentTime; tone(440, t, .22); tone(294, t + .16, .45); };
+  // Thinking is a soft two-note pulse, not a tick: a slow attack removes the
+  // percussive edge (the old triangle tick read as a metronome), the lowpass
+  // keeps it warm, and the pair alternates rising/falling so a long wait
+  // breathes instead of repeating one sound at you.
+  function softTone(freq, t0, dur, gain) {
+    const o = AC.createOscillator(), g = AC.createGain(), f = AC.createBiquadFilter();
+    o.type = "sine"; o.frequency.value = freq;
+    f.type = "lowpass"; f.frequency.value = 1100;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(gain, t0 + 0.12);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(f).connect(g).connect(AC.destination);
+    o.start(t0); o.stop(t0 + dur + 0.05);
+  }
   let thinkTimer = null;
   function thinkingSound(on) {
     if (on && !thinkTimer) {
-      const tick = () => tone(523, AC.currentTime, .09, .035, "triangle");
-      tick(); thinkTimer = setInterval(tick, 900);
+      let up = true;
+      const pulse = () => {
+        const t = AC.currentTime;
+        const [a, b] = up ? [392, 494] : [494, 392];
+        up = !up;
+        softTone(a, t, 0.55, 0.022);
+        softTone(b, t + 0.22, 0.65, 0.017);
+      };
+      pulse(); thinkTimer = setInterval(pulse, 1800);
     } else if (!on && thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
   }
 
