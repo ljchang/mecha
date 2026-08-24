@@ -243,6 +243,9 @@
   header .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; flex: 1; }
   .backbtn { background: none; border: none; color: var(--text-muted); min-width: 44px; min-height: 44px; margin: -12px 0 -12px -12px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   .scroll { flex: 1; overflow-y: auto; padding: 14px 20px; display: flex; flex-direction: column; gap: 10px; }
+  /* See Mail.svelte: overflow:hidden children of a flex column shrink to
+     fit, clipping their own text once the list outgrows the viewport. */
+  .scroll > * { flex-shrink: 0; }
   .rowbtn { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; color: var(--text); font: inherit; overflow: hidden; }
   .rowtop { display: flex; align-items: center; gap: 8px; }
   .label { font-size: 14px; font-weight: 500; color: var(--accent-400); }
