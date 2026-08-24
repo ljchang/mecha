@@ -160,6 +160,7 @@
   </button>
 
   {#if adding}
+    <div class="scrim" onclick={() => (adding = false)} aria-hidden="true"></div>
     <div class="sheet">
       <div class="grip"></div>
       <div class="sheettitle">Capture — lands in inbox</div>
@@ -196,6 +197,7 @@
   .empty { color: var(--text-muted); font-size: 14px; padding: 20px 0; text-align: center; }
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; padding-top: 6px; }
   .fab { position: absolute; right: 20px; bottom: 20px; width: 56px; height: 56px; border-radius: 14px; background: var(--accent-400); border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  .scrim { position: absolute; inset: 0; z-index: 5; }
   .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--accent-500); border-radius: 16px 16px 0 0; padding: 14px 20px 28px; display: flex; flex-direction: column; gap: 12px; z-index: 6; }
   .grip { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-900); align-self: center; }
   .sheettitle { font-size: 15px; font-weight: 500; }
