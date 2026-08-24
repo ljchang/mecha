@@ -1782,12 +1782,28 @@ constraint leads the page instead of trailing it.
 
 Three sessions coordinated the release across two repositories: a freeze on
 `~/Github/mecha` that both peers verified their own state against, a
-deliberate carve-out for the private graph checkout where a third session
+one-evening carve-out for the private graph checkout where a third session
 was mid-arc, and CHANGELOG entries written by the sessions that had built
-the things rather than inferred from their diffs. The carve-out is the part
-worth keeping: the update skill would normally reinstall the graph
-binaries, and doing that from a working tree in flight would have been
-worse than leaving a known-good install alone.
+the things rather than inferred from their diffs.
+
+**The freeze worked as a forcing function, and that is the part worth
+keeping.** Nobody was investigating binary staleness. The graph session
+checked its install timestamps *only* because a line had been drawn around
+its repo and it had to state where it stood — and stating it out loud is
+what made an hour-stale `mecha-graph-mcp` visible, across an arc whose
+central fix was in the write path that binary owns. An agent asked to
+summarise its own state finds things it was not looking for, which is an
+argument for release freezes that has nothing to do with releases.
+
+The carve-out itself was correct for one evening and would have been wrong
+as a standing arrangement, which the session that benefited from it argued
+for its own repo: an exemption held in two sessions' memory makes the graph
+install nobody's job by default, correct only while both remember. That is
+the shape this codebase keeps naming — a state that is only right after
+someone remembers something is a state nobody can trust — so the update
+skill owns both installs unconditionally, and "I am mid-arc" is something a
+session says at the time rather than something a note keeps true on its
+behalf.
 
 **The bake-off those two conclusions came from**, moved out of `README.md` on
 2026-08-10 so the numbers live with the rest of the measurement record rather
