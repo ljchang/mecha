@@ -40,9 +40,21 @@ use mecha_core::work;
 
 use crate::{setup, GlobalOpts};
 
-/// Phase 2 serves one conversation; the map and the wire shapes are already
-/// keyed so Phase 4's session rail extends this without breaking the page.
-const SESSION_KEY: &str = "main";
+/// The default conversation — what the chat tab opens onto.
+pub(super) const DEFAULT_SESSION: &str = "main";
+
+/// A session key becomes a directory name under the producer root, so it is
+/// validated like a producer name: short, lowercase, no path in it. The
+/// check is containment, not politeness — a key is model-adjacent input the
+/// moment a page script can choose it.
+fn valid_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 32
+        && key
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        && !key.starts_with(['-', '_'])
+}
 
 pub struct ChatState {
     agent: Arc<Agent>,
@@ -340,9 +352,10 @@ fn chat_state(state: &super::WebState) -> Result<&Arc<ChatState>, axum::response
 fn ensure_session<'a>(
     chat: &Arc<ChatState>,
     sessions: &'a mut HashMap<String, WebSession>,
+    key: &str,
 ) -> Result<&'a mut WebSession> {
-    if !sessions.contains_key(SESSION_KEY) {
-        let workspace = session_workspace(SESSION_KEY)?;
+    if !sessions.contains_key(key) {
+        let workspace = session_workspace(key)?;
         let session = Session::create(
             &Session::default_dir()?,
             SessionMeta {
@@ -351,7 +364,7 @@ fn ensure_session<'a>(
                 provider: chat.provider_name.clone(),
                 model: chat.model.clone(),
                 workspace: workspace.clone(),
-                title: Some(format!("web: {SESSION_KEY}")),
+                title: Some(format!("web: {key}")),
             },
         )?;
         session.append(&Record::Config(RunConfig::of(
@@ -361,7 +374,7 @@ fn ensure_session<'a>(
         )))?;
         let (events, _) = broadcast::channel(512);
         sessions.insert(
-            SESSION_KEY.to_string(),
+            key.to_string(),
             WebSession {
                 conversation: Some(Conversation::new()),
                 session: Arc::new(session),
@@ -372,17 +385,23 @@ fn ensure_session<'a>(
             },
         );
     }
-    Ok(sessions.get_mut(SESSION_KEY).expect("just inserted"))
+    Ok(sessions.get_mut(key).expect("just inserted"))
 }
 
-/// GET /api/chat — what a fresh page load renders.
-pub async fn transcript(State(state): Chat) -> axum::response::Response {
+/// GET /api/chat/{key} — what a fresh page load renders.
+pub async fn transcript(
+    State(state): Chat,
+    axum::extract::Path(key): axum::extract::Path<String>,
+) -> axum::response::Response {
     let chat = match chat_state(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    if !valid_key(&key) {
+        return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
+    }
     let mut sessions = chat.sessions.lock().await;
-    let ws = match ensure_session(chat, &mut sessions) {
+    let ws = match ensure_session(chat, &mut sessions, &key) {
         Ok(ws) => ws,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
     };
@@ -411,19 +430,26 @@ pub async fn transcript(State(state): Chat) -> axum::response::Response {
     .into_response()
 }
 
-/// POST /api/chat/send — start a run, or steer the one in flight.
-pub async fn send(State(state): Chat, Json(body): Json<SendBody>) -> axum::response::Response {
+/// POST /api/chat/{key}/send — start a run, or steer the one in flight.
+pub async fn send(
+    State(state): Chat,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Json(body): Json<SendBody>,
+) -> axum::response::Response {
     let chat = match chat_state(&state) {
         Ok(c) => c.clone(),
         Err(resp) => return resp,
     };
+    if !valid_key(&key) {
+        return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
+    }
     let text = body.text.trim().to_string();
     if text.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty message\n").into_response();
     }
 
     let mut sessions = chat.sessions.lock().await;
-    let ws = match ensure_session(&chat, &mut sessions) {
+    let ws = match ensure_session(&chat, &mut sessions, &key) {
         Ok(ws) => ws,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
     };
@@ -502,6 +528,7 @@ pub async fn send(State(state): Chat, Json(body): Json<SendBody>) -> axum::respo
     }
 
     let agent = Arc::clone(&chat.agent);
+    let key_for_task = key.clone();
     let session = Arc::clone(&ws.session);
     let bcast = ws.events.clone();
     let last_usage = Arc::clone(&ws.last_usage);
@@ -571,7 +598,7 @@ pub async fn send(State(state): Chat, Json(body): Json<SendBody>) -> axum::respo
         // Hand the conversation back, then announce the end — a stream left
         // open is indistinguishable from a run still working.
         let mut sessions = state_for_task.sessions.lock().await;
-        if let Some(ws) = sessions.get_mut(SESSION_KEY) {
+        if let Some(ws) = sessions.get_mut(&key_for_task) {
             let outcome_err = outcome.is_err();
             if outcome_err {
                 // A failed request must not leave a dangling user message the
@@ -588,14 +615,17 @@ pub async fn send(State(state): Chat, Json(body): Json<SendBody>) -> axum::respo
     Json(serde_json::json!({ "started": true })).into_response()
 }
 
-/// POST /api/chat/cancel — stop at the next safe point, keep the partial.
-pub async fn cancel(State(state): Chat) -> axum::response::Response {
+/// POST /api/chat/{key}/cancel — stop at the next safe point, keep the partial.
+pub async fn cancel(
+    State(state): Chat,
+    axum::extract::Path(key): axum::extract::Path<String>,
+) -> axum::response::Response {
     let chat = match chat_state(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
     let sessions = chat.sessions.lock().await;
-    match sessions.get(SESSION_KEY).and_then(|ws| ws.live.as_ref()) {
+    match sessions.get(&key).and_then(|ws| ws.live.as_ref()) {
         Some(live) => {
             live.cancel.cancel();
             Json(serde_json::json!({ "cancelled": true })).into_response()
@@ -604,16 +634,22 @@ pub async fn cancel(State(state): Chat) -> axum::response::Response {
     }
 }
 
-/// GET /api/chat/events — the run, streamed. Subscribing is legal at any
-/// time; a subscriber that falls behind gets a notice, never silence.
-pub async fn events(State(state): Chat) -> axum::response::Response {
+/// GET /api/chat/{key}/events — the run, streamed. Subscribing is legal at
+/// any time; a subscriber that falls behind gets a notice, never silence.
+pub async fn events(
+    State(state): Chat,
+    axum::extract::Path(key): axum::extract::Path<String>,
+) -> axum::response::Response {
     let chat = match chat_state(&state) {
         Ok(c) => c.clone(),
         Err(resp) => return resp,
     };
+    if !valid_key(&key) {
+        return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
+    }
     let rx = {
         let mut sessions = chat.sessions.lock().await;
-        match ensure_session(&chat, &mut sessions) {
+        match ensure_session(&chat, &mut sessions, &key) {
             Ok(ws) => ws.events.subscribe(),
             Err(e) => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response()
@@ -641,8 +677,61 @@ pub async fn events(State(state): Chat) -> axum::response::Response {
         .into_response()
 }
 
+/// GET /api/sessions — the rail: live sessions in this process, the default
+/// first, then by name. (Resuming a recorded session from disk is a later
+/// wiring; the rail lists what the process holds, honestly.)
+pub async fn sessions(State(state): Chat) -> axum::response::Response {
+    let chat = match chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let sessions = chat.sessions.lock().await;
+    let mut rows: Vec<serde_json::Value> = sessions
+        .iter()
+        .map(|(key, ws)| {
+            serde_json::json!({
+                "key": key,
+                "running": ws.live.is_some(),
+                "taint": ws.conversation.as_ref().map(|c| serde_json::json!({
+                    "private": c.taint.private, "untrusted": c.taint.untrusted,
+                })),
+                "turns": ws.conversation.as_ref().map(|c| c.len()),
+            })
+        })
+        .collect();
+    rows.sort_by_key(|r| {
+        (
+            r["key"] != DEFAULT_SESSION,
+            r["key"].as_str().unwrap_or("").to_string(),
+        )
+    });
+    Json(serde_json::json!({ "sessions": rows })).into_response()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_keys_that_could_leave_the_producer_dir_are_refused() {
+        use super::valid_key;
+        for bad in [
+            "../x",
+            "a/b",
+            "",
+            "-lead",
+            "UPPER",
+            "dot.dot",
+            &"x".repeat(33),
+        ] {
+            assert!(!valid_key(bad), "{bad:?} must be refused");
+        }
+        for good in ["main", "grant-review", "walk_2", "a"] {
+            assert!(valid_key(good), "{good:?} should pass");
+        }
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
     use super::*;
     use mecha_core::agent::AgentEvent;
 

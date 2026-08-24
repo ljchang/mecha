@@ -234,12 +234,14 @@ push arrives with the VPN up and the page closed.*
 
 ## 11. Open at build time
 
-- **Naming**: `mecha serve` vs growing `voice-serve` — settle with the
-  voice session before Phase 2 so the agent lands in one process. Whatever
-  name wins, `VOICE-RESEARCH.md` D2 names `voice-serve` explicitly and must
-  be amended in the same change — a tracked doc disagreeing with the code
-  about what exists is the stale-doc shape this repo treats as worse than
-  absence.
+- **Naming — RESOLVED 2026-08-24**: `mecha serve` won, and the unification
+  landed the other way around from the plan: the voice arc mounted its
+  facade *into* serve (`--voice-port`, `voice::Facade` over a
+  `ChatState::voice_parts()` handle) — one process, one agent, one cached
+  prefix, two dialects. `VOICE-RESEARCH.md` D2 was amended in the same
+  change. `voice-serve` survives as a standalone spelling of the same
+  implementation; the production switch to unified serve is sequenced with
+  the reinstall.
 - **axum vs hyper**, and **embedded static build vs directory** (§1).
 - **Presence transport**: SSE everywhere vs one WebSocket — decide when
   the ask/approver work starts; SSE-first is the simpler default.

@@ -9,6 +9,8 @@
   // conversation, and the overlay says so rather than pretending otherwise.
   import { createVoiceSession } from '../../../scripts/voice/page/voice-core.js';
 
+  let key = $state('main');
+  let rail = $state([]);
   let entries = $state([]);
   let streaming = $state('');
   let running = $state(false);
@@ -59,7 +61,7 @@
 
   async function load() {
     try {
-      const res = await fetch('/api/chat');
+      const res = await fetch(`/api/chat/${key}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).trim()}`);
       const data = await res.json();
       entries = data.entries.map((e) =>
@@ -81,7 +83,7 @@
   function subscribe() {
     // tailscale serve injects the identity header on this request too —
     // EventSource cannot set headers, and never needs to here.
-    const source = new EventSource('/api/chat/events');
+    const source = new EventSource(`/api/chat/${key}/events`);
     source.onmessage = (raw) => {
       const ev = JSON.parse(raw.data);
       switch (ev.type) {
@@ -126,9 +128,41 @@
     return source;
   }
 
-  load();
-  const source = subscribe();
-  $effect(() => () => source.close());
+  async function loadRail() {
+    try {
+      const res = await fetch('/api/sessions');
+      if (res.ok) rail = (await res.json()).sessions;
+    } catch {
+      // the rail is a convenience; the transcript is the truth
+    }
+  }
+
+  function switchTo(k) {
+    if (k === key) return;
+    key = k;
+    entries = [];
+    streaming = '';
+    usage = null;
+    taint = null;
+  }
+
+  function newSession() {
+    const name = prompt('Session name (lowercase, dashes):');
+    if (!name) return;
+    const k = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 32);
+    if (k) switchTo(k);
+  }
+
+  // Re-subscribe whenever the key changes; the server owns every
+  // conversation, so switching is just pointing the rendering elsewhere.
+  $effect(() => {
+    const source = subscribe();
+    load();
+    loadRail();
+    return () => source.close();
+  });
+  const railTimer = setInterval(loadRail, 20_000);
+  $effect(() => () => clearInterval(railTimer));
 
   // ---- voice call (overlay over this view) ----
   let voiceOpen = $state(false);
@@ -201,7 +235,7 @@
     if (!text) return;
     draft = '';
     try {
-      const res = await fetch('/api/chat/send', {
+      const res = await fetch(`/api/chat/${key}/send`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text }),
@@ -221,7 +255,7 @@
 
   async function cancel() {
     try {
-      await fetch('/api/chat/cancel', { method: 'POST' });
+      await fetch(`/api/chat/${key}/cancel`, { method: 'POST' });
     } catch {
       // The done event reports the real outcome either way.
     }
@@ -259,6 +293,19 @@
       </button>
     </div>
   </header>
+
+  <div class="rail">
+    {#each rail.length ? rail : [{ key: 'main', running: false }] as s}
+      <button class="railchip" class:active={s.key === key} onclick={() => switchTo(s.key)}>
+        <span class="raildot" class:on={s.running}></span>
+        {s.key}
+        {#if s.taint?.untrusted}<span class="railtaint">▲</span>{/if}
+      </button>
+    {/each}
+    <button class="railchip plus" onclick={newSession} title="new session">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+    </button>
+  </div>
 
   <div class="transcript" bind:this={transcriptEl}>
     {#if error}
@@ -397,8 +444,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 22px 20px 12px;
-    border-bottom: 1px solid var(--accent-900);
+    padding: 22px 20px 6px;
   }
   .title {
     font-weight: 500;
@@ -427,6 +473,50 @@
   }
   .speakbtn.on {
     color: var(--accent-400);
+  }
+  .rail {
+    display: flex;
+    gap: 8px;
+    padding: 10px 20px 12px;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--accent-900);
+  }
+  .railchip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    background: var(--bg);
+    border: 1px solid var(--accent-900);
+    border-radius: var(--radius-chip);
+    padding: 8px 12px;
+    min-height: 40px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .railchip.active {
+    color: var(--text);
+    background: var(--accent-900);
+    border-color: var(--accent-700);
+  }
+  .railchip.plus {
+    min-width: 44px;
+    justify-content: center;
+  }
+  .raildot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent-900);
+  }
+  .raildot.on {
+    background: var(--accent-400);
+  }
+  .railtaint {
+    color: var(--hazard);
+    font-size: 9px;
   }
   .transcript {
     flex: 1;
