@@ -614,3 +614,24 @@ OpenAI-compatible `/v1/audio/speech`): first request 2.2 s cold, 1.4 s
 warm for ~4.6 s of audio. The fallback pair now both speak; Phase 1's
 remaining items are the serving wrapper around `mecha/chatterbox:base`
 (OpenAI-compatible, streaming) and the systemd units.
+
+**The serving wrapper closed Phase 1's server work, same night.**
+`scripts/voice/chatterbox_server.py` (FastAPI, in `mecha/chatterbox:serve`)
+runs as the `chatterbox` container on 127.0.0.1:8881 with
+`--restart unless-stopped` — reboot-durable via the docker daemon, no
+sudo. Measured through the HTTP surface: **8.6 s of speech in 2.2 s.**
+The `voice` parameter maps to `~/models/voices/<name>.wav` cloning
+references — dropping a 5-second file there is the whole act of adding a
+voice — and an unknown name is a 400, never the wrong voice. Both TTS
+servers now answer the same OpenAI `/v1/audio/speech` shape (:8880
+Kokoro, :8881 Chatterbox), so the worker's voice choice is one base URL.
+No token-level streaming (the official Turbo API has no streaming
+method); sentence-level pipelining in the worker is the TTFB plan, with
+the community streaming fork as the named upgrade if sentence granularity
+ever feels laggy. `scripts/voice/llama-voxtral.service` is written and
+ready; installing it is the one step needing sudo, and until then :8082
+runs under nohup.
+
+Phase 1 status: **speech servers done** (:8082 ears, :8881 launch voice,
+:8880 fallback voice, all measured). Next: Phase 2, the facade — where
+mecha itself enters.
