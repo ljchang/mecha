@@ -752,3 +752,23 @@ radiating rings while speaking. The machine's transcript lines are
 copper, the owner's are steel. Reduced-motion collapses the ring states
 to static color. The owner's earlier verdict on the stock UI ("the voice
 button is very subtle") is the brief this page answers.
+
+**First field bug, same night: the STT model spoke for the owner.** The
+phone screenshot showed "YOU" lines saying "I'm an AI and don't have a
+calendar" — Voxtral is a chat model, and handed a VAD segment with no
+clear speech (speaker echo, room noise) it stops transcribing and starts
+*answering*; the answer was credited to the owner and sent into mecha as
+their words. Two prompt lessons re-learned while fixing it: naming an
+escape token ("output NOSPEECH when there is no speech") anchors the
+model into answering NOSPEECH **for real speech too** — the wording trap
+in a new costume — while appending "If there are no words, output
+nothing" leaves real transcription untouched (tested against jfk.wav)
+and degrades junk to droppable fragments. The durable fix is layered and
+mostly not a prompt: an **energy gate** (measured on this server: speech
+~0.14 RMS, room noise ~0.009, silence 0.000 — segments under 0.010 RMS
+or 0.3 s never reach the model, because the cheapest way to stop a chat
+model answering silence is to never ask it about silence), explicit
+echo-cancellation constraints on the page's mic, and output guards
+behind both (assistant-shaped openings, punctuation-only replies, and a
+words-per-second cap — a reply wordier than the audio could hold is a
+hallucination, not a transcript).

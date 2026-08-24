@@ -45,9 +45,27 @@ TTS_URL = os.environ.get("MECHA_VOICE_TTS", "http://127.0.0.1:8880/v1")
 TTS_VOICE = os.environ.get("MECHA_VOICE_TTS_VOICE", "af_heart")
 
 # Pinned per the build log (docs/VOICE-RESEARCH.md S7): this wording
-# transcribes; "from beginning to end" phrasing makes the model refuse.
-# Treat any rewording as a change to test, not a paraphrase.
-TRANSCRIBE_PROMPT = "Transcribe this audio exactly. Output only the transcription."
+# transcribes; "from beginning to end" phrasing makes the model refuse, and
+# naming an escape token ("output NOSPEECH") anchors the model into
+# answering it for real speech too - both found by testing. Treat any
+# rewording as a change to test, not a paraphrase. The trailing sentence
+# was tested against jfk.wav (unchanged) and silence/noise (degrades the
+# reply to droppable fragments instead of chat).
+TRANSCRIBE_PROMPT = (
+    "Transcribe this audio exactly. Output only the transcription. "
+    "If there are no words, output nothing."
+)
+
+# Segments quieter than this never reach the model. Voxtral is a chat
+# model: handed silence or echo residue it stops transcribing and starts
+# *answering* ("I'm an AI and don't have a calendar"), and that answer
+# then rides into mecha as the owner's words - the observed 2026-08-24
+# bug. Measured on this STT server: speech ~0.14 RMS, room noise ~0.009,
+# silence 0.000; the gate sits in the gap.
+MIN_SEGMENT_RMS = 0.010
+MIN_SEGMENT_SECONDS = 0.3
+# A reply longer than speech allows is a hallucination, not a transcript.
+MAX_WORDS_PER_SECOND = 5.0
 
 
 class VoxtralSTT(BaseWhisperSTTService):
@@ -55,7 +73,30 @@ class VoxtralSTT(BaseWhisperSTTService):
     not `/v1/audio/transcriptions` - and `cache_prompt` must be off: slot
     cache reuse splices mid-audio and presents as deafness (S7)."""
 
+    @staticmethod
+    def _segment_stats(audio: bytes):
+        """Duration and RMS of a wav segment, from the bytes themselves."""
+        import array
+        import io
+        import math
+        import wave
+
+        with wave.open(io.BytesIO(audio)) as w:
+            frames = w.readframes(w.getnframes())
+            rate = w.getframerate() or 16000
+        samples = array.array("h", frames)
+        if not samples:
+            return 0.0, 0.0
+        rms = math.sqrt(sum(x * x for x in samples) / len(samples)) / 32768
+        return len(samples) / rate, rms
+
     async def _transcribe(self, audio: bytes) -> Transcription:
+        try:
+            duration, rms = self._segment_stats(audio)
+        except Exception:
+            duration, rms = 1.0, 1.0  # unparseable: let the model try
+        if duration < MIN_SEGMENT_SECONDS or rms < MIN_SEGMENT_RMS:
+            return Transcription(text="")
         b64 = base64.b64encode(audio).decode()
         r = await self._client.chat.completions.create(
             model="voxtral",
@@ -73,9 +114,18 @@ class VoxtralSTT(BaseWhisperSTTService):
             extra_body={"cache_prompt": False},
         )
         text = (r.choices[0].message.content or "").strip().strip('"')
-        # The model answers prose when it hears nothing intelligible; an
-        # apology must not become a user turn.
-        if text.lower().startswith(("i'm sorry", "i am sorry", "i'm unable", "i can't")):
+        # Output-side guards, layered behind the energy gate: an assistant
+        # reply, a "no transcription" notice, punctuation confetti, or more
+        # words than the audio could hold must never become a user turn.
+        lowered = text.lower()
+        if lowered.startswith(
+            ("i'm sorry", "i am sorry", "i'm unable", "i can't", "i'm an ai",
+             "as an ai", "no transcription", "there are no words")
+        ):
+            text = ""
+        elif not any(c.isalnum() for c in text):
+            text = ""
+        elif len(text.split()) > max(3.0, duration * MAX_WORDS_PER_SECOND):
             text = ""
         return Transcription(text=text)
 
