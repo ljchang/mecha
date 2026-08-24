@@ -2,7 +2,7 @@
   import Home from './lib/Home.svelte';
   import Chat from './lib/Chat.svelte';
   import Nav from './lib/Nav.svelte';
-  import Outbox from './lib/Outbox.svelte';
+  import Review from './lib/Review.svelte';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
   const views = ['home', 'chat', 'review'];
@@ -30,7 +30,7 @@
   {#if view === 'chat'}
     <Chat />
   {:else if view === 'review'}
-    <Outbox />
+    <Review />
   {:else}
     <Home />
   {/if}
