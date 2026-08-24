@@ -125,12 +125,22 @@ pub enum Cmd {
     /// the group, on the outbox's rule that approving a paraphrase is
     /// approving unread.
     Groups {
+        /// Required for the class view; with --all, an optional filter.
         #[arg(long)]
-        proposer: String,
+        proposer: Option<String>,
         /// The cluster key — a bare predicate. Commitments do not group.
+        /// Meaningless with --all, which has no class.
+        #[arg(long, conflicts_with = "all")]
+        predicate: Option<String>,
+        /// The top layer: group the WHOLE pending queue regardless of
+        /// class, at the graph's stricter global floor. Every group names
+        /// the classes it spans — the blast radius is part of the
+        /// reviewable object — and a verdict on one rides
+        /// `accept|reject --cascade <ids> --across-classes`.
         #[arg(long)]
-        predicate: String,
-        /// Cosine floor; omitted, the graph's calibrated default applies.
+        all: bool,
+        /// Cosine floor; omitted, the graph's calibrated default applies
+        /// (per mode — the global floor is stricter than the class one).
         #[arg(long)]
         threshold: Option<f64>,
         #[arg(long)]
@@ -183,6 +193,10 @@ pub enum Cmd {
         /// groups listing) instead of re-deriving similarity.
         #[arg(long, conflicts_with_all = ["like", "proposer", "predicate"])]
         cascade: Option<String>,
+        /// With --cascade: the listed ids may come from other classes —
+        /// pair with a listing from `groups --all`.
+        #[arg(long, requires = "cascade")]
+        across_classes: bool,
     },
     /// Reject graph fact candidates, by id or by class.
     Reject {
@@ -206,6 +220,10 @@ pub enum Cmd {
         /// Cascade over an explicit member list — see `accept --cascade`.
         #[arg(long, conflicts_with_all = ["like", "proposer", "predicate"])]
         cascade: Option<String>,
+        /// With --cascade: the listed ids may come from other classes —
+        /// see `accept --across-classes`.
+        #[arg(long, requires = "cascade")]
+        across_classes: bool,
     },
 }
 
@@ -248,9 +266,19 @@ pub async fn execute(args: Args) -> Result<()> {
         Cmd::Groups {
             proposer,
             predicate,
+            all,
             threshold,
             json,
-        } => groups(&proposer, &predicate, threshold, json),
+        } => {
+            if all {
+                groups_all(proposer.as_deref(), threshold, json)
+            } else {
+                let (Some(p), Some(key)) = (proposer.as_deref(), predicate.as_deref()) else {
+                    bail!("--proposer and --predicate name the class; --all is the cross-class top layer");
+                };
+                groups(p, key, threshold, json)
+            }
+        }
         Cmd::Bind { id, to } => {
             let id_s = id.to_string();
             let mut args = vec!["bind", id_s.as_str()];
@@ -271,6 +299,7 @@ pub async fn execute(args: Args) -> Result<()> {
             like,
             threshold,
             cascade,
+            across_classes,
         } => decide(
             "accept",
             &ids,
@@ -281,6 +310,7 @@ pub async fn execute(args: Args) -> Result<()> {
             create_subjects,
             dry_run,
             match (&cascade, like) {
+                (Some(csv), _) if across_classes => Fan::IdsAcross(csv),
                 (Some(csv), _) => Fan::Ids(csv),
                 (None, true) => Fan::Similar(threshold),
                 (None, false) => Fan::None,
@@ -296,6 +326,7 @@ pub async fn execute(args: Args) -> Result<()> {
             like,
             threshold,
             cascade,
+            across_classes,
         } => decide(
             "reject",
             &ids,
@@ -306,6 +337,7 @@ pub async fn execute(args: Args) -> Result<()> {
             false,
             dry_run,
             match (&cascade, like) {
+                (Some(csv), _) if across_classes => Fan::IdsAcross(csv),
                 (Some(csv), _) => Fan::Ids(csv),
                 (None, true) => Fan::Similar(threshold),
                 (None, false) => Fan::None,
@@ -645,6 +677,66 @@ fn list(proposer: Option<&str>, limit: usize, as_json: bool) -> Result<()> {
     Ok(())
 }
 
+/// The top layer: the whole pending queue grouped across classes. The
+/// graph does everything; this process renders — including the classes
+/// each group spans, because the blast radius is part of the reviewable
+/// object, and the singleton count, because a view that shows less than
+/// the queue must say how much less.
+fn groups_all(proposer: Option<&str>, threshold: Option<f64>, as_json: bool) -> Result<()> {
+    let t_s = threshold.map(|t| t.to_string());
+    let mut args: Vec<&str> = vec!["review", "--groups", "--across-classes"];
+    if let Some(p) = proposer {
+        args.push("--proposer");
+        args.push(p);
+    }
+    if let Some(t) = &t_s {
+        args.push("--threshold");
+        args.push(t);
+    }
+    let answer = graph_json(&args)?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&answer)?);
+        return Ok(());
+    }
+    let rows = answer["groups"].as_array().cloned().unwrap_or_default();
+    let considered = answer["considered"].as_u64().unwrap_or(0);
+    if rows.is_empty() {
+        println!("no cross-class groups: nothing repeats above the global threshold");
+        return Ok(());
+    }
+    let covered: u64 = rows
+        .iter()
+        .map(|g| 1 + g["members"].as_array().map_or(0, |m| m.len() as u64))
+        .sum();
+    println!(
+        "{} group(s) covering {covered} of {considered} pending (cosine >= {}; singletons stay in their class listings)\n",
+        rows.len(),
+        answer["threshold"].as_f64().unwrap_or(0.0),
+    );
+    for g in &rows {
+        println!(
+            "  x{:<4} #{:<7} {}",
+            1 + g["members"].as_array().map_or(0, |m| m.len()),
+            g["leader_id"].as_i64().unwrap_or(0),
+            g["leader_statement"].as_str().unwrap_or("?"),
+        );
+        if let Some(classes) = g["classes"].as_object() {
+            let span: Vec<String> = classes
+                .iter()
+                .map(|(c, n)| format!("{c} x{}", n.as_u64().unwrap_or(0)))
+                .collect();
+            println!("           spans: {}", span.join(", "));
+        }
+        for sm in g["sample"].as_array().into_iter().flatten() {
+            if let Some(t) = sm.as_str() {
+                println!("           ~ {t}");
+            }
+        }
+    }
+    println!("\none verdict per group: mecha review accept|reject <leader-id> --cascade <ids> --across-classes");
+    Ok(())
+}
+
 /// One class's queue grouped by semantic similarity — the graph does the
 /// embedding and clustering; this process only renders. Largest first, so
 /// the top row is where one verdict resolves the most items.
@@ -842,6 +934,10 @@ pub enum Fan<'a> {
     /// groups listing — the set the person actually read. No embedder runs,
     /// and the graph vets every id against the seed's class.
     Ids(&'a str),
+    /// Like [`Fan::Ids`], from a `groups --all` listing: the graph's vet
+    /// admits pending ids from other classes. Everything else holds — one
+    /// seed, one human verdict, members labeled `cascade:<seed>`.
+    IdsAcross(&'a str),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -958,6 +1054,11 @@ pub fn decide_report(
         Fan::Ids(csv) => {
             args.push("--cascade");
             args.push(csv);
+        }
+        Fan::IdsAcross(csv) => {
+            args.push("--cascade");
+            args.push(csv);
+            args.push("--across-classes");
         }
     }
     graph_cli(&args)
