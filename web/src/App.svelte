@@ -8,21 +8,25 @@
   import Notes from './lib/Notes.svelte';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
+  // A hash may carry a sub-view after a slash (#review/frontdoor), which the
+  // view's component interprets; the router only splits it.
   const views = ['home', 'chat', 'mail', 'review', 'tasks', 'notes'];
   const fromHash = () => {
-    const h = location.hash.slice(1);
-    return views.includes(h) ? h : 'home';
+    const [h, s] = location.hash.slice(1).split('/');
+    return views.includes(h) ? { view: h, sub: s ?? null } : { view: 'home', sub: null };
   };
-  let view = $state(fromHash());
+  let route = $state(fromHash());
+  const view = $derived(route.view);
 
   function navigate(to) {
-    view = to;
+    const [v] = to.split('/');
+    route = { view: v, sub: to.split('/')[1] ?? null };
     location.hash = to === 'home' ? '' : to;
   }
 
   $effect(() => {
     const onHash = () => {
-      view = fromHash();
+      route = fromHash();
     };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
@@ -35,13 +39,13 @@
   {:else if view === 'mail'}
     <Mail />
   {:else if view === 'review'}
-    <Review />
+    <Review initial={route.sub} />
   {:else if view === 'tasks'}
     <Tasks />
   {:else if view === 'notes'}
     <Notes />
   {:else}
-    <Home />
+    <Home {navigate} />
   {/if}
   <Nav {view} {navigate} />
 </div>

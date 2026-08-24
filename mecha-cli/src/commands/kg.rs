@@ -33,6 +33,13 @@ pub struct Args {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Cmd {
+    /// Recent notes, newest first — the notebook view.
+    Notes {
+        #[arg(long, default_value_t = 20)]
+        limit: u64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Search the graph: entities, facts, episodes — the same context pack
     /// the model gets. `#tag` tokens filter to hand-tagged episodes.
     Search {
@@ -67,6 +74,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         Cmd::Search { query, k, json } => search(global, &query.join(" "), k, json).await,
         Cmd::Entity { name, json } => entity(global, &name.join(" "), json).await,
         Cmd::Note { text } => note(global, &text.join(" ")).await,
+        Cmd::Notes { limit, json } => notes(global, limit, json).await,
     }
 }
 
@@ -196,6 +204,36 @@ async fn entity(global: &GlobalOpts, name: &str, as_json: bool) -> Result<()> {
                     .collect::<String>(),
             );
         }
+    }
+    Ok(())
+}
+
+/// The notebook view: `kg_notes`, rendered. JSON is the envelope verbatim
+/// for the web page; text is one line per note for a terminal.
+async fn notes(global: &GlobalOpts, limit: u64, as_json: bool) -> Result<()> {
+    let out = call(global, "kg_notes", json!({ "limit": limit })).await?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    let rows = out["notes"].as_array().cloned().unwrap_or_default();
+    if rows.is_empty() {
+        println!("no notes yet — `mecha kg note <text>` captures one");
+        return Ok(());
+    }
+    for n in &rows {
+        let body = n["body"].as_str().unwrap_or("?");
+        let head: String = body.chars().take(96).collect();
+        println!(
+            "  {}  {}",
+            n["occurred_at"]
+                .as_str()
+                .unwrap_or("?")
+                .chars()
+                .take(16)
+                .collect::<String>(),
+            head
+        );
     }
     Ok(())
 }

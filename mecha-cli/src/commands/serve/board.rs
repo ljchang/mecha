@@ -116,3 +116,11 @@ pub async fn find(
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
     }
 }
+
+/// GET /api/notes — recent notes, the `kg_notes` envelope verbatim.
+pub async fn notes(State(state): St) -> Response {
+    match self_json(&state, &["kg", "notes", "--json"]).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
