@@ -198,6 +198,21 @@ pub async fn execute(args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Where every CLI child this server spawns runs. The serve unit's working
+/// directory is the owner's home, which any child that builds a tool
+/// surface *refuses* as a workspace — the jail must not be rooted over
+/// `~/.mecha` — so children get the web producer directory instead: inside
+/// the mecha home is fine (it is the workspace default), containing it is
+/// what is refused. This was first fixed for mail alone, and the same
+/// refusal promptly surfaced on the tasks board (`mecha tasks` reaches the
+/// graph over MCP, which builds a workspace too): the fix belongs at the
+/// spawn helpers, not at whichever route happened to fail first.
+pub(super) fn child_cwd() -> Option<std::path::PathBuf> {
+    let dir = mecha_core::work::producer_dir("web").ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
 /// The whole surface, auth included, as a value — which is what lets the
 /// guard be tested by driving the router directly instead of binding a port.
 fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
