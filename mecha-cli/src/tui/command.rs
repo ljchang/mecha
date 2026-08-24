@@ -34,6 +34,9 @@ pub enum Command {
     /// Google Docs, Sheets and Slides: what is in scope, and how to put
     /// something into it from a machine with no browser.
     Docs,
+    /// Who is who in the knowledge graph: look a person up, rename a node,
+    /// alias it, or create one for somebody the graph never minted.
+    Entity,
     /// The GTD board in the knowledge graph: see it, capture, move a task on.
     Tasks,
     /// Capture a note into the knowledge graph, from wherever you are.
@@ -137,6 +140,8 @@ pub fn parse(line: &str) -> Option<Command> {
         // `mecha mail`, the thing you want to see is the queue.
         "mail" | "inbox" => Command::Mail,
         "docs" => Command::Docs,
+        // "who" because that is the question people arrive with.
+        "entity" | "who" => Command::Entity,
         // "requests" because that is what the store holds; `frontdoor` is the
         // component's name and the CLI's.
         "frontdoor" | "requests" => Command::Frontdoor,
@@ -306,7 +311,7 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 24] = [
+pub const NAMES: [&str; 25] = [
     "help",
     "tools",
     "skills",
@@ -320,6 +325,7 @@ pub const NAMES: [&str; 24] = [
     "polls",
     "doctor",
     "docs",
+    "entity",
     "review",
     "model",
     "provider",

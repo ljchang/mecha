@@ -16,6 +16,7 @@ mod ask;
 mod command;
 mod docs;
 mod doctor;
+mod entity;
 mod find;
 mod frontdoor;
 mod mail;
@@ -417,6 +418,8 @@ struct App {
     find: Option<find::FindModal>,
     /// The /docs modal, when open. Takes every key while it is up.
     documents: Option<docs::DocsModal>,
+    /// The /entity modal: repairing who is who in the knowledge graph.
+    entities: Option<entity::EntityModal>,
     /// The /tasks modal, when open. Takes every key while it is up.
     tasks: Option<tasks::TasksModal>,
     /// The /queues modal — every store waiting on a human, including the
@@ -555,6 +558,7 @@ impl App {
             || self.requests.is_some()
             || self.mail.is_some()
             || self.documents.is_some()
+            || self.entities.is_some()
             || self.tasks.is_some()
             || self.queues.is_some()
             || self.poll_monitor.is_some()
@@ -792,6 +796,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         mail: None,
         find: None,
         documents: None,
+        entities: None,
         tasks: None,
         queues: None,
         poll_monitor: None,
@@ -823,7 +828,9 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         // reopens a conversation should not have to guess why an outbound call
         // is suddenly refused.
         let carried = match (app.convo.taint.private, app.convo.taint.untrusted) {
-            (true, true) => " · already holds private data and third-party content, so outbound calls will be refused",
+            (true, true) => {
+                " · already holds private data and third-party content, so outbound calls will be refused"
+            }
             (true, false) => " · already holds private data",
             (false, true) => " · already holds third-party content",
             (false, false) => "",
@@ -2005,6 +2012,7 @@ fn open_scoped_review(app: &mut App, ids: Vec<String>) {
         || app.mail.is_some()
         || app.find.is_some()
         || app.documents.is_some()
+        || app.entities.is_some()
         || app.tasks.is_some()
         || app.queues.is_some()
         || app.poll_monitor.is_some()
@@ -2407,6 +2415,9 @@ fn on_key(
     }
     if app.documents.is_some() {
         return handle_docs_key(app, key);
+    }
+    if app.entities.is_some() {
+        return handle_entity_key(app, key);
     }
     if app.queues.is_some() {
         return handle_queues_key(app, key);
@@ -2998,6 +3009,10 @@ fn run_command(
         // Opened at once in a loading state, with the listing fetched off the
         // event loop: it is a Drive request, and a modal that appears only
         // after the network answers reads as a key that did nothing.
+        Command::Entity => {
+            app.entities = Some(entity::EntityModal::new());
+        }
+
         Command::Docs => match docs_accounts() {
             accounts if accounts.is_empty() => {
                 say("no documents grant yet — run `mecha-docs auth` once, then \
@@ -6536,6 +6551,9 @@ fn draw(
     if let Some(modal) = &app.documents {
         modal.draw(frame);
     }
+    if let Some(modal) = &app.entities {
+        modal.draw(frame);
+    }
     if let Some(modal) = &app.tasks {
         modal.draw(frame);
     }
@@ -7654,6 +7672,173 @@ fn open_locally(url: &str) -> Result<()> {
     Ok(())
 }
 
+// ─── /entity ─────────────────────────────────────────────────────────────────
+
+/// Where `mecha-graph` lives, on `commands::review`'s rule: `$MECHA_GRAPH_BIN`
+/// first, then the name on `PATH`, and deliberately never `mecha.toml` — a
+/// project file arrives with a cloned repository, and a project that could
+/// name a binary mecha runs as a child process has been handed arbitrary
+/// execution.
+fn graph_bin() -> String {
+    std::env::var("MECHA_GRAPH_BIN").unwrap_or_else(|_| "mecha-graph".into())
+}
+
+/// Run `mecha-graph <args>` and hand back stdout, or the reason it failed.
+///
+/// Synchronous, unlike `/docs` and `/outbox`: an entity lookup against the
+/// graph measures 7ms, so the detached-job machinery would be ceremony
+/// around something faster than a keypress. A missing binary is reported by
+/// name with the variable that fixes it — "No such file or directory" from a
+/// child nobody mentioned is the least actionable error there is.
+fn graph_cli(args: &[&str]) -> std::result::Result<String, String> {
+    let bin = graph_bin();
+    let out = std::process::Command::new(&bin).args(args).output();
+    let out = match out {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "`{bin}` not found — install mecha-graph, or set MECHA_GRAPH_BIN to its path"
+            ));
+        }
+        Err(e) => return Err(format!("running {bin}: {e}")),
+    };
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+    }
+    // The reason may be on either stream, and `mecha-graph`'s refusals — the
+    // collision messages this modal exists to surface — are multi-line. Keep
+    // the first line, which is the sentence; the rest is the candidate list
+    // and would not fit a status row anyway.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let reason = stderr
+        .trim()
+        .lines()
+        .next()
+        .filter(|l| !l.trim().is_empty())
+        .or_else(|| stdout.trim().lines().next())
+        .unwrap_or("failed")
+        .trim_start_matches("error: ")
+        .to_string();
+    Err(reason)
+}
+
+/// Re-run the current query so the list reflects what just changed. A rename
+/// reorders nothing here, but it does change the name being displayed, and a
+/// row still showing the old one after a successful rename reads as a
+/// failure.
+fn entity_lookup(app: &mut App) {
+    let Some(modal) = &mut app.entities else {
+        return;
+    };
+    let q = modal.query.trim().to_string();
+    if q.is_empty() {
+        return;
+    }
+    match graph_cli(&["entity", &q, "--json"]) {
+        Ok(json) => modal.install(&json),
+        Err(e) => {
+            modal.rows.clear();
+            modal.fresh = false;
+            modal.status = Some(e);
+        }
+    }
+}
+
+/// Keys for the `/entity` modal.
+fn handle_entity_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let Some(modal) = &mut app.entities else {
+        return Ok(());
+    };
+
+    // An edit in flight takes every key first — including `q`, `r` and `a`,
+    // which are letters in a name before they are commands.
+    if let Some((kind, buf)) = &mut modal.edit {
+        let kind = *kind;
+        match key.code {
+            KeyCode::Esc => modal.edit = None,
+            KeyCode::Backspace => {
+                buf.pop();
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => buf.push(c),
+            KeyCode::Enter => {
+                let text = buf.trim().to_string();
+                modal.edit = None;
+                if text.is_empty() {
+                    return Ok(());
+                }
+                let target = modal.selected_row().map(|r| r.id.clone());
+                let args: Vec<String> = match kind {
+                    entity::EditKind::NewPerson => vec!["new-person".into(), text.clone()],
+                    _ => {
+                        let Some(id) = target else {
+                            modal.status = Some("no node selected".into());
+                            return Ok(());
+                        };
+                        vec![kind.verb().into(), id, text.clone()]
+                    }
+                };
+                let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+                match graph_cli(&argv) {
+                    Ok(out) => {
+                        modal.status =
+                            Some(out.lines().next().unwrap_or("done").trim().to_string());
+                        // Creating a person is also how you go and look at
+                        // them: the query becomes their name so the refresh
+                        // lands on the node just made.
+                        if kind == entity::EditKind::NewPerson {
+                            modal.query = text;
+                        }
+                        entity_lookup(app);
+                    }
+                    // A refusal keeps the page open — every collision here is
+                    // a question, and answering it needs what is on screen.
+                    Err(e) => modal.status = Some(e),
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    if modal.help {
+        modal.help = false;
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Esc => app.entities = None,
+        KeyCode::Char('?') => modal.help = true,
+        KeyCode::Up => modal.move_sel(-1),
+        KeyCode::Down => modal.move_sel(1),
+        KeyCode::Enter => entity_lookup(app),
+        KeyCode::Backspace => {
+            modal.query.pop();
+        }
+        // Ctrl-N, not `n`: the query box is live, so a bare letter is a
+        // letter. Prefilled with what was typed, because the moment you want
+        // this is the moment a lookup came back empty.
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let seed = modal.query.trim().to_string();
+            modal.edit = Some((entity::EditKind::NewPerson, seed));
+        }
+        // r and a act on the selected row, so they are only commands once
+        // there is a row to act on — otherwise they are letters being typed
+        // into the search box.
+        KeyCode::Char('r') if modal.selected_row().is_some() => {
+            modal.edit = Some((entity::EditKind::Rename, String::new()));
+        }
+        KeyCode::Char('a') if modal.selected_row().is_some() => {
+            modal.edit = Some((entity::EditKind::Alias, String::new()));
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            modal.query.push(c);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Keys for the `/docs` modal.
 ///
 /// Every action is a `mecha-docs …` child process, on the `/triggers` rule:
@@ -8048,6 +8233,104 @@ mod tests {
         app
     }
 
+    // ─── /entity ─────────────────────────────────────────────────────────
+
+    fn entity_app() -> App {
+        let mut app = test_app();
+        let mut modal = entity::EntityModal::new();
+        modal.install(
+            r#"[{"id":"person-53667537","name":"Josephine B. Conley","node_type":"person",
+                 "aliases":["josephine chang"],"interactions":1035,
+                 "facts":[{"statement":"Josephine is one of Luke's twin daughters."}]}]"#,
+        );
+        app.entities = Some(modal);
+        app
+    }
+
+    fn ent_press(app: &mut App, code: KeyCode) {
+        handle_entity_key(app, KeyEvent::new(code, KeyModifiers::NONE)).unwrap();
+    }
+
+    fn ent_press_ctrl(app: &mut App, code: KeyCode) {
+        handle_entity_key(app, KeyEvent::new(code, KeyModifiers::CONTROL)).unwrap();
+    }
+
+    /// The lookup box is live, so a letter is a letter — except where it
+    /// names an action on a row that exists.
+    #[test]
+    fn typing_reaches_the_query_and_r_opens_a_rename() {
+        let mut app = entity_app();
+        ent_press(&mut app, KeyCode::Char('r'));
+        let modal = app.entities.as_ref().unwrap();
+        assert_eq!(
+            modal.edit.as_ref().map(|(k, _)| *k),
+            Some(entity::EditKind::Rename),
+            "r on a selected row starts a rename"
+        );
+        assert!(modal.query.is_empty(), "r must not also land in the query");
+    }
+
+    /// With no row selected, the same key is just a letter — otherwise the
+    /// name "Rachel" would be untypeable.
+    #[test]
+    fn action_letters_are_letters_when_there_is_no_row() {
+        let mut app = test_app();
+        app.entities = Some(entity::EntityModal::new());
+        for c in ['r', 'a', 'n'] {
+            ent_press(&mut app, KeyCode::Char(c));
+        }
+        let modal = app.entities.as_ref().unwrap();
+        assert_eq!(modal.query, "ran");
+        assert!(modal.edit.is_none());
+    }
+
+    /// An edit in flight takes every key, including the ones that are
+    /// commands outside it. "Sara" must be typeable into a rename box.
+    #[test]
+    fn an_edit_in_flight_swallows_the_action_letters() {
+        let mut app = entity_app();
+        ent_press(&mut app, KeyCode::Char('r'));
+        for c in ['S', 'a', 'r', 'a'] {
+            ent_press(&mut app, KeyCode::Char(c));
+        }
+        let modal = app.entities.as_ref().unwrap();
+        assert_eq!(modal.edit.as_ref().unwrap().1, "Sara");
+        assert!(modal.query.is_empty());
+    }
+
+    /// Esc backs out one layer at a time: the edit first, the modal second.
+    /// Collapsing both would throw away a half-typed name on the keystroke
+    /// people use to fix a typo.
+    #[test]
+    fn esc_closes_the_edit_before_it_closes_the_modal() {
+        let mut app = entity_app();
+        ent_press(&mut app, KeyCode::Char('a'));
+        assert!(app.entities.as_ref().unwrap().edit.is_some());
+        ent_press(&mut app, KeyCode::Esc);
+        assert!(
+            app.entities.is_some(),
+            "the modal survives cancelling an edit"
+        );
+        assert!(app.entities.as_ref().unwrap().edit.is_none());
+        ent_press(&mut app, KeyCode::Esc);
+        assert!(app.entities.is_none());
+    }
+
+    /// Ctrl-N seeds the new-person box with what was typed, because the
+    /// moment you want it is the moment a lookup came back empty.
+    #[test]
+    fn ctrl_n_prefills_the_new_person_with_the_query() {
+        let mut app = test_app();
+        app.entities = Some(entity::EntityModal::new());
+        for c in ['E', 'd', 'i', 'e'] {
+            ent_press(&mut app, KeyCode::Char(c));
+        }
+        ent_press_ctrl(&mut app, KeyCode::Char('n'));
+        let (kind, buf) = app.entities.as_ref().unwrap().edit.as_ref().unwrap();
+        assert_eq!(*kind, entity::EditKind::NewPerson);
+        assert_eq!(buf, "Edie");
+    }
+
     #[test]
     fn a_pane_of_text_to_copy_hands_the_mouse_back_to_the_terminal() {
         // Mouse capture is why a drag never selected the authorization URL:
@@ -8164,6 +8447,7 @@ mod tests {
             mail: None,
             find: None,
             documents: None,
+            entities: None,
             tasks: None,
             queues: None,
             poll_monitor: None,
