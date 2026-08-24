@@ -1684,6 +1684,59 @@ as a metronome). And the first real phone tap paid for itself: see the two
 new traps below.
 
 
+**2026-08-24 night — the voice got a face, and three sessions found they
+shared one binary.** The voice page's dock had one button; it now carries a
+**six-voice picker and a rate slider**. Neither was free the obvious way.
+Chatterbox Turbo has no speed parameter (`generate()` takes
+`exaggeration`/`cfg_weight`/`temperature` and nothing about tempo), and the
+browser's cheap knob — `playbackRate` — resamples, moving pitch with tempo
+into a chipmunk; so rate is a pitch-preserving phase vocoder on the server,
+measured at ~50 ms warm against a synthesis cost of 0.53 s. The voices are
+**Kokoro presets synthesized into cloning references**
+(`scripts/voice/make-voices.py`), which is a licensing decision before it is
+an engineering one: Kokoro is Apache 2.0 and its voices are nobody's
+identity, so a voice can be added or deleted without anyone's consent being
+the thing that made it legal, and the risk that a twice-vocoded reference
+would clone badly did not materialise — all six work, 0.53–1.26 s for a
+short sentence. Changes ride a `voice-config` RTVI message and the server's
+reply is what renders: a bad value is **refused, never clamped**, so the
+slider cannot show a rate the worker is not speaking at, which is the
+wrong-bytes-review rule arriving in a control surface. The channel sets how
+the answer sounds and nothing else — there is deliberately no field on it
+that reaches the agent, the workspace or the posture.
+
+`VOICE_BLOCK` learned that **its first sentence is the only one on the
+latency path.** Pipecat's TTS service aggregates by sentence, so
+time-to-first-sound is the synthesis of sentence one alone: measured at
+0.33 s for "Sure." against 1.08 s for a full clause, on a leg that was
+consuming ~77% of the budget while STT sat at 92 ms and the LLM's cached
+prefix answered in ~220 ms. A short opener pays twice, being also fewer
+tokens to generate before speech can start at all. The measurement is the
+point — four turns of that session were spent debating the STT model, which
+is 6% of the latency and already at the low end of the industry figures.
+
+Several **stale labels on live processes** were corrected the same night, all
+of the same shape: `llama-voxtral.service` still described itself as "STT for
+mecha voice" months after Parakeet took the seat, `worker.py`'s docstring
+still named `:8082` while line 47 defaulted to `:8992`, and
+`VOICE-RESEARCH.md` §2.1/§2.2 still carried picks its own §7 build log had
+superseded. §2.1 gained the rule the Parakeet swap actually established:
+**an audio encoder bolted to a general LLM is disqualified from the STT seat
+whatever it scores**, because no ASR benchmark contains adversarial speech —
+which is why the table's top three entries are all disqualified.
+
+The same night, a second session landed the phone surface's remaining arcs:
+the **frontdoor page** (`serve/frontdoor.rs` + `Frontdoor.svelte`, closing
+the last review store the phone could not reach), a **session-history
+drawer** with resume that restores messages *and* taint through
+`Session::load` and re-proves the recorded workspace, a **plain mail inbox
+and compose** that stages under whatever `[outbox] tools` names and refuses
+if `mail_send` is unrouted, and **push-to-talk dictation** (`POST
+/api/dictate` → Parakeet) on the notes and task boxes. The interim
+browser-speech toggle was deleted rather than justified: the owner had been
+reading it as a status light.
+
+
 **The bake-off those two conclusions came from**, moved out of `README.md` on
 2026-08-10 so the numbers live with the rest of the measurement record rather
 than in the front door. It was taken on a DGX Spark (GB10, 128GB unified)
@@ -2922,6 +2975,50 @@ handled.**
   looking exactly like a regression in that day's work. **Compile-time paths
   live in the artifact, not the fingerprint: give a throwaway worktree its own
   target dir.** (2026-08-07, in the factory repo; the lesson is generic.)
+- **`cargo install` replaced a binary built from a different checkout, and
+  the only warning was one line of its own output.** Three sessions wrote
+  `~/.cargo/bin/mecha` on 2026-08-24 from three different checkouts of the
+  same repo — one from `main`, one from a worktree on a feature branch, one
+  from `main` again — each believing it was installing "the" binary. The
+  second install would have silently dropped a shipped web feature from
+  production; it was caught only because `cargo install` prints
+  `Replaced package ... (/path/to/other/checkout)` and someone read it. It
+  did not break anything, and that is the interesting part: the running
+  process holds the *replaced inode*, so the regression sits latent on disk
+  and activates on the next restart — systemd's, a reboot's, or anyone's.
+  **An install is not a source.** The update skill already says a tag is not
+  an install and a restart is not a reinstall; the corollary is that the
+  artifact does not tell you which tree produced it, so on a machine with
+  worktrees per session, verify the checkout before installing and `cmp` the
+  result after. The fix that generalises is coordination, not care:
+  the three sessions messaged each other, agreed who merged last, and that
+  session did the single install and restart. (2026-08-24.)
+- **A library that segfaults instead of raising turns a config error into a
+  dead service.** `sherpa_onnx` accepts `modeling_unit="bpe"` with no
+  `bpe_vocab`, builds the recognizer successfully, and then **segfaults
+  inside `create_stream()`** — no exception, no message. It was found while
+  pricing hotword biasing for the STT leg, which is the leg that feeds the
+  microphone: had a nightly job generated a hotwords file the library
+  disliked, `:8992` would have died and voice would have gone deaf with no
+  error text anywhere. **Anything generated that feeds a native library must
+  be validated in a subprocess first**, because the failure mode of a crash
+  is indistinguishable from the failure mode of a service that was never
+  started. (2026-08-24.)
+- **The serve unit's `WorkingDirectory=%h` gave spawned CLI children a cwd
+  the workspace jail correctly refuses**, so routes that shell out failed on
+  containment for reasons that looked like a jail bug. Fixed narrowly for
+  mail first, whereupon the tasks board promptly rediscovered it. **A fix
+  that belongs at a spawn helper does not belong at whichever route hit it
+  first** — it now lives in `serve/mod.rs::child_cwd`. (2026-08-24.)
+- **A layout bug that needs *scale* to fire passes every short-list test, and
+  a sibling page copied from it inherits the fuse.** A flex item with
+  `overflow` other than `visible` has an automatic minimum size of **zero**,
+  so the phone's mail cards collapsed to 30px slivers and clipped their own
+  text — but only once the list outgrew the viewport. The Outbox page carried
+  the identical latent bug and had simply never held enough drafts to trigger
+  it. **When a bug turns out to need volume to appear, grep for its shape in
+  every page that was copied from the one that broke**, rather than fixing
+  the instance. (2026-08-24.)
 - **A binary built here crash-looped the box with `status=203/EXEC` — this
   workstation is aarch64, the droplet is x86_64.** glibc versions matched,
   which was the check that got made; architecture was the one that mattered,

@@ -92,17 +92,18 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,323 tests**, no failures — re-measured the evening of 2026-08-24
-in a clean worktree after the web-review-surfaces arc (680 in the `mecha-core`
-lib suite, 429 in `mecha-cli` with 1 ignored, 122 in `mecha-mail`, 75 in
-`mecha-slack`, 15 across the two integration suites that need real backends,
-and 2 doctests). The 42 over the previous count span two arcs: the
-phone-as-terminal day's serve/present/chat/voice tests (merged 2026-08-24
-morning, measured only now), and the evening's web-review-surfaces arc — the
-mail-verb closed set, the serve router's mail-guard probes, and the
-upload/download tamers. The main checkout reports 7 more in `mecha-mail`
-from an uncommitted docs WIP that is not this arc's to count. The previous
-count was 1,281, measured the evening of 2026-08-23
+Expect **1,343 tests**, no failures — re-measured on `main` at f6a39a5, the
+night of 2026-08-24, after the voice-controls and web-surface-arcs merges
+(680 in the `mecha-core` lib suite, 442 in `mecha-cli` with 1 ignored, 129 in
+`mecha-mail`, 75 in `mecha-slack`, 15 across the two integration suites that
+need real backends, and 2 doctests). The 20 over the previous count are
+`mecha-cli` +13 and `mecha-mail` +7 — the phone surface's Arcs A/B/C and the
+dictation route, plus the `mecha-mail` tests that the 08-24-evening count had
+set aside as "an uncommitted docs WIP that is not this arc's to count" and
+which have since landed. The previous count was 1,323, measured the evening
+of 2026-08-24 in a clean worktree after the web-review-surfaces arc (680 /
+429+1 / 122 / 75 / 15 / 2), and 1,281 before that, measured the evening of
+2026-08-23
 after the groups/cascade, clean-evidence-learner and graph-surfaces arcs (679
 in the `mecha-core` lib suite, 388 in `mecha-cli` with 1 ignored, 122 in
 `mecha-mail`, 75 in `mecha-slack`, 15 across the two integration suites that
@@ -171,7 +172,7 @@ A working agent harness, used and measured rather than just compiled.
 | TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/queues`, `/outbox`, `/frontdoor`, `/mail`, `/tasks`, `/skills`, `/polls`, `/doctor` and (2026-08-23) `/find` modals drive the CLI like `/triggers` does — plus `/note` for one-line graph capture — the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
 | Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`; owner-gated command words `doctor`, `triggers`, `review now|later|auto`, and (2026-08-23) `note <text>` — a deterministic capture matched before the text can become a prompt — `queues`, the read-only backlog rollup, and (2026-08-24, adopted from an orphaned WIP) `tasks`/`task`, the GTD board as command words. **Merged 2026-08-09 (PR #25) and running as `mecha-slack.service`** |
 | Web surface | `mecha serve` (2026-08-24, extended the same evening) — the tailnet web app: binds 127.0.0.1 with no flag to widen it, `tailscale serve` is the door (`:8443`), every request must carry `Tailscale-User-Login` equal to `[web] owner_login` (global-file-only config, stripped from project layers like `[slack]`; refuses to start ownerless), strict self-only CSP. Pages: Home dashboard (`review queues --json` + `doctor --json` as child processes, a dash never a zero), streaming chat over SSE (one shared agent, per-session `RunContext` on the Slack connector's pattern — keyed sessions with validated directory-safe names, jails under `~/.mecha/work/web/<key>/`, steering, cancel, context gauge), outbox review (whole `DraftView`, source reads behind a gutter, taint sheet with exact args, approve `--yes`/reject/edit as CLI children), graph-queue sample deck (seed printed, verdict ≠ resample), tasks, notes + `kg search`. Per-session `ask` mode: live approval cards (deny-with-reason is a real user correction; timeout is `Blocked`) and `ask_user` option cards routed by the run's jail (`Asker::ask_in`); pending cards ride the transcript read so a locked phone reloads into them; cancel drains parked cards. Evening additions (2026-08-24): the **mail page** (`serve/mail.rs` + `Mail.svelte` — store read for the list, `mecha mail show` as the one thread renderer behind a gutter, closed-verb `/api/mail/act` with spam the only confirm; drafting verbs spawn detached into the outbox), the **graph queue at all three depths** (classes with server-stamped tiers from `tui::queues::Tier::of`, per-class similarity groups, and the cross-class global layer with a threshold stepper — see the graph repo's `similar.rs` for the invited-crossing rules), and **files** (`serve/files.rs`: uploads into the session jail's `inbox/` announced as paths, downloads that re-prove containment, images the only inline type). Assets are a build artifact at `~/.mecha/web/dist` (update skill surface 1b). `docs/REMOTE-SURFACE-RESEARCH.md` + `-DESIGN.md` |
-| Voice | The stack from `docs/VOICE-RESEARCH.md`, built and in production 2026-08-24 (§7 is the build log): Pipecat worker (`scripts/voice/worker.py`, `:7860`), **Parakeet TDT** STT (`mecha-parakeet.service`, `:8992` — Voxtral was structurally unfit: a chat model answers speech instead of transcribing it, and obeys spoken instructions), Chatterbox TTS with Kokoro fallback, and the loopback OpenAI facade (`mecha-cli/src/voice/`) **mounted inside `mecha serve`** (`--voice-port 8990`) over the shared agent — one process, one cached prefix, two dialects. The page's WebRTC offer proxies same-origin through serve (`/api/offer`), behind the owner guard. In-chat voice: waveform button → call overlay (voice-core.js embedded by relative import; threaded transcript pane, cloned-track mic meter, mute, end). A call is its own conversation until D3 lands. D5 ratified: owner speech is typed text, arms nothing |
+| Voice | The stack from `docs/VOICE-RESEARCH.md`, built and in production 2026-08-24 (§7 is the build log): Pipecat worker (`scripts/voice/worker.py`, `:7860`), **Parakeet TDT** STT (`mecha-parakeet.service`, `:8992` — Voxtral was structurally unfit: a chat model answers speech instead of transcribing it, and obeys spoken instructions), Chatterbox TTS with Kokoro fallback, and the loopback OpenAI facade (`mecha-cli/src/voice/`) **mounted inside `mecha serve`** (`--voice-port 8990`) over the shared agent — one process, one cached prefix, two dialects. The page's WebRTC offer proxies same-origin through serve (`/api/offer`), behind the owner guard. In-chat voice: waveform button → call overlay (voice-core.js embedded by relative import; threaded transcript pane, cloned-track mic meter, mute, end). A call is its own conversation until D3 lands. D5 ratified: owner speech is typed text, arms nothing. **Voice controls (2026-08-24 night):** the standalone page's dock carries a six-voice picker and a 0.5–2.0x rate slider, driven by a `voice-config` RTVI message and `session.voiceConfig(patch)` on `voice-core.js`; the server's reply is what renders, so a refused value never leaves the control showing a rate the worker is not speaking at. Rate is a pitch-preserving phase vocoder in `chatterbox_server.py` (~50 ms warm) because Chatterbox Turbo has no speed parameter and resampling moves pitch with tempo. The voices are Kokoro presets synthesized into cloning references by `scripts/voice/make-voices.py` — Apache 2.0, nobody's identity — and the server reads the directory live (`GET /v1/voices`) rather than holding a list |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
@@ -256,7 +257,7 @@ and `mecha-voice-worker` (`:7860`, Pipecat; tailscale serves the voice page
 at `:443` with `/api` proxied to it). Web assets live at `~/.mecha/web/dist`
 — a build artifact, not in git; the `update` skill's surface 1b rebuilds
 them. 8080 re-verified this date: `total_slots=4`, `n_ctx` 262,144/slot,
-vision true. Workspace tests: **1,318 pass, 0 fail**. Eval: 36 cases, 15
+vision true. Workspace tests: **1,343 pass, 0 fail**. Eval: 36 cases, 15
 tags (unchanged). The `[web]` section is live in `~/.mecha/config.toml` —
 safe now that every installed binary parses it; the outage its early
 arrival caused is in HISTORY under Traps → Environment. A `llama-voxtral`
@@ -834,13 +835,15 @@ Everything here is verified in source as of the date; the arcs' own docs
   voice arc owns the fix (facade adopting the web session key) and the
   session-key contract is agreed; talking and typing are two transcripts
   until then.
-- **Frontdoor has no page.** Phase 3 promised it; mail shipped 2026-08-24
-  evening and frontdoor is now the one review store the phone cannot reach.
-  Same thin-shell pattern as the mail page (`serve/mail.rs`).
 - **The owner's first-day feedback backlog is `REMOTE-SURFACE-DESIGN.md`
   §12** — chat model switching, a plain mail inbox + compose, notes/tasks
   voice capture and listings, the task→agent handoff (the big one), Home
-  navigation/widgets. Triaged there, not restated here.
+  navigation/widgets. Triaged there, not restated here. The plain inbox +
+  compose and the notes/tasks voice capture shipped 2026-08-24 night (Arcs B
+  and C); the rest stands. **The task→agent handoff is designed and not
+  built** — `docs/TASK-RESEARCH.md` and `docs/TASK-AGENT-DESIGN.md` are its
+  authority, landing on branch `task-agent-design`; if they are not in the
+  tree yet, that branch has not merged.
 - **`--voice-yes` is a deliberate posture with a named risk.** Voice runs
   get `ModeApprover { Allow }` (`voice/mod.rs:552`; the unit runs the flag)
   while web chat defaults read-only with live cards — so one process serves
@@ -850,10 +853,15 @@ Everything here is verified in source as of the date; the arcs' own docs
   spoken approvals, this flag is what they replace. `allow` mode is equally
   deliberately **not** offered from the page (`serve/chat.rs`) — approve one
   call at a time in `ask` mode instead.
-- **The interim browser-speech toggle is still wired** beside the real voice
-  mode (`Chat.svelte` "read replies aloud (interim browser voice)") — its
-  own comment says it dies when the speech servers land, and they landed.
-  Delete it, or decide it earns a seat as the cheap always-works fallback.
+- **The in-chat voice mode has no voice/rate controls.** Two surfaces embed
+  `createVoiceSession`: the standalone page (`scripts/voice/page/index.html`,
+  which got the dock controls) and the app's in-chat call
+  (`web/src/lib/Chat.svelte`). The second gets the *plumbing* free — the
+  shared module carries `voiceConfig(patch)` and `onVoiceConfig`, and the
+  change was additive — but renders no UI for it, so a call started from the
+  phone speaks in whatever voice the worker booted with. Deliberately left:
+  `Chat.svelte` was mid-arc when the controls landed and a second edit would
+  have collided. The contract is documented at the top of `voice-core.js`.
 - **The web app imports outside its package root** —
   `../../../scripts/voice/page/voice-core.js` — deliberate (one module, two
   shells, cannot drift) but it couples `npm run build` to the whole
@@ -865,14 +873,66 @@ Everything here is verified in source as of the date; the arcs' own docs
   dozens, so the undo design is worth pulling forward.
 - **PWA install and Web Push are unstarted** (design Phase 5). Until push,
   Slack remains the nudge channel for staged drafts — D11 keeps it anyway.
-- **Luke's next real call is the outstanding voice test** — and it now also
-  auditions the replaced thinking sound (a soft alternating two-note pulse;
-  the metronome tick is gone, `voice-core.js`). Both halves are
-  verified by probes end-to-end (Parakeet transcribes exactly, injection
-  audio is obeyed by nobody, a spoken calendar question round-tripped a real
-  tool call) — but no human has completed a full conversation on the new
-  stack yet, and the AEC/echo filter earns its keep only on a speakerphone
-  walk.
+- **Luke's next real call is the outstanding voice test**, and it now
+  auditions four things at once: the replaced thinking sound (a soft
+  alternating two-note pulse; the metronome tick is gone), the six-voice
+  picker and the rate slider (`page/index.html` dock), and whether the
+  first-sentence rule actually *feels* faster. Every part is verified by
+  probe end-to-end — Parakeet transcribes exactly, injection audio is
+  obeyed by nobody, a spoken calendar question round-tripped a real tool
+  call, and the voice-config round trip reads/sets/refuses correctly — but
+  **no human has completed a full conversation on the new stack**, and two
+  things only a real call can settle: whether the AEC/echo filter holds on
+  a speakerphone walk, and which of the six voices is worth keeping.
+- **Voice input has no denoising, and the research says leave it that way —
+  but the VAD is untuned, which is the actual lever.** Deferred 2026-08-24
+  with the finding attached, because the obvious fix is the wrong one.
+  Denoising and false-triggering are different jobs: the VAD decides what
+  becomes a turn, the denoiser only cleans what already got through. And
+  Pipecat's filter mutates the frame in place
+  (`BaseInputTransport`: `frame.audio = await ...filter(frame.audio)`), so
+  `audio_in_filter=RNNoiseFilter()` denoises the audio reaching **Parakeet**
+  too — and a systematic study that tested speech enhancement against four
+  ASR systems *including NVIDIA Parakeet* found it degraded every one, by
+  1.1–46.6% absolute semWER (arXiv 2512.17562; at 10 dB SNR, 8.82% → 25.83%),
+  through artifacts inaudible to humans and the removal of features the model
+  was already using. What you would want is denoise-for-VAD, raw-for-STT, and
+  Pipecat's filter API cannot express it. **Do first, in order:** (1)
+  `SileroVADAnalyzer()` is constructed with no arguments (`worker.py`), so it
+  runs defaults — `confidence 0.7`, `start_secs 0.2`, `stop_secs 0.2`,
+  `min_volume 0.6`; 200 ms of anything Silero scores as speech opens a turn,
+  which a sleeve on a mic clears (Pipecat issue #3036 is this exact
+  over-sensitivity). (2) `MIN_SEGMENT_RMS = 0.010` sits **one thousandth**
+  above the measured room noise of 0.009 — tuned in a quiet room, and wind
+  will not notice it; re-measure it in the conditions that matter before
+  trusting it outdoors. Note the *cost* of a false positive already collapsed
+  with the Parakeet swap: a noise segment now yields empty or garbage text
+  the gates drop, where Voxtral produced a confident fabricated answer
+  attributed to the owner. Only after 1 and 2: RNNoise is one
+  `pip install pipecat-ai[rnnoise]` away, but wind is non-stationary
+  broadband — RNNoise's weakest case and DeepFilterNet3's strength, and DFN
+  is not in Pipecat core (issue #3266). Measure Parakeet's WER either way.
+- **Parakeet hotword biasing is blocked on a missing `bpe.vocab`, and the
+  failure mode is a segfault.** Deferred 2026-08-24. This is the wanted half
+  of what an LLM-decoder ASR would give (domain vocabulary — contacts,
+  project and place names from the graph) without the half that lost Voxtral
+  the seat, because a hotword list is a decoding-time constraint on the
+  search and not a prompt: there is no channel down which an instruction can
+  travel. `sherpa_onnx` 1.13.6 exposes `hotwords_file` / `hotwords_score` /
+  `modeling_unit` / `bpe_vocab`, and `create_stream(hotwords=...)` takes them
+  per stream, so a list could be refreshed nightly without reloading the
+  model. But the model directory
+  (`sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8`) ships `tokens.txt` — 8,193
+  `▁`-prefixed sentencepiece tokens — and **no `bpe.vocab`**. Measured: the
+  `cjkchar` default does not crash and silently does nothing on a BPE model
+  (output identical to baseline); `modeling_unit="bpe"` **segfaults inside
+  `create_stream()`**, and a `bpe.vocab` reconstructed from `tokens.txt`
+  builds the recognizer and then segfaults in the same place. Needs either a
+  correct vocab or a model package that ships one. **The segfault is itself
+  the finding**: sherpa-onnx crashes the process rather than raising, so any
+  real version must validate a generated list in a subprocess before the
+  live recognizer sees it — otherwise a bad nightly write takes `:8992` down
+  and voice goes deaf with no error text anywhere.
 
 ### Cheap, and worth doing first
 
