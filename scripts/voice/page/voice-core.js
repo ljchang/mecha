@@ -17,6 +17,7 @@
  *     onLevel,             // (0..1) real mic level, for state rings
  *     onLink,              // (live: bool)
  *     onBotTurnEnd,        // () — the open bot utterance is complete
+ *     onVoiceConfig,       // ({voices, voice, speed, range, refused})
  *   });
  *   await session.connect();   // user gesture required (audio unlock)
  *   session.end();             // graceful; abrupt loss fires the same chime
@@ -24,6 +25,10 @@
  *                              // without ending the call; state is readable
  *                              // as session.micEnabled
  *   session.connected          // bool
+ *   session.voiceConfig(patch) // {} reads, {voice,speed} sets; the reply
+ *                              // always arrives via onVoiceConfig, so the
+ *                              // UI renders the server's answer and never
+ *                              // its own optimistic guess
  *
  * Sounds are synthesized, never fetched: the end chime's most important
  * trigger is the network dying, and a sound that must be downloaded
@@ -37,6 +42,7 @@ export function createVoiceSession(opts = {}) {
     onLevel: () => {},
     onLink: () => {},
     onBotTurnEnd: () => {},
+    onVoiceConfig: () => {},
     ...opts,
   };
 
@@ -81,7 +87,7 @@ export function createVoiceSession(opts = {}) {
     } else if (!on && thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
   }
 
-  let pc = null, micStream = null, meterTrack = null, levelRAF = 0, ended = false;
+  let pc = null, dc = null, micStream = null, meterTrack = null, levelRAF = 0, ended = false;
 
   function setState(name, label) { cfg.onState(name, label); }
 
@@ -102,6 +108,11 @@ export function createVoiceSession(opts = {}) {
         cfg.onTranscript({ who: "bot", text: msg.data.text, interim: false }); break;
       case "bot-stopped-speaking":
         cfg.onBotTurnEnd(); setState("listening", "listening"); break;
+      case "server-message":
+        // Custom server→client payloads share one RTVI type, so they are
+        // demultiplexed on `t` here rather than upstream.
+        if (msg.data?.t === "voice-config") cfg.onVoiceConfig(msg.data);
+        break;
       case "error":
         cfg.onTranscript({ who: "bot", text: "something went wrong: " + (msg.data?.message || "unknown error"), interim: false });
         break;
@@ -147,8 +158,14 @@ export function createVoiceSession(opts = {}) {
     const speaker = new Audio(); speaker.autoplay = true;
     pc.ontrack = (e) => { speaker.srcObject = e.streams[0]; };
 
-    const dc = pc.createDataChannel("rtvi");
-    dc.onopen = () => dc.send(JSON.stringify({ label: "rtvi-ai", type: "client-ready", id: crypto.randomUUID() }));
+    dc = pc.createDataChannel("rtvi");
+    dc.onopen = () => {
+      dc.send(JSON.stringify({ label: "rtvi-ai", type: "client-ready", id: crypto.randomUUID() }));
+      // Ask immediately: the picker must be populated from the server's
+      // list, so the first thing a fresh connection does is find out what
+      // this worker can actually speak as.
+      voiceConfig({});
+    };
     dc.onmessage = (e) => { try { onRtvi(JSON.parse(e.data)); } catch { /* not rtvi */ } };
 
     /* The end chime is wired to the connection-state machine, not a server
@@ -183,6 +200,19 @@ export function createVoiceSession(opts = {}) {
     await pc.setRemoteDescription(await resp.json());
   }
 
+  /* Voice/speed changes are fire-and-forget over the data channel: the
+     server answers with the full resulting state, which is what the UI
+     renders. A local echo would let the control drift from what is
+     actually being spoken the first time a value is refused. */
+  function voiceConfig(patch = {}) {
+    if (!dc || dc.readyState !== "open") return false;
+    dc.send(JSON.stringify({
+      label: "rtvi-ai", type: "client-message", id: crypto.randomUUID(),
+      data: { t: "voice-config", d: patch },
+    }));
+    return true;
+  }
+
   function end(label) {
     if (ended) return;
     ended = true;
@@ -193,7 +223,7 @@ export function createVoiceSession(opts = {}) {
     if (micStream) micStream.getTracks().forEach(t => t.stop());
     if (meterTrack) meterTrack.stop();
     if (pc) { try { pc.close(); } catch { /* already gone */ } }
-    pc = null;
+    pc = null; dc = null;
     cfg.onLink(false);
     setState("idle", label || "call ended — tap to reconnect");
   }
@@ -213,5 +243,6 @@ export function createVoiceSession(opts = {}) {
       return !!micStream && micStream.getAudioTracks().some(t => t.enabled);
     },
     get connected() { return !!pc; },
+    voiceConfig,
   };
 }
