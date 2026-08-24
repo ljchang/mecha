@@ -26,19 +26,6 @@
   // toggled. Deliberately a stopgap — the real voice mode (Pipecat, the
   // chosen launch voice, barge-in) replaces this when the speech servers
   // land; until then it is the fail-to-a-lesser-mode shape, and marked so.
-  let speak = $state(false);
-
-  function speakText(text) {
-    if (!speak || !('speechSynthesis' in window)) return;
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.05;
-    speechSynthesis.speak(utterance);
-  }
-
-  function toggleSpeak() {
-    speak = !speak;
-    if (!speak) speechSynthesis?.cancel();
-  }
 
   function pushEntry(entry) {
     flushStreaming();
@@ -49,7 +36,6 @@
   function flushStreaming() {
     if (streaming.trim()) {
       entries.push({ kind: 'assistant', text: streaming });
-      speakText(streaming);
     }
     streaming = '';
   }
@@ -428,17 +414,6 @@
         title="read_only: reads run, sends stage · ask: every other call becomes an approval card"
       >{mode === 'ask' ? 'ask' : 'read-only'}</button>
       <span class="chip">{model || '…'}</span>
-      <button
-        class="speakbtn"
-        class:on={speak}
-        onclick={toggleSpeak}
-        title="read replies aloud (interim browser voice)"
-      >
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 10v4h4l5 4V6L8 10z" />
-          {#if speak}<path d="M16 9a4 4 0 010 6M18.5 6.5a8 8 0 010 11" />{/if}
-        </svg>
-      </button>
     </div>
   </header>
 
@@ -643,7 +618,7 @@
   {#if voiceOpen}
     <div class="voice-overlay">
       <div class="voice-top">
-        <span class="chip">grant-review is not this call — a voice call is its own session for now</span>
+        <span class="chip">this call is its own conversation — {key === 'main' ? 'your chat' : `“${key}”`} can't hear it yet</span>
       </div>
       <div class="voice-stage">
         <svg viewBox="0 0 63 54" width="112" height="96" role="img" aria-label="mecha {vState.label}">
@@ -722,21 +697,6 @@
   }
   .chip.taint {
     color: var(--hazard);
-  }
-  .speakbtn {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    min-width: 44px;
-    min-height: 44px;
-    margin: -12px -12px -12px 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-  }
-  .speakbtn.on {
-    color: var(--accent-400);
   }
   .menubtn {
     background: none;
