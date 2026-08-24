@@ -133,53 +133,29 @@ header {
   <button id="core" class="idle" aria-label="Connect and talk"><span class="ring"></span></button>
   <div id="status">tap to talk</div>
 </div>
-<script>
-"use strict";
-/* ------------------------------------------------ sounds (D7)
-   Synthesized, not fetched: the end chime's most important trigger is the
-   network dying, and a sound that must be downloaded is a sound that cannot
-   play then. WebAudio makes "preloaded" true by construction. */
-const AC = new (window.AudioContext || window.webkitAudioContext)();
-function tone(freq, t0, dur, gain = 0.08, type = "sine") {
-  const o = AC.createOscillator(), g = AC.createGain();
-  o.type = type; o.frequency.value = freq;
-  g.gain.setValueAtTime(0, t0);
-  g.gain.linearRampToValueAtTime(gain, t0 + 0.02);
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  o.connect(g).connect(AC.destination);
-  o.start(t0); o.stop(t0 + dur + 0.05);
-}
-const chimeStart = () => { const t = AC.currentTime; tone(659, t, .18); tone(880, t + .12, .28); };
-const chimeEnd   = () => { const t = AC.currentTime; tone(440, t, .22); tone(294, t + .16, .45); };
-let thinkTimer = null;
-function thinkingSound(on) {
-  if (on && !thinkTimer) {
-    const tick = () => tone(523, AC.currentTime, .09, .035, "triangle");
-    tick(); thinkTimer = setInterval(tick, 900);
-  } else if (!on && thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
-}
+<script type="module">
+import { createVoiceSession } from "./voice-core.js";
 
-/* ------------------------------------------------ state */
+/* The page is a shell over voice-core.js — the same module the tailnet
+   app's in-chat voice mode embeds, so the two shells cannot drift. All the
+   machinery (chimes, barge-in, the end-sound-on-dead-network rule, RTVI)
+   lives in the module; this file only owns the core button, the ring, and
+   the transcript pane. */
 const core = document.getElementById("core");
 const statusEl = document.getElementById("status");
 const linkEl = document.getElementById("linkstate");
 const scroll = document.getElementById("transcript");
 const emptyEl = document.getElementById("empty");
-let pc = null, micStream = null, analyser = null, levelRAF = 0;
-let ended = false;
 
-function setState(name, label) {
-  core.className = name;
-  statusEl.textContent = label;
-}
-function setLink(live) {
-  linkEl.textContent = live ? "live" : "offline";
-  linkEl.classList.toggle("live", live);
-}
-
-/* ------------------------------------------------ transcript (D9) */
 let interimEl = null;
-function addLine(who, text, interim = false) {
+function makeLine(who, interim, text = "") {
+  const div = document.createElement("div");
+  div.className = `line ${who}${interim ? " interim" : ""}`;
+  div.innerHTML = `<span class="who">${who === "user" ? "you" : "mecha"}</span><span class="text"></span>`;
+  div.querySelector(".text").textContent = text;
+  return div;
+}
+function addLine({ who, text, interim }) {
   emptyEl.style.display = "none";
   if (who === "user" && interim) {
     if (!interimEl) {
@@ -204,143 +180,23 @@ function addLine(who, text, interim = false) {
   }
   scroll.scrollTop = scroll.scrollHeight;
 }
-function makeLine(who, interim, text = "") {
-  const div = document.createElement("div");
-  div.className = `line ${who}${interim ? " interim" : ""}`;
-  div.innerHTML = `<span class="who">${who === "user" ? "you" : "mecha"}</span><span class="text"></span>`;
-  div.querySelector(".text").textContent = text;
-  return div;
-}
-function closeBotLine() {
-  const last = scroll.lastElementChild;
-  if (last && last.dataset) delete last.dataset.open;
-}
 
-/* ------------------------------------------------ mic level -> the ring */
-function watchLevel() {
-  const data = new Uint8Array(analyser.frequencyBinCount);
-  const step = () => {
-    analyser.getByteTimeDomainData(data);
-    let peak = 0;
-    for (const v of data) peak = Math.max(peak, Math.abs(v - 128) / 128);
-    core.style.setProperty("--level", Math.min(1, peak * 2.2).toFixed(3));
-    levelRAF = requestAnimationFrame(step);
-  };
-  levelRAF = requestAnimationFrame(step);
-}
-
-/* ------------------------------------------------ rtvi events */
-function onRtvi(msg) {
-  switch (msg.type) {
-    case "user-started-speaking":
-      thinkingSound(false);
-      setState("listening", "listening");
-      break;
-    case "user-stopped-speaking":
-      setState("connecting", "…");
-      break;
-    case "user-transcription":
-      addLine("user", msg.data.text, !msg.data.final);
-      break;
-    case "bot-llm-started":       // the thinking trigger: request sent, no token yet
-      thinkingSound(true);
-      setState("thinking", "thinking");
-      break;
-    case "bot-tts-started":
-    case "bot-started-speaking":
-      thinkingSound(false);
-      setState("speaking", "speaking");
-      break;
-    case "bot-transcription":
-      addLine("bot", msg.data.text);
-      break;
-    case "bot-stopped-speaking":
-      closeBotLine();
-      setState("listening", "listening");
-      break;
-    case "error":
-      addLine("bot", "something went wrong: " + (msg.data?.message || "unknown error"));
-      break;
-  }
-}
-
-/* ------------------------------------------------ connection */
-async function connect() {
-  ended = false;
-  await AC.resume();               // user gesture: unlock audio for the chimes
-  setState("connecting", "connecting…");
-  try {
-    micStream = await navigator.mediaDevices.getUserMedia({
-      // Explicit, not default: the speaker and the mic share a phone, and
-      // every echo the browser cancels is a segment Voxtral never has to
-      // be talked out of answering.
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-  } catch {
-    setState("idle", "microphone refused — tap to retry");
-    return;
-  }
-  const src = AC.createMediaStreamSource(micStream);
-  analyser = AC.createAnalyser(); analyser.fftSize = 512;
-  src.connect(analyser);
-
-  pc = new RTCPeerConnection();
-  micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
-  pc.addTransceiver("audio", { direction: "recvonly" });
-  const speaker = new Audio(); speaker.autoplay = true;
-  pc.ontrack = (e) => { speaker.srcObject = e.streams[0]; };
-
-  const dc = pc.createDataChannel("rtvi");
-  dc.onopen = () => dc.send(JSON.stringify({ label: "rtvi-ai", type: "client-ready", id: crypto.randomUUID() }));
-  dc.onmessage = (e) => { try { onRtvi(JSON.parse(e.data)); } catch { /* not rtvi */ } };
-
-  /* The end chime is wired to the connection-state machine, not to a server
-     message: a server cannot announce a drop over the connection that
-     dropped. Abrupt loss and graceful end sound the same because to the
-     listener they are the same fact. */
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState === "connected") {
-      setLink(true);
-      chimeStart();
-      setState("listening", "listening");
-      watchLevel();
-    } else if (["disconnected", "failed", "closed"].includes(pc.connectionState)) {
-      endCall();
-    }
-  };
-
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  await new Promise(res => {
-    if (pc.iceGatheringState === "complete") return res();
-    pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && res();
-    setTimeout(res, 2000);
-  });
-  const resp = await fetch("/api/offer", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
-  }).catch(() => null);
-  if (!resp || !resp.ok) { endCall("could not reach mecha — tap to retry"); return; }
-  await pc.setRemoteDescription(await resp.json());
-}
-
-function endCall(label) {
-  if (ended) return;
-  ended = true;
-  thinkingSound(false);
-  chimeEnd();
-  cancelAnimationFrame(levelRAF);
-  core.style.setProperty("--level", 0);
-  if (micStream) micStream.getTracks().forEach(t => t.stop());
-  if (pc) { try { pc.close(); } catch {} }
-  pc = null;
-  setLink(false);
-  setState("idle", label || "call ended — tap to reconnect");
-}
+const session = createVoiceSession({
+  onState(name, label) { core.className = name; statusEl.textContent = label; },
+  onTranscript: addLine,
+  onLevel(v) { core.style.setProperty("--level", v.toFixed(3)); },
+  onLink(live) {
+    linkEl.textContent = live ? "live" : "offline";
+    linkEl.classList.toggle("live", live);
+  },
+  onBotTurnEnd() {
+    const last = scroll.lastElementChild;
+    if (last && last.dataset) delete last.dataset.open;
+  },
+});
 
 core.addEventListener("click", () => {
-  if (pc) { endCall(); } else { connect(); }
+  if (session.connected) session.end(); else session.connect();
 });
 </script>
 </body>

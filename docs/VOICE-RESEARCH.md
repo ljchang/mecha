@@ -772,3 +772,20 @@ echo-cancellation constraints on the page's mic, and output guards
 behind both (assistant-shaped openings, punctuation-only replies, and a
 words-per-second cap — a reply wordier than the audio could hold is a
 hallucination, not a transcript).
+
+**The embeddable seam, 2026-08-24.** The remote-surface arc's design takes
+this document as given and rules voice an *in-chat mode* of the tailnet
+app, merged in its final phase — and its `Chat.svelte` carries an interim
+browser-synthesis toggle explicitly marked "replaced when the speech
+servers land." They have landed, so the seam is now concrete:
+`scripts/voice/page/voice-core.js`, a framework-agnostic ES module holding
+all the machinery (chimes, thinking loop, barge-in, RTVI parsing, the
+end-sound-on-dead-network rule, mic level), with the standalone page
+refactored into a thin shell over it — one implementation, two shells, so
+the page and the app's component cannot drift. The contract is the
+module's header comment: `createVoiceSession({offerUrl, onState,
+onTranscript, onLevel, onLink, onBotTurnEnd})`. Until the process
+unification gives the app a local proxy, its component passes the worker
+origin's absolute `/api/offer` URL (the runner's CORS is open). The
+Svelte wrapper itself belongs to the remote-surface arc — their worktree,
+their build.
