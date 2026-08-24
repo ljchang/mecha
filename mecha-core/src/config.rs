@@ -49,6 +49,12 @@ pub struct Config {
     pub messages: MessagesConfig,
     /// Which of `~/.mecha/skills/` a run carries. See [`crate::skill`].
     pub skills: SkillsConfig,
+    /// The tailnet web surface's config — **schema owned by the
+    /// remote-surface arc**, carried opaquely here so two in-flight
+    /// branches can share the live global file without one refusing to
+    /// start on the other's section. Replaced by the real type when that
+    /// arc merges; nothing on this branch reads it.
+    pub web: Option<toml::Value>,
 }
 
 /// Which skills a run carries.
@@ -275,6 +281,7 @@ impl Default for Config {
             tools: ToolsConfig::default(),
             security: SecurityConfig::default(),
             skills: SkillsConfig::default(),
+            web: None,
             sandbox: crate::sandbox::SandboxConfig::default(),
             mcp: Vec::new(),
             subagents: Vec::new(),
@@ -1003,6 +1010,7 @@ struct ConfigLayer {
     slack: Option<SlackLayer>,
     messages: Option<MessagesLayer>,
     skills: Option<SkillsLayer>,
+    web: Option<toml::Value>,
 }
 
 /// A layer's opinion about which skills to carry.
@@ -1125,6 +1133,9 @@ struct ToolsLayer {
 
 impl ConfigLayer {
     fn apply(self, cfg: &mut Config) {
+        if let Some(web) = self.web {
+            cfg.web = Some(web);
+        }
         if let Some(v) = self.default_provider {
             cfg.default_provider = v;
         }
