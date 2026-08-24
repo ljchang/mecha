@@ -719,3 +719,15 @@ thinking loop, D9 transcript pane — the stock Pipecat debug UI serves
 today), turn-taking tuning against the §3.2 padding trap, systemd units
 for worker and facade (both run under nohup tonight; the Voxtral unit
 still awaits its sudo), and the cache-lens pass over a voice session.
+
+**The stack is reboot-proof, 2026-08-24.** `llama-voxtral` is a system
+unit (installed by the owner's sudo, verified hearing after the switch);
+`mecha-voice-serve` and `mecha-voice-worker` are **user units** with
+linger — no privilege needed, running as the owner whether or not a
+session is open (copies in `scripts/voice/`, live ones in
+`~/.config/systemd/user/`); Chatterbox and Kokoro ride docker restart
+policies; the tailscale serve config persists on its own. The facade
+unit points at the voice-arc worktree's release binary until the branch
+merges and the installed `mecha` carries voice-serve — the one
+deliberate impermanence, noted so the update skill knows to repoint it.
+D5 was ratified the same day: voice is typed text, no taint.
