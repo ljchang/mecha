@@ -207,7 +207,13 @@ pub async fn act(State(state): St, Json(body): Json<ActBody>) -> Response {
 async fn verb_now(state: &super::WebState, args: &[&str]) -> Response {
     let mut argv = vec!["mail"];
     argv.extend_from_slice(args);
-    match self_text(state, &argv).await {
+    verb_now_named(state, &argv).await
+}
+
+/// The same, taking the whole argv — the frontdoor page's verbs ride this
+/// too, so one implementation owns the run-wait-report shape.
+pub(super) async fn verb_now_named(state: &super::WebState, argv: &[&str]) -> Response {
+    match self_text(state, argv).await {
         Ok(out) => Json(serde_json::json!({ "ok": true, "output": out })).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
     }
@@ -220,12 +226,17 @@ async fn verb_now(state: &super::WebState, args: &[&str]) -> Response {
 fn spawn_detached(args: &[&str]) -> Response {
     let mut argv = vec!["mail".to_string()];
     argv.extend(args.iter().map(|s| s.to_string()));
+    spawn_detached_named(&argv)
+}
+
+/// The whole-argv detached spawn, shared with the frontdoor page.
+pub(super) fn spawn_detached_named(argv: &[String]) -> Response {
     let mut cmd = std::process::Command::new(crate::exe::self_exe());
     if let Some(dir) = super::child_cwd() {
         cmd.current_dir(dir);
     }
     match cmd
-        .args(&argv)
+        .args(argv)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -248,7 +259,7 @@ fn spawn_detached(args: &[&str]) -> Response {
 /// Like review's `self_json`, but the child's stdout is prose to pass
 /// through. Mail verbs reach a provider (MCP startup, OAuth refresh), so the
 /// budget is minutes where review's is seconds.
-async fn self_text(state: &super::WebState, args: &[&str]) -> anyhow::Result<String> {
+pub(super) async fn self_text(state: &super::WebState, args: &[&str]) -> anyhow::Result<String> {
     let _ = state;
     let mut cmd = tokio::process::Command::new(crate::exe::self_exe());
     if let Some(dir) = super::child_cwd() {

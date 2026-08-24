@@ -4,17 +4,23 @@
   // component so neither's rules leak into the other.
   import Outbox from './Outbox.svelte';
   import Queue from './Queue.svelte';
+  import Frontdoor from './Frontdoor.svelte';
 
-  let pane = $state('outbox');
+  let { initial = null } = $props();
+  const panes = ['outbox', 'graph', 'frontdoor'];
+  let pane = $state(panes.includes(initial) ? initial : 'outbox');
 </script>
 
 <div class="review">
   <div class="tabs">
     <button class="tab" class:active={pane === 'outbox'} onclick={() => (pane = 'outbox')}>Outbox</button>
     <button class="tab" class:active={pane === 'graph'} onclick={() => (pane = 'graph')}>Graph queue</button>
+    <button class="tab" class:active={pane === 'frontdoor'} onclick={() => (pane = 'frontdoor')}>Front door</button>
   </div>
   {#if pane === 'outbox'}
     <Outbox />
+  {:else if pane === 'frontdoor'}
+    <Frontdoor />
   {:else}
     <div class="scrollwrap"><Queue /></div>
   {/if}

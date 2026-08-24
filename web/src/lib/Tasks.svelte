@@ -24,12 +24,15 @@
   }
   load();
 
+  // The GTD views, drawer entries rather than chips: each says what it
+  // MEANS, because 'waiting' as a bare word on a chip explained nothing.
+  let drawer = $state(false);
   const ACTIONABLE = ['next', 'inbox'];
   const filters = [
-    ['actionable', (t) => ACTIONABLE.includes(t.status)],
-    ['scheduled', (t) => t.status === 'scheduled'],
-    ['waiting', (t) => t.status === 'waiting'],
-    ['done', (t) => t.status === 'done' || t.status === 'dropped'],
+    ['actionable', (t) => ACTIONABLE.includes(t.status), 'do next, or newly captured'],
+    ['scheduled', (t) => t.status === 'scheduled', 'has a date; surfaces then'],
+    ['waiting', (t) => t.status === 'waiting', 'blocked on someone else'],
+    ['done', (t) => t.status === 'done' || t.status === 'dropped', 'finished or dropped'],
   ];
   const tasks = $derived.by(() => {
     const pred = filters.find(([name]) => name === filter)?.[1] ?? (() => true);
@@ -91,7 +94,16 @@
     return { text: `due ${date.slice(5)}`, hazard: false };
   };
 
-  const STATUSES = ['next', 'inbox', 'scheduled', 'waiting', 'done', 'dropped'];
+  // Actions as verbs, not status nouns: what tapping DOES, in words. Each
+  // is one kg_task_update, one tap, reversible — the board has no delete.
+  const ACTIONS = [
+    ['done', '✓ done'],
+    ['next', 'do next'],
+    ['waiting', 'waiting on someone'],
+    ['scheduled', 'schedule'],
+    ['inbox', 'back to inbox'],
+    ['dropped', 'drop'],
+  ];
 </script>
 
 {#snippet hazardGlyph(size = 12)}
@@ -102,17 +114,28 @@
 
 <div class="page">
   <header>
-    <span class="title">Tasks</span>
+    <button class="menubtn" onclick={() => (drawer = true)} aria-label="views">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+    </button>
+    <span class="title">{filter}</span>
     <span class="chip">graph board</span>
   </header>
 
-  <div class="filters">
-    {#each filters as [name]}
-      <button class="chipbtn" class:active={filter === name} onclick={() => (filter = name)}>
-        {name}{count(name) ? ` ${count(name)}` : ''}
-      </button>
-    {/each}
-  </div>
+  {#if drawer}
+    <div class="scrim" onclick={() => (drawer = false)} aria-hidden="true"></div>
+    <aside class="drawer">
+      <div class="drawer-head"><span class="drawer-title">Views</span></div>
+      <div class="drawer-scroll">
+        {#each filters as [name, _, blurb]}
+          <button class="drow" class:dactive={filter === name} onclick={() => { filter = name; drawer = false; }}>
+            <span class="dname">{name}</span>
+            <span class="dcount">{count(name) || ''}</span>
+            <span class="dblurb">{blurb}</span>
+          </button>
+        {/each}
+      </div>
+    </aside>
+  {/if}
 
   <div class="scroll">
     {#if error}<div class="warnline">{@render hazardGlyph()}<span>{error}</span></div>{/if}
@@ -136,15 +159,16 @@
         </div>
         {#if selected === t.id}
           <div class="statusrow">
-            {#each STATUSES.filter((s) => s !== t.status) as status}
+            {#each ACTIONS.filter(([status]) => status !== t.status) as [status, verb]}
               <button
                 class="statusbtn"
+                class:donebtn={status === 'done'}
                 disabled={busy}
                 onclick={(e) => {
                   e.stopPropagation();
                   setStatus(t.id, status);
                 }}
-              >{status}</button>
+              >{verb}</button>
             {/each}
           </div>
         {/if}
@@ -181,9 +205,6 @@
   .page { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
   header { display: flex; align-items: center; justify-content: space-between; padding: 22px 20px 12px; }
   .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; }
-  .filters { display: flex; gap: 6px; padding: 0 20px 12px; overflow-x: auto; }
-  .chipbtn { font-family: var(--mono); font-size: 12px; color: var(--text-muted); background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); padding: 8px 12px; min-height: 40px; cursor: pointer; white-space: nowrap; }
-  .chipbtn.active { color: var(--text); background: var(--accent-900); border-color: var(--accent-700); }
   .scroll { flex: 1; overflow-y: auto; padding: 2px 20px 90px; display: flex; flex-direction: column; gap: 10px; }
   .row { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 8px; cursor: pointer; color: var(--text); font: inherit; }
   .name { font-size: 14px; font-weight: 500; line-height: 1.4; }
@@ -197,7 +218,19 @@
   .empty { color: var(--text-muted); font-size: 14px; padding: 20px 0; text-align: center; }
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; padding-top: 6px; }
   .fab { position: absolute; right: 20px; bottom: 20px; width: 56px; height: 56px; border-radius: 14px; background: var(--accent-400); border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-  .scrim { position: absolute; inset: 0; z-index: 5; }
+  .scrim { position: absolute; inset: 0; z-index: 5; background: rgba(0, 0, 0, 0.45); }
+  .menubtn { background: none; border: none; color: var(--text-muted); min-width: 44px; min-height: 44px; margin: -10px 4px -10px -12px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .drawer { position: fixed; top: 0; left: 0; bottom: 0; width: min(300px, 82vw); background: var(--bg); border-right: 1px solid var(--accent-700); z-index: 41; display: flex; flex-direction: column; padding-top: env(safe-area-inset-top); animation: drawer-in 0.18s ease-out; }
+  @keyframes drawer-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+  .drawer-head { padding: 18px 16px 12px; border-bottom: 1px solid var(--accent-900); }
+  .drawer-title { font-weight: 500; font-size: 16px; letter-spacing: -0.02em; }
+  .drawer-scroll { flex: 1; overflow-y: auto; padding: 8px; }
+  .drow { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; width: 100%; text-align: left; background: none; border: none; border-radius: var(--radius); color: var(--text); font: inherit; padding: 11px 10px; min-height: 44px; cursor: pointer; }
+  .drow.dactive { background: var(--accent-900); }
+  .dname { font-family: var(--mono); font-size: 13px; }
+  .dcount { font-size: 13px; font-weight: 500; color: var(--accent-400); text-align: right; }
+  .dblurb { grid-column: 1 / -1; font-size: 11px; color: var(--text-muted); }
+  .donebtn { color: var(--accent-400); border-color: var(--accent-700); }
   .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--accent-500); border-radius: 16px 16px 0 0; padding: 14px 20px 28px; display: flex; flex-direction: column; gap: 12px; z-index: 6; }
   .grip { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-900); align-self: center; }
   .sheettitle { font-size: 15px; font-weight: 500; }
