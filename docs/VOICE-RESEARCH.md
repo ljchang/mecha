@@ -789,3 +789,19 @@ unification gives the app a local proxy, its component passes the worker
 origin's absolute `/api/offer` URL (the runner's CORS is open). The
 Svelte wrapper itself belongs to the remote-surface arc — their worktree,
 their build.
+
+**Origin gating, 2026-08-24, on a peer's flag.** The worker's offer
+endpoint was network-gated but CORS-open — which meant any website loaded
+in a browser on a tailnet device could post an offer and feed *synthetic
+speech* into an owner-postured agent: drive-by voice injection, the
+`http_fetch`-query-string reasoning wearing a microphone. The worker now
+runs `--allowed-origins` naming exactly the two app origins (the tailnet
+root and the :8443 app); a foreign origin's preflight gets no CORS
+approval, so the browser never sends the offer. The tailnet remains the
+outer gate for non-browser clients, which are the owner's own devices by
+construction. Flagged by the remote-surface build (tui-bugs) while
+adopting voice-core.js — the in-chat wrapper is now theirs and in
+progress, importing the module by relative path so the two shells cannot
+drift; their overlay honestly labels the in-chat call as its own
+conversation until process unification delivers D3's same-session
+promise.
