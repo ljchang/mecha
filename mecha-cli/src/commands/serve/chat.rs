@@ -310,6 +310,22 @@ pub enum Entry {
 
 /// The transcript a fresh page load renders, derived from the conversation —
 /// the messages are the record; this is a rendering, never a second store.
+/// The voice facade prefixes its spoken-style preamble onto the first user
+/// turn of every call. For a person re-reading the conversation it is
+/// harness plumbing, not their words, so display strips it — keyed on the
+/// constant, with a paragraph-cut fallback for transcripts recorded under
+/// an earlier revision of the block. Display only: the record keeps it.
+fn strip_voice_preamble(text: &str) -> &str {
+    match text.strip_prefix(crate::voice::VOICE_BLOCK) {
+        Some(rest) => rest.trim_start(),
+        None if text.starts_with("Voice mode:") => text
+            .split_once("\n\n")
+            .map(|(_, rest)| rest.trim_start())
+            .unwrap_or(""),
+        None => text,
+    }
+}
+
 fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
     let mut names: HashMap<String, String> = HashMap::new();
     let mut entries = Vec::new();
@@ -323,7 +339,7 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                             if !text.is_empty() {
                                 text.push('\n');
                             }
-                            text.push_str(t);
+                            text.push_str(strip_voice_preamble(t));
                         }
                         Block::ToolResult {
                             tool_use_id,
@@ -842,6 +858,197 @@ pub async fn set_mode(
     Json(serde_json::json!({ "ok": true })).into_response()
 }
 
+/// The first user line of a transcript, for a history listing — the thing
+/// a person recognises a conversation by. Bounded: a transcript can be
+/// megabytes, and a listing that reads whole files is a listing nobody
+/// opens twice. `None` means no user ever spoke — a shell created by a page
+/// load — and the listing skips it.
+fn first_user_snippet(path: &std::path::Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    for line in reader.lines().take(300) {
+        let line = line.ok()?;
+        let v: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v["record"] == "message" && v["role"] == "user" {
+            for block in v["content"].as_array().into_iter().flatten() {
+                if let Some(text) = block["text"].as_str() {
+                    let text = strip_voice_preamble(text).trim();
+                    if !text.is_empty() {
+                        let head: String = text.chars().take(140).collect();
+                        return Some(head);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// GET /api/history — recorded web and voice sessions from the store,
+/// newest first: what the drawer's "earlier" section lists. A row carries
+/// the session id (what resume takes), when it started, which door it came
+/// through, its first user line, and — when this process already holds it —
+/// the live key, so the drawer never offers to resume a conversation into a
+/// second copy of itself.
+pub async fn history(State(state): Chat) -> axum::response::Response {
+    let chat = match chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let attached: std::collections::HashMap<String, String> = {
+        let sessions = chat.sessions.lock().await;
+        sessions
+            .iter()
+            .map(|(k, ws)| (ws.session.meta.id.clone(), k.clone()))
+            .collect()
+    };
+    let dir = match Session::default_dir() {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+    };
+    let mut metas = match Session::list(&dir) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+    };
+    metas.retain(|(m, _)| {
+        m.title
+            .as_deref()
+            .is_some_and(|t| t.starts_with("web: ") || t.starts_with("voice: "))
+    });
+    metas.sort_by(|a, b| b.0.created_at.cmp(&a.0.created_at));
+    let mut rows = Vec::new();
+    for (meta, path) in metas {
+        if rows.len() >= 40 {
+            break;
+        }
+        let Some(snippet) = first_user_snippet(&path) else {
+            continue; // a page load that never spoke is not a conversation
+        };
+        let kind = if meta
+            .title
+            .as_deref()
+            .is_some_and(|t| t.starts_with("voice"))
+        {
+            "voice"
+        } else {
+            "web"
+        };
+        rows.push(serde_json::json!({
+            "id": meta.id,
+            "kind": kind,
+            "created_at": meta.created_at.to_rfc3339(),
+            "snippet": snippet,
+            "attached_key": attached.get(&meta.id),
+        }));
+    }
+    Json(serde_json::json!({ "sessions": rows })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct ResumeBody {
+    pub id: String,
+}
+
+/// A live key for a resumed transcript: the id's unique tail, which is
+/// already lowercase hex and therefore already a valid key.
+fn resume_key(id: &str) -> String {
+    let tail: String = id
+        .chars()
+        .rev()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(10)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("r-{}", tail.to_ascii_lowercase())
+}
+
+/// POST /api/resume — pick a recorded conversation back up, exactly as
+/// `mecha chat --resume` does: `Session::load` restores the messages AND
+/// the taint (recorded so resuming cannot launder it), appends continue in
+/// the same transcript, and a config record marks the pickup. The response
+/// is the live key the page should switch to; resuming a session this
+/// process already holds returns that key rather than minting a twin — one
+/// conversation must never have two writers.
+pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::response::Response {
+    let chat = match chat_state(&state) {
+        Ok(c) => c.clone(),
+        Err(resp) => return resp,
+    };
+    let dir = match Session::default_dir() {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+    };
+    let mut sessions = chat.sessions.lock().await;
+    if let Some((k, _)) = sessions
+        .iter()
+        .find(|(_, ws)| ws.session.meta.id == body.id)
+    {
+        return Json(serde_json::json!({ "key": k })).into_response();
+    }
+    let path = match Session::find(&dir, &body.id) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::NOT_FOUND, format!("{e:#}\n")).into_response(),
+    };
+    let (meta, conversation) = match Session::load(&path) {
+        Ok(x) => x,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+    };
+    // The recorded jail, re-proved: a transcript names the workspace its
+    // tool calls resolved against, and continuing it anywhere else would be
+    // the outbox's wrong-bytes release through another door. Still checked
+    // against the mecha home, because the record is data, not authority.
+    let workspace = meta.workspace.clone();
+    if let Err(e) = std::fs::create_dir_all(&workspace)
+        .map_err(anyhow::Error::from)
+        .and_then(|()| mecha_core::work::ensure_outside_mecha_home(&workspace))
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
+    }
+    let key = resume_key(&meta.id);
+    if !valid_key(&key) || sessions.contains_key(&key) {
+        return (
+            StatusCode::CONFLICT,
+            "could not mint a key for this session\n",
+        )
+            .into_response();
+    }
+    let session = Session { meta, path };
+    // On resume as on create: a session picked up under different flags
+    // should say so in its own record.
+    if let Err(e) = session.append(&Record::Config(RunConfig::of(
+        &chat.agent,
+        &chat.config,
+        &chat.provider_name,
+    ))) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
+    }
+    let (events, _) = broadcast::channel(512);
+    let questions = super::present::Questions::default();
+    if let Ok(mut routes) = chat.routes.lock() {
+        routes.insert(key.clone(), (questions.clone(), events.clone()));
+    }
+    sessions.insert(
+        key.clone(),
+        WebSession {
+            conversation: Some(conversation),
+            session: Arc::new(session),
+            workspace,
+            live: None,
+            events,
+            last_usage: Arc::new(StdMutex::new(None)),
+            mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+            questions,
+        },
+    );
+    Json(serde_json::json!({ "key": key })).into_response()
+}
+
 /// GET /api/sessions — the rail: live sessions in this process, the default
 /// first, then by name. (Resuming a recorded session from disk is a later
 /// wiring; the rail lists what the process holds, honestly.)
@@ -856,6 +1063,8 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
         .map(|(key, ws)| {
             serde_json::json!({
                 "key": key,
+                "id": ws.session.meta.id,
+                "title": ws.session.meta.title,
                 "running": ws.live.is_some(),
                 "taint": ws.conversation.as_ref().map(|c| serde_json::json!({
                     "private": c.taint.private, "untrusted": c.taint.untrusted,

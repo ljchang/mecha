@@ -220,6 +220,8 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/ping", get(ping))
         .route("/api/summary", get(summary))
         .route("/api/sessions", get(chat::sessions))
+        .route("/api/history", get(chat::history))
+        .route("/api/resume", axum::routing::post(chat::resume))
         .route("/api/chat/{key}", get(chat::transcript))
         .route("/api/chat/{key}/send", axum::routing::post(chat::send))
         .route("/api/chat/{key}/cancel", axum::routing::post(chat::cancel))
