@@ -853,15 +853,6 @@ Everything here is verified in source as of the date; the arcs' own docs
   spoken approvals, this flag is what they replace. `allow` mode is equally
   deliberately **not** offered from the page (`serve/chat.rs`) — approve one
   call at a time in `ask` mode instead.
-- **The in-chat voice mode has no voice/rate controls.** Two surfaces embed
-  `createVoiceSession`: the standalone page (`scripts/voice/page/index.html`,
-  which got the dock controls) and the app's in-chat call
-  (`web/src/lib/Chat.svelte`). The second gets the *plumbing* free — the
-  shared module carries `voiceConfig(patch)` and `onVoiceConfig`, and the
-  change was additive — but renders no UI for it, so a call started from the
-  phone speaks in whatever voice the worker booted with. Deliberately left:
-  `Chat.svelte` was mid-arc when the controls landed and a second edit would
-  have collided. The contract is documented at the top of `voice-core.js`.
 - **The web app imports outside its package root** —
   `../../../scripts/voice/page/voice-core.js` — deliberate (one module, two
   shells, cannot drift) but it couples `npm run build` to the whole

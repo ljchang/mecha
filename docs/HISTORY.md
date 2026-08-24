@@ -1736,6 +1736,24 @@ if `mail_send` is unrouted, and **push-to-talk dictation** (`POST
 browser-speech toggle was deleted rather than justified: the owner had been
 reading it as a status light.
 
+Both voice surfaces got the controls within the hour, and the second one is
+worth recording for *how* rather than what. Two sessions split it by file —
+one took `Chat.svelte`, the other kept `voice-core.js`, the dock and the
+worker — and the contract crossed between them as three warnings rather than
+as a diff: render the server's reply and never an optimistic value (a refusal
+is refused, not clamped, so local state would leave a slider describing a
+speed nobody is speaking at), guard the preference restore or the reply
+handler becomes a send loop, and take the slider bounds from the server's
+`cfg.range` instead of literals. All three were load-bearing and all three
+were honoured. The question that saved the most work was the one asked before
+building: *where does the voice list come from* — the answer being that
+`voice-core.js` already requests it on `dc.onopen`, so a second surface needs
+only to supply an `onVoiceConfig` callback and the populated list arrives
+unprompted. Mirroring the first surface's list by hand was the obvious move
+and would have been the drift. (One trap for anyone curling it: the live path
+is `:8881/v1/voices`, because `TTS_URL` already carries the `/v1` — `/voices`
+alone is a 404 that reads like a broken list. Verified both ways.)
+
 
 **The bake-off those two conclusions came from**, moved out of `README.md` on
 2026-08-10 so the numbers live with the rest of the measurement record rather
