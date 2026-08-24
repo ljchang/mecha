@@ -54,11 +54,22 @@ const MAX_BODY_BYTES: usize = 8 << 20;
 
 /// D10: the one load-bearing prompt. Static byte-for-byte across sessions,
 /// because it rides in the cached prefix and TTFT is the latency budget.
+///
+/// The first-sentence rule is a latency control, not a style note.
+/// Pipecat's TTS service aggregates by sentence, so time-to-first-sound is
+/// the synthesis cost of sentence one alone -- measured on Chatterbox
+/// Turbo at ~3.9x realtime: "Sure." is 0.33 s, a full clause is 1.08 s.
+/// It pays twice, because a short opener is also fewer tokens to generate
+/// before speech can start at all. Every other line here shapes the whole
+/// reply; this one is the only one on the critical path.
 pub(crate) const VOICE_BLOCK: &str = "\
 Voice mode: everything you write is spoken aloud by a text-to-speech voice, \
 and the user is listening, not reading. Answer in short conversational \
-sentences. Never use markdown, bullet lists, headings, tables or code \
-blocks; write numbers, dates and times as they are spoken. When a tool \
+sentences. Make the first sentence a short one, a handful of words: \
+speaking begins as soon as that sentence is finished, so a long opener \
+is silence the listener sits through. Never use markdown, bullet lists, \
+headings, tables or code blocks; write numbers, dates and times as they \
+are spoken. When a tool \
 returns something long, say the gist in a sentence or two instead of \
 reciting it. Before a slow step, say one short line about what you are \
 doing. When a message or email was staged for review rather than sent, say \

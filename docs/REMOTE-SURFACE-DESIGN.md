@@ -246,3 +246,64 @@ push arrives with the VPN up and the page closed.*
 - **Presence transport**: SSE everywhere vs one WebSocket — decide when
   the ask/approver work starts; SSE-first is the simpler default.
 - **Push timing** stays research O3: Phase 5, Slack carries nudges until.
+
+## 12. Owner feedback backlog — the first real day of use (2026-08-24)
+
+Luke's notes from working the app on his phone, recorded verbatim in
+intent and triaged here. Three were fixed the same evening (the
+`grant-review` fossil in the voice disclaimer, the interim browser-speech
+toggle a user read as a status light, the task sheet with no
+tap-outside close). The rest, roughly by weight:
+
+**Chat.**
+- Tap the model chip to switch models, plus preset "thinking level"
+  controls (the ChatGPT/Claude pattern). Constraint to design around: the
+  serve process is ONE shared agent — a model switch rebuilds the agent
+  and drops the cached prefix for every session and the voice facade at
+  once, the same reason the Slack connector refused `set_approver`. And
+  thinking budget on the local stack is a *server* flag
+  (`--reasoning-budget`), not a per-request knob, so "thinking level" may
+  mean provider choice rather than a slider. Needs a design pass, not a
+  button.
+
+**Mail.**
+- A plain inbox view — recent mail regardless of triage state — beside
+  the classified queue, and manual compose/reply (staged through the
+  outbox like everything else). "The standard email functionality in
+  addition to our agent-augmented version." Needs a `mecha mail recent`
+  (reads via the MCP surface) and a `compose` verb that stages; the page
+  is then the established thin shell.
+
+**Notes.**
+- Voice capture: dictate a note like a chat turn (candidates: browser
+  SpeechRecognition as the cheap first cut, or a hold-to-talk that ships
+  audio to Parakeet through serve — the STT is already running).
+- A list of recent notes by created/last-touched, not just a capture box.
+  Reads come through the kg tool surface.
+
+**Tasks.**
+- The horizontal status filters read as noise — prefer the collapsible
+  left drawer (chat's pattern now). Underneath: the filters are the GTD
+  statuses (actionable/scheduled/waiting/done); research how Things /
+  OmniFocus / Todoist shape this before redesigning, per Luke.
+- Voice capture, same as notes.
+- **Task→agent handoff**: "I can't assign a task to the agent or prompt
+  an agent to help complete it." The board is a list; the ask is a verb
+  on each task that opens a chat session seeded with the task (or
+  spawns a run whose result comes back for review). Flowmail did a
+  version of this; Luke is open to research/brainstorm. The biggest item
+  here and its own design doc when picked up.
+- The per-task actions are unexplained ("a little bizarre") — revisit
+  what a row offers and why.
+
+**Home.**
+- No mail count on the dashboard; cards should navigate to their surface
+  on tap; longer-term, customizable widgets — the daily briefing as a
+  card is the motivating example.
+
+**Frontdoor.** Still no page — already an open handoff item.
+
+The through-line worth keeping: every ask is a standard pattern from
+apps Luke uses daily (session drawers, tappable dashboards, dictation,
+plain inbox). The agent-augmented surfaces earn their keep only when the
+ordinary affordances underneath them also exist.
