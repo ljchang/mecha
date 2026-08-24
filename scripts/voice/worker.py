@@ -68,6 +68,39 @@ MIN_SEGMENT_SECONDS = 0.3
 MAX_WORDS_PER_SECOND = 5.0
 
 
+# What the bot said recently, normalized, for the echo filter: a phone on
+# speaker hears its own TTS, and when client-side echo cancellation fails
+# (a known WebKit trap once WebAudio taps the mic track), the bot's words
+# come back as the owner's. Text is the one signal that survives every
+# acoustic path: if the transcript is contained in what the bot just said,
+# it is the speaker, not the speaker's owner.
+import collections
+import re
+import time as _time
+
+RECENT_BOT_SPEECH: collections.deque = collections.deque(maxlen=12)
+ECHO_WINDOW_SECONDS = 20.0
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]", "", text.lower()).strip()
+
+
+def note_bot_speech(text: str) -> None:
+    RECENT_BOT_SPEECH.append((_time.monotonic(), _normalize(text)))
+
+
+def is_probable_echo(transcript: str) -> bool:
+    norm = _normalize(transcript)
+    if len(norm) < 8:
+        return False
+    now = _time.monotonic()
+    for stamp, spoken in RECENT_BOT_SPEECH:
+        if now - stamp < ECHO_WINDOW_SECONDS and norm in spoken:
+            return True
+    return False
+
+
 class VoxtralSTT(BaseWhisperSTTService):
     """Voxtral behind llama-server takes chat-completions `input_audio`,
     not `/v1/audio/transcriptions` - and `cache_prompt` must be off: slot
@@ -139,6 +172,9 @@ class VoxtralSTT(BaseWhisperSTTService):
         elif len(text.split()) > max(3.0, duration * MAX_WORDS_PER_SECOND):
             logger.debug(f"voxtral word-rate cap: {len(text.split())} words in {duration:.2f}s")
             text = ""
+        elif is_probable_echo(text):
+            logger.debug(f"voxtral echo filter: transcript matches recent bot speech: {text[:60]!r}")
+            text = ""
         return Transcription(text=text)
 
 
@@ -165,6 +201,7 @@ class LocalTTS(OpenAITTSService):
                     yield ErrorFrame(error=f"TTS error {r.status_code}: {error}")
                     return
                 await self.start_tts_usage_metrics(text)
+                note_bot_speech(text)
                 async for chunk in r.iter_bytes(self.chunk_size):
                     if len(chunk) > 0:
                         await self.stop_ttfb_metrics()
