@@ -55,6 +55,10 @@ pub struct Args {
     /// that predate the `[web]` section.
     #[arg(long)]
     pub owner_login: Option<String>,
+    /// Where the voice runner accepts WebRTC offers; `/api/offer` proxies
+    /// to it. Loopback by construction of the default; empty disables.
+    #[arg(long, default_value = "http://127.0.0.1:7860/api/offer")]
+    pub offer_target: String,
 }
 
 #[derive(Clone)]
@@ -65,6 +69,8 @@ struct WebState {
     /// never silently.
     chat: Option<Arc<chat::ChatState>>,
     review: Arc<review::ReviewState>,
+    /// The voice runner's offer endpoint, or None when disabled.
+    offer_target: Option<Arc<String>>,
 }
 
 pub async fn execute(args: Args) -> Result<()> {
@@ -99,10 +105,14 @@ pub async fn execute(args: Args) -> Result<()> {
         }
     };
     let review = Arc::new(review::review_state(&config)?);
+    let offer_target = Some(args.offer_target.trim())
+        .filter(|t| !t.is_empty())
+        .map(|t| Arc::new(t.to_string()));
     let state = WebState {
         owner_login: Arc::new(owner),
         chat,
         review,
+        offer_target,
     };
     // Mount the voice facade on the same agent: one provider connection,
     // one cached prefix, two dialects. It rides this process's lifetime;
@@ -187,7 +197,8 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/tasks/set", axum::routing::post(board::task_set))
         .route("/api/tasks/add", axum::routing::post(board::task_add))
         .route("/api/notes", axum::routing::post(board::note))
-        .route("/api/find", get(board::find));
+        .route("/api/find", get(board::find))
+        .route("/api/offer", axum::routing::post(offer_proxy));
 
     let app = match assets {
         Some(dir) => api.fallback_service(tower_http::services::ServeDir::new(dir)),
@@ -250,6 +261,47 @@ async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Res
 
 async fn ping() -> &'static str {
     "ok\n"
+}
+
+/// POST /api/offer — the page's WebRTC offer, forwarded to the loopback
+/// voice runner. Same-origin for the browser (no CORS in the path at all)
+/// and behind the owner guard like everything else; the runner's own
+/// origin allowlist still covers its direct door. Body passed through
+/// verbatim both ways — this is a pipe, not a participant.
+async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> Response {
+    let Some(target) = &state.offer_target else {
+        return (StatusCode::NOT_FOUND, "voice offers are disabled\n").into_response();
+    };
+    let client = reqwest::Client::new();
+    let sent = client
+        .post(target.as_str())
+        .header("content-type", "application/json")
+        .body(body.to_vec())
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await;
+    match sent {
+        Ok(resp) => {
+            let status =
+                StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            match resp.bytes().await {
+                Ok(bytes) => (
+                    status,
+                    [("content-type", "application/json")],
+                    bytes.to_vec(),
+                )
+                    .into_response(),
+                Err(e) => {
+                    (StatusCode::BAD_GATEWAY, format!("reading answer: {e}\n")).into_response()
+                }
+            }
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("voice runner unreachable: {e}\n"),
+        )
+            .into_response(),
+    }
 }
 
 /// What the Home screen renders: the five queues and doctor's findings,
