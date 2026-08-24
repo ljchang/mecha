@@ -92,7 +92,17 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,281 tests**, no failures — re-measured the evening of 2026-08-23
+Expect **1,323 tests**, no failures — re-measured the evening of 2026-08-24
+in a clean worktree after the web-review-surfaces arc (680 in the `mecha-core`
+lib suite, 429 in `mecha-cli` with 1 ignored, 122 in `mecha-mail`, 75 in
+`mecha-slack`, 15 across the two integration suites that need real backends,
+and 2 doctests). The 42 over the previous count span two arcs: the
+phone-as-terminal day's serve/present/chat/voice tests (merged 2026-08-24
+morning, measured only now), and the evening's web-review-surfaces arc — the
+mail-verb closed set, the serve router's mail-guard probes, and the
+upload/download tamers. The main checkout reports 7 more in `mecha-mail`
+from an uncommitted docs WIP that is not this arc's to count. The previous
+count was 1,281, measured the evening of 2026-08-23
 after the groups/cascade, clean-evidence-learner and graph-surfaces arcs (679
 in the `mecha-core` lib suite, 388 in `mecha-cli` with 1 ignored, 122 in
 `mecha-mail`, 75 in `mecha-slack`, 15 across the two integration suites that
@@ -160,7 +170,7 @@ A working agent harness, used and measured rather than just compiled.
 | Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `review` / `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep, `slack` for the remote control, and `serve` for the tailnet web surface |
 | TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/queues`, `/outbox`, `/frontdoor`, `/mail`, `/tasks`, `/skills`, `/polls`, `/doctor` and (2026-08-23) `/find` modals drive the CLI like `/triggers` does — plus `/note` for one-line graph capture — the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
 | Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`; owner-gated command words `doctor`, `triggers`, `review now|later|auto`, and (2026-08-23) `note <text>` — a deterministic capture matched before the text can become a prompt — `queues`, the read-only backlog rollup, and (2026-08-24, adopted from an orphaned WIP) `tasks`/`task`, the GTD board as command words. **Merged 2026-08-09 (PR #25) and running as `mecha-slack.service`** |
-| Web surface | `mecha serve` (2026-08-24) — the tailnet web app: binds 127.0.0.1 with no flag to widen it, `tailscale serve` is the door (`:8443`), every request must carry `Tailscale-User-Login` equal to `[web] owner_login` (global-file-only config, stripped from project layers like `[slack]`; refuses to start ownerless), strict self-only CSP. Pages: Home dashboard (`review queues --json` + `doctor --json` as child processes, a dash never a zero), streaming chat over SSE (one shared agent, per-session `RunContext` on the Slack connector's pattern — keyed sessions with validated directory-safe names, jails under `~/.mecha/work/web/<key>/`, steering, cancel, context gauge), outbox review (whole `DraftView`, source reads behind a gutter, taint sheet with exact args, approve `--yes`/reject/edit as CLI children), graph-queue sample deck (seed printed, verdict ≠ resample), tasks, notes + `kg search`. Per-session `ask` mode: live approval cards (deny-with-reason is a real user correction; timeout is `Blocked`) and `ask_user` option cards routed by the run's jail (`Asker::ask_in`); pending cards ride the transcript read so a locked phone reloads into them; cancel drains parked cards. Assets are a build artifact at `~/.mecha/web/dist` (update skill surface 1b). `docs/REMOTE-SURFACE-RESEARCH.md` + `-DESIGN.md` |
+| Web surface | `mecha serve` (2026-08-24, extended the same evening) — the tailnet web app: binds 127.0.0.1 with no flag to widen it, `tailscale serve` is the door (`:8443`), every request must carry `Tailscale-User-Login` equal to `[web] owner_login` (global-file-only config, stripped from project layers like `[slack]`; refuses to start ownerless), strict self-only CSP. Pages: Home dashboard (`review queues --json` + `doctor --json` as child processes, a dash never a zero), streaming chat over SSE (one shared agent, per-session `RunContext` on the Slack connector's pattern — keyed sessions with validated directory-safe names, jails under `~/.mecha/work/web/<key>/`, steering, cancel, context gauge), outbox review (whole `DraftView`, source reads behind a gutter, taint sheet with exact args, approve `--yes`/reject/edit as CLI children), graph-queue sample deck (seed printed, verdict ≠ resample), tasks, notes + `kg search`. Per-session `ask` mode: live approval cards (deny-with-reason is a real user correction; timeout is `Blocked`) and `ask_user` option cards routed by the run's jail (`Asker::ask_in`); pending cards ride the transcript read so a locked phone reloads into them; cancel drains parked cards. Evening additions (2026-08-24): the **mail page** (`serve/mail.rs` + `Mail.svelte` — store read for the list, `mecha mail show` as the one thread renderer behind a gutter, closed-verb `/api/mail/act` with spam the only confirm; drafting verbs spawn detached into the outbox), the **graph queue at all three depths** (classes with server-stamped tiers from `tui::queues::Tier::of`, per-class similarity groups, and the cross-class global layer with a threshold stepper — see the graph repo's `similar.rs` for the invited-crossing rules), and **files** (`serve/files.rs`: uploads into the session jail's `inbox/` announced as paths, downloads that re-prove containment, images the only inline type). Assets are a build artifact at `~/.mecha/web/dist` (update skill surface 1b). `docs/REMOTE-SURFACE-RESEARCH.md` + `-DESIGN.md` |
 | Voice | The stack from `docs/VOICE-RESEARCH.md`, built and in production 2026-08-24 (§7 is the build log): Pipecat worker (`scripts/voice/worker.py`, `:7860`), **Parakeet TDT** STT (`mecha-parakeet.service`, `:8992` — Voxtral was structurally unfit: a chat model answers speech instead of transcribing it, and obeys spoken instructions), Chatterbox TTS with Kokoro fallback, and the loopback OpenAI facade (`mecha-cli/src/voice/`) **mounted inside `mecha serve`** (`--voice-port 8990`) over the shared agent — one process, one cached prefix, two dialects. The page's WebRTC offer proxies same-origin through serve (`/api/offer`), behind the owner guard. In-chat voice: waveform button → call overlay (voice-core.js embedded by relative import; threaded transcript pane, cloned-track mic meter, mute, end). A call is its own conversation until D3 lands. D5 ratified: owner speech is typed text, arms nothing |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
@@ -220,7 +230,9 @@ restarted onto the final install. The graph DB migrated to V017
 (`reviewed_by`). Operationally pending: **one class has an earned ladder
 promotion unapplied** (`mecha-graph ladder --promote` shows and applies it),
 and the graph queue stood at **6,569** after the day's review work, down
-from 7,296 at breakfast.
+from 7,296 at breakfast; by the evening of 2026-08-24 it read 7,505 in
+`review queues` (the nightly proposes faster than class-at-a-time review
+clears), which is what prompted the global similarity layer.
 
 **A version string is not evidence here.** The repository and the binary both
 say 0.1.9 and the reinstall changed no version, so `mecha --version` cannot
@@ -229,9 +241,13 @@ introduced (`mecha run --help` carrying `--image`), and check
 `/proc/<pid>/exe` for `(deleted)` to catch a *process* still running a replaced
 inode. The `update` skill carries both checks.
 
-**2026-08-24 (re-verified this date)**: `~/.cargo/bin/mecha` reinstalled three
-times through the day (both arcs' merges; final at merge `9e20214`), all
-mecha-binary services bounced onto the final inode and swept clean.
+**2026-08-24 (re-verified this date, evening)**: `~/.cargo/bin/mecha`
+reinstalled again for the web-review-surfaces arc (final at merge `cfab345`)
+and `~/.cargo/bin/mecha-graph` + `mecha-graph-mcp` reinstalled from the
+private checkout's `global-similarity` merge; all mecha-binary services
+bounced onto the final inodes. One `mecha tui` (started that evening) was
+seen on a `(deleted)` inode and left running — it degrades gracefully since
+0.1.12 but is stale until its owner restarts it.
 Production is now **one `mecha-serve.service`** (user unit, `mecha serve
 --voice-port 8990 --voice-yes`) owning `:63242` (web, fronted by `tailscale
 serve :8443`) and the loopback voice facade on `:8990`; `mecha-voice-serve`
@@ -812,19 +828,15 @@ on this machine. `docs/REMOTE-CONTROL-DESIGN.md` is the design; the arc is in
 Everything here is verified in source as of the date; the arcs' own docs
 (`REMOTE-SURFACE-DESIGN.md`, `VOICE-RESEARCH.md` §7) hold the shipped half.
 
-- **Files are the missing Phase 4 half.** No upload or download route exists
-  on the router (`serve/mod.rs`); the design promises uploads into the
-  session jail's `inbox/` and authenticated downloads. Images from a phone
-  are the motivating case and cannot happen yet.
 - **D3's same-session promise is unmet.** An in-chat call is its own
   conversation (`Chat.svelte` opens a separate `createVoiceSession`; voice
   slots key their own session ids) and the overlay says so honestly. The
   voice arc owns the fix (facade adopting the web session key) and the
   session-key contract is agreed; talking and typing are two transcripts
   until then.
-- **The mail and frontdoor tabs are absent from the phone** — `mail` is a
-  visible disabled tab (`web/src/lib/Nav.svelte:7`), frontdoor has no page.
-  Mail is now the one daily surface the phone cannot review.
+- **Frontdoor has no page.** Phase 3 promised it; mail shipped 2026-08-24
+  evening and frontdoor is now the one review store the phone cannot reach.
+  Same thin-shell pattern as the mail page (`serve/mail.rs`).
 - **`--voice-yes` is a deliberate posture with a named risk.** Voice runs
   get `ModeApprover { Allow }` (`voice/mod.rs:552`; the unit runs the flag)
   while web chat defaults read-only with live cards — so one process serves
@@ -844,10 +856,14 @@ Everything here is verified in source as of the date; the arcs' own docs
   checkout's layout; worth a note in the update skill if it ever moves.
 - **A phone verdict has no undo**, which doubles the stakes of the
   `undecide <seed>` design below: `POST /api/queue/verdict` is a second
-  irreversible verdict surface.
+  irreversible verdict surface — and since the global similarity layer
+  (2026-08-24 evening), one tap can now carry a cross-class cascade of
+  dozens, so the undo design is worth pulling forward.
 - **PWA install and Web Push are unstarted** (design Phase 5). Until push,
   Slack remains the nudge channel for staged drafts — D11 keeps it anyway.
-- **Luke's next real call is the outstanding voice test.** Both halves are
+- **Luke's next real call is the outstanding voice test** — and it now also
+  auditions the replaced thinking sound (a soft alternating two-note pulse;
+  the metronome tick is gone, `voice-core.js`). Both halves are
   verified by probes end-to-end (Parakeet transcribes exactly, injection
   audio is obeyed by nobody, a spoken calendar question round-tripped a real
   tool call) — but no human has completed a full conversation on the new

@@ -1652,6 +1652,38 @@ Two conclusions hold from it anyway:
    across the board. Don't conclude anything about a model's tool reliability
    from an unconstrained sampler.
 
+**2026-08-24 evening — the phone got the review surfaces, and similarity got
+a top layer.** One session, three arcs, all live by nightfall. The **mail
+page** closed the gap the morning's handoff named ("the one daily surface the
+phone cannot review"): `serve/mail.rs` + `Mail.svelte` on the TUI modal's
+exact split — store read for the list, `mecha mail show` as the one thread
+renderer (third-party text behind a per-line gutter), every mutation a
+closed-verb CLI child where an unknown verb 400s before an argv exists, spam
+the only confirm, drafting verbs detached into the outbox. The **queue tab**
+grew the TUI's missing depths — classes with tier chips (tiers stamped
+server-side from `tui::queues::Tier::of`, killing the page's own drifted copy
+of the thresholds), per-class similarity groups with cascade verdicts — and
+then, on Luke's push against the class fence at 7.5k pending, the **global
+similarity layer**: a cross-repo arc (`mecha-graph`'s `similar.rs` and CLI,
+mecha's `review groups --all` and the page's "similar across everything")
+that groups the whole pending queue at a stricter floor (0.90), names every
+class a group spans on the card, and rides `--cascade --across-classes` so
+one tap stays one human verdict with the members as a labeled machine
+cascade. The invariant was amended, not broken: "a cascade never crosses a
+class *uninvited*" — the crossing is asked for by flag, priced, and shown.
+First live run: 306 groups covering 782 of 6,929 pending in 40s, the top
+group 25 restatements of one family relationship spanning four predicates.
+**Files** landed as Phase 4's missing half (`serve/files.rs`): uploads into
+the session jail's `inbox/` announced as paths so taint arms through
+`fs_read`, downloads re-proving containment with missing and outside the
+same 404, and images the only inline content type — model-written HTML
+served same-origin would run script with the owner's auth against the API
+itself. The voice **thinking sound** was replaced the same session (a soft
+alternating two-note pulse with a 120ms attack; the 900ms triangle tick read
+as a metronome). And the first real phone tap paid for itself: see the two
+new traps below.
+
+
 **The bake-off those two conclusions came from**, moved out of `README.md` on
 2026-08-10 so the numbers live with the rest of the measurement record rather
 than in the front door. It was taken on a DGX Spark (GB10, 128GB unified)
@@ -2192,6 +2224,19 @@ regression hides.**
   that knows the answer key checks the key, not the work. Independence means
   withholding the list, and every new find goes into the gate so the next
   regression is caught mechanically.
+
+**The commit that shipped without its own new files was authored by a
+failed `&&` chain.** One command staged and committed the first change, then
+staged and committed the second — but the first commit died on the
+pre-commit fmt hook, the chain aborted, and the retry re-staged with
+`git add -u`, which updates *tracked* files only. The second commit landed
+without its two brand-new files, did not build in isolation, and the miss
+surfaced only when `cargo install` ran from the merged tree. Two lessons:
+after any failed commit, the index is not what the failed command's later
+steps would have made it — re-verify with `git status`, don't re-run from
+memory; and "every commit builds in isolation" is only true if something
+builds the commit's own tree, which the worktree (holding the untracked
+files) cannot prove.
 
 ### Learning
 
@@ -3094,6 +3139,36 @@ PIVOT
 
 The fourth command never ran, and the run was never stopped and restarted. This
 is the only recorded demonstration of steering in the repository.
+
+### The web surface
+
+**Twenty-four mail cards rendered as 30px slivers on the first real phone
+tap — chips visible, every summary gone.** The list's cards carry
+`overflow: hidden`, and a flex item with overflow other than `visible` has
+an **automatic minimum size of zero** — so inside the flex-column scroll
+container, the whole list shrank to fit the viewport instead of scrolling,
+each card clipping its own text. The fix is one line (`flex-shrink: 0` on
+the scroll container's children; scrolling is the container's job), but the
+shape is the lesson: the Outbox page carried the identical bug from birth
+and never showed it, because it never held enough pending drafts to create
+shrink pressure. A layout bug that needs *scale* to fire will pass every
+short-list test and demo, and a sibling page copied from it inherits the
+fuse. Headless Chromium reproduced it exactly (390px viewport, 24 rows), so
+the check is cheap now that it is known.
+
+**Every mail verb 502d from the phone while working perfectly from the
+TUI.** The serve unit runs with `WorkingDirectory=%h`, and the `mecha mail`
+children it spawns inherit that cwd — which the workspace jail *correctly*
+refuses, because a workspace containing `~/.mecha` is the exact hole
+`ensure_outside_mecha_home` exists to close. The TUI never saw it because a
+TUI runs from wherever the person is standing, which is usually a project
+directory. The general shape: a child process inherits the service's
+working directory, and a refusal designed for interactive misuse will fire
+from a unit file's default with a message aimed at a person who is not
+there. A spawner that owns a workspace should set the child's cwd
+deliberately (`serve/mail.rs::mail_child_cwd` — the web producer dir;
+*inside* the mecha home is the default and fine, containing it is what is
+refused).
 
 ### The usage frame
 
