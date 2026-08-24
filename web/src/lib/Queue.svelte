@@ -70,10 +70,12 @@
   // The top layer: near-repeats across the WHOLE queue, wherever they sit.
   // Embedding every pending statement takes minutes, and an honest wait
   // message beats a spinner that looks hung.
-  async function openGlobal() {
+  async function openGlobal(threshold = null) {
     groups = { all: true, threshold: null, rows: null, considered: null };
     try {
-      const res = await fetch('/api/queue/groups?all=true');
+      const q = new URLSearchParams({ all: 'true' });
+      if (threshold != null) q.set('threshold', threshold.toFixed(2));
+      const res = await fetch(`/api/queue/groups?${q}`);
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
       groups = { all: true, threshold: data.threshold, rows: data.groups, considered: data.considered };
@@ -217,7 +219,15 @@
     <div class="deckhead">
       {@render backTo(() => { groups = null; }, 'back')}
       <span class="pname">{groups.all ? 'across all classes' : groups.predicate}</span>
-      {#if groups.threshold != null}<span class="seed">cosine ≥ {groups.threshold}</span>{/if}
+      {#if groups.threshold != null}
+        <span class="seed">cosine ≥ {groups.threshold.toFixed(2)}</span>
+        {#if groups.all}
+          <!-- Step from the threshold the envelope says RAN, never from a
+               constant of this page's own — the drifted-literal trap. -->
+          <button class="stepbtn" title="looser — bigger groups, read more carefully" onclick={() => openGlobal(groups.threshold - 0.03)}>−</button>
+          <button class="stepbtn" title="stricter — only near-identical" onclick={() => openGlobal(groups.threshold + 0.03)}>+</button>
+        {/if}
+      {/if}
     </div>
     {#if groups.rows === null}
       <div class="empty">
@@ -354,6 +364,7 @@
   .global { border-color: var(--accent-700); }
   .spans { display: flex; gap: 6px; flex-wrap: wrap; }
   .spanchip { font-family: var(--mono); font-size: 10px; color: var(--accent-400); background: var(--accent-900); border-radius: var(--radius-chip); padding: 4px 8px; }
+  .stepbtn { font-family: var(--mono); font-size: 15px; color: var(--text); background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); min-width: 34px; min-height: 34px; cursor: pointer; }
   .meta { display: flex; gap: 8px; font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
   .btnrow { display: flex; gap: 10px; }
   .btn { flex: 1; min-height: 52px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 15px; cursor: pointer; }
