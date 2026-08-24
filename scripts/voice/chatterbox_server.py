@@ -35,7 +35,7 @@ class SpeechRequest(BaseModel):
     input: str
     model: str = "chatterbox-turbo"  # accepted, ignored: one model per server
     voice: str = "default"
-    response_format: str = "wav"  # wav only; the worker asks for nothing else
+    response_format: str = "wav"  # wav, or pcm (raw s16le at 24 kHz) for streaming
     # Chatterbox knobs, passed through when a client wants them.
     exaggeration: float = 0.0
     temperature: float = 0.8
@@ -63,8 +63,8 @@ def health():
 def speech(req: SpeechRequest):
     if model is None:
         raise HTTPException(503, "model still loading")
-    if req.response_format != "wav":
-        raise HTTPException(400, "only wav is served here")
+    if req.response_format not in ("wav", "pcm"):
+        raise HTTPException(400, "wav or pcm only")
     prompt_path = None
     if req.voice not in ("default", ""):
         prompt_path = os.path.join(VOICES_DIR, f"{req.voice}.wav")
@@ -79,6 +79,13 @@ def speech(req: SpeechRequest):
             exaggeration=req.exaggeration,
             temperature=req.temperature,
         )
+    samples = wav.squeeze().cpu().numpy()
+    if req.response_format == "pcm":
+        # Raw s16le at model.sr (24 kHz) - what the voice worker streams.
+        import numpy as np
+
+        pcm = (samples.clip(-1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+        return Response(content=pcm, media_type="audio/pcm")
     buf = io.BytesIO()
-    sf.write(buf, wav.squeeze().cpu().numpy(), model.sr, format="WAV")
+    sf.write(buf, samples, model.sr, format="WAV")
     return Response(content=buf.getvalue(), media_type="audio/wav")
