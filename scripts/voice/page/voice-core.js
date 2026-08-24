@@ -20,6 +20,9 @@
  *   });
  *   await session.connect();   // user gesture required (audio unlock)
  *   session.end();             // graceful; abrupt loss fires the same chime
+ *   session.setMicEnabled(on); // mute control: pauses the outbound track
+ *                              // without ending the call; state is readable
+ *                              // as session.micEnabled
  *   session.connected          // bool
  *
  * Sounds are synthesized, never fetched: the end chime's most important
@@ -169,6 +172,17 @@ export function createVoiceSession(opts = {}) {
   return {
     connect,
     end: () => end(),
+    /* Mute pauses the sender track rather than stopping it: stopping
+       releases the device (the mic indicator goes dark and resume needs a
+       new permission dance on some browsers), while a disabled track sends
+       silence - which the worker's energy gate drops before the STT model
+       ever hears it, so a muted room costs zero tokens. */
+    setMicEnabled(on) {
+      if (micStream) micStream.getAudioTracks().forEach(t => { t.enabled = !!on; });
+    },
+    get micEnabled() {
+      return !!micStream && micStream.getAudioTracks().some(t => t.enabled);
+    },
     get connected() { return !!pc; },
   };
 }
