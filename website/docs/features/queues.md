@@ -54,8 +54,14 @@ exactly the bug this surface exists to catch.
 
 ```
 queues ──Enter──▸ proposers ──Enter──▸ classes ──Enter──▸ items
-                      t                   t                a / r / n
-                evidence filter     evidence filter      one at a time
+                    t │                  t │               a / r / n
+              evidence filter      evidence filter       one at a time
+                      │                    │
+                      s                    s
+                      ▼                    ▼
+            similar across          similar within
+            every class             this class
+                      └──── a / r verdicts a whole group ────┘
 ```
 
 **Proposers** is the level decisions are actually made at. A proposing
@@ -123,6 +129,66 @@ Two details protect that property:
   sample without leaving the view. The list truncates to one line; a verdict
   on text you could not read is the approving-unread failure the
   [outbox](./outbox) exists to prevent, one store over.
+
+## Repetition is reviewable as repetition
+
+The queue's bulk is the same fact said many ways. An extractor proposes
+*"Luke plays with his children"* a hundred slightly different ways, and the
+graph's own dedup only removes the near-identical — everything between
+*similar* and *duplicate* queues for review one item at a time. That is how
+a queue reaches seven thousand items.
+
+`s` groups a class by semantic similarity, largest group first:
+
+```
+  x25   #12636   Luke J Chang is family of Eunice.
+           ~ Luke J Chang is the partner of Eunice.
+           ~ Eunice is Luke J Chang's wife.
+```
+
+`a` or `r` on that row is **one verdict covering twenty-five candidates** —
+and, crucially, **one human verdict**. The item you see is accepted or
+rejected as yours; the rest ride through as a labelled machine cascade that
+the [autonomy ladder](/docs/graph/architecture) never counts. A keystroke
+that manufactured twenty-five human verdicts would promote a class on its
+own volume, which is the one thing the ladder exists to prevent.
+
+Three rules make the fan-out safe to press:
+
+- **The group's face is a real member's own words**, never a model-written
+  summary. A verdict lands on these rows, and approving a paraphrase is
+  approving unread.
+- **The cascade acts on the ids that were on screen.** It does not re-derive
+  similarity at verdict time, so what you read is what you decided about —
+  and no embedding runs, which is why the keystroke answers at store speed.
+- **`[` and `]` step the threshold**, from the value the last grouping
+  actually ran at rather than from a constant the interface holds.
+
+### Across every class, when the backlog is the problem
+
+Within a class, sharing a proposer and a predicate already vouches for
+kinship. **`s` at the proposer level does the same thing over the whole
+pending queue**, regardless of class — the fast way through a backlog that
+one class at a time will never clear:
+
+```bash
+mecha review groups --all
+```
+
+Because the class no longer vouches for anything out there, the floor is
+stricter (0.90 rather than 0.83), and **every group names the classes it
+spans**, because the blast radius is part of what you are approving:
+
+```
+  x25   #12636   Luke J Chang is family of Eunice.
+           spans: llm . family_of ×18, llm . is ×4, llm . knows_of ×2, …
+```
+
+A cascade still never crosses a class *uninvited* — you ask for it by flag,
+the listing shows you what it reaches, and the verdict rides
+`--across-classes` so the graph vets every id against a rule that knows the
+crossing was intended. Singletons stay in their class listings; the view
+reports how much of the queue it covered rather than quietly showing less.
 
 ## The one place mecha shells out to the graph
 

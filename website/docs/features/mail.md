@@ -195,6 +195,39 @@ calendar that receives the events, defaulting to the default account; an absent
 request store is "nothing drained yet" rather than an error, because this runs
 on a timer that must not cry wolf.
 
+## The plain inbox, and writing a letter yourself
+
+The triage queue answers *what needs me*. It is deliberately not an inbox —
+it holds what the classifier decided you should look at, in the order it
+thinks you should look. Sometimes the question is just *what arrived*:
+
+```bash
+mecha mail recent                 # newest first, every account, merged
+mecha mail recent --account work  # or one
+```
+
+That reads through the same `mail_recent` tool the model uses, so there is
+one definition of "recent" and no second query to keep correct. On the
+[web surface](/docs/features/web) it is the **Inbox** tab beside the queue.
+
+Writing a new letter goes the one way mail leaves this system:
+
+```bash
+mecha mail compose --to someone@example.edu \
+                   --subject "Thursday" --body "Does 2pm still work?"
+```
+
+**It stages into the [outbox](./outbox); it does not send.** No model runs
+and no MCP server starts — the draft is your own words, staged verbatim
+under whatever tool name `[outbox] tools` routes sends to, so
+`mecha outbox send` releases it exactly as it releases one the model wrote.
+If `mail_send` is not routed there, composing **refuses** rather than
+staging a draft that no release path knows how to execute.
+
+The point is not ceremony. It is that one queue holds everything outbound
+regardless of who wrote it, so there is a single place to look before
+anything leaves.
+
 ## Capability labeling: reads are untrusted sources, not send sinks
 
 This is the part worth not re-litigating.

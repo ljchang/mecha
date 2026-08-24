@@ -22,6 +22,17 @@ two are one conversation. Which one you get is decided by the same question
 about ownership — see [the remote control is that owner, from somewhere
 else](#the-remote-control-is-that-owner-from-somewhere-else).
 
+Two more doors are not on that list either, for the same reason — they are
+places to reach the agent from, not new loops:
+
+- **[The web surface](/docs/features/web)** (`mecha serve`) is the same agent
+  behind a small web app on your tailnet, with many conversations on one
+  provider connection. It is where a phone reviews drafts, reads mail and
+  clears queues.
+- **[Voice](/docs/features/voice)** is that door with a microphone in front of
+  it. A call is an ordinary session with the same tools and the same outbox;
+  what differs is that speech is arriving instead of typing.
+
 ## One loop, four processes, and no extra models
 
 A question that comes up the first time a second agent starts: *if I run the

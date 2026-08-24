@@ -919,7 +919,7 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
             .as_deref()
             .is_some_and(|t| t.starts_with("web: ") || t.starts_with("voice: "))
     });
-    metas.sort_by(|a, b| b.0.created_at.cmp(&a.0.created_at));
+    metas.sort_by_key(|(m, _)| std::cmp::Reverse(m.created_at));
     let mut rows = Vec::new();
     for (meta, path) in metas {
         if rows.len() >= 40 {
