@@ -1686,7 +1686,10 @@ new traps below.
 
 **2026-08-24 night — the voice got a face, and three sessions found they
 shared one binary.** The voice page's dock had one button; it now carries a
-**six-voice picker and a rate slider**. Neither was free the obvious way.
+**seven-voice picker and a rate slider** — six Kokoro-derived cloning
+references plus Chatterbox's own built-in `default`, which is a real
+selectable voice rather than a passthrough (`voice: "default"` generates with
+no reference). Neither control was free the obvious way.
 Chatterbox Turbo has no speed parameter (`generate()` takes
 `exaggeration`/`cfg_weight`/`temperature` and nothing about tempo), and the
 browser's cheap knob — `playbackRate` — resamples, moving pitch with tempo
