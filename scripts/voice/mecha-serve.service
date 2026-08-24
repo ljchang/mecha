@@ -1,0 +1,16 @@
+# The unified surface: web app + JSON/SSE routes + the mounted voice facade,
+# one process, one agent, one prompt cache (docs/VOICE-RESEARCH.md, the
+# unification entry; docs/REMOTE-SURFACE-DESIGN.md S1). Replaces the
+# standalone mecha-voice-serve unit. Config comes from [web] in the live
+# global config; the facade port matches what the Pipecat worker expects.
+[Unit]
+Description=mecha serve (tailnet web surface + voice facade)
+After=network.target
+
+[Service]
+ExecStart=/home/ljchang/.cargo/bin/mecha serve --voice-port 8990 --voice-yes
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
