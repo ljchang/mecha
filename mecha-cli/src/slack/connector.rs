@@ -498,6 +498,35 @@ impl State {
             return;
         }
 
+        // The `tasks` command word — the GTD board with per-row controls, on
+        // the `triggers` pattern: gated before the word is matched, the board
+        // read in spawned work (the child starts an MCP server to reach the
+        // graph), every button a typed action carrying only a task id.
+        if super::tasks::is_tasks_command(&text) {
+            let slack = self.slack.clone();
+            let (channel, thread_ts) = (channel.clone(), thread_ts.clone());
+            tokio::spawn(async move {
+                let (text, blocks) = super::tasks::board().await;
+                let _ = chat::post_message(&slack, &channel, Some(&thread_ts), &text, blocks).await;
+            });
+            return;
+        }
+
+        // The `task` command word — a deterministic capture onto the board,
+        // the `note` rule one store over: matched before the text can become
+        // a prompt, because a capture that depends on a model's mood is not a
+        // capture. Owner-tier by the gate above; spawned for the same MCP
+        // startup reason as the board.
+        if let Some(body) = super::tasks::task_command(&text) {
+            let slack = self.slack.clone();
+            let (channel, thread_ts) = (channel.clone(), thread_ts.clone());
+            tokio::spawn(async move {
+                let reply = super::tasks::capture(&body).await;
+                let _ = chat::post_message(&slack, &channel, Some(&thread_ts), &reply, None).await;
+            });
+            return;
+        }
+
         // The `review` command word — the explicit owner gesture, and the
         // only thing that can set a thread's release policy. Matched with the
         // same precedence as `doctor`, before the text can become a prompt or
@@ -1948,6 +1977,18 @@ impl State {
                                 channel,
                                 ts,
                                 thread_ts: interaction.thread_ts.clone(),
+                            },
+                        ),
+                        // A board button reports beside the board, threaded
+                        // where the listing is.
+                        Action::TaskDone { .. } | Action::TaskNext { .. } => (
+                            "tasks",
+                            ActionCard::Reply {
+                                thread_ts: interaction
+                                    .thread_ts
+                                    .clone()
+                                    .unwrap_or_else(|| ts.clone()),
+                                channel,
                             },
                         ),
                         // A doctor-report button reports beside the report,
