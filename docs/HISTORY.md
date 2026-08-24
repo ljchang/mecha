@@ -2364,7 +2364,15 @@ already works.** The voice page's most load-bearing sentence — that the
 published crate contains the facade and none of the pipeline — appears
 nowhere in the build log that documented the stack, because the person
 writing that log had every service running locally and never had to
-discover the packaging boundary. The general lesson: when documenting for
+discover the packaging boundary.
+
+The mechanism, sharpened by the session that found it: **explaining a
+system to someone who does not have it is a different act from documenting
+it, and only the first has to answer "what do I need before any of this
+works?"** A maintainer writing docs answers *what does it do* — a question
+that never reaches the packaging boundary, which is why
+`cargo package --list` had never been run against this feature by anyone.
+The general lesson: when documenting for
 users, the facts most worth stating are the ones the author's environment
 makes invisible, and `cargo package --list` / `git ls-files` answer in
 seconds what memory answers wrongly. Check what ships, not what works.
