@@ -10,9 +10,15 @@ browser needs HTTPS before it will open a microphone.
 
 The three legs are env-configurable base URLs (D6):
     MECHA_VOICE_LLM   the facade        (default http://127.0.0.1:8990/v1)
-    MECHA_VOICE_STT   Voxtral           (default http://127.0.0.1:8082/v1)
-    MECHA_VOICE_TTS   Kokoro/Chatterbox (default http://127.0.0.1:8880/v1)
-    MECHA_VOICE_TTS_VOICE  voice name for the TTS leg
+    MECHA_VOICE_STT_KIND  parakeet (default) | voxtral - picks the STT leg
+    MECHA_VOICE_STT   the STT leg       (default follows STT_KIND:
+                      :8992 parakeet, :8082 voxtral)
+    MECHA_VOICE_TTS   Kokoro/Chatterbox (default http://127.0.0.1:8880/v1
+                      Kokoro; the shipped unit overrides to :8881
+                      Chatterbox Turbo, which is the launch voice)
+    MECHA_VOICE_TTS_VOICE  voice name for the TTS leg (start value; the
+                      page can change it per session)
+    MECHA_VOICE_TTS_SPEED  speaking rate, 0.5-2.0 (start value, likewise)
 """
 
 import base64
@@ -51,6 +57,12 @@ STT_URL = os.environ.get(
 )
 TTS_URL = os.environ.get("MECHA_VOICE_TTS", "http://127.0.0.1:8880/v1")
 TTS_VOICE = os.environ.get("MECHA_VOICE_TTS_VOICE", "af_heart")
+TTS_SPEED = float(os.environ.get("MECHA_VOICE_TTS_SPEED", "1.0"))
+# Bounds mirror the TTS server's own. Duplicated rather than fetched
+# because they gate a value before it is sent: a slider that can ask for
+# 4x and learn it was refused mid-sentence is a worse control than one
+# that cannot ask.
+MIN_SPEED, MAX_SPEED = 0.5, 2.0
 
 # Pinned per the build log (docs/VOICE-RESEARCH.md S7): this wording
 # transcribes; "from beginning to end" phrasing makes the model refuse, and
@@ -220,10 +232,67 @@ class ParakeetSTT(VoxtralSTT):
         return Transcription(text=text)
 
 
+_voices_cache = None
+
+
+def available_voices():
+    """What the TTS server can actually speak as, asked once and cached.
+
+    Asked rather than configured, for the reason `GET /props` is asked of
+    llama-server: a list written down here is a claim about another
+    process, and the failure it produces is the UI offering a voice that
+    400s at the moment somebody wants to hear it. On failure this returns
+    None - meaning "unknown", never an empty list, because a picker that
+    renders no choices and a picker that could not ask are opposite
+    findings and only one of them should hide the control.
+    """
+    global _voices_cache
+    if _voices_cache is not None:
+        return _voices_cache
+    import json
+    import urllib.request
+
+    from loguru import logger
+
+    try:
+        with urllib.request.urlopen(f"{TTS_URL}/voices", timeout=5) as r:
+            _voices_cache = json.load(r).get("voices") or None
+    except Exception as e:  # noqa: BLE001 - any failure is the same answer
+        logger.debug(f"voice list unavailable at {TTS_URL}/voices: {e}")
+        _voices_cache = None
+    return _voices_cache
+
+
 class LocalTTS(OpenAITTSService):
     """The stock service hard-validates `voice` against OpenAI's own list,
     which rejects every voice our local servers actually have. Same wire
-    (POST /v1/audio/speech, pcm streaming), our voice names allowed."""
+    (POST /v1/audio/speech, pcm streaming), our voice names allowed.
+
+    Voice and speed are held here rather than read from the environment at
+    call time, because the page can change them mid-call: the service
+    instance is per-connection, so one listener's choice cannot reach
+    another's, and there is deliberately no way to set them globally from
+    a message."""
+
+    def __init__(self, *args, speed: float = 1.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._speed = speed
+
+    @property
+    def speed(self) -> float:
+        return self._speed
+
+    def set_speed(self, speed: float) -> bool:
+        """Clamp-and-refuse rather than clamp-and-accept: a control that
+        silently substitutes a different value than the one asked for
+        leaves the UI showing a lie."""
+        if not (MIN_SPEED <= speed <= MAX_SPEED):
+            return False
+        self._speed = speed
+        return True
+
+    def set_voice_name(self, voice: str) -> None:
+        self._settings.voice = voice
 
     async def run_tts(self, text: str, context_id: str):
         from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame
@@ -233,6 +302,7 @@ class LocalTTS(OpenAITTSService):
                 "input": text,
                 "model": self._settings.model,
                 "voice": self._settings.voice,
+                "speed": self._speed,
                 "response_format": "pcm",
             }
             async with self._client.audio.speech.with_streaming_response.create(
@@ -259,6 +329,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         api_key="unused",
         base_url=TTS_URL,
         settings=OpenAITTSService.Settings(voice=TTS_VOICE, model="tts"),
+        speed=TTS_SPEED,
     )
     # The facade ignores the re-sent history (the Conversation is the
     # server's state) and the system prompt rides in mecha's cached prefix,
@@ -311,6 +382,56 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
 
     runner = WorkerRunner(handle_sigint=runner_args.handle_sigint)
     await runner.add_workers(worker)
+
+    # The voice controls (D7's dock). One message type serves read and
+    # write: `{}` asks what is available, a payload sets it, and both
+    # answer with the same shape, so the page has exactly one code path
+    # for "what is the voice now" and cannot render a control that
+    # disagrees with the server.
+    #
+    # This is a *presentation* channel and nothing else: it can pick a
+    # voice and a rate, and there is deliberately no field here that
+    # reaches the agent, the workspace or the posture. The remote-control
+    # rule - inbound text is a prompt, never a command - is what keeps a
+    # data channel from becoming a control plane, and the way to keep it
+    # true is that the only settable things are how the answer sounds.
+    @rtvi.event_handler("on_client_message")
+    async def on_client_message(rtvi, msg):
+        if msg.type != "voice-config":
+            return
+        data = msg.data or {}
+        applied, refused = {}, {}
+        if "voice" in data:
+            want = str(data["voice"])
+            known = available_voices()
+            # Unknown list means unknown, not permissive: refusing here
+            # costs one unchanged voice, where guessing costs a 400 in
+            # the middle of a spoken sentence.
+            if known is not None and want in known:
+                tts.set_voice_name(want)
+                applied["voice"] = want
+            else:
+                refused["voice"] = want
+        if "speed" in data:
+            try:
+                want = float(data["speed"])
+            except (TypeError, ValueError):
+                refused["speed"] = data["speed"]
+            else:
+                if tts.set_speed(want):
+                    applied["speed"] = want
+                else:
+                    refused["speed"] = want
+        if applied:
+            print(f"voice config: {applied}", flush=True)
+        await rtvi.send_server_message({
+            "t": "voice-config",
+            "voices": available_voices(),
+            "voice": tts._settings.voice,
+            "speed": tts.speed,
+            "range": {"min": MIN_SPEED, "max": MAX_SPEED},
+            "refused": refused or None,
+        })
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):

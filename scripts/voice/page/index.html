@@ -119,6 +119,48 @@ header {
   text-transform: lowercase; color: var(--muted); min-height: 1em;
 }
 #core.listening + #status, #core.speaking + #status { color: var(--copper); }
+
+/* The voice controls sit under the status line and stay deliberately
+   quiet: the core is the page's one loud object, and a row of chrome
+   competing with it would undo D7's whole point. Hidden until the worker
+   answers with a voice list — a control that cannot yet do anything is
+   worse than no control, and "could not ask" must not render as "no
+   voices" (the dash rule, one layer down). */
+#controls {
+  display: none; align-items: center; gap: 14px;
+  font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
+  color: var(--muted);
+}
+#controls.ready { display: flex; }
+#controls label { display: flex; align-items: center; gap: 7px; }
+#voice {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+  color: var(--ink); background: var(--ground);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 4px 22px 4px 8px; cursor: pointer;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 12px) 52%, calc(100% - 8px) 52%;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+#voice:focus-visible, #speed:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
+#speed {
+  -webkit-appearance: none; appearance: none;
+  width: 92px; height: 3px; border-radius: 2px; cursor: pointer;
+  background: var(--line);
+}
+#speed::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%;
+  background: var(--copper); border: none; cursor: pointer;
+}
+#speed::-moz-range-thumb {
+  width: 13px; height: 13px; border-radius: 50%;
+  background: var(--copper); border: none; cursor: pointer;
+}
+#speedval { color: var(--ink); min-width: 3.2em; }
+#controls.refused #speedval, #controls.refused #voice { color: #c96a5a; }
 </style>
 </head>
 <body>
@@ -132,6 +174,16 @@ header {
 <div id="dock">
   <button id="core" class="idle" aria-label="Connect and talk"><span class="ring"></span></button>
   <div id="status">tap to talk</div>
+  <div id="controls">
+    <label>voice
+      <select id="voice" aria-label="Speaking voice"></select>
+    </label>
+    <label>rate
+      <input id="speed" type="range" min="0.5" max="2" step="0.05" value="1"
+             aria-label="Speaking rate">
+      <span id="speedval">1.00×</span>
+    </label>
+  </div>
 </div>
 <script type="module">
 import { createVoiceSession } from "./voice-core.js";
@@ -181,13 +233,71 @@ function addLine({ who, text, interim }) {
   scroll.scrollTop = scroll.scrollHeight;
 }
 
+/* Voice controls. Two rules carry this:
+
+   1. The server's answer is what renders. Every change is sent and the
+      resulting state comes back over RTVI; nothing here paints an
+      optimistic value. A slider that shows 1.6x while the worker refused
+      it is the wrong-bytes review one layer down — you would be reading a
+      control that describes a voice you are not hearing.
+   2. Preferences are restored once per connection, never re-asserted.
+      A settings echo that re-sends on every reply is a loop, and the
+      thing it loops on is speech. */
+const controls = document.getElementById("controls");
+const voiceSel = document.getElementById("voice");
+const speedEl = document.getElementById("speed");
+const speedVal = document.getElementById("speedval");
+const PREFS = "mecha.voice.prefs";
+
+function loadPrefs() {
+  // Storage can throw outright (private mode, blocked site data), so a
+  // failure to read must degrade to "no preference", never to a crash on
+  // a page whose main job is answering the phone.
+  try { return JSON.parse(localStorage.getItem(PREFS)) || {}; } catch { return {}; }
+}
+function savePrefs(p) {
+  try { localStorage.setItem(PREFS, JSON.stringify(p)); } catch { /* not worth a word */ }
+}
+
+let restored = false;
+function onVoiceConfig(cfg) {
+  if (!cfg.voices || !cfg.voices.length) return;  // unknown ≠ empty: stay hidden
+  if (voiceSel.options.length !== cfg.voices.length) {
+    voiceSel.innerHTML = "";
+    for (const v of cfg.voices) {
+      const o = document.createElement("option");
+      o.value = v; o.textContent = v;
+      voiceSel.appendChild(o);
+    }
+  }
+  voiceSel.value = cfg.voice;
+  speedEl.value = cfg.speed;
+  speedVal.textContent = Number(cfg.speed).toFixed(2) + "×";
+  controls.classList.add("ready");
+  controls.classList.toggle("refused", !!cfg.refused);
+  if (cfg.refused) setTimeout(() => controls.classList.remove("refused"), 1200);
+
+  if (!restored) {
+    restored = true;
+    const p = loadPrefs();
+    const patch = {};
+    if (p.voice && p.voice !== cfg.voice && cfg.voices.includes(p.voice)) patch.voice = p.voice;
+    if (p.speed && Math.abs(p.speed - cfg.speed) > 0.01) patch.speed = p.speed;
+    if (Object.keys(patch).length) session.voiceConfig(patch);
+  } else {
+    savePrefs({ voice: cfg.voice, speed: cfg.speed });
+  }
+}
+
 const session = createVoiceSession({
+  onVoiceConfig,
   onState(name, label) { core.className = name; statusEl.textContent = label; },
   onTranscript: addLine,
   onLevel(v) { core.style.setProperty("--level", v.toFixed(3)); },
   onLink(live) {
     linkEl.textContent = live ? "live" : "offline";
     linkEl.classList.toggle("live", live);
+    if (!live) { controls.classList.remove("ready"); restored = false; }
   },
   onBotTurnEnd() {
     const last = scroll.lastElementChild;
@@ -198,6 +308,16 @@ const session = createVoiceSession({
 core.addEventListener("click", () => {
   if (session.connected) session.end(); else session.connect();
 });
+
+voiceSel.addEventListener("change", () => session.voiceConfig({ voice: voiceSel.value }));
+// `input` moves the readout with the thumb; only `change` (pointer up)
+// sends. Sending on every input event would fire dozens of messages
+// across one drag, and the last reply to arrive is not necessarily the
+// last value chosen.
+speedEl.addEventListener("input", () => {
+  speedVal.textContent = Number(speedEl.value).toFixed(2) + "×";
+});
+speedEl.addEventListener("change", () => session.voiceConfig({ speed: Number(speedEl.value) }));
 </script>
 </body>
 </html>
