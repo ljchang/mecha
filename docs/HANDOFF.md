@@ -157,13 +157,15 @@ A working agent harness, used and measured rather than just compiled.
 | Budgets | `max_turns`, `max_output_tokens`, `max_cost_usd`, cost accounting |
 | Control | Ctrl-C cancels mid-stream and keeps the partial turn; mid-run steering |
 | Context | Two-pass compaction: thin tool results, then summarise. Taint preserved, a tool's own state (the todo list) crosses verbatim, the states a mid-run rewrite replaced ride `Conversation::rewritten` into the session record, and a per-run cache lens watches whether the cached prefix is actually reused (warns only on unexplained re-payment) |
-| Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `review` / `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep, and `slack` for the remote control |
+| Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `review` / `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep, `slack` for the remote control, and `serve` for the tailnet web surface |
 | TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/queues`, `/outbox`, `/frontdoor`, `/mail`, `/tasks`, `/skills`, `/polls`, `/doctor` and (2026-08-23) `/find` modals drive the CLI like `/triggers` does — plus `/note` for one-line graph capture — the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
-| Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`; owner-gated command words `doctor`, `triggers`, `review now|later|auto`, and (2026-08-23) `note <text>` — a deterministic capture matched before the text can become a prompt — and `queues`, the read-only backlog rollup. **Merged 2026-08-09 (PR #25) and running as `mecha-slack.service`** |
+| Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`; owner-gated command words `doctor`, `triggers`, `review now|later|auto`, and (2026-08-23) `note <text>` — a deterministic capture matched before the text can become a prompt — `queues`, the read-only backlog rollup, and (2026-08-24, adopted from an orphaned WIP) `tasks`/`task`, the GTD board as command words. **Merged 2026-08-09 (PR #25) and running as `mecha-slack.service`** |
+| Web surface | `mecha serve` (2026-08-24) — the tailnet web app: binds 127.0.0.1 with no flag to widen it, `tailscale serve` is the door (`:8443`), every request must carry `Tailscale-User-Login` equal to `[web] owner_login` (global-file-only config, stripped from project layers like `[slack]`; refuses to start ownerless), strict self-only CSP. Pages: Home dashboard (`review queues --json` + `doctor --json` as child processes, a dash never a zero), streaming chat over SSE (one shared agent, per-session `RunContext` on the Slack connector's pattern — keyed sessions with validated directory-safe names, jails under `~/.mecha/work/web/<key>/`, steering, cancel, context gauge), outbox review (whole `DraftView`, source reads behind a gutter, taint sheet with exact args, approve `--yes`/reject/edit as CLI children), graph-queue sample deck (seed printed, verdict ≠ resample), tasks, notes + `kg search`. Per-session `ask` mode: live approval cards (deny-with-reason is a real user correction; timeout is `Blocked`) and `ask_user` option cards routed by the run's jail (`Asker::ask_in`); pending cards ride the transcript read so a locked phone reloads into them; cancel drains parked cards. Assets are a build artifact at `~/.mecha/web/dist` (update skill surface 1b). `docs/REMOTE-SURFACE-RESEARCH.md` + `-DESIGN.md` |
+| Voice | The stack from `docs/VOICE-RESEARCH.md`, built and in production 2026-08-24 (§7 is the build log): Pipecat worker (`scripts/voice/worker.py`, `:7860`), **Parakeet TDT** STT (`mecha-parakeet.service`, `:8992` — Voxtral was structurally unfit: a chat model answers speech instead of transcribing it, and obeys spoken instructions), Chatterbox TTS with Kokoro fallback, and the loopback OpenAI facade (`mecha-cli/src/voice/`) **mounted inside `mecha serve`** (`--voice-port 8990`) over the shared agent — one process, one cached prefix, two dialects. The page's WebRTC offer proxies same-origin through serve (`/api/offer`), behind the owner guard. In-chat voice: waveform button → call overlay (voice-core.js embedded by relative import; threaded transcript pane, cloned-track mic meter, mute, end). A call is its own conversation until D3 lands. D5 ratified: owner speech is typed text, arms nothing |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
-| Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit/**review**/send/reject, several ids or `--all` narrowed by `--kind`/`--via`; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner — and the jail they were drafted under, so a release resolves paths against the agent's workspace rather than the reviewer's |
+| Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit (`--body-file` for surfaces with no `$EDITOR`)/**review**/send/reject, several ids or `--all` narrowed by `--kind`/`--via`; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner — and the jail they were drafted under, so a release resolves paths against the agent's workspace rather than the reviewer's |
 | Messaging | `[messages]` + `mecha msg send/list/show/dismiss/agents` — a file mailbox between this machine's sessions (`~/.mecha/messages/<recipient>/`, producer-name addressing, per-session liveness registry). Delivery folds in at the steering point with the sender's harness-stamped taint merged first, so a hop launders nothing; attended surfaces hold with a notice, unattended accept; global config only; full mailboxes refuse, identical pending sends dedup. `docs/MESSAGING-RESEARCH.md` is the design record; phase 2 (TUI modal/badge) is scoped there |
 | Workspaces | `~/.mecha/work/<producer>/` is a run's workspace and its output directory; `mecha work list/path/clean`, retention nightly. A workspace containing the mecha home is refused |
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed. **`mail_triage`** (2026-08-18) adds archive/read/unread/spam/trash as a closed `TriageAction` enum, thread-level, in a third capability quadrant — `destructive` but *not* `external_send`, so it never routes through the outbox and a read-only run cannot reach it. Tagging is deliberately absent: a tag is mecha's own, on the triage record, not a Gmail label or a Graph category |
@@ -226,6 +228,25 @@ distinguish a current install from a skipped one — check a behaviour the chang
 introduced (`mecha run --help` carrying `--image`), and check
 `/proc/<pid>/exe` for `(deleted)` to catch a *process* still running a replaced
 inode. The `update` skill carries both checks.
+
+**2026-08-24 (re-verified this date)**: `~/.cargo/bin/mecha` reinstalled three
+times through the day (both arcs' merges; final at merge `9e20214`), all
+mecha-binary services bounced onto the final inode and swept clean.
+Production is now **one `mecha-serve.service`** (user unit, `mecha serve
+--voice-port 8990 --voice-yes`) owning `:63242` (web, fronted by `tailscale
+serve :8443`) and the loopback voice facade on `:8990`; `mecha-voice-serve`
+is retired (disabled). New units beside it: `mecha-parakeet` (`:8992`, STT)
+and `mecha-voice-worker` (`:7860`, Pipecat; tailscale serves the voice page
+at `:443` with `/api` proxied to it). Web assets live at `~/.mecha/web/dist`
+— a build artifact, not in git; the `update` skill's surface 1b rebuilds
+them. 8080 re-verified this date: `total_slots=4`, `n_ctx` 262,144/slot,
+vision true. Workspace tests: **1,318 pass, 0 fail**. Eval: 36 cases, 15
+tags (unchanged). The `[web]` section is live in `~/.mecha/config.toml` —
+safe now that every installed binary parses it; the outage its early
+arrival caused is in HISTORY under Traps → Environment. A `llama-voxtral`
+unit still exists at the *system* level (voice arc's; healthy per their
+2026-08-24 check, no longer the STT seat) — query it with plain
+`systemctl`, not `--user`, or it misreads as inactive.
 
 | Port | Model | State |
 |---|---|---|
@@ -597,7 +618,16 @@ tested, but has never been exercised against the real box by a person:
 
 Everything else below is independent of that.
 
-Every item below was re-verified against source on **2026-08-20** — MCP
+Every item below was re-verified against source on **2026-08-24** (a
+72-item sweep after the day the phone became a terminal — the web-surface
+and voice arcs, 45 commits). Almost everything held its verdict; the items
+that changed are rewritten in place below, chiefly: the approval race is
+now solved once (`serve/present.rs`) with routing to Slack still open, the
+`mecha serve` item part-shipped as a third front-end rather than a shared
+backend, and the "Slack `ask_user` is structurally absent" claim is half
+false since `Asker::ask_in` landed. A new subsection right after the
+remote-control one holds what the new code left open. The prior full pass
+was **2026-08-20** — MCP
 resources (`mecha-core/src/mcp.rs:206` still advertises `"capabilities": {}`),
 HTTP/SSE transports, the subagent workspace field, per-command approval, the
 seccomp half of the sandbox item, `Rule`'s missing scope, the raw reflection
@@ -758,13 +788,71 @@ on this machine. `docs/REMOTE-CONTROL-DESIGN.md` is the design; the arc is in
   connector's reply naming the live attach; routing it is a bigger decision
   that §2 of the design already settled the other way.
 
-- **Approvals cannot be answered from the thread.** The run says *waiting for
-  you at the terminal* and stops there. Answering from either surface is a race
-  needing an atomic claim; design §15.
-- **`mecha serve`** — a hosted agent process both front-ends are thin clients
-  of. It is the honest endgame: it survives an SSH drop without tmux and is the
-  only shape that reaches a second machine. It costs the first non-filesystem
-  IPC in the project, which is why it is not first. Design §15.
+- **Approvals cannot be answered from the mirrored thread — but the race is
+  now solved once, elsewhere.** The atomic claim design §15 asked for shipped
+  in `serve/present.rs` (2026-08-24): `Questions::open`/`answer` — a second
+  device answering an already-claimed card gets `false`, timeouts resolve as
+  `Blocked`, cancel drains parked cards. What remains here is routing: the
+  TUI still says *waiting for you at the terminal* (`tui/mod.rs:1127`), and
+  wiring the mirrored thread means a Slack renderer over the same
+  `Questions`, not a second claim mechanism.
+- **`mecha serve` shipped 2026-08-24 — as a third front-end, not yet the
+  shared backend.** The hosted process exists, survives SSH drops, reaches
+  a second machine (the phone, daily), and the voice facade mounts inside
+  it. What the item originally promised and remains open: the TUI
+  (`tui/mod.rs:943`) and the Slack connector still build their own `Agent`
+  each — "both front-ends are thin clients of it" is not true, and deciding
+  whether it ever should be is now a real question rather than a design
+  sketch, because three agent-owning processes on one llama-server is the
+  live shape. Design §15; `REMOTE-SURFACE-DESIGN.md` is the authority for
+  what serve itself still owes.
+
+### The phone surface and voice — what 2026-08-24 left open
+
+Everything here is verified in source as of the date; the arcs' own docs
+(`REMOTE-SURFACE-DESIGN.md`, `VOICE-RESEARCH.md` §7) hold the shipped half.
+
+- **Files are the missing Phase 4 half.** No upload or download route exists
+  on the router (`serve/mod.rs`); the design promises uploads into the
+  session jail's `inbox/` and authenticated downloads. Images from a phone
+  are the motivating case and cannot happen yet.
+- **D3's same-session promise is unmet.** An in-chat call is its own
+  conversation (`Chat.svelte` opens a separate `createVoiceSession`; voice
+  slots key their own session ids) and the overlay says so honestly. The
+  voice arc owns the fix (facade adopting the web session key) and the
+  session-key contract is agreed; talking and typing are two transcripts
+  until then.
+- **The mail and frontdoor tabs are absent from the phone** — `mail` is a
+  visible disabled tab (`web/src/lib/Nav.svelte:7`), frontdoor has no page.
+  Mail is now the one daily surface the phone cannot review.
+- **`--voice-yes` is a deliberate posture with a named risk.** Voice runs
+  get `ModeApprover { Allow }` (`voice/mod.rs:552`; the unit runs the flag)
+  while web chat defaults read-only with live cards — so one process serves
+  two dialects at two postures, and the hands-free one is the permissive
+  one. The reasoning (a voice call has a present owner and cards cannot be
+  tapped mid-sentence) is recorded in the flag's doc; if voice ever grows
+  spoken approvals, this flag is what they replace. `allow` mode is equally
+  deliberately **not** offered from the page (`serve/chat.rs`) — approve one
+  call at a time in `ask` mode instead.
+- **The interim browser-speech toggle is still wired** beside the real voice
+  mode (`Chat.svelte` "read replies aloud (interim browser voice)") — its
+  own comment says it dies when the speech servers land, and they landed.
+  Delete it, or decide it earns a seat as the cheap always-works fallback.
+- **The web app imports outside its package root** —
+  `../../../scripts/voice/page/voice-core.js` — deliberate (one module, two
+  shells, cannot drift) but it couples `npm run build` to the whole
+  checkout's layout; worth a note in the update skill if it ever moves.
+- **A phone verdict has no undo**, which doubles the stakes of the
+  `undecide <seed>` design below: `POST /api/queue/verdict` is a second
+  irreversible verdict surface.
+- **PWA install and Web Push are unstarted** (design Phase 5). Until push,
+  Slack remains the nudge channel for staged drafts — D11 keeps it anyway.
+- **Luke's next real call is the outstanding voice test.** Both halves are
+  verified by probes end-to-end (Parakeet transcribes exactly, injection
+  audio is obeyed by nobody, a spoken calendar question round-tripped a real
+  tool call) — but no human has completed a full conversation on the new
+  stack yet, and the AEC/echo filter earns its keep only on a speakerphone
+  walk.
 
 ### Cheap, and worth doing first
 
@@ -905,7 +993,11 @@ What is missing beyond that is refinement:
   `PUBLIC-SURFACE-DESIGN.md` §3.2–3.3.
 - **Policy questions as a new `proposals` kind — not a third queue.**
   `ask_user` is absent from unattended runs by construction, so a trigger can
-  stage but cannot ask. The elicitation that grows autonomy is *policy*
+  stage but cannot ask. (2026-08-24 sharpened the premise without changing
+  the conclusion: `Asker::ask_in` proves a *shared* agent can route a
+  question to the right present human — the web surface does it — but
+  unattended still means nobody to route to, which is what this item is
+  about.) The elicitation that grows autonomy is *policy*
   questions that unblock a class, not per-item approvals. These belong in
   `mecha proposals` beside `rule` and `retirement`, because it is the same
   shape — mecha asks, the user decides, future behaviour changes — and because
@@ -1076,7 +1168,7 @@ are worth reading together because one absence produced all three:
 
 - **Steering and queuing are the same key.** Enter starts a run when idle and
   steers one already going; there is no way to queue a follow-up instead.
-- **No `/export` or copy.** `NAMES` lists twenty-one commands (2026-08-21,
+- **No `/export` or copy.** `NAMES` lists twenty-four commands (re-counted 2026-08-24; twenty-one on 2026-08-21,
   after `/docs`, `/send` and `/remote-control`) and none of them get the
   transcript out. **OSC 52 is no longer the answer to assume.** `/docs` writes
   the link to the system clipboard that way (`tui/docs.rs`,
@@ -1231,7 +1323,9 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   its labeled fan-out to `proposed` (retracting accept-created facts only
   while nothing has built on them), a `mecha review` passthrough, and `u` in
   the `/queues` modal for the sitting's last verdict. Designed in
-  conversation 2026-08-23, not built.
+  conversation 2026-08-23, not built — and now covering a second caller:
+  the phone's sample deck (2026-08-24) verdicts through the same CLI verbs,
+  one thumb-tap each.
 
 - **Slack verdict cards are deliberately unbuilt.** The `queues` command
   word is read-only; mail-triage cards and queue-verdict buttons each need a
@@ -1587,21 +1681,27 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   [`SLACK-DESIGN.md`](SLACK-DESIGN.md) and the evidence
   [`SLACK-RESEARCH.md`](SLACK-RESEARCH.md). What is genuinely unbuilt:
 
-  - **`ask_user` is absent, and the reason is structural.** The approver rides
-    on `RunContext`, so it is per-thread for free; `ask_user` is a *tool* and
-    the registry belongs to the `Agent`, one of which serves every thread, so
-    a shared `AskUserTool` cannot know which thread asked. Routing it needs an
-    agent per thread (an MCP startup each) or a registry per run. The second
-    is the smaller change and would also close the item below.
+  - **`ask_user` is absent — and the structural half of that claim died on
+    2026-08-24.** `Asker::ask_in(&ToolCtx, …)` (`mecha-core/src/tool/ask.rs`,
+    default forwards to `ask`, TUI untouched) lets a shared `AskUserTool`
+    route by the calling run's jail — the web surface ships exactly this
+    (`serve/present.rs::WebAsker`, key = the workspace's directory name).
+    What remains for Slack is now ordinary work, not architecture: an
+    `Asker` mapping a thread's jail back to its thread, plus card rendering
+    through the `Action` ladder.
   - **MCP tools do not honour the per-thread jail** — only the built-in tools
     do, because servers are spawned once with the agent. They are rooted at
     the `slack` producer directory so paths at least agree; isolation between
-    threads is not there, and closing it is the same fix as above.
+    threads is not there. **Re-scoped 2026-08-24: this is now every
+    many-conversation front-end's limitation, not Slack's** — `mecha serve`
+    inherits it identically (`serve/chat.rs`, servers rooted at the `web`
+    producer). Closing it means an agent per conversation, an MCP startup
+    each; the cost is why it stays open.
   - **The outbox review cards have not been exercised live.** Built and unit
     tested; no run has yet staged a draft while the connector was watching.
   - **It is installed and running** (`mecha-slack.service` active, re-verified
-    2026-08-20 — but on the **0.1.8** binary, since the install is a release
-    behind the repository).
+    2026-08-24 — on the current install at merge `9e20214`, bounced and
+    inode-swept the same night).
     `mecha-slack.service` is enabled with linger, and `[slack] tools` is now
     `[]` — the whole surface, **including `mail__*` and the graph's `kg_*`**
     (re-measured 2026-08-10; the rationale comment sits above the line in

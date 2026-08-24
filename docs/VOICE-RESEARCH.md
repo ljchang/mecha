@@ -819,9 +819,12 @@ conversation, cached thereafter; verified in the session record, and the
 mounted endpoint's first reply came back ear-shaped. The seam agreed with
 the remote-surface arc holds: `voice/` owns facade + session slots,
 `serve/` owns routes + app, `ChatState::voice_parts` is the handoff.
-Still ahead: switching production from the standalone units to unified
-serve (a deploy decision, after the reinstall), the app's local
-/api/offer proxy, and D3's same-session promise.
+Still ahead at the time of writing: the production switch, the app's
+local /api/offer proxy, and D3. The first two shipped the same night —
+production runs unified `mecha-serve.service` (the standalone voice-serve
+unit is retired, disabled) and the page's offer goes same-origin through
+serve's `/api/offer` proxy behind the owner guard. **D3's same-session
+promise is the one that remains.**
 
 **The STT seat changes occupant: Parakeet in, Voxtral to the bench,
 2026-08-24.** The field bug behind every transcription oddity finally
