@@ -29,4 +29,5 @@ pub mod tools;
 pub mod trigger;
 pub mod validate;
 pub mod vet;
+pub mod voice_serve;
 pub mod work;

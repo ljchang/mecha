@@ -390,6 +390,20 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         cfg.agent.system_prompt = Some(read_maybe_file(system)?);
         cfg.agent.system_prompt_file = None;
     }
+    // A front-end's standing block, appended rather than replacing: `--system`
+    // is the user's voice and this is the harness's, and clobbering the first
+    // with the second would make configuring both impossible. It sits before
+    // the date stamp so the parts that never change stay contiguous at the
+    // front of the cached prefix.
+    if let Some(extra) = &opts.system_extra {
+        let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
+        cfg.agent.system_prompt = Some(if base.is_empty() {
+            extra.clone()
+        } else {
+            format!("{base}\n\n{extra}")
+        });
+        cfg.agent.system_prompt_file = None;
+    }
     // Today's date, because a model has no clock and every calendar or mail
     // question is relative to one. Found by running it: asked for "the next
     // three days" the model queried a window in January, six months stale,
