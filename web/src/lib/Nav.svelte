@@ -6,7 +6,7 @@
     ['chat', 'M4 5h16v11H9l-5 4z', true],
     ['mail', 'M3 7l9 6 9-6M3 5h18v14H3z', false],
     ['notes', 'M4 4h16v16H4zM8 9h8M8 13h5', false],
-    ['review', 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5', false],
+    ['review', 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5', true],
     ['tasks', 'M4 6h2M4 12h2M4 18h2M9 6h11M9 12h11M9 18h11', false],
   ];
 </script>

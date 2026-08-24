@@ -83,6 +83,11 @@ pub enum Cmd {
         /// changing a recipient.
         #[arg(long)]
         json: bool,
+        /// Replace the prose with this file's contents instead of opening
+        /// $EDITOR — the path for surfaces with no terminal (the web review
+        /// writes through this, so there is one implementation of "edit").
+        #[arg(long, conflicts_with = "json", value_name = "FILE")]
+        body_file: Option<std::path::PathBuf>,
     },
     /// Walk the pending items one at a time, deciding each.
     ///
@@ -131,7 +136,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }) {
         Cmd::List { kind, via } => list(&store, kind.as_deref(), via.as_deref()),
         Cmd::Show { id, json } => show(&store, &id, json),
-        Cmd::Edit { id, json } => edit(&store, &id, json),
+        Cmd::Edit {
+            id,
+            json,
+            body_file,
+        } => edit(&store, &id, json, body_file.as_deref()),
         Cmd::Review { selection } => review(global, &store, &selection).await,
         Cmd::Approve { selection, yes } => send(global, &store, &selection, yes).await,
         Cmd::Reject { selection, reason } => reject(&store, &selection, reason),
@@ -556,7 +565,7 @@ pub(crate) fn entry_point(path: &std::path::Path) -> Option<std::path::PathBuf> 
 ///
 /// A draft with no prose — a calendar RSVP, a reaction — falls back to the
 /// arguments rather than opening an empty file, and says so.
-fn edit(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
+fn edit(store: &OutboxStore, id: &str, json: bool, body_file: Option<&Path>) -> Result<()> {
     // Resolve before the editor so a bad id fails in milliseconds, but take
     // the lock only *after* the editor exits — holding it across a human's
     // editing session would wedge every concurrent pass that wants it.
@@ -578,6 +587,28 @@ fn edit(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
             item.id,
             item.id
         );
+    }
+
+    // The no-terminal path: the file is the body, whole. No reference
+    // marker to strip — the caller shows the source beside its own editor —
+    // and the same publish/pending guards above already ran.
+    if let Some(path) = body_file {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let text = text.strip_suffix('\n').unwrap_or(&text);
+        let args = mecha_core::outbox::with_body(&item.args, text)
+            .context("this draft has no prose field to replace; use --json")?;
+        let _lock = store.lock()?;
+        let updated = store.update_args(&item.id, args)?;
+        println!(
+            "{}",
+            if updated.edited() {
+                "edited"
+            } else {
+                "no change"
+            }
+        );
+        return Ok(());
     }
 
     let body = if json {
@@ -1015,7 +1046,7 @@ async fn review(global: &GlobalOpts, store: &OutboxStore, selection: &Selection)
                     break;
                 }
                 "e" | "edit" => {
-                    if let Err(e) = edit(store, &current.id, false) {
+                    if let Err(e) = edit(store, &current.id, false, None) {
                         eprintln!("{e:#}");
                     }
                     // Round again with what the edit produced, so the thing

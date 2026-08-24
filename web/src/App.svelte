@@ -2,9 +2,15 @@
   import Home from './lib/Home.svelte';
   import Chat from './lib/Chat.svelte';
   import Nav from './lib/Nav.svelte';
+  import Outbox from './lib/Outbox.svelte';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
-  let view = $state(location.hash === '#chat' ? 'chat' : 'home');
+  const views = ['home', 'chat', 'review'];
+  const fromHash = () => {
+    const h = location.hash.slice(1);
+    return views.includes(h) ? h : 'home';
+  };
+  let view = $state(fromHash());
 
   function navigate(to) {
     view = to;
@@ -13,7 +19,7 @@
 
   $effect(() => {
     const onHash = () => {
-      view = location.hash === '#chat' ? 'chat' : 'home';
+      view = fromHash();
     };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
@@ -23,6 +29,8 @@
 <div class="screen">
   {#if view === 'chat'}
     <Chat />
+  {:else if view === 'review'}
+    <Outbox />
   {:else}
     <Home />
   {/if}
