@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
-use axum::extract::{Path as UrlPath, State};
+use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -226,9 +226,86 @@ fn detail_json(item: &OutboxItem, sources: &[outbox_source::SourceRead]) -> serd
 // verdict never resamples (the page drops the card locally, seed unchanged);
 // a new draw is an explicit button and a new seed.
 
-/// GET /api/queue — the queue rolled up by proposing mechanism.
+/// GET /api/queue — the queue rolled up by proposing mechanism, each row
+/// stamped with its evidence tier (see `classes` for why the stamp is
+/// computed here and never in page script).
 pub async fn queue(State(state): St) -> Response {
     match self_json(&state, &["review", "proposers", "--json"]).await {
+        Ok(mut v) => {
+            if let Some(rows) = v.as_array_mut() {
+                for row in rows {
+                    let judged = row["accepted_hist"].as_i64().unwrap_or(0)
+                        + row["rejected_hist"].as_i64().unwrap_or(0);
+                    row["tier"] = serde_json::json!(crate::tui::queues::Tier::of(judged).as_str());
+                }
+            }
+            Json(v).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct ClassQuery {
+    pub proposer: Option<String>,
+}
+
+/// GET /api/queue/classes — one proposer's pending classes, each stamped
+/// with its evidence tier.
+///
+/// **The tier is computed here, from `tui::queues::Tier::of`** — the single
+/// definition behind the TUI's label and filter — and never re-derived in
+/// page script. The page shipped with its own `n < 10 ? 'thin' : …` copy of
+/// the thresholds, which is exactly the drift the one-definition rule
+/// exists to prevent: a filter disagreeing with the word beside it is worse
+/// than no filter, because you verdict a class believing it sits in a tier
+/// it does not.
+pub async fn classes(State(state): St, Query(q): Query<ClassQuery>) -> Response {
+    let mut args: Vec<&str> = vec!["review", "list", "--json"];
+    if let Some(proposer) = &q.proposer {
+        args.push("--proposer");
+        args.push(proposer);
+    }
+    match self_json(&state, &args).await {
+        Ok(mut v) => {
+            if let Some(rows) = v.as_array_mut() {
+                for row in rows {
+                    let judged = row["accepted_hist"].as_i64().unwrap_or(0)
+                        + row["rejected_hist"].as_i64().unwrap_or(0);
+                    row["tier"] = serde_json::json!(crate::tui::queues::Tier::of(judged).as_str());
+                }
+            }
+            Json(v).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct GroupsQuery {
+    pub proposer: String,
+    pub predicate: String,
+}
+
+/// GET /api/queue/groups — one class's pending candidates grouped by
+/// semantic similarity, largest first: where one verdict fans out furthest.
+/// The envelope (`{threshold, groups}`) is the CLI's, passed through — a
+/// group's face is a real member statement, never a paraphrase, on the
+/// outbox's rule that approving a summary is approving unread. Both class
+/// keys are required because a group never crosses a class; the CLI child
+/// enforces that too, but a route that *could* ask for cross-class groups
+/// would document a thing the system refuses to mean.
+pub async fn groups(State(state): St, Query(q): Query<GroupsQuery>) -> Response {
+    let args = [
+        "review",
+        "groups",
+        "--proposer",
+        &q.proposer,
+        "--predicate",
+        &q.predicate,
+        "--json",
+    ];
+    match self_json(&state, &args).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
     }
@@ -272,19 +349,41 @@ pub struct VerdictBody {
     pub id: i64,
     pub accept: bool,
     pub reason: Option<String>,
+    /// Explicit member ids from a groups listing: the named id is the
+    /// owner's verdict, these follow as a labeled machine cascade the
+    /// ladder never counts. Always the ids the page *showed*, never a
+    /// re-derived similarity — what a person saw is what the verdict covers.
+    pub cascade: Option<Vec<i64>>,
 }
 
 /// POST /api/queue/verdict — one candidate, one verdict, through the CLI.
+/// With `cascade`, one *human* verdict still: the members ride `--cascade`
+/// and land labeled `cascade:<seed>`, invisible to the autonomy ladder.
 pub async fn verdict(State(state): St, Json(body): Json<VerdictBody>) -> Response {
     let id = body.id.to_string();
+    let members = body
+        .cascade
+        .as_ref()
+        .filter(|ids| !ids.is_empty())
+        .map(|ids| {
+            ids.iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        });
+    let mut args: Vec<&str> = vec!["review"];
     if body.accept {
-        verb(&state, &["review", "accept", &id]).await
+        args.extend(["accept", &id]);
     } else {
-        match body.reason.as_deref().filter(|r| !r.trim().is_empty()) {
-            Some(reason) => verb(&state, &["review", "reject", &id, "--reason", reason]).await,
-            None => verb(&state, &["review", "reject", &id]).await,
+        args.extend(["reject", &id]);
+        if let Some(reason) = body.reason.as_deref().filter(|r| !r.trim().is_empty()) {
+            args.extend(["--reason", reason]);
         }
     }
+    if let Some(members) = &members {
+        args.extend(["--cascade", members]);
+    }
+    verb(&state, &args).await
 }
 
 /// Like `verb`, but the child's stdout is JSON to pass through.

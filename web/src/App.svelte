@@ -3,11 +3,12 @@
   import Chat from './lib/Chat.svelte';
   import Nav from './lib/Nav.svelte';
   import Review from './lib/Review.svelte';
+  import Mail from './lib/Mail.svelte';
   import Tasks from './lib/Tasks.svelte';
   import Notes from './lib/Notes.svelte';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
-  const views = ['home', 'chat', 'review', 'tasks', 'notes'];
+  const views = ['home', 'chat', 'mail', 'review', 'tasks', 'notes'];
   const fromHash = () => {
     const h = location.hash.slice(1);
     return views.includes(h) ? h : 'home';
@@ -31,6 +32,8 @@
 <div class="screen">
   {#if view === 'chat'}
     <Chat />
+  {:else if view === 'mail'}
+    <Mail />
   {:else if view === 'review'}
     <Review />
   {:else if view === 'tasks'}

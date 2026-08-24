@@ -21,7 +21,7 @@ mod frontdoor;
 mod mail;
 mod outbox;
 mod polls;
-mod queues;
+pub(crate) mod queues;
 mod skills;
 mod tasks;
 mod tools;
