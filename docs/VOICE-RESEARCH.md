@@ -635,3 +635,45 @@ runs under nohup.
 Phase 1 status: **speech servers done** (:8082 ears, :8881 launch voice,
 :8880 fallback voice, all measured). Next: Phase 2, the facade — where
 mecha itself enters.
+
+**Phase 2 — the facade — built and verified live, same day.**
+`mecha voice-serve` (`mecha-cli/src/voice/`): a hand-rolled loopback HTTP
+server on tokio + `httparse` (§6.1 resolved: httparse was already in the
+lock as a leaf; no axum, no new tree), serving `POST /v1/chat/completions`
+(streaming and not) and `GET /health`. Verified against the live local
+model, each of these observed rather than assumed:
+
+- **The conversation is server-side state.** Two requests on one `user`
+  key: the second answered from the first's content. The client's re-sent
+  history is ignored (D3 as built).
+- **Tools work through the facade, jailed and governed.** A "write a
+  haiku to a file" turn wrote through the path jail into the voice
+  producer workspace. Under the default posture the approver *blocked*
+  the write and the model said so out loud — voice-serve inherits
+  `--yes`/`--read-only`, so the launch flag chooses the posture, and the
+  refusal reads "Blocked by policy", never a user correction.
+- **Barge-in preserves the partial turn.** A hang-up two seconds into a
+  streamed count-to-two-hundred recorded `stop_cause: "interrupted"`, and
+  the next request was answered with "I'd made it to thirty-three when
+  you interrupted" — the Ctrl-C guarantee through an HTTP disconnect.
+- **Sessions are ordinary transcripts** (`voice: <key>` titles), so
+  distill and the run-quality corpus see voice for free (D9).
+- A voice turn's prompt is ~14k tokens — the full prefix (tools, skills,
+  rules, D10 voice block). The prefix cache is the TTFT story, as
+  predicted; `cache_lens` over a voice session is the Phase 4 check.
+
+Deviations and finds, recorded: **`recall` is absent** (the registry
+belongs to the one shared agent; per-session transcripts would cross-wire
+it — the Slack rule; an agent per session is the known price of changing
+this). **`GlobalOpts.system_extra`** is a new append-only seam in
+`setup.rs`, because `--system` replaces the base prompt and a front-end's
+standing block must never clobber the user's. **A busy session treats a
+new request as barge-in** (cancel, wait, run) rather than steering —
+steering needs a side-channel the OpenAI protocol lacks, and hanging up
+before speaking again is what a voice client actually does. And a v2
+worth wanting: a **VoiceApprover** that streams the approval question as
+text — "may I write this file?" — so the Ask posture becomes usable by
+voice the way SlackApprover made it usable from a phone.
+
+Remaining: Phase 3 (Pipecat worker + tailnet page + earcons + transcript
+pane), the systemd units, Phase 4 polish.
