@@ -72,6 +72,22 @@
       taint = data.taint;
       model = data.model;
       mode = data.mode ?? 'read_only';
+      for (const q of data.questions ?? []) {
+        if (!entries.some((e) => e.kind === 'question' && e.qid === q.qid)) {
+          entries.push({
+            kind: 'question',
+            qid: q.qid,
+            qkind: q.kind,
+            tool: q.tool,
+            args: q.args,
+            question: q.question,
+            options: q.options ?? [],
+            freeText: '',
+            denying: false,
+            denyReason: '',
+          });
+        }
+      }
       if (data.usage?.prompt_tokens) {
         usage = { prompt: data.usage.prompt_tokens, window: data.usage.context_window };
       }

@@ -50,7 +50,16 @@ pub enum Answer {
 #[derive(Clone, Default)]
 pub struct Questions {
     next: Arc<AtomicU64>,
-    pending: Arc<StdMutex<HashMap<u64, oneshot::Sender<Answer>>>>,
+    pending: Arc<StdMutex<HashMap<u64, PendingQuestion>>>,
+}
+
+struct PendingQuestion {
+    tx: oneshot::Sender<Answer>,
+    /// The card as it went over the event stream — kept so a page that
+    /// reloads mid-question (a locked phone kills the stream) gets the card
+    /// back from the transcript read instead of a run silently parked on a
+    /// question nobody can see.
+    card: Option<WireEvent>,
 }
 
 impl Questions {
@@ -58,9 +67,26 @@ impl Questions {
         let qid = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let (tx, rx) = oneshot::channel();
         if let Ok(mut pending) = self.pending.lock() {
-            pending.insert(qid, tx);
+            pending.insert(qid, PendingQuestion { tx, card: None });
         }
         (qid, rx)
+    }
+
+    /// Keep the card beside its channel, for the reload path.
+    fn remember(&self, qid: u64, card: WireEvent) {
+        if let Ok(mut pending) = self.pending.lock() {
+            if let Some(q) = pending.get_mut(&qid) {
+                q.card = Some(card);
+            }
+        }
+    }
+
+    /// Every card still waiting — what the transcript read returns.
+    pub fn cards(&self) -> Vec<WireEvent> {
+        self.pending
+            .lock()
+            .map(|p| p.values().filter_map(|q| q.card.clone()).collect())
+            .unwrap_or_default()
     }
 
     fn close(&self, qid: u64) {
@@ -74,7 +100,7 @@ impl Questions {
     pub fn answer(&self, qid: u64, answer: Answer) -> bool {
         let sender = self.pending.lock().ok().and_then(|mut p| p.remove(&qid));
         match sender {
-            Some(tx) => tx.send(answer).is_ok(),
+            Some(q) => q.tx.send(answer).is_ok(),
             None => false,
         }
     }
@@ -126,7 +152,7 @@ impl Approver for WebApprover {
         }
 
         let (qid, rx) = self.questions.open();
-        let _ = self.events.send(WireEvent::Question {
+        let card = WireEvent::Question {
             qid,
             kind: "approval".into(),
             tool: Some(tool.name().to_string()),
@@ -134,7 +160,9 @@ impl Approver for WebApprover {
             question: None,
             options: Vec::new(),
             timeout_secs: self.timeout.as_secs(),
-        });
+        };
+        self.questions.remember(qid, card.clone());
+        let _ = self.events.send(card);
 
         let decision = match tokio::time::timeout(self.timeout, rx).await {
             Ok(Ok(Answer::Approve)) => Decision::Allow,
@@ -186,7 +214,7 @@ impl Asker for WebAsker {
         let (questions, events) = (self.lookup)(&key)?;
 
         let (qid, rx) = questions.open();
-        let _ = events.send(WireEvent::Question {
+        let card = WireEvent::Question {
             qid,
             kind: "ask".into(),
             tool: None,
@@ -194,7 +222,9 @@ impl Asker for WebAsker {
             question: Some(question.to_string()),
             options: options.to_vec(),
             timeout_secs: ASK_TIMEOUT.as_secs(),
-        });
+        };
+        questions.remember(qid, card.clone());
+        let _ = events.send(card);
 
         let answer = match tokio::time::timeout(ASK_TIMEOUT, rx).await {
             Ok(Ok(Answer::Text(text))) => Some(text),
@@ -309,6 +339,33 @@ mod tests {
             .await;
         assert!(matches!(decision, Decision::Allow));
         assert!(questions.pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_pending_card_survives_for_the_reload_path_and_leaves_when_closed() {
+        let (approver, questions) = approver(PermissionMode::Ask, Duration::from_millis(80));
+        let handle = tokio::spawn(async move {
+            approver
+                .approve(&FakeTool { read_only: false }, &serde_json::json!({}))
+                .await
+        });
+        // The card appears while the question waits…
+        let mut waited = 0;
+        while questions.cards().is_empty() && waited < 50 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            waited += 1;
+        }
+        assert_eq!(
+            questions.cards().len(),
+            1,
+            "the transcript must see the card"
+        );
+        let _ = handle.await;
+        // …and is gone once it resolves (here: by timeout).
+        assert!(
+            questions.cards().is_empty(),
+            "a resolved card must not linger"
+        );
     }
 
     #[tokio::test]
