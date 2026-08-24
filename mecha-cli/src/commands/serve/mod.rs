@@ -42,6 +42,12 @@ pub struct Args {
     /// Override `[web] assets` (the built web app, `web/dist`) for this run.
     #[arg(long)]
     pub assets: Option<PathBuf>,
+    /// Override `[web] owner_login` for this run. Same trust as the config
+    /// field — a flag on the owner's own process — and what lets a branch
+    /// build serve while the live config stays parseable by older binaries
+    /// that predate the `[web]` section.
+    #[arg(long)]
+    pub owner_login: Option<String>,
 }
 
 #[derive(Clone)]
@@ -60,7 +66,11 @@ pub async fn execute(args: Args) -> Result<()> {
     // `[web]` from project layers as a second fence).
     let config = Config::load_global()?;
 
-    let Some(owner) = config.web.owner_login.clone() else {
+    let Some(owner) = args
+        .owner_login
+        .clone()
+        .or_else(|| config.web.owner_login.clone())
+    else {
         bail!(
             "[web] owner_login is not set, and mecha serve will not open a door with no \
              owner check.\nSet it in ~/.mecha/config.toml to the Tailscale login that may \
