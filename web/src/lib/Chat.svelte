@@ -268,7 +268,12 @@
   $effect(() => () => vSession?.end());
 
   async function send() {
-    const text = draft.trim();
+    let text = draft.trim();
+    if (attachments.length) {
+      const lines = attachments.map((p) => `Attached file at ${p}`).join('\n');
+      text = text ? `${text}\n\n${lines}` : lines;
+      attachments = [];
+    }
     if (!text) return;
     draft = '';
     try {
@@ -287,6 +292,32 @@
       }
     } catch (e) {
       pushEntry({ kind: 'notice', text: `send failed: ${e?.message ?? e}` });
+    }
+  }
+
+  // Phase 4's upload half: the file lands in the session jail's inbox/ and
+  // the *path* is announced in the message — never the content, so the taint
+  // arms through fs_read when the run opens it (the remote-control rule).
+  let fileInput = $state(null);
+  let uploading = $state(false);
+  let attachments = $state([]); // workspace-relative paths, announced on send
+
+  async function uploadPicked(e) {
+    const files = [...(e.target.files ?? [])];
+    e.target.value = '';
+    for (const f of files) {
+      uploading = true;
+      try {
+        const q = new URLSearchParams({ name: f.name });
+        const res = await fetch(`/api/chat/${key}/upload?${q}`, { method: 'POST', body: f });
+        if (!res.ok) throw new Error((await res.text()).trim());
+        const data = await res.json();
+        attachments.push(data.path);
+      } catch (err) {
+        pushEntry({ kind: 'notice', text: `upload failed: ${err?.message ?? err}` });
+      } finally {
+        uploading = false;
+      }
     }
   }
 
@@ -494,7 +525,20 @@
         </span>
       </div>
     {/if}
+    {#if attachments.length}
+      <div class="attach-row">
+        {#each attachments as p, i}
+          <button class="attach-chip" title="remove" onclick={() => attachments.splice(i, 1)}>
+            {p.split('/').pop()} ✕
+          </button>
+        {/each}
+      </div>
+    {/if}
     <div class="input-row">
+      <input type="file" multiple hidden bind:this={fileInput} onchange={uploadPicked} />
+      <button class="round" disabled={uploading} onclick={() => fileInput?.click()} title="attach a file — it lands in this session's inbox/">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--accent-400)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.5l-8.2 8.2a5.5 5.5 0 01-7.8-7.8L13.6 4.3a3.7 3.7 0 015.2 5.2l-8.4 8.4a1.85 1.85 0 01-2.6-2.6l7.8-7.8" /></svg>
+      </button>
       <textarea
         rows="1"
         placeholder={running ? 'Steer the run…' : 'Ask mecha…'}
@@ -910,6 +954,8 @@
     font-size: 10px;
     color: var(--text-muted);
   }
+  .attach-row { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 0 8px; }
+  .attach-chip { font-family: var(--mono); font-size: 11px; color: var(--text); background: var(--accent-900); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 6px 10px; cursor: pointer; }
   .input-row {
     display: flex;
     align-items: flex-end;
