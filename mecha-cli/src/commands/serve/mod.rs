@@ -31,6 +31,8 @@ use axum::{Json, Router};
 
 use mecha_core::config::Config;
 
+mod chat;
+
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// Override `[web] port` for this run.
@@ -44,6 +46,10 @@ pub struct Args {
 #[derive(Clone)]
 struct WebState {
     owner_login: Arc<String>,
+    /// `None` when the agent failed to build: the dashboard still serves and
+    /// the chat routes answer 503 naming the reason — fail to a lesser mode,
+    /// never silently.
+    chat: Option<Arc<chat::ChatState>>,
 }
 
 pub async fn execute(args: Args) -> Result<()> {
@@ -65,8 +71,17 @@ pub async fn execute(args: Args) -> Result<()> {
     let port = args.port.unwrap_or(config.web.port);
     let assets = args.assets.or(config.web.assets);
 
+    let chat = match chat::ChatState::build().await {
+        Ok(c) => Some(Arc::new(c)),
+        Err(e) => {
+            tracing::warn!("chat is unavailable: {e:#}");
+            eprintln!("warning: chat is unavailable — the dashboard still serves.\n  {e:#}");
+            None
+        }
+    };
     let state = WebState {
         owner_login: Arc::new(owner),
+        chat,
     };
     let app = router(state.clone(), assets.as_deref());
 
@@ -93,7 +108,11 @@ pub async fn execute(args: Args) -> Result<()> {
 fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
     let api = Router::new()
         .route("/api/ping", get(ping))
-        .route("/api/summary", get(summary));
+        .route("/api/summary", get(summary))
+        .route("/api/chat", get(chat::transcript))
+        .route("/api/chat/send", axum::routing::post(chat::send))
+        .route("/api/chat/cancel", axum::routing::post(chat::cancel))
+        .route("/api/chat/events", get(chat::events));
 
     let app = match assets {
         Some(dir) => api.fallback_service(tower_http::services::ServeDir::new(dir)),
@@ -223,6 +242,7 @@ mod tests {
         router(
             WebState {
                 owner_login: Arc::new("owner@example.com".into()),
+                chat: None,
             },
             None,
         )
