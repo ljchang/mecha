@@ -51,7 +51,8 @@ pub struct Config {
     pub skills: SkillsConfig,
     /// The tailnet web surface (`mecha serve`). Global-file only, like
     /// `[slack]`: it names a listening port and the one identity allowed
-    /// through the door.
+    /// through the door. (Replaces the opaque `toml::Value` bridge main
+    /// carried while this arc was in flight.)
     pub web: WebConfig,
 }
 

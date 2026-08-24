@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>mecha·voice</title>
+<style>
+/* mecha·voice — docs/VOICE-RESEARCH.md D7 (sound design) + D9 (transcript
+   pane). Self-contained on purpose: no external fetch, ever — the page must
+   work on the tailnet with nothing else reachable, like the harness itself.
+   Two voices, two temperatures: the machine is copper, the human is steel. */
+:root {
+  --ground: #14110c;
+  --surface: #1e1913;
+  --line: #322a1f;
+  --copper: #d08b4c;
+  --copper-hot: #f0b268;
+  --steel: #86a7c4;
+  --ink: #ede6da;
+  --muted: #8f8674;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  --prose: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--prose);
+  display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  overflow: hidden;
+}
+header {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.wordmark { font-family: var(--mono); font-size: 15px; letter-spacing: .08em; color: var(--ink); }
+.wordmark b { color: var(--copper); font-weight: 600; }
+#linkstate { font-family: var(--mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+#linkstate.live { color: var(--copper); }
+#linkstate::before { content: "● "; }
+
+#transcript {
+  flex: 1; overflow-y: auto; padding: 16px 18px 8px;
+  display: flex; flex-direction: column; gap: 10px;
+  overscroll-behavior: contain;
+}
+.empty {
+  margin: auto; text-align: center; color: var(--muted);
+  font-family: var(--mono); font-size: 12px; letter-spacing: .1em; line-height: 2;
+}
+.line { max-width: 86%; line-height: 1.45; font-size: 15px; animation: rise .25s ease both; }
+.line .who {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .16em;
+  text-transform: uppercase; display: block; margin-bottom: 3px;
+}
+.line.user { align-self: flex-end; text-align: right; }
+.line.user .who { color: var(--steel); }
+.line.user .text { color: var(--ink); }
+.line.bot { align-self: flex-start; }
+.line.bot .who { color: var(--copper); }
+.line.bot .text { color: var(--ink); }
+.line.interim .text { color: var(--muted); font-style: italic; }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+
+#dock {
+  flex: none; display: flex; flex-direction: column; align-items: center;
+  gap: 10px; padding: 14px 0 calc(18px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line); background: var(--surface);
+}
+#core {
+  --level: 0;
+  width: 96px; height: 96px; border-radius: 50%;
+  border: none; cursor: pointer; position: relative;
+  background: radial-gradient(circle at 50% 42%, #2b2115, #191510 70%);
+  box-shadow: 0 0 0 2px var(--line), 0 0 24px rgba(208,139,76,.06);
+  transition: box-shadow .4s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+#core:focus-visible { outline: 2px solid var(--steel); outline-offset: 4px; }
+#core .ring {
+  position: absolute; inset: -7px; border-radius: 50%;
+  border: 2px solid transparent; pointer-events: none;
+}
+/* idle: dim ember */
+#core.idle { box-shadow: 0 0 0 2px var(--line), 0 0 18px rgba(208,139,76,.10); }
+/* connecting: slow pulse */
+#core.connecting .ring { border-color: var(--muted); animation: pulse 1.6s ease-in-out infinite; }
+/* listening: the ember breathes with the real mic level (JS drives --level) */
+#core.listening {
+  box-shadow: 0 0 0 2px var(--copper),
+              0 0 calc(18px + var(--level) * 60px) rgba(240,178,104, calc(.18 + var(--level) * .6));
+}
+/* thinking: a single copper spark orbits */
+#core.thinking .ring {
+  border-top-color: var(--copper-hot);
+  animation: orbit 1.4s linear infinite;
+}
+/* speaking: rings radiate outward */
+#core.speaking .ring { border-color: var(--copper); animation: radiate 1.2s ease-out infinite; }
+@keyframes pulse { 50% { transform: scale(1.05); opacity: .5; } }
+@keyframes orbit { to { transform: rotate(360deg); } }
+@keyframes radiate {
+  from { transform: scale(1); opacity: .8; }
+  to { transform: scale(1.45); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ring, .line { animation: none !important; }
+  #core.thinking { box-shadow: 0 0 0 2px var(--copper-hot); }
+  #core.speaking { box-shadow: 0 0 0 3px var(--copper); }
+}
+#status {
+  font-family: var(--mono); font-size: 12px; letter-spacing: .18em;
+  text-transform: lowercase; color: var(--muted); min-height: 1em;
+}
+#core.listening + #status, #core.speaking + #status { color: var(--copper); }
+</style>
+</head>
+<body>
+<header>
+  <span class="wordmark">mecha<b>·voice</b></span>
+  <span id="linkstate">offline</span>
+</header>
+<main id="transcript">
+  <div class="empty" id="empty">tap the core to connect<br>say something when the ring warms up</div>
+</main>
+<div id="dock">
+  <button id="core" class="idle" aria-label="Connect and talk"><span class="ring"></span></button>
+  <div id="status">tap to talk</div>
+</div>
+<script type="module">
+import { createVoiceSession } from "./voice-core.js";
+
+/* The page is a shell over voice-core.js — the same module the tailnet
+   app's in-chat voice mode embeds, so the two shells cannot drift. All the
+   machinery (chimes, barge-in, the end-sound-on-dead-network rule, RTVI)
+   lives in the module; this file only owns the core button, the ring, and
+   the transcript pane. */
+const core = document.getElementById("core");
+const statusEl = document.getElementById("status");
+const linkEl = document.getElementById("linkstate");
+const scroll = document.getElementById("transcript");
+const emptyEl = document.getElementById("empty");
+
+let interimEl = null;
+function makeLine(who, interim, text = "") {
+  const div = document.createElement("div");
+  div.className = `line ${who}${interim ? " interim" : ""}`;
+  div.innerHTML = `<span class="who">${who === "user" ? "you" : "mecha"}</span><span class="text"></span>`;
+  div.querySelector(".text").textContent = text;
+  return div;
+}
+function addLine({ who, text, interim }) {
+  emptyEl.style.display = "none";
+  if (who === "user" && interim) {
+    if (!interimEl) {
+      interimEl = makeLine("user", true);
+      scroll.appendChild(interimEl);
+    }
+    interimEl.querySelector(".text").textContent = text;
+  } else if (who === "user") {
+    if (interimEl) { interimEl.remove(); interimEl = null; }
+    scroll.appendChild(makeLine("user", false, text));
+  } else {
+    // The machine speaks in sentences; append to the open bot line so one
+    // reply reads as one paragraph, not confetti.
+    let last = scroll.lastElementChild;
+    if (!(last && last.classList.contains("bot") && last.dataset.open === "1")) {
+      last = makeLine("bot", false, "");
+      last.dataset.open = "1";
+      scroll.appendChild(last);
+    }
+    const t = last.querySelector(".text");
+    t.textContent = (t.textContent ? t.textContent + " " : "") + text;
+  }
+  scroll.scrollTop = scroll.scrollHeight;
+}
+
+const session = createVoiceSession({
+  onState(name, label) { core.className = name; statusEl.textContent = label; },
+  onTranscript: addLine,
+  onLevel(v) { core.style.setProperty("--level", v.toFixed(3)); },
+  onLink(live) {
+    linkEl.textContent = live ? "live" : "offline";
+    linkEl.classList.toggle("live", live);
+  },
+  onBotTurnEnd() {
+    const last = scroll.lastElementChild;
+    if (last && last.dataset) delete last.dataset.open;
+  },
+});
+
+core.addEventListener("click", () => {
+  if (session.connected) session.end(); else session.connect();
+});
+</script>
+</body>
+</html>
