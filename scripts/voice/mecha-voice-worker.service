@@ -8,7 +8,11 @@ After=network.target mecha-voice-serve.service
 Environment=MECHA_VOICE_TTS=http://127.0.0.1:8881/v1
 Environment=MECHA_VOICE_TTS_VOICE=default
 WorkingDirectory=/home/ljchang/Github/mecha/.claude/worktrees/voice-arc
-ExecStart=/home/ljchang/models/voice-worker-venv/bin/python scripts/voice/worker.py --host 127.0.0.1 --port 7860
+# --allowed-origins closes drive-by voice injection: with open CORS, any
+# website in a browser on a tailnet device could post an offer and feed
+# synthetic speech into an owner-postured agent. Only the two app origins
+# may initiate a call.
+ExecStart=/home/ljchang/models/voice-worker-venv/bin/python scripts/voice/worker.py --host 127.0.0.1 --port 7860 --allowed-origins https://spark-8c43.tailc01fd2.ts.net https://spark-8c43.tailc01fd2.ts.net:8443
 Restart=on-failure
 RestartSec=5
 
