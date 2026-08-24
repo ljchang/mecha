@@ -410,6 +410,18 @@
           <span class="vdot" class:live={vLinked}></span>
           <span>{vState.label}</span>
         </div>
+        <div class="meter" title="your microphone, live">
+          {#each Array(14) as _, i}
+            <span
+              class="tick"
+              class:lit={vLevel * 14 > i}
+              style:height="{6 + Math.abs(i - 6.5) * -0 + (i % 2 ? 6 : 0) + 8}px"
+            ></span>
+          {/each}
+        </div>
+        <div class="meter-label">
+          {vLevel > 0.02 ? 'hearing you' : vState.name === 'listening' ? 'mic is silent — speak, or check the mic permission' : 'mic'}
+        </div>
       </div>
       <div class="voice-pane" bind:this={voicePane}>
         {#each vEntries as entry}
@@ -730,6 +742,27 @@
     font-family: var(--mono);
     font-size: 12px;
     color: var(--text-muted);
+  }
+  .meter {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+  }
+  .tick {
+    width: 3px;
+    border-radius: 1px;
+    background: var(--accent-900);
+    transition: background 60ms linear;
+  }
+  .tick.lit {
+    background: var(--accent-400);
+  }
+  .meter-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    min-height: 14px;
   }
   .vdot {
     width: 5px;
