@@ -1,4 +1,5 @@
 <script>
+  import Dictate from './Dictate.svelte';
   // The GTD board, over `mecha tasks …` — which reaches the graph's own
   // store through its MCP surface. Nothing here confirms: every status is
   // one tap from where it was, and the tool surface has no delete.
@@ -188,7 +189,10 @@
     <div class="sheet">
       <div class="grip"></div>
       <div class="sheettitle">Capture — lands in inbox</div>
+      <div class="namerow">
       <input class="field" placeholder="The task, phrased as an action" bind:value={addName} />
+        <Dictate onText={(text, err) => { if (text) addName = addName ? `${addName} ${text}` : text; if (err) error = err; }} />
+      </div>
       <div class="fieldrow">
         <input class="field" placeholder="due: today, +3d, 2026-09-05" bind:value={addDue} />
         <input class="field" placeholder="@context" bind:value={addContext} />
@@ -219,6 +223,8 @@
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; padding-top: 6px; }
   .fab { position: absolute; right: 20px; bottom: 20px; width: 56px; height: 56px; border-radius: 14px; background: var(--accent-400); border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; }
   .scrim { position: absolute; inset: 0; z-index: 5; background: rgba(0, 0, 0, 0.45); }
+  .namerow { display: flex; gap: 8px; align-items: stretch; }
+  .namerow > :global(input) { flex: 1; }
   .menubtn { background: none; border: none; color: var(--text-muted); min-width: 44px; min-height: 44px; margin: -10px 4px -10px -12px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   .drawer { position: fixed; top: 0; left: 0; bottom: 0; width: min(300px, 82vw); background: var(--bg); border-right: 1px solid var(--accent-700); z-index: 41; display: flex; flex-direction: column; padding-top: env(safe-area-inset-top); animation: drawer-in 0.18s ease-out; }
   @keyframes drawer-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
