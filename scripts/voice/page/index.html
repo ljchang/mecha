@@ -270,7 +270,12 @@ async function connect() {
   await AC.resume();               // user gesture: unlock audio for the chimes
   setState("connecting", "connecting…");
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micStream = await navigator.mediaDevices.getUserMedia({
+      // Explicit, not default: the speaker and the mic share a phone, and
+      // every echo the browser cancels is a segment Voxtral never has to
+      // be talked out of answering.
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
   } catch {
     setState("idle", "microphone refused — tap to retry");
     return;
