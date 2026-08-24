@@ -23,6 +23,7 @@ libc.workspace = true
 chrono-tz.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 futures.workspace = true
+httparse = "1"
 rustyline = "18"
 # What a character costs on screen. The input box wraps its own text, and a
 # wrapper that counts characters puts the caret two cells left of the glyph the
