@@ -837,6 +837,10 @@ Everything here is verified in source as of the date; the arcs' own docs
 - **Frontdoor has no page.** Phase 3 promised it; mail shipped 2026-08-24
   evening and frontdoor is now the one review store the phone cannot reach.
   Same thin-shell pattern as the mail page (`serve/mail.rs`).
+- **The owner's first-day feedback backlog is `REMOTE-SURFACE-DESIGN.md`
+  §12** — chat model switching, a plain mail inbox + compose, notes/tasks
+  voice capture and listings, the task→agent handoff (the big one), Home
+  navigation/widgets. Triaged there, not restated here.
 - **`--voice-yes` is a deliberate posture with a named risk.** Voice runs
   get `ModeApprover { Allow }` (`voice/mod.rs:552`; the unit runs the flag)
   while web chat defaults read-only with live cards — so one process serves

@@ -1,4 +1,10 @@
-# STT for mecha's voice mode: Voxtral Mini 3B behind llama-server.
+# Audio understanding for mecha's voice mode: Voxtral Mini 3B behind
+# llama-server. NOT the STT leg - Parakeet holds that seat since
+# 2026-08-24 (mecha-parakeet.service, :8992), because a chat model
+# transcriber answers question-shaped speech and obeys spoken
+# instructions. This server is the fallback and the audio-understanding
+# path: MECHA_VOICE_STT_KIND=voxtral on the worker switches back, and
+# nothing routes here per-turn today.
 # docs/VOICE-RESEARCH.md S7 records the operational rules this encodes:
 # the mmproj is load-bearing (a server without it answers fluently that
 # it cannot hear), and clients MUST send cache_prompt:false - slot cache
@@ -7,7 +13,7 @@
 # Install: sudo cp scripts/voice/llama-voxtral.service /etc/systemd/system/
 #          sudo systemctl daemon-reload && sudo systemctl enable --now llama-voxtral
 [Unit]
-Description=llama-server STT for mecha voice (voxtral-mini-3b, :8082)
+Description=llama-server audio understanding for mecha voice, STT fallback (voxtral-mini-3b, :8082)
 After=network.target
 
 [Service]
