@@ -370,6 +370,7 @@ mod tests {
             WebState {
                 owner_login: Arc::new("owner@example.com".into()),
                 chat: None,
+                offer_target: None,
                 review: Arc::new(review::ReviewState {
                     outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
                     sessions_dir: None,
