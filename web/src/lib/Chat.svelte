@@ -2,6 +2,13 @@
   // The chat view: a rendering of the conversation the server owns, plus a
   // live SSE feed of the run in flight. Sending during a run steers it —
   // the server folds the text into the tool-results turn.
+  //
+  // Voice rides the voice arc's module (scripts/voice/page/voice-core.js) —
+  // imported by relative path so this wrapper cannot drift from the
+  // standalone page. Until process unification, a call is its own facade
+  // conversation, and the overlay says so rather than pretending otherwise.
+  import { createVoiceSession } from '../../../scripts/voice/page/voice-core.js';
+
   let entries = $state([]);
   let streaming = $state('');
   let running = $state(false);
@@ -122,6 +129,65 @@
   load();
   const source = subscribe();
   $effect(() => () => source.close());
+
+  // ---- voice call (overlay over this view) ----
+  let voiceOpen = $state(false);
+  let vState = $state({ name: 'idle', label: 'connecting' });
+  let vEntries = $state([]);
+  let vLinked = $state(false);
+  let vLevel = $state(0);
+  let vSession = null;
+  let voicePane = $state(null);
+
+  function vScroll() {
+    queueMicrotask(() => voicePane?.scrollTo({ top: voicePane.scrollHeight }));
+  }
+
+  function onTranscript({ who, text, interim }) {
+    const last = vEntries.at(-1);
+    if (last && last.who === who && last.interim) {
+      last.text = text;
+      last.interim = interim;
+    } else {
+      vEntries.push({ who, text, interim });
+    }
+    vScroll();
+  }
+
+  function startVoice() {
+    // connect() inside the tap handler — the audio unlock needs the gesture.
+    vEntries = [];
+    vState = { name: 'connecting', label: 'connecting' };
+    vSession = createVoiceSession({
+      offerUrl: 'https://spark-8c43.tailc01fd2.ts.net/api/offer',
+      onState: (name, label) => (vState = { name, label }),
+      onTranscript,
+      onLevel: (level) => (vLevel = level),
+      onLink: (live) => {
+        vLinked = live;
+        if (!live && voiceOpen) {
+          vState = { name: 'idle', label: 'line dropped' };
+        }
+      },
+      onBotTurnEnd: () => {},
+    });
+    voiceOpen = true;
+    vSession.connect().catch((e) => {
+      vState = { name: 'idle', label: `could not connect: ${e?.message ?? e}` };
+    });
+  }
+
+  function endVoice() {
+    try {
+      vSession?.end();
+    } finally {
+      vSession = null;
+      voiceOpen = false;
+      vLevel = 0;
+    }
+  }
+
+  $effect(() => () => vSession?.end());
 
   async function send() {
     const text = draft.trim();
@@ -248,6 +314,13 @@
           }
         }}
       ></textarea>
+      <button
+        class="round voice"
+        onclick={startVoice}
+        title="start a voice call (its own session until unification)"
+      >
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="var(--accent-400)" stroke-width="1.8" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /></svg>
+      </button>
       {#if running}
         <button class="round stop" onclick={cancel} title="stop at the next safe point">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
@@ -258,6 +331,45 @@
       </button>
     </div>
   </footer>
+
+  {#if voiceOpen}
+    <div class="voice-overlay">
+      <div class="voice-top">
+        <span class="chip">grant-review is not this call — a voice call is its own session for now</span>
+      </div>
+      <div class="voice-stage">
+        <svg viewBox="0 0 63 54" width="112" height="96" role="img" aria-label="mecha {vState.label}">
+          <g fill="var(--accent-700)">
+            <path d="M0 0h24l7.5 8.5L39 0h24v16H0z" />
+            <path d="M0 20h14v15H0zM49 20h14v15H49zM0 39h14v15H0zM49 39h14v15H49z" />
+            <path d="M14 39v15h13.24zM49 39v15H35.76z" />
+          </g>
+          <path
+            d="M21 24h21v7H21z"
+            class="slot {vState.name}"
+            style:opacity={vState.name === 'listening' ? 0.7 + vLevel * 0.3 : 1}
+          />
+        </svg>
+        <div class="voice-state">
+          <span class="vdot" class:live={vLinked}></span>
+          <span>{vState.label}</span>
+        </div>
+      </div>
+      <div class="voice-pane" bind:this={voicePane}>
+        {#each vEntries as entry}
+          <div class="vline">
+            <span class="vwho">{entry.who === 'user' ? 'you' : 'mecha'}</span>
+            <span class="vtext" class:interim={entry.interim}>{entry.text}</span>
+          </div>
+        {/each}
+      </div>
+      <div class="voice-controls">
+        <button class="endcall" onclick={endVoice} title="end the call">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="var(--hazard)" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -457,5 +569,116 @@
   .stop {
     background: var(--surface);
     color: var(--hazard);
+  }
+  .voice {
+    background: var(--surface);
+    border: 1px solid var(--accent-700);
+  }
+  .voice-overlay {
+    position: absolute;
+    inset: 0;
+    background: var(--void);
+    display: flex;
+    flex-direction: column;
+    z-index: 5;
+  }
+  .voice-top {
+    display: flex;
+    justify-content: center;
+    padding: 22px 20px 0;
+  }
+  .voice-stage {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+  }
+  .slot {
+    fill: var(--accent-700);
+  }
+  .slot.listening {
+    fill: var(--accent-400);
+  }
+  .slot.thinking {
+    fill: var(--accent-500);
+    animation: slotpulse 1.1s infinite;
+  }
+  .slot.speaking {
+    fill: var(--accent-300);
+  }
+  @keyframes slotpulse {
+    0%,
+    100% {
+      opacity: 0.45;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+  .voice-state {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .vdot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent-900);
+  }
+  .vdot.live {
+    background: var(--accent-400);
+  }
+  .voice-pane {
+    max-height: 34%;
+    overflow-y: auto;
+    margin: 0 20px;
+    background: var(--bg);
+    border: 1px solid var(--accent-900);
+    border-radius: var(--radius);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .vline {
+    display: flex;
+    gap: 10px;
+  }
+  .vwho {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--accent-700);
+    min-width: 40px;
+    padding-top: 2px;
+    flex-shrink: 0;
+  }
+  .vtext {
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .vtext.interim {
+    color: var(--text-muted);
+  }
+  .voice-controls {
+    display: flex;
+    justify-content: center;
+    padding: 24px 0 34px;
+  }
+  .endcall {
+    width: 68px;
+    height: 68px;
+    border-radius: 16px;
+    background: var(--surface);
+    border: 1px solid var(--accent-700);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
   }
 </style>
