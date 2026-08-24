@@ -124,14 +124,25 @@ pub async fn execute(args: Args) -> Result<()> {
             {
                 Ok(f) => {
                     let facade = Arc::new(f);
-                    let stop = tokio_util::sync::CancellationToken::new();
-                    let task = {
-                        let facade = Arc::clone(&facade);
-                        let stop = stop.clone();
-                        tokio::spawn(async move { facade.serve(port, stop).await })
-                    };
-                    println!("voice facade on http://127.0.0.1:{port} (shared agent)");
-                    Some((facade, stop, task))
+                    // Bind before announcing: a claim about a port must be
+                    // the port's answer, not the plan's.
+                    match facade.bind(port).await {
+                        Ok(listener) => {
+                            let stop = tokio_util::sync::CancellationToken::new();
+                            let task = {
+                                let facade = Arc::clone(&facade);
+                                let stop = stop.clone();
+                                tokio::spawn(async move { facade.serve(listener, stop).await })
+                            };
+                            println!("voice facade on http://127.0.0.1:{port} (shared agent)");
+                            Some((facade, stop, task))
+                        }
+                        Err(e) => {
+                            tracing::warn!("voice facade unavailable: {e:#}");
+                            eprintln!("warning: voice facade could not bind — {e:#}");
+                            None
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("voice facade unavailable: {e:#}");

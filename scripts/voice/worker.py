@@ -91,11 +91,18 @@ class VoxtralSTT(BaseWhisperSTTService):
         return len(samples) / rate, rms
 
     async def _transcribe(self, audio: bytes) -> Transcription:
+        from loguru import logger
+
         try:
             duration, rms = self._segment_stats(audio)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"voxtral segment stats unparseable ({e}); letting the model try")
             duration, rms = 1.0, 1.0  # unparseable: let the model try
         if duration < MIN_SEGMENT_SECONDS or rms < MIN_SEGMENT_RMS:
+            logger.debug(
+                f"voxtral segment gated: duration={duration:.2f}s rms={rms:.4f} "
+                f"(gates: {MIN_SEGMENT_SECONDS}s / {MIN_SEGMENT_RMS})"
+            )
             return Transcription(text="")
         b64 = base64.b64encode(audio).decode()
         r = await self._client.chat.completions.create(
@@ -113,7 +120,11 @@ class VoxtralSTT(BaseWhisperSTTService):
             max_tokens=500,
             extra_body={"cache_prompt": False},
         )
-        text = (r.choices[0].message.content or "").strip().strip('"')
+        raw = r.choices[0].message.content or ""
+        logger.debug(
+            f"voxtral answered: duration={duration:.2f}s rms={rms:.4f} raw={raw[:120]!r}"
+        )
+        text = raw.strip().strip('"')
         # Output-side guards, layered behind the energy gate: an assistant
         # reply, a "no transcription" notice, punctuation confetti, or more
         # words than the audio could hold must never become a user turn.
@@ -126,6 +137,7 @@ class VoxtralSTT(BaseWhisperSTTService):
         elif not any(c.isalnum() for c in text):
             text = ""
         elif len(text.split()) > max(3.0, duration * MAX_WORDS_PER_SECOND):
+            logger.debug(f"voxtral word-rate cap: {len(text.split())} words in {duration:.2f}s")
             text = ""
         return Transcription(text=text)
 

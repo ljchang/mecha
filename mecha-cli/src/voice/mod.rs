@@ -127,15 +127,22 @@ impl Facade {
         })
     }
 
-    /// Bind the loopback listener and serve until cancelled. Signal
-    /// handling deliberately lives with the caller — a mounted facade must
-    /// not compete with its host process for SIGTERM.
-    pub async fn serve(&self, port: u16, stop: CancellationToken) -> Result<()> {
+    /// Bind the loopback listener — separated from serving so a host can
+    /// announce *after* the bind succeeds. Announcing first was a live bug:
+    /// a second serve printed "voice facade on :8990" while another process
+    /// held the port, and the bind error died inside a task nobody read —
+    /// the silently-degrading shape, caught by the remote-surface session.
+    pub async fn bind(&self, port: u16) -> Result<TcpListener> {
         let addr = format!("{LISTEN_HOST}:{port}");
-        let listener = TcpListener::bind(&addr)
+        TcpListener::bind(&addr)
             .await
-            .with_context(|| format!("binding {addr}"))?;
-        tracing::info!("voice facade listening on http://{addr}/v1/chat/completions");
+            .with_context(|| format!("binding {addr}"))
+    }
+
+    /// Serve on a bound listener until cancelled. Signal handling
+    /// deliberately lives with the caller — a mounted facade must not
+    /// compete with its host process for SIGTERM.
+    pub async fn serve(&self, listener: TcpListener, stop: CancellationToken) -> Result<()> {
         loop {
             tokio::select! {
                 accepted = listener.accept() => {
@@ -224,7 +231,8 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     // then go.
     let stop = CancellationToken::new();
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let server = facade.serve(args.port, stop.clone());
+    let listener = facade.bind(args.port).await?;
+    let server = facade.serve(listener, stop.clone());
     tokio::pin!(server);
     tokio::select! {
         r = &mut server => r?,
