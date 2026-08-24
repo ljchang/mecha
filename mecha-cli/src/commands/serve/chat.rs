@@ -476,6 +476,7 @@ pub async fn transcript(
         "model": chat.model,
         "mode": mode,
         "running": running,
+        "questions": ws.questions.cards(),
         "held_by_run": ws.conversation.is_none(),
         "entries": entries,
         "taint": taint.map(|t| serde_json::json!({
