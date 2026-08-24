@@ -581,3 +581,36 @@ Also landed: Kokoro-FastAPI arm64 CPU image pulled; NGC
 `nvcr.io/nvidia/pytorch:25.11-py3` (the tag NVIDIA's own DGX Spark
 playbook pins) is the Chatterbox runtime, pull pending. Not yet: the
 systemd unit for :8082, the Chatterbox container, the facade.
+
+**The TTS leg followed, the same night, after an ABI gauntlet worth
+recording.** Chatterbox Turbo speaks: 7.9 s of audio generated on the
+GB10, warm rate **~4× realtime (2.1 s of audio in 0.54 s)**, `[chuckle]`
+tag rendered. The working environment is committed as the docker image
+**`mecha/chatterbox:base`** — the gauntlet is paid once. What it took,
+each step a finding:
+
+- The NGC container (`pytorch:25.11-py3`, torch 2.10.0a0 nightly,
+  **verified seeing the GPU at capability (12,1)** — the sm_121 risk is
+  retired) ships **no torchaudio**, and `chatterbox-tts` pins
+  `torch==2.6.0` exactly — a naive `pip install` replaces NVIDIA's torch
+  and breaks the GPU. Install `--no-deps` with a constraints file pinning
+  the container's torch.
+- PyPI torchaudio wheels are ABI-incompatible with NVIDIA's torch
+  (dlopen fails). Source-building v2.10.0 fails on a torch header newer
+  than the nightly (`torch/csrc/stable/device.h`); source-building
+  release/2.9 compiles but its extension wants `torch_library_impl`,
+  which NVIDIA's libtorch does not export.
+- **The resolution: the C extension is not needed.** Patch torchaudio's
+  loader to treat the extension as optional (`try/except` around
+  `_load_lib("_torchaudio")`); Chatterbox's whole pipeline runs on the
+  pure-Python paths. Saving goes through `soundfile` — torchaudio 2.9's
+  `save` wants torchcodec, another dependency not worth its own gauntlet.
+- A `python -c "import torchaudio"` check run from inside the source
+  tree imports the *source package* and proves nothing about the
+  installed one — the vacuous-check shape; verify from a neutral cwd.
+
+Kokoro-FastAPI is also live on 127.0.0.1:8880 (arm64 CPU image,
+OpenAI-compatible `/v1/audio/speech`): first request 2.2 s cold, 1.4 s
+warm for ~4.6 s of audio. The fallback pair now both speak; Phase 1's
+remaining items are the serving wrapper around `mecha/chatterbox:base`
+(OpenAI-compatible, streaming) and the systemd units.
