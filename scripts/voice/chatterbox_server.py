@@ -1,30 +1,38 @@
+#!/usr/bin/env python3
 """OpenAI-compatible TTS server for Chatterbox Turbo.
 
-Runs inside the `mecha/chatterbox:serve` image (see docs/VOICE-RESEARCH.md
-S7 for why that image exists and what it cost). One route that matters:
-POST /v1/audio/speech, the same surface Kokoro-FastAPI serves on :8880,
-so the voice worker consumes both voices through identical config.
+POST /v1/audio/speech  -> wav, or raw s16le pcm at 24 kHz for streaming
+GET  /v1/voices        -> what this server can actually speak as
+GET  /health
 
-The `voice` parameter maps to cloning references: "default" (or absent)
+`voice` names a cloning reference in VOICES_DIR: "default" (or "")
 uses the model's built-in voice; any other name resolves to
-/voices/<name>.wav, a directory mounted from the host. Dropping a 5-second
-reference wav there IS the act of adding a voice - no restart needed.
+<VOICES_DIR>/<name>.wav, and an unknown name is a 400 rather than a
+fallback - the assistant speaking as the wrong person is worse than
+not speaking.
 
 Generation is serialized behind a lock: one GPU, one model instance, and
-interleaved generate() calls are not known to be safe. A voice turn sends
-one utterance at a time, so the lock never queues in practice.
+concurrent generates would interleave.
 """
 import io
 import os
 import threading
 import time
 
+import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
 VOICES_DIR = os.environ.get("VOICES_DIR", "/voices")
+
+# Speed is applied here rather than on the client because the browser's
+# only cheap knob is playbackRate, which resamples - it moves pitch with
+# tempo and turns the assistant into a chipmunk. librosa's phase vocoder
+# keeps pitch fixed. The bounds are taste, not safety: past 2x the
+# vocoder smears consonants, and below 0.5x it sounds drugged.
+MIN_SPEED, MAX_SPEED = 0.5, 2.0
 
 app = FastAPI()
 model = None
@@ -39,6 +47,19 @@ class SpeechRequest(BaseModel):
     # Chatterbox knobs, passed through when a client wants them.
     exaggeration: float = 0.0
     temperature: float = 0.8
+    # OpenAI's own speech API spells speed this way, so a generic client
+    # gets it for free. Chatterbox itself has no speed parameter - see
+    # `stretch` below for what actually happens.
+    speed: float = 1.0
+
+
+def stretch(samples: np.ndarray, speed: float) -> np.ndarray:
+    """Pitch-preserving time stretch. speed > 1 is faster (shorter)."""
+    if abs(speed - 1.0) < 0.01:
+        return samples
+    import librosa
+
+    return librosa.effects.time_stretch(samples, rate=speed)
 
 
 @app.on_event("startup")
@@ -59,12 +80,40 @@ def health():
     return {"status": "ok" if model is not None else "loading"}
 
 
+@app.get("/v1/voices")
+def voices():
+    """What this server can speak as, right now.
+
+    Read off the directory rather than a list in code: adding a voice is
+    dropping a wav in, so a hardcoded list would be a second source of
+    truth that goes stale the moment someone does the documented thing.
+    A UI that offers a name this does not return would 400 on selection.
+    """
+    names = []
+    try:
+        names = sorted(
+            f[:-4] for f in os.listdir(VOICES_DIR) if f.endswith(".wav")
+        )
+    except OSError:
+        # An unreadable voices dir means only the built-in voice works -
+        # which is a smaller story than failing the request, and the
+        # caller can still speak.
+        pass
+    return {
+        "default": "default",
+        "voices": ["default"] + names,
+        "speed": {"min": MIN_SPEED, "max": MAX_SPEED, "default": 1.0},
+    }
+
+
 @app.post("/v1/audio/speech")
 def speech(req: SpeechRequest):
     if model is None:
         raise HTTPException(503, "model still loading")
     if req.response_format not in ("wav", "pcm"):
         raise HTTPException(400, "wav or pcm only")
+    if not (MIN_SPEED <= req.speed <= MAX_SPEED):
+        raise HTTPException(400, f"speed must be in [{MIN_SPEED}, {MAX_SPEED}]")
     prompt_path = None
     if req.voice not in ("default", ""):
         prompt_path = os.path.join(VOICES_DIR, f"{req.voice}.wav")
@@ -80,10 +129,9 @@ def speech(req: SpeechRequest):
             temperature=req.temperature,
         )
     samples = wav.squeeze().cpu().numpy()
+    samples = stretch(samples, req.speed)
     if req.response_format == "pcm":
         # Raw s16le at model.sr (24 kHz) - what the voice worker streams.
-        import numpy as np
-
         pcm = (samples.clip(-1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
         return Response(content=pcm, media_type="audio/pcm")
     buf = io.BytesIO()

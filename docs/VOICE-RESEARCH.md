@@ -90,6 +90,9 @@ nothing this design needs.
 | Canary-Qwen 2.5B | 5.63% | RTFx ~418 | CC-BY-4.0 | NeMo only — container-or-bust here |
 | IBM Granite Speech 4.1 2B | 5.33% | RTFx ~231 | Apache 2.0 | transformers |
 | Whisper large-v3 | ~7.4% | RTFx ~69 | MIT | whisper.cpp — compatibility pick now, not quality |
+| *Cohere Transcribe 03-2026* | 5.42% | — | Apache 2.0 | FastConformer + from-scratch 8-layer decoder — **no LLM**; GGUF exists (`CrispASR`, MIT) |
+| *ARK-ASR-3B* | 5.04% (4.76 board) | RTFx ~491 | open | Whisper enc + **Qwen decoder**, `trust_remote_code` |
+| *MOSS-Transcribe-preview-2B* | 4.87 (board) | — | Apache 2.0 | Qwen3-Omni enc + **Qwen3-1.7B decoder** |
 
 The 2026 leaderboard top is separated by under one WER point; license and
 tooling decide, not rank. Voxtral is the one that is *understanding* rather
@@ -104,8 +107,26 @@ GLM-4-Voice (each loses to a standing pick at its own game), Reverb ASR
 if ever needed). Newer Voxtral: *Transcribe 2* batch is **API-only**; the
 open 4B Realtime model's streaming buys nothing for VAD-segmented turns.
 
-**Pick (amended same day, owner ruling): Voxtral Mini 3B GGUF behind a
-third llama-server process.** The owner chose to consolidate serving on
+**The criterion that outranks WER: the transcriber must not have an LLM
+decoder.** Added 2026-08-24 after the field bug in §7 — a chat model asked
+to transcribe *answers* question-shaped speech and *obeys* spoken
+instructions ("say the word banana" → `banana`). Putting the instruction
+before the audio fixes the answering and not the obedience, because
+obedience is what the model is. So the fix is a model with no prompt, and
+the rule is architectural rather than a tuning knob: **an encoder + a
+from-scratch transcription decoder (Parakeet, Cohere Transcribe) can be
+considered; an audio encoder bolted to a general LLM (Voxtral, Canary-Qwen,
+Granite Speech, ARK-ASR, MOSS-Transcribe) cannot, whatever it scores.** No
+ASR leaderboard measures this, because no ASR benchmark contains adversarial
+speech — which is why the table above ranks the disqualified models highest.
+Voice is untrusted content (D5 and `docs/TRIFECTA.md`); this rule is what
+stops the transcriber itself becoming the injection sink.
+
+**~~Pick (amended same day, owner ruling): Voxtral Mini 3B GGUF behind a
+third llama-server process.~~ SUPERSEDED 2026-08-24 by §7 — the seat is
+Parakeet TDT 0.6B v3 (int8, sherpa-onnx, CPU, :8992), for the rule above.
+Voxtral keeps :8082 as the audio-understanding path and the STT fallback.
+The reasoning below is kept because it is why Voxtral was tried at all.** The owner chose to consolidate serving on
 llama.cpp rather than add an ONNX stack, and the trade favours it anyway on
 this machine: llama.cpp is the GB10's best-supported runtime, the sequential
 pipeline means no GPU contention with the chat model, and understanding
@@ -129,8 +150,20 @@ Apache — do not upgrade blindly); MegaTTS3 withholds its cloning encoder;
 XTTS-v2/F5-TTS non-commercial; VibeVoice was pulled entirely. Piper is
 obsolete — Kokoro beats it on CPU.
 
-**Pick: Kokoro-82M first (zero friction, fast first chunk), Chatterbox or
-Zonos2 as the quality/cloning upgrade once the PyTorch container exists.**
+**~~Pick: Kokoro-82M first (zero friction, fast first chunk), Chatterbox or
+Zonos2 as the quality/cloning upgrade once the PyTorch container exists.~~
+SUPERSEDED 2026-08-24 by §7 — the container gauntlet was paid the same
+night, so Chatterbox Turbo (:8881) launched *as* the voice and Kokoro
+(:8880) is the fallback. The upgrade lane is therefore not "get cloning"
+(Chatterbox has it) but **streaming TTFB**: Chatterbox Turbo has no
+token-level streaming, so first-sound waits on a whole sentence. Qwen3-TTS
+1.7B's ~97 ms dual-track streaming is the claim to test (UNVERIFIED,
+vendor), and the Chatterbox community streaming fork (~80 ms) is the
+cheaper first move because it keeps the container, the voice and the
+cloning references. Audio8 TTS 0.6B (Apache, July 2026, ONNX INT4, CPU
+zero-shot cloning) is worth knowing about but is demoted by the same fact:
+its selling point is cloning without PyTorch, and PyTorch is already paid
+for here.**
 
 ### 2.3 The platform is part of the spec
 
