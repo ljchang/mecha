@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>mecha·voice</title>
+<style>
+/* mecha·voice — docs/VOICE-RESEARCH.md D7 (sound design) + D9 (transcript
+   pane). Self-contained on purpose: no external fetch, ever — the page must
+   work on the tailnet with nothing else reachable, like the harness itself.
+   Two voices, two temperatures: the machine is copper, the human is steel. */
+:root {
+  --ground: #14110c;
+  --surface: #1e1913;
+  --line: #322a1f;
+  --copper: #d08b4c;
+  --copper-hot: #f0b268;
+  --steel: #86a7c4;
+  --ink: #ede6da;
+  --muted: #8f8674;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  --prose: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--prose);
+  display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  overflow: hidden;
+}
+header {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.wordmark { font-family: var(--mono); font-size: 15px; letter-spacing: .08em; color: var(--ink); }
+.wordmark b { color: var(--copper); font-weight: 600; }
+#linkstate { font-family: var(--mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+#linkstate.live { color: var(--copper); }
+#linkstate::before { content: "● "; }
+
+#transcript {
+  flex: 1; overflow-y: auto; padding: 16px 18px 8px;
+  display: flex; flex-direction: column; gap: 10px;
+  overscroll-behavior: contain;
+}
+.empty {
+  margin: auto; text-align: center; color: var(--muted);
+  font-family: var(--mono); font-size: 12px; letter-spacing: .1em; line-height: 2;
+}
+.line { max-width: 86%; line-height: 1.45; font-size: 15px; animation: rise .25s ease both; }
+.line .who {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .16em;
+  text-transform: uppercase; display: block; margin-bottom: 3px;
+}
+.line.user { align-self: flex-end; text-align: right; }
+.line.user .who { color: var(--steel); }
+.line.user .text { color: var(--ink); }
+.line.bot { align-self: flex-start; }
+.line.bot .who { color: var(--copper); }
+.line.bot .text { color: var(--ink); }
+.line.interim .text { color: var(--muted); font-style: italic; }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+
+#dock {
+  flex: none; display: flex; flex-direction: column; align-items: center;
+  gap: 10px; padding: 14px 0 calc(18px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line); background: var(--surface);
+}
+#core {
+  --level: 0;
+  width: 96px; height: 96px; border-radius: 50%;
+  border: none; cursor: pointer; position: relative;
+  background: radial-gradient(circle at 50% 42%, #2b2115, #191510 70%);
+  box-shadow: 0 0 0 2px var(--line), 0 0 24px rgba(208,139,76,.06);
+  transition: box-shadow .4s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+#core:focus-visible { outline: 2px solid var(--steel); outline-offset: 4px; }
+#core .ring {
+  position: absolute; inset: -7px; border-radius: 50%;
+  border: 2px solid transparent; pointer-events: none;
+}
+/* idle: dim ember */
+#core.idle { box-shadow: 0 0 0 2px var(--line), 0 0 18px rgba(208,139,76,.10); }
+/* connecting: slow pulse */
+#core.connecting .ring { border-color: var(--muted); animation: pulse 1.6s ease-in-out infinite; }
+/* listening: the ember breathes with the real mic level (JS drives --level) */
+#core.listening {
+  box-shadow: 0 0 0 2px var(--copper),
+              0 0 calc(18px + var(--level) * 60px) rgba(240,178,104, calc(.18 + var(--level) * .6));
+}
+/* thinking: a single copper spark orbits */
+#core.thinking .ring {
+  border-top-color: var(--copper-hot);
+  animation: orbit 1.4s linear infinite;
+}
+/* speaking: rings radiate outward */
+#core.speaking .ring { border-color: var(--copper); animation: radiate 1.2s ease-out infinite; }
+@keyframes pulse { 50% { transform: scale(1.05); opacity: .5; } }
+@keyframes orbit { to { transform: rotate(360deg); } }
+@keyframes radiate {
+  from { transform: scale(1); opacity: .8; }
+  to { transform: scale(1.45); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ring, .line { animation: none !important; }
+  #core.thinking { box-shadow: 0 0 0 2px var(--copper-hot); }
+  #core.speaking { box-shadow: 0 0 0 3px var(--copper); }
+}
+#status {
+  font-family: var(--mono); font-size: 12px; letter-spacing: .18em;
+  text-transform: lowercase; color: var(--muted); min-height: 1em;
+}
+#core.listening + #status, #core.speaking + #status { color: var(--copper); }
+</style>
+</head>
+<body>
+<header>
+  <span class="wordmark">mecha<b>·voice</b></span>
+  <span id="linkstate">offline</span>
+</header>
+<main id="transcript">
+  <div class="empty" id="empty">tap the core to connect<br>say something when the ring warms up</div>
+</main>
+<div id="dock">
+  <button id="core" class="idle" aria-label="Connect and talk"><span class="ring"></span></button>
+  <div id="status">tap to talk</div>
+</div>
+<script>
+"use strict";
+/* ------------------------------------------------ sounds (D7)
+   Synthesized, not fetched: the end chime's most important trigger is the
+   network dying, and a sound that must be downloaded is a sound that cannot
+   play then. WebAudio makes "preloaded" true by construction. */
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function tone(freq, t0, dur, gain = 0.08, type = "sine") {
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(gain, t0 + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(AC.destination);
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+const chimeStart = () => { const t = AC.currentTime; tone(659, t, .18); tone(880, t + .12, .28); };
+const chimeEnd   = () => { const t = AC.currentTime; tone(440, t, .22); tone(294, t + .16, .45); };
+let thinkTimer = null;
+function thinkingSound(on) {
+  if (on && !thinkTimer) {
+    const tick = () => tone(523, AC.currentTime, .09, .035, "triangle");
+    tick(); thinkTimer = setInterval(tick, 900);
+  } else if (!on && thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
+}
+
+/* ------------------------------------------------ state */
+const core = document.getElementById("core");
+const statusEl = document.getElementById("status");
+const linkEl = document.getElementById("linkstate");
+const scroll = document.getElementById("transcript");
+const emptyEl = document.getElementById("empty");
+let pc = null, micStream = null, analyser = null, levelRAF = 0;
+let ended = false;
+
+function setState(name, label) {
+  core.className = name;
+  statusEl.textContent = label;
+}
+function setLink(live) {
+  linkEl.textContent = live ? "live" : "offline";
+  linkEl.classList.toggle("live", live);
+}
+
+/* ------------------------------------------------ transcript (D9) */
+let interimEl = null;
+function addLine(who, text, interim = false) {
+  emptyEl.style.display = "none";
+  if (who === "user" && interim) {
+    if (!interimEl) {
+      interimEl = makeLine("user", true);
+      scroll.appendChild(interimEl);
+    }
+    interimEl.querySelector(".text").textContent = text;
+  } else if (who === "user") {
+    if (interimEl) { interimEl.remove(); interimEl = null; }
+    scroll.appendChild(makeLine("user", false, text));
+  } else {
+    // The machine speaks in sentences; append to the open bot line so one
+    // reply reads as one paragraph, not confetti.
+    let last = scroll.lastElementChild;
+    if (!(last && last.classList.contains("bot") && last.dataset.open === "1")) {
+      last = makeLine("bot", false, "");
+      last.dataset.open = "1";
+      scroll.appendChild(last);
+    }
+    const t = last.querySelector(".text");
+    t.textContent = (t.textContent ? t.textContent + " " : "") + text;
+  }
+  scroll.scrollTop = scroll.scrollHeight;
+}
+function makeLine(who, interim, text = "") {
+  const div = document.createElement("div");
+  div.className = `line ${who}${interim ? " interim" : ""}`;
+  div.innerHTML = `<span class="who">${who === "user" ? "you" : "mecha"}</span><span class="text"></span>`;
+  div.querySelector(".text").textContent = text;
+  return div;
+}
+function closeBotLine() {
+  const last = scroll.lastElementChild;
+  if (last && last.dataset) delete last.dataset.open;
+}
+
+/* ------------------------------------------------ mic level -> the ring */
+function watchLevel() {
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  const step = () => {
+    analyser.getByteTimeDomainData(data);
+    let peak = 0;
+    for (const v of data) peak = Math.max(peak, Math.abs(v - 128) / 128);
+    core.style.setProperty("--level", Math.min(1, peak * 2.2).toFixed(3));
+    levelRAF = requestAnimationFrame(step);
+  };
+  levelRAF = requestAnimationFrame(step);
+}
+
+/* ------------------------------------------------ rtvi events */
+function onRtvi(msg) {
+  switch (msg.type) {
+    case "user-started-speaking":
+      thinkingSound(false);
+      setState("listening", "listening");
+      break;
+    case "user-stopped-speaking":
+      setState("connecting", "…");
+      break;
+    case "user-transcription":
+      addLine("user", msg.data.text, !msg.data.final);
+      break;
+    case "bot-llm-started":       // the thinking trigger: request sent, no token yet
+      thinkingSound(true);
+      setState("thinking", "thinking");
+      break;
+    case "bot-tts-started":
+    case "bot-started-speaking":
+      thinkingSound(false);
+      setState("speaking", "speaking");
+      break;
+    case "bot-transcription":
+      addLine("bot", msg.data.text);
+      break;
+    case "bot-stopped-speaking":
+      closeBotLine();
+      setState("listening", "listening");
+      break;
+    case "error":
+      addLine("bot", "something went wrong: " + (msg.data?.message || "unknown error"));
+      break;
+  }
+}
+
+/* ------------------------------------------------ connection */
+async function connect() {
+  ended = false;
+  await AC.resume();               // user gesture: unlock audio for the chimes
+  setState("connecting", "connecting…");
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    setState("idle", "microphone refused — tap to retry");
+    return;
+  }
+  const src = AC.createMediaStreamSource(micStream);
+  analyser = AC.createAnalyser(); analyser.fftSize = 512;
+  src.connect(analyser);
+
+  pc = new RTCPeerConnection();
+  micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
+  pc.addTransceiver("audio", { direction: "recvonly" });
+  const speaker = new Audio(); speaker.autoplay = true;
+  pc.ontrack = (e) => { speaker.srcObject = e.streams[0]; };
+
+  const dc = pc.createDataChannel("rtvi");
+  dc.onopen = () => dc.send(JSON.stringify({ label: "rtvi-ai", type: "client-ready", id: crypto.randomUUID() }));
+  dc.onmessage = (e) => { try { onRtvi(JSON.parse(e.data)); } catch { /* not rtvi */ } };
+
+  /* The end chime is wired to the connection-state machine, not to a server
+     message: a server cannot announce a drop over the connection that
+     dropped. Abrupt loss and graceful end sound the same because to the
+     listener they are the same fact. */
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === "connected") {
+      setLink(true);
+      chimeStart();
+      setState("listening", "listening");
+      watchLevel();
+    } else if (["disconnected", "failed", "closed"].includes(pc.connectionState)) {
+      endCall();
+    }
+  };
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await new Promise(res => {
+    if (pc.iceGatheringState === "complete") return res();
+    pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && res();
+    setTimeout(res, 2000);
+  });
+  const resp = await fetch("/api/offer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
+  }).catch(() => null);
+  if (!resp || !resp.ok) { endCall("could not reach mecha — tap to retry"); return; }
+  await pc.setRemoteDescription(await resp.json());
+}
+
+function endCall(label) {
+  if (ended) return;
+  ended = true;
+  thinkingSound(false);
+  chimeEnd();
+  cancelAnimationFrame(levelRAF);
+  core.style.setProperty("--level", 0);
+  if (micStream) micStream.getTracks().forEach(t => t.stop());
+  if (pc) { try { pc.close(); } catch {} }
+  pc = null;
+  setLink(false);
+  setState("idle", label || "call ended — tap to reconnect");
+}
+
+core.addEventListener("click", () => {
+  if (pc) { endCall(); } else { connect(); }
+});
+</script>
+</body>
+</html>

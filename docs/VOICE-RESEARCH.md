@@ -731,3 +731,24 @@ unit points at the voice-arc worktree's release binary until the branch
 merges and the installed `mecha` carries voice-serve — the one
 deliberate impermanence, noted so the update skill knows to repoint it.
 D5 was ratified the same day: voice is typed text, no taint.
+
+**The page — D7 and D9 built, 2026-08-24.** `scripts/voice/page/index.html`,
+one self-contained file (no external fetch ever — the page must work when
+the tailnet is all there is), served by `tailscale serve` as a file mount
+at `/` with `/api` proxied to the worker; the stock Pipecat UI remains at
+:7860/client for debugging. The worker gained `RTVIProcessor` +
+`RTVIObserver`, which is how the page knows anything: transcripts both
+directions, speaking edges, and `bot-llm-started` — which is *exactly*
+D7's thinking trigger (request in flight, no first token), so the
+thinking sound's observer is the worker and its player is the client,
+the D7 placement rule satisfied by relay. The chimes are **synthesized
+in WebAudio rather than fetched** — the end chime's most important
+trigger is the network dying, and a sound that must be downloaded cannot
+play then; synthesis makes "preloaded" true by construction. The
+signature control is the **core**: one button whose ring is the state —
+breathing with the real mic level (an AnalyserNode drives a CSS custom
+property) while listening, a copper spark orbiting while thinking,
+radiating rings while speaking. The machine's transcript lines are
+copper, the owner's are steel. Reduced-motion collapses the ring states
+to static color. The owner's earlier verdict on the stock UI ("the voice
+button is very subtle") is the brief this page answers.

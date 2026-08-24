@@ -29,6 +29,8 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.processors.frameworks.rtvi.observer import RTVIObserver
+from pipecat.processors.frameworks.rtvi.processor import RTVIProcessor
 from pipecat.runner.types import RunnerArguments
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.tts import OpenAITTSService
@@ -138,9 +140,16 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
     )
 
+    # RTVI is how the page knows what is happening: transcripts both ways,
+    # user/bot speaking edges, and bot-llm-started - which is exactly the
+    # thinking-sound trigger (request in flight, no first token yet). The
+    # worker observes; the client plays. docs/VOICE-RESEARCH.md D7/D9.
+    rtvi = RTVIProcessor()
+
     pipeline = Pipeline(
         [
             transport.input(),
+            rtvi,
             stt,
             user_aggregator,
             llm,
@@ -153,6 +162,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True),
+        observers=[RTVIObserver(rtvi)],
     )
 
     from pipecat.workers.runner import WorkerRunner
