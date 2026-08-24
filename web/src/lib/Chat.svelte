@@ -542,10 +542,11 @@
       </div>
       <div class="voice-pane" bind:this={voicePane}>
         {#each vEntries as entry}
-          <div class="vline">
-            <span class="vwho">{entry.who === 'user' ? 'you' : 'mecha'}</span>
-            <span class="vtext" class:interim={entry.interim}>{entry.text}</span>
-          </div>
+          {#if entry.who === 'user'}
+            <div class="vbubble" class:interim={entry.interim}>{entry.text}</div>
+          {:else}
+            <div class="vanswer" class:interim={entry.interim}>{entry.text}</div>
+          {/if}
         {/each}
       </div>
       <div class="voice-controls">
@@ -1022,23 +1023,23 @@
     flex-direction: column;
     gap: 10px;
   }
-  .vline {
-    display: flex;
-    gap: 10px;
-  }
-  .vwho {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--accent-700);
-    min-width: 40px;
-    padding-top: 2px;
-    flex-shrink: 0;
-  }
-  .vtext {
+  .vbubble {
+    align-self: flex-end;
+    max-width: 84%;
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 9px 12px;
     font-size: 13px;
     line-height: 1.5;
   }
-  .vtext.interim {
+  .vanswer {
+    align-self: flex-start;
+    max-width: 92%;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .vbubble.interim,
+  .vanswer.interim {
     color: var(--text-muted);
   }
   .voice-controls {
