@@ -842,8 +842,8 @@ Everything here is verified in source as of the date; the arcs' own docs
   compose and the notes/tasks voice capture shipped 2026-08-24 night (Arcs B
   and C); the rest stands. **The task→agent handoff is designed and not
   built** — `docs/TASK-RESEARCH.md` and `docs/TASK-AGENT-DESIGN.md` are its
-  authority, landing on branch `task-agent-design`; if they are not in the
-  tree yet, that branch has not merged.
+  authority (merged 2026-08-24 night at `995aed0`). Four phases; Phase 1 is
+  a CLI verb (`mecha tasks work <id>`) and nothing on the phone.
 - **`--voice-yes` is a deliberate posture with a named risk.** Voice runs
   get `ModeApprover { Allow }` (`voice/mod.rs:552`; the unit runs the flag)
   while web chat defaults read-only with live cards — so one process serves
