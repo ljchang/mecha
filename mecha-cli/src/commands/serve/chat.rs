@@ -9,12 +9,14 @@
 //! *moved into* the spawned run task and handed back at the end, so the map
 //! stays single-writer without a lock held across a run.
 //!
-//! Phase 2 posture: **read-only, sends stage.** There is no approval UI yet,
-//! so every run carries `ModeApprover { ReadOnly }` — reads run, mutations
-//! are refused as `Blocked` (machine policy, never mined as a correction),
-//! and outbox-routed sends still stage, because staging executes nothing.
-//! That is the trigger posture, and it makes the safe default also the
-//! useful one. The live approver is Phase 4.
+//! Default posture: **read-only, sends stage** — the trigger posture, which
+//! makes the safe default also the useful one (reads run; mutations are
+//! refused as `Blocked`, machine policy, never mined as a correction;
+//! outbox-routed sends still stage, because staging executes nothing). A
+//! session flipped to `ask` gets the live approver instead — see
+//! [`super::present`], where a tool call becomes a card on the page and a
+//! deny-with-reason is a real user correction. `allow` is deliberately not
+//! offered from the page.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;

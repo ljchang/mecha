@@ -237,7 +237,7 @@ pub enum Command {
     /// anything.
     Doctor(commands::doctor::Args),
 
-    /// Serve the tailnet web surface — read-only in phase 1.
+    /// Serve the tailnet web surface: dashboard, chat, review, voice.
     ///
     /// Binds 127.0.0.1 only; `tailscale serve` is the door, and the injected
     /// Tailscale-User-Login header must match `[web] owner_login` on every

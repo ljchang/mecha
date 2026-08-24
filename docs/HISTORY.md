@@ -1589,6 +1589,50 @@ subagent-skip warning went quiet under a trigger's own durable allowlist,
 on the outbox warning's own reasoning, and one bug was shipped and fixed
 within the hour — the NULL predicate, recorded under Traps.
 
+**2026-08-24 — the phone became a terminal, and mecha learned to talk.** Two
+arcs, three sessions coordinating over the inter-session mailbox, one
+production system by the end of it. The **voice arc** went from
+`docs/VOICE-RESEARCH.md` to a running stack in a day: three speech services
+(llama-served STT, Chatterbox TTS with Kokoro beside it, the Pipecat worker),
+the loopback OpenAI facade over the shared agent (`mecha-cli/src/voice/`),
+D5 ratified (owner speech is typed text, no taint), and the whole thing
+systemd-managed and reboot-proof — its build log is `VOICE-RESEARCH.md` §7.
+The **remote-surface arc** asked whether Slack was still the right remote
+control and answered by building the alternative: `REMOTE-SURFACE-RESEARCH.md`
+(the field's convergence on local-loop/remote-view/approval-as-the-verb;
+Telegram as the only credible Slack successor; the tailnet web app as the
+recommendation), `REMOTE-SURFACE-DESIGN.md` (one process, identity from the
+network, verbs as CLI children), brand-held phone mockups, and then `mecha
+serve` itself: a `[web]` config section stripped from project layers like
+`[slack]`, an owner-login guard on every request (the header `tailscale
+serve` injects), a read-only dashboard over `review queues --json` and
+`doctor --json`, streaming chat over SSE with steering and cancel on the
+Slack connector's one-agent/many-conversations pattern, the outbox as a
+phone review surface rendering the whole reviewable object (`DraftView`,
+source reads behind an amber gutter, taint sheet with the exact bytes,
+`outbox edit --body-file` so the no-terminal edit shares the one
+implementation), the graph queue's sample deck (seed printed, verdicts
+one at a time), tasks and notes over `tasks`/`kg` verbs, and a keyed
+session rail. The two arcs then **unified**: the voice facade mounted
+inside `mecha serve` (one agent, one cached prefix, two dialects), the
+page's WebRTC offer proxied same-origin behind the owner guard, voice-core
+embedded in the chat page as an in-call overlay with a live transcript
+thread and a cloned-track mic meter, and production flipped to one
+systemd-managed process serving web and voice both. The day's last build
+put a **present human** on the page: per-session `ask` mode turning tool
+calls into live approval cards (allow, or deny-with-reason mined as a real
+correction; timeout is `Blocked`, machine policy), `ask_user` routed to the
+session that owns the calling run's jail through a new `Asker::ask_in`
+context seam, cancel draining parked cards, and pending cards riding the
+transcript read so a locked phone reloads into its questions instead of a
+silently parked run. The voice arc's closing act was structural: **Voxtral
+answered speech instead of transcribing it** — question-shaped audio came
+back as first-person answers, spoken instructions were obeyed — so Parakeet
+took the STT seat, probes exact at 92ms, and the injection probe now
+transcribes as faithful words obeyed by nobody. An orphaned Slack
+tasks/board WIP from an earlier session was adopted, reviewed, and landed
+the same night. The `update` skill gained the web assets as surface 1b.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -1811,6 +1855,26 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**The one commit that skipped the test run was the one that broke the suite.**
+The offer-proxy commit substituted live verification (build, restart, curl
+through the real door) for `cargo test` — and it broke a test-only struct
+initializer, invisible to every live check because live checks exercise the
+running path and only the suite compiles the fixtures. It rode through a
+merge under a pipe that swallowed cargo's exit status. Two lessons, both old
+ones wearing new clothes: the suite and the live check verify different
+things and neither substitutes for the other; and an exit status behind a
+pipe is not a check at all.
+
+**A chat model in the transcriber's seat answered the audio instead of
+transcribing it.** Voxtral returned "I don't have access to your calendar"
+for question-shaped speech and obeyed a spoken "just say banana" — which also
+made the STT leg a prompt-injection surface, since anyone who can play audio
+at the mic could steer the transcript. No prompt fixes what a model is; the
+seat needed a transcription model (Parakeet), and the proof was adversarial
+probes through the real pipeline, not reading configs. When a component's
+output looks plausible, test it with inputs whose correct output you control.
+
 
 A SQL predicate written for a `WHERE` clause was reused inside `SUM()`, and
 the `OR` that had silently filtered NULLs began returning them:
@@ -2578,6 +2642,32 @@ and is what finally exercised the path.)
   the test has to be repeated on the far side of them.
 
 ### Environment
+
+**A live config edit shipped before the schema was installed took down every
+older binary at once.** Adding `[web]` to `~/.mecha/config.toml` while only a
+branch build understood it made config parsing fail for the installed
+`mecha` behind the Slack connector and the trigger daemon — `ConfigLayer` is
+`deny_unknown_fields`, so an unknown section is a startup error, which is the
+right strictness pointed the wrong way in time. The order is: merge the
+schema, reinstall every binary that reads the file, and only then point the
+live config at it. A section a sibling binary cannot parse is an outage, not
+a preference.
+
+**Production pointed into a session worktree, three separate times.** The web
+assets path, the voice worker's WorkingDirectory, and the tailscale page
+mount all named `…/.claude/worktrees/<session>/…` — each worked on the day it
+was set and each would have broken silently when the session directory was
+cleaned. Production paths must survive the session that created them:
+build artifacts get a stable home (`~/.mecha/web/dist`), units point at the
+main checkout, and the deploy skill carries the copy step so nobody
+remembers it.
+
+**A facade announced its port before binding it.** The voice facade printed
+"voice facade on 8990" while another process held the port; the bind failed
+in an unread task. Announce after the bind answers, or fail loudly — a
+startup line describing an intention as a fact is the silently-degrading
+shape in one sentence.
+
 
 **A secret in `~/.bashrc` is invisible to every systemd unit.** `EXA_API_KEY`
 exported there worked perfectly in every hand-test and would have reached no
