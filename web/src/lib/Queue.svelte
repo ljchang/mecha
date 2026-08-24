@@ -14,8 +14,9 @@
   // Groups are where one verdict fans out furthest: a group's face is a
   // real member statement, never a paraphrase, and a group verdict is ONE
   // human verdict — the leader is yours, the members follow as a labeled
-  // machine cascade the autonomy ladder never counts. A group never
-  // crosses a class.
+  // machine cascade the autonomy ladder never counts. A class group never
+  // crosses a class; the front screen's "similar across everything" is the
+  // invited crossing — stricter floor, every class named on the card.
   let proposers = $state(null);
   let classes = $state(null); // { proposer, rows }
   let tierFilter = $state(null); // null = all
@@ -59,6 +60,23 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
       groups = { proposer, predicate, threshold: data.threshold, rows: data.groups };
+      error = null;
+    } catch (e) {
+      error = String(e?.message ?? e);
+      groups = null;
+    }
+  }
+
+  // The top layer: near-repeats across the WHOLE queue, wherever they sit.
+  // Embedding every pending statement takes minutes, and an honest wait
+  // message beats a spinner that looks hung.
+  async function openGlobal() {
+    groups = { all: true, threshold: null, rows: null, considered: null };
+    try {
+      const res = await fetch('/api/queue/groups?all=true');
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const data = await res.json();
+      groups = { all: true, threshold: data.threshold, rows: data.groups, considered: data.considered };
       error = null;
     } catch (e) {
       error = String(e?.message ?? e);
@@ -114,7 +132,7 @@
       const res = await fetch('/api/queue/verdict', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: g.leader_id, accept, cascade: g.members.map((m) => m[0]) }),
+        body: JSON.stringify({ id: g.leader_id, accept, cascade: g.members.map((m) => m[0]), across: !!groups.all }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       groups.rows = groups.rows.filter((r) => r !== g);
@@ -197,23 +215,45 @@
     {/if}
   {:else if groups}
     <div class="deckhead">
-      {@render backTo(() => { groups = null; }, 'back to classes')}
-      <span class="pname">{groups.predicate}</span>
+      {@render backTo(() => { groups = null; }, 'back')}
+      <span class="pname">{groups.all ? 'across all classes' : groups.predicate}</span>
       {#if groups.threshold != null}<span class="seed">cosine ≥ {groups.threshold}</span>{/if}
     </div>
     {#if groups.rows === null}
-      <div class="empty">grouping by similarity…</div>
-    {:else if groups.rows.length === 0}
-      <div class="empty">Nothing here repeats above the threshold — review the class item by item.</div>
-    {:else}
-      <div class="footnote">
-        A group verdict is one human verdict: the shown statement is yours, the rest follow as a
-        labeled machine cascade. A group never crosses a class.
+      <div class="empty">
+        {groups.all
+          ? 'embedding the whole queue — this takes a couple of minutes, stay put'
+          : 'grouping by similarity…'}
       </div>
+    {:else if groups.rows.length === 0}
+      <div class="empty">Nothing repeats above the threshold — review item by item.</div>
+    {:else}
+      {#if groups.all}
+        <div class="footnote">
+          {groups.rows.length} groups covering
+          {groups.rows.reduce((n, g) => n + g.members.length + 1, 0)} of {groups.considered} pending ·
+          singletons stay in their class listings. One tap is one human verdict — the shown
+          statement is yours, the rest follow as a labeled machine cascade, and each group names
+          every class it touches.
+        </div>
+      {:else}
+        <div class="footnote">
+          A group verdict is one human verdict: the shown statement is yours, the rest follow as a
+          labeled machine cascade. A class group never crosses a class — the “everything” layer is
+          on the front screen.
+        </div>
+      {/if}
       {#each groups.rows as g}
         <div class="card candidate">
           <div class="kicker">{g.members.length + 1} near-repeats · leader #{g.leader_id}</div>
           <div class="statement">{g.leader_statement}</div>
+          {#if groups.all && g.classes}
+            <div class="spans">
+              {#each Object.entries(g.classes) as [c, n]}
+                <span class="spanchip">{c} ×{n}</span>
+              {/each}
+            </div>
+          {/if}
           {#each g.sample as s}
             <div class="member">≈ {s}</div>
           {/each}
@@ -258,6 +298,15 @@
   {:else if proposers === null && !error}
     <div class="empty">reading the queue…</div>
   {:else if proposers}
+    <button class="card row global" onclick={openGlobal} disabled={busy}>
+      <div class="rowtop">
+        <span class="pname">similar across everything</span>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--accent-400)" stroke-width="1.8" stroke-linecap="round"><path d="M13 3L4 14h6l-1 7 9-11h-6z" /></svg>
+      </div>
+      <div class="rowsub">
+        <span>near-repeats grouped over the whole queue, wherever they sit — the fast way through {proposers.reduce((n, p) => n + p.pending, 0).toLocaleString('en-US')} pending</span>
+      </div>
+    </button>
     {#each proposers as p}
       <button class="card row" onclick={() => openClasses(p.proposer)} disabled={busy}>
         <div class="rowtop">
@@ -302,6 +351,9 @@
   .candidate { padding: 18px; display: flex; flex-direction: column; gap: 12px; background: var(--surface); border-color: var(--accent-700); }
   .statement { font-size: 15px; line-height: 1.5; }
   .member { font-size: 12px; line-height: 1.45; color: var(--text-muted); }
+  .global { border-color: var(--accent-700); }
+  .spans { display: flex; gap: 6px; flex-wrap: wrap; }
+  .spanchip { font-family: var(--mono); font-size: 10px; color: var(--accent-400); background: var(--accent-900); border-radius: var(--radius-chip); padding: 4px 8px; }
   .meta { display: flex; gap: 8px; font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
   .btnrow { display: flex; gap: 10px; }
   .btn { flex: 1; min-height: 52px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 15px; cursor: pointer; }
