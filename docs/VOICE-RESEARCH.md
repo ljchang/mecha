@@ -610,6 +610,30 @@ each of which cost something:
   transcribed the intelligible one and refused the garble — correct
   behaviour that looks like a bug. Ground-truth clips must be real
   speech (whisper.cpp's `jfk.wav` is the canonical one).
+- **`test_call.py`'s bot output is not a signal, and it will invite a
+  regression hunt if you read it as one** (2026-08-24). The harness exists
+  for its `user-transcription` lines — it proves the path from a microphone
+  to a transcript, which is the layer nothing else exercises. But its
+  default fixture opens with *"And so, my fellow Americans."*: a **sentence
+  fragment containing no question**, so the model has nothing to answer and
+  says whatever a model says when handed a non-question and a block of style
+  instructions. Observed twice in one evening, hours apart, on the same
+  fixture: first *"That's JFK's opening line from his 1961 inaugural
+  address"*, then — 2 runs of 2 — *"Got it. Short sentences. No
+  formatting."* Neither is better than the other and neither indicates
+  anything about the stack. The second reading cost a regression hunt,
+  because it arrived the same evening D10's first-sentence rule changed and
+  looked exactly like a model that had started acknowledging its
+  instructions instead of following them. **The control that settles it is a
+  clip that actually asks something**, through the same path: a synthesized
+  *"Briefly, what is two plus two?"* came back *"Four."* — correct, and a
+  one-word first sentence, which is the rule working. Note the synthetic
+  clip is legitimate here for the reason the bullet above is not violated:
+  it is grading the *reply*, not the transcription, and the transcription is
+  visible in the same output to confirm it landed. The general shape is
+  worth more than the instance: **a test whose output looks meaningful but
+  carries no signal is worse than one that prints nothing**, because silence
+  is not mistaken for evidence.
 
 Also landed: Kokoro-FastAPI arm64 CPU image pulled; NGC
 `nvcr.io/nvidia/pytorch:25.11-py3` (the tag NVIDIA's own DGX Spark
