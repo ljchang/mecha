@@ -726,13 +726,20 @@ impl DocsClient {
     }
 
     /// Write rows into a spreadsheet range.
+    ///
+    /// Returns the cells written and the range they were written to, which
+    /// is not always the range asked for — see [`fit_range`].
     pub async fn write_sheet(
         &self,
         id: &str,
         range: &str,
         values: serde_json::Value,
-    ) -> Result<i64, MailError> {
-        let encoded = urlencode(range);
+    ) -> Result<(i64, String), MailError> {
+        // Widened here rather than at the call site so no future caller can
+        // reach the API around it. See `fit_range` for why the declared end
+        // of a range earns nothing but a refusal.
+        let range = fit_range(range, &values);
+        let encoded = urlencode(&range);
         // USER_ENTERED so "=SUM(A1:A9)" becomes a formula and "5" a number,
         // which is what someone dictating a spreadsheet edit means.
         let url = format!(
@@ -745,7 +752,7 @@ impl DocsClient {
                 serde_json::json!({"values": values}),
             )
             .await?;
-        Ok(json["updatedCells"].as_i64().unwrap_or(0))
+        Ok((json["updatedCells"].as_i64().unwrap_or(0), range))
     }
 
     /// Create a spreadsheet.
@@ -840,6 +847,122 @@ fn collect_text(content: &serde_json::Value) -> String {
 }
 
 // ---------------------------------------------------------------------------
+
+/// Widen a declared A1 range so the grid actually being written fits inside
+/// it. Returns the range unchanged whenever it already does.
+///
+/// Google's `values.update` refuses a write that reaches past the range it
+/// was handed — *"Requested writing within range [Schedule!A1:H50], but
+/// tried writing to column [I]"* — and refuses **the whole write**, so one
+/// header row a single cell too wide costs the other forty-three rows too.
+/// Counting columns into letters over a grid the model has just composed is
+/// exactly the arithmetic a model gets wrong, and it got it wrong twice on
+/// the same spreadsheet.
+///
+/// **The outbox is what makes getting it wrong expensive.** A routed call is
+/// staged, never dispatched, so this function's own caller never runs at
+/// draft time: the refusal surfaces hours later, in another process, to a
+/// reviewer whose only repair is hand-editing forty-four rows of JSON in
+/// `$EDITOR`. Staging defers execution and therefore defers every check the
+/// tool would have made, which means an argument a tool can repair itself
+/// must be repaired rather than reported.
+///
+/// **And the declared end earns nothing.** `values.update` writes the cells
+/// it is given and clears nothing, so a range wider than the grid and a
+/// range exactly its size do the same thing to the document. The end only
+/// ever decides whether the call is refused. So it is widened, never
+/// narrowed — narrowing would be the one change that alters what a reviewer
+/// approved — and a range the grid already fits is returned **byte for
+/// byte**, on `image.rs`'s rule for an image already under the cap:
+/// normalising what does not need it is how a passthrough grows a bug.
+///
+/// Deliberately conservative about what it will rewrite: both ends must be
+/// plain cell references (`A1`, `Schedule!B7`). A whole-column (`A:H`),
+/// whole-row (`1:50`), open (`A1`) or named range is returned untouched,
+/// because none of those has a rewriting that is obviously still the same
+/// range, and guessing wrong writes the user's data into the wrong cells —
+/// which is worse than the 400 this exists to prevent.
+pub fn fit_range(range: &str, values: &serde_json::Value) -> String {
+    let Some(rows) = values.as_array() else {
+        return range.to_string();
+    };
+    let height = rows.len();
+    let width = rows
+        .iter()
+        .map(|r| r.as_array().map_or(0, |cells| cells.len()))
+        .max()
+        .unwrap_or(0);
+    if height == 0 || width == 0 {
+        return range.to_string();
+    }
+
+    // Split the optional sheet name off the front. The *last* `!` is the
+    // separator: a quoted sheet name may contain one ('a!b'!A1:B2).
+    let (sheet, cells) = match range.rsplit_once('!') {
+        Some((s, c)) => (Some(s), c),
+        None => (None, range),
+    };
+    let Some((start, end)) = cells.split_once(':') else {
+        return range.to_string();
+    };
+    let (Some((start_col, start_row)), Some((end_col, end_row))) = (parse_a1(start), parse_a1(end))
+    else {
+        return range.to_string();
+    };
+
+    let needed_col = start_col + width - 1;
+    let needed_row = start_row + height - 1;
+    if end_col >= needed_col && end_row >= needed_row {
+        return range.to_string();
+    }
+    let fitted = format!(
+        "{}{}:{}{}",
+        column_letters(start_col),
+        start_row,
+        column_letters(end_col.max(needed_col)),
+        end_row.max(needed_row)
+    );
+    match sheet {
+        Some(s) => format!("{s}!{fitted}"),
+        None => fitted,
+    }
+}
+
+/// A plain A1 cell reference to (1-based column, 1-based row). `None` for
+/// anything that is not letters followed by digits — including the `$`
+/// absolute forms, which are legal A1 and which this deliberately declines
+/// to rewrite rather than silently dropping the anchoring from.
+fn parse_a1(cell: &str) -> Option<(usize, usize)> {
+    let split = cell.find(|c: char| c.is_ascii_digit())?;
+    let (letters, digits) = cell.split_at(split);
+    if letters.is_empty() || !letters.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    if !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let col = letters.chars().fold(0usize, |acc, c| {
+        acc * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1)
+    });
+    let row: usize = digits.parse().ok()?;
+    if row == 0 {
+        None
+    } else {
+        Some((col, row))
+    }
+}
+
+/// The inverse: 1 → `A`, 26 → `Z`, 27 → `AA`. Bijective base-26, which is
+/// the one thing about spreadsheet columns that is not ordinary base-26.
+fn column_letters(mut col: usize) -> String {
+    let mut out = Vec::new();
+    while col > 0 {
+        let rem = (col - 1) % 26;
+        out.push((b'A' + rem as u8) as char);
+        col = (col - 1) / 26;
+    }
+    out.iter().rev().collect()
+}
 
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -1038,6 +1161,103 @@ mod tests {
             !s.contains(".mecha/mail/"),
             "must not share the mail root: {s}"
         );
+    }
+
+    /// The bug this was written for, byte for byte off the outbox item that
+    /// could not be approved: nine header cells against a range eight
+    /// columns wide, which Google refuses outright — taking the other
+    /// thirty-six rows with it.
+    #[test]
+    fn a_grid_wider_than_its_range_widens_the_range() {
+        let values = serde_json::json!([
+            ["#", "Day", "Date", "Topic", "Agenda", "Flash", "Readings", "Due", "Scanning"],
+            ["1", "Tuesday", "9/15", "Overview", "", "NA", "", ""],
+        ]);
+        assert_eq!(fit_range("A1:H50", &values), "A1:I50");
+        assert_eq!(fit_range("Schedule!A1:H50", &values), "Schedule!A1:I50");
+    }
+
+    /// Height too, and both at once — a range is refused for either.
+    #[test]
+    fn a_grid_taller_than_its_range_widens_the_range() {
+        let three = serde_json::json!([["a"], ["b"], ["c"]]);
+        assert_eq!(fit_range("A1:A2", &three), "A1:A3");
+        let wide_and_tall = serde_json::json!([["a", "b", "c"], ["d", "e", "f"]]);
+        assert_eq!(fit_range("B2:B2", &wide_and_tall), "B2:D3");
+    }
+
+    /// The passthrough half, and the one that keeps this from becoming a
+    /// normalizer: a range the grid already fits comes back the same bytes,
+    /// including a range deliberately wider than its data.
+    #[test]
+    fn a_range_the_grid_already_fits_is_returned_unchanged() {
+        let values = serde_json::json!([["a", "b"], ["c", "d"]]);
+        for range in ["A1:B2", "A1:Z100", "Schedule!A1:H50", "'My!Sheet'!A1:D9"] {
+            assert_eq!(fit_range(range, &values), range, "{range} was rewritten");
+        }
+    }
+
+    /// Never narrowed. A range wider than the grid does the same thing to
+    /// the document as an exact one — `values.update` clears nothing — so
+    /// shrinking it could only change what the reviewer approved.
+    #[test]
+    fn a_range_is_never_narrowed() {
+        let one = serde_json::json!([["a"]]);
+        assert_eq!(fit_range("A1:Z99", &one), "A1:Z99");
+    }
+
+    /// Everything without an obviously-equivalent rewriting is left exactly
+    /// as it came. Guessing wrong here writes real data into the wrong
+    /// cells, which is worse than the refusal this exists to prevent.
+    #[test]
+    fn ranges_that_cannot_be_rewritten_safely_are_left_alone() {
+        let values = serde_json::json!([["a", "b", "c"], ["d", "e", "f"]]);
+        for range in [
+            "A:H",          // whole columns
+            "1:50",         // whole rows
+            "A1",           // open — Google anchors it and never refuses
+            "Schedule",     // a whole sheet
+            "MyNamedRange", // a named range
+            "$A$1:$H$50",   // absolute form; legal A1, not parsed here
+        ] {
+            assert_eq!(fit_range(range, &values), range, "{range} was rewritten");
+        }
+    }
+
+    /// A grid with nothing in it names no extent, so there is nothing to
+    /// fit — and a `values` that is not a grid at all is the handler's
+    /// error to report, not this function's to guess at.
+    #[test]
+    fn an_empty_or_malformed_grid_changes_nothing() {
+        assert_eq!(fit_range("A1:H50", &serde_json::json!([])), "A1:H50");
+        assert_eq!(fit_range("A1:H50", &serde_json::json!([[], []])), "A1:H50");
+        assert_eq!(fit_range("A1:H50", &serde_json::json!("nope")), "A1:H50");
+    }
+
+    /// Bijective base-26, which is the one thing about spreadsheet columns
+    /// that is not ordinary base-26: there is no zero digit, so 26 is `Z`
+    /// and 27 is `AA` rather than `BA`.
+    #[test]
+    fn column_letters_round_trip() {
+        for (col, letters) in [
+            (1, "A"),
+            (8, "H"),
+            (9, "I"),
+            (26, "Z"),
+            (27, "AA"),
+            (52, "AZ"),
+            (53, "BA"),
+            (702, "ZZ"),
+            (703, "AAA"),
+        ] {
+            assert_eq!(column_letters(col), letters);
+            assert_eq!(parse_a1(&format!("{letters}7")), Some((col, 7)));
+        }
+        assert_eq!(parse_a1("h7"), Some((8, 7)));
+        assert_eq!(parse_a1("A0"), None);
+        assert_eq!(parse_a1("7"), None);
+        assert_eq!(parse_a1("A7B"), None);
+        assert_eq!(parse_a1(""), None);
     }
 
     #[test]

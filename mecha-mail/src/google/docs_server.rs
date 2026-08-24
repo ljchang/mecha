@@ -133,12 +133,15 @@ pub fn tool_definitions() -> Vec<Value> {
         },
         {
             "name": "sheets_write",
-            "description": "Write rows into a Google Sheet range. `values` is an array of row arrays. Values are interpreted as a person typing them would expect, so '=SUM(A1:A9)' becomes a formula. Overwrites whatever is in the range.",
+            "description": "Write rows into a Google Sheet. `values` is an array of row arrays and is what decides the shape written — `range` only says where the top-left corner goes. Values are interpreted as a person typing them would expect, so '=SUM(A1:A9)' becomes a formula. Overwrites the cells written and clears nothing else.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "file_id": {"type": "string"},
-                    "range": {"type": "string"},
+                    "range": {
+                        "type": "string",
+                        "description": "Where to start, in A1 notation, optionally with a sheet name: 'A1', 'Schedule!A1', 'Schedule!A1:H50'. Only the start matters — a range too small for `values` is widened to fit rather than refused, so you do not have to count columns into letters. Rows may be ragged; a short row simply leaves its trailing cells untouched."
+                    },
                     "values": {
                         "type": "array",
                         "items": {"type": "array", "items": {"type": "string"}}
@@ -295,7 +298,13 @@ async fn dispatch(
                     client
                         .write_sheet(id, range, values)
                         .await
-                        .map(|n| format!("wrote {n} cell(s) to {range}"))
+                        // The range reported is the range *written*, which
+                        // is not always the one asked for: a grid wider or
+                        // taller than its declared range is fitted rather
+                        // than refused (`docs::fit_range`). Reporting the
+                        // asked-for one would hide that from the reviewer
+                        // reading the result.
+                        .map(|(n, wrote)| format!("wrote {n} cell(s) to {wrote}"))
                 }
             }
             (Err(e), _) | (_, Err(e)) => Err(e),
