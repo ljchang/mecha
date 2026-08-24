@@ -33,6 +33,8 @@ use mecha_core::config::Config;
 
 mod board;
 mod chat;
+mod files;
+mod mail;
 mod present;
 mod review;
 
@@ -209,6 +211,14 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/chat/{key}/events", get(chat::events))
         .route("/api/chat/{key}/answer", axum::routing::post(chat::answer))
         .route("/api/chat/{key}/mode", axum::routing::post(chat::set_mode))
+        .route(
+            "/api/chat/{key}/upload",
+            axum::routing::post(files::upload)
+                // A phone photo is 3-10 MB; axum's 2 MB default refuses the
+                // route's whole purpose. Bounded still: the jail is disk.
+                .layer(axum::extract::DefaultBodyLimit::max(26_214_400)),
+        )
+        .route("/api/chat/{key}/file", get(files::download))
         .route("/api/outbox", get(review::list))
         .route("/api/outbox/{id}", get(review::detail))
         .route(
@@ -221,8 +231,13 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         )
         .route("/api/outbox/{id}/edit", axum::routing::post(review::edit))
         .route("/api/queue", get(review::queue))
+        .route("/api/queue/classes", get(review::classes))
+        .route("/api/queue/groups", get(review::groups))
         .route("/api/queue/sample", axum::routing::post(review::sample))
         .route("/api/queue/verdict", axum::routing::post(review::verdict))
+        .route("/api/mail", get(mail::list))
+        .route("/api/mail/read", get(mail::read))
+        .route("/api/mail/act", axum::routing::post(mail::act))
         .route("/api/tasks", get(board::tasks))
         .route("/api/tasks/set", axum::routing::post(board::task_set))
         .route("/api/tasks/add", axum::routing::post(board::task_add))
@@ -451,6 +466,38 @@ mod tests {
             !csp.contains("https:"),
             "no external origin may ever appear in the CSP"
         );
+    }
+
+    #[tokio::test]
+    async fn the_mail_routes_sit_behind_the_owner_guard() {
+        // New surface, same door: a probe without the header learns nothing,
+        // not even that a mail queue exists.
+        for uri in ["/api/mail", "/api/mail/read?thread=t&account=a"] {
+            let response = test_router()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unknown_mail_verb_is_refused_before_an_argv_exists() {
+        // The closed-verb match is the boundary: even the owner cannot make
+        // this route spell a verb the match does not name.
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mail/act")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"verb":"trash","thread":"t","account":"a"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

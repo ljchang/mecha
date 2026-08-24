@@ -49,7 +49,7 @@ pub(super) const DEFAULT_SESSION: &str = "main";
 /// validated like a producer name: short, lowercase, no path in it. The
 /// check is containment, not politeness — a key is model-adjacent input the
 /// moment a page script can choose it.
-fn valid_key(key: &str) -> bool {
+pub(super) fn valid_key(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= 32
         && key
@@ -196,7 +196,7 @@ fn producer_root() -> Result<PathBuf> {
 
 /// One producer, per-session subdirectories — so `work clean`'s retention
 /// retires whole old sessions (the Slack thread pattern).
-fn session_workspace(key: &str) -> Result<PathBuf> {
+pub(super) fn session_workspace(key: &str) -> Result<PathBuf> {
     let dir = work::producer_dir("web")?.join(key);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     work::ensure_outside_mecha_home(&dir)?;
