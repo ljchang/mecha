@@ -218,8 +218,10 @@ enum Watch {
     /// who moved on is not yanked to a level they left.
     QueuesGroups {
         rx: std::sync::mpsc::Receiver<Result<String>>,
-        proposer: String,
-        predicate: String,
+        /// The class being grouped, or `None` for the global cross-class
+        /// layer — which embeds the WHOLE pending queue and legitimately
+        /// runs minutes, so its patience cap is its own.
+        class: Option<(String, String)>,
         since: std::time::Instant,
     },
     /// A `mecha-docs …` child answering for the /docs modal.
@@ -1737,23 +1739,26 @@ fn poll_watches(app: &mut App) {
                     }
                 }
             },
-            Watch::QueuesGroups {
-                rx,
-                proposer,
-                predicate,
-                since,
-            } => match rx.try_recv() {
+            Watch::QueuesGroups { rx, class, since } => match rx.try_recv() {
                 Ok(Ok(text)) => {
-                    // Install into a modal at the class list (the `s` entry)
-                    // or already at the groups of the same class (a `[`/`]`
-                    // threshold re-run). Anywhere else, a person moved on and
-                    // keeps their place; the status says the work finished.
+                    let what = match &class {
+                        Some((p, pr)) => format!("{p} · {pr}"),
+                        None => "the whole queue".into(),
+                    };
+                    // Install into a modal at the level the load was asked
+                    // from (the class list for a class grouping, the
+                    // proposer list for the global layer) or already at the
+                    // matching groups (a `[`/`]` threshold re-run). Anywhere
+                    // else, a person moved on and keeps their place; the
+                    // status says the work finished.
+                    let entry_level = match &class {
+                        Some(_) => queues::Level::Candidates,
+                        None => queues::Level::Proposers,
+                    };
                     match &mut app.queues {
                         Some(m)
-                            if m.level == queues::Level::Candidates
-                                || (m.level == queues::Level::Groups
-                                    && m.item_class.as_ref()
-                                        == Some(&(proposer.clone(), predicate.clone()))) =>
+                            if m.level == entry_level
+                                || (m.level == queues::Level::Groups && m.item_class == class) =>
                         {
                             match queues::groups_from_json(&text) {
                                 Ok((threshold, rows)) => {
@@ -1761,12 +1766,13 @@ fn poll_watches(app: &mut App) {
                                     m.level = queues::Level::Groups;
                                     m.groups = rows;
                                     m.group_threshold = threshold;
-                                    m.item_class = Some((proposer, predicate));
+                                    m.item_class = class;
                                     m.selected = 0;
                                     m.status = Some(match n {
-                                        0 => "nothing pending in this class".into(),
+                                        0 => "nothing repeats above the threshold".into(),
                                         n => format!(
-                                            "{n} group(s) at cosine ≥ {threshold:.2} —                                              a/r verdicts a whole group, [/] adjusts"
+                                            "{n} group(s) at cosine ≥ {threshold:.2} — \
+                                             a/r verdicts a whole group, [/] adjusts"
                                         ),
                                     });
                                 }
@@ -1774,34 +1780,38 @@ fn poll_watches(app: &mut App) {
                             }
                         }
                         Some(m) => {
-                            m.status = Some(format!(
-                                "groups of {proposer} · {predicate} ready — s re-opens them"
-                            ));
+                            m.status = Some(format!("groups of {what} ready — s re-opens them"));
                         }
                         None => app.transcript.push(Entry::Notice(format!(
-                            "grouping {proposer} · {predicate} finished after /queues closed"
+                            "grouping {what} finished after /queues closed"
                         ))),
                     }
                 }
                 Ok(Err(e)) => {
-                    let line = format!("grouping {proposer} · {predicate} failed: {e:#}");
+                    let what = match &class {
+                        Some((p, pr)) => format!("{p} · {pr}"),
+                        None => "the whole queue".into(),
+                    };
+                    let line = format!("grouping {what} failed: {e:#}");
                     match &mut app.queues {
                         Some(m) => m.status = Some(line),
                         None => app.transcript.push(Entry::Error(line)),
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    if since.elapsed() > doctor::EXAMINE_CAP {
+                    // The global layer embeds ~7k statements and measured
+                    // 40s on the real queue; give it minutes where a class
+                    // gets the ordinary cap.
+                    let cap = match &class {
+                        Some(_) => doctor::EXAMINE_CAP,
+                        None => std::time::Duration::from_secs(360),
+                    };
+                    if since.elapsed() > cap {
                         if let Some(m) = &mut app.queues {
                             m.status = Some("grouping never answered — is :8081 up?".into());
                         }
                     } else {
-                        app.watches.push(Watch::QueuesGroups {
-                            rx,
-                            proposer,
-                            predicate,
-                            since,
-                        });
+                        app.watches.push(Watch::QueuesGroups { rx, class, since });
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -4842,7 +4852,13 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 reload_queues(app, None);
             }
             queues::Level::Groups => {
-                modal.level = queues::Level::Candidates;
+                // Back to the level the grouping was asked from: the class
+                // list for a class grouping, the proposer list for the
+                // global layer (whose item_class is None by construction).
+                modal.level = match modal.item_class {
+                    Some(_) => queues::Level::Candidates,
+                    None => queues::Level::Proposers,
+                };
                 modal.groups.clear();
                 modal.item_class = None;
                 modal.selected = 0;
@@ -5040,8 +5056,13 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
             let create = key.code == KeyCode::Char('A');
             let accept = create || key.code == KeyCode::Char('a');
             let verb = if accept { "accept" } else { "reject" };
+            // A global group's members sit in other classes by design, so
+            // its cascade rides the across vet; a class group keeps the
+            // strict one. Which listing this is is exactly item_class.
             let fan = if member_csv.is_empty() {
                 crate::commands::review::Fan::None
+            } else if modal.item_class.is_none() {
+                crate::commands::review::Fan::IdsAcross(&member_csv)
             } else {
                 crate::commands::review::Fan::Ids(&member_csv)
             };
@@ -5115,15 +5136,25 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
             modal.status = Some(format!(
                 "grouping {pending} pending in {pb} · {pred} — embedding…"
             ));
-            spawn_group_load(app, pb, pred, None);
+            spawn_group_load(app, Some((pb, pred)), None);
+        }
+        // Proposer level: `s` is the TOP layer — near-repeats across the
+        // whole queue, every class at once, at the stricter global floor.
+        // The invited crossing: a verdict here rides --across-classes, and
+        // every group's spans line names what it reaches.
+        KeyCode::Char('s') if modal.level == queues::Level::Proposers => {
+            let pending: usize = modal.proposers.iter().map(|p| p.pending).sum();
+            modal.status = Some(format!(
+                "grouping {pending} pending across every class — embedding the whole queue, \
+                 this runs a minute or two…"
+            ));
+            spawn_group_load(app, None, None);
         }
         // Adjust the grouping threshold and re-group. Steps from the value
         // the child reported it ran at — never from a local copy of the
         // constant — and re-embeds, so it goes through the same watch.
         KeyCode::Char('[') | KeyCode::Char(']') if modal.level == queues::Level::Groups => {
-            let Some((pb, pred)) = modal.item_class.clone() else {
-                return Ok(());
-            };
+            let class = modal.item_class.clone();
             let step = if key.code == KeyCode::Char(']') {
                 0.02
             } else {
@@ -5133,7 +5164,7 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
             // past the dedup line, where precheck already removed them.
             let next = (modal.group_threshold + step).clamp(0.60, 0.97);
             modal.status = Some(format!("re-grouping at cosine ≥ {next:.2}…"));
-            spawn_group_load(app, pb, pred, Some(next));
+            spawn_group_load(app, class, Some(next));
         }
         // Item level: one verdict, one candidate. Distinct from the class
         // verdict a level up, and the key strip says which you are holding.
@@ -7337,18 +7368,21 @@ fn refresh_mail(app: &mut App) {
 /// A thread on purpose rather than a detached child: what is wanted back is
 /// the text, and `self_cli` already knows how to get it. The watch collects
 /// it a tick later and installs it into the modal.
-/// Load one class's similarity groups on a thread, at an optional explicit
+/// Load similarity groups on a thread — one class's, or (`class: None`) the
+/// cross-class global layer over the whole queue — at an optional explicit
 /// threshold, collected through `Watch::QueuesGroups`.
-fn spawn_group_load(app: &mut App, pb: String, pred: String, threshold: Option<f64>) {
-    let mut args: Vec<String> = vec![
-        "review".into(),
-        "groups".into(),
-        "--proposer".into(),
-        pb.clone(),
-        "--predicate".into(),
-        pred.clone(),
-        "--json".into(),
-    ];
+fn spawn_group_load(app: &mut App, class: Option<(String, String)>, threshold: Option<f64>) {
+    let mut args: Vec<String> = vec!["review".into(), "groups".into()];
+    match &class {
+        Some((pb, pred)) => {
+            args.push("--proposer".into());
+            args.push(pb.clone());
+            args.push("--predicate".into());
+            args.push(pred.clone());
+        }
+        None => args.push("--all".into()),
+    }
+    args.push("--json".into());
     if let Some(t) = threshold {
         args.push("--threshold".into());
         args.push(format!("{t:.2}"));
@@ -7360,8 +7394,7 @@ fn spawn_group_load(app: &mut App, pb: String, pred: String, threshold: Option<f
     });
     app.watches.push(Watch::QueuesGroups {
         rx,
-        proposer: pb,
-        predicate: pred,
+        class,
         since: std::time::Instant::now(),
     });
 }
