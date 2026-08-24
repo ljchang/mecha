@@ -79,6 +79,11 @@ enum SlotState {
 
 struct Shared {
     agent: Arc<Agent>,
+    /// True when the agent is shared with other front-ends (the unified
+    /// `mecha serve`): the D10 voice block then cannot ride the system
+    /// prompt, so it is prepended to each voice conversation's first user
+    /// message instead — one copy per conversation, cached thereafter.
+    inject_voice_block: bool,
     slots: Mutex<HashMap<String, SlotState>>,
     session_dir: PathBuf,
     outbox_root: PathBuf,
@@ -86,6 +91,90 @@ struct Shared {
     model: String,
     config: mecha_core::config::Config,
     token: Option<String>,
+}
+
+/// The facade as a mountable component: `mecha voice-serve` builds its own
+/// agent and hands it here; the unified `mecha serve` hands in the shared
+/// one. Either way the semantics below are identical — this split exists so
+/// there is exactly one implementation of them.
+pub struct Facade {
+    shared: Arc<Shared>,
+}
+
+impl Facade {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        agent: Arc<Agent>,
+        provider_name: String,
+        model: String,
+        config: mecha_core::config::Config,
+        outbox_root: PathBuf,
+        token: Option<String>,
+        inject_voice_block: bool,
+    ) -> Result<Self> {
+        Ok(Self {
+            shared: Arc::new(Shared {
+                agent,
+                inject_voice_block,
+                slots: Mutex::new(HashMap::new()),
+                session_dir: Session::default_dir()?,
+                outbox_root,
+                provider_name,
+                model,
+                config,
+                token,
+            }),
+        })
+    }
+
+    /// Bind the loopback listener and serve until cancelled. Signal
+    /// handling deliberately lives with the caller — a mounted facade must
+    /// not compete with its host process for SIGTERM.
+    pub async fn serve(&self, port: u16, stop: CancellationToken) -> Result<()> {
+        let addr = format!("{LISTEN_HOST}:{port}");
+        let listener = TcpListener::bind(&addr)
+            .await
+            .with_context(|| format!("binding {addr}"))?;
+        tracing::info!("voice facade listening on http://{addr}/v1/chat/completions");
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let (stream, _) = accepted?;
+                    let shared = Arc::clone(&self.shared);
+                    tokio::spawn(async move {
+                        if let Err(e) = handle(stream, shared).await {
+                            tracing::debug!("voice connection ended: {e}");
+                        }
+                    });
+                }
+                _ = stop.cancelled() => return Ok(()),
+            }
+        }
+    }
+
+    /// Cancel everything in flight, then wait (bounded) for handlers to
+    /// record their runs and return the slots — exiting without this tears
+    /// down the runtime mid-record.
+    pub async fn shutdown(&self) {
+        {
+            let slots = self.shared.slots.lock().await;
+            for state in slots.values() {
+                if let SlotState::Running(tok) = state {
+                    tok.cancel();
+                }
+            }
+        }
+        for _ in 0..150 {
+            let busy = {
+                let slots = self.shared.slots.lock().await;
+                slots.values().any(|s| matches!(s, SlotState::Running(_)))
+            };
+            if !busy {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
 }
 
 pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
@@ -109,69 +198,40 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         None => OutboxStore::default_root()?,
     };
 
-    let shared = Arc::new(Shared {
-        agent: Arc::new(prepared.agent),
-        slots: Mutex::new(HashMap::new()),
-        session_dir: Session::default_dir()?,
+    let workspace = prepared.workspace.clone();
+    let facade = Facade::new(
+        Arc::new(prepared.agent),
+        prepared.provider_name.clone(),
+        prepared.model.clone(),
+        prepared.config,
         outbox_root,
-        provider_name: prepared.provider_name.clone(),
-        model: prepared.model.clone(),
-        config: prepared.config,
-        token: args.token.clone(),
-    });
+        args.token.clone(),
+        // Standalone: the voice block already rides this agent's system
+        // prompt via system_extra, so nothing to inject per conversation.
+        false,
+    )?;
 
-    let addr = format!("{LISTEN_HOST}:{}", args.port);
-    let listener = TcpListener::bind(&addr)
-        .await
-        .with_context(|| format!("binding {addr}"))?;
     println!(
-        "mecha voice-serve · {} ({}) · listening on http://{addr}/v1/chat/completions · workspace {}",
-        shared.model,
-        shared.provider_name,
-        prepared.workspace.display()
+        "mecha voice-serve · {} ({}) · listening on http://{LISTEN_HOST}:{}/v1/chat/completions · workspace {}",
+        facade.shared.model,
+        facade.shared.provider_name,
+        args.port,
+        workspace.display()
     );
 
     // SIGTERM is how systemd stops this service, so it must mean what
     // Ctrl-C means: cancel, let partial turns land in their transcripts,
-    // then go. A signal that just kills the process loses every in-flight
-    // run's recording.
+    // then go.
+    let stop = CancellationToken::new();
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let (stream, _) = accepted?;
-                let shared = Arc::clone(&shared);
-                tokio::spawn(async move {
-                    if let Err(e) = handle(stream, shared).await {
-                        tracing::debug!("voice connection ended: {e}");
-                    }
-                });
-            }
-            _ = tokio::signal::ctrl_c() => break,
-            _ = sigterm.recv() => break,
-        }
+    let server = facade.serve(args.port, stop.clone());
+    tokio::pin!(server);
+    tokio::select! {
+        r = &mut server => r?,
+        _ = tokio::signal::ctrl_c() => stop.cancel(),
+        _ = sigterm.recv() => stop.cancel(),
     }
-    // Cancel everything in flight, then wait (bounded) for the handlers to
-    // record their runs and return the slots — returning immediately would
-    // tear down the runtime and abort them mid-record.
-    {
-        let slots = shared.slots.lock().await;
-        for state in slots.values() {
-            if let SlotState::Running(tok) = state {
-                tok.cancel();
-            }
-        }
-    }
-    for _ in 0..150 {
-        let busy = {
-            let slots = shared.slots.lock().await;
-            slots.values().any(|s| matches!(s, SlotState::Running(_)))
-        };
-        if !busy {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    facade.shutdown().await;
     println!("\nvoice-serve: shutting down.");
     Ok(())
 }
@@ -496,6 +556,13 @@ async fn completion(
         }
     }
 
+    // On a shared agent the D10 block cannot ride the system prompt, so a
+    // new voice conversation opens with it — one copy, cached thereafter.
+    let text = if shared.inject_voice_block && slot.convo.is_empty() {
+        format!("{VOICE_BLOCK}\n\n{text}")
+    } else {
+        text
+    };
     let user = Message::user(&text);
     slot.convo.push(user.clone());
     let _ = slot.session.append(&Record::Message(user));
