@@ -1,4 +1,5 @@
 <script>
+  import Dictate from './Dictate.svelte';
   // Notes: the owner's own words into the graph, as evidence. A capture is
   // `mecha kg note` — an episode the nightly extractor mines, with anything
   // it derives waiting in the review queue, never entering belief directly.
@@ -85,9 +86,12 @@
         placeholder="Capture a note — entities named in it are linked on landing"
         bind:value={draft}
       ></textarea>
-      <button class="btn primary" disabled={busy || !draft.trim()} onclick={capture}>
-        {busy ? 'staging…' : 'Capture'}
-      </button>
+      <div class="capturerow">
+        <Dictate onText={(text, err) => { if (text) draft = draft ? `${draft} ${text}` : text; if (err) error = err; }} />
+        <button class="btn primary grow" disabled={busy || !draft.trim()} onclick={capture}>
+          {busy ? 'staging…' : 'Capture'}
+        </button>
+      </div>
     </div>
 
     <div class="kicker">Recent</div>
@@ -139,6 +143,8 @@
   .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; }
   .scroll { flex: 1; overflow-y: auto; padding: 2px 20px 20px; display: flex; flex-direction: column; gap: 10px; }
   .capture { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .capturerow { display: flex; gap: 8px; }
+  .grow { flex: 1; }
   textarea { background: var(--surface); border: none; border-radius: var(--radius); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5; padding: 12px 14px; resize: vertical; }
   textarea:focus { outline: 1px solid var(--accent-500); }
   .btn { min-height: 46px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; cursor: pointer; }
