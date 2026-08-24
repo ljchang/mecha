@@ -1758,6 +1758,37 @@ is `:8881/v1/voices`, because `TTS_URL` already carries the `/v1` — `/voices`
 alone is a 404 that reads like a broken list. Verified both ways.)
 
 
+**2026-08-24 night — 0.1.13, and the docs catch up with two subsystems.**
+The release that made the day's work public: `mecha serve`, voice, the
+graph queue's similarity groups and cross-class layer, mail's plain inbox
+and hand-written compose, phone dictation, resumable session history, and
+`/entity`. Ninety-one commits under a patch bump, tagged and pushed with
+the crates workflow publishing on the tag.
+
+The website gained the two pages it had been missing entirely — one for the
+web surface and one for voice — plus similarity groups on the queues page
+(undocumented until now) and the inbox/compose half of mail. The voice page
+was written by the session that built the stack rather than by the session
+that published it, on the argument that a draft assembled from a build log
+would be subtly wrong; the thing it caught is the thing a build log cannot
+know, because a build log is written on a machine where everything is
+already installed: **`cargo install mecha-cli` ships the voice facade and
+none of the voice pipeline.** `scripts/` sits outside the crate, so
+`cargo package --list` shows zero runtime files, and `git ls-files` tracks
+zero `.wav` — the seven voices exist only where `make-voices.py` has been
+run. A user who read "mecha has voice mode", installed the crate and went
+looking would have found a facade with nothing behind it, so that
+constraint leads the page instead of trailing it.
+
+Three sessions coordinated the release across two repositories: a freeze on
+`~/Github/mecha` that both peers verified their own state against, a
+deliberate carve-out for the private graph checkout where a third session
+was mid-arc, and CHANGELOG entries written by the sessions that had built
+the things rather than inferred from their diffs. The carve-out is the part
+worth keeping: the update skill would normally reinstall the graph
+binaries, and doing that from a working tree in flight would have been
+worse than leaving a known-good install alone.
+
 **The bake-off those two conclusions came from**, moved out of `README.md` on
 2026-08-10 so the numbers live with the rest of the measurement record rather
 than in the front door. It was taken on a DGX Spark (GB10, 128GB unified)
@@ -2311,6 +2342,16 @@ steps would have made it — re-verify with `git status`, don't re-run from
 memory; and "every commit builds in isolation" is only true if something
 builds the commit's own tree, which the worktree (holding the untracked
 files) cannot prove.
+
+**A doc written from a build log is written on the machine where it
+already works.** The voice page's most load-bearing sentence — that the
+published crate contains the facade and none of the pipeline — appears
+nowhere in the build log that documented the stack, because the person
+writing that log had every service running locally and never had to
+discover the packaging boundary. The general lesson: when documenting for
+users, the facts most worth stating are the ones the author's environment
+makes invisible, and `cargo package --list` / `git ls-files` answer in
+seconds what memory answers wrongly. Check what ships, not what works.
 
 ### Learning
 
