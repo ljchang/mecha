@@ -5,9 +5,9 @@
     ['home', 'M4 11l8-7 8 7M6 10v10h12V10', true],
     ['chat', 'M4 5h16v11H9l-5 4z', true],
     ['mail', 'M3 7l9 6 9-6M3 5h18v14H3z', false],
-    ['notes', 'M4 4h16v16H4zM8 9h8M8 13h5', false],
+    ['notes', 'M4 4h16v16H4zM8 9h8M8 13h5', true],
     ['review', 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5', true],
-    ['tasks', 'M4 6h2M4 12h2M4 18h2M9 6h11M9 12h11M9 18h11', false],
+    ['tasks', 'M4 6h2M4 12h2M4 18h2M9 6h11M9 12h11M9 18h11', true],
   ];
 </script>
 

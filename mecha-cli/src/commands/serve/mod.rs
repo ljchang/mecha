@@ -31,6 +31,7 @@ use axum::{Json, Router};
 
 use mecha_core::config::Config;
 
+mod board;
 mod chat;
 mod review;
 
@@ -140,7 +141,12 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/outbox/{id}/edit", axum::routing::post(review::edit))
         .route("/api/queue", get(review::queue))
         .route("/api/queue/sample", axum::routing::post(review::sample))
-        .route("/api/queue/verdict", axum::routing::post(review::verdict));
+        .route("/api/queue/verdict", axum::routing::post(review::verdict))
+        .route("/api/tasks", get(board::tasks))
+        .route("/api/tasks/set", axum::routing::post(board::task_set))
+        .route("/api/tasks/add", axum::routing::post(board::task_add))
+        .route("/api/notes", axum::routing::post(board::note))
+        .route("/api/find", get(board::find));
 
     let app = match assets {
         Some(dir) => api.fallback_service(tower_http::services::ServeDir::new(dir)),
