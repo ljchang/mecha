@@ -283,8 +283,11 @@ pub async fn classes(State(state): St, Query(q): Query<ClassQuery>) -> Response 
 
 #[derive(serde::Deserialize)]
 pub struct GroupsQuery {
-    pub proposer: String,
-    pub predicate: String,
+    pub proposer: Option<String>,
+    pub predicate: Option<String>,
+    /// The top layer: group the whole pending queue across classes.
+    #[serde(default)]
+    pub all: bool,
 }
 
 /// GET /api/queue/groups — one class's pending candidates grouped by
@@ -296,13 +299,33 @@ pub struct GroupsQuery {
 /// enforces that too, but a route that *could* ask for cross-class groups
 /// would document a thing the system refuses to mean.
 pub async fn groups(State(state): St, Query(q): Query<GroupsQuery>) -> Response {
+    if q.all {
+        // The global layer embeds every pending statement, which is minutes,
+        // not seconds — a deliberate button on the page, priced accordingly.
+        let mut args: Vec<&str> = vec!["review", "groups", "--all", "--json"];
+        if let Some(p) = &q.proposer {
+            args.push("--proposer");
+            args.push(p);
+        }
+        return match self_json_within(&state, &args, 360).await {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+        };
+    }
+    let (Some(proposer), Some(predicate)) = (&q.proposer, &q.predicate) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "class groups need proposer and predicate; all=true is the cross-class layer\n",
+        )
+            .into_response();
+    };
     let args = [
         "review",
         "groups",
         "--proposer",
-        &q.proposer,
+        proposer,
         "--predicate",
-        &q.predicate,
+        predicate,
         "--json",
     ];
     match self_json(&state, &args).await {
@@ -354,6 +377,10 @@ pub struct VerdictBody {
     /// ladder never counts. Always the ids the page *showed*, never a
     /// re-derived similarity — what a person saw is what the verdict covers.
     pub cascade: Option<Vec<i64>>,
+    /// The cascade came from the cross-class layer (`groups?all=true`), so
+    /// its ids may sit in other classes. Meaningless without `cascade`.
+    #[serde(default)]
+    pub across: bool,
 }
 
 /// POST /api/queue/verdict — one candidate, one verdict, through the CLI.
@@ -382,6 +409,9 @@ pub async fn verdict(State(state): St, Json(body): Json<VerdictBody>) -> Respons
     }
     if let Some(members) = &members {
         args.extend(["--cascade", members]);
+        if body.across {
+            args.push("--across-classes");
+        }
     }
     verb(&state, &args).await
 }
@@ -391,9 +421,19 @@ pub(super) async fn self_json(
     state: &super::WebState,
     args: &[&str],
 ) -> anyhow::Result<serde_json::Value> {
+    self_json_within(state, args, 30).await
+}
+
+/// `self_json` with the budget stated, for the one child that legitimately
+/// runs minutes (the global grouping embeds the whole queue).
+pub(super) async fn self_json_within(
+    state: &super::WebState,
+    args: &[&str],
+    secs: u64,
+) -> anyhow::Result<serde_json::Value> {
     let _ = state;
     let output = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(secs),
         tokio::process::Command::new(crate::exe::self_exe())
             .args(args)
             .output(),
