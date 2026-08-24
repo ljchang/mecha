@@ -288,7 +288,10 @@ pub async fn verdict(State(state): St, Json(body): Json<VerdictBody>) -> Respons
 }
 
 /// Like `verb`, but the child's stdout is JSON to pass through.
-async fn self_json(state: &super::WebState, args: &[&str]) -> anyhow::Result<serde_json::Value> {
+pub(super) async fn self_json(
+    state: &super::WebState,
+    args: &[&str],
+) -> anyhow::Result<serde_json::Value> {
     let _ = state;
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(30),
@@ -357,7 +360,7 @@ pub async fn edit(
 
 /// Run our own binary and relay the outcome: stdout on success, the first
 /// stderr line with a 409 on refusal — the CLI's error *is* the API's.
-async fn verb(state: &super::WebState, args: &[&str]) -> Response {
+pub(super) async fn verb(state: &super::WebState, args: &[&str]) -> Response {
     let _ = state; // state carries nothing the child needs; the store is the meeting point
     let output = match tokio::time::timeout(
         std::time::Duration::from_secs(120),
