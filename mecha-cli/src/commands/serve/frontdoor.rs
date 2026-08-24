@@ -30,7 +30,7 @@ pub async fn list(State(_state): St) -> Response {
         Ok(r) => r,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
     };
-    records.sort_by(|a, b| b.seq.cmp(&a.seq));
+    records.sort_by_key(|r| std::cmp::Reverse(r.seq));
     let rows: Vec<serde_json::Value> = records
         .iter()
         .map(|r| {
