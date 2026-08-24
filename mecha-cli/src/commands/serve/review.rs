@@ -37,19 +37,103 @@ pub struct Row {
     id: String,
     tool: String,
     kind: String,
-    summary: String,
+    /// A verb a person reads ("Reply", "Doc edit"), never the registry name.
+    label: String,
+    /// The addressing line — subject, title, or recipient — from `DraftView`.
+    headline: String,
+    /// The prose head, word-safe; for prose-less drafts, the short arguments
+    /// rendered readably. Never raw JSON: the store's `summary` field is a
+    /// terminal one-liner, and putting it on a card was the wrong bytes for
+    /// the surface (found by a person reading the phone, not the code).
+    snippet: String,
     status: String,
     created_at: String,
     tainted: bool,
     edited: bool,
 }
 
+/// The registry name, made into a verb. Curated for the tools that exist,
+/// with a humanized fallback so an unanticipated tool reads as words too.
+fn label_for(tool: &str) -> String {
+    let suffix = tool.rsplit("__").next().unwrap_or(tool);
+    match suffix {
+        "mail_reply" => "Reply".into(),
+        "mail_send" => "New mail".into(),
+        "docs_replace" => "Doc edit".into(),
+        "docs_create" => "New doc".into(),
+        "sheets_write" => "Sheet write".into(),
+        "slides_write" => "Slides edit".into(),
+        "calendar_create" | "calendar_respond" => "Calendar".into(),
+        other => {
+            let words = other.replace('_', " ");
+            let mut c = words.chars();
+            match c.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+                None => tool.to_string(),
+            }
+        }
+    }
+}
+
+/// Cut at a word boundary with an ellipsis — never mid-identifier, never a
+/// wall of base64-shaped id.
+fn clip(text: &str, max: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(max).collect();
+    let cut = match cut.rfind(char::is_whitespace) {
+        Some(i) if i > max / 2 => &cut[..i],
+        _ => cut.as_str(),
+    };
+    format!("{}…", cut.trim_end())
+}
+
+/// An id-shaped value tells a reviewer nothing on a card.
+fn id_like(key: &str, value: &str) -> bool {
+    key.ends_with("_id") || key == "id" || (value.len() > 24 && !value.contains(' '))
+}
+
+fn headline_and_snippet(args: &serde_json::Value) -> (String, String) {
+    let view = DraftView::of(args);
+    let get = |k: &str| {
+        view.headers
+            .iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.clone())
+    };
+    let headline = get("subject")
+        .or_else(|| get("title"))
+        .or_else(|| get("to").map(|to| format!("To {to}")))
+        .or_else(|| get("channel").map(|c| format!("To #{c}")))
+        .unwrap_or_default();
+    let snippet = match &view.body {
+        Some(body) => clip(body, 140),
+        None => {
+            // No prose: the short, non-id arguments, readably.
+            let pairs: Vec<String> = view
+                .other
+                .iter()
+                .filter(|(k, v)| !id_like(k, v))
+                .take(2)
+                .map(|(k, v)| format!("{k}: {}", clip(v, 60)))
+                .collect();
+            pairs.join(" · ")
+        }
+    };
+    (headline, snippet)
+}
+
 fn row(item: &OutboxItem) -> Row {
+    let (headline, snippet) = headline_and_snippet(&item.args);
     Row {
         id: item.id.clone(),
         tool: item.tool.clone(),
         kind: format!("{:?}", item.kind).to_lowercase(),
-        summary: item.summary.clone(),
+        label: label_for(&item.tool),
+        headline,
+        snippet,
         status: item.status.clone(),
         created_at: item.created_at.clone(),
         tainted: item.taint.trifecta_armed(),
@@ -106,9 +190,12 @@ pub async fn detail(State(state): St, UrlPath(id): UrlPath<String>) -> Response 
 /// bytes ride along for the confirm sheet, which is the check, not the read.
 fn detail_json(item: &OutboxItem, sources: &[outbox_source::SourceRead]) -> serde_json::Value {
     let view = DraftView::of(&item.args);
+    let (headline, _) = headline_and_snippet(&item.args);
     serde_json::json!({
         "id": item.id,
         "tool": item.tool,
+        "label": label_for(&item.tool),
+        "headline": headline,
         "kind": format!("{:?}", item.kind).to_lowercase(),
         "status": item.status,
         "created_at": item.created_at,
@@ -257,6 +344,52 @@ mod tests {
             reason: None,
             error: None,
         }
+    }
+
+    #[test]
+    fn a_reply_row_reads_as_words_never_json() {
+        let mut it = item("x", "pending", "2026-08-24T10:00:00Z");
+        it.args = json!({
+            "account": "dartmouth",
+            "thread_id": "f8a2c1d9e0aa9b",
+            "subject": "Re: R01 resubmission",
+            "body_markdown": "Dear Dirk,\n\nThank you for reaching out and for your interest in our work on the neural signature of trust and everything after it."
+        });
+        let row = row(&it);
+        assert_eq!(row.label, "Reply");
+        assert_eq!(row.headline, "Re: R01 resubmission");
+        assert!(row.snippet.starts_with("Dear Dirk,"));
+        assert!(row.snippet.chars().count() <= 145);
+        assert!(!row.snippet.contains('{'), "raw JSON on a card was the bug");
+        assert!(
+            !row.snippet.contains("f8a2c1"),
+            "ids tell a reviewer nothing"
+        );
+    }
+
+    #[test]
+    fn a_prose_less_draft_shows_short_args_and_hides_id_shaped_ones() {
+        let mut it = item("y", "pending", "2026-08-24T10:00:00Z");
+        it.tool = "docs__docs_replace".into();
+        it.args = json!({
+            "file_id": "110RA0YIgljxkaZXZcfnp7hKFLqeZtfnlnJRiBBn",
+            "find": "Office hours Tu 2-4",
+            "replace": "Office hours Th 1-3"
+        });
+        let row = row(&it);
+        assert_eq!(row.label, "Doc edit");
+        assert!(
+            !row.snippet.contains("110RA0"),
+            "the file id is noise on a card"
+        );
+        assert!(row.snippet.contains("Office hours"));
+    }
+
+    #[test]
+    fn an_unknown_tool_still_reads_as_words() {
+        let mut it = item("z", "pending", "2026-08-24T10:00:00Z");
+        it.tool = "factory__bundle_publish".into();
+        assert_eq!(row(&it).label, "Bundle publish");
     }
 
     #[test]
