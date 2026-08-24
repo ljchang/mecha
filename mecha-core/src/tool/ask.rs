@@ -32,6 +32,20 @@ pub trait Asker: Send + Sync {
     /// `None` when the user declined to answer — closing the modal, or a
     /// front-end shutting down. Never blocks forever by contract.
     async fn ask(&self, question: &str, options: &[String]) -> Option<String>;
+
+    /// Like [`ask`], with the calling run's [`ToolCtx`] in hand.
+    ///
+    /// A front-end serving one conversation never needs it — the default
+    /// forwards to `ask` — but one agent serving many conversations must
+    /// route the question to the human who owns the run that asked, and the
+    /// context is the only thing that knows which run that is. The tool
+    /// calls this; the loop still learns nothing.
+    ///
+    /// [`ask`]: Asker::ask
+    async fn ask_in(&self, ctx: &ToolCtx, question: &str, options: &[String]) -> Option<String> {
+        let _ = ctx;
+        self.ask(question, options).await
+    }
 }
 
 pub struct AskUserTool {
@@ -95,7 +109,7 @@ impl Tool for AskUserTool {
         Capabilities::default()
     }
 
-    async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+    async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let question = input
             .get("question")
             .and_then(Value::as_str)
@@ -119,7 +133,7 @@ impl Tool for AskUserTool {
             })
             .unwrap_or_default();
 
-        match self.asker.ask(question, &options).await {
+        match self.asker.ask_in(ctx, question, &options).await {
             Some(answer) => Ok(ToolOutput::ok(answer)),
             // An error result rather than an `Err`: the model should be able to
             // carry on with its best guess and say that it did, not have the
