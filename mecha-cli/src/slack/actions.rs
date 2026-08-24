@@ -52,6 +52,8 @@ pub mod ids {
     pub const TRIGGER_ENABLE: &str = "slack_action_trigger_enable";
     pub const TRIGGER_DISABLE: &str = "slack_action_trigger_disable";
     pub const MAIL_IMPORT: &str = "slack_action_mail_import";
+    pub const TASK_DONE: &str = "slack_action_task_done";
+    pub const TASK_NEXT: &str = "slack_action_task_next";
     /// Modal callback ids, parsed by [`super::Action::from_submission`] — the
     /// one constructor that accepts owner-typed text, and only from a signed,
     /// gated `view_submission`. Never valid in [`super::Action::from_payload`]:
@@ -99,6 +101,13 @@ pub enum Action {
     /// additive: the import refuses to overwrite live credentials, so a
     /// second tap fails loudly rather than swapping a mailbox.
     MailImport { provider: String },
+    /// Mark a board task done. Phone-safe on the board's own argument: the
+    /// change reaches nobody (`kg_task_*` is `openWorldHint: false`), every
+    /// status is one move from where it was, and the tool surface has no
+    /// delete — so replay re-asserts a state rather than compounding one.
+    TaskDone { id: String },
+    /// Commit an inbox capture to `next`. The same reversibility argument.
+    TaskNext { id: String },
     /// Close a frontdoor request, with the reason the frontdoor design makes
     /// mandatory. `reason` is **owner-authored text from a gated modal
     /// submission** — see [`Action::from_submission`], the only constructor
@@ -172,6 +181,22 @@ impl Action {
                 provider.clone(),
                 "--provider".into(),
                 provider.clone(),
+            ],
+            Action::TaskDone { id } => vec![
+                "mecha".into(),
+                "tasks".into(),
+                "set".into(),
+                id.clone(),
+                "--status".into(),
+                "done".into(),
+            ],
+            Action::TaskNext { id } => vec![
+                "mecha".into(),
+                "tasks".into(),
+                "set".into(),
+                id.clone(),
+                "--status".into(),
+                "next".into(),
             ],
             Action::FrontdoorClose { seq, reason } => vec![
                 "mecha".into(),
@@ -265,6 +290,12 @@ impl Action {
             ids::MAIL_IMPORT if is_mail_provider(value) => Some(Action::MailImport {
                 provider: value.to_string(),
             }),
+            ids::TASK_DONE if is_task_id(value) => Some(Action::TaskDone {
+                id: value.to_string(),
+            }),
+            ids::TASK_NEXT if is_task_id(value) => Some(Action::TaskNext {
+                id: value.to_string(),
+            }),
             // Deliberately unreachable here: the frontdoor variants carry
             // owner-typed text, and a button's payload must never be able to
             // smuggle text into an argv. They are constructible only through
@@ -320,6 +351,8 @@ impl Action {
             Action::TriggerEnable { .. } => ids::TRIGGER_ENABLE,
             Action::TriggerDisable { .. } => ids::TRIGGER_DISABLE,
             Action::MailImport { .. } => ids::MAIL_IMPORT,
+            Action::TaskDone { .. } => ids::TASK_DONE,
+            Action::TaskNext { .. } => ids::TASK_NEXT,
             Action::FrontdoorClose { .. } => ids::FRONTDOOR_CLOSE_SUBMIT,
             Action::FrontdoorNeedsInfo { .. } => ids::FRONTDOOR_NEEDS_INFO_SUBMIT,
         }
@@ -337,6 +370,7 @@ impl Action {
             | Action::TriggerEnable { name }
             | Action::TriggerDisable { name } => name.clone(),
             Action::MailImport { provider } => provider.clone(),
+            Action::TaskDone { id } | Action::TaskNext { id } => id.clone(),
             Action::FrontdoorClose { seq, .. } | Action::FrontdoorNeedsInfo { seq, .. } => {
                 seq.to_string()
             }
@@ -356,6 +390,8 @@ impl Action {
             Action::MailImport { provider } => {
                 format!("importing the legacy {provider} mail login")
             }
+            Action::TaskDone { id } => format!("marking task `{id}` done"),
+            Action::TaskNext { id } => format!("moving task `{id}` to next"),
             Action::FrontdoorClose { seq, .. } => format!("closing request {seq}"),
             Action::FrontdoorNeedsInfo { seq, .. } => {
                 format!("parking request {seq} for more information")
@@ -379,6 +415,19 @@ fn is_mecha_unit(unit: &str) -> bool {
 /// refuse as a filename is refused here for the same reasons.
 fn is_trigger_name(name: &str) -> bool {
     Trigger::valid_name(name).is_ok()
+}
+
+/// A task id is minted by the graph: `task-` plus an id fragment. Shape check
+/// only — existence is the store's to answer at execution time, where
+/// `kg_task_update` errors on an unknown id rather than creating one.
+fn is_task_id(id: &str) -> bool {
+    id.strip_prefix("task-").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest.len() <= 64
+            && rest
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    })
 }
 
 /// The two legacy per-provider stores that exist. A closed set rather than a
@@ -618,6 +667,42 @@ impl Executor {
             return restart_outcome(unit, unit_is_failed(unit).await);
         }
 
+        // A task action's store is the graph behind MCP — there is no local
+        // file to re-read. But `mecha tasks set` prints `kg_task_update`'s
+        // own JSON answer, which is the store's word *after* the write,
+        // delivered on stdout; parsing that is the read-back, and the
+        // child's exit is still never the answer by itself (a clean exit
+        // with an unreadable answer reports unknown, not done).
+        if let Action::TaskDone { id } | Action::TaskNext { id } = action {
+            let argv = action.argv();
+            let (_, rest) = argv.split_first().expect("argv() is never empty");
+            let out = tokio::process::Command::new(crate::exe::self_exe())
+                .args(rest)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .await;
+            let want = match action {
+                Action::TaskNext { .. } => "next",
+                _ => "done",
+            };
+            return match out {
+                Ok(out) if out.status.success() => {
+                    task_outcome(id, want, serde_json::from_slice(&out.stdout).ok().as_ref())
+                }
+                Ok(out) => Outcome::of(
+                    "failed",
+                    format!(
+                        "Task `{id}` unchanged — {}",
+                        String::from_utf8_lossy(&out.stderr)
+                            .lines()
+                            .next_back()
+                            .unwrap_or("mecha tasks set failed")
+                    ),
+                ),
+                Err(e) => Outcome::of("failed", format!("Task `{id}` unchanged — {e}")),
+            };
+        }
+
         let started = Utc::now();
         let child_note = self.spawn(action).await;
 
@@ -734,6 +819,13 @@ fn store_outcome(
         Action::MailImport { provider } => {
             import_outcome(provider, registry_credentials_exist(provider), child_note)
         }
+        // Answered in `run`, before this function is reached — the graph has
+        // no local store to read back from here; arms anyway, so the match
+        // stays total without a panic in spawned work.
+        Action::TaskDone { id } | Action::TaskNext { id } => Outcome::of(
+            "unknown",
+            format!("task `{id}` — the outcome is read in run()"),
+        ),
         Action::FrontdoorClose { seq, .. } => mark_outcome(
             *seq,
             mecha_core::frontdoor::CLOSED,
@@ -800,6 +892,34 @@ pub fn draft_outcome(
                     ""
                 }
             ),
+        ),
+    }
+}
+
+/// The task as the graph now holds it is the outcome. `answer` is
+/// `kg_task_update`'s reply (`{"status": "updated", "task": {...}}`), passed
+/// through `mecha tasks set`'s stdout; the nested task's status is the field
+/// that answers, because the envelope's `"updated"` says the call ran and
+/// not what it left behind.
+pub fn task_outcome(id: &str, want: &str, answer: Option<&serde_json::Value>) -> Outcome {
+    let task = answer.map(|a| &a["task"]);
+    let name = task
+        .and_then(|t| t["name"].as_str())
+        .map(|n| format!(" — {n}"))
+        .unwrap_or_default();
+    match task.and_then(|t| t["status"].as_str()) {
+        Some(status) if status == want => {
+            Outcome::of(want, format!("Task `{id}` is {want}{name}"))
+        }
+        // The store answered with a different state than the tap asked for —
+        // report what it holds, never what was wanted.
+        Some(status) => Outcome::of(
+            "failed",
+            format!("Task `{id}` reads `{status}` after the tap{name} — check `mecha tasks list`"),
+        ),
+        None => Outcome::of(
+            "unknown",
+            format!("Task `{id}` — the update ran but the answer was unreadable; check `mecha tasks list`"),
         ),
     }
 }
@@ -1159,6 +1279,12 @@ mod tests {
             Action::MailImport {
                 provider: "google".into(),
             },
+            Action::TaskDone {
+                id: "task-1a2b3c4d".into(),
+            },
+            Action::TaskNext {
+                id: "task-1a2b3c4d".into(),
+            },
             Action::FrontdoorClose {
                 seq: 5,
                 reason: "spam".into(),
@@ -1323,6 +1449,28 @@ mod tests {
                 "{hostile}"
             );
         }
+        // A task value must be a graph-minted id: the `task-` prefix and an
+        // id fragment, nothing shell-shaped, and never a bare word that
+        // `mecha tasks set` would take as some other task's name.
+        for hostile in [
+            "",
+            "task-",
+            "buy milk",
+            "task-1a2b; rm -rf /",
+            "task-../escape",
+            "task-a b",
+        ] {
+            assert_eq!(
+                Action::from_payload(ids::TASK_DONE, hostile),
+                None,
+                "{hostile}"
+            );
+            assert_eq!(
+                Action::from_payload(ids::TASK_NEXT, hostile),
+                None,
+                "{hostile}"
+            );
+        }
         // The frontdoor verbs are modal callback ids, and a button payload
         // must never construct them: text can only arrive through the gated
         // submission parser.
@@ -1335,6 +1483,59 @@ mod tests {
             Action::from_payload(ids::FRONTDOOR_NEEDS_INFO_SUBMIT, "5"),
             None
         );
+    }
+
+    /// A board tap round-trips: the id the card carried comes back as the
+    /// same typed action, and its argv drives `mecha tasks set` with the
+    /// status as a literal — the tap picks a verb, never composes one.
+    #[test]
+    fn a_task_tap_round_trips_and_its_status_is_a_literal() {
+        let done = Action::from_payload(ids::TASK_DONE, "task-1a2b3c4d").unwrap();
+        assert_eq!(
+            done,
+            Action::TaskDone {
+                id: "task-1a2b3c4d".into()
+            }
+        );
+        assert_eq!(
+            done.argv(),
+            vec![
+                "mecha".to_string(),
+                "tasks".into(),
+                "set".into(),
+                "task-1a2b3c4d".into(),
+                "--status".into(),
+                "done".into(),
+            ]
+        );
+        let next = Action::from_payload(ids::TASK_NEXT, "task-1a2b3c4d").unwrap();
+        assert_eq!(next.argv()[5], "next");
+    }
+
+    /// The read-back answers from the graph's own reply, never the child's
+    /// exit: the nested task's status decides, a different status than the
+    /// tap asked for reports as what the store holds, and an unreadable
+    /// answer is unknown — not done.
+    #[test]
+    fn a_task_outcome_is_the_stores_word_or_unknown() {
+        use serde_json::json;
+        let answer = json!({
+            "v": 1, "status": "updated",
+            "task": { "id": "task-aa", "name": "email Dirk", "status": "done" }
+        });
+        let out = task_outcome("task-aa", "done", Some(&answer));
+        assert_eq!(out.status, "done");
+        assert!(out.line.contains("email Dirk"), "{}", out.line);
+
+        // The envelope says "updated" but the task reads otherwise — the
+        // store's word wins over the tap's intent.
+        let wrong = json!({ "status": "updated", "task": { "status": "inbox" } });
+        let out = task_outcome("task-aa", "done", Some(&wrong));
+        assert_eq!(out.status, "failed");
+        assert!(out.line.contains("`inbox`"), "{}", out.line);
+
+        let out = task_outcome("task-aa", "done", None);
+        assert_eq!(out.status, "unknown");
     }
 
     #[test]
