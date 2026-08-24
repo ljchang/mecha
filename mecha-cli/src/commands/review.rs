@@ -464,6 +464,45 @@ fn collect_queues() -> Vec<Queue> {
         opens: "mecha review list",
     });
 
+    // The graph's *entity* proposals — a second queue in the same store,
+    // and deliberately its own row rather than folded into the count above.
+    // They are different work: a fact candidate is "is this true?", an
+    // entity proposal is "is this the same person?", and a single number
+    // covering both tells you how much is waiting without telling you what
+    // kind of afternoon it is.
+    let (depth, detail) = match graph_json(&["proposals", "summary", "--json"]) {
+        Ok(v) => {
+            let rows = v.as_array().cloned().unwrap_or_default();
+            let total: usize = rows
+                .iter()
+                .filter_map(|r| r["pending"].as_u64())
+                .map(|n| n as usize)
+                .sum();
+            let detectors = rows
+                .iter()
+                .filter(|r| r["pending"].as_u64() > Some(0))
+                .count();
+            (
+                Some(total),
+                if total == 0 {
+                    "nothing the entity detectors can see".to_string()
+                } else {
+                    format!("{detectors} detector(s) with something to say")
+                },
+            )
+        }
+        // An older mecha-graph has no `proposals` verb, and that reads as
+        // unreadable rather than empty — the dash rule. "Nothing waiting" and
+        // "could not look" are opposite findings.
+        Err(e) => (None, format!("{e:#}")),
+    };
+    out.push(Queue {
+        name: "graph entities",
+        depth,
+        detail,
+        opens: "mecha-graph proposals list",
+    });
+
     let (depth, detail) = match OutboxStore::default_root().and_then(OutboxStore::open) {
         Ok(store) => match store.items() {
             Ok(items) => {
