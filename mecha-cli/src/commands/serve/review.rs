@@ -288,6 +288,9 @@ pub struct GroupsQuery {
     /// The top layer: group the whole pending queue across classes.
     #[serde(default)]
     pub all: bool,
+    /// Cosine floor override — the page's looser/stricter stepper, always
+    /// stepping from the threshold the last envelope reported ran.
+    pub threshold: Option<f64>,
 }
 
 /// GET /api/queue/groups — one class's pending candidates grouped by
@@ -306,6 +309,11 @@ pub async fn groups(State(state): St, Query(q): Query<GroupsQuery>) -> Response 
         if let Some(p) = &q.proposer {
             args.push("--proposer");
             args.push(p);
+        }
+        let t_s = q.threshold.map(|t| format!("{t:.2}"));
+        if let Some(t) = &t_s {
+            args.push("--threshold");
+            args.push(t);
         }
         return match self_json_within(&state, &args, 360).await {
             Ok(v) => Json(v).into_response(),
