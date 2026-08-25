@@ -323,7 +323,32 @@ two doors are the same surface; `scripts/voice/page/` was deleted and
 `tailscale serve status`. The docs site was rebuilt but **not deployed**, so
 <https://docs.mecha-factory.ai/docs/features/voice> still says "two places to
 talk from" — confirmed by fetching it this date — until someone pushes the
-site. That deploy is the one thing this pass left undone.
+site. That deploy has since been pushed and verified live.
+
+**The worktree convention has no retirement policy, and it cost 85 GB.**
+Fourteen worktrees had accumulated under `.claude/worktrees/` and various
+session scratchpads — essentially **one `target/` each** (17 GB in
+`tasks-arc`, 11.7 in `vision-arc`) against roughly 100 MB of combined
+source. The convention that produced them is right and is what let three
+sessions work in parallel on 2026-08-25; what it lacks is any statement of
+**when a worktree stops earning its disk**. Note the shape is already solved
+one directory over: `[work] keep` answers exactly that question for
+generated output, with `mecha work clean` as the policy and the nightly as
+the trigger — which is why `~/.mecha/work` stayed at 56 MB while the
+worktrees grew unwatched. `CARGO_TARGET_DIR` pointed at one shared directory
+is the structural fix if it recurs; a retention verb is the policy one.
+
+**And clearing them nearly destroyed the only copy of the raw benchmark
+trials.** `results/` in main tracks the Terminal-Bench *scorecards*; nothing
+tracked the per-trial output, and 1,627 files of `jobs/` — `config.json`,
+`result.json`, per-trial `trial.log` from 2026-08-11 — lived only in the
+`bench-run-*` worktrees, gitignored. Archived to
+`~/.mecha/archive/bench-jobs-2026-08-11.tar.gz` (4.4 MB, file count verified
+against disk) before removal. The near-miss is instructive because the rule
+was already written down: HISTORY's "a gitignored file in a disposable
+worktree dies with the worktree" entry predates this by weeks, and the
+check that caught it was counting files on disk rather than trusting a
+survey of tracked content.
 
 | Port | Model | State |
 |---|---|---|
