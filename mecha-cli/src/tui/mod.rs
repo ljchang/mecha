@@ -4861,11 +4861,17 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('g') | KeyCode::Home => modal.selected = 0,
         KeyCode::Char('G') | KeyCode::End => modal.selected = modal.len().saturating_sub(1),
         KeyCode::Esc | KeyCode::Char('q') => match modal.level {
+            // Esc peels one layer at a time here too: the detail closes
+            // before the level does.
+            queues::Level::Review if modal.review_detail.is_some() => {
+                modal.review_detail = None;
+            }
             queues::Level::Review => {
                 modal.level = queues::Level::Queues;
                 modal.selected = 0;
                 modal.review.clear();
                 modal.review_source = None;
+                modal.review_detail = None;
                 reload_queues(app, None);
             }
             // Esc peels one level at a time, never two — and the item
@@ -5162,6 +5168,12 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         said
                     };
                     reload_queues(app, Some(note));
+                    // The item just decided is gone from the list, so a
+                    // detail still showing it describes something that is no
+                    // longer there.
+                    if let Some(m) = &mut app.queues {
+                        m.review_detail = None;
+                    }
                 }
                 Err(e) => {
                     if let Some(m) = &mut app.queues {
@@ -7925,12 +7937,43 @@ fn handle_entity_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // A pending merge takes every key: it is the one irreversible action on
+    // this modal, so nothing else may happen while it is on screen.
+    if let Some((keep_id, keep, dup_id, dup)) = modal.merge_confirm.clone() {
+        match key.code {
+            KeyCode::Char('y') => {
+                modal.merge_confirm = None;
+                modal.merge_keep = None;
+                match graph_cli(&["merge", &keep_id, &dup_id]) {
+                    Ok(_) => {
+                        modal.status = Some(format!("merged {dup:?} into {keep:?}"));
+                        entity_lookup(app);
+                    }
+                    Err(e) => modal.status = Some(format!("merge failed: {e}")),
+                }
+            }
+            // Anything that is not an explicit yes is a no. EOF-is-no, one
+            // layer up — a confirmation that could be dismissed into
+            // proceeding is not one.
+            _ => {
+                modal.merge_confirm = None;
+                modal.merge_keep = None;
+                modal.status = Some("merge cancelled".into());
+            }
+        }
+        return Ok(());
+    }
+
     if modal.help {
         modal.help = false;
         return Ok(());
     }
 
     match key.code {
+        KeyCode::Esc if modal.merge_keep.is_some() => {
+            modal.merge_keep = None;
+            modal.status = Some("merge cancelled".into());
+        }
         KeyCode::Esc => app.entities = None,
         KeyCode::Char('?') => modal.help = true,
         KeyCode::Up => modal.move_sel(-1),
@@ -7954,6 +7997,32 @@ fn handle_entity_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('a') if modal.selected_row().is_some() => {
             modal.edit = Some((entity::EditKind::Alias, String::new()));
+        }
+        // Two keystrokes on two rows rather than a form: what is being
+        // merged is *these two nodes on screen*, and a field asking for an
+        // id would be answered by copying one off the display.
+        KeyCode::Char('m') if modal.selected_row().is_some() => {
+            let row = modal.selected_row().expect("checked");
+            let (id, name) = (row.id.clone(), row.name.clone());
+            match modal.merge_keep.clone() {
+                None => {
+                    modal.merge_keep = Some(id);
+                    modal.status = Some(format!("keeping {name:?} — now pick the duplicate"));
+                }
+                Some(keep_id) if keep_id == id => {
+                    modal.merge_keep = None;
+                    modal.status = Some("unmarked".into());
+                }
+                Some(keep_id) => {
+                    let keep_name = modal
+                        .rows
+                        .iter()
+                        .find(|r| r.id == keep_id)
+                        .map(|r| r.name.clone())
+                        .unwrap_or_else(|| keep_id.clone());
+                    modal.merge_confirm = Some((keep_id, keep_name, id, name));
+                }
+            }
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             modal.query.push(c);
@@ -8438,6 +8507,74 @@ mod tests {
         assert!(app.entities.as_ref().unwrap().edit.is_none());
         ent_press(&mut app, KeyCode::Esc);
         assert!(app.entities.is_none());
+    }
+
+    /// Merging is two keystrokes on two rows, and the first one only marks.
+    #[test]
+    fn m_marks_a_survivor_before_it_merges_anything() {
+        let mut app = entity_app();
+        ent_press(&mut app, KeyCode::Char('m'));
+        let m = app.entities.as_ref().unwrap();
+        assert_eq!(m.merge_keep.as_deref(), Some("person-53667537"));
+        assert!(m.merge_confirm.is_none(), "one row is not a merge");
+    }
+
+    /// Pressing m on the marked row again unmarks it — the same key backs
+    /// out of its own first step.
+    #[test]
+    fn m_on_the_marked_row_unmarks_it() {
+        let mut app = entity_app();
+        ent_press(&mut app, KeyCode::Char('m'));
+        ent_press(&mut app, KeyCode::Char('m'));
+        assert!(app.entities.as_ref().unwrap().merge_keep.is_none());
+    }
+
+    fn two_row_app() -> App {
+        let mut app = test_app();
+        let mut modal = entity::EntityModal::new();
+        modal.install(
+            r#"[{"id":"person-a","name":"Grace Choi","node_type":"person"},
+                {"id":"person-b","name":"Youn Ji Choi","node_type":"person"}]"#,
+        );
+        app.entities = Some(modal);
+        app
+    }
+
+    /// The only irreversible action on this modal is the only one that
+    /// confirms — and anything that is not an explicit yes is a no.
+    #[test]
+    fn a_merge_confirms_and_anything_but_y_cancels() {
+        for dismissal in [KeyCode::Esc, KeyCode::Char('n'), KeyCode::Char('q')] {
+            let mut app = two_row_app();
+            ent_press(&mut app, KeyCode::Char('m'));
+            ent_press(&mut app, KeyCode::Down);
+            ent_press(&mut app, KeyCode::Char('m'));
+            let m = app.entities.as_ref().unwrap();
+            let (keep, _, dup, _) = m.merge_confirm.clone().expect("confirm pending");
+            assert_eq!(keep, "person-a");
+            assert_eq!(dup, "person-b");
+
+            ent_press(&mut app, dismissal);
+            let m = app.entities.as_ref().unwrap();
+            assert!(m.merge_confirm.is_none(), "{dismissal:?} left it pending");
+            assert!(m.merge_keep.is_none(), "{dismissal:?} left a mark");
+            assert!(app.entities.is_some(), "{dismissal:?} closed the modal");
+        }
+    }
+
+    /// While a merge is pending, nothing else responds — a stray `r` must
+    /// not open a rename behind a confirmation.
+    #[test]
+    fn a_pending_merge_swallows_every_other_key() {
+        let mut app = two_row_app();
+        ent_press(&mut app, KeyCode::Char('m'));
+        ent_press(&mut app, KeyCode::Down);
+        ent_press(&mut app, KeyCode::Char('m'));
+        ent_press(&mut app, KeyCode::Char('r'));
+        assert!(
+            app.entities.as_ref().unwrap().edit.is_none(),
+            "a rename opened behind the confirmation"
+        );
     }
 
     /// Ctrl-N seeds the new-person box with what was typed, because the
