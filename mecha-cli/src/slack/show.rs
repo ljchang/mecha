@@ -48,7 +48,36 @@ use mecha_core::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
 use mecha_slack::{files, Slack};
 use serde_json::{json, Value};
 
-pub struct ShowFileTool;
+/// The size cap, read once when the tool is registered.
+///
+/// **Not read at call time, and that is the whole point of the field.** This
+/// tool wanted one number out of `[slack]` and loaded the *entire* global
+/// config to get it, which coupled every unrelated section's strictness to a
+/// tool call arbitrarily deep into a session. `Config` is
+/// `deny_unknown_fields` — correctly, since config is a wire format between
+/// versions — so adding any key anywhere made `show_file` start failing with
+/// a parse error in a process that had been running since before the key
+/// existed. It happened twice on 2026-08-21: once when `vision` was added
+/// ahead of the binary that knew it, and again with `[[search]]
+/// prefer_deep`. Twice in one day is the argument for the fix rather than for
+/// remembering the install ordering.
+///
+/// Registration is the right moment because it is also the only moment the
+/// TUI rebuilds this tool: startup, and every `/model`, `/provider` or `/mcp`
+/// switch. Those already re-read config, and a failure there is reported
+/// against the keystroke that caused it — which is what a config error should
+/// look like, instead of a chart the model silently could not show.
+pub struct ShowFileTool {
+    max_upload_bytes: u64,
+}
+
+impl ShowFileTool {
+    pub fn new(max_upload_mb: u64) -> Self {
+        ShowFileTool {
+            max_upload_bytes: max_upload_mb.saturating_mul(1024 * 1024),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for ShowFileTool {
@@ -118,21 +147,18 @@ impl Tool for ShowFileTool {
             Err(e) => return Ok(ToolOutput::err(format!("could not read the store: {e}"))),
         };
 
-        // `Ok(is_error)`, not `?`. Every other failure in this function lets
-        // the model route around it — say what it made and where — and a
-        // malformed config is no more the model's fault than a missing file.
-        let cfg = match mecha_core::config::Config::load_global() {
-            Ok(cfg) => cfg,
-            Err(e) => return Ok(ToolOutput::err(format!("could not read the config: {e}"))),
-        };
-        let max_bytes = cfg.slack.max_upload_mb.saturating_mul(1024 * 1024);
         let meta = match std::fs::metadata(&path) {
             Ok(meta) => meta,
             Err(e) => return Ok(ToolOutput::err(format!("cannot read {raw}: {e}"))),
         };
         // Shared with `/send`, so a refusal reads the same however it was
         // asked for, and the two cannot drift about what is too big.
-        let name = match crate::slack::send::vet(&path, meta.is_dir(), meta.len(), max_bytes) {
+        let name = match crate::slack::send::vet(
+            &path,
+            meta.is_dir(),
+            meta.len(),
+            self.max_upload_bytes,
+        ) {
             Ok(name) => name,
             Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
         };
@@ -194,7 +220,7 @@ mod tests {
     /// Each of these being wrong is a different bug, so each is named.
     #[test]
     fn show_file_sits_in_the_third_quadrant() {
-        let caps = ShowFileTool.capabilities();
+        let caps = ShowFileTool::new(25).capabilities();
         assert!(caps.private_data, "it reads workspace bytes");
         assert!(
             !caps.external_send,
@@ -206,7 +232,7 @@ mod tests {
             "it returns the harness's own report, not third-party content"
         );
         assert!(!caps.destructive, "it changes nothing");
-        assert!(ShowFileTool.read_only());
+        assert!(ShowFileTool::new(25).read_only());
     }
 
     /// **The load-bearing absence.** The whole safety argument is that the
@@ -216,7 +242,7 @@ mod tests {
     /// any other line of code changing.
     #[test]
     fn the_schema_offers_no_way_to_name_a_destination() {
-        let schema = ShowFileTool.input_schema();
+        let schema = ShowFileTool::new(25).input_schema();
         let props = schema["properties"].as_object().expect("an object schema");
         assert_eq!(
             props.keys().collect::<Vec<_>>(),
@@ -232,10 +258,95 @@ mod tests {
     /// as done. Every refusal path has to arrive as an error the model can
     /// recover from — `Ok(is_error)`, per the project's convention, so it can
     /// route around rather than failing the run.
+    /// `MECHA_HOME` is process-global, so a test that moves it holds a lock
+    /// and puts it back — the `work.rs` tests' guard, which is private to
+    /// that module.
+    struct HomeGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: Option<String>,
+        dir: std::path::PathBuf,
+    }
+
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    impl HomeGuard {
+        fn new() -> Self {
+            let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+            let previous = std::env::var("MECHA_HOME").ok();
+            let dir =
+                std::env::temp_dir().join(format!("mecha-show-{}-{}", std::process::id(), line!()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::env::set_var("MECHA_HOME", &dir);
+            HomeGuard {
+                _lock: lock,
+                previous,
+                dir,
+            }
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(v) => std::env::set_var("MECHA_HOME", v),
+                None => std::env::remove_var("MECHA_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// The regression, driven rather than asserted about.
+    ///
+    /// A config file this binary cannot parse — which is what every added key
+    /// looks like to a process that started before it — and a live attachment,
+    /// so the call reaches the point where the cap is needed. It used to load
+    /// the whole global config there and fail with a parse error about a
+    /// section it has no interest in; it now uses the number it was given.
+    ///
+    /// Fails on the old code with "could not read the config", which is the
+    /// message two sessions actually saw on 2026-08-21.
+    #[tokio::test]
+    async fn an_unparseable_config_no_longer_reaches_a_call_two_hours_in() {
+        let home = HomeGuard::new();
+        std::fs::write(
+            home.dir.join("config.toml"),
+            "[a_section_this_binary_has_never_heard_of]\nkey = 1\n",
+        )
+        .unwrap();
+        // Proves the file really is fatal to a config load, so the test is
+        // not passing because the config happened to be fine.
+        assert!(mecha_core::config::Config::load_global().is_err());
+
+        let workspace = home.dir.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("chart.png"), b"not really a png").unwrap();
+
+        let store = crate::slack::remote::RemoteStore::open_default().unwrap();
+        let mut rec = crate::slack::remote::AttachRecord::new("t", "s", workspace.clone());
+        rec.channel_id = Some("C1".into());
+        rec.thread_ts = Some("1.2".into());
+        store.put(&rec).unwrap();
+
+        // A cap of zero, so the size check is what answers and no network is
+        // reached. What matters is *which* refusal comes back.
+        let ctx = ToolCtx::default().with_workspace(workspace);
+        let out = ShowFileTool::new(0)
+            .call(json!({ "path": "chart.png" }), &ctx)
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            !out.content.contains("config"),
+            "the cap must come from registration, not from a call-time load: {}",
+            out.content
+        );
+        assert!(out.content.contains("max_upload_mb"), "{}", out.content);
+    }
+
     #[tokio::test]
     async fn a_missing_path_argument_is_a_recoverable_error() {
         let ctx = ToolCtx::default();
-        let out = ShowFileTool.call(json!({}), &ctx).await.unwrap();
+        let out = ShowFileTool::new(25).call(json!({}), &ctx).await.unwrap();
         assert!(out.is_error);
         assert!(out.content.contains("path"), "{}", out.content);
         assert!(
