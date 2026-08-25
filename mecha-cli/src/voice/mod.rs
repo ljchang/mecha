@@ -16,6 +16,12 @@
 //!   framework re-sends its whole chat history every request; only the last
 //!   user message is read, because mecha's `Conversation` is the state
 //!   (the Slack-thread precedent).
+//! - **A call may be someone else's conversation** (D3). When the caller
+//!   names one in `X-Chat-Session` and a [`SessionHost`] owns it, the turn
+//!   runs *there* — same messages, same taint, same transcript, same jail —
+//!   and this module keeps no record of it at all. Talking and typing stop
+//!   being two threads. An unnamed or unrecognised key still gets a slot of
+//!   its own, so nothing that worked before D3 stopped working.
 //! - **A new request for a busy session is barge-in.** It cancels the run
 //!   in flight and waits for the slot; the partial turn survives in the
 //!   conversation, exactly as with Ctrl-C. Client disconnect mid-stream
@@ -75,6 +81,78 @@ reciting it. Before a slow step, say one short line about what you are \
 doing. When a message or email was staged for review rather than sent, say \
 so out loud. Keep replies brief unless the user asks you to go deep.";
 
+// ------------------------------------------------------- the hosted door
+//
+// D3: a call the page named speaks into *that* conversation, rather than
+// into a second one of the facade's own. The seam is a trait so `voice/`
+// never learns that `serve/` exists — the `Approver`/`Asker` shape, applied
+// to "whose conversation is this".
+//
+// The alternative considered and rejected was merging a voice conversation
+// onto the web session when the call ends: much smaller, and it buys a
+// duplicate record — the same turns in two session JSONLs for `recall`,
+// `distill` and the run-quality corpus each to count twice.
+
+/// What a hosted turn hands back: the run's events as they happen, the
+/// answer when it lands, and the handle that stops it. Deliberately the
+/// same three things a facade-owned slot produces, so the SSE pump below
+/// cannot behave differently depending on whose conversation answered.
+pub struct HostedTurn {
+    pub events: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    pub done: tokio::sync::oneshot::Receiver<Result<HostedAnswer, String>>,
+    pub cancel: CancellationToken,
+}
+
+/// A hosted run's outcome, in the currency this facade answers in.
+pub struct HostedAnswer {
+    pub text: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// What asking a host to speak can come to.
+pub enum Hosted {
+    Started(Box<HostedTurn>),
+    /// Not a conversation this host owns — an invalid key, or a call that
+    /// named nothing. The facade falls back to its own slot map, which is
+    /// what every call did before D3.
+    Unknown,
+    /// The conversation would not come free inside the barge-in window,
+    /// usually a tool call outlasting it. Answered exactly as a busy slot is.
+    Busy,
+    Failed(String),
+}
+
+/// A front-end that owns conversations a call can speak into.
+#[async_trait::async_trait]
+pub trait SessionHost: Send + Sync {
+    /// Start a spoken turn on `key`, barging in on any run in flight.
+    ///
+    /// `approve_all` is `--voice-yes` travelling with the turn rather than
+    /// with the conversation: the owner is present and speaking, and an
+    /// approval card cannot be tapped mid-sentence. It is deliberately not
+    /// the host's posture to decide, and deliberately not sticky — a typed
+    /// turn in the same conversation still runs at whatever the page says.
+    async fn speak(&self, key: &str, utterance: &str, approve_all: bool) -> Hosted;
+}
+
+/// Open a spoken turn with the D10 block when the conversation has not just
+/// been spoken into — at the start of a call, and again after any typed
+/// turn, because the model has been writing for a reader since.
+///
+/// One rule, two callers: a facade slot is spoken-only, so "the previous
+/// turn was spoken" is exactly "the conversation is not empty"; a hosted
+/// conversation carries the flag because typed and spoken turns share it.
+/// Prepending costs nothing in cache terms — the transcript is append-only,
+/// so the block lands at the end and every earlier byte still matches.
+pub(crate) fn open_spoken_turn(text: &str, previous_turn_was_spoken: bool) -> String {
+    if previous_turn_was_spoken {
+        text.to_string()
+    } else {
+        format!("{VOICE_BLOCK}\n\n{text}")
+    }
+}
+
 /// One voice session between runs: its conversation and its transcript.
 struct Slot {
     convo: Conversation,
@@ -88,19 +166,31 @@ enum SlotState {
     Running(CancellationToken),
 }
 
-struct Shared {
-    agent: Arc<Agent>,
+/// How the facade is mounted. Standalone (`Mount::default()`) is what
+/// `mecha voice-serve` builds its own agent for; the unified `mecha serve`
+/// fills all three in. A struct rather than three positional flags, because
+/// two of them are booleans that mean opposite things about the same run.
+#[derive(Default)]
+pub struct Mount {
     /// True when the agent is shared with other front-ends (the unified
     /// `mecha serve`): the D10 voice block then cannot ride the system
-    /// prompt, so it is prepended to each voice conversation's first user
-    /// message instead — one copy per conversation, cached thereafter.
-    inject_voice_block: bool,
+    /// prompt, so it opens each spoken stretch of a conversation instead —
+    /// one copy per stretch, cached thereafter.
+    pub inject_voice_block: bool,
     /// The owner-present posture for voice runs. The shared agent carries
     /// the config's approver — `Ask`, which a non-interactive run answers
     /// with Blocked — so a mounted facade must say so explicitly or every
     /// voice tool call is refused ("I don't have access to your calendar",
     /// live, 2026-08-24). Outbox routing is untouched: sends still stage.
-    approve_all: bool,
+    pub approve_all: bool,
+    /// The front-end whose conversations a call may speak into (D3). None
+    /// is the pre-unification world: every call is the facade's own.
+    pub host: Option<Arc<dyn SessionHost>>,
+}
+
+struct Shared {
+    agent: Arc<Agent>,
+    mount: Mount,
     slots: Mutex<HashMap<String, SlotState>>,
     session_dir: PathBuf,
     outbox_root: PathBuf,
@@ -127,14 +217,12 @@ impl Facade {
         config: mecha_core::config::Config,
         outbox_root: PathBuf,
         token: Option<String>,
-        inject_voice_block: bool,
-        approve_all: bool,
+        mount: Mount,
     ) -> Result<Self> {
         Ok(Self {
             shared: Arc::new(Shared {
                 agent,
-                inject_voice_block,
-                approve_all,
+                mount,
                 slots: Mutex::new(HashMap::new()),
                 session_dir: Session::default_dir()?,
                 outbox_root,
@@ -233,11 +321,11 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         outbox_root,
         args.token.clone(),
         // Standalone: the voice block already rides this agent's system
-        // prompt via system_extra, so nothing to inject per conversation —
-        // and the launch flags (--yes/--read-only) already shaped the
-        // agent's own approver, so no override either.
-        false,
-        false,
+        // prompt via system_extra, so nothing to inject per conversation;
+        // the launch flags (--yes/--read-only) already shaped the agent's
+        // own approver, so no override either; and there is no other
+        // front-end in this process holding conversations to speak into.
+        Mount::default(),
     )?;
 
     println!(
@@ -275,6 +363,12 @@ struct Head {
     content_length: usize,
     authorization: Option<String>,
     session: Option<String>,
+    /// `X-Chat-Session`: a conversation the *caller* named, for the facade
+    /// to speak into rather than opening one of its own (D3). Deliberately
+    /// a second header rather than a namespace inside the first — one
+    /// header carrying two meanings is a value nobody can validate, and a
+    /// page is free to name a session `webrtc-anything`.
+    chat: Option<String>,
     body_start: usize,
 }
 
@@ -287,6 +381,7 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
             let mut content_length = 0usize;
             let mut authorization = None;
             let mut session = None;
+            let mut chat = None;
             for h in req.headers.iter() {
                 if h.name.eq_ignore_ascii_case("content-length") {
                     content_length = std::str::from_utf8(h.value)?.trim().parse()?;
@@ -294,6 +389,8 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
                     authorization = Some(String::from_utf8_lossy(h.value).into_owned());
                 } else if h.name.eq_ignore_ascii_case("x-voice-session") {
                     session = Some(String::from_utf8_lossy(h.value).trim().to_string());
+                } else if h.name.eq_ignore_ascii_case("x-chat-session") {
+                    chat = Some(String::from_utf8_lossy(h.value).trim().to_string());
                 }
             }
             Ok(Some(Head {
@@ -302,6 +399,7 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
                 content_length,
                 authorization,
                 session,
+                chat,
                 body_start,
             }))
         }
@@ -524,6 +622,149 @@ async fn take_slot(
     Ok(None)
 }
 
+/// Stream the reply as the run produces it, or (non-streaming) drain the
+/// events without rendering them. Returns true when the client hung up —
+/// the third spelling of interrupt, which cancels.
+///
+/// Shared by the facade's own slots and by a hosted conversation on
+/// purpose: what the worker hears must not depend on whose conversation
+/// answered it.
+async fn pump(
+    stream: &mut TcpStream,
+    id: &str,
+    model: &str,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    cancel: &CancellationToken,
+    want_stream: bool,
+) -> bool {
+    if !want_stream {
+        while rx.recv().await.is_some() {}
+        return false;
+    }
+    let mut disconnected = false;
+    let head_bytes = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n";
+    if stream.write_all(head_bytes.as_bytes()).await.is_err() {
+        cancel.cancel();
+        disconnected = true;
+    }
+    if !disconnected {
+        let first = sse_chunk(id, model, json!({"role": "assistant"}), None);
+        if write_chunk(stream, first.as_bytes()).await.is_err() {
+            cancel.cancel();
+            disconnected = true;
+        }
+    }
+    let mut keepalive = tokio::time::interval(Duration::from_secs(5));
+    keepalive.reset();
+    loop {
+        tokio::select! {
+            ev = rx.recv() => match ev {
+                Some(AgentEvent::TextDelta(t)) if !disconnected => {
+                    let chunk = sse_chunk(id, model, json!({"content": t}), None);
+                    if write_chunk(stream, chunk.as_bytes()).await.is_err() {
+                        cancel.cancel();
+                        disconnected = true;
+                    }
+                }
+                Some(_) => {}
+                // The run dropped its sender: it is over. The caller
+                // collects the outcome.
+                None => break,
+            },
+            _ = keepalive.tick() => {
+                if !disconnected
+                    && write_chunk(stream, b": ping\n\n").await.is_err() {
+                    cancel.cancel();
+                    disconnected = true;
+                }
+            }
+        }
+    }
+    disconnected
+}
+
+/// Close the SSE body. A failure must be *audible*: a clean "stop" after
+/// silence reads as the assistant ignoring the user, and the server-side
+/// log is the one place a voice user will never look.
+async fn finish_stream(stream: &mut TcpStream, id: &str, model: &str, error: Option<&str>) {
+    if let Some(e) = error {
+        let spoken = sse_chunk(
+            id,
+            model,
+            json!({"content": format!("I hit a problem and could not answer: {e}")}),
+            None,
+        );
+        let _ = write_chunk(stream, spoken.as_bytes()).await;
+    }
+    let done = sse_chunk(id, model, json!({}), Some("stop"));
+    let _ = write_chunk(stream, done.as_bytes()).await;
+    let _ = write_chunk(stream, b"data: [DONE]\n\n").await;
+    let _ = stream.write_all(b"0\r\n\r\n").await;
+}
+
+/// A turn spoken into a conversation another front-end owns (D3). The
+/// facade keeps no state for it at all — no slot, no session file, no
+/// conversation — because a second copy of any of those is the duplicate
+/// record this shape exists to avoid.
+async fn hosted_completion(
+    stream: &mut TcpStream,
+    shared: &Arc<Shared>,
+    id: &str,
+    want_stream: bool,
+    mut turn: HostedTurn,
+) -> Result<()> {
+    let disconnected = pump(
+        stream,
+        id,
+        &shared.model,
+        &mut turn.events,
+        &turn.cancel,
+        want_stream,
+    )
+    .await;
+    let answer = turn
+        .done
+        .await
+        .unwrap_or_else(|_| Err("the run ended without answering".to_string()));
+    if want_stream {
+        if !disconnected {
+            finish_stream(
+                stream,
+                id,
+                &shared.model,
+                answer.as_ref().err().map(|e| &**e),
+            )
+            .await;
+        }
+        return Ok(());
+    }
+    match answer {
+        Ok(a) => {
+            write_json(
+                stream,
+                200,
+                &json!({
+                    "id": id,
+                    "object": "chat.completion",
+                    "created": chrono::Utc::now().timestamp(),
+                    "model": shared.model,
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": a.text},
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {
+                        "prompt_tokens": a.input_tokens,
+                        "completion_tokens": a.output_tokens,
+                    },
+                }),
+            )
+            .await
+        }
+        Err(e) => write_json(stream, 500, &json!({"error": e})).await,
+    }
+}
+
 async fn completion(
     stream: &mut TcpStream,
     shared: &Arc<Shared>,
@@ -541,6 +782,39 @@ async fn completion(
         return write_json(stream, 400, &json!({"error": "no user message"})).await;
     };
     let want_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    let id = format!("chatcmpl-{}", Session::new_id());
+
+    // D3: the caller named a conversation, so speak into that one. Only a
+    // key the host does not recognise falls through to the facade's own
+    // slot — a warning rather than a refusal, because the fallback is
+    // exactly what every call did before D3 and a dead call is a worse
+    // answer than an unshared one. What the fall-through costs is visible
+    // where it matters: the page's transcript simply does not move.
+    if let (Some(chat_key), Some(host)) = (&head.chat, &shared.mount.host) {
+        if !chat_key.is_empty() {
+            match host.speak(chat_key, &text, shared.mount.approve_all).await {
+                Hosted::Started(turn) => {
+                    return hosted_completion(stream, shared, &id, want_stream, *turn).await
+                }
+                Hosted::Busy => return write_json(
+                    stream,
+                    503,
+                    &json!({"error": "still finishing the previous step — try again in a moment"}),
+                )
+                .await,
+                Hosted::Failed(e) => {
+                    tracing::error!("voice turn on chat session {chat_key:?} failed: {e}");
+                    return write_json(stream, 500, &json!({"error": e})).await;
+                }
+                Hosted::Unknown => {
+                    tracing::warn!(
+                        "voice call named chat session {chat_key:?}, which no front-end \
+                         holds — answering in a conversation of its own instead"
+                    );
+                }
+            }
+        }
+    }
 
     let Some((mut slot, cancel)) = take_slot(shared, &key).await? else {
         // The in-flight run would not yield — usually a tool call longer
@@ -559,7 +833,7 @@ async fn completion(
     // nothing below uses `?` until it has.
     let mut cx = (**shared.agent.context()).clone();
     cx.cancel = Some(cancel.clone());
-    if shared.approve_all {
+    if shared.mount.approve_all {
         cx.approver = Arc::new(mecha_core::tool::ModeApprover {
             mode: mecha_core::config::PermissionMode::Allow,
         });
@@ -592,9 +866,10 @@ async fn completion(
     }
 
     // On a shared agent the D10 block cannot ride the system prompt, so a
-    // new voice conversation opens with it — one copy, cached thereafter.
-    let text = if shared.inject_voice_block && slot.convo.is_empty() {
-        format!("{VOICE_BLOCK}\n\n{text}")
+    // spoken stretch opens with it. A facade slot is spoken-only, so "the
+    // previous turn was spoken" is exactly "this conversation is not new".
+    let text = if shared.mount.inject_voice_block {
+        open_spoken_turn(&text, !slot.convo.is_empty())
     } else {
         text
     };
@@ -610,53 +885,7 @@ async fn completion(
         (slot, outcome)
     });
 
-    let id = format!("chatcmpl-{}", Session::new_id());
-    let mut disconnected = false;
-
-    if want_stream {
-        let head_bytes = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n";
-        if stream.write_all(head_bytes.as_bytes()).await.is_err() {
-            cancel.cancel();
-            disconnected = true;
-        }
-        if !disconnected {
-            let first = sse_chunk(&id, &shared.model, json!({"role": "assistant"}), None);
-            if write_chunk(stream, first.as_bytes()).await.is_err() {
-                cancel.cancel();
-                disconnected = true;
-            }
-        }
-        let mut keepalive = tokio::time::interval(Duration::from_secs(5));
-        keepalive.reset();
-        loop {
-            tokio::select! {
-                ev = rx.recv() => match ev {
-                    Some(AgentEvent::TextDelta(t)) if !disconnected => {
-                        let chunk = sse_chunk(&id, &shared.model, json!({"content": t}), None);
-                        if write_chunk(stream, chunk.as_bytes()).await.is_err() {
-                            // The hang-up is the third spelling of interrupt.
-                            cancel.cancel();
-                            disconnected = true;
-                        }
-                    }
-                    Some(_) => {}
-                    // The run dropped its sender: it is over. Keep going to
-                    // collect the outcome below.
-                    None => break,
-                },
-                _ = keepalive.tick() => {
-                    if !disconnected
-                        && write_chunk(stream, b": ping\n\n").await.is_err() {
-                        cancel.cancel();
-                        disconnected = true;
-                    }
-                }
-            }
-        }
-    } else {
-        // Non-streaming: drain events without rendering them.
-        while rx.recv().await.is_some() {}
-    }
+    let disconnected = pump(stream, &id, &shared.model, &mut rx, &cancel, want_stream).await;
 
     let (mut slot, outcome) = match run.await {
         Ok(pair) => pair,
@@ -702,22 +931,8 @@ async fn completion(
 
     if want_stream {
         if !disconnected {
-            // A failure must be audible: a clean "stop" after silence reads
-            // as the assistant ignoring the user, and the server-side log
-            // is the one place a voice user will never look.
-            if let Err(e) = &outcome {
-                let spoken = sse_chunk(
-                    &id,
-                    &shared.model,
-                    json!({"content": format!("I hit a problem and could not answer: {e:#}")}),
-                    None,
-                );
-                let _ = write_chunk(stream, spoken.as_bytes()).await;
-            }
-            let done = sse_chunk(&id, &shared.model, json!({}), Some("stop"));
-            let _ = write_chunk(stream, done.as_bytes()).await;
-            let _ = write_chunk(stream, b"data: [DONE]\n\n").await;
-            let _ = stream.write_all(b"0\r\n\r\n").await;
+            let failed = outcome.as_ref().err().map(|e| format!("{e:#}"));
+            finish_stream(stream, &id, &shared.model, failed.as_deref()).await;
         }
     } else {
         match &outcome {
@@ -822,6 +1037,40 @@ mod tests {
         assert_eq!(
             session_key(&serde_json::json!({"user": "call-7"}), &header),
             "conn-abc"
+        );
+    }
+
+    #[test]
+    fn the_two_session_headers_do_not_bleed_into_each_other() {
+        // They mean different things: one is the facade's own slot, the
+        // other names a conversation someone else owns. A parser that
+        // conflated them would silently answer in the wrong transcript.
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\nX-Voice-Session: webrtc-1a2b\r\nX-Chat-Session: main\r\nContent-Length: 0\r\n\r\n";
+        let head = parse_head(raw).unwrap().expect("complete");
+        assert_eq!(head.session.as_deref(), Some("webrtc-1a2b"));
+        assert_eq!(head.chat.as_deref(), Some("main"));
+
+        // The old shape still parses, and names no conversation — which is
+        // what keeps every pre-D3 caller working unchanged.
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\nX-Voice-Session: webrtc-1a2b\r\nContent-Length: 0\r\n\r\n";
+        let head = parse_head(raw).unwrap().expect("complete");
+        assert_eq!(head.session.as_deref(), Some("webrtc-1a2b"));
+        assert_eq!(head.chat, None);
+    }
+
+    #[test]
+    fn the_voice_block_opens_a_spoken_stretch_and_nothing_else() {
+        // The rule is "the block accompanies a switch into speech": once at
+        // the start of a call, again after any typed turn, and never on the
+        // second consecutive spoken turn — where it would be pure repetition
+        // in a prompt that already carries it.
+        let opened = open_spoken_turn("what is on my calendar", false);
+        assert!(opened.starts_with(VOICE_BLOCK));
+        assert!(opened.ends_with("what is on my calendar"));
+        assert_eq!(
+            open_spoken_turn("and tomorrow?", true),
+            "and tomorrow?",
+            "a spoken turn following a spoken turn must not re-send the block"
         );
     }
 
