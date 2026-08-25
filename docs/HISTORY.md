@@ -2827,6 +2827,44 @@ and is what finally exercised the path.)
 
 ### Environment
 
+**An edit tool that silently does nothing shipped three dead features in one
+day.** Patches applied with python's `str.replace` return the string
+*unchanged* when the pattern does not match, and the pattern drifts the moment
+`cargo fmt` reflows a line. Asserting on some patches and not others meant
+three landed as no-ops: a forensic probe swept into a commit, a TUI border
+title that never gained the `m merge` key it advertised, and an `Enter`
+handler that stayed `=> {}` while the footer said "Enter read it". **Every one
+compiled and passed its tests, because a patch that does nothing breaks
+nothing.** Assert that the pattern matched before writing, always — a
+silently-skipped edit is indistinguishable from a finished one, and the tests
+that would catch it are the ones nobody writes for code they believe exists.
+
+**And the compiler had been saying so, past a reviewer counting warnings
+instead of reading them.** `field 'show' is never read` sat in every build
+between introducing that handler and fixing it. The check being run was
+`clippy | grep -c warning`, compared against a known baseline — which answers
+*"did I add a warning"* and never *"what is this warning saying"*. A count
+turns a diagnostic into a regression test and throws away the diagnosis. Read
+the text of anything new; compare counts only to decide whether to look.
+
+**A correct filter over a truncated input, and neither half looked wrong.**
+`resolve_entity_all`'s fuzzy tier took `LIMIT 5` with no ordering, so against
+13,400 event nodes a person was never reached; a surname search returned five
+events and no people. The rule directly below it — *drop retrieval-target
+types when something stronger matched* — was working perfectly and had nothing
+to drop to, because the LIMIT had spent every slot before a person got in.
+Ordering the query made the existing rule *reachable* rather than replacing
+it. When a filter appears to be failing, check what reached it: a component
+that is right about the wrong input reads as correct in isolation, and so does
+the one that never sees the case.
+
+**A maintenance verb whose `--dry-run` defaults to false rewrote seven nodes
+for someone running it as a survey.** `mecha-graph fix-person-names` was
+invoked to *see* what it would do. The renames were all correct and nothing
+was lost, which is luck rather than design. For any pass that can rewrite in
+bulk, reporting is the default and `--apply` is the opt-in — the inverse
+costs nothing when someone means it and costs a restore when they do not.
+
 **A live config edit shipped before the schema was installed took down every
 older binary at once.** Adding `[web]` to `~/.mecha/config.toml` while only a
 branch build understood it made config parsing fail for the installed
