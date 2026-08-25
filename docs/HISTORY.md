@@ -3167,6 +3167,35 @@ handled.**
   meant to outlive a branch must be written in the main checkout, and a
   worktree should be treated as already deleted from the moment it is made.
 
+- **And the mirror of that: something outside a worktree can point *into*
+  it, and git cannot see the dependency.** A cleanup pass on 2026-08-25 was
+  about to remove seven merged worktrees when `scripts/voice/mecha-voice-serve.service`
+  turned out to carry
+  `ExecStart=…/.claude/worktrees/voice-arc/target/release/mecha`. The unit was
+  disabled, so nothing would have broken that day — it would have left a
+  repo-tracked unit file naming a deleted binary, waiting for whoever
+  installed it next. The same worktree had already cost a day earlier: a
+  container was bind-mounting `/srv` out of it, three commits stale, and
+  worked only because one file happened to be byte-identical. The lesson is
+  about what the obvious check actually answers: **"0 commits ahead" tells
+  you a worktree has no unmerged work, not that nothing depends on it.** A
+  worktree is a filesystem path, so anything taking a path can name it —
+  systemd units, container mounts, a process's cwd — and `git worktree list`
+  knows about none of them. Before removing one, grep `scripts/`,
+  `~/.config/systemd/user/` and the live docker mounts for its path, and
+  check no process has its cwd inside it. Found by one session and
+  generalised into a sweep across all seven by another, which is the only
+  reason it is stated here as a rule rather than as one unit file.
+- **The shared-tree `git add -A` trap recurred, twice in one day**, nineteen
+  days after the entry above was written (2026-08-25: a forensic probe swept
+  into a graph commit, then another session's uncommitted `HANDOFF.md` edit
+  swept into `ae757b1`). Neither caused damage and the second was verified
+  line-by-line to have landed intact — but "verified intact" was luck, not
+  process. A rule stated once in a history file is not a habit; the session
+  involved adopted explicit-path staging only after being shown the second
+  instance. If two lanes are in one tree, the check that works is staging
+  named paths, not reading a clean-looking `git status`.
+
 ## Design notes worth keeping
 
 The rest of the original design-notes section duplicated `CLAUDE.md` and was
