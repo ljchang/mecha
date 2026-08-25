@@ -397,11 +397,28 @@ pub struct VerdictBody {
     /// its ids may sit in other classes. Meaningless without `cascade`.
     #[serde(default)]
     pub across: bool,
+    /// `accept --create-subjects`: a subject the graph does not know becomes
+    /// a new topic node instead of the verdict failing. The second way
+    /// through `cannot resolve subject`, and the one that does not need a
+    /// target to bind to.
+    #[serde(default)]
+    pub create_subjects: bool,
 }
 
 /// POST /api/queue/verdict — one candidate, one verdict, through the CLI.
 /// With `cascade`, one *human* verdict still: the members ride `--cascade`
 /// and land labeled `cascade:<seed>`, invisible to the autonomy ladder.
+///
+/// **A verdict that landed on nothing is a failure, whatever the exit code
+/// says.** `mecha-graph accept <id>` prints `#id FAILED: …` and exits *zero*
+/// — right for a bulk run where one candidate of five hundred cannot
+/// resolve, and a lie here, because the page drops the card it just sent and
+/// reports success. The child's own report is the only account of what
+/// happened, so it is tallied with `review::tally_report` — the same
+/// function the TUI reads, so the two surfaces cannot come to different
+/// conclusions about one line of output — and a zero tally answers 409 with
+/// the reason. Only the *cascade* arm exits non-zero today, which is why the
+/// bug was invisible on the group cards and live on the sample deck.
 pub async fn verdict(State(state): St, Json(body): Json<VerdictBody>) -> Response {
     let id = body.id.to_string();
     let members = body
@@ -417,6 +434,9 @@ pub async fn verdict(State(state): St, Json(body): Json<VerdictBody>) -> Respons
     let mut args: Vec<&str> = vec!["review"];
     if body.accept {
         args.extend(["accept", &id]);
+        if body.create_subjects {
+            args.push("--create-subjects");
+        }
     } else {
         args.extend(["reject", &id]);
         if let Some(reason) = body.reason.as_deref().filter(|r| !r.trim().is_empty()) {
@@ -428,6 +448,70 @@ pub async fn verdict(State(state): St, Json(body): Json<VerdictBody>) -> Respons
         if body.across {
             args.push("--across-classes");
         }
+    }
+    let report = match verb_output(&state, &args).await {
+        Ok(out) => out,
+        Err(refusal) => return refusal,
+    };
+    let (landed, _failed) = crate::commands::review::tally_report(&report);
+    if landed == 0 {
+        return (
+            StatusCode::CONFLICT,
+            format!("{}\n", why_nothing_landed(&report)),
+        )
+            .into_response();
+    }
+    let (cascaded, left) = crate::commands::review::cascade_tally(&report).unwrap_or((0, 0));
+    Json(serde_json::json!({
+        "ok": true,
+        "landed": landed,
+        "cascaded": cascaded,
+        "left_pending": left,
+        "output": report.trim(),
+    }))
+    .into_response()
+}
+
+/// The line of a verdict report that says why nothing landed.
+///
+/// Pure so it can be tested, and deliberately the child's own words: this
+/// string is what a person reads before deciding what to do next, and a
+/// re-wording here would be a second account of a failure the graph already
+/// described exactly once.
+pub(super) fn why_nothing_landed(report: &str) -> String {
+    report
+        .lines()
+        .map(str::trim)
+        .find(|l| l.contains("FAILED"))
+        .map(|l| l.to_string())
+        .unwrap_or_else(|| "the verdict landed on nothing, with no reason reported".into())
+}
+
+#[derive(serde::Deserialize)]
+pub struct BindBody {
+    pub id: i64,
+    /// Exact display name of the entity to bind to; omitted, the graph takes
+    /// its own top suggestion.
+    pub to: Option<String>,
+}
+
+/// POST /api/queue/bind — rebind a candidate's unresolvable subject.
+///
+/// The way through `cannot resolve subject 'X'` without leaving the surface
+/// that reported it, and the reason this exists on the phone at all: the
+/// error was already arriving here, with the two keys that answer it
+/// (`b` and `A`) reachable only from the TUI. The old spelling is learned as
+/// an alias graph-side, so the fix outlives this one candidate — and on a
+/// *group*, binding the leader unblocks the whole cascade, because sharing a
+/// subject is most of what made it a group.
+///
+/// The candidate stays pending: a bound subject is a candidate that can now
+/// be accepted, not one that has been.
+pub async fn bind(State(state): St, Json(body): Json<BindBody>) -> Response {
+    let id = body.id.to_string();
+    let mut args: Vec<&str> = vec!["review", "bind", &id];
+    if let Some(to) = body.to.as_deref().filter(|t| !t.trim().is_empty()) {
+        args.extend(["--to", to]);
     }
     verb(&state, &args).await
 }
@@ -515,9 +599,19 @@ pub async fn edit(
     result
 }
 
-/// Run our own binary and relay the outcome: stdout on success, the first
-/// stderr line with a 409 on refusal — the CLI's error *is* the API's.
-pub(super) async fn verb(state: &super::WebState, args: &[&str]) -> Response {
+/// Run our own binary and hand back its stdout, or the response a refusal
+/// deserves — the first stderr line with a 409, the CLI's error *being* the
+/// API's.
+///
+/// Split out of [`verb`] rather than duplicated because a caller sometimes
+/// has to *read* what the child said (a verdict's own report is the only
+/// account of how many candidates it landed on) and every such caller must
+/// still refuse a spawn failure, a timeout and a non-zero exit identically.
+/// Two spellings of that is two places for the statuses to drift.
+pub(super) async fn verb_output(
+    state: &super::WebState,
+    args: &[&str],
+) -> Result<String, Response> {
     let _ = state; // state carries nothing the child needs; the store is the meeting point
     let mut cmd = tokio::process::Command::new(crate::exe::self_exe());
     if let Some(dir) = super::child_cwd() {
@@ -529,27 +623,34 @@ pub(super) async fn verb(state: &super::WebState, args: &[&str]) -> Response {
         {
             Ok(Ok(output)) => output,
             Ok(Err(e)) => {
-                return (
+                return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("spawning: {e:#}\n"),
                 )
-                    .into_response()
+                    .into_response())
             }
-            Err(_) => return (StatusCode::GATEWAY_TIMEOUT, "the verb timed out\n").into_response(),
+            Err(_) => {
+                return Err((StatusCode::GATEWAY_TIMEOUT, "the verb timed out\n").into_response())
+            }
         };
     if output.status.success() {
-        Json(serde_json::json!({
-            "ok": true,
-            "output": String::from_utf8_lossy(&output.stdout).trim(),
-        }))
-        .into_response()
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        (
+        Err((
             StatusCode::CONFLICT,
             format!("{}\n", stderr.lines().last().unwrap_or("failed")),
         )
-            .into_response()
+            .into_response())
+    }
+}
+
+/// Run our own binary and relay the outcome, for the verbs whose whole
+/// answer is "it worked".
+pub(super) async fn verb(state: &super::WebState, args: &[&str]) -> Response {
+    match verb_output(state, args).await {
+        Ok(out) => Json(serde_json::json!({ "ok": true, "output": out.trim() })).into_response(),
+        Err(refusal) => refusal,
     }
 }
 
@@ -590,6 +691,41 @@ mod tests {
             reason: None,
             error: None,
         }
+    }
+
+    /// The bug this endpoint was carrying: `mecha-graph accept <id>` reports
+    /// a per-candidate failure on *stdout* and exits zero, so a page that
+    /// keyed on the exit code dropped the card it had just sent and told the
+    /// owner it had landed. Nothing had; the candidate is still pending.
+    #[test]
+    fn a_verdict_that_landed_on_nothing_is_not_a_success() {
+        let report = "#9286 FAILED: cannot resolve subject 'Edie and Josephine Chang'\n";
+        let (landed, failed) = crate::commands::review::tally_report(report);
+        assert_eq!((landed, failed), (0, 1));
+        assert!(
+            why_nothing_landed(report).contains("cannot resolve subject"),
+            "the reason is the child's own words — it is what the owner acts on"
+        );
+    }
+
+    /// And the other half: a cascade that worked must not be mistaken for a
+    /// failure by the same rule. The seed's line is the human verdict; the
+    /// members are summarised on the graph's own `cascade:` line.
+    #[test]
+    fn a_cascade_that_landed_reports_its_two_numbers() {
+        let report = "#601 accepted -> fact 3f2a (your verdict)\n\
+                      cascade: 6 accepted, 0 left pending — one human verdict on the ladder\n";
+        let (landed, _) = crate::commands::review::tally_report(report);
+        assert_eq!(landed, 1, "one human verdict, whatever the fan-out");
+        assert_eq!(crate::commands::review::cascade_tally(report), Some((6, 0)));
+    }
+
+    /// A report with no `FAILED` line and nothing accepted says *something*
+    /// rather than an empty string: a refusal a person cannot read is a
+    /// refusal they will retry forever.
+    #[test]
+    fn a_silent_report_still_names_itself() {
+        assert!(!why_nothing_landed("").is_empty());
     }
 
     #[test]
