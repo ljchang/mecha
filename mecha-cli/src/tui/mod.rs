@@ -1329,10 +1329,7 @@ fn settle_staged_drafts(
         return;
     };
     let Ok(items) = store.items() else { return };
-    let staged: Vec<mecha_core::outbox::OutboxItem> = items
-        .into_iter()
-        .filter(|i| i.status == "pending" && !baseline.contains(&i.id))
-        .collect();
+    let staged = crate::review_policy::staged_since(items, &baseline);
     if staged.is_empty() {
         return;
     }

@@ -1444,6 +1444,53 @@ nothing. Editor shell-outs from the TUI go through `self_cli_interactive`,
 which inherits the real terminal — `.output()` hands `$EDITOR` a pipe for a
 screen and a closed stdin for a keyboard, which was a real bug.
 
+**`review now` reaches the web page and the call too, and the call is where
+it gets interesting.** `mecha serve` was the one surface with no release
+policy at all — every draft went silently to the outbox and the badge — so a
+finished run now emits a `Staged` event carrying *ids*, and the page fetches
+each from `/api/outbox/{id}` and offers it: Send now, or Later. Ids on the
+wire, bytes from the store, because a reviewer reading one thing while
+approving another is what this whole surface exists to prevent.
+
+In a call the same offer has to be spoken and answered aloud, which is a
+different problem, because the answer arrives as *text in the model's own
+medium*. Four decisions carry it (`voice/confirm.rs`,
+`review_policy::parse_answer`):
+
+- **The harness asks and the harness hears.** Every word of the offer is
+  composed from the store through `DraftView::spoken`, and the reply is
+  matched *before* the request reaches a model — the release decision never
+  enters a context window at any point. This is `mecha review`'s oldest rule
+  in new clothes: there is deliberately no `kg_accept`, because a model that
+  can accept candidates can accept the ones its own extractor proposed, and a
+  model that could release drafts could release the ones an injection wrote.
+- **Whole-utterance match, never substring, and the failure direction is the
+  argument.** "yes" is an answer; "yes but change the time first" is not, and
+  reaches the model as ordinary words with nothing released. An unrecognised
+  yes costs one more question; an unrecognised anything-else costs a send
+  nobody authorised. An unanswered offer is *dropped* rather than held, or
+  every later "yes" in the call lands on a forgotten draft.
+- **Utter the whole draft, or do not offer it.** A listener cannot skim back
+  over the line where the extra recipient was, so a spoken paraphrase is not
+  a smaller review — it is a different document, missing exactly the field an
+  injection would add. Under `SPOKEN_UNPROMPTED_CHARS` (400, about half a
+  minute) it is read out entire; over it, it is named and the choice of
+  hearing it is the owner's. A publish is never offered by ear at all: its
+  reviewable object is a rendered page, and reading a path aloud is not
+  reviewing a website. Taint does not block — it is *spoken*, because the
+  listener is the one person who cannot re-read the addressing line.
+  Timestamps are rendered as dates and times in the offset the string itself
+  carries, never converted: hearing a different hour than the draft names is
+  the wrong-bytes review arriving through the ear.
+- **Nothing spoken can discard a draft.** There is no voice reject: rejecting
+  takes a reason — the record of the refusal, which the learning miner reads
+  — and a reason nobody typed is worse than none. "No" parks it in the
+  outbox, which is where it already was, so the safe answer to every
+  ambiguity is the same one. And the follow-on question is a whole question,
+  never a pointer to one: an earlier cut said "say next to hear it", which
+  invented a word the parser does not know, so every listener who said it
+  would have been answered by the model while the draft sat there.
+
 **Staging is sink-agnostic; reviewing is not.** The outbox generalised to a
 second kind of outbound action — publishing a bundle to the public surface —
 with no change to `outbox.rs` at all, which was the design goal. Every one of
