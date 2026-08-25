@@ -1805,6 +1805,56 @@ skill owns both installs unconditionally, and "I am mid-arc" is something a
 session says at the time rather than something a note keeps true on its
 behalf.
 
+**2026-08-25 — three review surfaces stopped hiding what they were asking
+people to approve.** The day's work came from the owner using the release and
+finding, in three different places, a surface that showed a decision without
+showing what the decision was about.
+
+*Mail actions on the personal account had never worked.* Every button on a
+personal thread failed with "no thread in the triage store matches" — the
+store held 192 records, all dartmouth, none personal, because the nightly
+named `--account dartmouth`. The flag was defensible and the requirement
+behind the failure was not: `mail_triage` reaches nobody, mutates only the
+user's own mailbox, and is documented as the third quadrant precisely so it
+can be the cheap way to act, yet it was the one verb that could not run. The
+requirement was never a decision about archiving — it fell out of
+`resolve_thread`, whose real job is expanding a briefing's eight-character
+handle. `triage` resolves leniently now (`mecha-cli/src/commands/mail.rs`),
+`resolve_account` split because its two callers want opposite things from a
+miss, and the gap it closes is permanent rather than incidental to one
+account: `classify` sweeps 50 threads of one mailbox nightly while mail
+arrives continuously in both.
+
+*Then the nightly took both mailboxes*, which had been blocked by a bug
+wearing a policy's clothes — see Traps → Unattended runs. The owner overruled
+the standing "personal should stay out of the nightly" entry, and the
+measurement vindicated them twice over: the first both-account sweep read 100
+threads and disposed **47 of 51 candidates without a model**. The account
+excluded for being expensive is the cheap one, because machine-generated is
+exactly what the prefilter handles for free.
+
+*A staged calendar delete showed an account and an opaque `event_id`.*
+`outbox_source` matched provider ids against earlier `tool_use` **inputs**,
+which finds a reply's thread read and cannot find anything for a draft whose
+target was *discovered by listing* — the id exists only in a result.
+`Join::Returned` closes it, `Join::Asked` keeps precedence where both hold,
+and `MIN_RETURNED_ID_CHARS` guards the value-only match because
+`calendar_id: "primary"` is a substring of every calendar result in the
+session. The heading moved onto `SourceRead`: it read "replying to", which was
+the one place a module documented as knowing nothing about mail knew about
+mail, and was false the moment a draft that answers nothing got a source.
+
+*And `Enter` at the TUI's review level had been a no-op for three commits*
+while the footer advertised "Enter read it" — harness candidates and rule
+proposals announced a depth and opened nothing, which is the exact shape
+`/queues` exists to prevent. Found by reading a compiler warning that had been
+in every build since; see Traps → Measuring.
+
+Three sessions worked one checkout all day. Two `git add -A` sweeps carried
+another lane's uncommitted edits into unrelated commits, nineteen days after
+that trap was written down — which is its own entry, and the reason explicit-
+path staging is now the habit rather than the rule.
+
 **The bake-off those two conclusions came from**, moved out of `README.md` on
 2026-08-10 so the numbers live with the rest of the measurement record rather
 than in the front door. It was taken on a DGX Spark (GB10, 128GB unified)
@@ -2824,6 +2874,23 @@ and is what finally exercised the path.)
   *waited at a prompt* — the check and the act separated by however long a
   person takes to read. Anywhere a human sits between the test and the action,
   the test has to be repeated on the far side of them.
+- **A graceful degradation is worthless if its consumer cannot parse the
+  degraded form.** `mail_recent` fans out across accounts and is built to
+  survive a lost one: it returns the surviving rows plus a trailing plain-text
+  note naming what failed, and errors only when every account fails.
+  `mecha mail classify` read that with `serde_json::from_str`, which rejects
+  the note as trailing characters — so the one caller the mechanism existed to
+  protect was the only thing that could not use it, and a revoked credential
+  on *any* single mailbox failed the sweep for **all** of them, including the
+  mailboxes that answered fine. The nightly had been pinned to
+  `--account dartmouth` for a year to avoid it, which made the workaround look
+  like a decision about Google's token lifetime rather than a bug. The general
+  lesson is about where the contract lived: `unified.rs`'s module header states
+  *"A failed account never sinks a fan-out"* in prose, and prose in a producer
+  cannot check its consumers. **When a component advertises that it degrades,
+  test a caller against the degraded output, not just the happy one** — the
+  partial response is a distinct wire format and nothing was exercising it.
+  (2026-08-25.)
 
 ### Environment
 
@@ -2845,7 +2912,12 @@ between introducing that handler and fixing it. The check being run was
 `clippy | grep -c warning`, compared against a known baseline — which answers
 *"did I add a warning"* and never *"what is this warning saying"*. A count
 turns a diagnostic into a regression test and throws away the diagnosis. Read
-the text of anything new; compare counts only to decide whether to look.
+the text of anything new; compare counts only to decide whether to look. Two
+independent signals said it, not one: `review_detail` was assigned `None` in
+three places and `Some` in none, which is the same fact stated in the source
+rather than in the build output. Neither was read until someone went looking
+for a cause, which is the tell — both were *available*, and availability is
+not the same as being consumed.
 
 **A correct filter over a truncated input, and neither half looked wrong.**
 `resolve_entity_all`'s fuzzy tier took `LIMIT 5` with no ordering, so against
