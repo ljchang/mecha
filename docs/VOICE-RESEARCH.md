@@ -610,6 +610,37 @@ each of which cost something:
   transcribed the intelligible one and refused the garble — correct
   behaviour that looks like a bug. Ground-truth clips must be real
   speech (whisper.cpp's `jfk.wav` is the canonical one).
+**The standalone page was retired, 2026-08-25 — one door, not two.** The
+page and the app's in-chat overlay had been kept in step by sharing
+`voice-core.js`, which was the right fix for the problem it addressed and
+did not address this one: **the module prevents *machinery* drift, and the
+controls live in the *shells*.** Proven the expensive way on 2026-08-24,
+when the voice picker and rate slider had to be built twice by two
+sessions, coordinated across six messages with the contract hand-carried
+between them, after which a link-loss fix was ported back by hand. Two
+shells is a standing tax that a shared module cannot collect.
+
+The stated reason for separateness had already expired. The app passed the
+worker's absolute offer URL only "until the process unification gives the
+app a local proxy", and that landed — `Chat.svelte` uses `/api/offer` and
+`mecha serve` proxies it. The page's own claim, self-containment ("must
+work when the tailnet is all there is"), held for its *assets* and not its
+*dependencies*: the worker's LLM is the facade, and the facade now runs
+**inside `mecha serve`**, so a serve failure took the page's answers with
+it while leaving the page itself loading. Independence against the failure
+it was unlikely to meet, not the one it was.
+
+The audit before deleting found exactly one thing the page did better —
+`prefers-reduced-motion`, which the app lacked entirely despite having
+three animations, two of them infinite. It was ported first, and it fixes
+more than it replaced, since those animations are the drawer and status
+pulses rather than anything voice. The app was already *ahead* on mute and
+on teardown. `tailscale serve` now points `:443` and `:8443` at the same
+app; `voice-core.js` moved to `scripts/voice/` because a directory named
+`page/` holding no page is the stale label this project keeps tripping
+over. The module stays framework-free regardless of having one consumer:
+that is the property worth keeping if voice is ever embedded again.
+
 - **`test_call.py`'s bot output is not a signal, and it will invite a
   regression hunt if you read it as one** (2026-08-24). The harness exists
   for its `user-transcription` lines — it proves the path from a microphone
@@ -789,10 +820,10 @@ merges and the installed `mecha` carries voice-serve — the one
 deliberate impermanence, noted so the update skill knows to repoint it.
 D5 was ratified the same day: voice is typed text, no taint.
 
-**The page — D7 and D9 built, 2026-08-24.** `scripts/voice/page/index.html`,
-one self-contained file (no external fetch ever — the page must work when
-the tailnet is all there is), served by `tailscale serve` as a file mount
-at `/` with `/api` proxied to the worker; the stock Pipecat UI remains at
+**The page — D7 and D9 built, 2026-08-24; retired 2026-08-25 (see below).**
+`scripts/voice/page/index.html`, one self-contained file (no external fetch
+ever — the page must work when the tailnet is all there is), served by
+`tailscale serve` as a file mount at `/` with `/api` proxied to the worker; the stock Pipecat UI remains at
 :7860/client for debugging. The worker gained `RTVIProcessor` +
 `RTVIObserver`, which is how the page knows anything: transcripts both
 directions, speaking edges, and `bot-llm-started` — which is *exactly*

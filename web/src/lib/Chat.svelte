@@ -3,11 +3,11 @@
   // live SSE feed of the run in flight. Sending during a run steers it —
   // the server folds the text into the tool-results turn.
   //
-  // Voice rides the voice arc's module (scripts/voice/page/voice-core.js) —
+  // Voice rides the voice arc's module (scripts/voice/voice-core.js) —
   // imported by relative path so this wrapper cannot drift from the
   // standalone page. Until process unification, a call is its own facade
   // conversation, and the overlay says so rather than pretending otherwise.
-  import { createVoiceSession } from '../../../scripts/voice/page/voice-core.js';
+  import { createVoiceSession } from '../../../scripts/voice/voice-core.js';
 
   let key = $state('main');
   let mode = $state('read_only');
@@ -1451,5 +1451,23 @@
     align-items: center;
     justify-content: center;
     cursor: pointer;
+  }
+
+  /* Carried from the standalone voice page when it was retired: it had the
+     only reduced-motion handling in either shell, and the animations that
+     most need it are here rather than there. The two infinite ones are the
+     concern - a perpetually pulsing dot is the classic vestibular trigger,
+     and both of them encode state (thinking, speaking) that must survive
+     the animation being switched off. So they degrade to a static colour
+     rather than simply stopping, which would leave the state invisible. */
+  @media (prefers-reduced-motion: reduce) {
+    .drawer,
+    .dot,
+    .slot.thinking {
+      animation: none !important;
+    }
+    .slot.thinking {
+      fill: var(--accent-300);
+    }
   }
 </style>

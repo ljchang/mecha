@@ -85,21 +85,15 @@ From a checkout, with the four services running:
 mecha serve --voice-port 8990 --voice-yes
 ```
 
-Then open the voice page over your tailnet. `scripts/voice/` holds systemd
-units for the worker and the speech servers — copy them, or run the scripts by
-hand while you are still finding out whether you like it.
-
-There are two places to talk from, and they are the same machinery:
-
-- **The voice page** — a single button. Tap it, wait for the ring to warm, and
-  speak.
-- **The web app's chat view** — a waveform button opens a call overlay over
-  whatever you were reading.
+Then open mecha's web app over your tailnet and go to the chat view: a
+waveform button opens a call overlay over whatever you were reading. Tap it,
+wait for the ring to warm, and speak. `scripts/voice/` holds systemd units for
+the worker and the speech servers — copy them, or run the scripts by hand while
+you are still finding out whether you like it.
 
 ## The controls
 
-Both surfaces carry the same two controls, and your choice is remembered
-across both.
+The call overlay carries two controls, and your choices are remembered.
 
 **Voice.** Seven options: six generated references plus Chatterbox's own
 built-in voice. The six are synthesised from Kokoro's presets by
@@ -118,7 +112,7 @@ are hearing is worse than a slider that snaps back.
 
 ## What it feels like, and why
 
-The page makes its state audible and visible: a chime on connect, a soft
+The overlay makes its state audible and visible: a chime on connect, a soft
 two-note pulse while mecha is thinking, rings that radiate while it speaks, and
 a ring that breathes with your own microphone level so you can see that it is
 hearing you. The end chime is synthesised in the browser rather than
