@@ -1848,7 +1848,7 @@ mail, and was false the moment a draft that answers nothing got a source.
 while the footer advertised "Enter read it" — harness candidates and rule
 proposals announced a depth and opened nothing, which is the exact shape
 `/queues` exists to prevent. Found by reading a compiler warning that had been
-in every build since; see Traps → Measuring.
+in every build since; see Traps → Environment.
 
 Three sessions worked one checkout all day. Two `git add -A` sweeps carried
 another lane's uncommitted edits into unrelated commits, nineteen days after

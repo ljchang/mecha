@@ -1129,8 +1129,10 @@ Everything here is verified in source as of the date; the arcs' own docs
   also picks its own label. **Cheapest fix: refuse any proposal whose `change`
   names a `security.*` key unless `class: security`** — a deterministic check
   on a string the proposer already wrote, in the one place a model authors a
-  change. The candidate itself (`hc-20260825T033444-d4a4`) is still staged and
-  is the owner's to dispose of.
+  change. The candidate itself (`hc-20260825T033444-d4a4`) was rejected from
+  `/queues` at 12:07Z that day, so the gap is the routing and not that one
+  proposal — the next `security.*` change to be labelled `Config` gets the
+  same free pass.
 
 - **MCP resources are not implemented.** `mecha-core/src/mcp.rs` advertises
   `"capabilities": {}` and speaks only `tools/list` and `tools/call`. No
