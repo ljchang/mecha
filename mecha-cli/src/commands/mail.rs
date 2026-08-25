@@ -1603,20 +1603,30 @@ fn resolve_account(store: &TriageStore, thread_id: &str, given: Option<&str>) ->
     if let Some(a) = given {
         return Ok(a.to_string());
     }
-    let hits: Vec<Record> = store
+    account_from_store(store, thread_id)?
+        .with_context(|| format!("no such thread in the triage store: {thread_id}"))
+}
+
+/// Which account the store believes holds this thread, if it knows.
+///
+/// `Ok(None)` is deliberately not an error here, because the two callers want
+/// opposite things from it: a verb that *edits a record* has nothing to edit
+/// and must fail, while one that *acts on the mailbox* has merely lost a hint
+/// and can be told which mailbox instead. Ambiguity still fails for both —
+/// guessing which account to archive in is not a convenience.
+fn account_from_store(store: &TriageStore, thread_id: &str) -> Result<Option<String>> {
+    let hits: Vec<String> = store
         .list()?
         .into_iter()
         .filter(|r| r.thread_id == thread_id)
+        .map(|r| r.account)
         .collect();
     match hits.len() {
-        0 => bail!("no such thread in the triage store: {thread_id}"),
-        1 => Ok(hits[0].account.clone()),
+        0 => Ok(None),
+        1 => Ok(Some(hits[0].clone())),
         _ => bail!(
             "thread id is in several accounts ({}) — pass --account",
-            hits.iter()
-                .map(|r| r.account.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
+            hits.join(", ")
         ),
     }
 }
@@ -2042,8 +2052,26 @@ async fn triage(
     action: &str,
 ) -> Result<()> {
     let store = TriageStore::open(TriageStore::default_root()?)?;
-    let thread_id = &resolve_thread(&store, thread_id)?;
-    let account = resolve_account(&store, thread_id, account)?;
+    // **The store is a lookup table here, not a precondition.** `mail_triage`
+    // acts on the user's own mailbox and reaches nobody, so a thread the
+    // classifier has never seen is still a thread they can archive — and one
+    // always exists, because `classify` runs nightly over 50 threads of one
+    // account while mail arrives continuously in both. Requiring a record was
+    // never a decision about archiving; it fell out of the strict resolver,
+    // whose real job is expanding a briefing's eight-character handle. `show`
+    // already reasons this way ("a verb may legitimately be handed one from a
+    // search"), and every reason it gives applies harder to acting than to
+    // reading.
+    let thread_id = &resolve_thread_lenient(&store, thread_id)?;
+    let account = match account {
+        Some(a) => a.to_string(),
+        None => account_from_store(&store, thread_id)?.with_context(|| {
+            format!(
+                "`{}` is not in the triage store, so which mailbox holds it is unknown — pass --account",
+                handle(thread_id)
+            )
+        })?,
+    };
 
     let prepared = setup::prepare_tools(global, false).await?;
     let tool = find_tool(&prepared.registry, "mail_triage")
