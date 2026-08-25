@@ -7974,6 +7974,18 @@ fn handle_entity_key(app: &mut App, key: KeyEvent) -> Result<()> {
             modal.merge_keep = None;
             modal.status = Some("merge cancelled".into());
         }
+        // Esc peels one layer at a time, as it does in /queues and /outbox:
+        // a search clears before the modal closes. Without this the only way
+        // to start a second lookup was to leave and come back, which is what
+        // sent someone reaching for ctrl-n expecting "new search" and
+        // creating a person named after their query instead.
+        KeyCode::Esc if !modal.query.is_empty() || !modal.rows.is_empty() => {
+            modal.query.clear();
+            modal.rows.clear();
+            modal.selected = 0;
+            modal.fresh = true;
+            modal.status = None;
+        }
         KeyCode::Esc => app.entities = None,
         KeyCode::Char('?') => modal.help = true,
         KeyCode::Up => modal.move_sel(-1),
@@ -8507,6 +8519,46 @@ mod tests {
         assert!(app.entities.as_ref().unwrap().edit.is_none());
         ent_press(&mut app, KeyCode::Esc);
         assert!(app.entities.is_none());
+    }
+
+    /// Esc peels one layer at a time. Without this there was no way to
+    /// start a second lookup without leaving the modal — which is what sent
+    /// someone reaching for ctrl-n expecting "new search" and creating a
+    /// person named after their query.
+    #[test]
+    fn esc_clears_the_search_before_it_closes_the_modal() {
+        let mut app = entity_app();
+        assert!(!app.entities.as_ref().unwrap().rows.is_empty());
+
+        ent_press(&mut app, KeyCode::Esc);
+        let m = app
+            .entities
+            .as_ref()
+            .expect("still open after the first esc");
+        assert!(m.rows.is_empty(), "the results should have cleared");
+        assert!(m.query.is_empty());
+        assert!(
+            m.fresh,
+            "a cleared modal has not searched, it is not a no-match"
+        );
+
+        ent_press(&mut app, KeyCode::Esc);
+        assert!(app.entities.is_none(), "the second esc closes it");
+    }
+
+    /// And the layers stack in the right order: an edit cancels before the
+    /// search clears, so backing out of a typo does not also lose the
+    /// results it was going to act on.
+    #[test]
+    fn esc_cancels_an_edit_before_it_clears_the_search() {
+        let mut app = entity_app();
+        ent_press(&mut app, KeyCode::Char('r'));
+        assert!(app.entities.as_ref().unwrap().edit.is_some());
+
+        ent_press(&mut app, KeyCode::Esc);
+        let m = app.entities.as_ref().unwrap();
+        assert!(m.edit.is_none(), "the edit cancelled");
+        assert!(!m.rows.is_empty(), "but the search survived");
     }
 
     /// Merging is two keystrokes on two rows, and the first one only marks.

@@ -247,7 +247,15 @@ impl EntityModal {
                     "  ◆ keeping this one — move to the duplicate and press m again  ·  esc cancels"
                         .to_string()
                 }
-                _ => "  ↑↓ move · enter search · r rename · a alias · m merge · ctrl-n new person · ? help · esc"
+                // "new person" read as "new search" to the person who hit
+                // it and got a node named after their query. CREATE is the
+                // verb that cannot be misread, and esc now has a first
+                // meaning worth advertising.
+                (..) if self.rows.is_empty() && self.query.is_empty() => {
+                    "  type a name · enter search · ctrl-n CREATE a person · ? help · esc close"
+                        .to_string()
+                }
+                _ => "  ↑↓ · enter search · r rename · a alias · m merge · ctrl-n CREATE person · esc clear · ? help"
                     .to_string(),
             },
             Style::new().fg(if self.merge_confirm.is_some() {
@@ -316,8 +324,10 @@ impl EntityModal {
             the old name is kept as an alias, so everything that
             reached it by the old name still does
   a         add an alias to the selected node
-  ctrl-n    create a person, prefilled with what you typed
-            for someone who has facts and episodes but no node
+  ctrl-n    CREATE a person, prefilled with what you typed — for someone
+            who has facts and episodes but no node of their own. This
+            writes a new entity; it does not start a new search
+  esc       clear the search; again to close the modal
   ?         this
   esc       back
 
@@ -490,15 +500,27 @@ mod tests {
             "r rename",
             "a alias",
             "m merge",
-            "ctrl-n new person",
+            "ctrl-n CREATE person",
+            "esc clear",
             "? help",
-            "esc",
         ] {
             assert!(
                 screen.contains(key),
                 "{key:?} is not shown anywhere:\n{screen}"
             );
         }
+    }
+
+    /// An empty modal advertises the two things reachable from it, and
+    /// names ctrl-n as CREATE — the word that cannot be read as "search".
+    /// It was "new person" when somebody pressed it looking for a way to
+    /// search and got a node named after their query.
+    #[test]
+    fn an_empty_modal_says_what_ctrl_n_actually_does() {
+        let m = EntityModal::new();
+        let screen = rendered(&m, 130, 24);
+        assert!(screen.contains("ctrl-n CREATE a person"), "{screen}");
+        assert!(screen.contains("enter search"), "{screen}");
     }
 
     /// The two merge states say what to do next, and the irreversible one
