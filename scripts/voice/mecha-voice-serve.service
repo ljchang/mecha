@@ -1,13 +1,17 @@
 # The voice facade: mecha behind an OpenAI-compatible endpoint on loopback.
 # docs/VOICE-RESEARCH.md D2/D3; user unit on purpose - it runs as the owner
-# and needs no privilege. Points at the voice-arc worktree release build
-# until the branch merges and the installed binary carries voice-serve.
+# and needs no privilege.
+#
+# NOT the usual way to run the facade: since process unification it is
+# mounted inside `mecha serve` (--voice-port), sharing one agent and one
+# cached prefix. This unit is the standalone path, for running the facade
+# without the web surface. Disabled by default for that reason.
 [Unit]
 Description=mecha voice-serve (OpenAI facade for the voice worker, :8990)
 After=network.target
 
 [Service]
-ExecStart=/home/ljchang/Github/mecha/.claude/worktrees/voice-arc/target/release/mecha voice-serve --port 8990 --yes
+ExecStart=/home/ljchang/.cargo/bin/mecha voice-serve --port 8990 --yes
 Restart=on-failure
 RestartSec=5
 
