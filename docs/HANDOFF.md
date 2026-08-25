@@ -1108,6 +1108,30 @@ Everything here is verified in source as of the date; the arcs' own docs
 
 ### Structural gaps
 
+- **A candidate's `class` is asserted by the proposer and never derived from
+  what it proposes**, and the class is what decides whether a human ever sees
+  it. `diagnose.rs` parses `class:` off a line the model wrote
+  (`mecha-core/src/diagnose.rs:219`) with no cross-check against the `change`
+  field; `commands/harness.rs:188` then routes on it — `Security` is never
+  measured and never auto-applied, while `Config` **inside the closed override
+  set goes straight to `measure()` and can auto-accept**. On 2026-08-25 the
+  nightly proposed `security.minimize_taint=false` classified **`Config`**,
+  predicting lower `ToolErrorRate`, with a rationale that cited "the session
+  logs" — which the diagnostician never sees, since the brief is counters only
+  and `blocked_sends` appears nowhere in that file. It is stuck solely because
+  `security.minimize_taint` is not one of the four closed-set keys
+  (`compact_at_tokens`, `max_turns`, `max_output_tokens`, `effort`). **So the
+  boundary today is the closed set, not the class check**, and it holds only
+  because those four keys happen to be benign — the day a security-relevant
+  knob joins the set, a self-declared `Config` proposal reaches auto-accept.
+  CLAUDE.md's standing rule is that a loop able to argue for widening its own
+  confinement will eventually argue well; what was not anticipated is that it
+  also picks its own label. **Cheapest fix: refuse any proposal whose `change`
+  names a `security.*` key unless `class: security`** — a deterministic check
+  on a string the proposer already wrote, in the one place a model authors a
+  change. The candidate itself (`hc-20260825T033444-d4a4`) is still staged and
+  is the owner's to dispose of.
+
 - **MCP resources are not implemented.** `mecha-core/src/mcp.rs` advertises
   `"capabilities": {}` and speaks only `tools/list` and `tools/call`. No
   `resources/list`, no `resources/read`. Whenever this is closed, resource
