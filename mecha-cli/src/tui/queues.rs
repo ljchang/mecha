@@ -64,6 +64,12 @@ pub struct ReviewSource {
     /// Human label for the box title.
     pub label: String,
     pub list: Vec<String>,
+    /// `<verb> show <id>` — the whole item. Essential rather than optional:
+    /// a rule proposal's list line is "5 rule(s) from 10 reflection(s)",
+    /// which is a count, not something anyone can accept on. Accepting what
+    /// you cannot read is the failure the outbox's DraftView exists to
+    /// prevent, and this surface had it.
+    pub show: Vec<String>,
     pub accept: Vec<String>,
     pub reject: Vec<String>,
     /// True when the verb lives in `mecha-graph` rather than `mecha`.
@@ -101,6 +107,8 @@ impl QueueRow {
             let v: Vec<String> = verb.iter().map(|s| s.to_string()).collect();
             let mut list = v.clone();
             list.extend(["list".into(), "--json".into()]);
+            let mut show = v.clone();
+            show.push("show".into());
             let mut accept = v.clone();
             accept.push("accept".into());
             let mut reject = v;
@@ -108,6 +116,7 @@ impl QueueRow {
             Some(ReviewSource {
                 label: label.to_string(),
                 list,
+                show,
                 accept,
                 reject,
                 graph,
@@ -341,6 +350,9 @@ pub struct QueuesModal {
     /// Rows and verbs for the generic review level, set when it is entered.
     pub review: Vec<ReviewRow>,
     pub review_source: Option<ReviewSource>,
+    /// The selected proposal in full, from `<verb> show`. `Enter` opens it,
+    /// `Esc` closes it before it closes the level.
+    pub review_detail: Option<String>,
     pub queues: Vec<QueueRow>,
     pub proposers: Vec<ProposerRow>,
     pub candidates: Vec<CandidateRow>,
@@ -386,6 +398,7 @@ impl QueuesModal {
             queues,
             review: vec![],
             review_source: None,
+            review_detail: None,
             proposers: vec![],
             candidates: vec![],
             groups: vec![],
@@ -557,7 +570,13 @@ impl QueuesModal {
 
     fn key_strip(&self) -> String {
         match self.level {
-            Level::Review => "j/k · a accept (applies it) · r reject · Esc back".into(),
+            Level::Review => {
+                if self.review_detail.is_some() {
+                    "a accept (applies it) · r reject · Esc back to the list".into()
+                } else {
+                    "j/k · Enter read it · a accept (applies it) · r reject · Esc back".into()
+                }
+            }
             Level::Queues => "j/k move · Enter open · ? help · Esc close".into(),
             Level::Proposers => {
                 "j/k · Enter classes · s similar EVERYWHERE · t evidence filter · Esc · ? help"
@@ -597,7 +616,13 @@ impl QueuesModal {
             Level::Candidates => self.candidate_lines(),
             Level::Groups => self.group_lines(),
             Level::Items => self.item_lines(),
-            Level::Review => self.review_lines(),
+            Level::Review => match &self.review_detail {
+                Some(text) => text
+                    .lines()
+                    .map(|l| Line::styled(format!("  {l}"), Style::new().fg(Color::White)))
+                    .collect(),
+                None => self.review_lines(),
+            },
         };
 
         let width = 122u16.min(frame.area().width);

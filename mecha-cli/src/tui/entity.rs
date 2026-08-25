@@ -78,6 +78,15 @@ impl EditKind {
 }
 
 pub struct EntityModal {
+    /// A row marked as the survivor of a merge. Two keystrokes on two rows
+    /// rather than a form: the thing being merged is *these two nodes on
+    /// screen*, and a text field asking for an id would be answered by
+    /// copying one off the display.
+    pub merge_keep: Option<String>,
+    /// A merge awaiting y/n: (keep id, keep name, dup id, dup name).
+    /// Merging is the one irreversible verb here, so it is the one that
+    /// confirms — every other key on this modal is undoable by another key.
+    pub merge_confirm: Option<(String, String, String, String)>,
     /// The lookup box.
     pub query: String,
     /// What the last lookup returned.
@@ -100,6 +109,8 @@ impl EntityModal {
             rows: Vec::new(),
             selected: 0,
             edit: None,
+            merge_keep: None,
+            merge_confirm: None,
             status: None,
             fresh: true,
             help: false,
@@ -172,7 +183,14 @@ impl EntityModal {
         }
         for (i, row) in self.rows.iter().enumerate() {
             let here = i == self.selected;
-            let marker = if here { "▸ " } else { "  " };
+            let keeping = self.merge_keep.as_deref() == Some(row.id.as_str());
+            let marker = if keeping {
+                "◆ "
+            } else if here {
+                "▸ "
+            } else {
+                "  "
+            };
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("{marker}{:<8} ", row.node_type),
@@ -229,7 +247,9 @@ impl EntityModal {
                     .to_string()
             }
         };
-        let border = if self.edit.is_some() {
+        let border = if self.merge_confirm.is_some() {
+            Color::Red
+        } else if self.edit.is_some() || self.merge_keep.is_some() {
             Color::Yellow
         } else {
             Color::Cyan
@@ -265,6 +285,9 @@ impl EntityModal {
 
   enter     look the typed name up
   ↑ ↓       move through the matches
+  m         merge: press once to mark the node to KEEP, then move to the
+            duplicate and press m again. Confirms with y/n — it is the only
+            irreversible action here
   r         rename the selected node
             the old name is kept as an alias, so everything that
             reached it by the old name still does
