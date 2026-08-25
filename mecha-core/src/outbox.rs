@@ -551,8 +551,23 @@ pub struct DraftView {
 /// way a letter writer needs the postcode format — which is to say later, and
 /// not above the prose. They fall through to `other`, which every surface
 /// shows below the body.
-const HEADER_FIELDS: [&str; 8] = [
-    "to", "cc", "bcc", "channel", "subject", "title", "when", "account",
+/// `start_time`/`end_time` sit here rather than falling through to `other`
+/// for one reason: `other` is in map order, which is alphabetical, so an
+/// event read *end before start* — nonsense on a page and worse in an ear,
+/// where a listener cannot glance back to sort it out.
+const HEADER_FIELDS: [&str; 12] = [
+    "to",
+    "cc",
+    "bcc",
+    "channel",
+    "subject",
+    "title",
+    "when",
+    "start",
+    "start_time",
+    "end",
+    "end_time",
+    "account",
 ];
 
 /// Arguments that carry the prose, most specific first. Exactly one wins; the
@@ -598,6 +613,118 @@ impl DraftView {
             view.other.push((key.clone(), render(value)));
         }
         view
+    }
+}
+
+/// A draft as it would be **read out loud** — every argument, nothing
+/// summarised.
+///
+/// The reviewable object of a message is the message, and that rule does not
+/// change when the reviewer is listening instead of looking. What changes is
+/// that a listener cannot skim: they hear it once, in order, at speaking
+/// speed, so the only safe spoken offer is one that utters the whole thing.
+/// A paraphrase read aloud is not a smaller review, it is a different
+/// document — and the field it leaves out (one more address on the `to` line)
+/// is exactly the field an injection would add.
+///
+/// So this is [`DraftView`]'s three buckets spoken in reading order, and it
+/// inherits that type's guarantee: **every argument key appears**, with a
+/// test on it. The only thing it decides is wording.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SpokenDraft {
+    /// The draft, in speakable lines. Concatenate with pauses between.
+    pub lines: Vec<String>,
+}
+
+impl SpokenDraft {
+    /// How much speech this is. Characters rather than words because that is
+    /// what a TTS leg is actually handed, and the two are proportional at any
+    /// rate worth caring about.
+    pub fn chars(&self) -> usize {
+        self.lines.iter().map(|l| l.chars().count() + 1).sum()
+    }
+
+    pub fn text(&self) -> String {
+        self.lines.join(" ")
+    }
+}
+
+/// An argument name as a person hears it: `body_markdown` → `Body markdown`.
+///
+/// Deliberately mechanical rather than a lookup table of nice phrasings. A
+/// table would cover the tools thought of today and quietly mis-speak the
+/// rest, and the store is tool-agnostic on purpose — an unanticipated field
+/// must arrive sounding slightly stiff, never sounding like something else.
+fn spoken_label(key: &str) -> String {
+    let words = key.replace('_', " ");
+    let mut chars = words.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => words,
+    }
+}
+
+/// A value as it should be *heard*.
+///
+/// One case, and it is the case a calendar draft is made of:
+/// `2026-08-28T14:30:00-04:00` read aloud is a run of digits nobody can check
+/// a meeting against, and being checkable is the entire purpose of reading a
+/// draft back. So a timestamp is spoken as a date and a time.
+///
+/// **Rendered in the offset the string itself carries, never in local time.**
+/// A reviewer must hear the moment the draft actually names; translating it
+/// into some other zone would be the wrong-bytes review arriving through the
+/// one door built to prevent it. Anything that does not parse is spoken
+/// unchanged — a value this does not understand must reach the listener as
+/// itself, not as a guess.
+fn spoken_value(value: &str) -> String {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
+        let on = dt.format("%A %B %-d");
+        return if dt.format("%M").to_string() == "00" {
+            format!("{on} at {}", dt.format("%-I %p"))
+        } else {
+            format!("{on} at {}", dt.format("%-I:%M %p"))
+        };
+    }
+    // A local datetime with no offset — which is what a calendar tool sends
+    // when the zone rides in a separate `timezone` argument, spoken beside
+    // it. Formatted, never *converted*: there is no offset here to convert
+    // from, and inventing one would be the harness telling the listener a
+    // different hour than the draft says.
+    for form in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M"] {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(value, form) {
+            let on = dt.format("%A %B %-d");
+            return if dt.format("%M").to_string() == "00" {
+                format!("{on} at {}", dt.format("%-I %p"))
+            } else {
+                format!("{on} at {}", dt.format("%-I:%M %p"))
+            };
+        }
+    }
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+        return date.format("%A %B %-d").to_string();
+    }
+    value.to_string()
+}
+
+impl DraftView {
+    /// This draft, spoken.
+    pub fn spoken(&self) -> SpokenDraft {
+        let mut lines = Vec::new();
+        for (key, value) in &self.headers {
+            lines.push(format!("{}: {}.", spoken_label(key), spoken_value(value)));
+        }
+        if let Some(body) = &self.body {
+            // The prose is uttered as prose, with no label in front of it:
+            // "Body markdown: Dear Dirk" is a field name a listener has to
+            // parse past. Which argument carried it is `body_field`'s to
+            // report, and no surface has ever needed to hear it.
+            lines.push(body.trim().to_string());
+        }
+        for (key, value) in &self.other {
+            lines.push(format!("{}: {}.", spoken_label(key), spoken_value(value)));
+        }
+        SpokenDraft { lines }
     }
 }
 
@@ -1084,6 +1211,97 @@ mod tests {
             ["to", "subject", "account"]
         );
         assert_eq!(view.headers[0].1, "a@x.org, b@x.org");
+    }
+
+    /// The spoken form carries the same guarantee, and it is the one that
+    /// matters most: a listener cannot skim back over the line where the
+    /// extra recipient was. Every argument's value must be *audible* — the
+    /// check is on values rather than keys, because the body is spoken with
+    /// no label and a key-only check would pass on a draft that read out its
+    /// field names and none of its content.
+    #[test]
+    fn a_spoken_draft_utters_every_argument() {
+        let args = json!({
+            "to": ["a@x.org", "b@x.org"],
+            "subject": "Tuesday?",
+            "body_markdown": "Dear A,\n\nHello.\n\nLuke",
+            "account": "dartmouth",
+            "importance": "high",
+        });
+        let spoken = DraftView::of(&args).spoken().text();
+        for audible in [
+            "a@x.org",
+            "b@x.org",
+            "Tuesday?",
+            "Dear A,",
+            "Luke",
+            "dartmouth",
+            "high",
+        ] {
+            assert!(
+                spoken.contains(audible),
+                "{audible} was never said: {spoken}"
+            );
+        }
+        // Labels are spoken as words, and the body carries none — "Body
+        // markdown:" is a field name a listener has to parse past.
+        assert!(spoken.contains("Subject: Tuesday?."), "{spoken}");
+        assert!(!spoken.contains("Body markdown"), "{spoken}");
+        assert!(spoken.contains("Importance: high."), "{spoken}");
+    }
+
+    /// A calendar draft is mostly timestamps, and a timestamp read out as
+    /// digits is a draft nobody can check. Rendered in the offset the string
+    /// carries — hearing a different moment than the draft names is the
+    /// wrong-bytes review arriving through the ear.
+    #[test]
+    fn a_timestamp_is_spoken_as_a_time_in_its_own_offset() {
+        let spoken = DraftView::of(&json!({
+            "title": "Walk with Sage",
+            "start_time": "2026-08-28T14:00:00-04:00",
+            "end_time": "2026-08-28T14:30:00-04:00",
+        }))
+        .spoken()
+        .text();
+        assert!(spoken.contains("Friday August 28 at 2 PM"), "{spoken}");
+        assert!(spoken.contains("Friday August 28 at 2:30 PM"), "{spoken}");
+        assert!(!spoken.contains("T14:00"), "{spoken}");
+        // A calendar tool that puts the zone in its own argument sends a
+        // *naive* datetime, which is the form this missed on the first pass:
+        // it fell through to the fallback and read out "2026-08-28T16:00:00".
+        let naive = DraftView::of(&json!({
+            "start_time": "2026-08-28T16:00:00",
+            "timezone": "America/New_York",
+        }))
+        .spoken()
+        .text();
+        assert!(naive.contains("Friday August 28 at 4 PM"), "{naive}");
+        // Start before end, whatever order the map hands them back in.
+        let start = spoken.find("Start time").expect("start");
+        let end = spoken.find("End time").expect("end");
+        assert!(start < end, "an event read end-first is nonsense: {spoken}");
+    }
+
+    /// A value the renderer does not understand reaches the listener as
+    /// itself. Guessing at it would be the one thing a spoken review cannot
+    /// afford.
+    #[test]
+    fn an_unparseable_value_is_spoken_unchanged() {
+        let spoken = DraftView::of(&json!({"when": "sometime next week"}))
+            .spoken()
+            .text();
+        assert_eq!(spoken, "When: sometime next week.");
+    }
+
+    /// A tool nobody anticipated is still speakable, stiffly and completely.
+    /// The alternative — a lookup table of nice phrasings — covers the tools
+    /// thought of today and mis-speaks the rest.
+    #[test]
+    fn an_unanticipated_argument_is_spoken_stiffly_not_silently() {
+        let spoken = DraftView::of(&json!({"emoji": "wave", "ts": 17}))
+            .spoken()
+            .text();
+        assert_eq!(spoken, "Emoji: wave. Ts: 17.");
     }
 
     /// A tool nobody anticipated is still reviewable: no headers, no body, and

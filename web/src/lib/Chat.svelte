@@ -144,6 +144,12 @@
         case 'question_done':
           entries = entries.filter((e) => !(e.kind === 'question' && e.qid === ev.qid));
           break;
+        case 'staged':
+          // The reply that produced the draft lands first, then the offer —
+          // a card above the sentence explaining it reads as a non sequitur.
+          flushStreaming();
+          for (const id of ev.ids) offerDraft(id);
+          break;
         case 'done':
           flushStreaming();
           running = false;
@@ -156,6 +162,55 @@
       }
     };
     return source;
+  }
+
+  // A draft this run staged, put in front of you rather than left to a badge
+  // — `review now`, which the TUI and Slack have always had and this surface
+  // never did.
+  //
+  // The card is built from `/api/outbox/{id}`, never from the event: that
+  // endpoint returns the whole reviewable object — every argument, the taint
+  // snapshot, and the thread a reply answers — and a reviewer reading one
+  // thing while approving another is the failure the outbox exists to
+  // prevent. Ids on the wire, bytes from the store.
+  async function offerDraft(id) {
+    try {
+      const res = await fetch(`/api/outbox/${id}`);
+      if (!res.ok) throw new Error((await res.text()).trim());
+      pushEntry({ kind: 'draft', id, draft: await res.json(), busy: false, showSource: false });
+    } catch (e) {
+      // "Could not read it back" and "nothing was staged" are opposite
+      // findings, so the failure says a draft exists and where it is rather
+      // than quietly rendering nothing.
+      pushEntry({
+        kind: 'notice',
+        text: `a draft was staged but could not be read back (${e?.message ?? e}) — it is waiting in your outbox`,
+      });
+    }
+  }
+
+  async function releaseDraft(entry) {
+    entry.busy = true;
+    try {
+      const res = await fetch(`/api/outbox/${entry.id}/approve`, { method: 'POST' });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      // The card is replaced rather than ticked: it was a question, and a
+      // question that has been answered is a fact about what happened.
+      entries = entries.map((e) =>
+        e === entry ? { kind: 'notice', text: `sent — ${entry.draft.headline || entry.draft.label}` } : e
+      );
+    } catch (e) {
+      entry.busy = false;
+      entry.error = String(e?.message ?? e);
+    }
+  }
+
+  function keepDraft(entry) {
+    entries = entries.map((e) =>
+      e === entry
+        ? { kind: 'notice', text: `left in your outbox — ${entry.draft.headline || entry.draft.label}` }
+        : e
+    );
   }
 
   async function loadRail() {
@@ -565,6 +620,55 @@
         </div>
       {:else if entry.kind === 'notice'}
         <div class="notice">{entry.text}</div>
+      {:else if entry.kind === 'draft'}
+        {@const d = entry.draft}
+        <div class="qcard dcard">
+          <div class="qhead">
+            <span class="qkicker">drafted — send it?</span>
+            <span class="qtool">{d.label}</span>
+          </div>
+          <!-- The taint warning sits above everything, as it does in every
+               other review surface: it is the one thing that changes how the
+               rest should be read. -->
+          {#if d.taint?.armed}
+            <div class="dwarn">
+              Written while third-party text was in this conversation — read the
+              addressing carefully.
+            </div>
+          {/if}
+          {#if d.headline}<div class="dheadline">{d.headline}</div>{/if}
+          {#each d.headers as [name, value]}
+            <div class="dfield"><span class="dkey">{name}</span><span>{value}</span></div>
+          {/each}
+          {#if d.body}<div class="dbody">{d.body}</div>{/if}
+          {#each d.other as [name, value]}
+            <div class="dfield"><span class="dkey">{name}</span><span>{value}</span></div>
+          {/each}
+          <!-- A reply's reviewable object includes what it replies to, and
+               these bytes are third-party text: every line is marked, because
+               a heading scrolls off and a per-line gutter cannot. -->
+          {#if d.sources?.length}
+            <button class="dtoggle" onclick={() => (entry.showSource = !entry.showSource)}>
+              {entry.showSource ? 'hide' : 'show'} what this answers
+            </button>
+            {#if entry.showSource}
+              {#each d.sources as src}
+                <div class="dsrchead">{src.heading}</div>
+                <div class="dsrc">{src.text}</div>
+              {/each}
+            {/if}
+          {/if}
+          {#if entry.error}<div class="dwarn">{entry.error}</div>{/if}
+          <div class="qrow">
+            <button class="qbtn" disabled={entry.busy} onclick={() => keepDraft(entry)}>
+              Later
+            </button>
+            <button class="qbtn primary" disabled={entry.busy} onclick={() => releaseDraft(entry)}>
+              {entry.busy ? 'sending…' : 'Send now'}
+            </button>
+          </div>
+          <div class="qfoot">Later leaves it in the outbox — nothing here throws a draft away</div>
+        </div>
       {:else if entry.kind === 'question' && entry.qkind === 'approval'}
         <div class="qcard">
           <div class="qhead">
@@ -1045,6 +1149,70 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+  .dcard {
+    gap: 8px;
+  }
+  .dwarn {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--hazard);
+    border-left: 2px solid var(--hazard);
+    padding-left: 10px;
+  }
+  .dheadline {
+    font-size: 15px;
+    font-weight: 500;
+    line-height: 1.35;
+  }
+  .dfield {
+    display: flex;
+    gap: 8px;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .dkey {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    min-width: 62px;
+    flex-shrink: 0;
+    padding-top: 3px;
+  }
+  .dbody {
+    font-size: 14px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    padding: 8px 0;
+    border-top: 1px solid var(--accent-900);
+    border-bottom: 1px solid var(--accent-900);
+  }
+  .dtoggle {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--text-muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .dsrchead {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+  /* Third-party text, marked on every line: a heading scrolls off, a gutter
+     cannot. */
+  .dsrc {
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    color: var(--text-muted);
+    border-left: 2px solid var(--accent-900);
+    padding-left: 10px;
   }
   .qhead {
     display: flex;
