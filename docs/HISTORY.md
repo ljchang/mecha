@@ -2136,6 +2136,19 @@ matters is the general shape.
 
 ### Measuring
 
+**A count taken on your own branch describes a tree nobody will check out.**
+Three sessions landed work on 2026-08-25 and two of them independently
+re-measured the workspace test count as part of a handoff pass — 1,365 and
+1,367, each correct on its own tip, each wrong about `main`. The merge was
+1,370. Worse than the arithmetic: the later sweep walked `git log --since`
+to attribute the delta and missed `5b187c5` entirely, because it arrived
+through a merge rather than in the linear log, so three `mecha-core` tests
+had no lane and the attribution would have been confidently wrong about
+which arc produced them. **Measure the merge, and attribute with
+`--ancestry-path` or `merge-base --is-ancestor`, not with a date range.** A
+date range answers "what happened while I was awake", which is not the same
+question as "what is in this tree".
+
 **The one commit that skipped the test run was the one that broke the suite.**
 The offer-proxy commit substituted live verification (build, restart, curl
 through the real door) for `cargo test` — and it broke a test-only struct
