@@ -3498,7 +3498,9 @@ handled.**
   the merge-state check, a commit range instead of a walk from `HEAD`, a
   restart list derived from the units that exist rather than from the build
   output. Where widening is not possible, the honest move is to say what was
-  *not* covered, which is the `no silent caps` rule wearing different clothes.
+  *not* covered — the same reasoning as `MECHA_TEST_REQUIRE_BACKENDS=1`
+  turning a skipped integration test into a failure, because in CI a silently
+  skipped test reads exactly like a passing one.
 
 ## Design notes worth keeping
 
