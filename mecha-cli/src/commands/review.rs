@@ -420,12 +420,50 @@ fn graph_json(args: &[&str]) -> Result<Value> {
 /// findings and rendering them alike is how a broken reader reads as a healthy
 /// queue. The same rule `sessions health` applies to a rate over no
 /// denominator.
+/// How long ago, in the coarsest unit that is still honest. Depth answers
+/// how much is waiting; this answers how long, which is the half a queue
+/// aggregator exists for — this surface was built because a queue reached
+/// 6,434 items unnoticed, and depth alone cannot show a queue growing.
+///
+/// Coarse on purpose: "5 days" is what a person acts on, and a timestamp
+/// to the second invites reading it as precision about something whose
+/// only meaningful question is "longer than I meant".
+fn age_of(ts: Option<&str>) -> Option<String> {
+    let raw = ts?.trim();
+    // Two shapes reach this: RFC3339 from mecha's own stores and SQLite's
+    // "YYYY-MM-DD HH:MM:SS" from the graph. Parsing both here rather than
+    // making six callers agree on one.
+    let parsed = chrono::DateTime::parse_from_rfc3339(raw)
+        .map(|d| d.with_timezone(&chrono::Utc))
+        .ok()
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S")
+                .map(|n| n.and_utc())
+                .ok()
+        })?;
+    let mins = (chrono::Utc::now() - parsed).num_minutes().max(0);
+    Some(match mins {
+        m if m < 60 => format!("{m}m"),
+        m if m < 60 * 24 => format!("{}h", m / 60),
+        m if m < 60 * 24 * 60 => format!("{}d", m / (60 * 24)),
+        m => format!("{}mo", m / (60 * 24 * 30)),
+    })
+}
+
+/// The oldest of a set of timestamps, as an age.
+fn oldest_age<'a>(stamps: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    age_of(stamps.into_iter().min())
+}
+
 struct Queue {
     name: &'static str,
     depth: Option<usize>,
     detail: String,
     /// The verb that opens it, for the line under the table.
     opens: &'static str,
+    /// How long the oldest still-waiting item has waited. `None` when the
+    /// store is empty or could not be read — an absent age, never "0m".
+    oldest: Option<String>,
 }
 
 fn collect_queues() -> Vec<Queue> {
@@ -433,7 +471,7 @@ fn collect_queues() -> Vec<Queue> {
 
     // The graph's merge queue, via the binary. Unreachable is a reported
     // state, never a reason to drop the other four.
-    let (depth, detail) = match graph_json(&["review", "--proposers", "--json"]) {
+    let (depth, detail, oldest) = match graph_json(&["review", "--proposers", "--json"]) {
         Ok(v) => {
             let rows = v.as_array().cloned().unwrap_or_default();
             let total: usize = rows
@@ -447,21 +485,24 @@ fn collect_queues() -> Vec<Queue> {
                 .filter_map(|r| r["pending"].as_u64())
                 .map(|n| n as usize)
                 .sum();
+            let oldest = oldest_age(rows.iter().filter_map(|r| r["oldest"].as_str()));
             (
                 Some(total),
                 format!(
                     "{} proposer(s); {unjudged} from mechanisms you have never judged",
                     rows.len()
                 ),
+                oldest,
             )
         }
-        Err(e) => (None, format!("{e:#}")),
+        Err(e) => (None, format!("{e:#}"), None),
     };
     out.push(Queue {
         name: "graph candidates",
         depth,
         detail,
         opens: "mecha review list",
+        oldest,
     });
 
     // The graph's *entity* proposals — a second queue in the same store,
@@ -470,7 +511,7 @@ fn collect_queues() -> Vec<Queue> {
     // entity proposal is "is this the same person?", and a single number
     // covering both tells you how much is waiting without telling you what
     // kind of afternoon it is.
-    let (depth, detail) = match graph_json(&["proposals", "summary", "--json"]) {
+    let (depth, detail, oldest) = match graph_json(&["proposals", "summary", "--json"]) {
         Ok(v) => {
             let rows = v.as_array().cloned().unwrap_or_default();
             let total: usize = rows
@@ -482,6 +523,7 @@ fn collect_queues() -> Vec<Queue> {
                 .iter()
                 .filter(|r| r["pending"].as_u64() > Some(0))
                 .count();
+            let oldest = oldest_age(rows.iter().filter_map(|r| r["oldest"].as_str()));
             (
                 Some(total),
                 if total == 0 {
@@ -489,21 +531,23 @@ fn collect_queues() -> Vec<Queue> {
                 } else {
                     format!("{detectors} detector(s) with something to say")
                 },
+                oldest,
             )
         }
         // An older mecha-graph has no `proposals` verb, and that reads as
         // unreadable rather than empty — the dash rule. "Nothing waiting" and
         // "could not look" are opposite findings.
-        Err(e) => (None, format!("{e:#}")),
+        Err(e) => (None, format!("{e:#}"), None),
     };
     out.push(Queue {
         name: "graph entities",
         depth,
         detail,
         opens: "mecha-graph proposals list",
+        oldest,
     });
 
-    let (depth, detail) = match OutboxStore::default_root().and_then(OutboxStore::open) {
+    let (depth, detail, oldest) = match OutboxStore::default_root().and_then(OutboxStore::open) {
         Ok(store) => match store.items() {
             Ok(items) => {
                 let pending: Vec<_> = items.iter().filter(|i| i.status == "pending").collect();
@@ -516,20 +560,22 @@ fn collect_queues() -> Vec<Queue> {
                 } else {
                     format!("{} resolved on file", items.len() - pending.len())
                 };
-                (Some(pending.len()), d)
+                let oldest = oldest_age(pending.iter().map(|i| i.created_at.as_str()));
+                (Some(pending.len()), d, oldest)
             }
-            Err(e) => (None, format!("{e:#}")),
+            Err(e) => (None, format!("{e:#}"), None),
         },
-        Err(e) => (None, format!("{e:#}")),
+        Err(e) => (None, format!("{e:#}"), None),
     };
     out.push(Queue {
         name: "outbox drafts",
         depth,
         detail,
         opens: "mecha outbox",
+        oldest,
     });
 
-    let (depth, detail) = match Frontdoor::open_default().and_then(|s| s.records()) {
+    let (depth, detail, oldest) = match Frontdoor::open_default().and_then(|s| s.records()) {
         Ok(records) => {
             // Anything not closed is still somebody's problem; extraction
             // failures are called out because they wait on a human by design
@@ -547,18 +593,20 @@ fn collect_queues() -> Vec<Queue> {
             } else {
                 format!("{} closed", records.len() - open.len())
             };
-            (Some(open.len()), d)
+            let oldest = oldest_age(open.iter().map(|r| r.created_at.as_str()));
+            (Some(open.len()), d, oldest)
         }
-        Err(e) => (None, format!("{e:#}")),
+        Err(e) => (None, format!("{e:#}"), None),
     };
     out.push(Queue {
         name: "front-door requests",
         depth,
         detail,
         opens: "mecha frontdoor list",
+        oldest,
     });
 
-    let (depth, detail) = match LearningStore::default_root()
+    let (depth, detail, oldest) = match LearningStore::default_root()
         .and_then(LearningStore::open)
         .and_then(|s| s.proposals())
     {
@@ -574,15 +622,17 @@ fn collect_queues() -> Vec<Queue> {
                     domains.into_iter().collect::<Vec<_>>().join(", ")
                 )
             };
-            (Some(pending.len()), d)
+            let oldest = oldest_age(pending.iter().map(|p| p.created_at.as_str()));
+            (Some(pending.len()), d, oldest)
         }
-        Err(e) => (None, format!("{e:#}")),
+        Err(e) => (None, format!("{e:#}"), None),
     };
     out.push(Queue {
         name: "rule proposals",
         depth,
         detail,
         opens: "mecha proposals",
+        oldest,
     });
 
     // The other half of the self-improvement loop. Rule proposals come out of
@@ -595,7 +645,7 @@ fn collect_queues() -> Vec<Queue> {
     // on evidence at all: `Security` and `Architecture` reach a person however
     // well they scored, so a count that blurred the two would hide the ones a
     // score can never clear.
-    let (depth, detail) =
+    let (depth, detail, oldest) =
         match mecha_core::harness::HarnessStore::open_default().and_then(|s| s.all()) {
             Ok(cs) => {
                 let pending: Vec<_> = cs.iter().filter(|c| c.pending()).collect();
@@ -608,15 +658,17 @@ fn collect_queues() -> Vec<Queue> {
                         pending.len() - measured
                     )
                 };
-                (Some(pending.len()), d)
+                let oldest = oldest_age(pending.iter().map(|c| c.created_at.as_str()));
+                (Some(pending.len()), d, oldest)
             }
-            Err(e) => (None, format!("{e:#}")),
+            Err(e) => (None, format!("{e:#}"), None),
         };
     out.push(Queue {
         name: "harness changes",
         depth,
         detail,
         opens: "mecha harness list",
+        oldest,
     });
 
     out
@@ -628,7 +680,8 @@ fn queues(as_json: bool) -> Result<()> {
         let rows: Vec<Value> = qs
             .iter()
             .map(|q| {
-                json!({ "queue": q.name, "depth": q.depth, "detail": q.detail, "opens": q.opens })
+                json!({ "queue": q.name, "depth": q.depth, "detail": q.detail,
+                        "opens": q.opens, "oldest": q.oldest })
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&rows)?);
@@ -639,9 +692,20 @@ fn queues(as_json: bool) -> Result<()> {
     println!("{total} item(s) waiting on you\n");
     for q in &qs {
         match q.depth {
-            Some(n) => println!("{n:>6}  {:<22} {}", q.name, q.detail),
+            // The age sits beside the count, not in the detail: it is the
+            // same kind of fact as the depth — a property of waiting — and
+            // burying it in prose is how it stayed invisible.
+            Some(n) => println!(
+                "{n:>6}  {:>6}  {:<22} {}",
+                q.oldest.as_deref().unwrap_or("—"),
+                q.name,
+                q.detail
+            ),
             // A dash, never a zero.
-            None => println!("{:>6}  {:<22} unreadable: {}", "—", q.name, q.detail),
+            None => println!(
+                "{:>6}  {:>6}  {:<22} unreadable: {}",
+                "—", "—", q.name, q.detail
+            ),
         }
     }
     println!();
