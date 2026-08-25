@@ -886,9 +886,14 @@ Everything here is verified in source as of the date; the arcs' own docs
   deliberately **not** offered from the page (`serve/chat.rs`) — approve one
   call at a time in `ask` mode instead.
 - **The web app imports outside its package root** —
-  `../../../scripts/voice/page/voice-core.js` — deliberate (one module, two
-  shells, cannot drift) but it couples `npm run build` to the whole
-  checkout's layout; worth a note in the update skill if it ever moves.
+  `../../../scripts/voice/voice-core.js` — which couples `npm run build` to
+  the whole checkout's layout. It was deliberate when the module served two
+  shells and had to be owned by neither; since the standalone page was
+  retired (2026-08-25) the app is the only consumer, so the argument now is
+  only that the module must stay framework-free for whatever embeds voice
+  next. Moving it under `web/src/lib/` would be defensible and would end the
+  outside-the-root import; it has not been done because the module is the
+  voice arc's to own and the web app's build is not.
 - **A phone verdict has no undo**, which doubles the stakes of the
   `undecide <seed>` design below: `POST /api/queue/verdict` is a second
   irreversible verdict surface — and since the global similarity layer

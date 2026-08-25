@@ -1,11 +1,16 @@
 /* voice-core.js — the embeddable heart of mecha's voice mode.
  *
- * Framework-agnostic on purpose: the standalone page (index.html) and the
- * tailnet app's in-chat voice mode (Chat.svelte, the remote-surface arc)
- * must be the same machinery with different shells, or the two will drift
- * apart in exactly the ways that matter (chime timing, barge-in, the
- * end-sound-on-dead-network rule). docs/VOICE-RESEARCH.md D7 governs the
- * sounds; the RTVI event names come from pipecat 1.7.
+ * Framework-agnostic on purpose, and it stays that way for a reason that
+ * outlived its original one. It was extracted so a standalone page and the
+ * tailnet app's in-chat voice mode could not drift; the page was retired on
+ * 2026-08-25 (one door is clearer than two, and sharing a module never
+ * stopped the two *shells* diverging - the voice controls had to be built
+ * twice), so `Chat.svelte` is the only consumer today. The module keeps no
+ * framework dependency anyway: this is the layer that must be portable if
+ * voice is ever embedded anywhere else, and coupling it to Svelte would be
+ * a decision made once and regretted at the next surface.
+ * docs/VOICE-RESEARCH.md D7 governs the sounds; the RTVI event names come
+ * from pipecat 1.7.
  *
  * Contract:
  *   const session = createVoiceSession({
