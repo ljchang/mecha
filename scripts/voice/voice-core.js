@@ -100,6 +100,20 @@ export function createVoiceSession(opts = {}) {
   }
 
   let pc = null, dc = null, micStream = null, meterTrack = null, levelRAF = 0, ended = false;
+  /* `linked` is "we have been connected once", which is what separates a
+     first connect (chime, start the meter) from a recovery (neither, or the
+     call chimes and stacks a second animation loop every time wifi coughs).
+     `dropTimer` is the open grace window over a transient drop, and
+     `endLabel` is a reason the server announced for a teardown it is about
+     to perform - the close that follows carries none. */
+  let linked = false, dropTimer = null, endLabel = null;
+  /* How long a `disconnected` may last before the call is declared over.
+     Long enough for a wifi/cellular handoff or a route change - the events
+     that produce it on a phone - and short enough that a dead line does not
+     sit there pretending to be live. Usually academic: a browser gives up on
+     its own when ICE consent expires (~30s) and reports `failed`, which ends
+     the call through the terminal arm below without waiting for this. */
+  const DROP_GRACE_MS = 15000;
 
   function setState(name, label) { cfg.onState(name, label); }
 
@@ -124,6 +138,12 @@ export function createVoiceSession(opts = {}) {
         // Custom server→client payloads share one RTVI type, so they are
         // demultiplexed on `t` here rather than upstream.
         if (msg.data?.t === "voice-config") cfg.onVoiceConfig(msg.data);
+        // The worker announces a teardown it is about to perform. Held for
+        // `end()` rather than acted on: the close arrives a moment later by
+        // itself, and what was missing was never the ending - it was any
+        // account of why. An unrecognised reason still ends the call, with
+        // the server's own word in it.
+        else if (msg.data?.t === "call-ending") endLabel = endingLabel(msg.data);
         break;
       case "error":
         cfg.onTranscript({ who: "bot", text: "something went wrong: " + (msg.data?.message || "unknown error"), interim: false });
@@ -132,7 +152,11 @@ export function createVoiceSession(opts = {}) {
   }
 
   async function connect() {
-    ended = false;
+    // Every per-call flag resets together: a session object that is
+    // reconnected must not inherit the previous call's grace window or the
+    // reason the previous one ended.
+    ended = false; linked = false; endLabel = null;
+    clearTimeout(dropTimer); dropTimer = null;
     await AC.resume();
     setState("connecting", "connecting…");
     try {
@@ -183,15 +207,50 @@ export function createVoiceSession(opts = {}) {
     /* The end chime is wired to the connection-state machine, not a server
        message: a server cannot announce a drop over the connection that
        dropped. Abrupt loss and graceful end sound the same because to the
-       listener they are the same fact. */
+       listener they are the same fact.
+
+       But `disconnected` is not loss, and ending on it is what made calls
+       hang up by themselves. It is the browser reporting that packets have
+       stopped arriving *for now*; ICE keeps checking and the state returns
+       to `connected` on its own when they resume, which on a phone at the
+       edge of a room is the normal course of events rather than a failure.
+       The worker's own log shows the same hiccup from the other side -
+       `socket.send() raised exception` seconds before a call died. So only
+       `failed` and `closed` are terminal here; `disconnected` opens a grace
+       window and ends the call only if it never comes back.
+
+       Deliberately no ICE restart to shorten that window: pipecat's
+       reconnect path (`restart_pc`) fires its own `disconnected` event
+       server-side, and that event is what this worker cancels the pipeline
+       on - so "reconnecting" would destroy the bot being reconnected to.
+       Waiting costs nothing and keeps the conversation. */
     pc.onconnectionstatechange = () => {
       if (!pc) return;
-      if (pc.connectionState === "connected") {
+      const state = pc.connectionState;
+      if (state === "connected") {
+        clearTimeout(dropTimer); dropTimer = null;
         cfg.onLink(true);
-        chimeStart();
         setState("listening", "listening");
-        levelRAF = requestAnimationFrame(step);
-      } else if (["disconnected", "failed", "closed"].includes(pc.connectionState)) {
+        // A recovery is not a new call. Chiming again would announce an
+        // arrival that already happened, and a second `requestAnimationFrame`
+        // would leave two meter loops running for the rest of the session.
+        if (!linked) {
+          linked = true;
+          chimeStart();
+          levelRAF = requestAnimationFrame(step);
+        }
+      } else if (state === "disconnected") {
+        if (ended || dropTimer) return;
+        // The thinking pulse means "a request is in flight"; over a line
+        // that is not carrying anything it is a sound telling you something
+        // untrue, so it stops here and the next state event restarts it.
+        thinkingSound(false);
+        setState("connecting", "reconnecting…");
+        dropTimer = setTimeout(() => {
+          dropTimer = null;
+          end("connection lost — tap to reconnect");
+        }, DROP_GRACE_MS);
+      } else if (state === "failed" || state === "closed") {
         end();
       }
     };
@@ -232,9 +291,21 @@ export function createVoiceSession(opts = {}) {
     return true;
   }
 
+  /* A teardown the server announced, worded for a person. The reason is
+     the server's word and unknown ones pass through: a label naming a cause
+     nobody here anticipated still beats "call ended" with no cause at all. */
+  function endingLabel(d) {
+    if (d?.reason === "idle") {
+      const mins = Math.max(1, Math.round((d.after_secs ?? 0) / 60));
+      return `call ended — nothing said for ${mins} minutes`;
+    }
+    return d?.reason ? `call ended (${d.reason}) — tap to reconnect` : null;
+  }
+
   function end(label) {
     if (ended) return;
     ended = true;
+    clearTimeout(dropTimer); dropTimer = null;
     thinkingSound(false);
     chimeEnd();
     cancelAnimationFrame(levelRAF);
@@ -244,7 +315,7 @@ export function createVoiceSession(opts = {}) {
     if (pc) { try { pc.close(); } catch { /* already gone */ } }
     pc = null; dc = null;
     cfg.onLink(false);
-    setState("idle", label || "call ended — tap to reconnect");
+    setState("idle", label || endLabel || "call ended — tap to reconnect");
   }
 
   return {

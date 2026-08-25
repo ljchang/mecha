@@ -107,21 +107,42 @@
     }
   }
 
-  async function verdict(accept) {
+  // What a card is saying about its own last verdict, keyed by the id that
+  // verdict named. Deliberately not one page-level string: the failure this
+  // surface kept producing — `cannot resolve subject 'X'` — is answered by
+  // two actions on that one candidate, and an error line at the top of the
+  // screen is a message a thumb cannot act on. `created` records that the
+  // attempt already passed --create-subjects, so the hint offering it does
+  // not reappear pointing at what just failed.
+  let notes = $state({}); // id → { error?, said?, created? }
+  const note = (id, patch) => (notes = { ...notes, [id]: patch });
+  const clearNote = (id) => {
+    const rest = { ...notes };
+    delete rest[id];
+    notes = rest;
+  };
+
+  async function verdict(accept, create = false) {
     const item = deck.items[0];
     busy = true;
     try {
       const res = await fetch('/api/queue/verdict', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: item.id, accept }),
+        body: JSON.stringify({ id: item.id, accept, create_subjects: create }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
+      // The card leaves only once the server says the verdict *landed*. It
+      // used to leave on any 2xx, and the graph reports a per-candidate
+      // failure on stdout while exiting zero — so a candidate that could not
+      // resolve disappeared from the sample, stayed pending in the queue, and
+      // was counted as one of the twelve verdicts this sitting describes.
       deck.items.shift();
       deck.judged += 1;
+      clearNote(item.id);
       error = null;
     } catch (e) {
-      error = String(e?.message ?? e);
+      note(item.id, { error: String(e?.message ?? e), created: create });
     } finally {
       busy = false;
     }
@@ -130,19 +151,58 @@
   // One tap, one human verdict: the leader id is the owner's, the member
   // ids ride as the cascade — always the ids the page showed, never a
   // re-derived similarity.
-  async function groupVerdict(g, accept) {
+  //
+  // A failed seed cascades nothing, by the graph's own rule (a fan-out from
+  // a failed verdict is a fan-out from nothing), so the group stays whole
+  // and keeps its place. That is why the ways through belong on the card:
+  // binding the leader's subject is usually enough to unblock all of it,
+  // because sharing a subject is most of what made it a group.
+  async function groupVerdict(g, accept, create = false) {
     busy = true;
     try {
       const res = await fetch('/api/queue/verdict', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: g.leader_id, accept, cascade: g.members.map((m) => m[0]), across: !!groups.all }),
+        body: JSON.stringify({
+          id: g.leader_id,
+          accept,
+          create_subjects: create,
+          cascade: g.members.map((m) => m[0]),
+          across: !!groups.all,
+        }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       groups.rows = groups.rows.filter((r) => r !== g);
+      clearNote(g.leader_id);
       error = null;
     } catch (e) {
-      error = String(e?.message ?? e);
+      note(g.leader_id, { error: String(e?.message ?? e), created: create });
+    } finally {
+      busy = false;
+    }
+  }
+
+  // Rebind an unresolvable subject to a real entity — the graph's own `bind`,
+  // which takes its top suggestion and learns the old spelling as an alias,
+  // so the fix outlives this one candidate. The row STAYS: a bound subject is
+  // a candidate that can now be accepted, not one that has been, and the
+  // graph's own line (`#id subject 'old' → New — accept to promote`) is
+  // passed through rather than re-worded, next keypress included.
+  async function bindSubject(id) {
+    busy = true;
+    try {
+      const res = await fetch('/api/queue/bind', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const data = await res.json();
+      note(id, { said: (data.output || '').trim() || 'subject bound — accept to promote' });
+    } catch (e) {
+      // A bind that failed says nothing about --create-subjects, so whether
+      // that hint is still on offer is carried over rather than decided here.
+      note(id, { error: String(e?.message ?? e), created: notes[id]?.created });
     } finally {
       busy = false;
     }
@@ -165,6 +225,27 @@
   <svg viewBox="0 0 24 24" width={size} height={size} style="flex-shrink: 0" fill="none" stroke="var(--hazard)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <path d="M12 4l9 16H3z" /><path d="M12 11v4M12 17.5v.5" />
   </svg>
+{/snippet}
+
+<!-- What one card has to say about its own last verdict, and the two ways
+     through the failure that produces almost all of them. Both keys exist in
+     the TUI (`b` binds, `A` accepts as a new topic) and neither existed here,
+     which is what left a phone holding an error it could not answer. Offered
+     after a failure rather than always: `--create-subjects` invents a topic
+     node, which is not a default. Suppressed once it has been tried, on the
+     TUI's rule — a hint pointing at what just failed is circular. -->
+{#snippet verdictNote(id, retryCreating)}
+  {#if notes[id]?.error}
+    <div class="cardwarn">{@render hazardGlyph()}<span>{notes[id].error}</span></div>
+    <div class="ways">
+      <button class="ghost" disabled={busy} onclick={() => bindSubject(id)}>Bind subject</button>
+      {#if !notes[id].created}
+        <button class="ghost" disabled={busy} onclick={retryCreating}>Accept as new topic</button>
+      {/if}
+    </div>
+  {:else if notes[id]?.said}
+    <div class="cardsaid">{notes[id].said}</div>
+  {/if}
 {/snippet}
 
 {#snippet backTo(action, label)}
@@ -211,6 +292,7 @@
         <button class="btn" disabled={busy} onclick={() => verdict(false)}>Reject</button>
         <button class="btn primary" disabled={busy} onclick={() => verdict(true)}>Accept</button>
       </div>
+      {@render verdictNote(item.id, () => verdict(true, true))}
       <div class="deckfoot">
         <button class="ghost" onclick={skip}>Skip for now</button>
         <button class="ghost" disabled={busy} onclick={() => draw(deck.proposer, deck.predicate)}>New draw</button>
@@ -273,6 +355,7 @@
             <button class="btn" disabled={busy} onclick={() => groupVerdict(g, false)}>Reject all {g.members.length + 1}</button>
             <button class="btn primary" disabled={busy} onclick={() => groupVerdict(g, true)}>Accept all {g.members.length + 1}</button>
           </div>
+          {@render verdictNote(g.leader_id, () => groupVerdict(g, true, true))}
         </div>
       {/each}
     {/if}
@@ -339,6 +422,10 @@
 
 <style>
   .pane { display: flex; flex-direction: column; gap: 10px; }
+  .cardwarn { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--hazard); line-height: 1.45; padding-top: 2px; }
+  .cardsaid { font-family: var(--mono); font-size: 11px; color: var(--text-muted); line-height: 1.5; padding-top: 2px; }
+  .ways { display: flex; gap: 8px; flex-wrap: wrap; }
+  .ways .ghost { flex: 1; min-height: 42px; border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); }
   .warnline { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; }
   .row { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 7px; cursor: pointer; color: var(--text); font: inherit; }
   .rowtop { display: flex; align-items: center; gap: 8px; }
