@@ -123,13 +123,17 @@ mail-classify fixes, `harness`/`review`/`proposals`), and **5 in
 voice block's switch-into-speech rule, and the three that pin what a spoken
 turn reads back as).
 
-**Measure the merge, not either side of it** — the lesson of this
-particular count. Three sessions landed work the same afternoon, and two
-of them each wrote down a figure measured on their own tip (1,365 and
-1,367); neither described the tree anyone would check out, and the second
-also missed 5b187c5 entirely, because it arrived through a merge and not
-in the linear log the sweep had walked. Note also that the earlier line
-said "2 doctests" where there is one plus a single test in the
+**Measure the merge, not either side of it, and attribute with a commit
+range** — the lesson of this particular count, and the reason those numbers
+are `git diff v0.1.13..HEAD` per suite rather than a `git log` sweep. Three
+sessions landed work the same afternoon; two wrote down a figure measured on
+their own tip (1,365 and 1,367), neither describing the tree anyone would
+check out, and the attribution sweep then ran inside a worktree cut 31
+minutes before `5b187c5` existed, so three `mecha-core` tests had no lane.
+Two wrong mechanisms were proposed for that before one was measured — they
+are recorded in HISTORY under Traps → Measuring, along with the genuine
+`--since` hazard that turned up while chasing it. Note also that the earlier
+line said "2 doctests" where there is one plus a single test in the
 `mecha-mail` binary; the total was right and the breakdown was not.
 
 The previous figure was **1,343**, re-measured at the v0.1.13 tag
