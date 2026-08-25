@@ -21,10 +21,19 @@ maps which document holds what.
 
 ## Where the work is
 
-Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.13**
-(2026-08-24 night — the web surface, voice, and the graph queue's similarity
-groups; 0.1.12 shipped 2026-08-22, 0.1.11 on 2026-08-21, 0.1.10 on 2026-08-20,
+Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.14**
+(2026-08-25 — the day the last release got used rather than built on: voice
+calls and chat became one conversation, three review surfaces stopped hiding
+what they were asking people to approve, and the nightly mail classifier took
+both mailboxes; 0.1.13 shipped 2026-08-24 night with the web surface, voice,
+and the graph queue's similarity
+groups; 0.1.12 on 2026-08-22, 0.1.11 on 2026-08-21, 0.1.10 on 2026-08-20,
 and 0.1.7/0.1.8 on 2026-08-19/20 after the mail hold lifted).
+
+**0.1.14 is thirty-one commits from three sessions working the same day**,
+which is the thing to know about reading its history: the lanes interleave,
+so `--ancestry-path` answers "what is in this release" and a date range does
+not (see the Measuring trap that count produced).
 
 **0.1.13 is a patch bump carrying two whole subsystems**, which is worth
 knowing rather than discovering: 91 commits, including everything the voice

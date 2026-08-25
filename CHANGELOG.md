@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-08-25
+
+A day of using the last release rather than building the next one, which is
+why almost everything here is a seam somebody walked into. The largest is
+voice: talking and typing were two conversations, and now they are one.
+
+### Added
+
+- **A voice call is the chat session it was started from.** The last of the
+  voice decisions still owing something. An in-chat call used to open its
+  own conversation with its own transcript and its own clean taint slate;
+  now the page names its session in the WebRTC offer, the worker forwards
+  it, and the turn runs on that conversation's messages, taint, transcript
+  and workspace jail. Start something at the desk, finish it on a walk,
+  read it back at the desk. A watching page fills in as you talk, and
+  spoken turns are marked as spoken in the transcript.
+
+  Two things worth knowing about the shape. The obstacle was never the
+  transport — `mecha serve` held two session maps in one process, and a
+  call resolved in the wrong one. And the smaller fix was rejected on
+  purpose: merging the voice conversation onto the web session when the
+  call ends would have put the same turns in two session JSONLs, for
+  `recall`, `distill` and the run-quality corpus each to count twice.
+
+  The permission posture travels with the *turn*, not the conversation:
+  `--voice-yes` still means a spoken turn runs without stopping to ask,
+  while a typed turn in the same conversation obeys the page's mode.
+  Nothing structural moved — the trifecta interlock sits ahead of the
+  approver, sends still stage through the outbox, and taint now accumulates
+  across both doors instead of being reset by opening a call.
+
+- **`/queues` reviews proposals in place, for all three stores.** Three
+  rows announced a count and then refused to open, which is the worst shape
+  a queue aggregator can take: it exists because a queue grew unnoticed,
+  and it was itself showing 28 items behind a door that did not open.
+
+- **Every queue says how long its oldest item has waited.** A count answers
+  "how much", not "how long has this been ignored", and the second is the
+  question a review queue is for.
+
+### Changed
+
+- **A staged draft shows what it acts on, even when the target was
+  discovered rather than asked for.** `outbox_source` matched provider ids
+  against earlier tool-call *inputs*, which finds a reply's thread read and
+  finds nothing for a calendar delete whose event id exists only in a
+  result. Reviewing that item meant approving an account name and an opaque
+  id. `Join::Returned` closes it, with a minimum-entropy guard so
+  `calendar_id: "primary"` cannot match every calendar result in the
+  session.
+
+- **The nightly mail classifier reads both mailboxes.** The first
+  both-account sweep read 100 threads and disposed 47 of 51 candidates with
+  no model at all — the account excluded for being expensive is the cheap
+  one, because machine-generated mail is exactly what the prefilter handles
+  for free.
+
+- **One voice door.** The standalone voice page is retired; the app is the
+  only shell. Sharing `voice-core.js` kept the two shells' machinery
+  identical and did nothing about the shells themselves, so the voice
+  picker and rate slider were built twice.
+
+- **Two standbys removed.** Kokoro and Voxtral each sat at zero requests
+  holding GPU memory as a "fallback" nothing failed over to automatically.
+  A spare with no code path to it is an intention, not a spare.
+
+### Fixed
+
+- **Mail actions on the personal account had never worked.** Every button
+  on a personal thread failed with "no thread in the triage store matches",
+  because the nightly named one account. `mail_triage` reaches nobody and
+  mutates only your own mailbox — it is documented as the cheap way to act
+  — and it was the one verb that could not run.
+
+- **A sound with no words in it no longer stops the bot.** The VAD was
+  winning the turn-start race, so 200 ms of anything Silero scored as
+  speech interrupted a reply — a sleeve on a microphone cleared it. Fixed
+  structurally rather than by tuning: the VAD came out of the turn-*start*
+  strategies, so a wordless segment now produces no transcription at all
+  and the reply simply continues. The cost, stated plainly: barge-in is
+  "finish the phrase and it stops" rather than instant.
+
+- **`Enter` at the TUI's review level had been a no-op for three commits**
+  while the footer advertised "Enter read it" — harness candidates and rule
+  proposals announced a depth and opened nothing, which is exactly what
+  `/queues` exists to prevent.
+
+- **`/entity` advertises its keys**: Esc clears the search, ctrl-n says
+  CREATE, and the merge key was advertised nowhere at all.
+
 ## [0.1.13] - 2026-08-24
 
 The release where mecha grew a face and a voice. Two subsystems arrived —
@@ -1899,7 +1989,12 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.14...HEAD
+[0.1.14]: https://github.com/ljchang/mecha/releases/tag/v0.1.14
+[0.1.13]: https://github.com/ljchang/mecha/releases/tag/v0.1.13
+[0.1.12]: https://github.com/ljchang/mecha/releases/tag/v0.1.12
+[0.1.11]: https://github.com/ljchang/mecha/releases/tag/v0.1.11
+[0.1.10]: https://github.com/ljchang/mecha/releases/tag/v0.1.10
 [0.1.9]: https://github.com/ljchang/mecha/releases/tag/v0.1.9
 [0.1.8]: https://github.com/ljchang/mecha/releases/tag/v0.1.8
 [0.1.7]: https://github.com/ljchang/mecha/releases/tag/v0.1.7
