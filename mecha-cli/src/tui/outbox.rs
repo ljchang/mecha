@@ -559,14 +559,7 @@ fn detail_lines(item: &OutboxItem, reads: &[SourceRead]) -> Vec<Line<'static>> {
     // and must never read as a continuation of the letter.
     for read in reads {
         body.push(Line::raw(""));
-        body.push(Line::styled(
-            format!(
-                "replying to — third-party content via {} ({})",
-                read.tool,
-                read.keys.join(", ")
-            ),
-            header,
-        ));
+        body.push(Line::styled(read.heading(), header));
         for line in read.text.lines() {
             body.push(Line::styled(format!("│ {line}"), grey));
         }
@@ -858,14 +851,17 @@ mod tests {
         let read = SourceRead {
             tool: "mail__mail_get_thread".into(),
             keys: vec!["thread_id".into()],
+            join: mecha_core::outbox_source::Join::Asked,
             text: "Dear Dr. Chang,\n\nI am an incoming freshman.".into(),
         };
         let body = text(&detail_lines(
             &item("aaa1", "pending", OutboxKind::Message),
             std::slice::from_ref(&read),
         ));
+        // Split on the shared heading rather than on a literal, so a reworded
+        // lead cannot make this assert against a string no surface prints.
         let (draft, source) = body
-            .split_once("replying to")
+            .split_once(read.heading().split(" — ").next().unwrap())
             .expect("the source read is headed, not appended silently");
         assert!(draft.contains("\nhi\n"), "the draft comes first: {body}");
         assert!(

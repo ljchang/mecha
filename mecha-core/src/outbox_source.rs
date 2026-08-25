@@ -67,6 +67,38 @@ pub const MAX_READS: usize = 3;
 /// is cut, the cut says so), and `--json` is still the unabridged check.
 pub const MAX_CHARS: usize = 6000;
 
+/// The shortest a provider id may be to join on its **value alone**.
+///
+/// [`Join::Asked`] matches key *and* value, so a coincidence has to happen
+/// twice and no floor is needed. [`Join::Returned`] has only the value, and a
+/// low-entropy one is a substring of everything: `calendar_id: "primary"`
+/// would match every calendar result in the session and present an unrelated
+/// listing as the thing being acted on — the wrong-bytes review this module
+/// exists to prevent, arriving through the door it just opened.
+///
+/// Sixteen because that is a Gmail thread id exactly (`1a035af8bbc75864`),
+/// and because the failure directions are not symmetric: too high shows no
+/// source, which is what every draft had before this existed, while too low
+/// shows the reviewer the wrong original and tells them it is the right one.
+pub const MIN_RETURNED_ID_CHARS: usize = 16;
+
+/// How the draft and the read were joined — and therefore how much it proves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Join {
+    /// The id was an **argument** to this call: the run asked for this exact
+    /// thing, by the same key the draft uses.
+    Asked,
+    /// The id is in this call's **result**: the run learned it here.
+    ///
+    /// Without this, a whole shape of draft has no reviewable object at all.
+    /// A reply names its `thread_id` because the model was given one; a
+    /// calendar delete names an `event_id` it can only have got by *listing*
+    /// the calendar first, so the id appears in a result and in no input
+    /// before the staging call. That draft showed a reviewer an account and
+    /// an opaque id and asked them to approve deleting something.
+    Returned,
+}
+
 /// One earlier tool result the staged draft was written from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceRead {
@@ -76,9 +108,45 @@ pub struct SourceRead {
     /// Which arguments joined it to the draft, so a coincidental match is
     /// visibly coincidental rather than presented as the source.
     pub keys: Vec<String>,
+    /// Whether the call asked for the id or returned it. Rendered, because
+    /// "the run asked for this" and "the run found this here" are different
+    /// claims and a reviewer weighs them differently.
+    pub join: Join,
     /// The result, with the model-facing `<untrusted-content>` wrapper
     /// removed. Truncated to [`MAX_CHARS`], with a line saying so.
     pub text: String,
+}
+
+impl SourceRead {
+    /// The line every surface puts above the quoted bytes.
+    ///
+    /// It says four things and each is needed: that this is **not** the draft,
+    /// that it came from outside this machine, which tool fetched it, and how
+    /// it was joined. A quoted block with no heading reads as more of the
+    /// letter — which, for text an attacker may have written, is the one
+    /// impression this must never leave.
+    ///
+    /// **One definition because there are three renderers** — the CLI, the
+    /// TUI and the web review pane. A heading that drifts between them is a
+    /// reviewer told different things about the same bytes depending on where
+    /// they happened to read them.
+    ///
+    /// The lead is no longer "replying to". That was true of the only case
+    /// that existed when it was written and false the moment a draft that
+    /// answers nothing got a source: a staged calendar delete is not replying
+    /// to the listing it found the event in. This module special-cases no tool
+    /// name anywhere, and the heading was quietly the exception.
+    pub fn heading(&self) -> String {
+        let lead = match self.join {
+            Join::Asked => "drafted from",
+            Join::Returned => "target came from",
+        };
+        format!(
+            "{lead} — third-party content via {} ({}), not part of your draft:",
+            self.tool,
+            self.keys.join(", ")
+        )
+    }
 }
 
 /// The reads behind a draft, or an empty list when there are none to find.
@@ -162,16 +230,35 @@ pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead>
         if name == &item.tool && input == &item.args_before {
             break;
         }
-        let keys: Vec<String> = ids
+        let Some(content) = results.get(id.as_str()) else {
+            continue;
+        };
+        // Asked first, and it wins outright when it matches: key *and* value
+        // is the stronger claim, and a call that asked for the id is a call
+        // that meant this exact thing.
+        let asked: Vec<String> = ids
             .iter()
             .filter(|(key, value)| input.get(key).and_then(|v| v.as_str()) == Some(value.as_str()))
             .map(|(key, _)| key.clone())
             .collect();
-        if keys.is_empty() {
-            continue;
-        }
-        let Some(content) = results.get(id.as_str()) else {
-            continue;
+        let (join, keys) = if !asked.is_empty() {
+            (Join::Asked, asked)
+        } else {
+            // The id appears in what this call returned. See [`Join::Returned`]
+            // for why the value-only match is necessary, and
+            // [`MIN_RETURNED_ID_CHARS`] for why it is floored.
+            let returned: Vec<String> = ids
+                .iter()
+                .filter(|(_, value)| {
+                    value.chars().count() >= MIN_RETURNED_ID_CHARS
+                        && content.contains(value.as_str())
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            if returned.is_empty() {
+                continue;
+            }
+            (Join::Returned, returned)
         };
         // One call is one read. The union can hand back the same `tool_use`
         // twice when a rewrite changed the assistant message around it —
@@ -183,6 +270,7 @@ pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead>
         found.push(SourceRead {
             tool: name.clone(),
             keys,
+            join,
             text: clip(unwrap_untrusted(content)),
         });
     }
@@ -320,10 +408,22 @@ mod tests {
     use serde_json::{json, Value};
 
     fn draft(args: Value) -> OutboxItem {
+        draft_of("mail__mail_reply", args)
+    }
+
+    /// As [`draft`], for a draft staged by some other tool.
+    ///
+    /// The tool name is not decoration here: the walk ends at the staging call
+    /// by matching `(name, args_before)`, so a fixture whose staging call is
+    /// named differently from `item.tool` silently disables that break — and
+    /// the draft then joins to *itself*, handing the reviewer "Drafted, not
+    /// sent" as the thing it is acting on. Found by writing exactly that
+    /// fixture by accident.
+    fn draft_of(tool: &str, args: Value) -> OutboxItem {
         OutboxItem {
             id: "i1".into(),
             status: "pending".into(),
-            tool: "mail__mail_reply".into(),
+            tool: tool.into(),
             kind: OutboxKind::Message,
             args_before: args.clone(),
             args,
@@ -373,6 +473,93 @@ mod tests {
         assert_eq!(reads[0].tool, "mail__mail_get_thread");
         assert_eq!(reads[0].keys, vec!["thread_id".to_string()]);
         assert!(reads[0].text.contains("Dear Dr. Chang"));
+    }
+
+    /// **The regression this half exists for.** A calendar delete names an
+    /// `event_id` the run can only have got by listing the calendar, so the id
+    /// is in a *result* and in no input before the staging call. Before
+    /// [`Join::Returned`] the reviewer was shown an account and an opaque id
+    /// and asked to approve deleting something.
+    ///
+    /// Fails on the old behaviour: matching inputs alone finds nothing here.
+    #[test]
+    fn an_id_the_run_learned_from_a_result_still_finds_its_source() {
+        let event = "is146vnus4laqip97744h9n9kq_20260824T130000Z";
+        let item = draft_of(
+            "mail__calendar_delete_event",
+            json!({"account": "personal", "event_id": event}),
+        );
+        let listing = format!(
+            "[{{\"event_id\": \"{event}\", \"summary\": \"No meetings\", \
+             \"start_time\": \"2026-08-24 09:00 EDT\"}}]"
+        );
+        let messages = vec![
+            // The window asked for is a time range; the id appears nowhere in
+            // this call's arguments, which is the whole point.
+            call(
+                "a",
+                "mail__calendar_list_events",
+                json!({"account": "personal", "start": "2026-08-24"}),
+            ),
+            result("a", &listing),
+            call("b", "mail__calendar_delete_event", item.args_before.clone()),
+            result("b", "Drafted, not sent: staged as `i1`."),
+        ];
+        let reads = from_messages(&item, &messages);
+        assert_eq!(reads.len(), 1, "{reads:?}");
+        assert_eq!(reads[0].join, Join::Returned);
+        assert_eq!(reads[0].keys, vec!["event_id".to_string()]);
+        // What the reviewer could not see before: which event this is.
+        assert!(reads[0].text.contains("No meetings"), "{:?}", reads[0].text);
+        assert!(reads[0].heading().contains("target came from"));
+    }
+
+    /// A value short enough to be a substring of everything must not join, or
+    /// `calendar_id: "primary"` presents an unrelated listing as the thing
+    /// being deleted — the wrong-bytes review, through the door this opened.
+    #[test]
+    fn a_low_entropy_value_never_joins_on_a_result() {
+        let item = draft_of(
+            "mail__calendar_delete_event",
+            json!({"calendar_id": "primary"}),
+        );
+        let messages = vec![
+            call(
+                "a",
+                "mail__calendar_list_events",
+                json!({"start": "2026-08-24"}),
+            ),
+            result(
+                "a",
+                "[{\"calendar_id\": \"primary\", \"summary\": \"Standup\"}]",
+            ),
+            call("b", "mail__calendar_delete_event", item.args_before.clone()),
+        ];
+        assert!(
+            from_messages(&item, &messages).is_empty(),
+            "`primary` is seven characters and matches every calendar result"
+        );
+    }
+
+    /// When a call both asked for the id and returned it, the stronger claim
+    /// is the one reported: key *and* value beats value alone.
+    #[test]
+    fn asking_for_an_id_outranks_merely_returning_it() {
+        let item = draft(json!({"thread_id": "1a035af8bbc75864", "body_markdown": "Hi"}));
+        let messages = vec![
+            call(
+                "a",
+                "mail__mail_get_thread",
+                json!({"thread_id": "1a035af8bbc75864"}),
+            ),
+            // The result echoes the id, so both rules match this one call.
+            result("a", "thread 1a035af8bbc75864\n\nFrom: Alan"),
+            call("b", "mail__mail_reply", item.args_before.clone()),
+        ];
+        let reads = from_messages(&item, &messages);
+        assert_eq!(reads.len(), 1, "{reads:?}");
+        assert_eq!(reads[0].join, Join::Asked, "the stronger join wins");
+        assert!(reads[0].heading().contains("drafted from"));
     }
 
     #[test]
@@ -489,6 +676,7 @@ mod tests {
         SourceRead {
             tool: "mail__mail_get_thread".into(),
             keys: vec!["thread_id".into()],
+            join: Join::Asked,
             text: text.into(),
         }
     }

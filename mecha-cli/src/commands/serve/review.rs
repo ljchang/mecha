@@ -214,6 +214,14 @@ fn detail_json(item: &OutboxItem, sources: &[outbox_source::SourceRead]) -> serd
         "sources": sources.iter().map(|s| serde_json::json!({
             "tool": s.tool,
             "keys": s.keys,
+            // The rendered line and the raw discriminant both: the pane shows
+            // the first and can style on the second, and neither is rebuilt
+            // from `keys` on the far side of a JSON boundary.
+            "heading": s.heading(),
+            "join": match s.join {
+                outbox_source::Join::Asked => "asked",
+                outbox_source::Join::Returned => "returned",
+            },
             "text": s.text,
         })).collect::<Vec<_>>(),
     })
