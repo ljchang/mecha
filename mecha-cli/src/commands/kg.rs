@@ -66,6 +66,15 @@ pub enum Cmd {
         /// The note. Trailing words are joined, so it needs no quoting.
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
+        /// Rewrite an existing note in place, by the `source_id` that
+        /// `mecha kg notes` prints. The graph's episode key is
+        /// (source, source_id), so this updates the row rather than adding a
+        /// near-duplicate beside it — and it re-mines: the cached embedding
+        /// and enrichment are dropped, so the nightly extractor reads the new
+        /// wording. Candidates already derived from the old wording stay in
+        /// the review queue; editing a note is not a retraction.
+        #[arg(long, value_name = "SOURCE_ID")]
+        edit: Option<String>,
     },
 }
 
@@ -73,7 +82,10 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     match args.cmd {
         Cmd::Search { query, k, json } => search(global, &query.join(" "), k, json).await,
         Cmd::Entity { name, json } => entity(global, &name.join(" "), json).await,
-        Cmd::Note { text } => note(global, &text.join(" ")).await,
+        Cmd::Note { text, edit } => match edit {
+            Some(id) => note_edit(global, &id, &text.join(" ")).await,
+            None => note(global, &text.join(" ")).await,
+        },
         Cmd::Notes { limit, json } => notes(global, limit, json).await,
     }
 }
@@ -223,17 +235,89 @@ async fn notes(global: &GlobalOpts, limit: u64, as_json: bool) -> Result<()> {
     }
     for n in &rows {
         let body = n["body"].as_str().unwrap_or("?");
-        let head: String = body.chars().take(96).collect();
+        let head: String = body.chars().take(80).collect();
+        // The id is printed because it is the handle `--edit` takes, and a
+        // listing whose rows cannot be named is a listing you can only read.
         println!(
-            "  {}  {}",
+            "  {}  {:<26}  {}",
             n["occurred_at"]
                 .as_str()
                 .unwrap_or("?")
                 .chars()
                 .take(16)
                 .collect::<String>(),
+            n["source_id"].as_str().unwrap_or("—"),
             head
         );
+    }
+    println!("\nedit one: mecha kg note --edit <id> <new text>");
+    Ok(())
+}
+
+/// Rewrite one note in place.
+///
+/// Three things decide the shape:
+///
+/// - **The episode key is (source, source_id), not the uid.** `kg_notes`
+///   prints both; only the second one can write. Re-upserting under it is an
+///   UPDATE — the graph drops the stale embedding and enrichment, so the
+///   nightly extractor re-reads the new wording — where a fresh id would
+///   leave the old note sitting beside the new one, both true-looking.
+/// - **The note's own moment is preserved, never re-stamped.** `upsert_episode`
+///   writes every field it is handed, and `occurred_at` defaults to *now*
+///   when omitted, so an edit that did not carry it would move the note to
+///   today: a notebook rewriting when things happened because somebody fixed
+///   a typo. It is read back from the listing the id came from rather than
+///   accepted from a caller, so no surface can get it wrong on its own.
+/// - **`unchanged` is reported as unchanged.** The graph hashes the body and
+///   skips identical content, and printing that as "updated" would be a
+///   surface confirming an edit that never happened.
+async fn note_edit(global: &GlobalOpts, source_id: &str, text: &str) -> Result<()> {
+    if text.trim().is_empty() {
+        bail!("an empty note records nothing — reject it in review instead");
+    }
+    let listing = call(global, "kg_notes", json!({ "limit": 200 })).await?;
+    let row = listing["notes"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .find(|n| n["source_id"].as_str() == Some(source_id))
+        .with_context(|| {
+            format!(
+                "no note `{source_id}` in the last 200 — `mecha kg notes --limit 200` lists them"
+            )
+        })?;
+    let occurred_at = row["occurred_at"].as_str().with_context(|| {
+        format!("note `{source_id}` has no timestamp to preserve — refusing to re-stamp it as now")
+    })?;
+    let out = call(
+        global,
+        "kg_upsert",
+        json!({
+            "kind": "episode",
+            "source": "note",
+            "source_id": source_id,
+            "body": text,
+            "occurred_at": occurred_at,
+        }),
+    )
+    .await?;
+    match out["status"].as_str().unwrap_or("?") {
+        "updated" => println!(
+            "edited (episode {}, {} entities linked) — the extractor re-reads it tonight",
+            out["episode_id"].as_i64().unwrap_or(0),
+            out["entities_linked"].as_i64().unwrap_or(0),
+        ),
+        "unchanged" => println!("unchanged — the note already said exactly that"),
+        "inserted" => println!(
+            "no note carried that id, so this was captured as a new one (episode {})",
+            out["episode_id"].as_i64().unwrap_or(0),
+        ),
+        other => bail!(
+            "{other}: {}",
+            out["note"].as_str().unwrap_or("the graph refused the edit")
+        ),
     }
     Ok(())
 }
@@ -256,6 +340,18 @@ async fn note(global: &GlobalOpts, text: &str) -> Result<()> {
         }),
     )
     .await?;
+    // A tombstoned (source, source_id) lands nothing and answers `status:
+    // "tombstoned"` with episode_id 0. Printing the usual line there would
+    // confirm a capture that was refused — "noted (episode 0)" reads as
+    // success to everyone including the caller.
+    if out["status"].as_str() == Some("tombstoned") {
+        bail!(
+            "{}",
+            out["note"]
+                .as_str()
+                .unwrap_or("the graph refused this capture")
+        );
+    }
     println!(
         "noted (episode {}, {} entities linked)",
         out["episode_id"].as_i64().unwrap_or(0),
