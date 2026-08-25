@@ -1131,8 +1131,9 @@ Everything here is verified in source as of the date; the arcs' own docs
   on a string the proposer already wrote, in the one place a model authors a
   change. The candidate itself (`hc-20260825T033444-d4a4`) was rejected from
   `/queues` at 12:07Z that day, so the gap is the routing and not that one
-  proposal — the next `security.*` change to be labelled `Config` gets the
-  same free pass.
+  proposal — the next `security.*` change labelled `Config` is routed the same
+  way, and stages as merely *outside the closed override set* rather than
+  carrying the security-class reason a reviewer needs to read.
 
 - **MCP resources are not implemented.** `mecha-core/src/mcp.rs` advertises
   `"capabilities": {}` and speaks only `tools/list` and `tools/call`. No
