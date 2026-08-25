@@ -334,15 +334,28 @@ unit still exists at the *system* level (voice arc's; healthy per their
 2026-08-24 check, no longer the STT seat) — query it with plain
 `systemctl`, not `--user`, or it misreads as inactive.
 
-**2026-08-25 (12:53) — the installed binary is ahead of the tag, and
-`--version` cannot say so.** `~/.cargo/bin/mecha` is built from mecha main,
-now well past `v0.1.13`. The workspace version was never bumped, so **`mecha
---version` reports 0.1.13 while the binary is main** — the "a version string
-is not evidence" trap above, arriving through the door that looks most like
-evidence. The behavioural check is `mecha harness list --help` carrying
-`--json`; the install timestamp is 12:53. `mecha-graph` and
-`mecha-graph-mcp` are both from that repo's main at 12:39 — **two crates,
-two installs**, and the MCP one is the only binary mecha reaches at runtime.
+**2026-08-25 (13:20) — everything installed and restarted at v0.1.14, and
+the version skew that stood earlier today is closed.** `mecha --version`
+reports **0.1.14** matching the tag; `mecha-mail` and its three sibling
+binaries reinstalled at the same version; `mecha-graph` and
+`mecha-graph-mcp` both reinstalled from the private repo at 0.1.3 —
+**two crates, two installs**, and the MCP one is the only binary mecha
+reaches at runtime (12 tools, answered from `~/.cargo/bin`). Five
+long-running units restarted (`mecha-slack`, `mecha-triggers`,
+`mecha-drain`, `mecha-serve`, `mecha-voice-worker`), each verified by its
+own startup line rather than by `is-active`. Web assets rebuilt into
+`~/.mecha/web/dist` and confirmed by the hash the `:8443` door actually
+serves. The stale-process sweep found none. `factory-publish` and the
+droplet are both current at 0.2.7 — checked, not assumed — and the
+`mecha-sandbox` image's cargo matches the host's 1.97.1, so neither needed
+touching.
+
+Earlier the same day this paragraph recorded the opposite state, and the
+reason is worth keeping: the installed binary was built from main while
+the workspace version still said 0.1.13, so `mecha --version` reported a
+number the bytes had outgrown — the "a version string is not evidence"
+trap arriving through the door that looks most like evidence. Cutting
+0.1.14 is what made the version line true again, not a fix to the check.
 
 What has landed on main since the tag, beyond the `--json` flags and the
 `/queues` review level: **`/entity` merges two nodes you pick yourself**
