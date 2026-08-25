@@ -610,6 +610,40 @@ each of which cost something:
   transcribed the intelligible one and refused the garble — correct
   behaviour that looks like a bug. Ground-truth clips must be real
   speech (whisper.cpp's `jfk.wav` is the canonical one).
+**Tailscale is not a preference for voice; it is the topology — decided
+2026-08-25.** Priced Cloudflare Tunnel + Access as an alternative to
+`tailscale serve` and the owner's ruling was to stay on one supported path.
+Both are free (Tunnel outright since July 2026; Access to 50 users), and the
+identity half would have been one config key — mecha checks a header, not a
+vendor, and Cloudflare's own rule that header-only trust needs the origin
+reachable *only* through the tunnel is already satisfied structurally by the
+127.0.0.1 bind with no widening flag. Two things stopped it, and the second
+is the real one:
+
+- **Cloudflare terminates TLS at its edge and sees plaintext.** Tailscale is
+  WireGuard between the owner's own devices. For a surface carrying mail,
+  calendar, the graph and live audio, that is a different posture from the
+  rest of this design.
+- **Voice would break, and silently.** `voice-core.js` creates
+  `new RTCPeerConnection()` with **no `iceServers`**, and the worker
+  configures no STUN or TURN either. Media works because the browser and
+  the worker sit on **one flat L3 network** — host candidates are directly
+  reachable. Behind a tunnel the browser is on the public internet and the
+  worker's candidates are private addresses it can never reach: the offer
+  would still round-trip through the proxy and the audio would never
+  connect. So Tailscale is not providing a tunnel here, it is providing the
+  flat network WebRTC needs to work with zero ICE infrastructure, and
+  replacing it means standing up a TURN server with its own credentials and
+  uptime. **UNVERIFIED by experiment** — read from the ICE configuration,
+  not tested behind an actual tunnel.
+
+The consequence worth carrying: the web surface has a vendor-shaped *naming*
+problem (`TAILSCALE_LOGIN` is a compile-time constant in an auth path, in a
+project whose strongest rule is that the model names an account and never a
+provider), and voice has a genuine *topology* requirement. They look like one
+issue and they are two, which is why the dependency felt wrong but would not
+dissolve when poked.
+
 **The standalone page was retired, 2026-08-25 — one door, not two.** The
 page and the app's in-chat overlay had been kept in step by sharing
 `voice-core.js`, which was the right fix for the problem it addressed and

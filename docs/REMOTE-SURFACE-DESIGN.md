@@ -74,10 +74,22 @@ embeds or reads the build directory — decide at build, embedding preferred
 - Every tailnet request must carry `Tailscale-User-Login` equal to
   `[web] owner_login`. Absent header, wrong value, or unset config →
   **refused**, not warned: a header that fails open is a login screen made
-  of paper. Loopback requests (the Pipecat worker) skip the check — they
-  never crossed the network the header describes.
+  of paper. **There is no loopback exemption**, and the sentence that used
+  to promise one here was wrong about the shipped code (corrected
+  2026-08-25): everything reaching this process arrives over loopback,
+  because `tailscale serve` proxies to it, so "came from loopback" carries
+  no information and an exemption would exempt everything.
+  `owner_guard` fails closed on absence, not only on mismatch. The Pipecat
+  worker never needed the exemption — it talks to the **voice facade on its
+  own listener** (`--voice-port`, its own optional token), and never reaches
+  this router at all.
 - No cookies, no sessions, no login page. Identity is the network plus the
-  header; a second device class someday is a config change, not a rebuild.
+  header. **The header name is a compile-time constant** (`TAILSCALE_LOGIN`),
+  so a second identity provider is a rebuild rather than the config change
+  this line used to claim. Making it a `[web] auth_header` key was priced on
+  2026-08-25 and **deliberately not built** — see VOICE-RESEARCH.md for why
+  Cloudflare would not be equivalent anyway, and why the owner's call was to
+  stay on one supported path.
 
 ## 3. Sessions — D3
 
