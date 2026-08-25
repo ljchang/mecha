@@ -28,23 +28,27 @@
 # decisions in the driver. Asking a model to call a tool to do what a CLI does
 # exactly would be re-answering a settled question badly.
 #
-# **Why `dartmouth` only.** The Google client is pinned in Testing publishing
-# status, so `personal`'s refresh credential expires 7 days after consent and
-# an unattended sweep would spend a third of its life failing on a dead grant
-# (`mecha doctor` warns two days out; `accounts.toml` declares the lifetime).
-# Dartmouth's grant is permanent, and every category this feature was built for
-# — letters, lab applications, department admin — is work mail. `personal`
-# classifies on demand. Widen the `--account` flag if that ever changes; going
-# to production on the Google side needs verification plus an annual CASA
-# assessment, which is a deliberately deferred decision and not a blocker here.
+# **Both accounts, since 2026-08-25.** This swept `dartmouth` only, because
+# the Google client is pinned in Testing publishing status and `personal`'s
+# refresh credential dies 7 days after consent. The stated cost was a sweep
+# "failing on a dead grant"; the real cost was worse and is now fixed.
+# `mail_recent` fans out and a fan-out that loses an account still answers —
+# surviving rows plus a trailing plain-text note — and `classify` parsed that
+# with `serde_json::from_str`, which rejects the note as trailing characters.
+# So one revoked grant failed the sweep for *every* account, including the
+# ones that answered. `parse_recent` reads the leading value and reports the
+# note, so a lapsed `personal` now costs `personal` and prints why.
 #
-# **Acting on unclassified mail no longer needs this sweep to have run.**
-# `mecha mail archive|spam|trash` resolves a thread leniently and acts on the
-# mailbox directly, so the phone's Archive button works on `personal` today.
-# What still needs a record is anything reading the classifier's own verdict —
-# `task` (name and deadline), `draft`, `needs-info`, `correct`, `dismiss`.
-# Worth knowing before widening the flag: the reason to widen it is those
-# verbs, not archiving.
+# That is what makes omitting `--account` safe rather than optimistic: the
+# bad night degrades to what this unit already did, instead of to nothing.
+# `--limit` is per account.
+#
+# The lapse is still real and still wants fixing at the root: publishing the
+# client to **In production** ends the 7-day expiry, and needs no
+# verification and no CASA assessment — those buy the removal of the
+# unverified-app screen and the lifetime cap of 100 users, neither of which
+# binds a single-user assistant. `accounts.toml` declares
+# `grant_lifetime_days = 7`; drop it when the client is published.
 #
 # A failure needs no log convention of its own: `mecha doctor` globs
 # `mecha-*` for failed units, so this one is already watched.
@@ -60,7 +64,7 @@ Type=oneshot
 # that brought more leaves the remainder for the next sweep rather than
 # silently dropping it, because `classify` skips what the store already knows.
 ExecStartPre=/bin/mkdir -p %h/.mecha/work/mail-classify
-ExecStart=%h/.cargo/bin/mecha --workspace %h/.mecha/work/mail-classify mail classify --account dartmouth --limit 50
+ExecStart=%h/.cargo/bin/mecha --workspace %h/.mecha/work/mail-classify mail classify --limit 50
 # The sweep is model-bound and this host's inference is bandwidth-bound, so a
 # run that has somehow not finished by morning is worse than one that stopped:
 # it would still be competing with the briefing at 07:00.
