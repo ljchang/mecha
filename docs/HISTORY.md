@@ -1145,6 +1145,39 @@ empty at build time (178 sessions read, 0 outcomes), and the research's own
 finding is that agents update their harnesses without benefiting, so the next
 thing to learn is whether doctor's findings would actually have been acted on.
 
+**2026-08-19 (midday to evening) — mail stops being a queue and becomes a
+surface you work.** Recorded on 2026-08-25, six days late: this arc shipped
+between 11:08 and 18:10 and neither document closed it out, so the plan
+written that morning went on reading as a to-do list. Every phase the
+`MAIL-UX-DESIGN.md` roadmap named landed in one run. **Phase 4′, the
+pre-filter** (`3547cb1`): `List-Unsubscribe` plus an automated-sender rule
+ahead of the classifier, disposing of a little under half of all threads
+without a model call — and keeping three properties, that it only ever
+produces `ignore`, that it reads the envelope and never the body (which is
+where an injection lives), and that `List-Unsubscribe` alone is not enough,
+because it finds marketing, which must offer an unsubscribe, and misses
+institutional and transactional senders, which need not. `PrefilterRule` rides
+on the verdict so the rule can be **graded rather than believed** — without it
+a thread the pre-filter dropped and one the classifier called `ignore` are
+indistinguishable afterwards, and "is this too aggressive" has no way to be
+asked. **The corpus became a scorecard** (`e2af8a5`, `4cafaf1`): `mecha mail
+eval` grades against a year of mail whose outcome is known, sampling both
+strata rather than the corpus uniformly, because answered threads are rare and
+a uniform run of 200 would hold a handful of the only threads carrying ground
+truth. **Phase 6, corrections** (`3329c39`, `f6bac35`, `0166120`, `c440700`,
+`40a1dc7`) — field-level, feeding a few-shot pool and a `triage`-domain
+reflection — and `mecha mail score` (`5151f22`) for the live store, which is a
+different question from the corpus and so a different verb. **Phase 4″**
+(`05581fb`): a thread becomes a board task or parks with a reason. **Phase
+4‴** (`0001ae6`, `a14c136`, `8231163`): day two as a store-side primitive, so
+the morning briefing is one reader of it rather than the owner — and
+"nothing new to surface" stopped being written as "nothing is waiting".
+**Phase 5** (`3ef4e60`, `78d73d9`, `037d9c8`, `a34a1c2`): `/mail` as a modal,
+ending with `r`, `f` and `e` no longer stubs — `f` being **forward**, which had
+had no key bound to it at all, though the receipts-to-the-finance-person case
+was one of the five that motivated the whole feature. An eleven-finding review
+ran over it the same evening, and its first finding was the whole loop.
+
 **2026-08-19 (night) — skills, and the queue stops asking people to read
 JSON.** `mecha-core/src/skill.rs` and the Agent Skills format: a procedure the
 *user* writes and the model loads when it decides one is relevant, at three
@@ -1854,6 +1887,47 @@ Three sessions worked one checkout all day. Two `git add -A` sweeps carried
 another lane's uncommitted edits into unrelated commits, nineteen days after
 that trap was written down — which is its own entry, and the reason explicit-
 path staging is now the habit rather than the rule.
+**2026-08-25 (evening) — the gate stopped reading a label the proposer wrote
+about its own change.** `class` decides whether a harness candidate ever
+reaches a human — `Security` is never measured and never auto-applied, while
+`Config` inside the closed override set reaches `measure()` and can
+auto-accept — and it was parsed off a line the diagnostician typed, never
+cross-checked against the `change` beside it. It had held anyway, but by
+coincidence: the closed set is four benign knobs, so a security change
+labelled `config` stuck at `parse_change` for being *outside the set* rather
+than for being a security change, and staged carrying that reason instead of
+the one a reviewer needs. That morning's nightly had proposed disabling a
+taint control, class `config`. `diagnose::names_guarded_setting` now derives
+the class from the change: `[security]`, `[sandbox]` and `[outbox]` — three of
+the four boundaries CLAUDE.md says reach a human however anything scores, the
+fourth being the path jail, which is not configurable and so cannot be
+proposed — plus every `SecurityConfig` field by its bare name, since the
+section prefix is the model's to omit and omitting it must not be the way
+through. Three properties carry it, each with a test: it **only ever raises**
+toward review, like a capability override; it **reclassifies rather than
+refuses**, because a refused proposal leaves no record and the brief carries
+every prior candidate as "already tried", so a dropped one is free to return
+tomorrow where a staged one is both blocked and paid for; and it
+**over-matches on purpose**, since naming a setting is `security.` or
+`[sandbox]` and prose *about* the sandbox is not caught, but a sentence ending
+on the word is — which costs a reviewer a warning they did not need, where
+missing one costs a confinement change auto-accepted. The mislabel itself
+rides on the candidate's reason, because a proposer whose account of its own
+change was wrong is the more interesting record and a pattern of them is
+invisible if each is silently corrected. The same evening, **`show_file`
+stopped loading the entire global config to read one number.** It wanted
+`slack.max_upload_mb` and called `Config::load_global` at call time; config is
+`deny_unknown_fields` — correctly, since it is a wire format between versions —
+so any key added anywhere made the tool fail with a parse error in a process
+started before the key existed. It happened twice on 2026-08-21, with `vision`
+and then `[[search]] prefer_deep`. The cap is captured when the tool is
+registered, which is also the only moment the TUI rebuilds it, so a broken file
+now fails the `/model` switch the user just asked for instead of a chart an
+hour later. Its test drives the failure rather than asserting about it — an
+unparseable config under a temp `MECHA_HOME` plus a live attach record, which
+reproduces the recorded message verbatim on the old code. `send_file` still
+has the call-time load and is recorded in the handoff as the remaining half.
+
 **2026-08-25 — talking and typing became one conversation.** D3, the last
 of the voice decisions still owing something, and the one the design had
 been promising since it was written. An in-chat call had been its own
@@ -2567,6 +2641,47 @@ The general lesson: when documenting for
 users, the facts most worth stating are the ones the author's environment
 makes invisible, and `cargo package --list` / `git ls-files` answer in
 seconds what memory answers wrongly. Check what ships, not what works.
+
+**A plan and a to-do list are the same words, and only a timestamp tells
+them apart.** On 2026-08-19 at 04:23 the handoff gained a section reordering
+the remaining mail phases by what the corpus had just measured. Between 11:08
+and 18:10 the same day every one of those phases shipped, in commits that name
+them by number. Nothing went back to strike the plan, and nothing recorded the
+arc in this file either — so for six days the section read as a to-do list for
+work that was finished, headed "four phases remain". On 2026-08-25 a session
+picking the project up cold read it, chose the pre-filter as the best
+value-per-effort item, cut a worktree and started scoping it before a grep
+found `mail_triage::prefilter` already there with both rules and a
+`PrefilterRule` recorded on every verdict.
+
+Two mechanisms, and the second is the one that generalises. The narrow one:
+**the reflex that updates prose about a subsystem is not the reflex that
+strikes an item off a list.** That section's narrative was revised repeatedly
+in the days after — it discusses the 2026-08-25 both-account sweep in
+detail — while the list beside it was not touched, because you revise the
+story when you *learn* something and the list only when you *finish*
+something, which is the moment you are least inclined to write anything down.
+When a session executes a plan it wrote the same day, closing out is part of
+that arc rather than a chore for later; by the next session the plan has
+become indistinguishable from a backlog.
+
+The broader one: **a blanket claim of verification is worth exactly the
+evidence beside it.** The handoff opened with "every item below was
+re-verified against source on 2026-08-24" — six days after this work landed,
+and it did not cover this section. That sentence is what made the stale list
+credible; without it a reader would have checked. A coverage claim should
+either name what it checked or be narrowed until it can.
+
+**And the diagnosis nearly went the same way as the entry above it.** The
+session's first explanation was that the 08-24 sweep had missed the section —
+a mechanism that fits the symptom perfectly. Checking with
+`git merge-base --is-ancestor` showed the bullets were authored at 04:23,
+*before* any of the work existed, so there was nothing for a sweep to miss at
+the time they were written; the failure was never re-checking them, not a bad
+check. That is the same lesson the branch-cut-too-early entry reached
+independently, arriving from the other direction: **a mechanism that fits the
+symptom is not yet evidence it caused it**, and the cheap test is almost
+always re-running one command against two starting points.
 
 ### Learning
 
