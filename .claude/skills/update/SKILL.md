@@ -117,17 +117,41 @@ These hold an open file handle on the old binary and must be restarted *after*
 step 1:
 
 ```bash
-systemctl --user restart mecha-slack.service mecha-triggers.service mecha-drain.service
+systemctl --user restart mecha-slack.service mecha-triggers.service \
+                         mecha-drain.service mecha-serve.service \
+                         mecha-voice-worker.service
 ```
+
+**`mecha-serve` and `mecha-voice-worker` were missing from this list until
+2026-08-25**, which is worth naming because the omission is the shape this
+skill exists to catch. `mecha-serve` is three surfaces in one process — the
+web app, the chat agent, and the mounted voice facade — so it holds a handle
+on the new `mecha` binary *and* serves `[web] assets`; step 1b mentions
+restarting it, but only in the branch a session reaches when it changed the
+assets, so a pure-Rust change would have installed a binary nothing
+re-executed. `mecha-voice-worker` is the other direction and easier to miss:
+it runs `scripts/voice/worker.py` **from the repo working tree**, so it is
+the one unit here that goes stale on a change that never touched Rust at
+all and never appears in `cargo install` output.
+
+**`mecha-parakeet` is deliberately not in the list.** It runs
+`scripts/voice/parakeet_server.py`, so restart it when *that* file changes —
+and only then, because coming back costs a model load and voice is deaf
+until it finishes.
 
 **The timer-driven units need nothing.** `mecha-frontdoor`, `mecha-ruminate`
 and `mecha-slots` are `.timer`-fired and exec fresh on each firing, so they
 pick up a new binary by themselves. Knowing which list a unit is on is the
 difference between a restart that matters and cargo-culting six of them.
 
-Verify: `journalctl --user -u mecha-slack.service --since "2 minutes ago"`
-should show the reconnect line ("Connected to … N owner(s)"), and
-`mecha-triggers` should log "N trigger(s), N enabled · ticking every minute".
+Verify — and take a startup line, never `is-active`, since a unit that
+crashes on its first request is active for a while first.
+`journalctl --user -u mecha-slack.service --since "2 minutes ago"`
+should show the reconnect line ("Connected to … N owner(s)"),
+`mecha-triggers` should log "N trigger(s), N enabled · ticking every minute",
+`mecha-serve` should print both its doors ("voice facade on
+http://127.0.0.1:8990" and "mecha serve on http://127.0.0.1:63242"), and
+`mecha-voice-worker` should reach "Uvicorn running on http://127.0.0.1:7860".
 A service that comes back but logs nothing is not evidence of success.
 
 ### 3. The graph MCP server — folded into step 1 since 2026-08-16
