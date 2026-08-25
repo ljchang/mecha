@@ -831,6 +831,29 @@ fn dismiss(thread_id: &str, account: Option<&str>) -> Result<()> {
 /// Every thread is its own isolated call. Nothing accumulates across them —
 /// no conversation, no shared prefix — so one hostile message cannot colour
 /// the reading of the next, and a failure is one row rather than the batch.
+/// Split `mail_recent`'s answer into rows and whatever followed them.
+///
+/// **Reads fan out, and a fan-out that lost an account appends a plain-text
+/// note after the JSON.** `serde_json::from_str` rejects that as trailing
+/// characters, so the caller that was supposed to survive one dead account
+/// was the one thing that could not: a revoked grant on *any* mailbox failed
+/// the whole sweep, including the mailboxes that answered fine. Reading only
+/// the leading value is what makes a lost account cost that account.
+///
+/// The note is returned rather than dropped, because the sweep succeeding
+/// with one mailbox missing is the case that most needs saying out loud.
+fn parse_recent(content: &str) -> Result<(Vec<Value>, Option<String>)> {
+    let mut stream = serde_json::Deserializer::from_str(content).into_iter::<Vec<Value>>();
+    let rows = stream
+        .next()
+        .transpose()
+        .context("mail_recent did not answer with JSON rows")?
+        .context("mail_recent answered with nothing")?;
+    let rest = content[stream.byte_offset()..].trim();
+    let note = (!rest.is_empty()).then(|| rest.to_string());
+    Ok((rows, note))
+}
+
 async fn classify(
     global: &GlobalOpts,
     account: Option<&str>,
@@ -854,8 +877,14 @@ async fn classify(
     if out.is_error {
         bail!("reading mail failed: {}", out.content);
     }
-    let rows: Vec<Value> =
-        serde_json::from_str(&out.content).context("mail_recent did not answer with JSON rows")?;
+    let (rows, note) = parse_recent(&out.content)?;
+    // The note has to reach the operator. A fan-out that lost an account still
+    // answers, so the only evidence that a mailbox dropped out of the nightly
+    // is this line — and an account silently missing from a sweep reads
+    // exactly like a quiet night.
+    if let Some(note) = &note {
+        eprintln!("{note}");
+    }
 
     let todo: Vec<&Value> = rows
         .iter()
@@ -2326,7 +2355,8 @@ fn draft_prompt(
 
 #[cfg(test)]
 mod classify_exit_tests {
-    use super::run_accomplished_nothing;
+    use super::{parse_recent, run_accomplished_nothing};
+    use serde_json::Value;
 
     /// 2026-08-19: the nightly classified 0 of 16 and systemd logged SUCCESS,
     /// because the command returned `Ok(())` whatever happened. Every check
@@ -2350,5 +2380,42 @@ mod classify_exit_tests {
         // Nothing to do is not a failure — the common case for a nightly that
         // already swept an hour ago, and the one false alarm to avoid.
         assert!(!run_accomplished_nothing(0, 0, 0));
+    }
+
+    /// A clean fan-out is plain JSON and must stay exactly as it was.
+    #[test]
+    fn recent_rows_parse_without_a_note() {
+        let (rows, note) = parse_recent(r#"[{"account":"dartmouth"}]"#).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(note.is_none());
+    }
+
+    /// **The regression this exists for.** One dead grant makes `mail_recent`
+    /// answer with the surviving rows *plus* a trailing note, which
+    /// `serde_json::from_str` rejects outright — so the sweep failed for every
+    /// account because one account was out. Fails on the old behaviour.
+    #[test]
+    fn a_lost_account_costs_that_account_only() {
+        let body = "[{\"account\":\"dartmouth\",\"thread_id\":\"x\"}]\n\n\
+                    note — some accounts could not be read:\n\
+                    account `personal`: refresh token expired";
+        // The old spelling, kept here so the test states what it is guarding.
+        assert!(serde_json::from_str::<Vec<Value>>(body).is_err());
+
+        let (rows, note) = parse_recent(body).expect("surviving rows still parse");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["account"], "dartmouth");
+        let note = note.expect("the lost account must be reported, never swallowed");
+        assert!(
+            note.contains("personal"),
+            "the note names the account: {note}"
+        );
+    }
+
+    /// Nothing at all is a failure, not an empty sweep — "no mail today" and
+    /// "the tool answered with nothing" are different findings.
+    #[test]
+    fn an_empty_answer_is_an_error() {
+        assert!(parse_recent("").is_err());
     }
 }
