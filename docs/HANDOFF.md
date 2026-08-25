@@ -109,8 +109,11 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,370 tests**, no failures — measured 2026-08-25 on the merged
-tree at e3af3b6 (466 in `mecha-cli` with 1 ignored, 683 in the
+Expect **1,377 tests**, no failures — measured 2026-08-25 on `main` at
+897bd13. The 7 over the 1,370 measured at e3af3b6 are the two fixes of that
+evening: 6 in `mecha-core` for the derived candidate class, 1 in `mecha-cli`
+for `show_file`'s captured cap. The e3af3b6 breakdown, otherwise unchanged,
+was (466 in `mecha-cli` with 1 ignored, 683 in the
 `mecha-core` lib suite, 129 in `mecha-mail` plus 1 in its `mecha-mail`
 binary, 75 in `mecha-slack`, 15 across the two integration suites that need
 real backends, and 1 doctest). The 27 over v0.1.13's 1,343 are attributed
@@ -329,8 +332,8 @@ own `/api/offer` proxy rather than directly). Web assets live at `~/.mecha/web/d
 them. 8080 re-verified this date: `total_slots=4`, `n_ctx` 262,144/slot,
 vision true. **Re-verified 2026-08-25** and all four unchanged
 (`total_slots=4`, `n_ctx` 262,144/slot, `model_alias qwen3.6-35b-a3b`,
-`modalities.vision` true). Workspace tests **2026-08-25: 1,370 pass, 0
-fail**. Eval: 36 cases, 15 tags, plus 10 graph cases — all three re-counted
+`modalities.vision` true). Workspace tests **2026-08-25: 1,377 pass, 0
+fail** (`main` at 897bd13; 1,370 at e3af3b6 earlier the same day). Eval: 36 cases, 15 tags, plus 10 graph cases — all three re-counted
 2026-08-25, unchanged. The `[web]` section is live in `~/.mecha/config.toml` —
 safe now that every installed binary parses it; the outage its early
 arrival caused is in HISTORY under Traps → Environment. A `llama-voxtral`
@@ -790,6 +793,14 @@ tested, but has never been exercised against the real box by a person:
 
 Everything else below is independent of that.
 
+**Swept again 2026-08-25**, and that pass is the reason this section carries
+a warning. The mail section below had listed six shipped phases as unbuilt
+since 2026-08-19 — see the trap in [`HISTORY.md`](HISTORY.md) under Measuring.
+Two further items closed the same day and moved out (the candidate-class gap
+and `show_file`'s call-time config read). The blanket sentence that follows
+was true of the items it names and was **not** true of the mail section, which
+is why a claim of full coverage now needs the evidence beside it.
+
 Every item below was re-verified against source on **2026-08-24** (a
 72-item sweep after the day the phone became a terminal — the web-surface
 and voice arcs, 45 commits). Almost everything held its verdict; the items
@@ -942,15 +953,15 @@ both directions, files included. Built and merged 2026-08-21 (`d266fe8`), live
 on this machine. `docs/REMOTE-CONTROL-DESIGN.md` is the design; the arc is in
 [`HISTORY.md`](HISTORY.md) under 2026-08-21. What remains:
 
-- **`show_file` reads the whole global config at call time** for one number
-  (`slack.max_upload_mb`, `slack/show.rs:124`). That is what coupled an
-  unrelated config section's strictness to a tool call two hours into a
-  session when a new key was added — see the trap in HISTORY under
-  Environment. Capturing the number at registration would decouple them.
-  **It recurred on 2026-08-21** when `[[search]] prefer_deep` was added to
-  config before the binary that knew the key was installed, which is the same
-  ordering the `update` skill warns about. Twice in one day is the argument
-  for the fix rather than for remembering the ordering.
+- **`/send` still reads the whole global config at call time.**
+  `slack/send.rs:141` (`send_file`) loads `Config::load_global` for one number,
+  and the TUI's `/send` reaches it. Same root cause as the `show_file` bug
+  fixed 2026-08-25 and a milder version of it — the parse error lands on a
+  keystroke the user just pressed rather than on a tool call two hours in, so
+  it is comprehensible where the other was not. Closing it means a field on
+  the TUI's `Live` struct, beside `todo` and `skill`, which ride there for the
+  same reason: a `/model` switch rebuilds the agent and refreshes them.
+  Deliberately left out of the `show_file` fix rather than overlooked.
 
 - **A top-level DM starts a connector run even while a session is attached.**
   Working as designed — the thread is the unit — but the observed failure mode
@@ -1175,33 +1186,6 @@ the mechanism and every decision. What it left standing:
 
 ### Structural gaps
 
-- **A candidate's `class` is asserted by the proposer and never derived from
-  what it proposes**, and the class is what decides whether a human ever sees
-  it. `diagnose.rs` parses `class:` off a line the model wrote
-  (`mecha-core/src/diagnose.rs:219`) with no cross-check against the `change`
-  field; `commands/harness.rs:188` then routes on it — `Security` is never
-  measured and never auto-applied, while `Config` **inside the closed override
-  set goes straight to `measure()` and can auto-accept**. On 2026-08-25 the
-  nightly proposed `security.minimize_taint=false` classified **`Config`**,
-  predicting lower `ToolErrorRate`, with a rationale that cited "the session
-  logs" — which the diagnostician never sees, since the brief is counters only
-  and `blocked_sends` appears nowhere in that file. It is stuck solely because
-  `security.minimize_taint` is not one of the four closed-set keys
-  (`compact_at_tokens`, `max_turns`, `max_output_tokens`, `effort`). **So the
-  boundary today is the closed set, not the class check**, and it holds only
-  because those four keys happen to be benign — the day a security-relevant
-  knob joins the set, a self-declared `Config` proposal reaches auto-accept.
-  CLAUDE.md's standing rule is that a loop able to argue for widening its own
-  confinement will eventually argue well; what was not anticipated is that it
-  also picks its own label. **Cheapest fix: refuse any proposal whose `change`
-  names a `security.*` key unless `class: security`** — a deterministic check
-  on a string the proposer already wrote, in the one place a model authors a
-  change. The candidate itself (`hc-20260825T033444-d4a4`) was rejected from
-  `/queues` at 12:07Z that day, so the gap is the routing and not that one
-  proposal — the next `security.*` change labelled `Config` is routed the same
-  way, and stages as merely *outside the closed override set* rather than
-  carrying the security-class reason a reviewer needs to read.
-
 - **MCP resources are not implemented.** `mecha-core/src/mcp.rs` advertises
   `"capabilities": {}` and speaks only `tools/list` and `tools/call`. No
   `resources/list`, no `resources/read`. Whenever this is closed, resource
@@ -1327,131 +1311,63 @@ What is missing beyond that is refinement:
   pre-set untrusted. What remains is only the listener itself and its
   authentication.
 
-### Mail as a surface you work — four phases remain, reordered by measurement
+### Mail as a surface you work — built; what is open is judgement
 
-**`docs/MAIL-UX-DESIGN.md` is the authority for what is left** and
-**`docs/MAIL-CORPUS-RESEARCH.md` (2026-08-19) is the measurement that reordered
-it — gitignored, on `OPERATIONS.md`'s split: the lesson is here, the figures
-are not**; `MAIL-UX-RESEARCH.md` is the original survey. Where they disagree the
-later one wins, and the corpus is the latest. **The release hold is over**:
-0.1.7 shipped 2026-08-19 and 0.1.8 and 0.1.9 on 2026-08-20, so the phases below
-are ordinary open work rather than a blocker on shipping. What the hold bought
-is recorded in `HISTORY.md`; what it was holding for — the phases below — is
-still unbuilt, and is now unblocked rather than deferred.
+**`docs/MAIL-UX-DESIGN.md` is the authority** and its **§7** is where the
+remaining questions live. `docs/MAIL-CORPUS-RESEARCH.md` is the measurement
+that reordered the plan — **gitignored**, on `OPERATIONS.md`'s split: the
+lesson is here, the figures are not.
 
-Phases 1-3 shipped 2026-08-18: `mail_triage` (archive/read/unread/spam/trash,
-closed enum, both providers), `~/.mecha/mail-triage/` holding one typed verdict
-per thread, the quarantined classifier, `mecha mail
-classify/list/show/dismiss`, the snippet-first escalation rule, and the
-`mecha-mail-classify` timer (05:30 UTC, installed and running; **both accounts since 2026-08-25**).
+**Every phase the plan named is shipped.** Phases 1–3 landed 2026-08-18;
+**phases 4′ through 6 landed on 2026-08-19 between 11:08 and 18:10**, in
+commits that name them by number (`3547cb1` … `a34a1c2`). The arc is in
+[`HISTORY.md`](HISTORY.md). Verified against source 2026-08-25:
 
-**Front-door routing was the original phase 4 and is deleted** (2026-08-19),
-along with `ROUTABLE_TYPES`, `is_routable` and `Proposed::Frontdoor`. Do not
-rebuild it: `MAIL-UX-DESIGN.md` §1 has the five reasons, the sharpest being
-that the front door's `[verification]` block exists to prove a stranger
-controls an email address and an email *arrived from* one. Mail keeps its own
-request kinds and gets its own `needs-info`.
+| Phase | What it is | Evidence |
+|---|---|---|
+| 4′ pre-filter | Bulk + automated-sender rules ahead of the classifier, only ever producing `ignore`, reading the envelope and never the body | `mail_triage.rs:340` (`prefilter`), `:303` (`PrefilterRule`) |
+| Corpus eval | The classifier graded offline against mail whose outcome is known | `commands/mail.rs:333` (`Eval`), `:1307`; `--sample/--seed/--prefilter-only/--out` |
+| 4″ tasks + `needs-info` | A thread becomes a board task, or parks naming what is missing | `commands/mail.rs:1937` (`task`), `:2020` (`needs_info`) |
+| 4‴ day two | The aged set as a store-side primitive, surfaced by the briefing | `commands/mail.rs:504` (`list`, `--aged --aged-hours --surface`); wired live in `~/.mecha/triggers/morning.toml:59` |
+| 5 `/mail` | The queue as a modal, with forward finally bound | `tui/mail.rs:401` `t`, `:403` `n`, `:405` `r`, `:406` `f` |
+| 6 corrections | Field-level corrections feeding the few-shot pool *and* `triage`-domain reflections | `mail_triage.rs:600` (`Correcting`), `:626` (`apply_correction`), `commands/mail.rs:1804` (`reflect`) |
 
-#### What the year of mail changed
+`mecha mail score` (`commands/mail.rs:488`) grades the *live* store, which is a
+different question from `eval`'s corpus and is deliberately a separate verb.
 
-A year was fetched raw and unclassified (`mecha-mail corpus`, an operator verb
-deliberately absent from the MCP surface), then analysed. Three findings, each
-of which moved the plan rather than confirming it. **Figures are in the
-gitignored doc; the conclusions are stated here so nothing below depends on
-having read it.**
-
-- **About half of all threads need no model at all** — `List-Unsubscribe` plus
-  a sender-address regex, at a negligible error rate over a year. The header
-  alone finds two thirds of it; it catches marketing, which must offer an
-  unsubscribe, and misses every institutional and transactional sender, which
-  need not. **This supersedes the note previously recorded here that "the
-  classifier is a better filter than the `List-Unsubscribe` heuristic and runs
-  anyway."** It is a better filter; it should not be the first one.
-- **The taxonomy was guesswork and wrong in both directions.** Already fixed in
-  code: `student-advising` added (the largest category by a wide margin, and
-  absent entirely), `advising` added to `TAGS`, `book` removed (two threads in
-  ten months, neither a book request). `finance-admin` was recommended
-  by the analysis and deliberately rejected — nothing has to be gathered before
-  a receipt is forwarded, so it is the `expense` tag and a `forward` action.
-- **The failure is abandonment, not misclassification.** Only a small fraction
-  of personally-addressed mail is ever answered, most replies that happen
-  happen on day one, and **a thread unanswered after a day is overwhelmingly
-  unlikely ever to be answered.** No phase in the old plan operated after day
-  one.
-
-What is left, in the order the measurements argue for:
-
-- **Pre-filter (part of phase 4′, unbuilt).** Bulk + sender-pattern ahead of
-  the classifier. Halves the nightly's model calls, fully specified, and its
-  error rate is measurable against the corpus rather than argued about. The
-  smallest item here and the one that makes everything after it cheaper to
-  iterate on.
-- **Corpus as an offline eval set (new, unbuilt, not yet in the design doc).**
-  For every Dartmouth thread we know whether a reply went out, so a thread that
-  was answered and is classified `ignore` is a countable error with no human
-  grader. **Asymmetric on purpose**: a reply proves the thread mattered, no
-  reply proves nothing — so it measures false-`ignore` and is silent on
-  false-`respond`. That is the error worth catching. Grading the whole corpus
-  is days of local inference; after the pre-filter it is about half that, and a
-  stratified sample of a few hundred threads is one overnight run.
-- **Phase 4″ — tasks and `needs-info`, native to mail.** `t` carries the
-  thread's deadline into `kg_task_create`; `n` parks a thread and names what is
-  missing. This is the half of the front-door idea that survived.
-- **Phase 4‴ — day two.** A `respond` thread aged past the threshold with no
-  outbound message since, surfaced once. Needs no new state. Keys on the bucket
-  and never on silence, forgives a thread settled in a meeting, and fires once.
-  **Surface decided 2026-08-19: the morning briefing**, because it is already
-  read daily and day two is precisely when the user is not looking at mail. A
-  trigger cannot ask, so the briefing lists and acting happens elsewhere —
-  which makes `mecha mail list --aged` the primitive and the briefing one
-  reader of it. Still open: the age itself, likely one working day rather than
-  24 hours, and measurable against the corpus rather than guessed.
-- **Phase 5 — `/mail`**, a sixth modal on the `/outbox` pattern with a closed
-  key set. `r`/`e`/`f` are detached agent runs; `a`/`s`/`t`/`g` are single
-  calls. Replies land in `/outbox`, which stays the only approval surface.
-  `f` is **forward**, which had no key bound to it before — the
-  receipts-to-the-finance-person case, one of the five that motivated the
-  feature, had no way to happen.
-- **Phase 6 — the correction loop.** `!` records a field-level correction,
-  feeding a classifier few-shot pool *and* a `triage`-domain reflection on the
-  ordinary learning path. The pool is deliberately not a learned rule —
-  `triage` is not in `RUN_DOMAINS`.
-
-Six open questions are in the design doc's §7. Only one blocks: where day two
-surfaces. The rest are live but not in the way — whether `r` hands the drafting
-run the thread or the verdict; whether `t` can point back at the thread at all
-given `kg_task_create`'s fields; whether `meeting` earns its place; retention on
-the triage store; and **how `student-advising` is actually answered**, which is
-the biggest single piece of the load and is probably a substitution problem —
-the same handful of questions, which a form or a published answer removes
-rather than something mecha should answer one at a time.
-
-Two decisions recorded rather than left open: tags are mecha's own and never
+**Two decisions recorded rather than left open**: tags are mecha's own and never
 provider labels, and no mail parser belongs in mecha — the graph already ingests
 `email.thread` episodes (`sources/mbox.rs`) with the bulk filter and the
 `NEVER_AUTO` guard, so the live path pushes evidence through `kg_upsert` on the
 `distill.rs` pattern and lets the graph extract. Push only `respond`/`notify`
-buckets.
+buckets. **Front-door routing was the original phase 4 and is deleted**
+(2026-08-19), along with `ROUTABLE_TYPES`, `is_routable` and
+`Proposed::Frontdoor`. Do not rebuild it: `MAIL-UX-DESIGN.md` §1 has the five
+reasons.
 
-**The nightly's outage on 2026-08-19 cost three fixes**, all shipped, and they
-are worth reading together because one absence produced all three:
+#### What is actually open
 
-1. The model server was not a unit (above), so it did not come back.
-2. `mecha mail classify` returned `Ok(())` however badly it went, so a run that
-   classified 0 of 16 logged SUCCESS and every exit-code-based check —
-   `OnFailure=`, `systemctl --failed`, doctor's failed-unit scan — read a dead
-   nightly as a healthy one. It now exits non-zero when a run classified
-   nothing, disposed of nothing, and failed at least once. Partial failure is
-   still success on purpose: failing the unit for 14-of-16 trains someone to
-   ignore the alarm.
-3. **The sweep skipped anything the store had heard of**, and the store holds
-   failures as well as verdicts, so all 17 threads that failed against the dead
-   server would have been skipped forever — including a manuscript review
-   invitation, the category with the lowest reply rate and the hardest
-   deadlines. `TriageStore::needs_classifying` replaces `!is_known`: absent or
-   `failed` means classify, `dismissed` is a person's decision and
-   `classified` is done. Nothing would have reported this one either — the
-   sweep printed "0 to classify", which is what a quiet morning looks like.
+None of it is a phase. All of it is judgement, and **§7 of the design doc is
+the authority** — restated here only far enough to be choosable:
+
+- **The day-two age.** `--aged-hours` defaults to 30. The reply cliff falls at
+  24 hours, but a briefing firing the morning after an evening email nags about
+  something a working day old. §7.3 leans to one working day, and this is
+  measurable against the corpus rather than pickable.
+- **How `student-advising` is answered.** The largest category by a wide
+  margin, and probably a *substitution* problem rather than an automation one —
+  the same handful of questions (prerequisites, petitions, transfer credit),
+  which is the profile of something a form or a published answer removes. §7.5,
+  and the biggest single piece of the load.
+- **Whether `meeting` earns a request kind.** Real volume and the *highest*
+  reply rate of any category, which cuts both ways; structurally the greediest
+  label, and the booking flow may already cover it. §7.4.
+- **Retention on `~/.mecha/mail-triage/`.** Nothing prunes it. `mecha work
+  clean` has the policy shape, but an archived verdict is also the eval fixture
+  and the few-shot pool, so deleting costs what sweeping the work directory
+  does not. §7.6.
+- **Whether `t` can point back at the thread.** `kg_task_create` has no field
+  for it, so it lives in the name or needs a pkg change. §7.2.
 
 **Local state in no repository**, and the next session will want it:
 
