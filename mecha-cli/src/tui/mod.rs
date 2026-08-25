@@ -722,7 +722,8 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     // On create and on resume both: a session picked up under different flags
     // is exactly what this record exists to catch.
     // Before the config record, which captures the tool list for replay.
-    install_frontend_tools(&mut prepared.agent, &asker, session.as_ref());
+    let max_upload_mb = prepared.config.slack.max_upload_mb;
+    install_frontend_tools(&mut prepared.agent, &asker, session.as_ref(), max_upload_mb);
 
     if let Some(s) = &session {
         s.append(&Record::Config(RunConfig::of(
@@ -943,6 +944,7 @@ fn install_frontend_tools(
     agent: &mut mecha_core::agent::Agent,
     asker: &Arc<dyn mecha_core::tool::ask::Asker>,
     session: Option<&Session>,
+    max_upload_mb: u64,
 ) {
     // Only ever registered by the TUI: it is the one front-end that owns a
     // human to ask, and the one that can attach a session to a thread. A tool
@@ -954,7 +956,12 @@ fn install_frontend_tools(
         )));
     agent
         .registry_mut()
-        .insert(Arc::new(crate::slack::show::ShowFileTool));
+        // The cap is passed in rather than read inside the tool: see the
+        // field's own comment for the two hours-later parse errors that
+        // argued for it.
+        .insert(Arc::new(crate::slack::show::ShowFileTool::new(
+            max_upload_mb,
+        )));
     if let Some(s) = session {
         setup::register_recall(agent, s);
     }
@@ -2766,7 +2773,12 @@ async fn apply_switch(
     // is gone — which is invisible, because a model with no `show_file` simply
     // describes the chart instead.
     let mut prepared = prepared;
-    install_frontend_tools(&mut prepared.agent, asker, session);
+    // Re-read here on purpose, and only here: a switch rebuilds the agent
+    // from config already, so this is the moment a config edit is meant to
+    // take effect — and a broken file fails the switch the user just asked
+    // for rather than a tool call an hour later.
+    let max_upload_mb = prepared.config.slack.max_upload_mb;
+    install_frontend_tools(&mut prepared.agent, asker, session, max_upload_mb);
     let tools_changed = prepared.agent.registry().len() != live.agent.registry().len();
     *live = Live::new(prepared, opts);
     app.mcp_on = !live.opts.no_mcp;
