@@ -10,18 +10,13 @@ browser needs HTTPS before it will open a microphone.
 
 The three legs are env-configurable base URLs (D6):
     MECHA_VOICE_LLM   the facade        (default http://127.0.0.1:8990/v1)
-    MECHA_VOICE_STT_KIND  parakeet (default) | voxtral - picks the STT leg
-    MECHA_VOICE_STT   the STT leg       (default follows STT_KIND:
-                      :8992 parakeet, :8082 voxtral)
-    MECHA_VOICE_TTS   Kokoro/Chatterbox (default http://127.0.0.1:8880/v1
-                      Kokoro; the shipped unit overrides to :8881
-                      Chatterbox Turbo, which is the launch voice)
+    MECHA_VOICE_STT   Parakeet          (default http://127.0.0.1:8992/v1)
+    MECHA_VOICE_TTS   Chatterbox Turbo  (default http://127.0.0.1:8881/v1)
     MECHA_VOICE_TTS_VOICE  voice name for the TTS leg (start value; the
                       page can change it per session)
     MECHA_VOICE_TTS_SPEED  speaking rate, 0.5-2.0 (start value, likewise)
 """
 
-import base64
 import os
 import uuid
 
@@ -46,17 +41,9 @@ from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
 FACADE_URL = os.environ.get("MECHA_VOICE_LLM", "http://127.0.0.1:8990/v1")
-# parakeet (default): the transducer - cannot answer, obey, or improvise.
-# voxtral: the chat model, kept for audio-understanding turns; as a
-# transcriber it answered question-shaped speech and obeyed spoken
-# instructions ("say the word banana" -> "banana"), so it lost the seat.
-STT_KIND = os.environ.get("MECHA_VOICE_STT_KIND", "parakeet")
-STT_URL = os.environ.get(
-    "MECHA_VOICE_STT",
-    "http://127.0.0.1:8992/v1" if STT_KIND == "parakeet" else "http://127.0.0.1:8082/v1",
-)
-TTS_URL = os.environ.get("MECHA_VOICE_TTS", "http://127.0.0.1:8880/v1")
-TTS_VOICE = os.environ.get("MECHA_VOICE_TTS_VOICE", "af_heart")
+STT_URL = os.environ.get("MECHA_VOICE_STT", "http://127.0.0.1:8992/v1")
+TTS_URL = os.environ.get("MECHA_VOICE_TTS", "http://127.0.0.1:8881/v1")
+TTS_VOICE = os.environ.get("MECHA_VOICE_TTS_VOICE", "default")
 TTS_SPEED = float(os.environ.get("MECHA_VOICE_TTS_SPEED", "1.0"))
 # Bounds mirror the TTS server's own. Duplicated rather than fetched
 # because they gate a value before it is sent: a slider that can ask for
@@ -71,21 +58,17 @@ MIN_SPEED, MAX_SPEED = 0.5, 2.0
 # rewording as a change to test, not a paraphrase. The trailing sentence
 # was tested against jfk.wav (unchanged) and silence/noise (degrades the
 # reply to droppable fragments instead of chat).
-TRANSCRIBE_PROMPT = (
-    "Transcribe this audio exactly. Output only the transcription. "
-    "If there are no words, output nothing."
-)
-
-# Segments quieter than this never reach the model. Voxtral is a chat
-# model: handed silence or echo residue it stops transcribing and starts
-# *answering* ("I'm an AI and don't have a calendar"), and that answer
-# then rides into mecha as the owner's words - the observed 2026-08-24
-# bug. Measured on this STT server: speech ~0.14 RMS, room noise ~0.009,
+# Segments quieter than this never reach the model. The gate was measured
+# against a chat-model transcriber, which handed silence or echo residue
+# stopped transcribing and started *answering* ("I'm an AI and don't have
+# a calendar") - and that answer rode into mecha as the owner's words, the
+# observed 2026-08-24 bug. A transducer cannot do that, so the gate is now
+# about cost and false turns rather than about fabrication; it stays
+# because a half-second of room noise is not a turn whatever hears it.
+# Measured on this STT server: speech ~0.14 RMS, room noise ~0.009,
 # silence 0.000; the gate sits in the gap.
 MIN_SEGMENT_RMS = 0.010
 MIN_SEGMENT_SECONDS = 0.3
-# A reply longer than speech allows is a hallucination, not a transcript.
-MAX_WORDS_PER_SECOND = 5.0
 
 
 # What the bot said recently, normalized, for the echo filter: a phone on
@@ -121,10 +104,11 @@ def is_probable_echo(transcript: str) -> bool:
     return False
 
 
-class VoxtralSTT(BaseWhisperSTTService):
-    """Voxtral behind llama-server takes chat-completions `input_audio`,
-    not `/v1/audio/transcriptions` - and `cache_prompt` must be off: slot
-    cache reuse splices mid-audio and presents as deafness (S7)."""
+class SegmentGatedSTT(BaseWhisperSTTService):
+    """The energy/duration gate every segment passes before any model sees
+    it. Split out from the transcriber because it is a property of the
+    *audio*, not of whichever model reads it: room noise and half-second
+    breaths are not speech regardless of what is listening."""
 
     @staticmethod
     def _segment_stats(audio: bytes):
@@ -143,73 +127,15 @@ class VoxtralSTT(BaseWhisperSTTService):
         rms = math.sqrt(sum(x * x for x in samples) / len(samples)) / 32768
         return len(samples) / rate, rms
 
-    async def _transcribe(self, audio: bytes) -> Transcription:
-        from loguru import logger
-
-        try:
-            duration, rms = self._segment_stats(audio)
-        except Exception as e:
-            logger.debug(f"voxtral segment stats unparseable ({e}); letting the model try")
-            duration, rms = 1.0, 1.0  # unparseable: let the model try
-        if duration < MIN_SEGMENT_SECONDS or rms < MIN_SEGMENT_RMS:
-            logger.debug(
-                f"voxtral segment gated: duration={duration:.2f}s rms={rms:.4f} "
-                f"(gates: {MIN_SEGMENT_SECONDS}s / {MIN_SEGMENT_RMS})"
-            )
-            return Transcription(text="")
-        b64 = base64.b64encode(audio).decode()
-        r = await self._client.chat.completions.create(
-            model="voxtral",
-            messages=[
-                {
-                    "role": "user",
-                    # Instruction first, audio second - tested: with the
-                    # audio first the model treats it as the message and
-                    # answers question-shaped speech instead of writing it
-                    # down. Order does not fix the obeys-spoken-commands
-                    # class, which is why Parakeet holds the seat.
-                    "content": [
-                        {"type": "text", "text": TRANSCRIBE_PROMPT},
-                        {"type": "input_audio", "input_audio": {"data": b64, "format": "wav"}},
-                    ],
-                }
-            ],
-            temperature=0,
-            max_tokens=500,
-            extra_body={"cache_prompt": False},
-        )
-        raw = r.choices[0].message.content or ""
-        logger.debug(
-            f"voxtral answered: duration={duration:.2f}s rms={rms:.4f} raw={raw[:120]!r}"
-        )
-        text = raw.strip().strip('"')
-        # Output-side guards, layered behind the energy gate: an assistant
-        # reply, a "no transcription" notice, punctuation confetti, or more
-        # words than the audio could hold must never become a user turn.
-        lowered = text.lower()
-        if lowered.startswith(
-            ("i'm sorry", "i am sorry", "i'm unable", "i can't", "i'm an ai",
-             "as an ai", "no transcription", "there are no words")
-        ):
-            text = ""
-        elif not any(c.isalnum() for c in text):
-            text = ""
-        elif len(text.split()) > max(3.0, duration * MAX_WORDS_PER_SECOND):
-            logger.debug(f"voxtral word-rate cap: {len(text.split())} words in {duration:.2f}s")
-            text = ""
-        elif is_probable_echo(text):
-            logger.debug(f"voxtral echo filter: transcript matches recent bot speech: {text[:60]!r}")
-            text = ""
-        return Transcription(text=text)
-
-
-class ParakeetSTT(VoxtralSTT):
-    """The structural transcriber: Parakeet TDT behind parakeet_server.py,
-    whisper-style multipart. Inherits Voxtral's gates (energy, duration,
-    echo, word-rate) - a faithful transcriber faithfully transcribes the
+class ParakeetSTT(SegmentGatedSTT):
+    """The transcriber: Parakeet TDT behind parakeet_server.py,
+    whisper-style multipart. Takes the segment gate (energy, duration) and
+    the echo filter - a faithful transcriber faithfully transcribes the
     bot's own speaker when echo cancellation fails, so the text filter
-    stays load-bearing - but needs none of the prompt discipline, because
-    there is no prompt."""
+    stays load-bearing - and needs no prompt discipline at all, because
+    there is no prompt. The output-side guards a chat-model transcriber
+    needed (refusal prefixes, a word-rate cap) went with it: a transducer
+    cannot emit words it did not hear."""
 
     async def _transcribe(self, audio: bytes) -> Transcription:
         from loguru import logger
@@ -323,8 +249,7 @@ class LocalTTS(OpenAITTSService):
 
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
-    stt_cls = ParakeetSTT if STT_KIND == "parakeet" else VoxtralSTT
-    stt = stt_cls(api_key="unused", base_url=STT_URL)
+    stt = ParakeetSTT(api_key="unused", base_url=STT_URL)
     tts = LocalTTS(
         api_key="unused",
         base_url=TTS_URL,

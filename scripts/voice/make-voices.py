@@ -15,8 +15,10 @@ that made it legal. Public-domain corpus clips (LJSpeech, VCTK) are
 the fallback if a synthesized reference clones badly - it is a real
 risk, since the reference has already been through a vocoder once.
 
-Both servers are already running; this only talks to them over HTTP.
-Nothing here is on the voice path at run time.
+**Kokoro is not part of the running stack** — it was removed on 2026-08-25
+once it was clear nothing failed over to it automatically. Start a container
+before running this, and stop it afterwards; nothing else needs one. This
+script is on nobody's voice path at run time.
 """
 import argparse
 import os

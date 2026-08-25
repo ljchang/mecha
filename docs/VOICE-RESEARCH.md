@@ -610,6 +610,41 @@ each of which cost something:
   transcribed the intelligible one and refused the garble — correct
   behaviour that looks like a bug. Ground-truth clips must be real
   speech (whisper.cpp's `jfk.wav` is the canonical one).
+**Both standbys were removed, 2026-08-25 — a spare nothing fails over to
+is not a spare.** Voxtral (`:8082`) had held the STT seat until the swap
+that morning and then sat idle for the rest of the day: **0 requests**,
+6,278 MiB of GPU on a box at 109/121 GiB. Its stated job — "kept for the
+audio-understanding turns it was always the right model for" — was an
+intention with no code behind it: the only selector was a process-wide env
+var read once at import, so there was never a per-turn route to those
+turns, and Phase 3 would have to build one anyway. Kokoro (`:8880`) was
+documented as the TTS "fallback", and the docs were wrong in the way that
+matters: `TTS_URL` is read once at import with no try/except and no second
+base URL, so failing over meant editing a unit and restarting. It had
+served 0 requests in six hours.
+
+The removal was structural, not just operational. `VoxtralSTT` was the
+*parent* of `ParakeetSTT` — it held the shared segment gate — so deleting
+it meant splitting the gate out as `SegmentGatedSTT`, which is the better
+shape anyway: the energy/duration threshold is a property of the **audio**
+(a half-second of room noise is not a turn) and not of whichever model
+reads it. What went with Voxtral were the guards only a chat model needed —
+the refusal-prefix list, the word-rate cap — because a transducer cannot
+emit words it did not hear. `MECHA_VOICE_STT_KIND` is gone, the TTS default
+moved from `:8880` to `:8881`, and the worker unit's two `Environment=`
+lines were dropped because they had come to restate the code's own
+defaults.
+
+`make-voices.py` survives as a **one-off tool**: it still needs a Kokoro
+container while generating references, and nothing needs one afterwards.
+That is the honest shape — the six `.wav` files on disk are the artifact,
+and Kokoro was only ever their compiler.
+
+The general lesson, and the owner's framing: **a backup that requires a
+human edit to engage is not redundancy, it is a second service to keep
+alive.** Both of these read as prudence in the docs and were, measurably,
+two idle processes and one stale claim.
+
 **Tailscale is not a preference for voice; it is the topology — decided
 2026-08-25.** Priced Cloudflare Tunnel + Access as an alternative to
 `tailscale serve` and the owner's ruling was to stay on one supported path.
