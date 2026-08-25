@@ -1854,6 +1854,83 @@ Three sessions worked one checkout all day. Two `git add -A` sweeps carried
 another lane's uncommitted edits into unrelated commits, nineteen days after
 that trap was written down — which is its own entry, and the reason explicit-
 path staging is now the habit rather than the rule.
+**2026-08-25 — talking and typing became one conversation.** D3, the last
+of the voice decisions still owing something, and the one the design had
+been promising since it was written. An in-chat call had been its own
+conversation with its own transcript and its own clean taint slate; the
+overlay said so honestly, which is the best a seam can do about being a
+seam. It is gone.
+
+The obstacle was never the transport. `mecha serve` held **two session maps
+in one process** — `voice::Facade`'s slots and `chat::ChatState`'s sessions
+— sharing an agent, a provider connection and a prompt cache, and a call
+resolved in the wrong one. The key-carrying plumbing already ran end to
+end; what was missing was the page choosing a key and the facade resolving
+it somewhere other than its own map.
+
+What shipped: the page names its session in the WebRTC offer through
+`request_data`, which is pipecat's own passthrough to `runner_args.body`,
+so no framework patch and no second endpoint — and the offer is used
+because it is the only message sent *before* the bot exists, and the bot is
+what has to know, the data channel opening far too late to choose an LLM
+service's headers. The worker forwards it as `X-Chat-Session` beside the
+slot key it still mints, deliberately a second header rather than a
+namespace inside the first: one header carrying two meanings is a value
+nothing can validate, and a page is free to name a session
+`webrtc-anything`. The facade resolves it through a `voice::SessionHost`
+trait that `serve::chat::VoiceHost` implements, so `voice/` still has never
+heard of `serve/` — the `Approver`/`Asker` shape applied to "whose
+conversation is this" — and the facade keeps **no** slot, session file or
+conversation for a hosted turn, because a second copy of any of those is
+exactly the duplicate record that made merge-on-close the rejected shape.
+
+`chat::begin_turn` became the one implementation of "a turn on a web
+session", shared by both doors. That is the `/tasks` rule (one
+implementation per verb) applied inside a process rather than across a CLI
+boundary, and for the same reason: two constructions is how the typed and
+spoken paths stop agreeing about the jail, the outbox stamp or the
+recording contract, silently and in that order.
+
+Four decisions rode along. A spoken utterance mid-run **barges in rather
+than steering** — steering would fold the words into the run already
+streaming *to the page*, and the worker is owed a reply it can speak;
+measured at 1.2 s from speaking over a 300-line generation to hearing the
+answer. A spoken turn **broadcasts its own user message** (`WireEvent::User`,
+the voice block stripped) because it has no local echo anywhere, so the page
+fills in as you talk; a typed send is still echoed only by the page that
+typed it, and what a second device misses is a separate gap that was
+deliberately not half-closed here. `--voice-yes` **travels with the turn,
+not the conversation** — the owner's call — so a spoken turn runs with
+approvals off while a typed turn in the same conversation obeys the page's
+mode, verified in one session by a spoken `fs_write` that succeeded and a
+typed one two turns later that was Blocked read-only. And nothing
+structural moved: the interlock still sits ahead of the approver, sends
+still stage, and taint now **accumulates across both doors** instead of
+being reset by opening a call, which is the stricter direction.
+
+Verified by running it rather than by reading it, which is what this
+project keeps having to relearn: shared context across the doors, one
+session file where there had been two, the block firing on exactly the
+switches into speech, and `X-Chat-Session: ../evil` falling back to a
+conversation of its own with a warning — a dead call being a worse answer
+than an unshared one.
+
+Left standing and written down rather than fixed: a `voice:` session is now
+the fallback rather than the norm, so the drawer's badge quietly means
+"this call had no page behind it"; the page's mode chip does not describe
+spoken turns; and `mecha serve` still never drains its chat runs on
+shutdown, which now covers spoken turns too — unreachable in practice,
+since `axum::serve` is not wrapped in `with_graceful_shutdown` and
+systemd's stop is a hard kill, but the standalone `voice-serve` handles
+SIGTERM and the mounted one does not.
+
+The same day, earlier and by another session, **a sound with no words in it
+stopped stopping the bot** — step (1) of the deferred VAD item, fixed
+structurally rather than by tuning. Dropping the VAD from the turn-*start*
+strategies means a wordless segment emits no transcription frame at all,
+reaches no strategy, and the bot simply keeps talking: resume-on-empty
+achieved by never stopping, which needs no state to unwind. The analyser
+stays, because it still segments.
 
 **The bake-off those two conclusions came from**, moved out of `README.md` on
 2026-08-10 so the numbers live with the rest of the measurement record rather
@@ -2791,6 +2868,33 @@ and is what finally exercised the path.)
   control down until someone found the file. Fail closed on a record you cannot
   read; skip a thing that was never a record. The two are not the same
   question, and one directory listing conflates them.
+
+- **A predicate that encodes who writes to a structure breaks silently when a
+  second writer arrives.** The D10 voice block was injected when
+  `convo.is_empty()` — correct, and *only* because a voice conversation had
+  exactly one author. The moment talking and typing shared a message list
+  (D3), that predicate quietly changed meaning: a call opened into an
+  existing chat would find the conversation non-empty and send no block, so
+  the reply came back as markdown with headings, read aloud. It fails in the
+  direction that looks like working software, not the direction that errors,
+  and no test could have caught it because the condition was still true of
+  everything the test knew about. The general form: when you add a second
+  writer to anything, grep for predicates over its *contents* — they are
+  assertions about authorship wearing a shape check. The replacement carries
+  the fact explicitly (`WebSession::last_turn_spoken`), because "was the
+  previous turn spoken" is not recoverable from the messages once both doors
+  record identically.
+
+- **A smoke test that provokes refusals writes into the corpus something else
+  thresholds on.** Driving the D3 path by hand meant deliberately triggering
+  read-only denials to prove the posture, and every one of them landed in a
+  session JSONL that `runlog` reads and `mecha doctor` computes a per-model
+  tool-error rate from — with a 20-run floor, so a handful of provoked
+  failures move it. The traces were removed afterwards. Before hand-driving a
+  path that fails on purpose, know which store is counting: the run-quality
+  corpus has no notion of "this run was a test", and it is the one place
+  where deliberately-caused failures are indistinguishable from the real
+  thing.
 
 - **A test that asserts prose freezes the prose.** The thread header said
   "nothing typed here reaches this session" — true when it was written, false

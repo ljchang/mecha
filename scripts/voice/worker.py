@@ -263,18 +263,51 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     )
     # The facade ignores the re-sent history (the Conversation is the
     # server's state) and the system prompt rides in mecha's cached prefix,
-    # so neither is configured here. The session key (D3) travels as a
-    # header - pipecat's service has no `user` field, and without a key
-    # every call would share one eternal conversation and two clients
-    # would barge-in on each other forever. Per connection: one call, one
-    # taint slate, one transcript.
+    # so neither is configured here. The session key travels as a header -
+    # pipecat's service has no `user` field, and without a key every call
+    # would share one eternal conversation and two clients would barge-in
+    # on each other forever. Per connection: one call, one slot.
     session_key = f"webrtc-{uuid.uuid4().hex[:8]}"
-    print(f"voice session key: {session_key}", flush=True)
+    headers = {"X-Voice-Session": session_key}
+
+    # D3: when the caller named a chat session in the WebRTC offer, the
+    # facade speaks into *that* conversation instead of opening one of its
+    # own - talking and typing become one transcript, one taint slate, one
+    # workspace. A second header rather than overloading the first, because
+    # the two mean different things and only one of them is ours to mint.
+    #
+    # Validated here as well as at the facade, and to the same rule
+    # (mecha-cli's `valid_key`): this value becomes a directory name under
+    # the producer root, it arrives from a browser, and a claim checked on
+    # only one side of a seam is a claim nobody checks the day the other
+    # side is reached directly. Refusing costs a call that is merely
+    # unshared; passing it on costs whatever a bad name does.
+    named = None
+    body = runner_args.body if isinstance(runner_args.body, dict) else {}
+    want = body.get("session")
+    if isinstance(want, str):
+        want = want.strip()
+        if (
+            0 < len(want) <= 32
+            and want[0] not in "-_"
+            and all(c.islower() or c.isdigit() or c in "-_" for c in want)
+            and want.isascii()
+        ):
+            named = want
+        elif want:
+            print(f"voice: refusing malformed chat session {want!r}", flush=True)
+    if named:
+        headers["X-Chat-Session"] = named
+    print(
+        f"voice session key: {session_key}"
+        + (f" (speaking into chat session {named!r})" if named else ""),
+        flush=True,
+    )
     llm = OpenAILLMService(
         api_key="unused",
         base_url=FACADE_URL,
         model="mecha",
-        default_headers={"X-Voice-Session": session_key},
+        default_headers=headers,
     )
 
     context = LLMContext()

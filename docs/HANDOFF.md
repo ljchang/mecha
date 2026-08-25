@@ -100,12 +100,23 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,343 tests**, no failures — re-measured at the v0.1.13 tag
+Expect **1,367 tests**, no failures — measured 2026-08-25 at a9b26eb, after
+the voice-session arc (466 in `mecha-cli` with 1 ignored, 680 in the
+`mecha-core` lib suite, 129 in `mecha-mail` plus 1 in its `mecha-mail`
+binary, 75 in `mecha-slack`, 15 across the two integration suites that need
+real backends, and 1 doctest). The 24 over v0.1.13's 1,343 are **entirely
+`mecha-cli`**, and attributed exactly rather than estimated — 19 added
+between the tag and c2ca24b (the `/queues` proposal review and queue-age
+work, `/entity`'s search and merge keys, the mail-classify fixes and
+`harness`/`review`/`proposals`), and 5 by the voice-session arc itself (the
+two session headers, the voice block's switch-into-speech rule, and the
+three that pin what a spoken turn reads back as). Note the earlier line
+said "2 doctests" where there is one plus a single test in the `mecha-mail`
+binary; the total was right and the breakdown was not.
+
+The previous figure was **1,343**, re-measured at the v0.1.13 tag
 (068a659); the same number was measured earlier at f6a39a5, the
-night of 2026-08-24, after the voice-controls and web-surface-arcs merges
-(680 in the `mecha-core` lib suite, 442 in `mecha-cli` with 1 ignored, 129 in
-`mecha-mail`, 75 in `mecha-slack`, 15 across the two integration suites that
-need real backends, and 2 doctests). The 20 over the previous count are
+night of 2026-08-24, after the voice-controls and web-surface-arcs merges. The 20 over the count before it are
 `mecha-cli` +13 and `mecha-mail` +7 — the phone surface's Arcs A/B/C and the
 dictation route, plus the `mecha-mail` tests that the 08-24-evening count had
 set aside as "an uncommitted docs WIP that is not this arc's to count" and
@@ -140,12 +151,16 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 679 |
-| `mecha-cli` unit | 388 |
-| `mecha-mail` unit | 122 |
+| `mecha-core` unit | 680 |
+| `mecha-cli` unit | 466 (1 ignored) |
+| `mecha-mail` unit | 129 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
 | doctest | 1 |
+
+Measured 2026-08-25 at a9b26eb. The table had drifted two counts behind the
+prose above it, which is the failure mode of stating one fact twice — read
+the prose if they ever disagree again, and fix the table.
 
 The integration tests need docker (with `debian:stable-slim` and `python:3-slim`
 pulled) and `python3`; without them they skip and say so. CI sets
@@ -181,7 +196,7 @@ A working agent harness, used and measured rather than just compiled.
 | TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/queues`, `/outbox`, `/frontdoor`, `/mail`, `/tasks`, `/skills`, `/polls`, `/doctor` and (2026-08-23) `/find` modals drive the CLI like `/triggers` does — plus `/note` for one-line graph capture — the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
 | Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`; owner-gated command words `doctor`, `triggers`, `review now|later|auto`, and (2026-08-23) `note <text>` — a deterministic capture matched before the text can become a prompt — `queues`, the read-only backlog rollup, and (2026-08-24, adopted from an orphaned WIP) `tasks`/`task`, the GTD board as command words. **Merged 2026-08-09 (PR #25) and running as `mecha-slack.service`** |
 | Web surface | `mecha serve` (2026-08-24, extended the same evening) — the tailnet web app: binds 127.0.0.1 with no flag to widen it, `tailscale serve` is the door (`:8443`), every request must carry `Tailscale-User-Login` equal to `[web] owner_login` (global-file-only config, stripped from project layers like `[slack]`; refuses to start ownerless), strict self-only CSP. Pages: Home dashboard (`review queues --json` + `doctor --json` as child processes, a dash never a zero), streaming chat over SSE (one shared agent, per-session `RunContext` on the Slack connector's pattern — keyed sessions with validated directory-safe names, jails under `~/.mecha/work/web/<key>/`, steering, cancel, context gauge), outbox review (whole `DraftView`, source reads behind a gutter, taint sheet with exact args, approve `--yes`/reject/edit as CLI children), graph-queue sample deck (seed printed, verdict ≠ resample), tasks, notes + `kg search`. Per-session `ask` mode: live approval cards (deny-with-reason is a real user correction; timeout is `Blocked`) and `ask_user` option cards routed by the run's jail (`Asker::ask_in`); pending cards ride the transcript read so a locked phone reloads into them; cancel drains parked cards. Evening additions (2026-08-24): the **mail page** (`serve/mail.rs` + `Mail.svelte` — store read for the list, `mecha mail show` as the one thread renderer behind a gutter, closed-verb `/api/mail/act` with spam the only confirm; drafting verbs spawn detached into the outbox), the **graph queue at all three depths** (classes with server-stamped tiers from `tui::queues::Tier::of`, per-class similarity groups, and the cross-class global layer with a threshold stepper — see the graph repo's `similar.rs` for the invited-crossing rules), and **files** (`serve/files.rs`: uploads into the session jail's `inbox/` announced as paths, downloads that re-prove containment, images the only inline type). Assets are a build artifact at `~/.mecha/web/dist` (update skill surface 1b). `docs/REMOTE-SURFACE-RESEARCH.md` + `-DESIGN.md` |
-| Voice | The stack from `docs/VOICE-RESEARCH.md`, built and in production 2026-08-24 (§7 is the build log): Pipecat worker (`scripts/voice/worker.py`, `:7860`), **Parakeet TDT** STT (`mecha-parakeet.service`, `:8992` — Voxtral was structurally unfit: a chat model answers speech instead of transcribing it, and obeys spoken instructions), Chatterbox TTS (no standby — Kokoro was removed 2026-08-25; nothing failed over to it automatically), and the loopback OpenAI facade (`mecha-cli/src/voice/`) **mounted inside `mecha serve`** (`--voice-port 8990`) over the shared agent — one process, one cached prefix, two dialects. The WebRTC offer proxies same-origin through serve (`/api/offer`), behind the owner guard — true of **both** doors since 2026-08-25, and only of `:8443` before it, when `:443` was a file mount whose `/api` went straight to the worker. In-chat voice: waveform button → call overlay (voice-core.js embedded by relative import; threaded transcript pane, cloned-track mic meter, mute, end). A call is its own conversation until D3 lands. D5 ratified: owner speech is typed text, arms nothing. **Voice controls (2026-08-24 night):** the in-chat call overlay (`Chat.svelte`) carries a **seven**-voice picker and a 0.5–2.0x rate slider. They persist in `localStorage` (`mecha.voice.prefs`, `{voice, speed}`, read on each connection's first `onVoiceConfig`), so the next call opens where you left it rather than resetting to whatever the worker booted with. That key originally synced two shells; the standalone page was retired in 876580e and the preference is why it stays. Seven is six Kokoro-derived cloning references plus Chatterbox's own built-in `default`, which the server lists as selectable because it is one — `voice: "default"` generates with no reference rather than falling back to anything. The controls are driven by a `voice-config` RTVI message and `session.voiceConfig(patch)` on `voice-core.js`; the server's reply is what renders, so a refused value never leaves the control showing a rate the worker is not speaking at. Rate is a pitch-preserving phase vocoder in `chatterbox_server.py` (~50 ms warm) because Chatterbox Turbo has no speed parameter and resampling moves pitch with tempo. The voices are Kokoro presets synthesized into cloning references by `scripts/voice/make-voices.py` — Apache 2.0, nobody's identity — and the server reads the directory live (`GET /v1/voices`) rather than holding a list |
+| Voice | The stack from `docs/VOICE-RESEARCH.md`, built and in production 2026-08-24 (§7 is the build log): Pipecat worker (`scripts/voice/worker.py`, `:7860`), **Parakeet TDT** STT (`mecha-parakeet.service`, `:8992` — Voxtral was structurally unfit: a chat model answers speech instead of transcribing it, and obeys spoken instructions), Chatterbox TTS (no standby — Kokoro was removed 2026-08-25; nothing failed over to it automatically), and the loopback OpenAI facade (`mecha-cli/src/voice/`) **mounted inside `mecha serve`** (`--voice-port 8990`) over the shared agent — one process, one cached prefix, two dialects. The WebRTC offer proxies same-origin through serve (`/api/offer`), behind the owner guard — true of **both** doors since 2026-08-25, and only of `:8443` before it, when `:443` was a file mount whose `/api` went straight to the worker. In-chat voice: waveform button → call overlay (voice-core.js embedded by relative import; threaded transcript pane, cloned-track mic meter, mute, end). **A call is the chat session it was started from (D3, 2026-08-25)**: the page names its key in the WebRTC offer (`request_data`, pipecat's own passthrough), the worker forwards it as `X-Chat-Session` beside the slot key it still mints, and `voice::SessionHost` — implemented by `serve::chat::VoiceHost` — runs the turn on that conversation's messages, taint, transcript and jail, with the facade keeping no record of its own. `chat::begin_turn` is the one implementation both doors go through. Spoken turns arrive on the page's SSE feed live (`WireEvent::User`, block stripped) and are marked `spoken` in the transcript; the D10 block now opens a *switch into speech* rather than a conversation (`last_turn_spoken`), and `--voice-yes` travels with the turn, so a spoken turn runs at Allow while a typed one in the same session obeys the page's mode. D5 ratified: owner speech is typed text, arms nothing. **Voice controls (2026-08-24 night):** the in-chat call overlay (`Chat.svelte`) carries a **seven**-voice picker and a 0.5–2.0x rate slider. They persist in `localStorage` (`mecha.voice.prefs`, `{voice, speed}`, read on each connection's first `onVoiceConfig`), so the next call opens where you left it rather than resetting to whatever the worker booted with. That key originally synced two shells; the standalone page was retired in 876580e and the preference is why it stays. Seven is six Kokoro-derived cloning references plus Chatterbox's own built-in `default`, which the server lists as selectable because it is one — `voice: "default"` generates with no reference rather than falling back to anything. The controls are driven by a `voice-config` RTVI message and `session.voiceConfig(patch)` on `voice-core.js`; the server's reply is what renders, so a refused value never leaves the control showing a rate the worker is not speaking at. Rate is a pitch-preserving phase vocoder in `chatterbox_server.py` (~50 ms warm) because Chatterbox Turbo has no speed parameter and resampling moves pitch with tempo. The voices are Kokoro presets synthesized into cloning references by `scripts/voice/make-voices.py` — Apache 2.0, nobody's identity — and the server reads the directory live (`GET /v1/voices`) rather than holding a list |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
@@ -289,8 +304,11 @@ and `mecha-voice-worker` (`:7860`, Pipecat, reached through `mecha serve`'s
 own `/api/offer` proxy rather than directly). Web assets live at `~/.mecha/web/dist`
 — a build artifact, not in git; the `update` skill's surface 1b rebuilds
 them. 8080 re-verified this date: `total_slots=4`, `n_ctx` 262,144/slot,
-vision true. Workspace tests: **1,365 pass, 0 fail**. Eval: 36 cases, 15
-tags (unchanged). The `[web]` section is live in `~/.mecha/config.toml` —
+vision true. **Re-verified 2026-08-25** and all four unchanged
+(`total_slots=4`, `n_ctx` 262,144/slot, `model_alias qwen3.6-35b-a3b`,
+`modalities.vision` true). Workspace tests **2026-08-25: 1,367 pass, 0
+fail**. Eval: 36 cases, 15 tags, plus 10 graph cases — all three re-counted
+2026-08-25, unchanged. The `[web]` section is live in `~/.mecha/config.toml` —
 safe now that every installed binary parses it; the outage its early
 arrival caused is in HISTORY under Traps → Environment. A `llama-voxtral`
 unit still exists at the *system* level (voice arc's; healthy per their
@@ -925,56 +943,47 @@ on this machine. `docs/REMOTE-CONTROL-DESIGN.md` is the design; the arc is in
   live shape. Design §15; `REMOTE-SURFACE-DESIGN.md` is the authority for
   what serve itself still owes.
 
-### The phone surface and voice — what 2026-08-24 left open
+### The phone surface and voice — what is still open
 
-Everything here is verified in source as of the date; the arcs' own docs
-(`REMOTE-SURFACE-DESIGN.md`, `VOICE-RESEARCH.md` §7) hold the shipped half.
+Everything here is verified in source, re-checked 2026-08-25; the arcs' own
+docs (`REMOTE-SURFACE-DESIGN.md`, `VOICE-RESEARCH.md` §7) hold the shipped
+half.
 
-- **D3's same-session promise is unmet, and this is the next piece of
-  voice work.** Talking and typing are two transcripts. Scoped 2026-08-25;
-  everything below is verified in source so a cold start needs no
-  re-derivation.
+D3 shipped 2026-08-25 — a call is the chat session it was started from.
+The narrative is in HISTORY under that date; `VOICE-RESEARCH.md` §7 holds
+the mechanism and every decision. What it left standing:
 
-  **The obstacle: `mecha serve` holds two session maps in one process.**
-  `voice::Facade` has `slots: Mutex<HashMap<String, SlotState>>`
-  (`voice/mod.rs:104`), each `Slot` being `{convo: Conversation, session:
-  Session}` (`:79`). `chat::ChatState` has `sessions: Mutex<HashMap<String,
-  WebSession>>` (`serve/chat.rs:75`), each `WebSession` being
-  `{conversation: Option<Conversation>, session: Arc<Session>, workspace,
-  live, events}` (`:80`). Same process, same agent, same prompt cache — two
-  stores, and a call resolves in the wrong one.
-
-  **The key path, end to end:** `worker.py` mints `webrtc-{uuid4[:8]}` per
-  WebRTC connection and stamps it as the `X-Voice-Session` header (pipecat's
-  LLM service exposes `default_headers` but no `user` field); the facade's
-  `session_key()` (`voice/mod.rs:384`) prefers that header, then OpenAI's
-  `user` field, then `"default"`. So the plumbing to carry a *chosen* key
-  already exists in both directions — what is missing is the page passing
-  its chat key down and the facade resolving against `ChatState` instead of
-  its own map.
-
-  **Two shapes, and the smaller one was rejected.** (a) The call *is* the
-  chat session: one conversation, no merge, no seam, and "continue" works
-  across the modal closing because there never was one. (b) Merge the voice
-  conversation onto the web session when the modal closes — much smaller,
-  and it buys a **duplicate record**: those turns would then exist in two
-  session JSONLs, so `recall`, `distill` and the run-quality corpus each
-  count them twice. That is the second-copy-that-can-disagree shape this
-  project refuses everywhere else, so (a) is the plan.
-
-  **What is not broken, so scope stays honest:** nothing is lost today.
-  Voice calls are ordinary session transcripts (`voice: <key>` titles) in
-  the same store as web chat, `/api/history` already lists them tagged
-  `kind: "voice"` beside `"web"` (`serve/chat.rs:897`, the retain on
-  `"web: "`/`"voice: "` prefixes), and `POST /api/resume` restores messages
-  **and taint** through `Session::load`. The gap is two threads where one
-  was promised, not lost work.
-
-  **Watch item for whoever builds it:** `WebSession.conversation` is an
-  `Option` on purpose — moved out while a run holds it, to keep the map
-  single-writer on the Slack connector's pattern. A voice turn arriving
-  mid-web-run must not find `None` and mint a second conversation, which is
-  exactly the bug this change could introduce while appearing to work.
+- **A `voice:` session is now the fallback, not the norm.** A call from the
+  app is a `web:` session, so the drawer's `voice` badge marks only calls
+  that named nothing — a direct offer to the worker, or a key no front-end
+  held. The badge's meaning quietly changed from "this was spoken" to "this
+  call had no page behind it"; the per-turn `spoken` marker in the
+  transcript is what carries the first meaning now. Worth a deliberate
+  decision about what the drawer should say, rather than leaving two
+  meanings one word apart.
+- **The page's mode chip does not describe spoken turns.** `--voice-yes`
+  travels with the *turn* (`TurnOpts::approve_all`,
+  `serve/chat.rs`), so a spoken turn runs at Allow while a typed turn in
+  the same conversation runs at whatever the chip says. Luke's call,
+  2026-08-25, and defensible because nothing structural moved — the
+  interlock is ahead of the approver, sends still stage, and taint
+  accumulates across both doors. Still worth revisiting: a label true of
+  one door and not the other is the shape this project usually refuses,
+  and if voice ever grows spoken approvals, that flag is what they replace.
+- **`mecha serve` never drains its chat runs on shutdown**, and since D3
+  that gap covers spoken turns too. Not a regression in practice —
+  `axum::serve` is not wrapped in `with_graceful_shutdown` and there is no
+  SIGTERM handler, so systemd's stop is a hard kill and `facade.shutdown()`
+  was already unreachable there. But the standalone `mecha voice-serve`
+  *does* handle SIGTERM and the mounted one does not, which is now the only
+  place that difference shows. Closing it means deciding who owns SIGTERM
+  in a process holding SSE streams and pending approval cards.
+- **A second device watching a typed send sees the reply and not the
+  prompt.** A spoken turn broadcasts `WireEvent::User` because it has no
+  local echo anywhere; a typed send is still echoed only by the page that
+  typed it, so broadcasting it too would render it twice there. Ending it
+  properly means the page distinguishing its own echo from the broadcast,
+  which is a small change nobody has needed yet.
 - **The owner's first-day feedback backlog is `REMOTE-SURFACE-DESIGN.md`
   §12** — chat model switching, a plain mail inbox + compose, notes/tasks
   voice capture and listings, the task→agent handoff (the big one), Home
@@ -1010,16 +1019,25 @@ Everything here is verified in source as of the date; the arcs' own docs
 - **PWA install and Web Push are unstarted** (design Phase 5). Until push,
   Slack remains the nudge channel for staged drafts — D11 keeps it anyway.
 - **Luke's next real call is the outstanding voice test**, and it now
-  auditions four things at once: the replaced thinking sound (a soft
+  auditions six things at once: the replaced thinking sound (a soft
   alternating two-note pulse; the metronome tick is gone), the seven-voice
-  picker and the rate slider, and whether the
-  first-sentence rule actually *feels* faster. Every part is verified by
+  picker and the rate slider, whether the
+  first-sentence rule actually *feels* faster, the VAD change (a wordless
+  sound no longer stops the bot, at the cost of barge-in being
+  "finish the phrase and it stops"), and **the shared conversation** —
+  whether talking into what you were typing reads as continuous or as two
+  registers of one thing. Every part is verified by
   probe end-to-end — Parakeet transcribes exactly, injection audio is
   obeyed by nobody, a spoken calendar question round-tripped a real tool
-  call, and the voice-config round trip reads/sets/refuses correctly — but
-  **no human has completed a full conversation on the new stack**, and two
-  things only a real call can settle: whether the AEC/echo filter holds on
-  a speakerphone walk, and which of the seven voices is worth keeping — six Kokoro-derived references plus Chatterbox's own `default`.
+  call, the voice-config round trip reads/sets/refuses correctly, and the
+  shared conversation was driven through the facade by hand (context
+  crossed both doors, one session file, barge-in at 1.2 s) — but
+  **no human has completed a full conversation on the new stack**, and
+  three things only a real call can settle: whether the AEC/echo filter
+  holds on a speakerphone walk, which of the seven voices is worth keeping
+  (six Kokoro-derived references plus Chatterbox's own `default`), and
+  whether the D10 block re-arriving after every typed turn keeps replies
+  ear-shaped or is one copy too few.
 - **Voice input has no denoising, and the research says leave it that way —
   but the VAD is untuned, which is the actual lever.** Deferred 2026-08-24
   with the finding attached, because the obvious fix is the wrong one.
@@ -1033,18 +1051,31 @@ Everything here is verified in source as of the date; the arcs' own docs
   1.1–46.6% absolute semWER (arXiv 2512.17562; at 10 dB SNR, 8.82% → 25.83%),
   through artifacts inaudible to humans and the removal of features the model
   was already using. What you would want is denoise-for-VAD, raw-for-STT, and
-  Pipecat's filter API cannot express it. **Do first, in order:** (1)
-  `SileroVADAnalyzer()` is constructed with no arguments (`worker.py`), so it
-  runs defaults — `confidence 0.7`, `start_secs 0.2`, `stop_secs 0.2`,
-  `min_volume 0.6`; 200 ms of anything Silero scores as speech opens a turn,
-  which a sleeve on a mic clears (Pipecat issue #3036 is this exact
-  over-sensitivity). (2) `MIN_SEGMENT_RMS = 0.010` sits **one thousandth**
+  Pipecat's filter API cannot express it.
+
+  **Step (1) shipped 2026-08-25 (`c7fc975`), and not by tuning.** The VAD was
+  dropped from the turn-*start* strategies
+  (`worker.py:347`, `start=[TranscriptionUserTurnStartStrategy(...)]`), so a
+  wordless segment now emits no `TranscriptionFrame` at all, reaches no
+  strategy, and the bot simply keeps talking — "resume on an empty
+  transcript" achieved by never stopping, which needs no state to unwind.
+  The analyser stays because it still *segments*; `start_secs` moved 0.2 →
+  0.3 (`worker.py:346`) and `confidence`/`min_volume` were deliberately left
+  alone, since the owner's measured speech is ~0.024 RMS against a 0.14
+  tuning assumption and raising thresholds to chase noise would start
+  dropping quiet real speech. The cost, stated in the source: Parakeet is
+  offline, so barge-in is "finish the phrase and it stops" rather than
+  instant.
+
+  **What is still open is (2) and the denoiser question.**
+  `MIN_SEGMENT_RMS = 0.010` (`worker.py:75`) sits **one thousandth**
   above the measured room noise of 0.009 — tuned in a quiet room, and wind
   will not notice it; re-measure it in the conditions that matter before
   trusting it outdoors. Note the *cost* of a false positive already collapsed
-  with the Parakeet swap: a noise segment now yields empty or garbage text
-  the gates drop, where Voxtral produced a confident fabricated answer
-  attributed to the owner. Only after 1 and 2: RNNoise is one
+  twice over: with the Parakeet swap a noise segment yields empty or garbage
+  text the gates drop where Voxtral produced a confident fabricated answer
+  attributed to the owner, and since (1) it no longer interrupts either.
+  Only after (2): RNNoise is one
   `pip install pipecat-ai[rnnoise]` away, but wind is non-stationary
   broadband — RNNoise's weakest case and DeepFilterNet3's strength, and DFN
   is not in Pipecat core (issue #3266). Measure Parakeet's WER either way.
@@ -1419,7 +1450,9 @@ are worth reading together because one absence produced all three:
 
 - **Steering and queuing are the same key.** Enter starts a run when idle and
   steers one already going; there is no way to queue a follow-up instead.
-- **No `/export` or copy.** `NAMES` lists twenty-four commands (re-counted 2026-08-24; twenty-one on 2026-08-21,
+- **No `/export` or copy.** `NAMES` lists twenty-five commands
+  (`tui/command.rs:314`, re-counted 2026-08-25 after `/entity` landed;
+  twenty-four on 2026-08-24, twenty-one on 2026-08-21,
   after `/docs`, `/send` and `/remote-control`) and none of them get the
   transcript out. **OSC 52 is no longer the answer to assume.** `/docs` writes
   the link to the system clipboard that way (`tui/docs.rs`,

@@ -96,6 +96,13 @@ struct WebSession {
     mode: Arc<StdMutex<PermissionMode>>,
     /// Outstanding approval/ask cards for this session.
     questions: super::present::Questions,
+    /// Was the last turn spoken? Since D3 typed and spoken turns share one
+    /// conversation, so "does this turn need the voice block" is no longer
+    /// answerable from the messages — a spoken turn and a typed one look
+    /// identical once recorded. False on create and on resume: injecting
+    /// one extra copy of the block costs a few hundred cached tokens,
+    /// where omitting it costs a markdown reply read aloud.
+    last_turn_spoken: bool,
 }
 
 struct Live {
@@ -211,6 +218,14 @@ pub(super) fn session_workspace(key: &str) -> Result<PathBuf> {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WireEvent {
     Delta {
+        text: String,
+    },
+    /// A turn started with words the page did not type — today that means
+    /// spoken (D3). A typed send echoes locally, so broadcasting it too
+    /// would render it twice on the page that sent it; what a second device
+    /// watching the same session misses is a separate gap, and this is not
+    /// the place to half-close it.
+    User {
         text: String,
     },
     Queued {
@@ -450,6 +465,7 @@ fn ensure_session<'a>(
                 last_usage: Arc::new(StdMutex::new(None)),
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
                 questions,
+                last_turn_spoken: false,
             },
         );
     }
@@ -547,13 +563,91 @@ pub async fn send(
             .into_response();
     }
 
-    let Some(mut conversation) = ws.conversation.take() else {
-        return (
+    match begin_turn(
+        &chat,
+        &mut sessions,
+        &key,
+        &text,
+        TurnOpts {
+            spoken: false,
+            approve_all: false,
+        },
+    ) {
+        Ok(_started) => Json(serde_json::json!({ "started": true })).into_response(),
+        Err(TurnError::Held) => (
             StatusCode::CONFLICT,
             "conversation is held by a finished run still landing\n",
         )
-            .into_response();
+            .into_response(),
+        Err(TurnError::Failed(e)) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}\n")).into_response()
+        }
+    }
+}
+
+/// Which door a turn came through, and what that changes about it.
+struct TurnOpts {
+    /// Spoken rather than typed (D3). Two consequences and no others: the
+    /// D10 voice block opens the turn when the last one was typed, and the
+    /// user's words are broadcast because there is no page-side echo.
+    spoken: bool,
+    /// `--voice-yes`: run with approvals off. Deliberately a property of
+    /// the *turn*, not of the conversation — a typed turn in the same
+    /// session still runs at whatever the page's mode says, and nothing
+    /// here is sticky. Decision A, 2026-08-25: the flag already owned this
+    /// risk in writing, and unification was meant to change which
+    /// transcript a turn lands in, not what a turn may do. Everything
+    /// structural is untouched: the interlock sits ahead of the approver,
+    /// sends still stage through the outbox, and taint now accumulates
+    /// across both doors instead of being reset by opening a call.
+    approve_all: bool,
+}
+
+/// Why a turn could not start.
+enum TurnError {
+    /// The conversation is not there to take — a finished run still landing.
+    Held,
+    Failed(String),
+}
+
+/// A started turn, for a caller that wants to follow it rather than fire
+/// and forget. The typed door drops all three, which costs nothing: a tap
+/// with no receiver is a send that fails, and the run never notices.
+struct Started {
+    events: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    done: tokio::sync::oneshot::Receiver<Result<crate::voice::HostedAnswer, String>>,
+    cancel: CancellationToken,
+}
+
+/// Start a turn on a session that is idle and still holds its conversation.
+///
+/// One implementation, two doors — typed through `send`, spoken through
+/// [`VoiceHost::speak`] — because two constructions of "a run on a web
+/// session" is how the two silently stop agreeing about the jail, the
+/// outbox stamp or the recording contract. The caller holds the sessions
+/// lock across this whole call, which is what keeps the map single-writer
+/// (the Slack connector's pattern).
+fn begin_turn(
+    chat: &Arc<ChatState>,
+    sessions: &mut HashMap<String, WebSession>,
+    key: &str,
+    text: &str,
+    opts: TurnOpts,
+) -> Result<Started, TurnError> {
+    let ws = sessions
+        .get_mut(key)
+        .ok_or_else(|| TurnError::Failed("no such session".into()))?;
+
+    let text = if opts.spoken {
+        crate::voice::open_spoken_turn(text, ws.last_turn_spoken)
+    } else {
+        text.to_string()
     };
+
+    let Some(mut conversation) = ws.conversation.take() else {
+        return Err(TurnError::Held);
+    };
+    ws.last_turn_spoken = opts.spoken;
 
     // Append the user message to the record *before* the run — the
     // `record_run` contract: `before` is what the file already holds.
@@ -564,13 +658,18 @@ pub async fn send(
         // is invisible to distill, recall and the run-quality corpus.
         conversation.messages.pop();
         ws.conversation = Some(conversation);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("recording: {e:#}\n"),
-        )
-            .into_response();
+        return Err(TurnError::Failed(format!("recording: {e:#}")));
     }
     let before = conversation.messages.clone();
+
+    // A typed turn is echoed by the page that typed it; a spoken one has no
+    // local echo anywhere, so it is announced — with the voice block
+    // stripped, which is harness plumbing and not the owner's words.
+    if opts.spoken {
+        let _ = ws.events.send(WireEvent::User {
+            text: strip_voice_preamble(&text).to_string(),
+        });
+    }
 
     let cancel = CancellationToken::new();
     let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
@@ -586,12 +685,18 @@ pub async fn send(
         workspace: ws.workspace.clone(),
         ..(*chat.agent.ctx()).clone()
     });
-    cx.approver = Arc::new(super::present::WebApprover {
-        mode: Arc::clone(&ws.mode),
-        questions: ws.questions.clone(),
-        events: ws.events.clone(),
-        timeout: super::present::APPROVAL_TIMEOUT,
-    });
+    cx.approver = if opts.approve_all {
+        Arc::new(mecha_core::tool::ModeApprover {
+            mode: PermissionMode::Allow,
+        }) as Arc<dyn mecha_core::tool::Approver>
+    } else {
+        Arc::new(super::present::WebApprover {
+            mode: Arc::clone(&ws.mode),
+            questions: ws.questions.clone(),
+            events: ws.events.clone(),
+            timeout: super::present::APPROVAL_TIMEOUT,
+        })
+    };
     if cx.budget.max_turns.is_none() {
         cx.budget.max_turns = Some(40);
     }
@@ -610,12 +715,14 @@ pub async fn send(
     }
 
     let agent = Arc::clone(&chat.agent);
-    let key_for_task = key.clone();
+    let key_for_task = key.to_string();
     let session = Arc::clone(&ws.session);
     let bcast = ws.events.clone();
     let last_usage = Arc::clone(&ws.last_usage);
     let context_window = chat.context_window;
-    let state_for_task = chat.clone();
+    let state_for_task = Arc::clone(chat);
+    let (tap_tx, tap_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
 
     tokio::spawn(async move {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -629,6 +736,9 @@ pub async fn send(
                             *slot = Some(usage.clone());
                         }
                     }
+                    // The private tap: a caller streaming this run somewhere
+                    // of its own (the voice facade, answering the worker).
+                    let _ = tap_tx.send(event.clone());
                     if let Some(wire) = wire_event(&event, context_window) {
                         let _ = bcast.send(wire);
                     }
@@ -692,9 +802,99 @@ pub async fn send(
         }
         drop(sessions);
         let _ = bcast.send(done);
+        // Last, deliberately: a caller told "answered" before the
+        // conversation is back would find it held on its very next turn.
+        let _ = done_tx.send(match outcome {
+            Ok(o) => Ok(crate::voice::HostedAnswer {
+                text: o.text,
+                input_tokens: o.usage.input_tokens,
+                output_tokens: o.usage.output_tokens,
+            }),
+            Err(e) => Err(format!("{e:#}")),
+        });
     });
 
-    Json(serde_json::json!({ "started": true })).into_response()
+    Ok(Started {
+        events: tap_rx,
+        done: done_rx,
+        cancel,
+    })
+}
+
+/// How long a spoken turn will wait for a run in flight to yield, in 100 ms
+/// tries. The facade's own slot map waits exactly as long, because the
+/// thing being waited on is the same: a tool call, which cancellation never
+/// interrupts mid-call.
+const BARGE_IN_TRIES: usize = 200;
+
+/// `ChatState` as something a voice call can speak into (D3).
+///
+/// A wrapper rather than an impl on `ChatState` itself, because starting a
+/// turn needs an owned `Arc<ChatState>` to hand the spawned run — the same
+/// handle `send` clones out of axum's state.
+pub struct VoiceHost(pub Arc<ChatState>);
+
+#[async_trait::async_trait]
+impl crate::voice::SessionHost for VoiceHost {
+    async fn speak(&self, key: &str, utterance: &str, approve_all: bool) -> crate::voice::Hosted {
+        use crate::voice::Hosted;
+        // Containment stays with the side that owns the filesystem: a
+        // session key becomes a directory name under the producer root, and
+        // it is model-adjacent input the moment a page script can choose it.
+        if !valid_key(key) {
+            return Hosted::Unknown;
+        }
+        for _ in 0..BARGE_IN_TRIES {
+            {
+                let mut sessions = self.0.sessions.lock().await;
+                let (live, idle) = match ensure_session(&self.0, &mut sessions, key) {
+                    Ok(ws) => (ws.live.is_some(), ws.conversation.is_some()),
+                    Err(e) => return Hosted::Failed(format!("{e:#}")),
+                };
+                if live {
+                    // Barge-in, the facade's own contract, and deliberately
+                    // not steering: steering folds the words into the run
+                    // already streaming, whose output goes to the page —
+                    // and the worker is owed a reply it can speak. Order
+                    // matters exactly as it does in `cancel`: a run parked
+                    // on an approval card never sees the token, so the
+                    // cards are dropped first.
+                    if let Some(ws) = sessions.get_mut(key) {
+                        ws.questions.drain();
+                        if let Some(live) = &ws.live {
+                            live.cancel.cancel();
+                        }
+                    }
+                } else if idle {
+                    match begin_turn(
+                        &self.0,
+                        &mut sessions,
+                        key,
+                        utterance,
+                        TurnOpts {
+                            spoken: true,
+                            approve_all,
+                        },
+                    ) {
+                        Ok(started) => {
+                            return Hosted::Started(Box::new(crate::voice::HostedTurn {
+                                events: started.events,
+                                done: started.done,
+                                cancel: started.cancel,
+                            }))
+                        }
+                        // Held: a finished run still landing. Fall through
+                        // to the sleep — another try costs 100 ms and
+                        // usually finds the conversation back.
+                        Err(TurnError::Held) => {}
+                        Err(TurnError::Failed(e)) => return Hosted::Failed(e),
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        Hosted::Busy
+    }
 }
 
 /// POST /api/chat/{key}/cancel — stop at the next safe point, keep the partial.
@@ -1044,6 +1244,7 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
             last_usage: Arc::new(StdMutex::new(None)),
             mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
             questions,
+            last_turn_spoken: false,
         },
     );
     Json(serde_json::json!({ "key": key })).into_response()
@@ -1175,6 +1376,49 @@ mod wire_tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn what_a_spoken_turn_opens_with_is_exactly_what_display_strips() {
+        // Two modules, one convention: `voice::open_spoken_turn` writes the
+        // preamble and `strip_voice_preamble` takes it off. Since D3 they
+        // meet in one conversation, so a drift between them would render
+        // harness plumbing to the owner as their own words — or, worse,
+        // eat the first paragraph of what they actually said.
+        let opened = crate::voice::open_spoken_turn("what is on my calendar", false);
+        assert_eq!(strip_voice_preamble(&opened), "what is on my calendar");
+        // And a turn that carries no preamble is passed through untouched.
+        let plain = crate::voice::open_spoken_turn("and tomorrow?", true);
+        assert_eq!(strip_voice_preamble(&plain), "and tomorrow?");
+    }
+
+    #[test]
+    fn a_spoken_turn_reads_back_as_the_owners_words() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![Block::Text {
+                text: crate::voice::open_spoken_turn("book the room", false),
+            }],
+        }];
+        assert_eq!(
+            transcript_entries(&messages),
+            vec![Entry::User {
+                text: "book the room".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_spoken_turn_reaches_the_page_under_the_name_the_page_switches_on() {
+        // The page's SSE handler keys on the literal `"user"`; a rename
+        // here would leave spoken turns arriving and nothing rendering
+        // them, which looks exactly like voice not being wired at all.
+        let wire = serde_json::to_value(WireEvent::User {
+            text: "book the room".into(),
+        })
+        .unwrap();
+        assert_eq!(wire["type"], "user");
+        assert_eq!(wire["text"], "book the room");
     }
 
     #[test]
