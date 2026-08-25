@@ -699,7 +699,10 @@ mod tests {
     /// owner it had landed. Nothing had; the candidate is still pending.
     #[test]
     fn a_verdict_that_landed_on_nothing_is_not_a_success() {
-        let report = "#9286 FAILED: cannot resolve subject 'Edie and Josephine Chang'\n";
+        // A neutral subject on purpose: this repo is public, and the string
+        // a resolve failure carries is a *name out of the owner's graph*.
+        // The test is about the reporting, never about whose name it was.
+        let report = "#9286 FAILED: cannot resolve subject 'Ada and Grace Fixture'\n";
         let (landed, failed) = crate::commands::review::tally_report(report);
         assert_eq!((landed, failed), (0, 1));
         assert!(
