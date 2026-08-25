@@ -2186,9 +2186,19 @@ count is asking.
 **And the meta-lesson, which is the durable one:** two of the three
 explanations were produced by reasoning about git's behaviour and both were
 wrong; the third came from re-running the original command against the two
-different starting points and comparing. When a peer hands you a mechanism
-that fits the symptom, that is not yet evidence it caused it — the cheap
-check is usually to reproduce the failure, not to reason about the tool.
+different starting points and comparing. Reasoning produces an explanation
+that *fits*; reproduction produces one that *fired*, and only the second
+survives contact with a fact nobody thought to check.
+
+The `--since` half is the sharper warning of the two, because it was not a
+guess — it was **verified in isolation and never run against the command
+that produced the number**. It does exactly what its author said it does;
+it simply could not have fired here, since the invocation passed an
+explicit time. That is the most expensive shape available: a mechanism that
+reproduces on its own *feels* confirmed, so the one remaining check — point
+it at the actual event — is the one it talks you out of. The original
+invocation was on the record the whole time. When you have it, test the
+event, not the hypothesis.
 
 **The one commit that skipped the test run was the one that broke the suite.**
 The offer-proxy commit substituted live verification (build, restart, curl
