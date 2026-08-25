@@ -69,7 +69,12 @@ rationale: <one line: what is wrong, and why this addresses it>
 
 `metric` is what you predict this change will *reduce*. Pick the one it should \
 move most; a prediction that cannot fail is not a prediction. If the evidence \
-does not support any single change, say so in prose and write no block.";
+does not support any single change, say so in prose and write no block.
+
+Anything touching `[security]`, `[sandbox]` or `[outbox]` is `class: security`, \
+whatever else it also is. Calling it something else does not make it \
+measurable — it is reclassified from the change itself and staged for a person \
+either way.";
 
 /// Everything the diagnostician is allowed to be handed about a corpus.
 ///
@@ -179,6 +184,76 @@ impl Evidence {
     }
 }
 
+// ─── The class is derived, never taken on trust ─────────────────────────────
+//
+// `class` decides whether a human ever sees a proposal: `Security` is never
+// measured and never auto-applied, while `Config` inside the closed override
+// set goes straight to the measurement arm and can auto-accept. Until this
+// existed, the class was simply whatever the model typed on a line — so the
+// boundary CLAUDE.md describes as structural rested on the proposer's own
+// account of what it was proposing.
+//
+// It held anyway, but by coincidence: the closed set is four benign knobs, so
+// a security change labelled `config` stuck at `parse_change` for being
+// outside the set rather than for being a security change. The day a
+// security-relevant key joins that set, the coincidence ends. On 2026-08-25
+// the nightly proposed disabling a taint control, classified `config`.
+
+/// Config sections whose settings are security boundaries.
+///
+/// `[security]` holds the interlock, `[sandbox]` the confinement that `shell`'s
+/// capability label depends on, and `[outbox]` the routing that makes a send a
+/// draft. Those are three of the four boundaries CLAUDE.md says reach a human
+/// however anything scores; the fourth, the path jail, is not configurable and
+/// so cannot be proposed.
+pub const GUARDED_SECTIONS: [&str; 3] = ["security", "sandbox", "outbox"];
+
+/// Settings whose bare names are unambiguous without their section.
+///
+/// A proposer writing `trifecta=allow` rather than `security.trifecta=allow`
+/// has proposed the same change, and the prefix is the model's to omit. These
+/// are every field of `SecurityConfig`, and none collides with a key elsewhere
+/// in the config — which is what makes matching them bare safe rather than
+/// merely convenient.
+pub const GUARDED_KEYS: [&str; 6] = [
+    "trifecta",
+    "block_private_ips",
+    "allowed_domains",
+    "blocked_domains",
+    "mark_untrusted_output",
+    "block_sends_after_private",
+];
+
+/// Does this change touch a security boundary, whatever the proposer called it?
+///
+/// Returns the section or key it matched, so a record can name what it found
+/// instead of asserting that it found something.
+///
+/// **It over-matches on purpose, and the asymmetry is the design.** A section
+/// counts wherever `security.` or `[sandbox]`-style bracketing appears, so a
+/// prose proposal whose one line happens to end in "the sandbox." is caught
+/// too. That costs a reviewer a warning they did not need — prose stages for a
+/// human either way, so the two dispositions differ in wording and not in who
+/// decides. Missing one costs a confinement change routed to `measure()` and
+/// auto-accepted. Fail toward the human.
+///
+/// Note this is a check on a string the proposer already wrote, with no model
+/// anywhere in it. That is deliberate: the accept gate is pure for the same
+/// reason, and a classifier asked whether a change is security-relevant is one
+/// more thing that can be argued out of its answer.
+pub fn names_guarded_setting(change: &str) -> Option<&'static str> {
+    let hay = change.to_lowercase();
+    for section in GUARDED_SECTIONS {
+        // `.` or `]` is what separates naming a *setting* from discussing a
+        // subject: `sandbox.kind=none` and `[sandbox] kind` are proposals
+        // where a bare "sandbox" in a sentence about one is not.
+        if hay.contains(&format!("{section}.")) || hay.contains(&format!("{section}]")) {
+            return Some(section);
+        }
+    }
+    GUARDED_KEYS.into_iter().find(|k| hay.contains(k))
+}
+
 /// A candidate change, as the diagnostician wrote it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Proposal {
@@ -186,6 +261,14 @@ pub struct Proposal {
     pub change: String,
     pub metric: Metric,
     pub rationale: String,
+    /// Set when [`parse_proposal`] overrode the class the model asserted,
+    /// naming what it wrote and what the change actually touches.
+    ///
+    /// Carried rather than silently corrected, because the mislabel is itself
+    /// the finding: a diagnostician that calls a confinement change `config`
+    /// is a more interesting record than one that labels it honestly, and a
+    /// reviewer who cannot see the difference cannot notice a pattern of them.
+    pub reclassified: Option<String>,
 }
 
 /// Read a proposal out of the model's reply.
@@ -236,11 +319,35 @@ pub fn parse_proposal(text: &str) -> Option<Proposal> {
     if change.is_empty() {
         return None;
     }
+
+    // Derive the class from what is being changed rather than from what the
+    // proposer called it. Note the direction: this only ever raises a class
+    // *toward* review, and there is deliberately no branch that lowers one —
+    // the same shape as `Capabilities` overrides, which widen and never
+    // narrow.
+    //
+    // Reclassifying rather than refusing is also deliberate. A refused
+    // proposal leaves no record, and the brief carries every prior candidate
+    // as "already tried — do not re-propose", so a dropped one is free to
+    // return tomorrow. Staged as security-class it is both blocked and paid
+    // for.
+    let (class, reclassified) = match names_guarded_setting(&change) {
+        Some(found) if class != ChangeClass::Security => (
+            ChangeClass::Security,
+            Some(format!(
+                "proposed as `{class:?}`, reclassified: the change names `{found}`, \
+                 which is a security boundary"
+            )),
+        ),
+        _ => (class, None),
+    };
+
     Some(Proposal {
         class,
         change,
         metric,
         rationale: fields.get("rationale").cloned().unwrap_or_default(),
+        reclassified,
     })
 }
 
@@ -335,6 +442,124 @@ I would look at compaction next if this does not help.";
             "PROPOSAL\nclass: config\nchange:\nmetric: cut_short",
         ] {
             assert!(parse_proposal(broken).is_none(), "{broken}");
+        }
+    }
+
+    #[test]
+    fn a_security_change_labelled_config_is_reclassified_rather_than_believed() {
+        // The 2026-08-25 nightly in shape: a change disabling a taint control,
+        // asserted `config`, predicting a lower error rate. It stuck only
+        // because that key is not one of the four in the closed override set —
+        // so the boundary was the set and not the class, and the day a
+        // security-relevant knob joins the set this reaches auto-accept.
+        let reply = "\
+PROPOSAL
+class: config
+change: security.minimize_taint=false
+metric: tool_error_rate
+rationale: taint minimization refuses calls that would have succeeded";
+        let p = parse_proposal(reply).unwrap();
+        assert_eq!(p.class, ChangeClass::Security);
+        let note = p.reclassified.expect("the mislabel must be on the record");
+        assert!(note.contains("Config"), "{note}");
+        assert!(note.contains("security"), "{note}");
+    }
+
+    #[test]
+    fn every_guarded_boundary_is_caught_however_it_is_spelled() {
+        // Three sections and not one: `security.*` alone would leave the
+        // sandbox and the outbox routed on a self-declared label, which is
+        // the same width the gap was found at.
+        for change in [
+            "security.trifecta=allow",
+            "[security] trifecta = \"allow\"",
+            "config.security.block_private_ips=false",
+            "sandbox.kind=none",
+            "[sandbox] kind = \"none\"",
+            "outbox.tools=[]",
+            // No section named at all: the prefix is the model's to omit, and
+            // omitting it must not be the way through.
+            "trifecta=ask",
+            "block_sends_after_private=false",
+        ] {
+            let reply =
+                format!("PROPOSAL\nclass: config\nchange: {change}\nmetric: tool_error_rate");
+            let p = parse_proposal(&reply).expect(change);
+            assert_eq!(p.class, ChangeClass::Security, "{change}");
+            assert!(p.reclassified.is_some(), "{change}");
+        }
+    }
+
+    #[test]
+    fn the_closed_override_set_is_untouched_by_the_check() {
+        // Every key a candidate may auto-accept on. If one of these ever
+        // reclassified, the measurement arm would go silent and the loop would
+        // stop being able to accept anything — and a check that fires on
+        // honest proposals is one somebody eventually turns off, which is the
+        // lesson `CARRY_OVER_WORDS` already carries.
+        for change in [
+            "max_turns=40",
+            "compact_at_tokens=100000",
+            "max_output_tokens=8192",
+            "effort=high",
+        ] {
+            let reply = format!("PROPOSAL\nclass: config\nchange: {change}\nmetric: cut_short");
+            let p = parse_proposal(&reply).expect(change);
+            assert_eq!(p.class, ChangeClass::Config, "{change}");
+            assert!(p.reclassified.is_none(), "{change}");
+        }
+    }
+
+    #[test]
+    fn an_honestly_labelled_security_change_carries_no_mislabel_note() {
+        // Nothing to report: the note means "the account did not match the
+        // change", so attaching one here would cry wolf on the proposals that
+        // behaved.
+        let reply = "PROPOSAL\nclass: security\nchange: sandbox.kind=none\nmetric: tool_error_rate";
+        let p = parse_proposal(reply).unwrap();
+        assert_eq!(p.class, ChangeClass::Security);
+        assert!(p.reclassified.is_none());
+    }
+
+    #[test]
+    fn naming_a_setting_is_what_counts_not_mentioning_its_subject() {
+        // The discriminator the doc comment claims: `.` or `]` separates a
+        // proposal that *moves* a boundary from prose that talks about one.
+        // Without it every documentation change about the sandbox would stage
+        // with a security warning, which is how a warning stops being read.
+        let reply = "\
+PROPOSAL
+class: prose
+change: reword the sandbox preflight failure so it names the backend
+metric: tool_error_rate
+rationale: the message does not say which backend refused";
+        let p = parse_proposal(reply).unwrap();
+        assert_eq!(p.class, ChangeClass::Prose);
+        assert!(p.reclassified.is_none());
+
+        // And the over-match is real and accepted, not an oversight: a line
+        // whose sentence happens to end on the word still routes to a human,
+        // one wording away from where it would have gone anyway.
+        assert_eq!(
+            names_guarded_setting("explain the sandbox. Then bwrap"),
+            Some("sandbox")
+        );
+    }
+
+    #[test]
+    fn the_derivation_only_ever_raises_toward_review() {
+        // The asymmetry is the property. There is no input that turns a
+        // security-class proposal into a measurable one, because a loop able
+        // to relabel its own confinement change downward is the whole failure
+        // this guards.
+        for change in [
+            "max_turns=40",
+            "sandbox.kind=none",
+            "reword the system prompt",
+        ] {
+            let reply = format!("PROPOSAL\nclass: security\nchange: {change}\nmetric: cut_short");
+            let p = parse_proposal(&reply).expect(change);
+            assert_eq!(p.class, ChangeClass::Security, "{change}");
         }
     }
 
