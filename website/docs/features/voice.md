@@ -18,17 +18,21 @@ the *facade* — `mecha voice-serve`, and the `--voice-port` flag on
 `mecha serve` — which is the loopback endpoint the voice pipeline talks to.
 The pipeline itself is not packaged.
 
-Voice needs a **git checkout** and four local services:
+Voice needs a **git checkout** and three local services:
 
 | What | Where | Why |
 |---|---|---|
 | A chat model | `llama-server`, `:8080` | answers the turn |
 | Speech to text | Parakeet TDT via `sherpa-onnx`, `:8992` | hears you |
 | Text to speech | Chatterbox Turbo (docker), `:8881` | speaks back |
-| A fallback voice | Kokoro (docker), `:8880` | speaks when Chatterbox is down |
+
+There is no standby for any of them. A second TTS was kept running for a
+while as a "fallback" and was removed once it became clear nothing failed
+over to it automatically — a spare that needs a config edit and a restart is
+not a spare, it is a second service to keep alive.
 
 Plus the Python worker (`scripts/voice/worker.py`) that wires them together
-over WebRTC. Two of those are model downloads and two are container images.
+over WebRTC. One is a model download and one is a container image.
 This is a build-it-yourself feature, and the honest summary is that setting it
 up takes an afternoon.
 
@@ -96,11 +100,16 @@ you are still finding out whether you like it.
 The call overlay carries two controls, and your choices are remembered.
 
 **Voice.** Seven options: six generated references plus Chatterbox's own
-built-in voice. The six are synthesised from Kokoro's presets by
-`scripts/voice/make-voices.py` — a deliberate choice, because they are then
-nobody's identity and can be added or deleted without anyone's consent being
-the thing that made it legal. Adding your own is dropping a five-second `.wav`
-into the voices directory; the server reads the directory live.
+built-in voice. Chatterbox clones from a few seconds of reference audio, so a
+voice is a `.wav` on disk — adding your own is dropping a five-second clip
+into the voices directory, and the server reads that directory live.
+
+The six shipped references were synthesised from Kokoro's presets by
+`scripts/voice/make-voices.py`, which is a licensing decision more than a
+technical one: Kokoro is Apache 2.0 and its voices are nobody's identity, so
+a voice can be added or deleted without anyone's consent being the thing that
+made it legal. That script is a **one-off tool, not a service** — it needs a
+Kokoro container running while it generates, and nothing needs one afterwards.
 
 **Rate.** 0.5× to 2.0×, pitch-preserving — mecha speaks faster without
 sounding like a chipmunk.
