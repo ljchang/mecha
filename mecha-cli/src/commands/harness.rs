@@ -62,6 +62,9 @@ pub enum Cmd {
     List {
         #[arg(long)]
         all: bool,
+        /// Machine-readable, for /queues
+        #[arg(long)]
+        json: bool,
     },
     /// One candidate, whole: prediction, measurement, evidence.
     Show { id: String },
@@ -96,7 +99,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             anyhow::ensure!(holdout_in >= 2, "--holdout-in must be at least 2");
             ruminate(global, sessions, days, limit, holdout_in).await
         }
-        Cmd::List { all } => list(all),
+        Cmd::List { all, json } => list(all, json),
         Cmd::Show { id } => show(&id),
         Cmd::Accept { id } => accept(&id),
         Cmd::Reject { id, reason } => reject(&id, reason),
@@ -382,7 +385,7 @@ async fn measure(
     Ok(())
 }
 
-fn list(all: bool) -> Result<()> {
+fn list(all: bool, as_json: bool) -> Result<()> {
     let store = HarnessStore::open_default()?;
     let candidates = store.all()?;
     let shown: Vec<&HarnessCandidate> = if all {
@@ -390,6 +393,24 @@ fn list(all: bool) -> Result<()> {
     } else {
         candidates.iter().filter(|c| c.pending()).collect()
     };
+    // One shape across every reviewable store — see proposals.rs.
+    if as_json {
+        let rows: Vec<serde_json::Value> = shown
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "kind": format!("{:?}", c.class).to_lowercase(),
+                    "title": c.change,
+                    "detail": c.measurement.as_ref()
+                        .map(|m| format!("{} {} | {}", m.selection, m.holdout, m.disposition))
+                        .unwrap_or_else(|| c.status.clone()),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
     if shown.is_empty() {
         if all || candidates.is_empty() {
             println!("no harness candidates on file — `mecha harness ruminate` creates them");

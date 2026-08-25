@@ -30,7 +30,11 @@ pub struct Args {
 #[derive(clap::Subcommand, Debug)]
 pub enum Cmd {
     /// List proposals (default).
-    List,
+    List {
+        /// Machine-readable, for /queues
+        #[arg(long)]
+        json: bool,
+    },
     /// Show one proposal: rules diff and the gate's evidence.
     Show { id: String },
     /// Apply a pending proposal to the live rules.
@@ -52,16 +56,36 @@ pub enum Cmd {
 
 pub async fn execute(args: Args) -> Result<()> {
     let store = LearningStore::open(LearningStore::default_root()?)?;
-    match args.cmd.unwrap_or(Cmd::List) {
-        Cmd::List => list(&store),
+    match args.cmd.unwrap_or(Cmd::List { json: false }) {
+        Cmd::List { json } => list(&store, json),
         Cmd::Show { id } => show(&store, &id),
         Cmd::Accept { id, force } => accept(&store, &id, force),
         Cmd::Reject { id, reason } => reject(&store, &id, reason),
     }
 }
 
-fn list(store: &LearningStore) -> Result<()> {
+fn list(store: &LearningStore, as_json: bool) -> Result<()> {
     let proposals = store.proposals()?;
+    // The shape every reviewable store answers in, so /queues can hold one
+    // review surface rather than one per store: what it is, what it would
+    // do, and what state it is in.
+    if as_json {
+        let rows: Vec<serde_json::Value> = proposals
+            .iter()
+            .filter(|p| p.status == "pending")
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.id,
+                    "kind": p.domain,
+                    "title": format!("{} rule(s) from {} reflection(s)",
+                                     p.rules.len(), p.reflexion_ids.len()),
+                    "detail": p.status,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
     if proposals.is_empty() {
         println!("no proposals — `mecha learn --propose` creates them");
         return Ok(());
