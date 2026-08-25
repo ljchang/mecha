@@ -57,7 +57,7 @@
       "tags": [
         "reasoning"
       ],
-      "text": "Eshin worked 30 + 12 = 42 hours at $60/hour, for a total of **$2,520**.",
+      "text": "Marek worked 30 + 12 = 42 hours at $60/hour, for a total of **$2,520**.",
       "tool_errors": 0,
       "tools_called": [
         "fs_read",

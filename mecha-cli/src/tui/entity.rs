@@ -409,15 +409,15 @@ mod tests {
     use super::*;
 
     fn sample() -> &'static str {
-        r#"[{"id":"person-1","name":"Josephine B. Conley","node_type":"person",
-            "aliases":["josephine","josephine chang"],"interactions":1035,
-            "facts":[{"statement":"Josephine is one of Luke's twin daughters."}]}]"#
+        r#"[{"id":"person-1","name":"Dana R. Whitfield","node_type":"person",
+            "aliases":["dana","dana whitfield"],"interactions":1035,
+            "facts":[{"statement":"Dana co-authored the Trust replication."}]}]"#
     }
 
     #[test]
     fn a_lookup_answer_becomes_rows() {
         let mut m = EntityModal::new();
-        m.query = "Josephine".into();
+        m.query = "Dana".into();
         m.install(sample());
         assert_eq!(m.rows.len(), 1);
         assert_eq!(m.rows[0].id, "person-1");

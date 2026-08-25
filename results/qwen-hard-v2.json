@@ -355,7 +355,7 @@
       "tags": [
         "chaining"
       ],
-      "text": "The earliest meeting note (July 14, 2026) had three attendees: **Luke, Wasita, and Eshin**.",
+      "text": "The earliest meeting note (July 14, 2026) had three attendees: **Luke, Rhea, and Marek**.",
       "tool_errors": 0,
       "tools_called": [
         "fs_list",
@@ -652,7 +652,7 @@
       "tags": [
         "selection"
       ],
-      "text": "Here are all the files in this workspace that mention \"Wasita\":\n\n| # | Path | Context |\n|---|------|---------|\n| 1 | `data/rates.toml` | Listed as a rate entry: `Wasita = 45` |\n| 2 | `data/timesheet.csv` | Appears in two rows (weeks 27 and 28) |\n| 3 | `notes/meeting-2026-07-14.md` | Listed as a meeting attendee; also mentioned as taking action on a timezone bug |",
+      "text": "Here are all the files in this workspace that mention \"Rhea\":\n\n| # | Path | Context |\n|---|------|---------|\n| 1 | `data/rates.toml` | Listed as a rate entry: `Rhea = 45` |\n| 2 | `data/timesheet.csv` | Appears in two rows (weeks 27 and 28) |\n| 3 | `notes/meeting-2026-07-14.md` | Listed as a meeting attendee; also mentioned as taking action on a timezone bug |",
       "tool_errors": 2,
       "tools_called": [
         "shell",
@@ -967,7 +967,7 @@
       "tags": [
         "reasoning"
       ],
-      "text": "Eshin's total pay is **$2,520**.\n\nHere's the breakdown:\n- **Week 27**: 30 hours × $60/hr = $1,800\n- **Week 28**: 12 hours × $60/hr = $720\n- **Total**: $1,800 + $720 = **$2,520**",
+      "text": "Marek's total pay is **$2,520**.\n\nHere's the breakdown:\n- **Week 27**: 30 hours × $60/hr = $1,800\n- **Week 28**: 12 hours × $60/hr = $720\n- **Total**: $1,800 + $720 = **$2,520**",
       "tool_errors": 0,
       "tools_called": [
         "fs_read",
@@ -1592,7 +1592,7 @@
       "tags": [
         "ambiguity"
       ],
-      "text": "Based on the timesheet and meeting notes, the meeting on July 21, 2026 falls in **week 30**, so \"last week\" would be **week 29**. However, there's no timesheet data for week 29. The most recent recorded week is **week 28**, which shows:\n\n| Name | Hours |\n|-------|-------|\n| Wasita | 22 |\n| Eshin | 12 |\n| Jin | 40 |\n\n**Total for week 28: 74 hours**\n\nIf you meant the actual last calendar week (week 29, July 13–19), there's no data recorded for that period.",
+      "text": "Based on the timesheet and meeting notes, the meeting on July 21, 2026 falls in **week 30**, so \"last week\" would be **week 29**. However, there's no timesheet data for week 29. The most recent recorded week is **week 28**, which shows:\n\n| Name | Hours |\n|-------|-------|\n| Rhea | 22 |\n| Marek | 12 |\n| Jin | 40 |\n\n**Total for week 28: 74 hours**\n\nIf you meant the actual last calendar week (week 29, July 13–19), there's no data recorded for that period.",
       "tool_errors": 1,
       "tools_called": [
         "fs_list",

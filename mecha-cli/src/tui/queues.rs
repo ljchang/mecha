@@ -1667,11 +1667,11 @@ mod tests {
     fn a_global_group_carries_its_blast_radius_and_a_class_group_carries_none() {
         let (t, rows) = groups_from_json(
             r#"{"v":1,"threshold":0.9,"across_classes":true,"considered":6929,"groups":[
-                {"leader_id":1,"leader_statement":"Luke has twins",
+                {"leader_id":1,"leader_statement":"Dana has two co-authors",
                  "leader_class":"llm . has",
                  "members":[[2,0.95]],
                  "classes":{"bee:suggested . family":1,"llm . has":1},
-                 "sample":["Luke has twin girls"]}]}"#,
+                 "sample":["Dana has two co-authors on the trust paper"]}]}"#,
         )
         .unwrap();
         assert_eq!(t, 0.9);

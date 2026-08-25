@@ -2179,23 +2179,23 @@ mod tests {
             r
         };
         let records = vec![
-            mk("lisa@dartmouth.edu", "Lisa Lee"),
-            mk("lisa@dartmouth.edu", "Lisa Lee"),
-            mk("luke@dartmouth.edu", "Luke"),
-            mk("nikki@dartmouth.edu", "Nikki Boyle"),
-            mk("LISA@dartmouth.edu", "Lisa Lee"),
+            mk("priya@dartmouth.edu", "Priya Nair"),
+            mk("priya@dartmouth.edu", "Priya Nair"),
+            mk("me@dartmouth.edu", "Me"),
+            mk("sam@dartmouth.edu", "Sam Okafor"),
+            mk("PRIYA@dartmouth.edu", "Priya Nair"),
         ];
-        let cs = contacts(&records, &["luke@dartmouth.edu".into()]);
+        let cs = contacts(&records, &["me@dartmouth.edu".into()]);
         assert_eq!(cs.len(), 2, "the user is not a contact; case folds");
-        assert_eq!(cs[0].address, "lisa@dartmouth.edu");
+        assert_eq!(cs[0].address, "priya@dartmouth.edu");
         assert_eq!(cs[0].seen, 3);
-        assert_eq!(cs[1].address, "nikki@dartmouth.edu");
+        assert_eq!(cs[1].address, "sam@dartmouth.edu");
 
-        // Name and address both match, because people remember "Lisa" more
+        // Name and address both match, because people remember "Priya" more
         // reliably than the address behind it.
-        assert_eq!(contact_candidates("lisa", &cs, 5).len(), 1);
-        assert_eq!(contact_candidates("Lisa Lee", &cs, 5).len(), 1);
-        assert_eq!(contact_candidates("nikki@", &cs, 5).len(), 1);
+        assert_eq!(contact_candidates("priya", &cs, 5).len(), 1);
+        assert_eq!(contact_candidates("Priya Nair", &cs, 5).len(), 1);
+        assert_eq!(contact_candidates("sam@", &cs, 5).len(), 1);
         // An empty partial offers the most frequent rather than nothing: a
         // menu that appears only after typing teaches nobody who is there.
         assert_eq!(contact_candidates("", &cs, 5).len(), 2);
@@ -2206,12 +2206,12 @@ mod tests {
     /// typed — otherwise editing an earlier address completes the wrong slot.
     #[test]
     fn the_recipient_under_the_cursor_is_the_one_completed() {
-        let line = "lisa@x.edu, nik";
-        assert_eq!(recipient_token(line, line.len()), (11, "nik"));
+        let line = "priya@x.edu, sa";
+        assert_eq!(recipient_token(line, line.len()), (12, "sa"));
         // Cursor inside the first recipient completes that one.
-        assert_eq!(recipient_token(line, 4), (0, "lisa"));
+        assert_eq!(recipient_token(line, 4), (0, "priy"));
         // No comma yet: the whole line is the token.
-        assert_eq!(recipient_token("lis", 3), (0, "lis"));
+        assert_eq!(recipient_token("pri", 3), (0, "pri"));
         // Trailing comma starts an empty token, which offers the frequent list.
         assert_eq!(recipient_token("a@b.c, ", 7), (6, ""));
     }
@@ -2518,7 +2518,7 @@ pub fn recipient_token(input: &str, cursor: usize) -> (usize, &str) {
 
 /// Contacts a partial recipient could still mean.
 ///
-/// Matches on address and display name, because people remember "Lisa" more
+/// Matches on address and display name, because people remember "Priya" more
 /// reliably than the address it maps to. An empty partial offers the most
 /// frequent — a menu that appears only after typing teaches nobody who is
 /// available.

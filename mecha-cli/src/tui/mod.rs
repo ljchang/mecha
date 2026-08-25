@@ -8484,9 +8484,9 @@ mod tests {
         let mut app = test_app();
         let mut modal = entity::EntityModal::new();
         modal.install(
-            r#"[{"id":"person-53667537","name":"Josephine B. Conley","node_type":"person",
-                 "aliases":["josephine chang"],"interactions":1035,
-                 "facts":[{"statement":"Josephine is one of Luke's twin daughters."}]}]"#,
+            r#"[{"id":"person-53667537","name":"Dana R. Whitfield","node_type":"person",
+                 "aliases":["dana whitfield"],"interactions":1035,
+                 "facts":[{"statement":"Dana co-authored the Trust replication."}]}]"#,
         );
         app.entities = Some(modal);
         app
@@ -8723,13 +8723,13 @@ mod tests {
     fn ctrl_n_prefills_the_new_person_with_the_query() {
         let mut app = test_app();
         app.entities = Some(entity::EntityModal::new());
-        for c in ['E', 'd', 'i', 'e'] {
+        for c in ['D', 'a', 'n', 'a'] {
             ent_press(&mut app, KeyCode::Char(c));
         }
         ent_press_ctrl(&mut app, KeyCode::Char('n'));
         let (kind, buf) = app.entities.as_ref().unwrap().edit.as_ref().unwrap();
         assert_eq!(*kind, entity::EditKind::NewPerson);
-        assert_eq!(buf, "Edie");
+        assert_eq!(buf, "Dana");
     }
 
     #[test]

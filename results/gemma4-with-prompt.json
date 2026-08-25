@@ -327,7 +327,7 @@
       "tags": [
         "chaining"
       ],
-      "text": "Luke, Wasita, and Eshin attended the earliest meeting.",
+      "text": "Luke, Rhea, and Marek attended the earliest meeting.",
       "tool_errors": 0,
       "tools_called": [
         "fs_list",

@@ -6,11 +6,16 @@ After=network.target mecha-voice-serve.service
 
 [Service]
 WorkingDirectory=/home/ljchang/Github/mecha
+# Fill in the two origins before installing — this repo is public, so the
+# real tailnet name lives in docs/OPERATIONS.md (gitignored) rather than
+# here. An unedited copy refuses every offer, which is the safe way for
+# a placeholder to be wrong.
+#
 # --allowed-origins closes drive-by voice injection: with open CORS, any
 # website in a browser on a tailnet device could post an offer and feed
 # synthetic speech into an owner-postured agent. Only the two app origins
 # may initiate a call.
-ExecStart=/home/ljchang/models/voice-worker-venv/bin/python scripts/voice/worker.py --host 127.0.0.1 --port 7860 --allowed-origins https://spark-8c43.tailc01fd2.ts.net https://spark-8c43.tailc01fd2.ts.net:8443
+ExecStart=/home/ljchang/models/voice-worker-venv/bin/python scripts/voice/worker.py --host 127.0.0.1 --port 7860 --allowed-origins https://YOUR-HOST.YOUR-TAILNET.ts.net https://YOUR-HOST.YOUR-TAILNET.ts.net:8443
 Restart=on-failure
 RestartSec=5
 

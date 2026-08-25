@@ -1226,7 +1226,7 @@ mod tests {
         // Every one of these is a right answer that raw substring matching
         // marked wrong. All three were observed from a real model.
         let cases = [
-            ("Eshin worked 42 hours, for a total of **$2,520**.", "2520"),
+            ("Marek worked 42 hours, for a total of **$2,520**.", "2520"),
             ("Jin's week 28 cost is **$1,750**.", "1750"),
             ("They do **not** agree: README says 1.85.", "not agree"),
             ("The port is `8431`.", "8431"),
