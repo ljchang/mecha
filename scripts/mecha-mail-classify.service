@@ -38,6 +38,14 @@
 # to production on the Google side needs verification plus an annual CASA
 # assessment, which is a deliberately deferred decision and not a blocker here.
 #
+# **Acting on unclassified mail no longer needs this sweep to have run.**
+# `mecha mail archive|spam|trash` resolves a thread leniently and acts on the
+# mailbox directly, so the phone's Archive button works on `personal` today.
+# What still needs a record is anything reading the classifier's own verdict —
+# `task` (name and deadline), `draft`, `needs-info`, `correct`, `dismiss`.
+# Worth knowing before widening the flag: the reason to widen it is those
+# verbs, not archiving.
+#
 # A failure needs no log convention of its own: `mecha doctor` globs
 # `mecha-*` for failed units, so this one is already watched.
 
