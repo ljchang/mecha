@@ -468,16 +468,10 @@ pub(crate) fn source_reads(item: &OutboxItem) -> Vec<SourceRead> {
 
 /// The heading over a quoted source read.
 ///
-/// It says three things, and each is needed: that this is *not* the draft,
-/// that it came from outside this machine, and which tool fetched it. A
-/// quoted block with no heading reads as more of the letter — which for text
-/// an attacker may have written is the one impression this must never leave.
+/// Delegates: the wording lives on [`SourceRead::heading`] so the CLI, the TUI
+/// and the web pane cannot drift into describing the same bytes differently.
 pub(crate) fn source_heading(read: &SourceRead) -> String {
-    format!(
-        "replying to — third-party content via {} ({}), not part of your draft:",
-        read.tool,
-        read.keys.join(", ")
-    )
+    read.heading()
 }
 
 /// Arguments that name something on this machine, so `show` can point a
