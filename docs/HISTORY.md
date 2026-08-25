@@ -3474,6 +3474,32 @@ handled.**
   instance. If two lanes are in one tree, the check that works is staging
   named paths, not reading a clean-looking `git status`.
 
+- **A check can only report on what it enumerates, so it is always silent
+  about what you forgot to enumerate.** Three instances landed on 2026-08-25,
+  in three different tools, and they read as unrelated bugs until they are put
+  side by side. The `update` skill's restart list omitted `mecha-serve` and
+  `mecha-voice-worker`: a pure-Rust release would install a binary nothing
+  re-executed, and `cargo install`'s output cannot mention a service it never
+  restarted — worse for the voice worker, which runs `worker.py` straight from
+  the tree, so it goes stale on changes no install step ever touches.
+  `ls .git/MERGE_HEAD` was used to answer "is another lane mid-merge here?"
+  and cannot see a linked worktree, whose merge state lives in
+  `.git/worktrees/<name>/MERGE_HEAD` — a false negative on the question asked
+  immediately before doing something irreversible. And `git log` enumerates
+  from `HEAD`, which is what actually lost `5b187c5` from an attribution sweep
+  (see Traps → Measuring): the starting point was the one input nobody
+  questioned, because it is the one the tool supplies for you.
+  The tell they share is that **each check answered correctly about its own
+  frame and silently about the caller's**, so the output looks like evidence of
+  absence and is only evidence of an empty enumeration. Distinct from the
+  dash-not-zero rule, which is about rendering a failed read honestly; here the
+  read succeeds. The fix is never to read the output more carefully — it is to
+  ask what the check enumerates and widen the frame: `git worktree list` before
+  the merge-state check, a commit range instead of a walk from `HEAD`, a
+  restart list derived from the units that exist rather than from the build
+  output. Where widening is not possible, the honest move is to say what was
+  *not* covered, which is the `no silent caps` rule wearing different clothes.
+
 ## Design notes worth keeping
 
 The rest of the original design-notes section duplicated `CLAUDE.md` and was
