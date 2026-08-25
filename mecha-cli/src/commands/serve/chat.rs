@@ -262,6 +262,20 @@ pub enum WireEvent {
     QuestionDone {
         qid: u64,
     },
+    /// This run staged drafts, and here is what it staged.
+    ///
+    /// Ids only, deliberately: the page fetches each from `/api/outbox/{id}`,
+    /// so the card it renders is built from the *store* rather than from
+    /// whatever the event carried. That is the same rule the release path
+    /// already follows — a reviewer reading one thing while approving
+    /// another is the failure this whole surface exists to prevent — and it
+    /// costs one request per draft, on a queue that is almost always one.
+    ///
+    /// Sent before `Done`: the offer is part of how the run ended, not a
+    /// thing that happens after it.
+    Staged {
+        ids: Vec<String>,
+    },
     Done {
         ok: bool,
         stop: Option<String>,
@@ -714,6 +728,24 @@ fn begin_turn(
         }
     }
 
+    // What was already waiting, before this run staged anything. Taken here
+    // rather than inside the task so it is genuinely a *before* — a run that
+    // stages in its first second must not find its own draft in its baseline.
+    // `None` when the store could not be read: no baseline, no offer (see
+    // `review_policy::staged_since`).
+    let outbox_baseline: Option<std::collections::HashSet<String>> =
+        OutboxStore::open(&chat.outbox_root)
+            .ok()
+            .and_then(|store| store.items().ok())
+            .map(|items| {
+                items
+                    .into_iter()
+                    .filter(|i| i.status == "pending")
+                    .map(|i| i.id)
+                    .collect()
+            });
+    let outbox_root = chat.outbox_root.clone();
+
     let agent = Arc::clone(&chat.agent);
     let key_for_task = key.to_string();
     let session = Arc::clone(&ws.session);
@@ -765,6 +797,25 @@ fn begin_turn(
                         "{} queued message(s) arrived too late for this run — send again",
                         queue.len()
                     ),
+                });
+            }
+        }
+
+        // `ReviewMode::Now`, which the TUI and Slack have had all along and
+        // this surface never did: a draft you just asked for is a draft you
+        // are about to read, so the run's own drafts are put in front of you
+        // instead of only incrementing a badge. Offered however the run
+        // ended — an interrupted run's drafts are exactly the ones worth
+        // looking at — because only `Auto` may act unattended.
+        if let Some(baseline) = &outbox_baseline {
+            let staged = OutboxStore::open(&outbox_root)
+                .ok()
+                .and_then(|store| store.items().ok())
+                .map(|items| crate::review_policy::staged_since(items, baseline))
+                .unwrap_or_default();
+            if !staged.is_empty() {
+                let _ = bcast.send(WireEvent::Staged {
+                    ids: staged.into_iter().map(|i| i.id).collect(),
                 });
             }
         }

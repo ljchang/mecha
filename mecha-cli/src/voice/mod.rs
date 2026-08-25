@@ -50,6 +50,8 @@ use tokio_util::sync::CancellationToken;
 use crate::commands::voice_serve::Args;
 use crate::GlobalOpts;
 
+pub mod confirm;
+
 /// Loopback, by design rather than default — see the module docs.
 const LISTEN_HOST: &str = "127.0.0.1";
 
@@ -78,8 +80,12 @@ headings, tables or code blocks; write numbers, dates and times as they \
 are spoken. When a tool \
 returns something long, say the gist in a sentence or two instead of \
 reciting it. Before a slow step, say one short line about what you are \
-doing. When a message or email was staged for review rather than sent, say \
-so out loud. Keep replies brief unless the user asks you to go deep.";
+doing. When a message, email or calendar change was staged for review \
+rather than sent, say one short clause and nothing more -- \"That is \
+drafted.\" -- and do NOT describe what is in it or where it is waiting: \
+the harness reads the draft back word for word and asks whether to send \
+it, so anything you add is the same thing said twice. Keep replies brief \
+unless the user asks you to go deep.";
 
 // ------------------------------------------------------- the hosted door
 //
@@ -198,6 +204,10 @@ struct Shared {
     model: String,
     config: mecha_core::config::Config,
     token: Option<String>,
+    /// The open "send it?" question per conversation. Lives beside the slots
+    /// rather than inside one, because a hosted call (D3) has no slot here
+    /// and still gets asked.
+    confirmations: confirm::Confirmations,
 }
 
 /// The facade as a mountable component: `mecha voice-serve` builds its own
@@ -230,6 +240,7 @@ impl Facade {
                 model,
                 config,
                 token,
+                confirmations: confirm::Confirmations::default(),
             }),
         })
     }
@@ -706,12 +717,15 @@ async fn finish_stream(stream: &mut TcpStream, id: &str, model: &str, error: Opt
 /// facade keeps no state for it at all — no slot, no session file, no
 /// conversation — because a second copy of any of those is the duplicate
 /// record this shape exists to avoid.
+#[allow(clippy::too_many_arguments)]
 async fn hosted_completion(
     stream: &mut TcpStream,
     shared: &Arc<Shared>,
     id: &str,
     want_stream: bool,
     mut turn: HostedTurn,
+    confirm_key: &str,
+    baseline: &Option<std::collections::HashSet<String>>,
 ) -> Result<()> {
     let disconnected = pump(
         stream,
@@ -726,8 +740,19 @@ async fn hosted_completion(
         .done
         .await
         .unwrap_or_else(|_| Err("the run ended without answering".to_string()));
+    // The offer comes after the model's own words and only when the turn
+    // produced an answer: a run that failed has staged nothing worth
+    // confirming, and asking about drafts on top of an error is a question
+    // over the top of the thing that needs saying.
+    let offer = match &answer {
+        Ok(_) => offer_for_turn(shared, confirm_key, baseline).await,
+        Err(_) => None,
+    };
     if want_stream {
         if !disconnected {
+            if let Some(offer) = &offer {
+                say(stream, shared, id, &format!(" {offer}")).await;
+            }
             finish_stream(
                 stream,
                 id,
@@ -740,6 +765,10 @@ async fn hosted_completion(
     }
     match answer {
         Ok(a) => {
+            let content = match &offer {
+                Some(offer) => format!("{} {offer}", a.text),
+                None => a.text,
+            };
             write_json(
                 stream,
                 200,
@@ -750,7 +779,7 @@ async fn hosted_completion(
                     "model": shared.model,
                     "choices": [{
                         "index": 0,
-                        "message": {"role": "assistant", "content": a.text},
+                        "message": {"role": "assistant", "content": content},
                         "finish_reason": "stop",
                     }],
                     "usage": {
@@ -763,6 +792,151 @@ async fn hosted_completion(
         }
         Err(e) => write_json(stream, 500, &json!({"error": e})).await,
     }
+}
+
+/// The ids of everything currently waiting in the outbox.
+///
+/// `None` when the store could not be read, and that is not the same as an
+/// empty set: no baseline means no diff, and no diff means nothing is
+/// offered — a surface that could not look before the run must not conclude
+/// afterwards that the whole backlog is new.
+fn pending_outbox_ids(root: &std::path::Path) -> Option<std::collections::HashSet<String>> {
+    OutboxStore::open(root).ok()?.items().ok().map(|items| {
+        items
+            .into_iter()
+            .filter(|i| i.status == "pending")
+            .map(|i| i.id)
+            .collect()
+    })
+}
+
+/// The question to ask about whatever this turn staged, if anything.
+///
+/// Runs after every spoken turn, hosted or not. The web page makes the same
+/// offer as a card for the same drafts — deliberately: a call and the page
+/// are two views of one conversation, and whichever one the owner acts in,
+/// the other's copy simply finds the item already resolved.
+async fn offer_for_turn(
+    shared: &Arc<Shared>,
+    confirm_key: &str,
+    baseline: &Option<std::collections::HashSet<String>>,
+) -> Option<String> {
+    let baseline = baseline.as_ref()?;
+    let staged = crate::review_policy::staged_since(
+        OutboxStore::open(&shared.outbox_root).ok()?.items().ok()?,
+        baseline,
+    );
+    let offer = confirm::compose_offer(&staged)?;
+    shared.confirmations.set(confirm_key, offer.pending).await;
+    Some(offer.speech)
+}
+
+/// Say something the harness composed, on whichever channel this request
+/// wanted. One utterance, one place, so the streaming and blocking paths
+/// cannot word the same fact differently.
+async fn say(stream: &mut TcpStream, shared: &Arc<Shared>, id: &str, text: &str) {
+    let chunk = sse_chunk(id, &shared.model, json!({"content": text}), None);
+    let _ = write_chunk(stream, chunk.as_bytes()).await;
+}
+
+/// Answer a spoken yes/later/read-it-out, without running a model turn.
+///
+/// `None` means the words were not an answer at all: the caller carries on to
+/// the model with them, and the question is already gone from the store of
+/// pending confirmations — dropped rather than held, so a "yes" three turns
+/// later cannot land on a draft nobody was talking about any more.
+async fn answer_completion(
+    stream: &mut TcpStream,
+    shared: &Arc<Shared>,
+    id: &str,
+    want_stream: bool,
+    confirm_key: &str,
+    pending: &confirm::Pending,
+    text: &str,
+) -> Option<Result<()>> {
+    // The draft as it is *now*, not as it was when the question was asked:
+    // it may have been sent from the page, edited there, or swept in between.
+    let head = pending
+        .queue
+        .front()
+        .and_then(|id| confirm::item_now(&shared.outbox_root, id));
+    // The one after it, so a reply that moves on can ask a whole question
+    // rather than promising a word the parser does not know.
+    let next = pending
+        .queue
+        .get(1)
+        .and_then(|id| confirm::item_now(&shared.outbox_root, id));
+    match confirm::react(text, pending, head.as_ref(), next.as_ref()) {
+        confirm::Reaction::PassToModel => None,
+        confirm::Reaction::Reread(said) => {
+            // The head is still the open question: hearing it again is not
+            // answering it.
+            shared.confirmations.set(confirm_key, pending.clone()).await;
+            Some(finish_with(stream, shared, id, want_stream, &said).await)
+        }
+        confirm::Reaction::Say(said) => {
+            let mut rest = pending.clone();
+            rest.queue.pop_front();
+            shared.confirmations.set(confirm_key, rest).await;
+            Some(finish_with(stream, shared, id, want_stream, &said).await)
+        }
+        confirm::Reaction::Release {
+            acknowledge,
+            id: item,
+        } => {
+            // The acknowledgement goes out *before* the work: a release
+            // rebuilds a tool surface and can take seconds, and silence after
+            // "yes" reads as the call having dropped.
+            if want_stream {
+                say(stream, shared, id, &acknowledge).await;
+            }
+            let outcome = confirm::release(&item).await;
+            let mut rest = pending.clone();
+            rest.queue.pop_front();
+            let report = confirm::report_release(outcome, next.as_ref());
+            shared.confirmations.set(confirm_key, rest).await;
+            let spoken = if want_stream {
+                report
+            } else {
+                format!("{acknowledge} {report}")
+            };
+            Some(finish_with(stream, shared, id, want_stream, &spoken).await)
+        }
+    }
+}
+
+/// Close out a harness-authored reply on whichever channel was asked for.
+async fn finish_with(
+    stream: &mut TcpStream,
+    shared: &Arc<Shared>,
+    id: &str,
+    want_stream: bool,
+    text: &str,
+) -> Result<()> {
+    if want_stream {
+        say(stream, shared, id, text).await;
+        finish_stream(stream, id, &shared.model, None).await;
+        return Ok(());
+    }
+    write_json(
+        stream,
+        200,
+        &json!({
+            "id": id,
+            "object": "chat.completion",
+            "created": chrono::Utc::now().timestamp(),
+            "model": shared.model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+            }],
+            // No model ran, so no tokens were spent. Reporting a guess here
+            // would put fiction into whatever counts them.
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+        }),
+    )
+    .await
 }
 
 async fn completion(
@@ -784,6 +958,43 @@ async fn completion(
     let want_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let id = format!("chatcmpl-{}", Session::new_id());
 
+    // The conversation this utterance belongs to, for the purpose of "was a
+    // question asked here". A hosted call names a chat session and keeps no
+    // slot; an unhosted one has a slot and no chat key. They must not collide,
+    // so the namespace is part of the key.
+    let confirm_key = match head.chat.as_deref().filter(|c| !c.is_empty()) {
+        Some(chat) => format!("chat:{chat}"),
+        None => format!("voice:{key}"),
+    };
+
+    // **Before the model sees a word**: is this an answer to a question the
+    // harness asked out loud? Release policy must not be decidable by
+    // anything sharing a context window with third-party text, and the way
+    // that rule is kept here is that the decision never enters one — the
+    // question was composed from the store and the answer is matched by
+    // `review_policy::parse_answer`, which recognises a bare yes and nothing
+    // else. Anything that is not an answer drops the question and falls
+    // through to the model as ordinary words.
+    if let Some(pending) = shared.confirmations.take(&confirm_key).await {
+        if let Some(handled) = answer_completion(
+            stream,
+            shared,
+            &id,
+            want_stream,
+            &confirm_key,
+            &pending,
+            &text,
+        )
+        .await
+        {
+            return handled;
+        }
+    }
+
+    // What was already waiting before this turn. Taken here, before anything
+    // runs, so a draft this turn stages cannot appear in its own baseline.
+    let outbox_baseline = pending_outbox_ids(&shared.outbox_root);
+
     // D3: the caller named a conversation, so speak into that one. Only a
     // key the host does not recognise falls through to the facade's own
     // slot — a warning rather than a refusal, because the fallback is
@@ -794,7 +1005,16 @@ async fn completion(
         if !chat_key.is_empty() {
             match host.speak(chat_key, &text, shared.mount.approve_all).await {
                 Hosted::Started(turn) => {
-                    return hosted_completion(stream, shared, &id, want_stream, *turn).await
+                    return hosted_completion(
+                        stream,
+                        shared,
+                        &id,
+                        want_stream,
+                        *turn,
+                        &confirm_key,
+                        &outbox_baseline,
+                    )
+                    .await
                 }
                 Hosted::Busy => return write_json(
                     stream,
@@ -929,14 +1149,28 @@ async fn completion(
         }
     }
 
+    // Same rule as the hosted path: the drafts this turn staged are offered
+    // after the answer, and only when there was one.
+    let offer = match &outcome {
+        Ok(_) => offer_for_turn(shared, &confirm_key, &outbox_baseline).await,
+        Err(_) => None,
+    };
+
     if want_stream {
         if !disconnected {
+            if let Some(offer) = &offer {
+                say(stream, shared, &id, &format!(" {offer}")).await;
+            }
             let failed = outcome.as_ref().err().map(|e| format!("{e:#}"));
             finish_stream(stream, &id, &shared.model, failed.as_deref()).await;
         }
     } else {
         match &outcome {
             Ok(o) => {
+                let content = match &offer {
+                    Some(offer) => format!("{} {offer}", o.text),
+                    None => o.text.clone(),
+                };
                 let _ = write_json(
                     stream,
                     200,
@@ -947,7 +1181,7 @@ async fn completion(
                         "model": shared.model,
                         "choices": [{
                             "index": 0,
-                            "message": {"role": "assistant", "content": o.text},
+                            "message": {"role": "assistant", "content": content},
                             "finish_reason": "stop",
                         }],
                         "usage": {
