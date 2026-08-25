@@ -2136,25 +2136,59 @@ matters is the general shape.
 
 ### Measuring
 
-**A count taken on your own branch describes a tree nobody will check out.**
-Three sessions landed work on 2026-08-25 and two of them independently
+**A count taken on your own branch describes a tree nobody will check out**,
+and three sessions proposed three mechanisms for how it went wrong before one
+of them was measured. Worth the space, because the wrong two are both
+plausible and one of them is a real hazard that simply was not this.
+
+The facts. Three lanes landed work on 2026-08-25; two sessions independently
 re-measured the workspace test count as part of a handoff pass — 1,365 and
 1,367, each correct on its own tip, each wrong about `main`. The merge was
-1,370. Worse than the arithmetic: the later sweep walked `git log --since` to
-attribute the delta, and **a bare date there does not mean midnight**. Git's
-approxidate fills in the fields you leave out from *now*, so
-`--since=2026-08-25` run at 13:23 means "since 13:23 today" — it returned
-nothing at all, where `--since="2026-08-25 00:00"` returns 34 commits over the
-same tree. `5b187c5` was excluded by the clock, not by the topology: it is a
-first-class ancestor of `HEAD` and `git log` walks merges perfectly well. That
-matters because the failure wears a topology costume, and the fix first
-recorded here — `--ancestry-path`, `merge-base --is-ancestor` — would have
-changed nothing, since nothing was excluded by traversal. Three `mecha-core`
-tests ended up with no lane and the attribution would have been confidently
-wrong about which arc produced them. **Measure the merge, and attribute with a
-commit range (`v0.1.13..HEAD`), never with a date.** A date range answers "what
-happened while I was awake", which is not the same question as "what is in this
-tree" — and a bare date does not reliably answer even that one.
+1,370. The later sweep then attributed the delta by walking `git log` and
+came up three `mecha-core` tests short, so `5b187c5` had no lane and the
+attribution would have been confidently wrong about which arc produced them.
+
+**The cause was the starting point, not the range and not the topology.**
+That sweep ran inside a worktree on a branch cut from `c2ca24b`, and
+`5b187c5` was committed **31 minutes later**. `git log` walks what is
+reachable from `HEAD`; a commit that lands on `main` after your branch point
+is not in your history at any date, under any traversal flag. Reproduced
+both ways: the identical command finds it on `main` and does not find it on
+`c2ca24b`, and `merge-base --is-ancestor 5b187c5 c2ca24b` fails.
+
+Two mechanisms were proposed first and both are worth recording as refuted,
+because each is the kind of thing that sounds settled:
+
+- *"It arrived through a merge, so the linear log missed it."* False, and it
+  was the first author's own guess. `5b187c5` is on the first-parent chain;
+  `git log` walks merges perfectly well. The remedy that guess produced —
+  `--ancestry-path`, `merge-base --is-ancestor` — would have changed nothing,
+  since nothing was excluded by traversal.
+- *"A bare date in `--since` does not mean midnight."* **True, measured, and
+  not what happened here** — the sweep passed an explicit `2026-08-24 18:00`,
+  a window that does contain the commit. Keep the finding anyway, because it
+  is a genuine trap two sessions confirmed on this tree the same afternoon:
+  git's approxidate fills the fields you omit from *now*, so
+  `--since=2026-08-25` run at 13:25 means "since 13:25 today" and returns
+  **0 commits** where `--since="2026-08-25 00:00"` returns 35. A filter whose
+  meaning depends on the hour you run it will disagree with itself across one
+  session and never say so.
+
+**Attribute with a commit range from the tag, in the tree you are about to
+release** — `git diff v0.1.13..HEAD -- 'mecha-core/**/*.rs'` and friends,
+which settle it per suite with no clock and no branch in the answer: +3
+`mecha-core`, +24 `mecha-cli` (19 review-surfaces, 5 voice), 0 elsewhere,
+matching the measured 1,343 → 1,370 exactly. A date range answers "what
+happened while I was awake"; a branch answers "what I have been doing".
+Neither is "what is in this tree", which is the only question a release
+count is asking.
+
+**And the meta-lesson, which is the durable one:** two of the three
+explanations were produced by reasoning about git's behaviour and both were
+wrong; the third came from re-running the original command against the two
+different starting points and comparing. When a peer hands you a mechanism
+that fits the symptom, that is not yet evidence it caused it — the cheap
+check is usually to reproduce the failure, not to reason about the tool.
 
 **The one commit that skipped the test run was the one that broke the suite.**
 The offer-proxy commit substituted live verification (build, restart, curl
