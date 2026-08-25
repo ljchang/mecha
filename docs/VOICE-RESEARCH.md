@@ -282,6 +282,17 @@ the state, exactly as it is for a Slack thread. Same-conversation semantics
 across a dropped-and-rejoined call can come later; a fresh slate per call is
 the honest default (the Slack-thread precedent).
 
+**Revised and delivered 2026-08-25: the call *is* the chat session.** A
+fresh slate per call was the honest default only while there was nothing
+else for a call to be. Once the web surface put a live conversation on the
+same screen as the call button, "one call, one conversation" stopped being a
+default and became a seam — the owner spoke to one mecha and typed to
+another, on one box, in one process. The promise the design had always made
+was the same conversation, and what shipped is that: a call names the chat
+session it was started from, and the turn runs *there* — same messages, same
+taint, same transcript, same workspace jail. See §7's build log for the
+mechanism and for the shape that was rejected.
+
 **D4 — barge-in is `RunContext::cancel`; a mid-run utterance is
 `queued_input`.** The interruption model was already built: cancel stops at
 the next safe point and keeps the partial turn (a cancellable run always
@@ -1043,6 +1054,71 @@ production runs unified `mecha-serve.service` (the standalone voice-serve
 unit is retired, disabled) and the page's offer goes same-origin through
 serve's `/api/offer` proxy behind the owner guard. **D3's same-session
 promise is the one that remains.**
+
+**D3 delivered — talking and typing are one conversation, 2026-08-25.**
+The obstacle was never the transport: one process held *two* session maps,
+`voice::Facade`'s slots and `chat::ChatState`'s sessions, and a call
+resolved in the wrong one. What shipped:
+
+- **The page names its conversation in the WebRTC offer.** `request_data`
+  is pipecat's own passthrough (`runner_args.body`), so no framework patch
+  and no second endpoint; the offer is the only message sent *before* the
+  bot exists, and the bot is what has to know, because the data channel
+  opens too late to choose an LLM's headers.
+- **A second header, not a namespace in the first.** The worker still mints
+  `X-Voice-Session` per connection; `X-Chat-Session` is the conversation the
+  caller named. One header carrying two meanings is a value nothing can
+  validate — and a page is free to name a session `webrtc-anything`.
+- **The seam is a trait.** `voice::SessionHost` is what the facade knows;
+  `serve::chat::VoiceHost` is what implements it. `voice/` still has never
+  heard of `serve/`, which is the `Approver`/`Asker` shape applied to
+  "whose conversation is this". The facade keeps **no** state for a hosted
+  turn — no slot, no session file, no conversation — because a second copy
+  of any of those is the duplicate record this whole shape avoids.
+- **Merge-on-close was rejected**, as scoped: much smaller, and it buys the
+  same turns in two session JSONLs for `recall`, `distill` and the
+  run-quality corpus each to count twice.
+- **One implementation of "a turn on a web session".** `chat::begin_turn`
+  is shared by the typed door and the spoken one; two constructions is how
+  the two silently stop agreeing about the jail, the outbox stamp or the
+  recording contract. The typed door drops the tap and the outcome channel,
+  which costs nothing.
+- **Barge-in, deliberately not steering.** A spoken utterance arriving
+  mid-run cancels it and waits for the conversation (cards drained first,
+  as in `cancel` — a run parked on a card never sees the token). Steering
+  would fold the words into the run already streaming *to the page*, and
+  the worker is owed a reply it can speak. Measured: 1.2 s from speaking
+  over a 300-line generation to hearing the answer.
+- **The voice block accompanies a switch into speech**, not the first turn
+  of a conversation. Typed and spoken turns now share one message list, so
+  `convo.is_empty()` stopped meaning what it meant; `WebSession` carries
+  `last_turn_spoken` instead, and `open_spoken_turn` is the one rule with
+  two callers. Costs nothing in cache terms — the transcript is
+  append-only, so the block lands at the end and every earlier byte still
+  matches. Verified live: one copy at the start of a call, none on the
+  second consecutive spoken turn, a second copy after a typed turn
+  intervened.
+- **The posture travels with the turn, not with the conversation**
+  (decision A, the owner's, 2026-08-25). `--voice-yes` still means a spoken
+  turn runs with approvals off; a typed turn in the same conversation still
+  runs at whatever the page's mode says. Verified live in one session: a
+  spoken `fs_write` succeeded and a typed one two turns later was Blocked
+  read-only. Nothing structural moved — the interlock sits ahead of the
+  approver, sends still stage, and taint now *accumulates across both
+  doors* instead of being reset by opening a call, which is the stricter
+  direction. What it costs is that the page's mode chip no longer describes
+  spoken turns; that is written down rather than fixed.
+- **An unrecognised key falls back, loudly.** A call naming a session no
+  front-end holds gets a conversation of its own and a warning — the
+  pre-D3 behaviour, because a dead call is a worse answer than an unshared
+  one. Verified with `X-Chat-Session: ../evil`.
+- **A watching page sees the call live.** A spoken turn broadcasts
+  `WireEvent::User` (the block stripped — harness plumbing is not the
+  owner's words) and the deltas ride the ordinary SSE feed, so the chat
+  transcript fills in as you talk. A typed turn is echoed locally by the
+  page that typed it and is deliberately not broadcast; what a *second*
+  device watching a typed send misses is a separate gap and not this
+  arc's to half-close.
 
 **The STT seat changes occupant: Parakeet in, Voxtral to the bench,
 2026-08-24.** The field bug behind every transcription oddity finally

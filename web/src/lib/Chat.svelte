@@ -4,9 +4,11 @@
   // the server folds the text into the tool-results turn.
   //
   // Voice rides the voice arc's module (scripts/voice/voice-core.js) —
-  // imported by relative path so this wrapper cannot drift from the
-  // standalone page. Until process unification, a call is its own facade
-  // conversation, and the overlay says so rather than pretending otherwise.
+  // imported by relative path; the module stays framework-free for whatever
+  // embeds voice next. Since D3 a call speaks into *this* session: the key
+  // travels in the WebRTC offer, the facade resolves it against the same
+  // conversation this view is rendering, and spoken turns arrive here over
+  // the ordinary SSE feed like any other.
   import { createVoiceSession } from '../../../scripts/voice/voice-core.js';
 
   let key = $state('main');
@@ -97,6 +99,13 @@
           break;
         case 'queued':
           pushEntry({ kind: 'user', text: ev.text, queued: true });
+          break;
+        case 'user':
+          // Words this page did not type — spoken into the same
+          // conversation (D3). It is also the only signal that a run
+          // started, since nothing local set `running` for it.
+          pushEntry({ kind: 'user', text: ev.text, spoken: true });
+          running = true;
           break;
         case 'tool':
           pushEntry({ kind: 'tool', name: ev.name, pending: true });
@@ -321,6 +330,10 @@
       // Same-origin: serve proxies to the loopback runner, so the offer
       // rides the owner guard and no cross-origin fetch exists to fail.
       offerUrl: '/api/offer',
+      // D3: the call is this conversation. Read at connect time rather
+      // than bound reactively — switching sessions mid-call must not
+      // silently redirect the words being spoken into a different one.
+      sessionKey: key,
       onState: (name, label) => (vState = { name, label }),
       onTranscript,
       onLevel: (level) => (vLevel = level),
@@ -538,6 +551,7 @@
         <div class="bubble" class:queued={entry.queued}>
           {entry.text}
           {#if entry.queued}<span class="queued-tag">steered</span>{/if}
+          {#if entry.spoken}<span class="queued-tag">spoken</span>{/if}
         </div>
       {:else if entry.kind === 'assistant'}
         <div class="answer">{entry.text}</div>
@@ -672,7 +686,7 @@
       <button
         class="round voice"
         onclick={startVoice}
-        title="start a voice call (its own session until unification)"
+        title="start a voice call in this conversation"
       >
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="var(--accent-400)" stroke-width="1.8" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /></svg>
       </button>
@@ -690,7 +704,7 @@
   {#if voiceOpen}
     <div class="voice-overlay">
       <div class="voice-top">
-        <span class="chip">this call is its own conversation — {key === 'main' ? 'your chat' : `“${key}”`} can't hear it yet</span>
+        <span class="chip">speaking into {key === 'main' ? 'your chat' : `“${key}”`} — same conversation, same memory</span>
       </div>
       <div class="voice-stage">
         <svg viewBox="0 0 63 54" width="112" height="96" role="img" aria-label="mecha {vState.label}">

@@ -132,12 +132,27 @@ blocks; numbers and times spoken as words; long tool output summarised rather
 than recited. And it opens with a short sentence — speech begins as soon as the
 first sentence is finished, so a long opening is silence you would sit through.
 
+## A call is the conversation you were already having
+
+Tap the call button in a chat and you are speaking into *that* conversation,
+not a second one beside it. What you typed a minute ago is context for what
+you say now; what you say is there in the transcript when you put the phone
+down, marked as spoken. One conversation means one memory, one recorded
+transcript and one taint slate — a call that reads a web page is a call whose
+conversation stays wary of it afterwards, however you continue it.
+
+Practically: start something at the desk, finish it on a walk, read it back at
+the desk. The page fills in as you talk, so you can watch a call from a laptop
+while you speak into a phone.
+
 ## What it does not do yet
 
-- **A call is its own conversation.** Talking and typing produce two
-  transcripts, and the overlay says so rather than pretending otherwise.
 - **No phone number**, as above.
 - **Voice runs are permissive by default.** `--voice-yes` lets a call act
   without stopping to ask, on the reasoning that you are present and cannot tap
-  an approval card mid-sentence. Drop the flag if you would rather it asked;
-  the web chat view defaults to read-only regardless.
+  an approval card mid-sentence. Drop the flag if you would rather it asked.
+  Note what this means now that talking and typing share a conversation: the
+  posture travels with the *turn*, so a spoken turn acts while a typed turn in
+  the same conversation still obeys the read-only default the page shows. What
+  cannot be reached either way is unchanged — sends still stage for review, and
+  the trifecta interlock refuses exfiltration before any approval is asked for.

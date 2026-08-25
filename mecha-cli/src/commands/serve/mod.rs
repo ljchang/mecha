@@ -139,8 +139,14 @@ pub async fn execute(args: Args) -> Result<()> {
                 config,
                 outbox_root,
                 None,
-                true,
-                args.voice_yes,
+                crate::voice::Mount {
+                    inject_voice_block: true,
+                    approve_all: args.voice_yes,
+                    // D3: a call that names one of this process's chat
+                    // sessions speaks into it, so talking and typing are one
+                    // conversation rather than two transcripts.
+                    host: Some(Arc::new(chat::VoiceHost(Arc::clone(chat)))),
+                },
             ) {
                 Ok(f) => {
                     let facade = Arc::new(f);
