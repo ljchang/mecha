@@ -2140,14 +2140,21 @@ matters is the general shape.
 Three sessions landed work on 2026-08-25 and two of them independently
 re-measured the workspace test count as part of a handoff pass — 1,365 and
 1,367, each correct on its own tip, each wrong about `main`. The merge was
-1,370. Worse than the arithmetic: the later sweep walked `git log --since`
-to attribute the delta and missed `5b187c5` entirely, because it arrived
-through a merge rather than in the linear log, so three `mecha-core` tests
-had no lane and the attribution would have been confidently wrong about
-which arc produced them. **Measure the merge, and attribute with
-`--ancestry-path` or `merge-base --is-ancestor`, not with a date range.** A
-date range answers "what happened while I was awake", which is not the same
-question as "what is in this tree".
+1,370. Worse than the arithmetic: the later sweep walked `git log --since` to
+attribute the delta, and **a bare date there does not mean midnight**. Git's
+approxidate fills in the fields you leave out from *now*, so
+`--since=2026-08-25` run at 13:23 means "since 13:23 today" — it returned
+nothing at all, where `--since="2026-08-25 00:00"` returns 34 commits over the
+same tree. `5b187c5` was excluded by the clock, not by the topology: it is a
+first-class ancestor of `HEAD` and `git log` walks merges perfectly well. That
+matters because the failure wears a topology costume, and the fix first
+recorded here — `--ancestry-path`, `merge-base --is-ancestor` — would have
+changed nothing, since nothing was excluded by traversal. Three `mecha-core`
+tests ended up with no lane and the attribution would have been confidently
+wrong about which arc produced them. **Measure the merge, and attribute with a
+commit range (`v0.1.13..HEAD`), never with a date.** A date range answers "what
+happened while I was awake", which is not the same question as "what is in this
+tree" — and a bare date does not reliably answer even that one.
 
 **The one commit that skipped the test run was the one that broke the suite.**
 The offer-proxy commit substituted live verification (build, restart, curl
