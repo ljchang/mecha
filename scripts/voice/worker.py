@@ -23,6 +23,11 @@ import uuid
 from openai.types.audio import Transcription
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
+    TranscriptionUserTurnStartStrategy,
+)
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -273,9 +278,43 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     )
 
     context = LLMContext()
+    # A user turn starts on a *transcription*, never on the VAD. Pipecat's
+    # default is both (`[VADUserTurnStartStrategy, Transcription...]`) and
+    # the VAD always wins the race, which is the bug: 200ms of anything
+    # Silero scores as speech stops the bot mid-sentence, and a keyboard
+    # clears that easily. Observed 2026-08-25 in a real call - 1.18s at
+    # rms 0.0124 interrupted a reply and transcribed to '' - so the bot
+    # stopped for a sound with no words in it.
+    #
+    # Dropping VAD from the *start* list fixes it structurally rather than
+    # by tuning: `BaseWhisperSTTService.run_stt` emits no TranscriptionFrame
+    # at all for empty text (`if text or self._push_empty_transcripts`),
+    # so a wordless segment now reaches no strategy and the bot simply
+    # keeps talking. This is "resume on an empty transcript" achieved by
+    # never stopping, which needs no state to unwind.
+    #
+    # The VAD analyzer stays - it still *segments*, which is what hands the
+    # STT an utterance. What changed is that a false segment now costs one
+    # wasted 92ms transcription instead of an interruption, so the gate can
+    # afford to stay sensitive. That matters here: the owner's measured
+    # speech is ~0.024 RMS against a 0.14 tuning assumption, so raising VAD
+    # thresholds to chase noise would start dropping quiet real speech.
+    # start_secs 0.2 -> 0.3 only rejects the shortest transients; confidence
+    # and min_volume are left alone deliberately.
+    #
+    # The cost, stated: Parakeet is offline, so a transcript arrives after
+    # the utterance ends. Barge-in is therefore "finish the phrase and it
+    # stops" rather than instant. A streaming STT would restore instant
+    # barge-in via use_interim=True; with this one interim frames never
+    # exist, so it is False rather than misleading.
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(start_secs=0.3)),
+            user_turn_strategies=UserTurnStrategies(
+                start=[TranscriptionUserTurnStartStrategy(use_interim=False)],
+            ),
+        ),
     )
 
     # RTVI is how the page knows what is happening: transcripts both ways,

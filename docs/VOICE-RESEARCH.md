@@ -610,6 +610,47 @@ each of which cost something:
   transcribed the intelligible one and refused the garble — correct
   behaviour that looks like a bug. Ground-truth clips must be real
   speech (whisper.cpp's `jfk.wav` is the canonical one).
+**The bot stopped talking for sounds with no words in them — fixed by
+never starting the turn, 2026-08-25.** First real-call complaint: mecha
+would cut itself off mid-reply, apparently on typing. The transcript log
+named it exactly — two interruptions in the call, one of them
+`duration=1.18s rms=0.0124 text=''`: 1.18 seconds crossed the VAD, stopped
+the bot, reached Parakeet, and produced **no words at all**.
+
+The cause is that Pipecat's default user-turn start list is
+`[VADUserTurnStartStrategy, TranscriptionUserTurnStartStrategy]` and **the
+VAD always wins the race** — 200 ms of anything Silero scores as speech
+opens a turn, which a keyboard clears. The fix is to drop VAD from the
+*start* list and keep only transcription, which works because
+`BaseWhisperSTTService.run_stt` emits **no `TranscriptionFrame` at all**
+for empty text (`if text or self._push_empty_transcripts`, the latter
+defaulting False). A wordless segment therefore reaches no strategy and
+the bot simply keeps talking. That is "resume on an empty transcript"
+obtained by never stopping — no interrupted state to unwind, which the
+resume framing would have required.
+
+Two consequences worth carrying:
+
+- **A false VAD segment became cheap.** It now costs one wasted 92 ms
+  transcription instead of an interruption, so the VAD can afford to stay
+  sensitive — and must, because the owner's measured speech is **~0.024
+  RMS against the 0.14 the gates were tuned on**. That is a 2x gap to
+  noise where the tuning assumed 15x, so raising thresholds to chase noise
+  would have started dropping quiet real speech. `start_secs` went 0.2 →
+  0.3 and nothing else moved. **The gate was tuned on a different
+  microphone than the one in use**, which is worth re-measuring per setup
+  rather than treating 0.010 as a constant.
+- **Barge-in is now "finish the phrase and it stops", not instant**,
+  because Parakeet is offline and a transcript only exists once the
+  utterance ends. `use_interim=False` is set rather than left default,
+  since interim frames never exist on this STT and True would be a
+  misleading no-op. A streaming STT would restore instant barge-in by
+  flipping it.
+
+Verified both directions: synthetic noise at rms 0.0122 — matching the
+0.0124 that interrupted the real call — starts no turn and yields no
+transcript, while a spoken question still transcribes and is answered.
+
 **Both standbys were removed, 2026-08-25 — a spare nothing fails over to
 is not a spare.** Voxtral (`:8082`) had held the STT seat until the swap
 that morning and then sat idle for the rest of the day: **0 requests**,
