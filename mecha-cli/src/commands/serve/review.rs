@@ -451,7 +451,7 @@ pub async fn verdict(State(state): St, Json(body): Json<VerdictBody>) -> Respons
     }
     let report = match verb_output(&state, &args).await {
         Ok(out) => out,
-        Err(refusal) => return refusal,
+        Err(refusal) => return *refusal,
     };
     let (landed, _failed) = crate::commands::review::tally_report(&report);
     if landed == 0 {
@@ -608,10 +608,16 @@ pub async fn edit(
 /// account of how many candidates it landed on) and every such caller must
 /// still refuse a spawn failure, a timeout and a non-zero exit identically.
 /// Two spellings of that is two places for the statuses to drift.
+/// The refusal is boxed because an axum `Response` is 128 bytes, and a
+/// `Result` whose error dwarfs its success value is paid for by every call
+/// that never fails — `clippy::result_large_err`, which the CI toolchain
+/// enforces and this box's older clippy does not yet know about. Worth the
+/// noise at three call sites: the alternative found the repo through a red
+/// main rather than through a local run.
 pub(super) async fn verb_output(
     state: &super::WebState,
     args: &[&str],
-) -> Result<String, Response> {
+) -> Result<String, Box<Response>> {
     let _ = state; // state carries nothing the child needs; the store is the meeting point
     let mut cmd = tokio::process::Command::new(crate::exe::self_exe());
     if let Some(dir) = super::child_cwd() {
@@ -623,25 +629,31 @@ pub(super) async fn verb_output(
         {
             Ok(Ok(output)) => output,
             Ok(Err(e)) => {
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("spawning: {e:#}\n"),
-                )
-                    .into_response())
+                return Err(Box::new(
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("spawning: {e:#}\n"),
+                    )
+                        .into_response(),
+                ))
             }
             Err(_) => {
-                return Err((StatusCode::GATEWAY_TIMEOUT, "the verb timed out\n").into_response())
+                return Err(Box::new(
+                    (StatusCode::GATEWAY_TIMEOUT, "the verb timed out\n").into_response(),
+                ))
             }
         };
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err((
-            StatusCode::CONFLICT,
-            format!("{}\n", stderr.lines().last().unwrap_or("failed")),
-        )
-            .into_response())
+        Err(Box::new(
+            (
+                StatusCode::CONFLICT,
+                format!("{}\n", stderr.lines().last().unwrap_or("failed")),
+            )
+                .into_response(),
+        ))
     }
 }
 
@@ -650,7 +662,7 @@ pub(super) async fn verb_output(
 pub(super) async fn verb(state: &super::WebState, args: &[&str]) -> Response {
     match verb_output(state, args).await {
         Ok(out) => Json(serde_json::json!({ "ok": true, "output": out.trim() })).into_response(),
-        Err(refusal) => refusal,
+        Err(refusal) => *refusal,
     }
 }
 
