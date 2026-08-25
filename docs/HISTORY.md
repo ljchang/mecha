@@ -3502,6 +3502,30 @@ handled.**
   turning a skipped integration test into a failure, because in CI a silently
   skipped test reads exactly like a passing one.
 
+  **A fourth instance appeared in the sentence that closed that entry**, and
+  it is the one to guard against hardest because the check that would catch
+  it is not a command. The paragraph originally ended by invoking "the `no
+  silent caps` rule" — which grepped to exactly one hit, the sentence citing
+  it. Not a rule this project dropped: **a rule from the authoring agent's
+  own tool documentation, imported into this history wearing mecha's voice.**
+  It was never here to go stale.
+
+  What makes it hard to catch from the inside is that the two vocabularies
+  are written in the same register. *Fail closed*, *the silently-degrading
+  sandbox*, *a lane must not promote itself*, *no silent caps* — named,
+  italicised invariants, indistinguishable by feel, so recall cannot
+  separate the ones this repo earned from the ones an agent arrived
+  carrying. The failure does not dangle visibly; it resolves to nothing.
+  And it is worse than a stale pointer, because a reader who trusts it
+  goes looking for a principle this project never held.
+
+  **So: grep before citing a named rule, and require a hit that is not the
+  sentence you are writing.** It costs one command. The reason it belongs
+  in this entry rather than beside it is that the paragraph's own review
+  enumerated the reasoning and never the vocabulary — answering correctly
+  about its frame and silently about the reader's, which is the entry's
+  thesis one turn further in.
+
 ## Design notes worth keeping
 
 The rest of the original design-notes section duplicated `CLAUDE.md` and was
