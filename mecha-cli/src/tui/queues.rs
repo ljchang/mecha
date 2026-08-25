@@ -87,6 +87,11 @@ pub struct QueueRow {
     /// The `mecha …` verb that owns this queue, shown so the modal never
     /// becomes the only way to reach it.
     pub opens: String,
+    /// How long the oldest still-waiting item has waited. Rendered beside
+    /// the depth rather than inside the detail, because it is the same kind
+    /// of fact — a property of *waiting* — and a reviewer choosing what to
+    /// open next needs it before opening anything. A dash when unknown.
+    pub oldest: Option<String>,
 }
 
 impl QueueRow {
@@ -729,12 +734,16 @@ impl QueuesModal {
                     Some(n) => format!("{n:>6}"),
                     None => format!("{:>6}", "—"),
                 };
+                // A dash when unknown, never "0m" — an absent age and a
+                // fresh one are opposite findings, the same rule the depth
+                // column already follows.
+                let age = format!("{:>5}", q.oldest.as_deref().unwrap_or("—"));
                 let here = if q.is_graph() { "review here" } else { "opens" };
                 let text = format!(
-                    "{marker} {depth}  {:<22} {:<11} {}",
+                    "{marker} {depth} {age}  {:<22} {:<11} {}",
                     q.name,
                     here,
-                    truncate(&q.detail, 62)
+                    truncate(&q.detail, 56)
                 );
                 style_row(text, sel, q.depth.is_none(), q.depth == Some(0))
             })
@@ -1105,6 +1114,7 @@ pub fn queues_from_json(text: &str) -> anyhow::Result<Vec<QueueRow>> {
                     depth: r["depth"].as_u64().map(|n| n as usize),
                     detail: r["detail"].as_str().unwrap_or("").to_string(),
                     opens: r["opens"].as_str().unwrap_or("").to_string(),
+                    oldest: r["oldest"].as_str().map(str::to_string),
                 })
                 .collect()
         })
@@ -1238,7 +1248,44 @@ mod tests {
             depth: Some(depth),
             detail: String::new(),
             opens: opens.into(),
+            oldest: None,
         }
+    }
+
+    /// The age sits beside the depth, and an unknown one is a dash rather
+    /// than a zero — "nothing waiting" and "waiting since a moment ago" are
+    /// opposite findings, exactly as for the count. This column exists
+    /// because four drafts sat five days behind a row reading `6`.
+    #[test]
+    fn a_queue_shows_how_long_its_oldest_item_has_waited() {
+        let mut a = row("outbox drafts", 6, "mecha outbox");
+        a.oldest = Some("5d".into());
+        let b = row("harness changes", 0, "mecha harness list"); // oldest: None
+        let m = QueuesModal::new(vec![a, b]);
+        let text: String = m
+            .queue_lines()
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(text.contains("5d"), "{text}");
+        assert!(
+            text.contains('—'),
+            "an unknown age must render as a dash: {text}"
+        );
+    }
+
+    /// It survives the wire, and a listing without the field still parses —
+    /// an older `mecha review` must not break the modal.
+    #[test]
+    fn the_age_round_trips_and_an_older_listing_still_parses() {
+        let with = r#"[{"queue":"outbox drafts","depth":6,"detail":"","opens":"mecha outbox",
+                        "oldest":"5d"}]"#;
+        assert_eq!(
+            queues_from_json(with).unwrap()[0].oldest.as_deref(),
+            Some("5d")
+        );
+        let without = r#"[{"queue":"outbox drafts","depth":6,"detail":"","opens":"mecha outbox"}]"#;
+        assert!(queues_from_json(without).unwrap()[0].oldest.is_none());
     }
 
     /// Every row that shows a count must be openable. This one shipped
