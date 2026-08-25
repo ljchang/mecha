@@ -369,11 +369,39 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         ]
     )
 
+    # Pipecat cancels an "idle" pipeline - and the runner with it - after
+    # `idle_timeout_secs`, where idle means neither side produced a speaking
+    # frame. The default is 300s, which is a *conversational* silence on a
+    # phone: think for five minutes, read something, put it in your pocket,
+    # and the call dies with no message of any kind. The client sees only the
+    # peer connection close, which is how "the call ends by itself" was
+    # reported. Measured in production 2026-08-25: a call connected 11:36:23
+    # ended 11:41:50 on exactly this timer.
+    #
+    # The timeout is kept rather than disabled, because an abandoned tab
+    # otherwise holds VAD, turn detection, STT and TTS open forever on a box
+    # with one GPU. It is raised to fifteen minutes - past any pause that is
+    # still a conversation - and, more importantly, it now *says so* on the
+    # way out (below): a component that stops has to be able to tell you why,
+    # or the only symptom is a surface that silently stopped working.
+    IDLE_SECS = 15 * 60
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True),
         observers=[RTVIObserver(rtvi)],
+        idle_timeout_secs=IDLE_SECS,
     )
+
+    @worker.event_handler("on_idle_timeout")
+    async def on_idle_timeout(worker):
+        # Fired before the cancel, so the data channel is still open and this
+        # is the last chance to name the cause. Best-effort by design: a
+        # failure here must not stop the teardown it is announcing.
+        print(f"voice idle timeout after {IDLE_SECS}s - ending the call", flush=True)
+        try:
+            await rtvi.send_server_message({"t": "call-ending", "reason": "idle", "after_secs": IDLE_SECS})
+        except Exception as e:  # noqa: BLE001 - an announcement is not load-bearing
+            print(f"voice idle timeout: could not announce ({e})", flush=True)
 
     from pipecat.workers.runner import WorkerRunner
 

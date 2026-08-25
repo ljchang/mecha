@@ -89,12 +89,51 @@ pub struct NoteBody {
 
 /// POST /api/notes — the owner's own words, staged to the graph as an
 /// episode (`kg note`); entities named in it are linked on landing.
+///
+/// `--` before the text because a note is prose and prose can start with a
+/// dash; without it clap reads the owner's first word as a flag it does not
+/// have and refuses the capture.
 pub async fn note(State(state): St, Json(body): Json<NoteBody>) -> Response {
     let text = body.text.trim();
     if text.is_empty() {
         return (StatusCode::BAD_REQUEST, "an empty note\n").into_response();
     }
-    verb(&state, &["kg", "note", text]).await
+    verb(&state, &["kg", "note", "--", text]).await
+}
+
+#[derive(serde::Deserialize)]
+pub struct NoteEditBody {
+    /// The episode key from a `kg_notes` row — not the `uid`, which names
+    /// the row but cannot write to it.
+    pub source_id: String,
+    pub text: String,
+}
+
+/// POST /api/notes/edit — rewrite one note in place.
+///
+/// The whole edit lives in `mecha kg note --edit`, including the part that
+/// matters (the note's original `occurred_at` is read back and preserved, so
+/// fixing a typo does not restamp when the thing happened). This handler
+/// only checks that both halves are present: a note page that could reach a
+/// rewrite the terminal cannot is the shape `/tasks` and `/triggers` both
+/// refuse.
+pub async fn note_edit(State(state): St, Json(body): Json<NoteEditBody>) -> Response {
+    let id = body.source_id.trim();
+    let text = body.text.trim();
+    if id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which note?\n").into_response();
+    }
+    if text.is_empty() {
+        // Emptying a note is not editing it, and there is deliberately no
+        // delete here: a note is evidence, and what the graph derived from it
+        // is retracted in review, not by blanking the record.
+        return (
+            StatusCode::BAD_REQUEST,
+            "an empty note — clear it in review instead\n",
+        )
+            .into_response();
+    }
+    verb(&state, &["kg", "note", "--edit", id, "--", text]).await
 }
 
 #[derive(serde::Deserialize)]
