@@ -122,7 +122,7 @@ Worth splitting into its own document once any of it is built.
 ## 2. The pieces
 
 ```
-        home (spark-8c43)                    the public box
+        home (the tailnet box)               the public box
   ┌──────────────────────────┐        ┌──────────────────────────────┐
   │ mecha                    │        │ mecha-factory (one binary)   │
   │  ├ tools: publish ───────┼──POST─▶│  /v1/bundles     ← publish   │

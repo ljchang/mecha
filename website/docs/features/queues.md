@@ -141,9 +141,9 @@ a queue reaches seven thousand items.
 `s` groups a class by semantic similarity, largest group first:
 
 ```
-  x25   #12636   Luke J Chang is family of Eunice.
-           ~ Luke J Chang is the partner of Eunice.
-           ~ Eunice is Luke J Chang's wife.
+  x25   #12636   Dana Whitfield is family of Mara.
+           ~ Dana Whitfield is the partner of Mara.
+           ~ Mara is Dana Whitfield's wife.
 ```
 
 `a` or `r` on that row is **one verdict covering twenty-five candidates** —
@@ -180,7 +180,7 @@ stricter (0.90 rather than 0.83), and **every group names the classes it
 spans**, because the blast radius is part of what you are approving:
 
 ```
-  x25   #12636   Luke J Chang is family of Eunice.
+  x25   #12636   Dana Whitfield is family of Mara.
            spans: llm . family_of ×18, llm . is ×4, llm . knows_of ×2, …
 ```
 

@@ -336,7 +336,7 @@
       "tags": [
         "chaining"
       ],
-      "text": "The earliest meeting note is `meeting-2026-07-14.md`, and the attendees were Luke, Wasita, and Eshin.",
+      "text": "The earliest meeting note is `meeting-2026-07-14.md`, and the attendees were Luke, Rhea, and Marek.",
       "tool_errors": 0,
       "tools_called": [
         "fs_list",
@@ -625,7 +625,7 @@
       "tags": [
         "selection"
       ],
-      "text": "The name Wasita is mentioned in `notes/meeting-2026-07-14.md`.",
+      "text": "The name Rhea is mentioned in `notes/meeting-2026-07-14.md`.",
       "tool_errors": 1,
       "tools_called": [
         "shell",
@@ -856,7 +856,7 @@
       "tags": [
         "reasoning"
       ],
-      "text": "Eshin's total pay across both weeks is $2520.",
+      "text": "Marek's total pay across both weeks is $2520.",
       "tool_errors": 0,
       "tools_called": [
         "fs_list",

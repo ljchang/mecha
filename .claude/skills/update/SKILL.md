@@ -207,7 +207,8 @@ domain resolves to Squarespace, not the droplet — the origin you want is
 `gate.mecha-factory.ai` (`compute.` is the same host).
 
 spark reaches it as **root**, using a dedicated key generated here for this
-purpose (`~/.ssh/mecha_factory_deploy`, comment `spark-8c43`). No `~/.ssh/config`
+purpose (`~/.ssh/mecha_factory_deploy`, commented with the box's hostname).
+No `~/.ssh/config`
 entry exists, so the key has to be named explicitly:
 
 ```bash

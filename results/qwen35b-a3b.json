@@ -335,7 +335,7 @@
       "tags": [
         "chaining"
       ],
-      "text": "The attendees at the earliest meeting (July 14, 2026) were **Luke, Wasita, and Eshin**.",
+      "text": "The attendees at the earliest meeting (July 14, 2026) were **Luke, Rhea, and Marek**.",
       "tool_errors": 0,
       "tools_called": [
         "fs_list",
@@ -622,7 +622,7 @@
       "tags": [
         "selection"
       ],
-      "text": "The name \"Wasita\" appears in **three** files:\n\n1. **`data/rates.toml`** — listed in the hourly rates: `Wasita = 45`\n2. **`data/timesheet.csv`** — appears in timesheet rows: `Wasita,27,18` and `Wasita,28,22`\n3. **`notes/meeting-2026-07-14.md`** — mentioned as an attendee and action item owner",
+      "text": "The name \"Rhea\" appears in **three** files:\n\n1. **`data/rates.toml`** — listed in the hourly rates: `Rhea = 45`\n2. **`data/timesheet.csv`** — appears in timesheet rows: `Rhea,27,18` and `Rhea,28,22`\n3. **`notes/meeting-2026-07-14.md`** — mentioned as an attendee and action item owner",
       "tool_errors": 1,
       "tools_called": [
         "shell",
@@ -865,7 +865,7 @@
       "tags": [
         "reasoning"
       ],
-      "text": "Eshin's hours:\n- Week 27: 30 hours × $60 = $1,800\n- Week 28: 12 hours × $60 = $720\n\n**Total pay: $2,520**",
+      "text": "Marek's hours:\n- Week 27: 30 hours × $60 = $1,800\n- Week 28: 12 hours × $60 = $720\n\n**Total pay: $2,520**",
       "tool_errors": 0,
       "tools_called": [
         "fs_read",

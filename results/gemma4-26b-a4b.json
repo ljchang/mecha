@@ -327,7 +327,7 @@
       "tags": [
         "chaining"
       ],
-      "text": "The attendees of the earliest meeting (from July 14, 2026) were Luke, Wasita, and Eshin.",
+      "text": "The attendees of the earliest meeting (from July 14, 2026) were Luke, Rhea, and Marek.",
       "tool_errors": 0,
       "tools_called": [
         "fs_list",
@@ -619,7 +619,7 @@
       "tags": [
         "selection"
       ],
-      "text": "The name \"Wasita\" is mentioned in `notes/meeting-2026-07-14.md`.",
+      "text": "The name \"Rhea\" is mentioned in `notes/meeting-2026-07-14.md`.",
       "tool_errors": 1,
       "tools_called": [
         "shell",

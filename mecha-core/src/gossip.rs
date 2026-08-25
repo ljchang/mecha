@@ -931,7 +931,7 @@ pub fn strip_user_directed(text: &str) -> String {
 /// sources *hold*.
 ///
 /// The last shape of the assistant reflex to survive into the question
-/// slot. A live round-2 asked "What specific aspect of Luke J Chang's work
+/// slot. A live round-2 asked "What specific aspect of Dana Whitfield's work
 /// or background are you most interested in?" — grammatically a question,
 /// addressed to a peer, and worthless: the other reader has no preferences,
 /// only sources, so it burned a whole round explaining that it could not
@@ -1078,7 +1078,7 @@ pub fn parse_verdict(text: &str) -> (String, String) {
 ///
 /// The filter earns its place. A tool-less extractor handed a transcript of
 /// two agents searching carries on searching: a live run produced
-/// "search_query: U034F8HLM7S" and "I will search the knowledge graph
+/// "search_query: U0EXAMPLE01" and "I will search the knowledge graph
 /// for..." in the claim slot, and all three were dutifully sent to the
 /// adjudicator. A claim is a statement about the person; an announcement of
 /// what the model is about to do is not one, and passing it on wastes a
@@ -1142,7 +1142,7 @@ pub async fn audit(
     // front of a long input loses to the shape of that input. The
     // transcript ends with two agents searching, so the extractor carried
     // on searching — it has no tools, and still emitted "search_query:
-    // U034F8HLM7S" where a claim belonged.
+    // U0EXAMPLE01" where a claim belonged.
     let mut convo = Conversation::user(format!(
         "The person is {}.\n\n{}\n\n\
          Now list the factual claims made about {} in the transcript above. \
@@ -1416,14 +1416,14 @@ mod tests {
     #[test]
     fn claim_extraction_drops_scaffolding() {
         let listed = "**Claims:**\n\
-             1. Luke J Chang works at Dartmouth.\n\
+             1. Dana Whitfield works at Dartmouth.\n\
              - py-feat is a tool for fNIRS analysis.\n\
-             Is he the lab PI?\n\
+             Is she the lab PI?\n\
              short\n\
-             He maintains the /home/ljchang/Git directory.";
+             She maintains the /srv/example/Git directory.";
         let claims = claim_lines(listed, 8);
         assert_eq!(claims.len(), 3, "got {claims:?}");
-        assert!(claims[0].starts_with("Luke J Chang works"));
+        assert!(claims[0].starts_with("Dana Whitfield works"));
         assert!(
             !claims.iter().any(|c| c.ends_with('?')),
             "questions are not claims"
@@ -1434,14 +1434,14 @@ mod tests {
 
         // The live failure: a tool-less extractor announcing searches, and
         // every one of them sent to the adjudicator as a claim.
-        let intent = "I will search the knowledge graph for the Slack handle U034F8HLM7S.\n\
-             search_query: ljchang@email.arizona.edu\n\
+        let intent = "I will search the knowledge graph for the Slack handle U0EXAMPLE01.\n\
+             search_query: dana@email.example.edu\n\
              Let me check whether the two entities are distinct.\n\
-             Luke J Chang presented a poster on April 19, 2026.";
+             Dana Whitfield presented a poster on April 19, 2026.";
         let claims = claim_lines(intent, 8);
         assert_eq!(
             claims,
-            vec!["Luke J Chang presented a poster on April 19, 2026."]
+            vec!["Dana Whitfield presented a poster on April 19, 2026."]
         );
     }
 
@@ -1451,7 +1451,7 @@ mod tests {
         // the other reader has no interests, only evidence.
         assert_eq!(
             usable_question(
-                "What specific aspect of Luke J Chang's work or background \
+                "What specific aspect of Dana Whitfield's work or background \
                  are you most interested in?"
             ),
             None
@@ -1460,9 +1460,9 @@ mod tests {
         // The good ones from the same run must survive. Both are second
         // person, so the rule cannot simply reject "you".
         for q in [
-            "Are you referring to the Luke J Chang associated with the Chang \
+            "Are you referring to the Dana Whitfield associated with the Chang \
              lab at Dartmouth and the 'py-feat' paper?",
-            "Can you confirm if Luke J Chang is associated with the Chang lab?",
+            "Can you confirm if Dana Whitfield is associated with the Chang lab?",
         ] {
             assert!(usable_question(q).is_some(), "rejected a real probe: {q}");
         }
@@ -2212,9 +2212,9 @@ mod vet_tests {
     #[test]
     fn a_vet_verdict_is_parsed_or_admitted() {
         let (v, who, _, quote) =
-            parse_vet("VERDICT: MISATTRIBUTED\nWHO: Eunice\nQUOTE: Eunice said she prefers DIY.");
+            parse_vet("VERDICT: MISATTRIBUTED\nWHO: Mara\nQUOTE: Mara said she prefers DIY.");
         assert_eq!(v, Vet::Misattributed);
-        assert_eq!(who.as_deref(), Some("Eunice"));
+        assert_eq!(who.as_deref(), Some("Mara"));
         assert!(quote.contains("prefers DIY"));
 
         // A mistype carries its repair, normalized to vocabulary shape.
@@ -2245,7 +2245,7 @@ mod vet_tests {
         let cand = Candidate {
             candidate_id: 1,
             statement: "Luke prefers DIY.".into(),
-            subject: Some("Luke J Chang".into()),
+            subject: Some("Dana Whitfield".into()),
             origin_source: None,
             subject_ambiguous: false,
             confidence: None,

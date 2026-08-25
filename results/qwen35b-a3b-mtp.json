@@ -335,7 +335,7 @@
       "tags": [
         "chaining"
       ],
-      "text": "The earliest meeting note is from **14 July 2026**, and the attendees were:\n\n- **Luke**\n- **Wasita**\n- **Eshin**",
+      "text": "The earliest meeting note is from **14 July 2026**, and the attendees were:\n\n- **Luke**\n- **Rhea**\n- **Marek**",
       "tool_errors": 0,
       "tools_called": [
         "fs_list",
@@ -623,7 +623,7 @@
       "tags": [
         "selection"
       ],
-      "text": "The file that mentions \"Wasita\" is:\n\n**`data/timesheet.csv`**\n\nIt appears in two rows of the timesheet data:\n\n| name | week | hours |\n|--------|------|-------|\n| Wasita | 27 | 18 |\n| Wasita | 28 | 22 |",
+      "text": "The file that mentions \"Rhea\" is:\n\n**`data/timesheet.csv`**\n\nIt appears in two rows of the timesheet data:\n\n| name | week | hours |\n|--------|------|-------|\n| Rhea | 27 | 18 |\n| Rhea | 28 | 22 |",
       "tool_errors": 1,
       "tools_called": [
         "shell",
@@ -856,7 +856,7 @@
       "tags": [
         "reasoning"
       ],
-      "text": "Eshin's hours and rate:\n- Week 27: 30 hours × $60/hr = $1,800\n- Week 28: 12 hours × $60/hr = $720\n\n**Total pay: $2,520**",
+      "text": "Marek's hours and rate:\n- Week 27: 30 hours × $60/hr = $1,800\n- Week 28: 12 hours × $60/hr = $720\n\n**Total pay: $2,520**",
       "tool_errors": 0,
       "tools_called": [
         "fs_read",

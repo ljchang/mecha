@@ -325,7 +325,7 @@
       "tags": [
         "chaining"
       ],
-      "text": "The earliest meeting note is from **14 July 2026**. The attendees were **Luke, Wasita, and Eshin**.",
+      "text": "The earliest meeting note is from **14 July 2026**. The attendees were **Luke, Rhea, and Marek**.",
       "tool_errors": 0,
       "tools_called": [
         "fs_list",
@@ -614,7 +614,7 @@
       "tags": [
         "selection"
       ],
-      "text": "The file that mentions Wasita is:\n\n**`notes/meeting-2026-07-14.md`**",
+      "text": "The file that mentions Rhea is:\n\n**`notes/meeting-2026-07-14.md`**",
       "tool_errors": 1,
       "tools_called": [
         "shell",

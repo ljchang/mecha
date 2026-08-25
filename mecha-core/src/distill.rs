@@ -52,7 +52,7 @@ than a gap.
 
 Separately, record CORRECTIONS: moments where the user said something the \
 graph holds is wrong. \"No, she's at Yale now\", \"that's the old deadline\", \
-\"it's Wasita, not Wasitha\" — a correction is the user overriding what the \
+\"it's Rhea, not Rhiya\" — a correction is the user overriding what the \
 agent said or what the graph returned, not merely new information. For each \
 one give what was wrong and what is right, and who or what it is about. If \
 the transcript shows the graph's own identifier for the wrong claim (a fact \
@@ -518,22 +518,22 @@ mod tests {
             "m",
             &[
                 Correction {
-                    wrong: "Wasita works at Mount Sinai".into(),
-                    right: Some("Wasita works at NYU".into()),
-                    about: Some("Wasita".into()),
+                    wrong: "Rhea works at Mount Sinai".into(),
+                    right: Some("Rhea works at NYU".into()),
+                    about: Some("Rhea".into()),
                     fact_uid: None,
                 },
                 Correction {
-                    wrong: "Eshin worked at Dartmouth".into(),
+                    wrong: "Marek worked at Dartmouth".into(),
                     right: None, // a rejection: pkg writes a negation
-                    about: Some("Eshin".into()),
+                    about: Some("Marek".into()),
                     fact_uid: Some("abc-123".into()),
                 },
             ],
         );
         let c = &args["meta"]["corrections"];
-        assert_eq!(c[0]["wrong"], "Wasita works at Mount Sinai");
-        assert_eq!(c[0]["right"], "Wasita works at NYU");
+        assert_eq!(c[0]["wrong"], "Rhea works at Mount Sinai");
+        assert_eq!(c[0]["right"], "Rhea works at NYU");
         assert!(
             c[0].get("fact_uid").is_none(),
             "absent optionals stay absent rather than serializing as null"

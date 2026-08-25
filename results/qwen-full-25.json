@@ -335,7 +335,7 @@
       "tags": [
         "chaining"
       ],
-      "text": "The earliest meeting note is from **14 July 2026**. The attendees were **Luke, Wasita, and Eshin**.",
+      "text": "The earliest meeting note is from **14 July 2026**. The attendees were **Luke, Rhea, and Marek**.",
       "tool_errors": 0,
       "tools_called": [
         "fs_list",
@@ -623,7 +623,7 @@
       "tags": [
         "selection"
       ],
-      "text": "The name **Wasita** appears in three files:\n\n1. `data/rates.toml`\n2. `data/timesheet.csv`\n3. `notes/meeting-2026-07-14.md`",
+      "text": "The name **Rhea** appears in three files:\n\n1. `data/rates.toml`\n2. `data/timesheet.csv`\n3. `notes/meeting-2026-07-14.md`",
       "tool_errors": 1,
       "tools_called": [
         "shell",
@@ -863,7 +863,7 @@
       "tags": [
         "reasoning"
       ],
-      "text": "Eshin worked 30 hours in week 27 and 12 hours in week 28, for a total of 42 hours. At an hourly rate of $60, Eshin's total pay is **$2,520**.",
+      "text": "Marek worked 30 hours in week 27 and 12 hours in week 28, for a total of 42 hours. At an hourly rate of $60, Marek's total pay is **$2,520**.",
       "tool_errors": 0,
       "tools_called": [
         "fs_read",
