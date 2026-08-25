@@ -4603,6 +4603,40 @@ fn review_cli(args: &[&str]) -> Result<String> {
     self_cli(&full)
 }
 
+/// Drive `mecha <args>` for the generic review level — same rule as
+/// `review_cli`, but the verb varies by store.
+fn self_cli_capture(args: &[&str]) -> Result<String> {
+    self_cli(args)
+}
+
+/// Drive `mecha-graph <args>`. The graph's proposal queue lives in its own
+/// binary, so the review level reaches it the way `/queues` already reaches
+/// the graph's fact queue — as a child process, never by opening the store.
+fn graph_cli_raw(args: &[&str]) -> Result<String> {
+    let bin = graph_bin();
+    let out = std::process::Command::new(&bin)
+        .args(args)
+        .output()
+        .map_err(|e| anyhow::anyhow!("running {bin}: {e}"))?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    anyhow::bail!(
+        "{bin} {}: {}",
+        args.first().unwrap_or(&""),
+        stderr.trim().lines().next().unwrap_or("failed")
+    )
+}
+
+/// A row's title, short enough for a status line.
+fn truncate_title(s: &str) -> String {
+    if s.chars().count() <= 48 {
+        return s.to_string();
+    }
+    s.chars().take(47).chain(std::iter::once('…')).collect()
+}
+
 /// A seed for a sample draw, from the clock.
 ///
 /// Chosen on this side so the modal can name it and redraw it — the graph
@@ -4633,6 +4667,30 @@ fn reload_queues(app: &mut App, status: Option<String>) {
     let (item_class, item_seed, tier) = (old.item_class.clone(), old.item_seed, old.tier);
     let from_group = old.from_group.clone();
     let loaded = match level {
+        // The review level reloads from whichever store it was opened on;
+        // the source travels with the modal so the reload does not have to
+        // work out which queue it came from.
+        queues::Level::Review => {
+            let Some(src) = &old.review_source else {
+                return;
+            };
+            let argv: Vec<&str> = src.list.iter().map(String::as_str).collect();
+            let out = if src.graph {
+                graph_cli_raw(&argv)
+            } else {
+                self_cli_capture(&argv)
+            };
+            match out {
+                Ok(t) => queues::review_from_json(&t).map(|rows| {
+                    let mut m = queues::QueuesModal::new(vec![]);
+                    m.level = queues::Level::Review;
+                    m.review = rows;
+                    m.review_source = old.review_source.clone();
+                    m
+                }),
+                Err(e) => Err(e),
+            }
+        }
         queues::Level::Groups => {
             let Some((pb, pred)) = old.item_class.clone() else {
                 return;
@@ -4803,6 +4861,13 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('g') | KeyCode::Home => modal.selected = 0,
         KeyCode::Char('G') | KeyCode::End => modal.selected = modal.len().saturating_sub(1),
         KeyCode::Esc | KeyCode::Char('q') => match modal.level {
+            queues::Level::Review => {
+                modal.level = queues::Level::Queues;
+                modal.selected = 0;
+                modal.review.clear();
+                modal.review_source = None;
+                reload_queues(app, None);
+            }
             // Esc peels one level at a time, never two — and the item
             // detail is a layer of its own.
             queues::Level::Items if modal.item_detail => {
@@ -4896,6 +4961,10 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
             queues::Level::Queues => app.queues = None,
         },
         KeyCode::Enter => match modal.level {
+            // Nothing. a/r are the verbs here, and a key that looks like
+            // "open" but silently decides would be the worst possible
+            // default on a surface whose whole job is deciding.
+            queues::Level::Review => {}
             queues::Level::Queues => {
                 let Some(q) = modal.selected_queue() else {
                     return Ok(());
@@ -4903,6 +4972,15 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 if q.is_graph() {
                     modal.level = queues::Level::Proposers;
                     modal.selected = 0;
+                    reload_queues(app, None);
+                } else if let Some(src) = q.review_source() {
+                    // Reviewed in place. These three stores answer the same
+                    // shape and take the same verbs, so they share one level
+                    // rather than owning a modal each — and the row stops
+                    // announcing a count it cannot open.
+                    modal.level = queues::Level::Review;
+                    modal.selected = 0;
+                    modal.review_source = Some(src);
                     reload_queues(app, None);
                 } else {
                     // Hand off to the modal that owns this queue — it holds
@@ -5042,6 +5120,52 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 Err(e) => {
                     if let Some(m) = &mut app.queues {
                         m.status = Some(format!("bind #{id_s} failed: {e:#}"));
+                    }
+                }
+            }
+        }
+        KeyCode::Char('a') | KeyCode::Char('r') if modal.level == queues::Level::Review => {
+            let Some(src) = modal.review_source.clone() else {
+                return Ok(());
+            };
+            let Some(row) = modal.review.get(modal.selected) else {
+                return Ok(());
+            };
+            let (id, title) = (row.id.clone(), row.title.clone());
+            let accepting = key.code == KeyCode::Char('a');
+            let base = if accepting { &src.accept } else { &src.reject };
+            let mut argv: Vec<String> = base.clone();
+            argv.push(id.clone());
+            // `mecha proposals reject` and `mecha harness reject` both want a
+            // reason, and a reason nobody typed is worse than none — say
+            // where it came from rather than inventing a justification.
+            if !accepting && !src.graph {
+                argv.push("--reason".into());
+                argv.push("rejected from /queues".into());
+            }
+            let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let out = if src.graph {
+                graph_cli_raw(&refs)
+            } else {
+                self_cli_capture(&refs)
+            };
+            let verb = if accepting { "accepted" } else { "rejected" };
+            match out {
+                Ok(t) => {
+                    // The child's own first line, not a sentence composed
+                    // here: an accept can APPLY something (a merge, a rename,
+                    // an override) and what it did is the child's to report.
+                    let said = t.trim().lines().next().unwrap_or("").to_string();
+                    let note = if said.is_empty() {
+                        format!("{verb} {}", truncate_title(&title))
+                    } else {
+                        said
+                    };
+                    reload_queues(app, Some(note));
+                }
+                Err(e) => {
+                    if let Some(m) = &mut app.queues {
+                        m.status = Some(format!("{verb} #{id} failed: {e:#}"));
                     }
                 }
             }

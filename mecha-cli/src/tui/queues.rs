@@ -38,6 +38,36 @@ pub enum Level {
     Candidates,
     Groups,
     Items,
+    /// A flat list of proposals from any store that answers `list --json`
+    /// in the common shape and takes `accept <id>` / `reject <id>`. One
+    /// level rather than one modal per store: rule proposals, harness
+    /// candidates and the graph's entity proposals are the same review with
+    /// different nouns, and three copies would be three things to keep
+    /// correct — which is how this row came to say "no modal for that one
+    /// yet" while showing a count of 28.
+    Review,
+}
+
+/// One reviewable proposal, in the shape every such store now answers in.
+pub struct ReviewRow {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+}
+
+/// Where a review level gets its rows and how it decides them. Held as argv
+/// rather than as an enum of stores, on the `/triggers` rule: the modal
+/// drives the command line, so nothing it can do is missing from a script.
+#[derive(Clone)]
+pub struct ReviewSource {
+    /// Human label for the box title.
+    pub label: String,
+    pub list: Vec<String>,
+    pub accept: Vec<String>,
+    pub reject: Vec<String>,
+    /// True when the verb lives in `mecha-graph` rather than `mecha`.
+    pub graph: bool,
 }
 
 /// One store's backlog, as `mecha review queues --json` reports it.
@@ -61,6 +91,34 @@ impl QueueRow {
     /// second list of queues to keep in step.
     pub fn is_graph(&self) -> bool {
         self.name == "graph candidates"
+    }
+
+    /// The reviewable-proposal stores, and where each one's verbs live.
+    /// Keyed on the queue name for the same reason `is_graph` is — one list
+    /// of queues, emitted by the command and read here.
+    pub fn review_source(&self) -> Option<ReviewSource> {
+        let owned = |label: &str, verb: &[&str], graph: bool| {
+            let v: Vec<String> = verb.iter().map(|s| s.to_string()).collect();
+            let mut list = v.clone();
+            list.extend(["list".into(), "--json".into()]);
+            let mut accept = v.clone();
+            accept.push("accept".into());
+            let mut reject = v;
+            reject.push("reject".into());
+            Some(ReviewSource {
+                label: label.to_string(),
+                list,
+                accept,
+                reject,
+                graph,
+            })
+        };
+        match self.name.as_str() {
+            "graph entities" => owned("entity proposals", &["proposals"], true),
+            "rule proposals" => owned("rule proposals", &["proposals"], false),
+            "harness changes" => owned("harness candidates", &["harness"], false),
+            _ => None,
+        }
     }
 }
 
@@ -213,8 +271,76 @@ impl CandidateRow {
     }
 }
 
+/// Break a long evidence string onto lines at word boundaries.
+fn wrap_detail(s: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut line = String::new();
+    for word in s.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            out.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out.truncate(4);
+    out
+}
+
+/// Parse the common `list --json` shape. The graph's entity proposals
+/// answer a richer object (they carry node ids and evidence); the fields
+/// this needs are read by name from either, so one parser serves all three
+/// stores without forcing them to a lowest common schema.
+pub fn review_from_json(raw: &str) -> anyhow::Result<Vec<ReviewRow>> {
+    let v: serde_json::Value = serde_json::from_str(raw)?;
+    let arr = v.as_array().cloned().unwrap_or_default();
+    Ok(arr
+        .iter()
+        .map(|r| {
+            let id = r["id"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| r["id"].as_i64().map(|n| n.to_string()))
+                .unwrap_or_default();
+            let kind = r["detector"]
+                .as_str()
+                .or_else(|| r["kind"].as_str())
+                .unwrap_or("")
+                .to_string();
+            // The graph names the node; the others carry a title already.
+            let title = r["title"].as_str().map(str::to_string).unwrap_or_else(|| {
+                let subject = r["subject_name"].as_str().unwrap_or("");
+                let other = r["other_name"].as_str().unwrap_or("");
+                if other.is_empty() {
+                    subject.to_string()
+                } else {
+                    format!("{subject}  +  {other}")
+                }
+            });
+            let detail = r["evidence"]
+                .as_str()
+                .or_else(|| r["detail"].as_str())
+                .unwrap_or("")
+                .to_string();
+            ReviewRow {
+                id,
+                kind,
+                title,
+                detail,
+            }
+        })
+        .collect())
+}
+
 pub struct QueuesModal {
     pub level: Level,
+    /// Rows and verbs for the generic review level, set when it is entered.
+    pub review: Vec<ReviewRow>,
+    pub review_source: Option<ReviewSource>,
     pub queues: Vec<QueueRow>,
     pub proposers: Vec<ProposerRow>,
     pub candidates: Vec<CandidateRow>,
@@ -258,6 +384,8 @@ impl QueuesModal {
         Self {
             level: Level::Queues,
             queues,
+            review: vec![],
+            review_source: None,
             proposers: vec![],
             candidates: vec![],
             groups: vec![],
@@ -303,6 +431,7 @@ impl QueuesModal {
             Level::Candidates => self.visible_candidates().len(),
             Level::Groups => self.groups.len(),
             Level::Items => self.items.len(),
+            Level::Review => self.review.len(),
         }
     }
 
@@ -364,6 +493,14 @@ impl QueuesModal {
 
     fn title(&self) -> String {
         match self.level {
+            Level::Review => {
+                let label = self
+                    .review_source
+                    .as_ref()
+                    .map(|s| s.label.as_str())
+                    .unwrap_or("proposals");
+                format!(" review · {label} — {} waiting ", self.review.len())
+            }
             Level::Queues => {
                 let total: usize = self.queues.iter().filter_map(|q| q.depth).sum();
                 format!(" review — {total} waiting ")
@@ -420,6 +557,7 @@ impl QueuesModal {
 
     fn key_strip(&self) -> String {
         match self.level {
+            Level::Review => "j/k · a accept (applies it) · r reject · Esc back".into(),
             Level::Queues => "j/k move · Enter open · ? help · Esc close".into(),
             Level::Proposers => {
                 "j/k · Enter classes · s similar EVERYWHERE · t evidence filter · Esc · ? help"
@@ -459,6 +597,7 @@ impl QueuesModal {
             Level::Candidates => self.candidate_lines(),
             Level::Groups => self.group_lines(),
             Level::Items => self.item_lines(),
+            Level::Review => self.review_lines(),
         };
 
         let width = 122u16.min(frame.area().width);
@@ -512,6 +651,46 @@ impl QueuesModal {
             Paragraph::new(body).scroll((self.list_scroll(list.height), 0)),
             list,
         );
+    }
+
+    fn review_lines(&self) -> Vec<Line<'static>> {
+        if self.review.is_empty() {
+            return vec![Line::styled(
+                "  nothing waiting",
+                Style::new().fg(Color::DarkGray),
+            )];
+        }
+        let mut out = Vec::new();
+        for (i, r) in self.review.iter().enumerate() {
+            let here = i == self.selected;
+            out.push(Line::from(vec![
+                Span::styled(if here { "▸ " } else { "  " }, Style::new().fg(Color::Cyan)),
+                Span::styled(
+                    format!("{:<22} ", truncate(&r.kind, 22)),
+                    Style::new().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    truncate(&r.title, 88),
+                    if here {
+                        Style::new().fg(Color::White).bold()
+                    } else {
+                        Style::new().fg(Color::White)
+                    },
+                ),
+            ]));
+            // The evidence only under the cursor: it is the sentence the
+            // decision rests on and it is long, so showing every row's would
+            // make the list unreadable and hide the one being decided.
+            if here && !r.detail.is_empty() {
+                for chunk in wrap_detail(&r.detail, 96) {
+                    out.push(Line::styled(
+                        format!("      {chunk}"),
+                        Style::new().fg(Color::DarkGray),
+                    ));
+                }
+            }
+        }
+        out
     }
 
     fn queue_lines(&self) -> Vec<Line<'static>> {
@@ -1026,6 +1205,100 @@ pub fn candidates_from_json(text: &str) -> anyhow::Result<Vec<CandidateRow>> {
 
 #[cfg(test)]
 mod tests {
+    // ── the generic review level ──────────────────────────────────────────
+
+    fn row(name: &str, depth: usize, opens: &str) -> QueueRow {
+        QueueRow {
+            name: name.into(),
+            depth: Some(depth),
+            detail: String::new(),
+            opens: opens.into(),
+        }
+    }
+
+    /// Every row that shows a count must be openable. This one shipped
+    /// announcing 28 and answering "no modal for that one yet".
+    #[test]
+    fn every_reviewable_queue_knows_its_verbs() {
+        for (name, graph, verb) in [
+            ("graph entities", true, "proposals"),
+            ("rule proposals", false, "proposals"),
+            ("harness changes", false, "harness"),
+        ] {
+            let src = row(name, 3, "")
+                .review_source()
+                .unwrap_or_else(|| panic!("{name} has no review source"));
+            assert_eq!(src.graph, graph, "{name}");
+            assert_eq!(src.list, vec![verb, "list", "--json"], "{name}");
+            assert_eq!(src.accept, vec![verb, "accept"], "{name}");
+            assert_eq!(src.reject, vec![verb, "reject"], "{name}");
+        }
+        // The graph's FACT queue keeps its own four-level review; it is not
+        // a flat accept/reject list and must not be routed here.
+        assert!(row("graph candidates", 9, "").review_source().is_none());
+        assert!(row("outbox drafts", 6, "").review_source().is_none());
+    }
+
+    /// One parser, two shapes: the graph answers a rich object with node
+    /// ids and evidence, mecha's two answer the common four fields. Forcing
+    /// either to the other's schema would be a third thing to keep in step.
+    #[test]
+    fn one_parser_reads_every_stores_listing() {
+        let graph = r#"[{"id":20,"detector":"near_duplicate_person","kind":"merge",
+            "subject_id":"person-a","subject_name":"Conan Moore",
+            "other_id":"person-b","other_name":"Conan F Moore",
+            "evidence":"one name is the other plus an initial","status":"pending"}]"#;
+        let rows = review_from_json(graph).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "20", "a numeric id becomes a string");
+        assert_eq!(rows[0].kind, "near_duplicate_person");
+        assert_eq!(rows[0].title, "Conan Moore  +  Conan F Moore");
+        assert!(rows[0].detail.contains("plus an initial"));
+
+        let rules = r#"[{"id":"20260823T123035-5678d075","kind":"behavior",
+            "title":"5 rule(s) from 10 reflection(s)","detail":"pending"}]"#;
+        let rows = review_from_json(rules).unwrap();
+        assert_eq!(rows[0].id, "20260823T123035-5678d075");
+        assert_eq!(rows[0].title, "5 rule(s) from 10 reflection(s)");
+
+        // A proposal with no second node shows just the one.
+        let single = r#"[{"id":1,"detector":"malformed_name","subject_name":"A]], [[B",
+            "other_name":"","evidence":"two people"}]"#;
+        assert_eq!(review_from_json(single).unwrap()[0].title, "A]], [[B");
+    }
+
+    /// Display code for three stores it does not own: a shape it cannot read
+    /// is an empty list plus the caller's error, never a panic.
+    #[test]
+    fn an_unreadable_listing_does_not_panic() {
+        assert!(review_from_json("not json").is_err());
+        assert!(review_from_json("{}").unwrap().is_empty());
+        assert!(review_from_json("[]").unwrap().is_empty());
+        // A row missing every field still parses to something renderable.
+        let rows = review_from_json(r#"[{}]"#).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].id.is_empty());
+    }
+
+    /// The review level draws at sizes that would panic an inline clamp —
+    /// the `list_height` rule, with the assertion being the draw itself.
+    #[test]
+    fn the_review_level_draws_at_tiny_sizes() {
+        let mut m = QueuesModal::new(vec![row("graph entities", 28, "")]);
+        m.level = Level::Review;
+        m.review_source = row("graph entities", 28, "").review_source();
+        m.review = review_from_json(
+            r#"[{"id":1,"detector":"absorbing_node","subject_name":"SPSP Reedie Reunion",
+                 "evidence":"carries 473 conversational mentions against 1 of its own"}]"#,
+        )
+        .unwrap();
+        for (w, h) in [(1, 1), (4, 2), (10, 4), (20, 5), (80, 24)] {
+            let backend = ratatui::backend::TestBackend::new(w, h);
+            let mut term = ratatui::Terminal::new(backend).unwrap();
+            term.draw(|f| m.draw(f)).unwrap();
+        }
+    }
+
     use super::*;
 
     /// An unreadable store must not render as an empty one.
