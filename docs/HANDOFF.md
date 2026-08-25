@@ -100,19 +100,28 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,367 tests**, no failures — measured 2026-08-25 at a9b26eb, after
-the voice-session arc (466 in `mecha-cli` with 1 ignored, 680 in the
+Expect **1,370 tests**, no failures — measured 2026-08-25 on the merged
+tree at e3af3b6 (466 in `mecha-cli` with 1 ignored, 683 in the
 `mecha-core` lib suite, 129 in `mecha-mail` plus 1 in its `mecha-mail`
 binary, 75 in `mecha-slack`, 15 across the two integration suites that need
-real backends, and 1 doctest). The 24 over v0.1.13's 1,343 are **entirely
-`mecha-cli`**, and attributed exactly rather than estimated — 19 added
-between the tag and c2ca24b (the `/queues` proposal review and queue-age
-work, `/entity`'s search and merge keys, the mail-classify fixes and
-`harness`/`review`/`proposals`), and 5 by the voice-session arc itself (the
-two session headers, the voice block's switch-into-speech rule, and the
-three that pin what a spoken turn reads back as). Note the earlier line
-said "2 doctests" where there is one plus a single test in the `mecha-mail`
-binary; the total was right and the breakdown was not.
+real backends, and 1 doctest). The 27 over v0.1.13's 1,343 are attributed
+exactly rather than estimated, and across three lanes that ran the same
+day: **3 in `mecha-core`** (`outbox_source`'s returned-id join, 5b187c5),
+**19 in `mecha-cli`** from the review-surfaces day (the `/queues` proposal
+review and queue-age work, `/entity`'s search and merge keys, the
+mail-classify fixes, `harness`/`review`/`proposals`), and **5 in
+`mecha-cli`** from the voice-session arc (the two session headers, the
+voice block's switch-into-speech rule, and the three that pin what a spoken
+turn reads back as).
+
+**Measure the merge, not either side of it** — the lesson of this
+particular count. Three sessions landed work the same afternoon, and two
+of them each wrote down a figure measured on their own tip (1,365 and
+1,367); neither described the tree anyone would check out, and the second
+also missed 5b187c5 entirely, because it arrived through a merge and not
+in the linear log the sweep had walked. Note also that the earlier line
+said "2 doctests" where there is one plus a single test in the
+`mecha-mail` binary; the total was right and the breakdown was not.
 
 The previous figure was **1,343**, re-measured at the v0.1.13 tag
 (068a659); the same number was measured earlier at f6a39a5, the
@@ -151,16 +160,17 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 680 |
+| `mecha-core` unit | 683 |
 | `mecha-cli` unit | 466 (1 ignored) |
 | `mecha-mail` unit | 129 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
 | doctest | 1 |
 
-Measured 2026-08-25 at a9b26eb. The table had drifted two counts behind the
-prose above it, which is the failure mode of stating one fact twice — read
-the prose if they ever disagree again, and fix the table.
+Measured 2026-08-25 on the merged tree at e3af3b6. The table had drifted
+two counts behind the prose above it, which is the failure mode of stating
+one fact twice — read the prose if they ever disagree again, and fix the
+table.
 
 The integration tests need docker (with `debian:stable-slim` and `python:3-slim`
 pulled) and `python3`; without them they skip and say so. CI sets
@@ -306,7 +316,7 @@ own `/api/offer` proxy rather than directly). Web assets live at `~/.mecha/web/d
 them. 8080 re-verified this date: `total_slots=4`, `n_ctx` 262,144/slot,
 vision true. **Re-verified 2026-08-25** and all four unchanged
 (`total_slots=4`, `n_ctx` 262,144/slot, `model_alias qwen3.6-35b-a3b`,
-`modalities.vision` true). Workspace tests **2026-08-25: 1,367 pass, 0
+`modalities.vision` true). Workspace tests **2026-08-25: 1,370 pass, 0
 fail**. Eval: 36 cases, 15 tags, plus 10 graph cases — all three re-counted
 2026-08-25, unchanged. The `[web]` section is live in `~/.mecha/config.toml` —
 safe now that every installed binary parses it; the outage its early
