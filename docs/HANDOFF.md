@@ -285,8 +285,8 @@ Production is now **one `mecha-serve.service`** (user unit, `mecha serve
 --voice-port 8990 --voice-yes`) owning `:63242` (web, fronted by `tailscale
 serve :8443`) and the loopback voice facade on `:8990`; `mecha-voice-serve`
 is retired (disabled). New units beside it: `mecha-parakeet` (`:8992`, STT)
-and `mecha-voice-worker` (`:7860`, Pipecat; tailscale serves the voice page
-at `:443` with `/api` proxied to it). Web assets live at `~/.mecha/web/dist`
+and `mecha-voice-worker` (`:7860`, Pipecat, reached through `mecha serve`'s
+own `/api/offer` proxy rather than directly). Web assets live at `~/.mecha/web/dist`
 — a build artifact, not in git; the `update` skill's surface 1b rebuilds
 them. 8080 re-verified this date: `total_slots=4`, `n_ctx` 262,144/slot,
 vision true. Workspace tests: **1,343 pass, 0 fail**. Eval: 36 cases, 15
@@ -296,6 +296,34 @@ arrival caused is in HISTORY under Traps → Environment. A `llama-voxtral`
 unit still exists at the *system* level (voice arc's; healthy per their
 2026-08-24 check, no longer the STT seat) — query it with plain
 `systemctl`, not `--user`, or it misreads as inactive.
+
+**2026-08-25 (~01:00) — the installed binary is ahead of the tag, and
+`--version` cannot say so.** `~/.cargo/bin/mecha` was reinstalled from mecha
+main at `1de4274`, two commits past `v0.1.13` (`proposals`/`harness list
+--json`, and `/queues` reviewing all three proposal stores in place instead
+of announcing a count and refusing to open). The workspace version was not
+bumped, so **`mecha --version` reports 0.1.13 while the binary is main** —
+the "a version string is not evidence" trap above, arriving through the door
+that looks most like evidence. The behavioural check is `mecha harness list
+--help` carrying `--json`; the install timestamp is 00:56.
+
+**Three services were deliberately left on the old inode.** `mecha-serve`
+(2012985), `mecha-slack` (2013005) and `mecha-triggers` (2013011) all read
+`(deleted)` on `/proc/<pid>/exe` and that is **intended, not drift**: neither
+change touches any of them, and `mecha-serve` is now the live web *and* voice
+door, so bouncing it to pick up a TUI modal would drop an in-flight call for
+nothing. The `update` skill's stale-process sweep will flag all three —
+restart them on the next change that actually reaches them, not because the
+sweep says so.
+
+**`:443` now serves the app, and the standalone voice page is gone.**
+`tailscale serve` proxies both `:443` and `:8443` to `127.0.0.1:63242`, so the
+two doors are the same surface; `scripts/voice/page/` was deleted and
+`voice-core.js` moved up to `scripts/voice/`. Verified live this date from
+`tailscale serve status`. The docs site was rebuilt but **not deployed**, so
+<https://docs.mecha-factory.ai/docs/features/voice> still says "two places to
+talk from" — confirmed by fetching it this date — until someone pushes the
+site. That deploy is the one thing this pass left undone.
 
 | Port | Model | State |
 |---|---|---|
