@@ -151,10 +151,10 @@ impl EntityModal {
             return;
         }
         let area = frame.area();
-        // Two reserved rows: the query line and the status line. The
+        // Three reserved rows: query, keys and status. The
         // `list_height` rule — an inline clamp here saturates to zero on a
         // four-row terminal and panics on `min > max`.
-        let rows = list_height_reserving(self.body_lines() as u16, area.height, 2);
+        let rows = list_height_reserving(self.body_lines() as u16, area.height, 3);
         let box_area = centered(area, area.width.saturating_sub(6).min(110), rows);
         frame.render_widget(Clear, box_area);
 
@@ -232,6 +232,33 @@ impl EntityModal {
             }
         }
 
+        // The keys live INSIDE the box, not in the border title. A border
+        // title is truncated to the box width without saying so, and the
+        // keys that get cut are the ones at the end — which is how `m
+        // merge` came to be advertised nowhere at all while the feature
+        // shipped. A line in the body wraps instead of vanishing.
+        lines.push(Line::styled(
+            match (&self.edit, &self.merge_confirm, &self.merge_keep) {
+                (Some((kind, buf)), ..) => format!("  {}  {buf}▌", kind.title()),
+                (_, Some((_, keep, _, dup)), _) => format!(
+                    "  merge {dup:?} INTO {keep:?}?  THIS CANNOT BE UNDONE  ·  y confirm  ·  any other key cancels"
+                ),
+                (_, _, Some(_)) => {
+                    "  ◆ keeping this one — move to the duplicate and press m again  ·  esc cancels"
+                        .to_string()
+                }
+                _ => "  ↑↓ move · enter search · r rename · a alias · m merge · ctrl-n new person · ? help · esc"
+                    .to_string(),
+            },
+            Style::new().fg(if self.merge_confirm.is_some() {
+                Color::Red
+            } else if self.edit.is_some() || self.merge_keep.is_some() {
+                Color::Yellow
+            } else {
+                Color::DarkGray
+            }),
+        ));
+
         lines.push(Line::styled(
             match &self.status {
                 Some(s) => format!("  {s}"),
@@ -240,13 +267,8 @@ impl EntityModal {
             Style::new().fg(Color::Yellow),
         ));
 
-        let title = match &self.edit {
-            Some((kind, buf)) => format!("{}  {buf}▌", kind.title()),
-            None => {
-                " /entity · enter search · ↑↓ · r rename · a alias · ctrl-n new · ? help · esc "
-                    .to_string()
-            }
-        };
+        let title = " /entity — who is who in the knowledge graph ".to_string();
+
         let border = if self.merge_confirm.is_some() {
             Color::Red
         } else if self.edit.is_some() || self.merge_keep.is_some() {
@@ -268,7 +290,9 @@ impl EntityModal {
     }
 
     fn body_lines(&self) -> usize {
-        let mut n = 1 + self.rows.len().max(1);
+        // +1 for the key line, which is part of the body now rather than
+        // the border.
+        let mut n = 2 + self.rows.len().max(1);
         if let Some(row) = self.selected_row() {
             if !row.aliases.is_empty() {
                 n += 1;
@@ -438,6 +462,69 @@ mod tests {
         assert_eq!(EditKind::Rename.verb(), "rename");
         assert_eq!(EditKind::Alias.verb(), "alias");
         assert_eq!(EditKind::NewPerson.verb(), "new-person");
+    }
+
+    /// Render the modal to a buffer and read the text back. The merge key
+    /// shipped advertised NOWHERE — a patch to the border title silently
+    /// failed to apply and nothing asserted on what a user actually sees.
+    /// A test that reads the rendered surface is the only kind that catches
+    /// that; one asserting on the format string would have passed.
+    fn rendered(m: &EntityModal, w: u16, h: u16) -> String {
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| m.draw(f)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn every_key_the_modal_answers_to_is_visible_on_it() {
+        let mut m = EntityModal::new();
+        m.install(sample());
+        let screen = rendered(&m, 130, 24);
+        for key in [
+            "r rename",
+            "a alias",
+            "m merge",
+            "ctrl-n new person",
+            "? help",
+            "esc",
+        ] {
+            assert!(
+                screen.contains(key),
+                "{key:?} is not shown anywhere:\n{screen}"
+            );
+        }
+    }
+
+    /// The two merge states say what to do next, and the irreversible one
+    /// says so in as many words.
+    #[test]
+    fn the_merge_states_explain_themselves() {
+        let mut m = EntityModal::new();
+        m.install(sample());
+
+        m.merge_keep = Some("person-1".into());
+        let marked = rendered(&m, 130, 24);
+        assert!(marked.contains("press m again"), "{marked}");
+
+        m.merge_confirm = Some((
+            "person-1".into(),
+            "Grace Choi".into(),
+            "person-2".into(),
+            "Youn Ji Choi".into(),
+        ));
+        let confirming = rendered(&m, 130, 24);
+        assert!(confirming.contains("CANNOT BE UNDONE"), "{confirming}");
+        assert!(confirming.contains("y confirm"), "{confirming}");
+        assert!(
+            confirming.contains("Youn Ji Choi") && confirming.contains("Grace Choi"),
+            "the confirmation must name both sides: {confirming}"
+        );
     }
 
     /// The `list_height` rule: the assertion is the draw itself. A modal
