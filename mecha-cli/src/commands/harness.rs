@@ -184,14 +184,28 @@ async fn ruminate(
     println!("change:    {}", cand.change);
     println!("predicts:  lower {:?}", cand.metric);
     println!("because:   {}", cand.rationale);
+    // Printed, not only stored: the nightly's log is where a pattern of
+    // mislabels would first be visible, and a candidate nobody opens is one
+    // nobody sees the note on.
+    if let Some(note) = &proposal.reclassified {
+        println!("note:      {note}");
+    }
 
     match proposal.class {
         ChangeClass::Security => {
-            cand.reason = Some(
+            let mut reason = String::new();
+            // The mislabel leads, because it is the part a reviewer most needs
+            // and the part the standing warning cannot imply: it says the
+            // proposer's own account of its change did not match the change.
+            if let Some(note) = &proposal.reclassified {
+                reason.push_str(note);
+                reason.push_str(" — ");
+            }
+            reason.push_str(
                 "security-class: never measured and never auto-applied — a loop that can \
-                 argue for widening its own confinement will eventually argue well"
-                    .into(),
+                 argue for widening its own confinement will eventually argue well",
             );
+            cand.reason = Some(reason);
             store.write(&cand)?;
             println!(
                 "\nstaged for review (security-class; `mecha harness show {}`)",

@@ -1750,6 +1750,34 @@ Two rules are structural rather than instructed:
   lifted from a page cannot survive that; a conclusion drawn from one can.
   Eight because shorter runs collide on ordinary technical prose, and a check
   that fires on honest proposals gets turned off and protects nothing.
+- **The class is derived from the change, never taken on trust.** The class is
+  what decides whether a human ever sees a proposal — `Security` is never
+  measured and never auto-applied, while `Config` inside the closed override
+  set reaches `measure()` and can auto-accept — and it used to be whatever the
+  model typed on a line. So the boundary described as structural rested on the
+  proposer's own account of what it was proposing. It held anyway, by
+  coincidence: the closed set is four benign knobs, so a security change
+  labelled `config` stuck at `parse_change` for being *outside the set* rather
+  than for being a security change, and the reviewer read the wrong reason. On
+  2026-08-25 the nightly proposed disabling a taint control, classified
+  `config`. `names_guarded_setting` now matches `[security]`, `[sandbox]` and
+  `[outbox]` — three of the four boundaries this file says reach a human
+  however anything scores; the fourth, the path jail, is not configurable and
+  so cannot be proposed — plus every `SecurityConfig` field by its bare name,
+  since the section prefix is the model's to omit and omitting it must not be
+  the way through. Three properties carry it. It **only ever raises** toward
+  review, like a capability override; there is no input that makes a
+  security-class proposal measurable. It **reclassifies rather than refuses**,
+  because a refused proposal leaves no record and the brief carries every
+  prior candidate as "already tried" — a dropped one is free to return
+  tomorrow, where a staged one is both blocked and paid for. And it
+  **over-matches on purpose**: naming a setting is `security.` or `[sandbox]`,
+  so prose *about* the sandbox is not caught, but a sentence ending on the
+  word is — which costs a reviewer a warning they did not need, where missing
+  one costs a confinement change auto-accepted. The mislabel itself rides on
+  the candidate's reason, because a proposer whose account of its own change
+  was wrong is the more interesting record, and a pattern of them is invisible
+  if each is silently corrected.
 
 Smaller things with tests on them: declining to propose is a legitimate answer
 and is never coerced into a change (a diagnostician that always proposes is
