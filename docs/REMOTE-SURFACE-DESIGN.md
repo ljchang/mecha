@@ -107,6 +107,16 @@ run-quality corpus see them for free (the voice D9 precedent). The rail
 lists live sessions first, then resumable recorded ones; resume is
 `mecha`'s existing resume, wired.
 
+**A call is one of these sessions, not a session beside it** (voice D3,
+built 2026-08-25). The page names its session key in the WebRTC offer and
+the facade resolves it through `voice::SessionHost`, so a spoken turn runs
+on the same conversation, taint, transcript and jail as a typed one, and
+the facade holds nothing of its own. `chat::begin_turn` is the single
+implementation both doors go through — the `/tasks` rule (one
+implementation per verb) applied inside the process rather than across a
+CLI boundary, and for the same reason: two constructions of "a run on a web
+session" is how they stop agreeing about the jail and the outbox stamp.
+
 **Not in v1: mirroring a live TUI session.** A `Conversation` has one
 owner (the `/remote-control` rule), and a web view of a TUI-owned session
 is the connector's mirror problem again. The v2 shape already exists on

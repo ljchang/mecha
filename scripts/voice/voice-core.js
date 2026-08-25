@@ -14,9 +14,15 @@
  *
  * Contract:
  *   const session = createVoiceSession({
- *     offerUrl,            // default "/api/offer"; the app passes the
- *                          // worker origin's absolute URL until the
- *                          // process unification gives it a local proxy
+ *     offerUrl,            // default "/api/offer"; serve proxies it to the
+ *                          // loopback worker, so the offer rides the owner
+ *                          // guard and no cross-origin fetch exists to fail
+ *     sessionKey,          // optional: a conversation the host front-end
+ *                          // owns, for the call to speak into rather than
+ *                          // opening one of its own (D3). It rides the
+ *                          // offer because that is the only message sent
+ *                          // before the bot exists, and the bot is what
+ *                          // has to know — the data channel opens too late
  *     onState,             // (name, label) — idle|connecting|listening|thinking|speaking
  *     onTranscript,        // ({who: "user"|"bot", text, interim})
  *     onLevel,             // (0..1) real mic level, for state rings
@@ -42,6 +48,7 @@
 export function createVoiceSession(opts = {}) {
   const cfg = {
     offerUrl: "/api/offer",
+    sessionKey: null,
     onState: () => {},
     onTranscript: () => {},
     onLevel: () => {},
@@ -196,10 +203,17 @@ export function createVoiceSession(opts = {}) {
       pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && res();
       setTimeout(res, 2000);
     });
+    /* `request_data` is pipecat's own passthrough: the runner hands it to
+       the bot as `runner_args.body`, so naming a session needs no patched
+       framework and no second endpoint. Omitted entirely when there is no
+       session to name, so a caller that does not use D3 sends exactly the
+       bytes it always did. */
+    const offerBody = { sdp: pc.localDescription.sdp, type: pc.localDescription.type };
+    if (cfg.sessionKey) offerBody.request_data = { session: cfg.sessionKey };
     const resp = await fetch(cfg.offerUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
+      body: JSON.stringify(offerBody),
     }).catch(() => null);
     if (!resp || !resp.ok) { end("could not reach mecha — tap to retry"); return; }
     await pc.setRemoteDescription(await resp.json());
