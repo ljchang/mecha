@@ -610,6 +610,26 @@ each of which cost something:
   transcribed the intelligible one and refused the garble — correct
   behaviour that looks like a bug. Ground-truth clips must be real
   speech (whisper.cpp's `jfk.wav` is the canonical one).
+**What an interruption leaves behind, measured 2026-08-25.** Read off a
+real interrupted call rather than reasoned about, because it decides
+whether "continue" is a usable thing to say out loud.
+
+- **The assistant's turn is recorded truncated at the cut** — the call
+  ended `"...two research blocks booked on your Dartmouth calendar, a"`,
+  mid-clause. So the model's own context shows it stopping mid-word, which
+  is why **"continue" needs no special handling**: there is no competing
+  task to advance and the evidence of the cut is in the transcript. The
+  ambiguous case is being cut off mid-explanation of something it was also
+  *doing*; "finish what you were saying" disambiguates. Deliberately **not**
+  building a reserved word for this — a magic command in a voice channel
+  fires when you say it in ordinary conversation, which is the closed-enum
+  reasoning arriving through the microphone.
+- **A spurious interruption used to leave an empty user turn in the
+  record.** The same transcript carries `user` with empty content between
+  the tool call and the answer — the noise segment became a turn the model
+  then had to respond to. Gone with the turn-start fix below: no frame, no
+  turn, nothing written.
+
 **The bot stopped talking for sounds with no words in them — fixed by
 never starting the turn, 2026-08-25.** First real-call complaint: mecha
 would cut itself off mid-reply, apparently on typing. The transcript log

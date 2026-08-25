@@ -914,12 +914,51 @@ on this machine. `docs/REMOTE-CONTROL-DESIGN.md` is the design; the arc is in
 Everything here is verified in source as of the date; the arcs' own docs
 (`REMOTE-SURFACE-DESIGN.md`, `VOICE-RESEARCH.md` §7) hold the shipped half.
 
-- **D3's same-session promise is unmet.** An in-chat call is its own
-  conversation (`Chat.svelte` opens a separate `createVoiceSession`; voice
-  slots key their own session ids) and the overlay says so honestly. The
-  voice arc owns the fix (facade adopting the web session key) and the
-  session-key contract is agreed; talking and typing are two transcripts
-  until then.
+- **D3's same-session promise is unmet, and this is the next piece of
+  voice work.** Talking and typing are two transcripts. Scoped 2026-08-25;
+  everything below is verified in source so a cold start needs no
+  re-derivation.
+
+  **The obstacle: `mecha serve` holds two session maps in one process.**
+  `voice::Facade` has `slots: Mutex<HashMap<String, SlotState>>`
+  (`voice/mod.rs:104`), each `Slot` being `{convo: Conversation, session:
+  Session}` (`:79`). `chat::ChatState` has `sessions: Mutex<HashMap<String,
+  WebSession>>` (`serve/chat.rs:75`), each `WebSession` being
+  `{conversation: Option<Conversation>, session: Arc<Session>, workspace,
+  live, events}` (`:80`). Same process, same agent, same prompt cache — two
+  stores, and a call resolves in the wrong one.
+
+  **The key path, end to end:** `worker.py` mints `webrtc-{uuid4[:8]}` per
+  WebRTC connection and stamps it as the `X-Voice-Session` header (pipecat's
+  LLM service exposes `default_headers` but no `user` field); the facade's
+  `session_key()` (`voice/mod.rs:384`) prefers that header, then OpenAI's
+  `user` field, then `"default"`. So the plumbing to carry a *chosen* key
+  already exists in both directions — what is missing is the page passing
+  its chat key down and the facade resolving against `ChatState` instead of
+  its own map.
+
+  **Two shapes, and the smaller one was rejected.** (a) The call *is* the
+  chat session: one conversation, no merge, no seam, and "continue" works
+  across the modal closing because there never was one. (b) Merge the voice
+  conversation onto the web session when the modal closes — much smaller,
+  and it buys a **duplicate record**: those turns would then exist in two
+  session JSONLs, so `recall`, `distill` and the run-quality corpus each
+  count them twice. That is the second-copy-that-can-disagree shape this
+  project refuses everywhere else, so (a) is the plan.
+
+  **What is not broken, so scope stays honest:** nothing is lost today.
+  Voice calls are ordinary session transcripts (`voice: <key>` titles) in
+  the same store as web chat, `/api/history` already lists them tagged
+  `kind: "voice"` beside `"web"` (`serve/chat.rs:897`, the retain on
+  `"web: "`/`"voice: "` prefixes), and `POST /api/resume` restores messages
+  **and taint** through `Session::load`. The gap is two threads where one
+  was promised, not lost work.
+
+  **Watch item for whoever builds it:** `WebSession.conversation` is an
+  `Option` on purpose — moved out while a run holds it, to keep the map
+  single-writer on the Slack connector's pattern. A voice turn arriving
+  mid-web-run must not find `None` and mint a second conversation, which is
+  exactly the bug this change could introduce while appearing to work.
 - **The owner's first-day feedback backlog is `REMOTE-SURFACE-DESIGN.md`
   §12** — chat model switching, a plain mail inbox + compose, notes/tasks
   voice capture and listings, the task→agent handoff (the big one), Home
