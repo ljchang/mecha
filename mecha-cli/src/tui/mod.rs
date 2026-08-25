@@ -8517,8 +8517,18 @@ mod tests {
             "the modal survives cancelling an edit"
         );
         assert!(app.entities.as_ref().unwrap().edit.is_none());
+        // Then the search clears, and only then does the modal close —
+        // three layers, three presses. This assertion used to expect two,
+        // and updating it IS the behaviour change: there was previously no
+        // way to start a second lookup without leaving.
         ent_press(&mut app, KeyCode::Esc);
-        assert!(app.entities.is_none());
+        assert!(
+            app.entities.is_some(),
+            "the second esc clears the search, it does not close"
+        );
+        assert!(app.entities.as_ref().unwrap().rows.is_empty());
+        ent_press(&mut app, KeyCode::Esc);
+        assert!(app.entities.is_none(), "the third esc closes it");
     }
 
     /// Esc peels one layer at a time. Without this there was no way to
