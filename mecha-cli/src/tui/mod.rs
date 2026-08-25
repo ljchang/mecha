@@ -4970,7 +4970,38 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
             // Nothing. a/r are the verbs here, and a key that looks like
             // "open" but silently decides would be the worst possible
             // default on a surface whose whole job is deciding.
-            queues::Level::Review => {}
+            queues::Level::Review => {
+                // Read it whole before deciding. The list line is a summary
+                // — "5 rule(s) from 10 reflection(s)" is a count, not
+                // something anyone can accept on — so the item has to be
+                // openable or `a` is a blind keystroke.
+                //
+                // This arm was a no-op with a comment arguing it should be,
+                // and the argument was right until the detail view existed:
+                // a key that reads as "open" but silently DECIDES is a bad
+                // default on a deciding surface, so Enter did nothing while
+                // a/r were the only verbs. Adding `show` inverted it and the
+                // comment survived as a fossil. The compiler said so — `field
+                // `show` is never read` — for every build in between.
+                let Some(src) = modal.review_source.clone() else {
+                    return Ok(());
+                };
+                let Some(row) = modal.review.get(modal.selected) else {
+                    return Ok(());
+                };
+                let mut argv: Vec<String> = src.show.clone();
+                argv.push(row.id.clone());
+                let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+                let out = if src.graph {
+                    graph_cli_raw(&refs)
+                } else {
+                    self_cli_capture(&refs)
+                };
+                match out {
+                    Ok(t) => modal.review_detail = Some(t),
+                    Err(e) => modal.status = Some(format!("show failed: {e:#}")),
+                }
+            }
             queues::Level::Queues => {
                 let Some(q) = modal.selected_queue() else {
                     return Ok(());
@@ -8569,6 +8600,44 @@ mod tests {
         let m = app.entities.as_ref().unwrap();
         assert!(m.edit.is_none(), "the edit cancelled");
         assert!(!m.rows.is_empty(), "but the search survived");
+    }
+
+    /// A key advertised in the footer must DO something. This one was a
+    /// no-op for three commits while the footer said "Enter read it" and
+    /// the compiler warned `field 'show' is never read` — the bug reporting
+    /// itself in two places at once, past a reviewer counting warnings
+    /// instead of reading them.
+    ///
+    /// The assertion is deliberately weak about the outcome and strong
+    /// about the attempt: `show` shells out to a real binary, which will
+    /// fail in a test with no store behind it. Either a detail arrives or a
+    /// status explains why — what must never happen is nothing at all.
+    #[test]
+    fn enter_at_the_review_level_is_not_a_no_op() {
+        let mut app = test_app();
+        let mut m = queues::QueuesModal::new(vec![]);
+        m.level = queues::Level::Review;
+        m.review_source = queues::QueueRow {
+            name: "rule proposals".into(),
+            depth: Some(1),
+            detail: String::new(),
+            opens: String::new(),
+            oldest: None,
+        }
+        .review_source();
+        m.review = queues::review_from_json(
+            r#"[{"id":"nonexistent-id","kind":"behavior","title":"5 rule(s)","detail":"pending"}]"#,
+        )
+        .unwrap();
+        app.queues = Some(m);
+
+        handle_queues_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
+
+        let m = app.queues.as_ref().expect("the modal stays open");
+        assert!(
+            m.review_detail.is_some() || m.status.is_some(),
+            "Enter did nothing at all — it is advertised as 'read it'"
+        );
     }
 
     /// Merging is two keystrokes on two rows, and the first one only marks.
