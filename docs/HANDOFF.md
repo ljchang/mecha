@@ -289,7 +289,7 @@ and `mecha-voice-worker` (`:7860`, Pipecat, reached through `mecha serve`'s
 own `/api/offer` proxy rather than directly). Web assets live at `~/.mecha/web/dist`
 — a build artifact, not in git; the `update` skill's surface 1b rebuilds
 them. 8080 re-verified this date: `total_slots=4`, `n_ctx` 262,144/slot,
-vision true. Workspace tests: **1,343 pass, 0 fail**. Eval: 36 cases, 15
+vision true. Workspace tests: **1,365 pass, 0 fail**. Eval: 36 cases, 15
 tags (unchanged). The `[web]` section is live in `~/.mecha/config.toml` —
 safe now that every installed binary parses it; the outage its early
 arrival caused is in HISTORY under Traps → Environment. A `llama-voxtral`
@@ -297,33 +297,49 @@ unit still exists at the *system* level (voice arc's; healthy per their
 2026-08-24 check, no longer the STT seat) — query it with plain
 `systemctl`, not `--user`, or it misreads as inactive.
 
-**2026-08-25 (~01:00) — the installed binary is ahead of the tag, and
-`--version` cannot say so.** `~/.cargo/bin/mecha` was reinstalled from mecha
-main at `1de4274`, two commits past `v0.1.13` (`proposals`/`harness list
---json`, and `/queues` reviewing all three proposal stores in place instead
-of announcing a count and refusing to open). The workspace version was not
-bumped, so **`mecha --version` reports 0.1.13 while the binary is main** —
-the "a version string is not evidence" trap above, arriving through the door
-that looks most like evidence. The behavioural check is `mecha harness list
---help` carrying `--json`; the install timestamp is 00:56.
+**2026-08-25 (12:53) — the installed binary is ahead of the tag, and
+`--version` cannot say so.** `~/.cargo/bin/mecha` is built from mecha main,
+now well past `v0.1.13`. The workspace version was never bumped, so **`mecha
+--version` reports 0.1.13 while the binary is main** — the "a version string
+is not evidence" trap above, arriving through the door that looks most like
+evidence. The behavioural check is `mecha harness list --help` carrying
+`--json`; the install timestamp is 12:53. `mecha-graph` and
+`mecha-graph-mcp` are both from that repo's main at 12:39 — **two crates,
+two installs**, and the MCP one is the only binary mecha reaches at runtime.
 
-**Three services were deliberately left on the old inode.** `mecha-serve`
-(2012985), `mecha-slack` (2013005) and `mecha-triggers` (2013011) all read
-`(deleted)` on `/proc/<pid>/exe` and that is **intended, not drift**: neither
-change touches any of them, and `mecha-serve` is now the live web *and* voice
-door, so bouncing it to pick up a TUI modal would drop an in-flight call for
-nothing. The `update` skill's stale-process sweep will flag all three —
-restart them on the next change that actually reaches them, not because the
-sweep says so.
+What has landed on main since the tag, beyond the `--json` flags and the
+`/queues` review level: **`/entity` merges two nodes you pick yourself**
+(`m` marks the survivor, `m` again confirms with `y` — the only key on that
+modal that confirms, because it is the only irreversible one), **Esc peels
+one layer at a time there** (merge → edit → search → modal), and **every
+`/queues` row reports how long its oldest item has waited** beside its depth.
+That last closed a real gap: four outbox drafts sat five days behind a row
+reading `6`, visible only to `mecha doctor`. Depth is a snapshot; the surface
+built because a queue reached 6,434 items unnoticed could not show a queue
+growing.
+
+**`mecha-slack` and `mecha-triggers` are on a deleted inode, and that is
+intended.** Both read `(deleted)` on `/proc/<pid>/exe`; nothing landed today
+reaches either, so the `update` skill's stale-process sweep will flag two
+false positives. Restart them on the next change that actually reaches them,
+not because the sweep says so. `mecha-serve` **was** in that set and is not
+any more (pid 2626147, live inode): the outbox source join and the mail
+resolver both run inside it, so it earned the bounce that the earlier changes
+did not. The rule this pass confirmed twice: only `mecha-serve` shells out
+through `/proc/self/exe`, and the `mail-classify` timer needs no restart at
+all because it spawns a fresh `mecha` per run and picks up an install the
+moment it lands.
 
 **`:443` now serves the app, and the standalone voice page is gone.**
 `tailscale serve` proxies both `:443` and `:8443` to `127.0.0.1:63242`, so the
 two doors are the same surface; `scripts/voice/page/` was deleted and
 `voice-core.js` moved up to `scripts/voice/`. Verified live this date from
 `tailscale serve status`. The docs site was rebuilt but **not deployed**, so
-<https://docs.mecha-factory.ai/docs/features/voice> still says "two places to
-talk from" — confirmed by fetching it this date — until someone pushes the
-site. That deploy has since been pushed and verified live.
+the live site served "two places to talk from" until it was pushed. **Deployed
+and verified this date** by fetching
+<https://docs.mecha-factory.ai/docs/features/voice> rather than by reading the
+workflow's green check — the phrase is gone and the app-only wording is
+serving.
 
 **The worktree convention has no retirement policy, and it cost 85 GB.**
 Fourteen worktrees had accumulated under `.claude/worktrees/` and various
@@ -1233,7 +1249,7 @@ Phases 1-3 shipped 2026-08-18: `mail_triage` (archive/read/unread/spam/trash,
 closed enum, both providers), `~/.mecha/mail-triage/` holding one typed verdict
 per thread, the quarantined classifier, `mecha mail
 classify/list/show/dismiss`, the snippet-first escalation rule, and the
-`mecha-mail-classify` timer (05:30 UTC, Dartmouth only, installed and running).
+`mecha-mail-classify` timer (05:30 UTC, installed and running; **both accounts since 2026-08-25**).
 
 **Front-door routing was the original phase 4 and is deleted** (2026-08-19),
 along with `ROUTABLE_TYPES`, `is_routable` and `Proposed::Frontdoor`. Do not
@@ -1346,11 +1362,13 @@ are worth reading together because one absence produced all three:
 **Local state in no repository**, and the next session will want it:
 
 - The classify timer is installed at `~/.config/systemd/user/`.
-- `~/.mecha/mail-triage/` holds 51 records classified across **four** binary
-  generations now, so `request_type` is not consistent across the store and the
-  taxonomy changed again on 2026-08-19. It wants one `mecha mail classify
-  --account dartmouth --limit 50 --force` sweep (~25 min) before any
-  measurement is taken from it. Five of those records carried
+- `~/.mecha/mail-triage/` holds **264 records — 222 dartmouth, 42 personal**
+  (2026-08-25; personal was 0 until that date), classified across several
+  binary generations, so `request_type` is not consistent across the store and
+  the taxonomy changed again on 2026-08-19. It wants one `mecha mail classify
+  --limit 50 --force` sweep before any measurement is taken from it — note the
+  flag no longer names an account, and `--limit` is **per account**, so the
+  sweep is twice the size it used to be. Five of those records carried
   `proposed: frontdoor` and now read as `none` — by design, not by damage.
 - **The corpus is at `~/.mecha/mail-corpus/{dartmouth,personal}.jsonl`**,
   owner-only, outside the repo, `*.jsonl` gitignored so it cannot be staged.
@@ -1358,11 +1376,17 @@ are worth reading together because one absence produced all three:
   analysis; do re-fetch if the window needs extending. The personal half was
   fetched twice — the first was truncated by a 500-per-month cap, now fixed and
   reported when reached.
-- **The personal account should stay out of the nightly**, and this is now
-  measured rather than assumed: it is far more machine-generated than the work
-  account and carries almost no correspondence needing an answer. Adding it
-  would roughly double the thread count for a negligible number of real
-  threads.
+- **The personal account is in the nightly as of 2026-08-25**, reversing the
+  entry that stood here. The measurement behind the old conclusion was right —
+  personal mail is far more machine-generated and carries almost no
+  correspondence needing an answer — and the conclusion drawn from it was
+  backwards. Machine-generated is exactly what the prefilter disposes of for
+  free: the first both-account sweep read 100 threads, and **47 of the 51
+  candidates were disposed without a model**, 4 reaching the classifier. The
+  account excluded for being expensive is the cheap one. What remains true is
+  the *reason* it was excluded originally — the Google grant's 7-day expiry —
+  and that is now survivable rather than fatal; see the classify entry under
+  Traps.
 
 ### TUI polish
 
