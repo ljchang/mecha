@@ -76,7 +76,10 @@ distill.rs   session → episode, staged to the knowledge graph over MCP
 session.rs   append-only JSONL transcripts; a rewrite record when compaction edits history,
              and a `RunStats` outcome record per run — how it went, beside what it said
 runlog.rs    the run-quality corpus: every recorded outcome, read back across sessions
+homeostat.rs the conditions a run happened under, recorded beside what it did
+backlog.rs   what waits on the owner across five stores; one walk, three readers
 candidate.rs a proposed harness change, its falsifiable prediction, and the gate
+sample.rs    seeded uniform draws: the holdout that prioritised replay cannot bias
 diagnose.rs  the one place a model authors a change: counters in, a typed candidate out
 replay.rs    re-run a transcript against its recorded tool results
 replay_run.rs  the driver behind that, shared with the validation probes
