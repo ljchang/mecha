@@ -109,10 +109,11 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,551 tests**, no failures — measured 2026-08-26 late evening on the
-merge of the task-conversation arc into `main` at `be75b73`, which is neither
-side's own number: main's count predates this arc and the arc's predates the
-context-pressure work it merged. That clause is load-bearing and has been
+Expect **1,551 tests**, no failures — measured 2026-08-26 late evening on
+`main` at **4d111d8**, the merge of the task-conversation arc. Neither side's
+own number survived that merge: main's count predated the arc and the arc's
+predated the context-pressure work it merged, so it was re-measured rather
+than picked. That clause is load-bearing and has been
 wrong twice: a count taken while any lane's work sits uncommitted in this
 shared checkout describes one disk and no commit, so say which tree.
 Breakdown: **524** in `mecha-cli` with 1 ignored, **802** in `mecha-core`,
@@ -1089,14 +1090,16 @@ the mechanism and every decision. What it left standing:
   not move, and *let it carry on without me* hands the same transcript to a
   detached child. HISTORY has the narrative and `CLAUDE.md` the invariants.
   What that leaves open:
-  - **Admission control (R1 / phase 6) is now due.** It was deferred with a
-    stated trigger — *"worth building once more than one delegation at a time
-    is routine, and not before"* — and this arc is what makes it routine: a
-    delegation can now run 200 turns on the same llama-server as chat, voice
-    and the triggers. Nothing decides what runs when, and the owner has
-    already asked for the missing half by name (*"when the question is
-    answered it should resume in the queue"* — answering spawns the resumed
-    run immediately). The design's own input for it is R3's measurement.
+  - **Admission control (R1 / phase 6) shipped 2026-08-26**, after R3 was run:
+    `permit.rs`, three background seats against the server's four, interactive
+    work uncounted. What is left of it is the half that was never the point —
+    **there is still no queue.** A refused delegation is told to try again;
+    nothing remembers it and nothing starts it when a seat frees. That is
+    deliberate for now (a queue that starts work unattended is a scheduler,
+    and the trigger daemon is already the place for scheduled runs), but it is
+    the gap between what shipped and what the owner asked for — *"when the
+    question is answered it should resume in the queue"*. Worth building only
+    if refusals actually happen; the permit files make that countable.
   - **`mecha serve` still has no graceful shutdown**, and it now costs more
     than it did: a restart kills a conversation-owned run mid-flight, where a
     handed-over one survives. The conversation itself survives either way

@@ -74,6 +74,7 @@ pub mod message;
 pub mod onboarding;
 pub mod outbox;
 pub mod outbox_source;
+pub mod permit;
 pub mod pressure;
 pub mod provider;
 pub mod quarantine;

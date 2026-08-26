@@ -2420,6 +2420,41 @@ Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
 length bound: this is a record of what was measured, which is what this
 document is for.
 
+**2026-08-26 — slot contention, and the cost that is not prefix churn.** R3's
+question, pointed at concurrency rather than at overnight parking:
+`scripts/slot-contention.py` runs K conversations at once, each six turns over
+a stable ~9,800-token prefix, and reads the server's own
+`prompt eval time = … / N tokens` — small N means the prefix was reused, N in
+the thousands means the transcript was re-prefilled. Against `-np 4`,
+262,144 per slot, on a quiet machine (load 0.32):
+
+| K | requests | wall | throughput | per-turn latency | prefill after turn 1 |
+|---|---|---|---|---|---|
+| 1 | 6 | 42.7s | 1.00× | 7.1s | 31 tokens |
+| 4 | 24 | 108.2s | 1.58× | 18.0s (2.5×) | 31 tokens |
+| 6 | 36 | 153.7s | 1.67× | 25.6s (3.6×) | 31 tokens |
+
+**Six conversations on four slots did not evict each other.** After each
+conversation's first turn, every later request re-prefilled 31 tokens — just
+the new question — with two cache evictions across all three arms and no
+conversation ever re-paying its transcript. That is `-cram` doing what §3.3
+said it does, holding at a load nobody had tested it at, and it **refutes the
+rationale that had been proposed for R1 hours earlier**: a permit count to
+protect prefix reuse would have been protecting something the server already
+protects, and the metric chosen to validate it would have shown no effect.
+
+What over-admission actually costs is **latency, at flat throughput**.
+Throughput saturates at four seats and buys 6% more going to six, while
+per-conversation latency degrades 42%. So a fifth concurrent conversation is
+close to pure loss: no more work done, everybody waits longer. That is the
+number R1's permit count rests on — three background permits against four
+seats, one reserved so the owner's turn stays near 7s instead of near 26s —
+and it is a measurement rather than a guess.
+
+The general shape worth keeping: **the right mechanism can survive the wrong
+reason, and the reason is what the validating metric is chosen from.** Both
+roads led to a permit count; only one of them would have been checkable.
+
 On the original 25 grounded cases, all four local models score 23–24/25 with
 zero malformed arguments and zero invented tools. **That set saturated** — it is
 a floor test, not a ranking test, and it stays in the file as exactly that.
