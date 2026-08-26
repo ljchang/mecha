@@ -203,6 +203,26 @@ async fn answer_and_resume(
     // sees divergence and writes a `rewrite` that clobbers the other's
     // history.
     //
+    // **A resumed delegation takes a seat too when nobody is watching.** It
+    // is still a background run on the shared model, so leaving it uncounted
+    // would make answering a question the way to exceed the pool. What it
+    // does *not* do is wait: the answer is already stored, so a full pool
+    // reports and this verb can simply be run again. An attended resume takes
+    // none, like an attended `tasks work` — the reserve exists for the person
+    // at the keyboard.
+    let _seat = if unattended {
+        match super::tasks::permits()?.take(&format!("answer {}", q.session_id))? {
+            Ok(held) => Some(held),
+            Err(busy) => anyhow::bail!(
+                "the model is busy with {} background run(s) — your answer is saved; run \
+                 `mecha questions answer` again when one ends",
+                busy.len()
+            ),
+        }
+    } else {
+        None
+    };
+
     // Checked before `setup::prepare`, which pays an MCP startup: a refusal
     // that costs a second is a refusal people read.
     //
