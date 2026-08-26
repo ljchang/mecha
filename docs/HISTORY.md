@@ -1803,6 +1803,24 @@ to prevent; a stale `.cancel` could stop the *next* run two seconds in; and
 every task run shared one `TodoTool` key, so the card showed another task's
 plan the moment it began rendering one.
 
+A second lane shipped **task provenance** the same afternoon: a task now
+carries a pointer at what asked for it, so a person deciding "done or do
+next" can read the original instead of searching their own inbox for a
+subject line they half-remember. `captured_from` on the task node
+(`gtd.rs:273`, `CAPTURE_KINDS` at `:234`), a **closed kind set of
+mail | frontdoor | session** — deliberately not slack, because nothing on
+this side can render a Slack thread and a kind with no reader is a button
+that opens nothing — and unknown keys refused, which is what structurally
+keeps it a pointer rather than a copy of an email body. `mail task` writes
+it at capture; `mecha tasks source <id>` (`tasks.rs:401`) follows it with
+one reader per kind; `POST /api/tasks/source` and a `read the …` control on
+the card; the TUI's `o` deliberately off the key strip, because it is inert
+on any task somebody typed and a legend advertising a dead key is the
+dead-affordance problem arriving through the legend.
+
+The two arcs interleaved in `commands/tasks.rs` and `Tasks.svelte`, which
+is its own entry under Traps.
+
 On the web surface: *ask mecha*, *stop*, *open the conversation*, an agent
 chip derived from the board rather than self-reported, `task:` sessions in
 the chat drawer, and the plan rendered in both places you watch a run —
@@ -3023,6 +3041,22 @@ All found by pre-push review or by running it.
   wrong answer is the one you were hoping for.
 
 ### Containment and state
+
+**Two sessions in one checkout is fine until one of them operates on a file
+the other is writing.** Two lanes worked the same tree for an afternoon —
+reading each other's state cost nothing and caught real things (a misplaced
+brace, a wrong install timestamp, a guard one lane needed and the other did
+not). It broke exactly once: told "you go first", one lane lifted the
+other's hunks out of a shared file to commit around them, and in the window
+between the lift and the restore the other built new code against the
+stripped version. Their tree stopped compiling and the cause was not
+theirs. The rule that would have prevented it: **commit order follows who
+is mid-flight, not who offers to go second** — "you go first" is only safe
+once the other party has actually stopped. Two smaller ones that held up:
+restore from a whole-file snapshot rather than a reconstruction (md5 the
+result), and when a whole-tree gate like `cargo fmt --all --check` fails on
+files outside your commit, bypass with the reason written down rather than
+reformatting someone else's work into your change.
 
 **A workaround for a gap that had since closed read as a deliberate rule,
 and broke the feature it was protecting.** `tasks work`'s one-run-per-task
