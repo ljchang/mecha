@@ -57,13 +57,33 @@ pub struct TodoItem {
 /// One conversation's plan: the list, and what the whole of it serves.
 ///
 /// **The goal belongs to the plan and not to each item**, which is a claim
-/// about the world rather than a convenience. `TASK-AGENT-DESIGN.md` D11 is
-/// *one live run per task*, so a run maps to at most one board task and a
-/// per-item reference would model a situation that cannot arise — while
-/// costing a field the model has to repeat correctly on every item of every
-/// write, in the one tool whose whole job is being cheap to keep updated.
+/// about the world rather than a convenience — and it rests on the
+/// conjunction of two facts, one of them very recent.
 ///
-/// It also makes the rendering the design asked for fall out: the goal is one
+/// `TASK-AGENT-DESIGN.md` **D14** keys this tool by the run's workspace: one
+/// workspace, one list. And since `b877e41` (2026-08-26) `tasks work` calls
+/// `work::ensure(task_id)`, so each task run gets a workspace of its own —
+/// before that every task run used the configured workspace and every task on
+/// the board shared one key, which is the bug that commit fixed. Together
+/// those give *one list, one task*, so for a delegated run a per-item goal
+/// models a state that cannot arise, while costing a field the model must
+/// repeat correctly on every item of every write, in the one tool whose whole
+/// job is being cheap to keep updated.
+///
+/// **Not D11.** *One live run per task* is a one-writer rule about two runs
+/// racing; it does not say a run serves only one task, and citing it here
+/// would be the converse of what it states.
+///
+/// **The residual, stated so nobody relies on more than is true.** This tool
+/// is registered once (`setup.rs`) and serves **chat** runs too, keyed by the
+/// same workspace — and a long chat session in one directory legitimately
+/// wanders across goals. There, a reference set early and never revised
+/// becomes a line above the list that misdescribes it. Accepted: the field is
+/// optional, the failure is ordinary staleness the next write corrects, and
+/// per-item references would cost every run to fix the one kind that wanders.
+/// So "cannot arise" is true of task runs and is not universal.
+///
+/// Putting it on the plan also makes the rendering fall out: the goal is one
 /// line *above* the list rather than a suffix that has to be separated from
 /// free-text content on the way back in.
 #[derive(Debug, Clone, Default, PartialEq)]
