@@ -117,7 +117,12 @@
 
   // Poll only while something is actually in flight, and stop when nothing
   // is. A board that reloads forever is a phone that never sleeps.
-  let watching = $state(false);
+  // Deliberately NOT `$state`: reading it inside the effect below would make
+  // it a tracked dependency, so setting it false at the end of a loop would
+  // re-run the effect and start another — defeating the iteration cap
+  // entirely. A task left agent-held by a crashed run then polls forever, and
+  // every poll spawns a child that pays an MCP startup.
+  let watching = false;
   async function watch() {
     if (watching) return;
     watching = true;
@@ -296,15 +301,21 @@
                 }}
               >ask mecha</button>
             {/if}
-            {#if t.session}
+            {#if t.session && !working(t)}
               <!-- The way back into the run that worked this. The board
                    holds the session id, so this is a lookup rather than a
                    search through titles that are not unique. -->
-              <a
+              <!-- A button, not an anchor: the card row is itself a
+                   `<button>`, and interactive content nested in one is invalid
+                   HTML that browsers disagree about and assistive tech cannot
+                   traverse. The navigation is a hash change either way. -->
+              <button
                 class="statusbtn"
-                href={`#chat/${encodeURIComponent(t.session)}`}
-                onclick={(e) => e.stopPropagation()}
-              >open the conversation</a>
+                onclick={(e) => {
+                  e.stopPropagation();
+                  location.hash = `chat/${encodeURIComponent(t.session)}`;
+                }}
+              >open the conversation</button>
             {/if}
             {#each ACTIONS.filter(([status]) => status !== t.status) as [status, verb]}
               <button

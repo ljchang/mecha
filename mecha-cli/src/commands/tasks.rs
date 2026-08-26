@@ -137,12 +137,17 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         Cmd::Stop { task } => {
             if markers()?.request_cancel(&task)? {
                 println!("asked the run on {task} to stop — it finishes the current step first");
+                Ok(())
             } else {
-                // Said rather than pretended: a caller that gets "ok" for a
-                // stop that stopped nothing will believe the run ended.
-                println!("nothing is running on {task}");
+                // **An error, not a message.** Saying it on stdout and exiting
+                // 0 made every caller that checks the status believe the run
+                // had ended — which is precisely the confusion the wording was
+                // written to prevent, surviving only as far as the terminal.
+                // The web page checks `res.ok` and nothing else, so this is
+                // the difference between a card that stops pulsing and one
+                // that lies about it.
+                bail!("nothing is running on {task}")
             }
-            Ok(())
         }
         Cmd::Work {
             task,
@@ -223,6 +228,10 @@ async fn list(global: &GlobalOpts, closed: bool, as_json: bool) -> Result<()> {
         if !tail.is_empty() {
             println!("{:<10}  {}", "", tail.join(" · "));
         }
+        // Where it came from, and how to read it. Its own line rather than a
+        // tail entry because the value is an object, and because this is the
+        // one piece of the row that is a *verb* — the rest describes the task,
+        // this says what to type to see what asked for it.
     }
     println!("\n{} task(s) · today is {today}", items.len());
     Ok(())
@@ -295,7 +304,7 @@ async fn set(
 /// Its own directory rather than the work tree, because these are process
 /// facts with a lifetime of one run — `mecha work clean`'s retention is about
 /// artifacts, and sweeping a live run's marker would make it un-stoppable.
-fn markers() -> Result<mecha_core::runmarker::RunMarkers> {
+pub(crate) fn markers() -> Result<mecha_core::runmarker::RunMarkers> {
     Ok(mecha_core::runmarker::RunMarkers::new(
         mecha_core::work::mecha_home()?.join("taskruns"),
     ))
@@ -379,6 +388,29 @@ async fn work(
     // who just typed the command. `--yes` stays the unattended path, and the
     // phone's button (Phase 4) will acquire its human through the web
     // approver instead.
+    // **Its own workspace, one per task.**
+    //
+    // Every task run used the configured workspace, so every task shared one
+    // `TodoTool` key (D14 keys by jail) — and the moment the card began
+    // *rendering* the plan, opening task A after task B showed B's. A latent
+    // key collision became a visibly wrong plan, which is the shape this
+    // project keeps finding: the display did not cause the bug, it revealed
+    // one that had been silently true.
+    //
+    // `work::producer_dir` is the same mechanism a trigger and a Slack thread
+    // use, and it buys the other thing work directories are for: a durable
+    // place per task that `mecha work clean` retires on the usual policy.
+    // An explicit `-w` still wins, because a person naming a directory means
+    // it.
+    let mut global = global.clone();
+    if global.workspace.is_none() {
+        // The id already reads `task-1a2b3c4d`, so it *is* the producer name —
+        // and `ensure` creates the directory, which `producer_dir` alone does
+        // not.
+        global.workspace = Some(mecha_core::work::ensure(task_id)?);
+    }
+    let global = &global;
+
     // **D3, made explicit rather than inferred.** Interactive when a person
     // ran the command, because they are the human a run acquires more
     // permission by having. Unattended when a detached caller says so — the
@@ -438,14 +470,25 @@ async fn work(
     if matches!(was.as_str(), "done" | "dropped") {
         bail!("{task_id} is {was} — `mecha tasks set {task_id} --status next` reopens it first");
     }
-    // D11 as far as Phase 1 can see it. `waiting` is the board's own record
-    // that somebody already has the ball; without `waiting_on` (the graph
-    // change that is Phase 2) this cannot tell the agent from a person, so it
-    // refuses and names the override rather than guessing which.
-    if was == "waiting" && !again {
+    // **D11: one live run per task, and only that.**
+    //
+    // This keyed on `status == "waiting"` while phase 1 had no way to tell the
+    // agent from a person — and then phase 3 shipped `waiting_on` and nobody
+    // came back to tighten it. Every finished run leaves the task `waiting`,
+    // so the *second* `ask mecha` on any task bailed: detached from the web it
+    // exited 1 into `/dev/null` while the page had already said "handed to
+    // mecha", and the owner saw nothing happen and no reason why. A stale
+    // workaround for a gap that has since closed is worse than the gap.
+    //
+    // Both halves are required. `waiting_on` names the agent for the whole
+    // life of a run *and after a crash*, so it alone would refuse forever; the
+    // marker is the live half and sweeps itself when its process is gone. A
+    // task the agent holds on paper with nothing running is free to start.
+    let held = task["waiting_on"].as_str() == Some(AGENT);
+    if held && markers()?.running(task_id).is_some() && !again {
         bail!(
-            "{task_id} is already waiting on someone — `mecha tasks work {task_id} --again` \
-             starts a run anyway"
+            "{AGENT} is already working {task_id} — `mecha tasks stop {task_id}` ends that run, \
+             or `--again` starts a second one alongside it"
         );
     }
 
@@ -526,6 +569,12 @@ async fn work(
     // makes the next `stop` claim to have stopped something.
     let run_markers = markers()?;
     run_markers.mark_running(task_id, None)?;
+    // Belt and braces on `mark_running`'s own sweep: a cancel written in the
+    // window between `tasks stop`'s liveness check and the previous run's
+    // `clear` outlives it, and `cancel_requested` is a bare existence check.
+    // A run that cancels itself two seconds in and reports a near-empty
+    // partial is indistinguishable from a model that gave up.
+    debug_assert!(!run_markers.cancel_requested(task_id));
 
     // Moved before the model sees anything, so the board tells the truth for
     // the whole time the run is in flight rather than only after it lands —
