@@ -1788,6 +1788,21 @@ precisely not the runs a person needs help finding. The session id is a task
 attribute instead, and is strictly the more general of the two — the
 episode's idempotence key *is* the session id.
 
+A second review at high effort over phases 3–4 found ten more, and the first
+would have shipped a feature that works once: **the D11 guard keyed on
+`status == "waiting"`, which every finished run leaves behind**, so the
+second *ask mecha* on any task bailed — detached from the web it exited 1
+into `/dev/null` while the page had already said "handed to mecha". The
+guard's own comment named the gap ("without `waiting_on` … this cannot tell
+the agent from a person") and phase 3 had closed it hours earlier. Also
+fixed: the resume door moved the board to the agent and never moved it back
+on failure, and wrote no run marker while rendering as running — so *stop*
+found nothing and the card kept pulsing; "nothing to stop" was returned to
+the page as success, defeating the exact confusion its own comment claimed
+to prevent; a stale `.cancel` could stop the *next* run two seconds in; and
+every task run shared one `TodoTool` key, so the card showed another task's
+plan the moment it began rendering one.
+
 On the web surface: *ask mecha*, *stop*, *open the conversation*, an agent
 chip derived from the board rather than self-reported, `task:` sessions in
 the chat drawer, and the plan rendered in both places you watch a run —
@@ -3008,6 +3023,20 @@ All found by pre-push review or by running it.
   wrong answer is the one you were hoping for.
 
 ### Containment and state
+
+**A workaround for a gap that had since closed read as a deliberate rule,
+and broke the feature it was protecting.** `tasks work`'s one-run-per-task
+guard keyed on `status == "waiting"` because phase 1 had no way to tell the
+agent from a person, and said so in a comment naming `waiting_on` as the
+thing that would fix it. Phase 3 shipped `waiting_on` the same day and
+nobody came back. Every finished run leaves a task `waiting`, so the second
+delegation on any task refused — silently, from the web, because the child
+exited 1 into `/dev/null` after the endpoint had already answered ok. The
+general shape: **a temporary check outlives the reason for it and stops
+looking temporary.** A comment naming the thing that will replace it is not
+a reminder; the only reminders that work are the ones that fail. Where a
+workaround cannot be made to fail loudly, it belongs on the same checklist
+as the change that will retire it.
 
 **A tool removed from the parent registry was still reachable through a
 subagent, because the child's copy was made before the removal.**
