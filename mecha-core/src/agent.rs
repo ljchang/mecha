@@ -472,6 +472,12 @@ pub struct Conversation {
     ///
     /// [`Session::record_run`]: crate::session::Session::record_run
     pub rewritten: Vec<Vec<Message>>,
+    /// What the last requests on this conversation cost, so the next one can
+    /// be predicted. Here rather than on the run for the reason `taint` is —
+    /// see [`ContextTracker::carry_into`], which also explains when it resets.
+    ///
+    /// [`ContextTracker::carry_into`]: crate::pressure::ContextTracker::carry_into
+    pub pressure: crate::pressure::ContextTracker,
 }
 
 impl Conversation {
@@ -485,6 +491,7 @@ impl Conversation {
             messages: vec![Message::user(text)],
             taint: Taint::default(),
             rewritten: Vec::new(),
+            pressure: crate::pressure::ContextTracker::default(),
         }
     }
 
@@ -495,6 +502,10 @@ impl Conversation {
             messages,
             taint,
             rewritten: Vec::new(),
+            // A transcript records what runs cost in total and never what the
+            // last request weighed, so a resumed conversation has no anchor
+            // and predicts from its second turn on.
+            pressure: crate::pressure::ContextTracker::default(),
         }
     }
 
@@ -521,6 +532,7 @@ impl From<Vec<Message>> for Conversation {
             messages,
             taint: Taint::default(),
             rewritten: Vec::new(),
+            pressure: crate::pressure::ContextTracker::default(),
         }
     }
 }
@@ -1024,12 +1036,25 @@ impl Agent {
         // snapshot below is: the loop returns from six places, and the count
         // lives in a local behind all of them.
         let mut context_overflows = 0u32;
-        // The size series lives here for the same reason: it is built inside
-        // the loop and read after it, and the loop has six ways out.
-        let mut pressure = crate::pressure::ContextTracker::new();
-        let mut outcome = self
+        // Taken off the conversation and put back below, rather than borrowed
+        // out of it: the loop already holds `&mut convo.messages` for its whole
+        // body, and a second field borrow alongside would mean destructuring
+        // `convo` at the top and rewriting every `convo.taint = …` site with
+        // it. Moving a handful of integers out and back is cheaper to read.
+        let mut pressure = std::mem::take(&mut convo.pressure);
+        // Continued if this run sends the same shape of request the last one
+        // did, discarded if it does not — a `/model` switch replaces the
+        // tokenizer the anchor was measured under.
+        pressure.carry_into(self.request_surface(cx));
+
+        let ran = self
             .run_loop(cx, convo, events, &mut context_overflows, &mut pressure)
-            .await?;
+            .await;
+        // Before the `?`. The series is a fact about the conversation, so a run
+        // that errored still leaves behind what it measured — and the next run
+        // on this conversation is the one that needs it most.
+        convo.pressure = pressure.clone();
+        let mut outcome = ran?;
         outcome.context_overflows = context_overflows;
         // One place, after every exit. The loop returns from six of them, and
         // a snapshot attached at five is worse than one attached at none —
@@ -1040,6 +1065,22 @@ impl Agent {
             .clone()
             .map(|h| h.finish(&pressure, self.context_window));
         Ok(outcome)
+    }
+
+    /// What this run's requests look like apart from their messages.
+    ///
+    /// Read once per run rather than per turn: the surface *can* move mid-run
+    /// — loading a skill narrows the tool list — but the anchor is re-measured
+    /// every turn anyway, so a mid-run change costs one slightly-off
+    /// prediction and corrects itself. The case worth catching is the one that
+    /// happens *between* runs, where nothing else would notice.
+    fn request_surface(&self, cx: &RunContext) -> u64 {
+        let specs = self.registry.specs_for(cx.phase);
+        crate::pressure::surface_fingerprint(
+            &self.model,
+            self.system.as_deref(),
+            specs.iter().map(|s| s.name.as_str()),
+        )
     }
 
     async fn run_loop(
@@ -4410,6 +4451,135 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    /// A second run on the same conversation acts on the first one's
+    /// measurement — which is what `mecha chat` and the TUI are, since one
+    /// submission there is one run.
+    ///
+    /// Sizing this took a wrong turn worth recording. The obvious shape —
+    /// let run 1 grow the transcript with tool calls — cannot work, because
+    /// the predictive check fires *inside* run 1 the turn before the growth
+    /// is priced. That is the feature working, and it means the carried
+    /// anchor is only ever the deciding signal when the transcript grows
+    /// **between** runs: the model answers, and then a large message arrives.
+    /// Which is the ordinary way a chat session gets big.
+    ///
+    /// So: one quiet run to leave a measurement, a big user turn, and a
+    /// second run whose very first check is the assertion. Graded on eviction
+    /// having happened, because the free passes are what that check reaches
+    /// for and they are enough here.
+    #[tokio::test]
+    async fn a_second_run_on_one_conversation_acts_on_the_first_ones_anchor() {
+        let big = "z".repeat(90_000);
+        let bulk = json!({"n": 90_000});
+        let mut history = vec![Message::user("go")];
+        // Two identical calls, so the second run's eviction has something to
+        // supersede.
+        for id in ["a", "b"] {
+            history.push(Message::assistant(vec![Block::ToolUse {
+                id: id.into(),
+                name: "bulk".into(),
+                input: bulk.clone(),
+            }]));
+            history.push(Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: id.into(),
+                content: big.clone(),
+                is_error: false,
+            }]));
+        }
+
+        let provider = SizedProvider::new(
+            None,
+            vec![
+                assistant(vec![Block::text("one")], StopReason::EndTurn),
+                assistant(vec![Block::text("two")], StopReason::EndTurn),
+            ],
+        );
+        let agent = sized_agent(
+            &provider,
+            AgentConfig {
+                compact_at_tokens: Some(50_000),
+                ..AgentConfig::default()
+            },
+        );
+
+        // Run 1 answers in one turn, so its only check runs before it has
+        // measured anything and nothing fires.
+        let mut convo = Conversation::from(history);
+        let first = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(first.text, "one");
+        assert!(
+            convo.rewritten.is_empty(),
+            "run 1's single check had nothing to go on"
+        );
+        let anchor = convo
+            .pressure
+            .reported()
+            .expect("run 1 left its measurement on the conversation");
+        assert!(anchor > 50_000, "and it is over the threshold: {anchor}");
+
+        // The second submission. This check is the whole test: with the
+        // anchor it fires and evicts; without one there is nothing to fire on
+        // and the oversized transcript goes out unexamined.
+        convo.push(Message::user("next"));
+        let second = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(second.text, "two");
+        assert!(
+            !convo.rewritten.is_empty(),
+            "the second run's first check acted on the first run's measurement"
+        );
+        assert_eq!(
+            second.compactions, 0,
+            "and eviction was enough — no summary was paid for"
+        );
+    }
+
+    /// The other half: a `/model` switch rebuilds the agent, and an anchor
+    /// measured under the old tokenizer must not be extrapolated from.
+    #[tokio::test]
+    async fn a_model_switch_discards_the_anchor_instead_of_carrying_it() {
+        let first = SizedProvider::new(
+            None,
+            vec![assistant(vec![Block::text("one")], StopReason::EndTurn)],
+        );
+        let mut convo = Conversation::from(vec![Message::user("a".repeat(30_000))]);
+        sized_agent(&first, AgentConfig::default())
+            .run(&mut convo, None)
+            .await
+            .unwrap();
+        assert!(convo.pressure.reported().is_some());
+
+        // Same conversation, an agent whose surface differs.
+        let second = SizedProvider::new(
+            None,
+            vec![assistant(vec![Block::text("two")], StopReason::EndTurn)],
+        );
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(BulkTool));
+        registry.insert(Arc::new(EchoTool));
+        let switched = Agent::new(
+            shared(&second),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+            AgentConfig::default(),
+            None,
+        )
+        .unwrap();
+
+        convo.push(Message::user("again"));
+        // The anchor from the old surface is dropped at run start; this run's
+        // own measurement is what remains.
+        switched.run(&mut convo, None).await.unwrap();
+        let peak = convo.pressure.peak_tokens();
+        assert!(peak > 0, "the new surface measured its own request: {peak}");
     }
 
     /// The budget narrows as the transcript fills, and the bytes it no longer
