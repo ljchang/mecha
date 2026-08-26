@@ -362,6 +362,40 @@ pub async fn task_stop(State(state): St, Json(body): Json<TaskStopBody>) -> Resp
 }
 
 #[derive(serde::Deserialize)]
+pub struct TaskSteerBody {
+    pub task: String,
+    pub text: String,
+}
+
+/// POST /api/tasks/steer — redirect a run in flight without stopping it.
+///
+/// **The one thing a detached run could not be told.** Everything else the
+/// card offers is a fact about the board; this is text for the run itself,
+/// and the run is in another process — so it travels the way `stop` does, as
+/// a file the runner polls, and lands in the same `queued_input` a TUI's
+/// typed steering goes into. The loop sees what it always saw: an
+/// instruction arriving on the message that carries the tool results.
+///
+/// Synchronous, unlike `work`. Queueing is a file write, and the answer the
+/// page needs — *was anything actually running?* — is known immediately;
+/// spawning it detached would report success for a run that had already
+/// ended, which is the confusion `stop`'s non-zero exit was written to stop.
+pub async fn task_steer(State(state): St, Json(body): Json<TaskSteerBody>) -> Response {
+    let task = body.task.trim();
+    let text = body.text.trim();
+    if task.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which task?\n").into_response();
+    }
+    if text.is_empty() {
+        // Nothing to say is not an instruction. Refused here rather than
+        // queued, because an empty steer would still cost the run a turn's
+        // attention on a user message with no content in it.
+        return (StatusCode::BAD_REQUEST, "steer it with what?\n").into_response();
+    }
+    verb(&state, &["tasks", "steer", task, text]).await
+}
+
+#[derive(serde::Deserialize)]
 pub struct TaskAddBody {
     pub name: String,
     pub due: Option<String>,

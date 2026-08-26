@@ -76,6 +76,46 @@
   // Questions whose answer has been handed to a detached child that has not
   // yet been seen to act.
   //
+  // What the owner is typing at a run in flight, per task. Kept while they
+  // type and cleared only on a queue that actually landed — a steer that was
+  // refused because the run had just ended must leave the words on screen,
+  // or the owner retypes a sentence the machine already ate.
+  let steerText = $state({});
+  let steerNote = $state({});
+
+  // **Steering is not stopping, and the card must not make them look alike.**
+  // `stop` ends the run and keeps the partial turn; this redirects one that
+  // is still going, by queueing text the runner folds into the message
+  // carrying its next tool results. The run is a detached child, so this
+  // cannot be an in-process nudge: it is a file the runner polls, which is
+  // exactly how `stop` already reaches it.
+  async function steer(id) {
+    const text = (steerText[id] ?? '').trim();
+    if (!text || busy) return;
+    busy = true;
+    steerNote = { ...steerNote, [id]: null };
+    try {
+      const res = await fetch('/api/tasks/steer', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ task: id, text }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+      steerText = { ...steerText, [id]: '' };
+      // Said out loud, because nothing visible happens for up to two seconds
+      // and then the change appears inside a transcript this card does not
+      // render. Silence here reads exactly like the button doing nothing —
+      // which is the report that started this whole surface.
+      steerNote = { ...steerNote, [id]: 'queued — it arrives with the run\'s next tool results' };
+    } catch (e) {
+      // The refusal worth wording carefully: a run that ended between the
+      // page's last poll and this tap. The words stay in the box.
+      steerNote = { ...steerNote, [id]: String(e?.message ?? e) };
+    } finally {
+      busy = false;
+    }
+  }
+
   // **The card must stop inviting a second tap.** The endpoint returns as
   // soon as the child is spawned, so the next poll still lists the question
   // and the card used to re-render with every option live and the text box
@@ -857,6 +897,40 @@
               >{openSource === t.id ? 'hide' : 'read'} the {sourceWord(t)}</button>
             {/if}
           </div>
+          <!-- **Talking to a run that is still going.** A sibling of the card
+               row, never inside it: the row is a `<button>`, and an `<input>`
+               nested in one cannot reliably be focused or typed into at all —
+               the same rule the question card follows, one card over.
+
+               Only while a run is in flight, because that is the only time
+               there is anything to steer. When it ends, the way to say
+               something is `open the conversation`, where the words become
+               the next turn — and that button appears in the same slot, so
+               the card always offers exactly one way to talk to this task. -->
+          {#if working(t)}
+            <div class="steer">
+              <input
+                class="steerin"
+                type="text"
+                placeholder="tell it something — it arrives with the next results"
+                bind:value={steerText[t.id]}
+                disabled={busy}
+                onclick={(e) => e.stopPropagation()}
+                onkeydown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') steer(t.id);
+                }}
+              />
+              <button
+                class="statusbtn"
+                disabled={busy || !(steerText[t.id] ?? '').trim()}
+                onclick={(e) => { e.stopPropagation(); steer(t.id); }}
+              >send</button>
+            </div>
+            {#if steerNote[t.id]}
+              <div class="steernote">{steerNote[t.id]}</div>
+            {/if}
+          {/if}
           <div class="grouprow">
             <span class="grouplabel">move it</span>
             {#each LIFECYCLE.filter(([status]) => status !== t.status) as [status, verb]}
@@ -988,6 +1062,31 @@
   .due { display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
   .due.hazard { color: var(--hazard); }
   .dim { color: var(--accent-700); }
+  .steer {
+    display: flex;
+    gap: 0.4rem;
+    margin: 0.5rem 0 0;
+  }
+  .steerin {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg2, #14141c);
+    color: inherit;
+    border: 1px solid var(--line, #2a2a38);
+    border-radius: 6px;
+    padding: 0.45rem 0.6rem;
+    font: inherit;
+    font-size: 0.86rem;
+  }
+  .steerin:focus {
+    outline: none;
+    border-color: var(--accent, #8b7ee8);
+  }
+  .steernote {
+    margin: 0.35rem 0 0;
+    font-size: 0.78rem;
+    opacity: 0.75;
+  }
   .statusrow { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; border-top: 1px solid var(--accent-900); padding-top: 10px; }
   .grouprow { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding-top: 8px; }
   /* The shape the six chips were missing. A label costs one line and turns a
