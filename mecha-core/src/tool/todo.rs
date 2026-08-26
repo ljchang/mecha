@@ -11,6 +11,11 @@
 
 use super::{CarriedState, Tool, ToolCtx, ToolOutput};
 use crate::compact::CARRIED_HEADER;
+use crate::goal::GoalRef;
+
+/// The word introducing the goal line in a rendered plan. One spelling, used
+/// by both [`TodoTool::render`] and the parser that reads it back.
+const SERVING: &str = "serving";
 use crate::message::{Block, Message};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -38,13 +43,33 @@ impl Status {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TodoItem {
     pub content: String,
     pub status: Status,
 }
 
-/// One list per conversation, keyed by the run's workspace.
+/// One conversation's plan: the list, and what the whole of it serves.
+///
+/// **The goal belongs to the plan and not to each item**, which is a claim
+/// about the world rather than a convenience. `TASK-AGENT-DESIGN.md` D11 is
+/// *one live run per task*, so a run maps to at most one board task and a
+/// per-item reference would model a situation that cannot arise — while
+/// costing a field the model has to repeat correctly on every item of every
+/// write, in the one tool whose whole job is being cheap to keep updated.
+///
+/// It also makes the rendering the design asked for fall out: the goal is one
+/// line *above* the list rather than a suffix that has to be separated from
+/// free-text content on the way back in.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Plan {
+    /// What this plan is a decomposition of. `None` is the ordinary case for
+    /// a chat run nobody delegated.
+    pub goal: Option<GoalRef>,
+    pub items: Vec<TodoItem>,
+}
+
+/// One plan per conversation, keyed by the run's workspace.
 ///
 /// It held a single list for the lifetime of the *agent* until 2026-08-26,
 /// which was correct while every front-end holding one served a single
@@ -63,7 +88,7 @@ pub struct TodoItem {
 /// [`Asker::ask_in`]: super::ask::Asker::ask_in
 #[derive(Default)]
 pub struct TodoTool {
-    lists: Mutex<HashMap<PathBuf, Vec<TodoItem>>>,
+    lists: Mutex<HashMap<PathBuf, Plan>>,
 }
 
 impl TodoTool {
@@ -77,8 +102,8 @@ impl TodoTool {
     /// list set by anything other than the model's own `todo` write, or a
     /// faithful restoration of one, is a second author of state the tool is
     /// supposed to own.
-    pub fn set_items_in(&self, workspace: &Path, items: Vec<TodoItem>) {
-        self.lists.lock().unwrap().insert(workspace.into(), items);
+    pub fn set_plan_in(&self, workspace: &Path, plan: Plan) {
+        self.lists.lock().unwrap().insert(workspace.into(), plan);
     }
 
     /// Restore a resumed conversation's plan from its own transcript.
@@ -97,9 +122,9 @@ impl TodoTool {
     /// existing, and the reason the TUI reads a trigger's last answer from the
     /// session file rather than caching it.
     pub fn rehydrate(&self, workspace: &Path, messages: &[Message]) -> Option<usize> {
-        let items = Self::from_transcript(messages)?;
-        let n = items.len();
-        self.set_items_in(workspace, items);
+        let plan = Self::plan_from_transcript(messages)?;
+        let n = plan.items.len();
+        self.set_plan_in(workspace, plan);
         Some(n)
     }
 
@@ -122,6 +147,11 @@ impl TodoTool {
     /// restores nothing now: the tool rejected it, so the list it names never
     /// existed.
     pub fn from_transcript(messages: &[Message]) -> Option<Vec<TodoItem>> {
+        Self::plan_from_transcript(messages).map(|p| p.items)
+    }
+
+    /// The same walk, keeping what the plan serves.
+    pub fn plan_from_transcript(messages: &[Message]) -> Option<Plan> {
         let failed: std::collections::HashSet<&str> = messages
             .iter()
             .flat_map(|m| m.content.iter())
@@ -145,14 +175,21 @@ impl TodoTool {
                             if let Ok(items) =
                                 serde_json::from_value::<Vec<TodoItem>>(items.clone())
                             {
-                                return Some(items);
+                                // Lenient on the way in: this is a record, and
+                                // a kind this binary has not heard of must
+                                // cost the reference rather than the plan.
+                                let goal = input
+                                    .get("serves")
+                                    .and_then(Value::as_str)
+                                    .and_then(GoalRef::parse_lenient);
+                                return Some(Plan { goal, items });
                             }
                         }
                     }
                     Block::Text { text } if text.trim_start().starts_with(CARRIED_HEADER) => {
-                        let items = Self::parse_carried(text);
-                        if !items.is_empty() {
-                            return Some(items);
+                        let plan = Self::parse_carried(text);
+                        if !plan.items.is_empty() {
+                            return Some(plan);
                         }
                     }
                     _ => {}
@@ -167,13 +204,21 @@ impl TodoTool {
     /// The inverse of [`render`](Self::render), and a round-trip test says so.
     /// Stops at the next `## ` because the block carries every stateful tool's
     /// section, not only this one.
-    fn parse_carried(text: &str) -> Vec<TodoItem> {
+    fn parse_carried(text: &str) -> Plan {
         let mut lines = text.lines().skip_while(|l| l.trim() != "## todo");
         if lines.next().is_none() {
-            return Vec::new();
+            return Plan::default();
         }
-        lines
+        let section: Vec<&str> = lines
             .take_while(|l| !l.trim_start().starts_with("## "))
+            .collect();
+        let goal = section.iter().find_map(|l| {
+            l.trim()
+                .strip_prefix(SERVING)
+                .and_then(GoalRef::parse_lenient)
+        });
+        let items = section
+            .iter()
             .filter_map(|line| {
                 let line = line.trim();
                 let (marker, rest) = line.split_at(line.char_indices().nth(3)?.0);
@@ -189,7 +234,8 @@ impl TodoTool {
                     status,
                 })
             })
-            .collect()
+            .collect();
+        Plan { goal, items }
     }
 
     /// One run's list, for a UI that wants to render progress live.
@@ -202,20 +248,32 @@ impl TodoTool {
             .lock()
             .unwrap()
             .get(workspace)
-            .cloned()
+            .map(|p| p.items.clone())
             .unwrap_or_default()
     }
 
-    fn render(items: &[TodoItem]) -> String {
-        if items.is_empty() {
+    /// What this run's plan serves, if it said.
+    pub fn goal_in(&self, workspace: &Path) -> Option<GoalRef> {
+        self.lists.lock().unwrap().get(workspace)?.goal.clone()
+    }
+
+    fn render(plan: &Plan) -> String {
+        if plan.items.is_empty() {
             return "(the list is empty)".to_string();
         }
-        let done = items
+        let done = plan
+            .items
             .iter()
             .filter(|i| i.status == Status::Completed)
             .count();
-        let mut out = format!("{done}/{} done\n", items.len());
-        for item in items {
+        // Above the list, not beside an item: what the steps are *for* is the
+        // half a summariser drops, and it has to be the first thing read back.
+        let mut out = String::new();
+        if let Some(goal) = &plan.goal {
+            out.push_str(&format!("{SERVING} {goal}\n"));
+        }
+        out.push_str(&format!("{done}/{} done\n", plan.items.len()));
+        for item in &plan.items {
             out.push_str(&format!("{} {}\n", item.status.marker(), item.content));
         }
         out
@@ -259,6 +317,12 @@ impl Tool for TodoTool {
                         },
                         "required": ["content", "status"]
                     }
+                },
+                "serves": {
+                    "type": "string",
+                    "description": "Optional. What this whole plan is working toward, as \
+                                    `task:<id>` for a task on the board. Pass it on every \
+                                    write, like `items` — it is replaced, not merged."
                 }
             },
             "required": ["items"]
@@ -285,16 +349,16 @@ impl Tool for TodoTool {
     /// copy of it.
     fn carried_state(&self, ctx: &ToolCtx) -> Option<CarriedState> {
         let lists = self.lists.lock().unwrap();
-        let items = lists.get(&ctx.workspace)?;
+        let plan = lists.get(&ctx.workspace)?;
         // An empty list is genuinely nothing to carry, and an empty section in
         // the prompt reads as "the plan is finished" rather than "there was
         // never a plan".
-        if items.is_empty() {
+        if plan.items.is_empty() {
             return None;
         }
         Some(CarriedState {
             label: "todo".into(),
-            body: Self::render(items),
+            body: Self::render(plan),
         })
     }
 
@@ -360,11 +424,23 @@ impl Tool for TodoTool {
             );
         }
 
-        let rendered = Self::render(&items);
+        // Strict on the way in, unlike every reader of a record: the model can
+        // fix this on the next call, and a silently dropped reference leaves a
+        // plan claiming to serve something it does not.
+        let goal = match input.get("serves").and_then(Value::as_str) {
+            Some(raw) => match raw.parse::<GoalRef>() {
+                Ok(goal) => Some(goal),
+                Err(e) => return Ok(ToolOutput::err(format!("`serves`: {e}"))),
+            },
+            None => None,
+        };
+
+        let plan = Plan { goal, items };
+        let rendered = Self::render(&plan);
         self.lists
             .lock()
             .unwrap()
-            .insert(ctx.workspace.clone(), items);
+            .insert(ctx.workspace.clone(), plan);
         Ok(ToolOutput::ok(format!("{rendered}{note}")))
     }
 }
@@ -417,6 +493,79 @@ mod tests {
         let items = tool.items_in(&ctx.workspace);
         assert_eq!(items.len(), 1, "a write replaces the whole list");
         assert_eq!(items[0].content, "b");
+    }
+
+    #[tokio::test]
+    async fn a_plan_can_name_what_it_serves_and_echoes_it_above_the_list() {
+        let tool = TodoTool::new();
+        let ctx = ToolCtx::default();
+        let out = tool
+            .call(
+                json!({
+                    "items": [{"content": "draft the reply", "status": "in_progress"}],
+                    "serves": "task:01J8ZK",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        // Above the list, because the echo is what the model re-reads every
+        // turn and what survives a compaction.
+        assert!(
+            out.content.starts_with("serving task:01J8ZK\n"),
+            "{}",
+            out.content
+        );
+        assert_eq!(
+            tool.goal_in(&ctx.workspace),
+            Some(GoalRef::Task("01J8ZK".into()))
+        );
+    }
+
+    /// The model-facing direction is strict, the opposite of every reader of a
+    /// record. A dropped reference would leave a plan claiming to serve
+    /// something it does not, and the model can fix this on the next call.
+    #[tokio::test]
+    async fn a_malformed_goal_is_reported_rather_than_silently_dropped() {
+        let tool = TodoTool::new();
+        let ctx = ToolCtx::default();
+        let out = tool
+            .call(
+                json!({
+                    "items": [{"content": "a", "status": "pending"}],
+                    "serves": "epic:7",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("not a kind of goal"),
+            "{}",
+            out.content
+        );
+        assert!(
+            tool.items_in(&ctx.workspace).is_empty(),
+            "a rejected write changes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plan_that_serves_nothing_renders_no_goal_line() {
+        let tool = TodoTool::new();
+        let ctx = ToolCtx::default();
+        let out = tool
+            .call(
+                json!({"items": [{"content": "a", "status": "pending"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert!(out.content.starts_with("0/1 done"), "{}", out.content);
+        assert_eq!(tool.goal_in(&ctx.workspace), None);
     }
 
     #[tokio::test]
@@ -612,17 +761,39 @@ mod tests {
                 status: Status::Pending,
             },
         ];
-        let block = format!(
-            "{CARRIED_HEADER}\n\n## todo\n{}\n",
-            TodoTool::render(&items)
+        // With a goal, because *what the steps are for* is exactly the half a
+        // summariser drops — carrying the list across a compaction and losing
+        // what it serves would reproduce, one field down, the failure
+        // `carried_state` exists to prevent.
+        let plan = Plan {
+            goal: Some(GoalRef::Task("01J8ZK".into())),
+            items: items.clone(),
+        };
+        let block = format!("{CARRIED_HEADER}\n\n## todo\n{}\n", TodoTool::render(&plan));
+        assert!(
+            block.contains("serving task:01J8ZK"),
+            "the goal is rendered above the list: {block}"
         );
-        let back = TodoTool::parse_carried(&block);
 
-        assert_eq!(back.len(), items.len());
-        for (a, b) in back.iter().zip(&items) {
-            assert_eq!(a.content, b.content);
-            assert_eq!(a.status, b.status);
-        }
+        let back = TodoTool::parse_carried(&block);
+        assert_eq!(back, plan);
+
+        // And a plan that serves nothing round-trips as one, rather than
+        // acquiring a reference on the way back.
+        let bare = Plan { goal: None, items };
+        let block = format!("{CARRIED_HEADER}\n\n## todo\n{}\n", TodoTool::render(&bare));
+        assert_eq!(TodoTool::parse_carried(&block), bare);
+    }
+
+    /// A record written by a newer binary naming a kind this one has never
+    /// heard of costs the reference and nothing else. The opposite policy from
+    /// the model-facing direction, which errors — see `goal`.
+    #[test]
+    fn a_carried_goal_of_an_unknown_kind_does_not_cost_the_plan() {
+        let block = format!("{CARRIED_HEADER}\n\n## todo\nserving epic:7\n1/1 done\n[x] mine\n");
+        let back = TodoTool::parse_carried(&block);
+        assert_eq!(back.goal, None);
+        assert_eq!(back.items.len(), 1, "the plan survives its unreadable goal");
     }
 
     /// A block carries every stateful tool's section, so the walk must stop
@@ -631,9 +802,9 @@ mod tests {
     fn a_neighbouring_carried_section_is_not_absorbed() {
         let block =
             format!("{CARRIED_HEADER}\n\n## todo\n1/1 done\n[x] mine\n\n## skill\n[x] not mine\n");
-        let items = TodoTool::parse_carried(&block);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].content, "mine");
+        let plan = TodoTool::parse_carried(&block);
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].content, "mine");
     }
 
     /// A transcript with no plan restores nothing, rather than an empty list
