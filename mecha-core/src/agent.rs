@@ -205,6 +205,18 @@ pub struct RunContext {
     pub cancel: Option<CancellationToken>,
     /// Which tools this run may see at all. See [`Phase`].
     pub phase: Phase,
+    /// Conditions sampled when this run began — see [`Homeostat`].
+    ///
+    /// Opt-in for the same shape of reason `cancel` is: sampling walks five
+    /// stores, and more importantly `mecha eval` and the replay probes must
+    /// not read *live* machine state. A scorecard that varies with how busy
+    /// the box was is not a scorecard, and a replayed arm that samples today's
+    /// backlog measures the afternoon rather than the change. So a front-end
+    /// that records sessions turns this on; a harness that reconstructs a run
+    /// reads what was recorded.
+    ///
+    /// [`Homeostat`]: crate::homeostat::Homeostat
+    pub homeostat: Option<crate::homeostat::Homeostat>,
     /// Compaction threshold for this run, overriding the agent's own.
     ///
     /// Here rather than only in `AgentConfig` for the same reason the budget
@@ -267,6 +279,7 @@ impl Budget {
 impl RunContext {
     pub fn new(tools: ToolCtx, approver: Arc<dyn Approver>) -> Self {
         RunContext {
+            homeostat: None,
             tools: Arc::new(tools),
             approver,
             budget: Budget::default(),
@@ -291,6 +304,15 @@ impl RunContext {
             approver,
             ..self.clone()
         }
+    }
+
+    /// Sample the conditions this run starts under.
+    ///
+    /// Opt-in: see the field. A front-end that records sessions calls this;
+    /// `eval` and the replay probes must not.
+    pub fn with_homeostat(mut self) -> Self {
+        self.homeostat = Some(crate::homeostat::Homeostat::at_start());
+        self
     }
 
     pub fn with_budget(mut self, budget: Budget) -> Self {
@@ -707,6 +729,8 @@ pub struct RunOutcome {
     pub blocked_sends: u32,
     /// Taint state when the run ended.
     pub taint: Taint,
+    /// Conditions the run happened under, when the caller asked for them.
+    pub homeostat: Option<crate::homeostat::Homeostat>,
     pub stop_cause: StopCause,
     /// Cost of this run, when the provider has prices configured.
     pub cost_usd: Option<f64>,
@@ -811,6 +835,19 @@ impl Agent {
     /// Attach per-million-token prices so cost budgets and reporting work.
     pub fn with_pricing(mut self, pricing: Option<Pricing>) -> Self {
         self.pricing = pricing;
+        self
+    }
+
+    /// Sample run conditions on this agent's own context.
+    ///
+    /// Reaches every front-end that calls [`Agent::run`], and deliberately not
+    /// `eval`, `batch` or the replay probes — each of those supplies its own
+    /// [`RunContext`] per case or per item, which leaves the snapshot off.
+    /// That is the same boundary those paths already draw for MCP, hooks,
+    /// learned rules and the outbox, and for the same reason: a measurement
+    /// that varies with how busy the machine was is not a measurement.
+    pub fn with_homeostat(mut self) -> Self {
+        self.cx = std::sync::Arc::new((*self.cx).clone().with_homeostat());
         self
     }
 
@@ -950,6 +987,24 @@ impl Agent {
     /// cache — can then serve concurrent runs that are jailed to different
     /// directories under different permissions.
     pub async fn run_in(
+        &self,
+        cx: &RunContext,
+        convo: &mut Conversation,
+        events: Option<UnboundedSender<AgentEvent>>,
+    ) -> Result<RunOutcome> {
+        let mut outcome = self.run_loop(cx, convo, events).await?;
+        // One place, after every exit. The loop returns from six of them, and
+        // a snapshot attached at five is worse than one attached at none —
+        // a field that is present for most runs reads as a sampling failure
+        // for the rest rather than as the plumbing gap it is.
+        outcome.homeostat = cx
+            .homeostat
+            .clone()
+            .map(crate::homeostat::Homeostat::finish);
+        Ok(outcome)
+    }
+
+    async fn run_loop(
         &self,
         cx: &RunContext,
         convo: &mut Conversation,
@@ -1234,6 +1289,7 @@ impl Agent {
 
                 let cost = self.cost(&usage);
                 let outcome = RunOutcome {
+                    homeostat: None,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -1908,6 +1964,10 @@ impl Agent {
             malformed_tool_args,
             blocked_sends,
             taint,
+            // Filled by `run_in` once, rather than by every builder: the loop
+            // has six exit points and a field set at five of them is worse
+            // than one set at none.
+            homeostat: None,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -2043,6 +2103,7 @@ impl Agent {
             malformed_tool_args,
             blocked_sends,
             taint,
+            homeostat: None,
             stop_cause: StopCause::Interrupted,
             compactions,
             cost_usd: self.cost(&usage),

@@ -248,7 +248,11 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         Some(model.clone()),
     )?
     .with_pricing(provider_cfg.pricing())
-    .with_context_window(provider_cfg.context_window);
+    .with_context_window(provider_cfg.context_window)
+    // Read-only: what the run happened under, recorded beside what it did.
+    // `eval` and the probes build their own per-case contexts and so stay
+    // unsampled — see `Agent::with_homeostat`.
+    .with_homeostat();
 
     if let Some(hooks) = hooks {
         agent.set_hooks(hooks);
