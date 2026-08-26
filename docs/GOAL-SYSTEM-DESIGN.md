@@ -1,7 +1,31 @@
 # The goal system — design
 
-Decided 2026-08-26, **unbuilt**. This is the shape to build, written so
-someone can start.
+Decided 2026-08-26. **Rungs 0–3 of §14 shipped the same day** (PRs #61–#65);
+rung 4 is open in #66. The body below is the design as proposed and is
+deliberately not rewritten — `docs/HISTORY.md` records what was built, and the
+gap between the two is evidence about how the built thing came to be shaped
+that way. Where building corrected the design, the correction is recorded
+beside the original rather than replacing it (§2.1 is both instances).
+
+| rung | what | state |
+|---|---|---|
+| 0 | quarantined-pass constructor, `ProbeKind` | shipped, #62 |
+| 1 | `GoalRef`, the goal on the plan | shipped, #63 |
+| 2 | sign the existing channels (`sent && !edited()`) | shipped, #64 |
+| 3 | the homeostat, read-only | shipped, #65 |
+| 4 | prioritised replay + uniform holdout | open, #66 |
+| 5–11 | predictive compaction onward | unbuilt |
+
+Everything shipped so far has no model, no charter and no adversary in it,
+which is §14's ordering rather than a coincidence.
+
+Three things were deliberately named rather than done, so they are not
+rediscovered as oversights: rewiring `/queues` onto `backlog.rs` (§13.3 — it
+needs either a wider `Backlog` or the loss of its per-item detail lines),
+context pressure on the `Homeostat` (§4, it wants rung 5's in-run tracker
+rather than a field nothing sets), and `/slots` (§4.2, no consumer yet).
+
+This is the shape to build, written so someone can start.
 
 It designs one thing: a representation of **what mecha is for**, the signed
 error signal that falls out of having one, and the three consumers of that

@@ -253,6 +253,18 @@ pub struct RunStats {
     pub blocked_sends: u32,
     #[serde(default)]
     pub compactions: u32,
+    /// Times a prompt was refused as too large and the run recovered.
+    ///
+    /// **`Option`, unlike every other counter here, and the difference is the
+    /// point.** This field exists to be a *baseline* — the thing a change
+    /// claiming to predict overflows is measured against — so the measurement
+    /// spans the moment it was introduced. A row written before that knows
+    /// nothing, and a plain `u32` would read it as a run that overflowed zero
+    /// times, silently diluting the very rate it was added to establish.
+    /// `None` says the sensor was not there. Absent is not zero, the rule
+    /// [`crate::homeostat`] and [`crate::backlog`] both state at length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_overflows: Option<u32>,
     /// The conditions this run happened under, when the front-end asked for
     /// them. Recorded here rather than derived later because a run
     /// reconstructed against *today's* machine state is measuring the
@@ -285,33 +297,103 @@ impl RunStats {
     /// - `usage_complete` is an AND: one lower-bound turn makes the total a
     ///   lower bound.
     pub fn absorb(&mut self, o: &crate::agent::RunOutcome) {
-        self.turns += o.turns;
-        self.usage.add(&o.usage);
-        self.cost_usd = match (self.cost_usd, o.cost_usd) {
+        self.merge(&RunStats::of_run(o));
+    }
+
+    /// Fold another *row* in, by the rules above.
+    ///
+    /// Same code as `absorb`, deliberately: an episode is several runs, and
+    /// something has to be able to rebuild one from the rows a session
+    /// recorded — `harness_probe` sizes its priority signal that way, and it
+    /// has to fold exactly as the arm it will be compared against does. Two
+    /// spellings of this is how a measurement arm and the thing it measures
+    /// stop being comparable without anyone noticing.
+    ///
+    /// `homeostat` is untouched, as it always was: the conditions belong to
+    /// the run that sampled them, and an episode's several runs happened under
+    /// several. The first one set keeps the field.
+    pub fn merge(&mut self, other: &RunStats) {
+        self.turns += other.turns;
+        self.usage.add(&other.usage);
+        self.cost_usd = match (self.cost_usd, other.cost_usd) {
             (Some(a), Some(b)) => Some(a + b),
             (a, b) => a.or(b),
         };
-        self.usage_complete &= o.usage_complete;
-        self.stop_cause = Some(o.stop_cause);
-        self.exhausted = o.exhausted;
-        self.ended_on_failed_call = o.ended_on_failed_call;
-        self.tool_calls += o.tool_calls.len() as u32;
-        // `denied` is excluded, and the exclusion has to be written out: a
-        // denied trace carries `is_error: true` too, so filtering on
-        // `is_error` alone counts every refusal as an environment failure and
-        // averages "the harness working" into the rate the candidate gate and
-        // doctor both threshold on.
-        self.tool_errors += o
-            .tool_calls
-            .iter()
-            .filter(|c| c.unknown || (c.is_error && !c.denied))
-            .count() as u32;
-        self.tool_denied += o.tool_calls.iter().filter(|c| c.denied).count() as u32;
-        self.tool_staged += o.tool_calls.iter().filter(|c| c.staged).count() as u32;
-        self.malformed_tool_args += o.malformed_tool_args;
-        self.blocked_sends += o.blocked_sends;
-        self.compactions += o.compactions;
-        self.taint.merge(o.taint);
+        self.usage_complete &= other.usage_complete;
+        // Last wins, `None` included. Keeping an earlier cause when the
+        // final row has none would invent the one fact the field is about —
+        // doctor's rule for the same value: unrecorded is unknown, never
+        // assumed complete.
+        self.stop_cause = other.stop_cause;
+        self.exhausted = other.exhausted;
+        self.ended_on_failed_call = other.ended_on_failed_call;
+        self.tool_calls += other.tool_calls;
+        self.tool_errors += other.tool_errors;
+        self.tool_denied += other.tool_denied;
+        self.tool_staged += other.tool_staged;
+        self.malformed_tool_args += other.malformed_tool_args;
+        self.blocked_sends += other.blocked_sends;
+        self.compactions += other.compactions;
+        // Summed through the `Option`, on `cost_usd`'s shape above: a live run
+        // always knows its own count, so the `None` case only arises folding a
+        // row read back off disk, and `or` keeps whichever arm had a sensor.
+        // On `merge` rather than in `of_run` alone, so that `episode_stats` —
+        // which rebuilds an episode from recorded rows — folds it too.
+        self.context_overflows = match (self.context_overflows, other.context_overflows) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+        self.taint.merge(other.taint);
+    }
+
+    /// Fold a session's recorded rows into the episode they describe.
+    ///
+    /// The seed is the first row rather than `default()`, because
+    /// `usage_complete` is ANDed down — starting from the default's `false`
+    /// would make every folded episode a lower bound.
+    pub fn fold(rows: impl IntoIterator<Item = RunStats>) -> Option<RunStats> {
+        let mut folded: Option<RunStats> = None;
+        for row in rows {
+            match &mut folded {
+                Some(acc) => acc.merge(&row),
+                None => folded = Some(row),
+            }
+        }
+        folded
+    }
+
+    /// One run's outcome as a row, before any folding.
+    fn of_run(o: &crate::agent::RunOutcome) -> RunStats {
+        RunStats {
+            turns: o.turns,
+            usage: o.usage.clone(),
+            cost_usd: o.cost_usd,
+            usage_complete: o.usage_complete,
+            stop_cause: Some(o.stop_cause),
+            exhausted: o.exhausted,
+            ended_on_failed_call: o.ended_on_failed_call,
+            tool_calls: o.tool_calls.len() as u32,
+            // `denied` is excluded, and the exclusion has to be written out: a
+            // denied trace carries `is_error: true` too, so filtering on
+            // `is_error` alone counts every refusal as an environment failure
+            // and averages "the harness working" into the rate the candidate
+            // gate and doctor both threshold on.
+            tool_errors: o
+                .tool_calls
+                .iter()
+                .filter(|c| c.unknown || (c.is_error && !c.denied))
+                .count() as u32,
+            tool_denied: o.tool_calls.iter().filter(|c| c.denied).count() as u32,
+            tool_staged: o.tool_calls.iter().filter(|c| c.staged).count() as u32,
+            malformed_tool_args: o.malformed_tool_args,
+            blocked_sends: o.blocked_sends,
+            compactions: o.compactions,
+            // `Some`, never `None`: a live run always knows its own count, and
+            // the `None` case exists only for rows written before the sensor.
+            context_overflows: Some(o.context_overflows),
+            homeostat: o.homeostat.clone(),
+            taint: o.taint,
+        }
     }
 }
 
@@ -319,13 +401,7 @@ impl From<&crate::agent::RunOutcome> for RunStats {
     fn from(o: &crate::agent::RunOutcome) -> Self {
         // `usage_complete` starts true and is ANDed down, so the default's
         // `false` would make every single-run row a lower bound.
-        let mut stats = RunStats {
-            homeostat: o.homeostat.clone(),
-            usage_complete: true,
-            ..RunStats::default()
-        };
-        stats.absorb(o);
-        stats
+        RunStats::of_run(o)
     }
 }
 
@@ -343,6 +419,27 @@ pub struct SessionMeta {
 pub struct Session {
     pub meta: SessionMeta,
     pub path: PathBuf,
+}
+
+/// A transcript read once: see [`Session::read`].
+pub struct Transcript {
+    pub meta: SessionMeta,
+    pub convo: Conversation,
+    /// Every `RunConfig` recorded, in order. The first is the run the session
+    /// began under; a `/model` switch appends another.
+    pub configs: Vec<RunConfig>,
+    /// Every recorded outcome, folded into the episode the session describes.
+    pub episode: Option<RunStats>,
+}
+
+/// Every `Record::Outcome` in a transcript, in order.
+fn outcomes_in(text: &str) -> impl Iterator<Item = RunStats> + '_ {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| match serde_json::from_str(l) {
+            Ok(Record::Outcome(s)) => Some(s),
+            _ => None,
+        })
 }
 
 impl Session {
@@ -500,6 +597,18 @@ impl Session {
     /// Still one reader of the record format — this lives beside `outcomes`
     /// rather than in a caller, so a change to `Record` cannot leave a
     /// second, private parser behind.
+    /// Every outcome a session recorded, folded into the episode it describes.
+    ///
+    /// `last_outcome` answers a different question — how the session *ended* —
+    /// and using it as an episode's stats is a unit mismatch: a resumed chat
+    /// records one row per run, while anything replaying the session drives
+    /// every recorded user turn and folds all of them.
+    pub fn episode_stats(path: &Path) -> Result<Option<RunStats>> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        Ok(RunStats::fold(outcomes_in(&text)))
+    }
+
     pub fn last_outcome(path: &Path) -> Result<Option<RunStats>> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
@@ -539,9 +648,30 @@ impl Session {
     /// Unparseable lines are skipped rather than failing the load — a truncated
     /// final line is the normal result of a killed process.
     pub fn load(path: &Path) -> Result<(SessionMeta, Conversation)> {
+        let t = Session::read(path)?;
+        Ok((t.meta, t.convo))
+    }
+
+    /// Everything a reader can want from a transcript, in **one** pass.
+    ///
+    /// `load`, `run_configs` and `episode_stats` each open the file and walk
+    /// every line, so a caller that wants all three pays three reads and three
+    /// parses of the same JSONL. That is fine for a one-off and is not fine
+    /// for `harness_probe`'s pool, which considers four times the wanted
+    /// episode count on every nightly — sixty-four transcripts, hundreds of KB
+    /// apiece, read three times each to answer questions one walk can answer
+    /// together.
+    ///
+    /// The three keep their own entry points, because most callers want one
+    /// thing and a caller that wants one thing should not have to hold a
+    /// header it has no use for. This is the seam for the caller that wants
+    /// all of them.
+    pub fn read(path: &Path) -> Result<Transcript> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
+        let mut configs = Vec::new();
+        let mut outcomes = Vec::new();
         let mut meta = None;
         let mut messages = Vec::new();
         let mut taint = Taint::default();
@@ -556,13 +686,23 @@ impl Session {
                 // Merged rather than replaced: taint only ever grows, and a
                 // transcript written by an older build has none at all.
                 Ok(Record::Taint(t)) => taint.merge(t),
-                Ok(Record::Summary { .. }) | Ok(Record::Config(_)) | Ok(Record::Outcome(_)) => {}
+                // Kept rather than discarded: this is the pass that has them
+                // in hand, and the alternative is two more reads of the file
+                // it just walked.
+                Ok(Record::Config(c)) => configs.push(c),
+                Ok(Record::Outcome(o)) => outcomes.push(o),
+                Ok(Record::Summary { .. }) => {}
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
         }
 
         let meta = meta.with_context(|| format!("{} has no session header", path.display()))?;
-        Ok((meta, Conversation::resumed(messages, taint)))
+        Ok(Transcript {
+            meta,
+            convo: Conversation::resumed(messages, taint),
+            configs,
+            episode: RunStats::fold(outcomes),
+        })
     }
 
     /// Every message the conversation ever contained, in first-seen order.
@@ -792,6 +932,7 @@ mod homeostat_record_tests {
     #[test]
     fn the_conditions_a_run_happened_under_reach_its_record() {
         let bare = || crate::agent::RunOutcome {
+            context_overflows: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),
@@ -839,6 +980,63 @@ mod homeostat_record_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// One walk has to answer exactly what three walks answered, or the
+    /// caller that swapped to it is reading a different transcript from the
+    /// one everything else reads.
+    #[test]
+    fn one_pass_agrees_with_the_three_readers_it_replaces() {
+        let dir = std::env::temp_dir().join(format!("mecha-onepass-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Session::create(
+            &dir,
+            SessionMeta {
+                id: "20260826T000000-x".into(),
+                created_at: chrono::Utc::now(),
+                provider: "local".into(),
+                model: "first".into(),
+                workspace: std::path::PathBuf::from("/tmp"),
+                title: None,
+            },
+        )
+        .unwrap();
+        s.append(&Record::Config(RunConfig {
+            provider: "local".into(),
+            model: "first".into(),
+            ..Default::default()
+        }))
+        .unwrap();
+        s.append_messages(&[crate::message::Message::user("go")])
+            .unwrap();
+        let row = |turns: u32, calls: u32| RunStats {
+            turns,
+            tool_calls: calls,
+            usage_complete: true,
+            stop_cause: Some(crate::agent::StopCause::Completed),
+            ..RunStats::default()
+        };
+        s.append(&Record::Outcome(row(2, 3))).unwrap();
+        s.append(&Record::Outcome(row(5, 7))).unwrap();
+
+        let read = Session::read(&s.path).unwrap();
+        let (meta, convo) = Session::load(&s.path).unwrap();
+        assert_eq!(read.meta.id, meta.id);
+        assert_eq!(read.convo.messages, convo.messages);
+        assert_eq!(
+            serde_json::to_string(&read.configs).unwrap(),
+            serde_json::to_string(&Session::run_configs(&s.path).unwrap()).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_string(&read.episode).unwrap(),
+            serde_json::to_string(&Session::episode_stats(&s.path).unwrap()).unwrap()
+        );
+        // And the fold is a fold, not the last row.
+        let episode = read.episode.clone().unwrap();
+        assert_eq!(episode.turns, 7);
+        assert_eq!(episode.tool_calls, 10);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
     use crate::message::Block;
 
@@ -1288,6 +1486,7 @@ mod tests {
         };
         let outcome = RunOutcome {
             homeostat: None,
+            context_overflows: 0,
             text: "done".into(),
             stop_reason: StopReason::EndTurn,
             usage: Usage {
@@ -1351,6 +1550,7 @@ mod tests {
         let outcome =
             |turns: u32, calls: usize, errored: bool, ended_failed: bool, cause| RunOutcome {
                 homeostat: None,
+                context_overflows: 0,
                 text: String::new(),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage {
@@ -1418,6 +1618,7 @@ mod tests {
 
         let mut incomplete = RunOutcome {
             homeostat: None,
+            context_overflows: 0,
             text: String::new(),
             stop_reason: StopReason::Other,
             usage: Usage::default(),
