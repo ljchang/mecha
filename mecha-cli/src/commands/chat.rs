@@ -32,6 +32,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let path = Session::find(&session_dir, id)?;
         let (meta, prior) = Session::load(&path)?;
         println!("resumed {} ({} messages)", meta.id, prior.messages.len());
+        // D15: restore the plan from the transcript the model is about to
+        // re-read it from, so the two agree from the first turn.
+        if let Some(todo) = &prepared.todo {
+            let ws = prepared.agent.context().tools.workspace.clone();
+            if let Some(n) = todo.rehydrate(&ws, &prior.messages) {
+                println!("restored a plan of {n} item(s)");
+            }
+        }
         convo = prior;
         session = Some(Session { meta, path });
     } else if !args.no_session {

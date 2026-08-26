@@ -703,6 +703,14 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     if let Some(id) = &resume {
         let path = Session::find(&session_dir, id)?;
         let (meta, prior) = Session::load(&path)?;
+        // D15, before anything renders: the live pane polls the todo handle,
+        // and a resumed conversation whose plan is only in the transcript
+        // shows an empty pane beside a model that knows exactly where it got
+        // to.
+        if let Some(todo) = &prepared.todo {
+            let ws = prepared.agent.context().tools.workspace.clone();
+            todo.rehydrate(&ws, &prior.messages);
+        }
         convo = prior;
         session = Some(Session { meta, path });
     } else if !no_session {
