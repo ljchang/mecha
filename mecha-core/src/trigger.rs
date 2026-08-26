@@ -799,93 +799,49 @@ impl TriggerStore {
         self.root.join("locks")
     }
 
-    fn marker_path(&self, name: &str) -> PathBuf {
-        self.locks_dir().join(format!("{name}.running"))
-    }
-
-    fn cancel_path(&self, name: &str) -> PathBuf {
-        self.locks_dir().join(format!("{name}.cancel"))
+    /// The markers for this store's runs.
+    ///
+    /// Delegated since 2026-08-26: `mecha tasks work` needed the same
+    /// "is it running / please stop" pair, and the mechanism is four subtle
+    /// rules — a marker beside the flock rather than the flock, a dead pid
+    /// reading as not-running, a cancel file rather than a signal, and
+    /// clearing both files. Two copies is two places for one of them to rot.
+    fn markers(&self) -> crate::runmarker::RunMarkers {
+        crate::runmarker::RunMarkers::new(self.locks_dir())
     }
 
     /// Announce that a run has started, for anything that wants to *display*
-    /// whether one is in flight.
-    ///
-    /// Deliberately not the flock. The obvious way to ask "is it running?" is
-    /// to try to claim it and see — but `try_claim` acquires the lock and then
-    /// drops it, so a UI polling that question would occasionally hold the
-    /// lock at the instant the scheduler tried to fire, and the scheduler
-    /// would record a spurious overlap skip. Watching must never perturb what
-    /// is watched. The flock stays the real mutual exclusion (the kernel frees
-    /// it if the process dies); this is advisory state beside it.
+    /// whether one is in flight. See [`crate::runmarker`] for why this is not
+    /// the flock.
     pub fn mark_running(&self, name: &str, slot: Option<DateTime<Utc>>) -> Result<()> {
-        crate::create_private_dir(&self.locks_dir())?;
-        let marker = RunMarker {
-            pid: std::process::id(),
-            started_at: Utc::now(),
-            slot,
-        };
-        let path = self.marker_path(name);
-        let tmp = path.with_extension("running.tmp");
-        std::fs::write(&tmp, serde_json::to_string(&marker)?)?;
-        std::fs::rename(&tmp, &path)?;
-        Ok(())
+        self.markers().mark_running(name, slot)
     }
 
-    /// Clear the marker and any unclaimed cancel request. Both, because a
-    /// cancel that arrives as a run is ending must not be left lying around to
-    /// kill the *next* one.
+    /// Clear the marker and any unclaimed cancel request.
     pub fn clear_running(&self, name: &str) {
-        let _ = std::fs::remove_file(self.marker_path(name));
-        let _ = std::fs::remove_file(self.cancel_path(name));
+        self.markers().clear(name)
     }
 
     /// The run in flight, if there is one.
-    ///
-    /// A marker whose process is gone is a crashed run, not a running one — it
-    /// is cleaned up and reported as absent, so a hard kill cannot leave a
-    /// trigger looking permanently busy in every UI that asks.
     pub fn running(&self, name: &str) -> Option<RunMarker> {
-        let text = std::fs::read_to_string(self.marker_path(name)).ok()?;
-        let marker: RunMarker = serde_json::from_str(&text).ok()?;
-        if crate::process_alive(marker.pid) {
-            Some(marker)
-        } else {
-            self.clear_running(name);
-            None
-        }
+        self.markers().running(name)
     }
 
     /// Ask the run in flight to stop. Returns false when there is nothing to
     /// stop, so a caller can say so rather than pretending.
-    ///
-    /// A file rather than a signal, because the run may belong to the daemon's
-    /// process and SIGTERM there would take the whole scheduler down with it.
-    /// The runner polls for this and cancels its own token, which stops the run
-    /// at the next safe point with its partial answer and ledger row intact —
-    /// the same path as Ctrl-C and the timeout.
     pub fn request_cancel(&self, name: &str) -> Result<bool> {
-        if self.running(name).is_none() {
-            return Ok(false);
-        }
-        crate::create_private_dir(&self.locks_dir())?;
-        std::fs::write(self.cancel_path(name), Utc::now().to_rfc3339())?;
-        Ok(true)
+        self.markers().request_cancel(name)
     }
 
     /// Has a cancel been requested for the run in flight?
     pub fn cancel_requested(&self, name: &str) -> bool {
-        self.cancel_path(name).exists()
+        self.markers().cancel_requested(name)
     }
 }
 
-/// Who is running a trigger right now.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunMarker {
-    pub pid: u32,
-    pub started_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slot: Option<DateTime<Utc>>,
-}
+/// Who is running a trigger right now. Re-exported so callers keep the name
+/// they had before the mechanism moved.
+pub use crate::runmarker::RunMarker;
 
 #[cfg(test)]
 mod tests {

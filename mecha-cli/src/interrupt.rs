@@ -21,6 +21,28 @@ pub async fn run_interruptible(
     convo: &mut Conversation,
     events: Option<UnboundedSender<AgentEvent>>,
 ) -> anyhow::Result<RunOutcome> {
+    run_interruptible_watching(agent, cx, convo, events, None).await
+}
+
+/// [`run_interruptible`], plus a second thing that can ask the run to stop.
+///
+/// A run started from the web has no terminal to Ctrl-C, so "stop" arrives as
+/// a file the run watches for (`mecha_core::runmarker`). Both routes cancel
+/// the **same** token, which is the point: a sentinel that killed the process
+/// instead would discard the partial turn that cancellation exists to keep,
+/// and a detached run you can only kill is worse than the TUI's case rather
+/// than equivalent to it.
+///
+/// Polled rather than pushed, at two seconds — the same cadence the trigger
+/// runner uses, and slow enough that a run doing real work is not paying for
+/// the ability to be stopped.
+pub async fn run_interruptible_watching(
+    agent: &Agent,
+    cx: &RunContext,
+    convo: &mut Conversation,
+    events: Option<UnboundedSender<AgentEvent>>,
+    stop: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
+) -> anyhow::Result<RunOutcome> {
     let token = CancellationToken::new();
     let cx = cx.clone().with_cancel(token.clone());
 
@@ -44,12 +66,36 @@ pub async fn run_interruptible(
         })
     };
 
+    // The out-of-band stop, when the caller has one. Ends itself the moment
+    // the token is cancelled, however that happened, so a finished run leaves
+    // no poller behind.
+    let watcher2 = stop.map(|stop| {
+        let token = token.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => return,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                        if stop() {
+                            eprintln!("mecha: stop requested — finishing the current step");
+                            token.cancel();
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    });
+
     let result = agent.run_in(&cx, convo, events).await;
 
     // Ends the watcher whichever way the run went, and releases the signal
     // handler so a later Ctrl-C at the prompt behaves normally.
     token.cancel();
     let _ = watcher.await;
+    if let Some(w) = watcher2 {
+        let _ = w.await;
+    }
 
     result
 }
