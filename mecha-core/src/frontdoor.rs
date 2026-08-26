@@ -576,25 +576,19 @@ pub async fn extract(
     let mut attempt = prompt.clone();
     let mut last_error = String::new();
 
+    // No tools and no history, structurally — see `quarantine`. The budget is
+    // generous for four short fields because a reasoning model spends it
+    // thinking before it writes anything: at 1024 the local model produced
+    // *empty content* with `finish_reason: length`, every token gone on
+    // reasoning, and the schema deliberately puts the reading first, so
+    // thinking is the behaviour being paid for rather than one to suppress.
+    // The frame is uncached by default, which is right here — there is nothing
+    // to share a prefix with, and caching a stranger's text across calls is a
+    // property nobody asked for.
+    let pass = crate::quarantine::QuarantinedPass::new(model, 4096);
+
     for round in 0..2 {
-        let request = crate::message::CompletionRequest {
-            model: model.to_string(),
-            system: None,
-            messages: vec![crate::message::Message::user(attempt.clone())],
-            tools: Vec::new(),
-            // Generous for four short fields, because a reasoning model spends
-            // this budget thinking before it writes anything. At 1024 the local
-            // model produced *empty content* with `finish_reason: length` —
-            // every token gone on reasoning — and the schema deliberately puts
-            // the reading first, so thinking is the behaviour being paid for
-            // rather than one to suppress.
-            max_tokens: 4096,
-            effort: None,
-            thinking: false,
-            // Nothing to share a prefix with, and caching a stranger's text
-            // across calls is a property nobody asked for.
-            cache_prompt: false,
-        };
+        let request = pass.ask(attempt.clone());
         let response = provider.complete(&request, None).await?;
 
         // A refusal arrives as an ordinary response, so the stop reason is

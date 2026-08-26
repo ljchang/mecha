@@ -279,6 +279,12 @@ impl Tool for Subagent {
         // which is both wrong and a hole in the jail. Permissions stay the
         // child's own: the allowlist is the point of a subagent.
         let cx = RunContext {
+            // Never sampled per child: a subagent is work inside the
+            // parent's run, and the parent's snapshot already spans it.
+            // Differencing the backlog again here would count a draft the
+            // child staged twice — once for it, once for the run that
+            // contains it.
+            homeostat: None,
             tools: Arc::new(ctx.clone()),
             approver: Arc::clone(&self.agent.context().approver),
             // The child's own `max_turns` comes from its profile, via its

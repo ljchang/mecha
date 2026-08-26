@@ -254,6 +254,7 @@ mod tests {
 
     fn outcome() -> RunOutcome {
         RunOutcome {
+            homeostat: None,
             text: String::new(),
             stop_reason: mecha_core::message::StopReason::EndTurn,
             usage: mecha_core::Usage::default(),
