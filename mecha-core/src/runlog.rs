@@ -187,11 +187,11 @@ impl Corpus {
     /// this is read from deliberately spans the introduction of the field —
     /// so a caller that ignores the second element is comparing runs that
     /// could report an overflow against runs that could not.
-    pub fn overflow_recoveries(&self) -> (u64, usize) {
+    pub fn context_overflows(&self) -> (u64, usize) {
         let sensed: Vec<u32> = self
             .rows
             .iter()
-            .filter_map(|r| r.stats.overflow_recoveries)
+            .filter_map(|r| r.stats.context_overflows)
             .collect();
         (sensed.iter().map(|n| u64::from(*n)).sum(), sensed.len())
     }
@@ -206,7 +206,7 @@ impl Corpus {
         let sensed: Vec<u32> = self
             .rows
             .iter()
-            .filter_map(|r| r.stats.overflow_recoveries)
+            .filter_map(|r| r.stats.context_overflows)
             .collect();
         (!sensed.is_empty())
             .then(|| sensed.iter().filter(|n| **n > 0).count() as f64 / sensed.len() as f64)
@@ -302,7 +302,7 @@ mod tests {
     fn stats(calls: u32, errors: u32, ended_failed: bool, cause: StopCause) -> RunStats {
         RunStats {
             homeostat: None,
-            overflow_recoveries: None,
+            context_overflows: None,
             turns: 3,
             usage: Usage::default(),
             cost_usd: Some(0.25),
@@ -321,7 +321,7 @@ mod tests {
         }
     }
 
-    /// The whole reason `overflow_recoveries` is an `Option` where every other
+    /// The whole reason `context_overflows` is an `Option` where every other
     /// counter here is a plain `u32`.
     ///
     /// This corpus is the shape the field will actually be read in: rows from
@@ -335,7 +335,7 @@ mod tests {
         let dir = tmpdir();
         let sensed = |n: u32| {
             let mut st = stats(4, 0, false, StopCause::Completed);
-            st.overflow_recoveries = Some(n);
+            st.context_overflows = Some(n);
             st
         };
         session_with(
@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(corpus.len(), 3, "all three rows are in the corpus");
         // Three recoveries, but only two rows could have reported any — and
         // the pair says so rather than implying a rate over three.
-        assert_eq!(corpus.overflow_recoveries(), (3, 2));
+        assert_eq!(corpus.context_overflows(), (3, 2));
         // One of the two sensed rows hit an overflow. Reading the unsensed row
         // as a clean run would give 1/3 here, which is the quiet dilution.
         assert_eq!(corpus.overflow_rate(), Some(0.5));
@@ -375,7 +375,7 @@ mod tests {
         );
 
         let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
-        assert_eq!(corpus.overflow_recoveries(), (0, 0));
+        assert_eq!(corpus.context_overflows(), (0, 0));
         assert_eq!(corpus.overflow_rate(), None, "not Some(0.0)");
 
         let _ = std::fs::remove_dir_all(&dir);

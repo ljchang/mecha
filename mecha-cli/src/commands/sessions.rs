@@ -368,22 +368,34 @@ fn health(
             .sum::<u32>(),
         corpus.compactions(),
     );
-    // Printed with its denominator, never as a bare total: the corpus spans
-    // the commit that added the sensor, so "3 overflows" over 200 runs and
-    // over the 12 that could report one are different findings. A corpus with
-    // no sensed rows says so rather than printing a zero that reads as a
-    // threshold doing its job.
-    let (overflows, sensed) = corpus.overflow_recoveries();
+    // Two numbers about two different things, so they get two clauses. The
+    // first draft read "3 across 2 of 3 run(s) — 50.0% hit at least one",
+    // where `2 of 3` is *sensor coverage* but parses as "the runs that
+    // overflowed" — and then disagrees with the percentage beside it. The
+    // whole reason the reader returns a pair is to keep coverage visible;
+    // spending it on a phrase that reads as incidence gave the confusion back.
+    let (overflows, sensed) = corpus.context_overflows();
+    let hit = corpus
+        .rows
+        .iter()
+        .filter(|r| r.stats.context_overflows.is_some_and(|n| n > 0))
+        .count();
     if sensed > 0 {
-        println!(
-            "  context overflows recovered   {} across {} of {} run(s) — {} hit at least one",
-            overflows,
-            sensed,
-            corpus.len(),
-            pct(corpus.overflow_rate()),
+        print!(
+            "  context overflows   {overflows} in {hit} run(s) ({})",
+            pct(corpus.overflow_rate())
         );
+        // Only worth saying when the corpus is mixed; on one written entirely
+        // after the sensor, the caveat is noise.
+        if sensed < corpus.len() {
+            print!(
+                " — of {sensed} that recorded it; {} did not",
+                corpus.len() - sensed
+            );
+        }
+        println!();
     } else {
-        println!("  context overflows recovered   — (no run in this corpus recorded the counter)");
+        println!("  context overflows   — (no run in this corpus recorded the counter)");
     }
 
     let by_model = corpus.by_model();
@@ -393,11 +405,17 @@ fn health(
         println!("\nby model");
         for (model, sub) in &by_model {
             println!(
-                "  {:<28} {:>4} run(s)   tool errors {:>6}   ended on failure {:>6}",
+                "  {:<28} {:>4} run(s)   tool errors {:>6}   ended on failure {:>6}   \
+                 overflows {:>6}",
                 model,
                 sub.len(),
                 pct(sub.tool_error_rate()),
                 pct(sub.rate_of(|r| r.stats.ended_on_failed_call)),
+                // The one rate here that is *more* model-bound than the
+                // others: `context_window` is a per-provider setting, so a
+                // corpus of a 32k local model and a wide-window cloud one has
+                // no blended overflow rate worth quoting.
+                pct(sub.overflow_rate()),
             );
         }
     }
@@ -414,7 +432,7 @@ fn health(
 
 fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     let (cost, priced) = corpus.cost_usd();
-    let (overflows, sensed) = corpus.overflow_recoveries();
+    let (overflows, sensed) = corpus.context_overflows();
     serde_json::json!({
         "runs": corpus.len(),
         "sessions_read": corpus.sessions_read,
@@ -424,7 +442,7 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
         "ended_on_failed_call": corpus.ended_on_failed_call(),
         "ended_on_failed_call_rate": corpus.rate_of(|r| r.stats.ended_on_failed_call),
         "compactions": corpus.compactions(),
-        "overflow_recoveries": overflows,
+        "context_overflows": overflows,
         "runs_with_overflow_sensor": sensed,
         "overflow_rate": corpus.overflow_rate(),
         "cost_usd": cost,
@@ -438,6 +456,7 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
                     "runs": sub.len(),
                     "tool_error_rate": sub.tool_error_rate(),
                     "ended_on_failed_call_rate": sub.rate_of(|r| r.stats.ended_on_failed_call),
+                    "overflow_rate": sub.overflow_rate(),
                 })
             })
             .collect::<Vec<_>>(),
