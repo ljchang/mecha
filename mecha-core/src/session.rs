@@ -253,6 +253,18 @@ pub struct RunStats {
     pub blocked_sends: u32,
     #[serde(default)]
     pub compactions: u32,
+    /// Times a prompt was refused as too large and the run recovered.
+    ///
+    /// **`Option`, unlike every other counter here, and the difference is the
+    /// point.** This field exists to be a *baseline* — the thing a change
+    /// claiming to predict overflows is measured against — so the measurement
+    /// spans the moment it was introduced. A row written before that knows
+    /// nothing, and a plain `u32` would read it as a run that overflowed zero
+    /// times, silently diluting the very rate it was added to establish.
+    /// `None` says the sensor was not there. Absent is not zero, the rule
+    /// [`crate::homeostat`] and [`crate::backlog`] both state at length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow_recoveries: Option<u32>,
     /// The conditions this run happened under, when the front-end asked for
     /// them. Recorded here rather than derived later because a run
     /// reconstructed against *today's* machine state is measuring the
@@ -311,6 +323,13 @@ impl RunStats {
         self.malformed_tool_args += o.malformed_tool_args;
         self.blocked_sends += o.blocked_sends;
         self.compactions += o.compactions;
+        // Summed through the `Option`, on `cost_usd`'s shape above: a live run
+        // always knows its own count, so the `None` case only arises folding a
+        // row read back off disk, and `or` keeps whichever arm had a sensor.
+        self.overflow_recoveries = match (self.overflow_recoveries, Some(o.overflow_recoveries)) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
         self.taint.merge(o.taint);
     }
 }
@@ -792,6 +811,7 @@ mod homeostat_record_tests {
     #[test]
     fn the_conditions_a_run_happened_under_reach_its_record() {
         let bare = || crate::agent::RunOutcome {
+            overflow_recoveries: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),
@@ -1288,6 +1308,7 @@ mod tests {
         };
         let outcome = RunOutcome {
             homeostat: None,
+            overflow_recoveries: 0,
             text: "done".into(),
             stop_reason: StopReason::EndTurn,
             usage: Usage {
@@ -1351,6 +1372,7 @@ mod tests {
         let outcome =
             |turns: u32, calls: usize, errored: bool, ended_failed: bool, cause| RunOutcome {
                 homeostat: None,
+                overflow_recoveries: 0,
                 text: String::new(),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage {
@@ -1418,6 +1440,7 @@ mod tests {
 
         let mut incomplete = RunOutcome {
             homeostat: None,
+            overflow_recoveries: 0,
             text: String::new(),
             stop_reason: StopReason::Other,
             usage: Usage::default(),

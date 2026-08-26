@@ -368,6 +368,23 @@ fn health(
             .sum::<u32>(),
         corpus.compactions(),
     );
+    // Printed with its denominator, never as a bare total: the corpus spans
+    // the commit that added the sensor, so "3 overflows" over 200 runs and
+    // over the 12 that could report one are different findings. A corpus with
+    // no sensed rows says so rather than printing a zero that reads as a
+    // threshold doing its job.
+    let (overflows, sensed) = corpus.overflow_recoveries();
+    if sensed > 0 {
+        println!(
+            "  context overflows recovered   {} across {} of {} run(s) — {} hit at least one",
+            overflows,
+            sensed,
+            corpus.len(),
+            pct(corpus.overflow_rate()),
+        );
+    } else {
+        println!("  context overflows recovered   — (no run in this corpus recorded the counter)");
+    }
 
     let by_model = corpus.by_model();
     if by_model.len() > 1 {
@@ -397,6 +414,7 @@ fn health(
 
 fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     let (cost, priced) = corpus.cost_usd();
+    let (overflows, sensed) = corpus.overflow_recoveries();
     serde_json::json!({
         "runs": corpus.len(),
         "sessions_read": corpus.sessions_read,
@@ -406,6 +424,9 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
         "ended_on_failed_call": corpus.ended_on_failed_call(),
         "ended_on_failed_call_rate": corpus.rate_of(|r| r.stats.ended_on_failed_call),
         "compactions": corpus.compactions(),
+        "overflow_recoveries": overflows,
+        "runs_with_overflow_sensor": sensed,
+        "overflow_rate": corpus.overflow_rate(),
         "cost_usd": cost,
         "runs_priced": priced,
         "by_model": corpus

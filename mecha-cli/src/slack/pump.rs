@@ -254,6 +254,7 @@ mod tests {
 
     fn outcome() -> RunOutcome {
         RunOutcome {
+            overflow_recoveries: 0,
             homeostat: None,
             text: String::new(),
             stop_reason: mecha_core::message::StopReason::EndTurn,
