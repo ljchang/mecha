@@ -84,7 +84,17 @@ enum Command {
     Accounts,
     /// Set (or with no argument, show) the default account for new mail and
     /// events sent without an explicit account.
-    Default { name: Option<String> },
+    Default {
+        name: Option<String>,
+        /// Set the default for outgoing mail only, leaving the calendar's
+        /// alone. With neither flag the general default moves, which is what
+        /// this verb has always done.
+        #[arg(long)]
+        mail: bool,
+        /// Set the default for new calendar events only.
+        #[arg(long)]
+        calendar: bool,
+    },
     /// Merged busy intervals across every account, as data. Built for the
     /// slot-refresh pipeline (`mecha-mail freebusy --json | …`), which is a
     /// scheduled command with no model in it — so unlike the MCP surface,
@@ -171,7 +181,11 @@ async fn run(cli: Cli) -> Result<()> {
         Some(Command::Corpus { since, account }) => corpus(&since, account.as_deref()).await,
         Some(Command::Import { name, provider }) => import(name, provider),
         Some(Command::Accounts) => list_accounts(),
-        Some(Command::Default { name }) => set_default(name),
+        Some(Command::Default {
+            name,
+            mail,
+            calendar,
+        }) => set_default(name, mail, calendar),
         Some(Command::Freebusy {
             days,
             from,
@@ -999,14 +1013,21 @@ fn list_accounts() -> Result<()> {
     Ok(())
 }
 
-fn set_default(name: Option<String>) -> Result<()> {
+fn set_default(name: Option<String>, mail: bool, calendar: bool) -> Result<()> {
     let mut file = accounts::load()?;
     match name {
         None => {
-            match &file.default {
-                Some(d) => println!("{d}"),
-                None => println!("(none)"),
-            }
+            // Reading prints what each create would actually resolve to,
+            // not the raw fields: "what is my default" is a question about
+            // where the next message and the next event go, and with a
+            // fallback in play the stored value and the effective one are
+            // not always the same string.
+            let line = |label: &str, value: Option<&str>| {
+                println!("{label}: {}", value.unwrap_or("(none)"));
+            };
+            line("default", file.default.as_deref());
+            line("mail", file.mail_default());
+            line("calendar", file.calendar_default());
             Ok(())
         }
         Some(name) => {
@@ -1020,9 +1041,32 @@ fn set_default(name: Option<String>) -> Result<()> {
                         .join(", ")
                 );
             }
-            file.default = Some(name.clone());
+            // Both flags together is the general default by another name,
+            // and saying so beats writing two overrides that shadow it.
+            let (set_mail, set_calendar) = (mail, calendar);
+            match (set_mail, set_calendar) {
+                (false, false) | (true, true) => {
+                    file.default = Some(name.clone());
+                    eprintln!("✓ default account: {name}");
+                }
+                (true, false) => {
+                    file.default_mail = Some(name.clone());
+                    eprintln!(
+                        "✓ default account for outgoing mail: {name} \
+                         (new events still go to `{}`)",
+                        file.calendar_default().unwrap_or("(none)")
+                    );
+                }
+                (false, true) => {
+                    file.default_calendar = Some(name.clone());
+                    eprintln!(
+                        "✓ default account for new events: {name} \
+                         (mail still goes from `{}`)",
+                        file.mail_default().unwrap_or("(none)")
+                    );
+                }
+            }
             accounts::save(&file)?;
-            eprintln!("✓ default account: {name}");
             Ok(())
         }
     }

@@ -44,6 +44,8 @@ pub struct Account {
 pub struct MailTools {
     accounts: Vec<Account>,
     default: Option<String>,
+    default_mail: Option<String>,
+    default_calendar: Option<String>,
     /// Built once at startup: the `account` enum is baked into the schemas,
     /// so the model sees the real account names instead of guessing.
     definitions: Vec<Value>,
@@ -99,8 +101,10 @@ impl MailTools {
         }
         let names: Vec<String> = list.iter().map(|a| a.name.clone()).collect();
         Ok(MailTools {
-            definitions: tool_definitions(&names, file.default.as_deref()),
+            definitions: tool_definitions(&names, &file),
             accounts: list,
+            default_mail: file.default_mail,
+            default_calendar: file.default_calendar,
             default: file.default,
         })
     }
@@ -115,8 +119,19 @@ enum Mode {
     Read,
     /// The call carries an account-scoped id: one account, named.
     Item,
-    /// Something new is created: the default account, or instructions.
-    Create,
+    /// Something new is created: that surface's default account, or
+    /// instructions. The surface rides along because the two creates are
+    /// separate decisions — a person whose mail goes out from work may keep
+    /// their life on a personal calendar, and one `default` covering both
+    /// forces a choice that is not one choice.
+    Create(Surface),
+}
+
+/// Which create is being resolved.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Surface {
+    Mail,
+    Calendar,
 }
 
 /// Pure so it is testable without credentials: pick account indexes.
@@ -142,7 +157,7 @@ fn resolve(
             "several accounts are configured ({listed}) and this id is account-scoped — \
              pass `account` (every search and list row carries it)"
         )),
-        Mode::Create => match default {
+        Mode::Create(_) => match default {
             Some(d) => match names.iter().position(|n| n == d) {
                 Some(i) => Ok(vec![i]),
                 None => Err(format!(
@@ -152,7 +167,12 @@ fn resolve(
             None => Err(format!(
                 "several accounts are configured ({listed}) and no default is set — \
                  ask the user which account to use, then pass it as `account`. \
-                 (They can set a standing default with `mecha-mail default <name>`.)"
+                 (They can set a standing default with `mecha-mail default <name>`, \
+                 or one for this surface alone with `{verb}`.)",
+                verb = match mode {
+                    Mode::Create(Surface::Mail) => "mecha-mail default <name> --mail",
+                    _ => "mecha-mail default <name> --calendar",
+                }
             )),
         },
     }
@@ -161,8 +181,12 @@ fn resolve(
 // ---------------------------------------------------------------- tool defs
 
 /// The unified surface. `names` becomes the `account` enum in every schema.
-pub fn tool_definitions(names: &[String], default: Option<&str>) -> Vec<Value> {
-    let account = |rule: &str| -> Value {
+pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) -> Vec<Value> {
+    // The note has to be the default that *this* tool would actually use. A
+    // schema saying "the default account is `personal`" on `mail_send` while
+    // sends resolve to `dartmouth` is worse than saying nothing: the model
+    // omits `account` believing it knows where the message goes.
+    let with_default = |rule: &str, default: Option<&str>| -> Value {
         let default_note = match default {
             Some(d) => format!(" The default account is `{d}`."),
             None => String::new(),
@@ -173,6 +197,9 @@ pub fn tool_definitions(names: &[String], default: Option<&str>) -> Vec<Value> {
             "description": format!("{rule}{default_note}"),
         })
     };
+    let account = |rule: &str| with_default(rule, file.default.as_deref());
+    let mail_account = |rule: &str| with_default(rule, file.mail_default());
+    let calendar_account = |rule: &str| with_default(rule, file.calendar_default());
 
     json!([
         {
@@ -223,7 +250,7 @@ pub fn tool_definitions(names: &[String], default: Option<&str>) -> Vec<Value> {
                     "to": {"type": "string"},
                     "subject": {"type": "string"},
                     "body_markdown": {"type": "string"},
-                    "account": account("The account to send from."),
+                    "account": mail_account("The account to send from."),
                     "cc": {"type": "string"},
                     "bcc": {"type": "string"}
                 },
@@ -314,7 +341,7 @@ pub fn tool_definitions(names: &[String], default: Option<&str>) -> Vec<Value> {
                     "title": {"type": "string"},
                     "start_time": {"type": "string"},
                     "end_time": {"type": "string"},
-                    "account": account("The account whose calendar gets the event."),
+                    "account": calendar_account("The account whose calendar gets the event."),
                     "description": {"type": "string"},
                     "location": {"type": "string"},
                     "attendees": {"type": "array", "items": {"type": "string"}},
@@ -856,7 +883,8 @@ impl MailTools {
     /// on another is a collision — a revoked token on one of the others is
     /// classified and skipped there, never used to narrow the read.
     pub fn create_account_name(&self, account: Option<&str>) -> Result<String, String> {
-        self.pick(account, Mode::Create).map(|p| p[0].name.clone())
+        self.pick(account, Mode::Create(Surface::Calendar))
+            .map(|p| p[0].name.clone())
     }
 
     /// Create one event with typed arguments — the bookings handler's
@@ -877,7 +905,7 @@ impl MailTools {
         end: &str,
         attendee: Option<&str>,
     ) -> Result<(String, String), String> {
-        let account = self.pick(account, Mode::Create)?[0];
+        let account = self.pick(account, Mode::Create(Surface::Calendar))?[0];
         let attendees: Vec<String> = attendee.map(str::to_string).into_iter().collect();
         let result = with_token(&account.manager, |t| {
             let (title, description) = (title.to_string(), description.to_string());
@@ -987,7 +1015,18 @@ impl MailTools {
 
     fn pick(&self, arg: Option<&str>, mode: Mode) -> Result<Vec<&Account>, String> {
         let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
-        resolve(&names, self.default.as_deref(), arg, mode)
+        // Only a create consults a default at all; the surface picks which
+        // one, falling back to the general default when that surface has no
+        // opinion. Resolved here rather than inside `resolve` so that
+        // function stays a pure question about names.
+        let default = match mode {
+            Mode::Create(Surface::Mail) => self.default_mail.as_deref().or(self.default.as_deref()),
+            Mode::Create(Surface::Calendar) => {
+                self.default_calendar.as_deref().or(self.default.as_deref())
+            }
+            _ => self.default.as_deref(),
+        };
+        resolve(&names, default, arg, mode)
             .map(|idx| idx.into_iter().map(|i| &self.accounts[i]).collect())
     }
 
@@ -1116,7 +1155,7 @@ impl MailTools {
                 else {
                     return missing("to, subject, and body_markdown");
                 };
-                let account = match self.pick(account_arg.as_deref(), Mode::Create) {
+                let account = match self.pick(account_arg.as_deref(), Mode::Create(Surface::Mail)) {
                     Ok(p) => p[0],
                     Err(e) => return fail(e),
                 };
@@ -1342,10 +1381,11 @@ impl MailTools {
                 else {
                     return missing("title, start_time, and end_time");
                 };
-                let account = match self.pick(account_arg.as_deref(), Mode::Create) {
-                    Ok(p) => p[0],
-                    Err(e) => return fail(e),
-                };
+                let account =
+                    match self.pick(account_arg.as_deref(), Mode::Create(Surface::Calendar)) {
+                        Ok(p) => p[0],
+                        Err(e) => return fail(e),
+                    };
                 let calendar_id = str_arg("calendar_id").unwrap_or_else(|| "primary".into());
                 let description = str_arg("description");
                 let location = str_arg("location");
@@ -1550,7 +1590,10 @@ mod tests {
     #[test]
     fn the_tool_surface_is_labelled_correctly() {
         crate::mcp::assert_tool_surface(
-            &tool_definitions(&names(&["dartmouth", "personal"]), Some("dartmouth")),
+            &tool_definitions(
+                &names(&["dartmouth", "personal"]),
+                &conf(Some("dartmouth"), None, None),
+            ),
             &[
                 "mail_search",
                 "mail_recent",
@@ -1584,7 +1627,7 @@ mod tests {
 
         // The schema and the parser must name the same set, or the model is
         // offered a verb that fails or denied one that works.
-        let defs = tool_definitions(&names(&["a"]), Some("a"));
+        let defs = tool_definitions(&names(&["a"]), &conf(Some("a"), None, None));
         let tool = defs.iter().find(|t| t["name"] == "mail_triage").unwrap();
         let schema: Vec<&str> = tool["inputSchema"]["properties"]["action"]["enum"]
             .as_array()
@@ -1601,7 +1644,7 @@ mod tests {
     /// mecha's own concept on the triage record.
     #[test]
     fn the_mail_surface_offers_no_tagging_verb() {
-        let defs = tool_definitions(&names(&["a"]), Some("a"));
+        let defs = tool_definitions(&names(&["a"]), &conf(Some("a"), None, None));
         for tool in &defs {
             let name = tool["name"].as_str().unwrap();
             assert!(
@@ -1615,7 +1658,7 @@ mod tests {
     /// model picks from the real names instead of guessing.
     #[test]
     fn every_tool_offers_the_real_account_names() {
-        let defs = tool_definitions(&names(&["dartmouth", "personal"]), None);
+        let defs = tool_definitions(&names(&["dartmouth", "personal"]), &conf(None, None, None));
         for tool in &defs {
             let name = tool["name"].as_str().unwrap();
             let enum_values = &tool["inputSchema"]["properties"]["account"]["enum"];
@@ -1629,7 +1672,7 @@ mod tests {
 
     #[test]
     fn the_default_account_is_named_in_the_schema() {
-        let defs = tool_definitions(&names(&["a", "b"]), Some("a"));
+        let defs = tool_definitions(&names(&["a", "b"]), &conf(Some("a"), None, None));
         let send = defs.iter().find(|t| t["name"] == "mail_send").unwrap();
         let desc = send["inputSchema"]["properties"]["account"]["description"]
             .as_str()
@@ -1650,7 +1693,7 @@ mod tests {
     #[test]
     fn a_single_account_never_needs_naming() {
         let n = names(&["only"]);
-        for mode in [Mode::Read, Mode::Item, Mode::Create] {
+        for mode in [Mode::Read, Mode::Item, Mode::Create(Surface::Mail)] {
             assert_eq!(resolve(&n, None, None, mode).unwrap(), vec![0]);
         }
     }
@@ -1670,8 +1713,11 @@ mod tests {
     #[test]
     fn creates_use_the_default_and_otherwise_say_to_ask_the_user() {
         let n = names(&["a", "b"]);
-        assert_eq!(resolve(&n, Some("b"), None, Mode::Create).unwrap(), vec![1]);
-        let err = resolve(&n, None, None, Mode::Create).unwrap_err();
+        assert_eq!(
+            resolve(&n, Some("b"), None, Mode::Create(Surface::Mail)).unwrap(),
+            vec![1]
+        );
+        let err = resolve(&n, None, None, Mode::Create(Surface::Mail)).unwrap_err();
         // The wording is deliberate: "ask the user", never "use your best
         // judgment" — the measured failure of the latter is the model
         // inventing an answer.
@@ -1679,6 +1725,20 @@ mod tests {
     }
 
     // ---- booking re-verification scoping ----
+
+    /// An accounts file carrying just the defaults a schema test needs.
+    fn conf(
+        default: Option<&str>,
+        mail: Option<&str>,
+        calendar: Option<&str>,
+    ) -> crate::accounts::AccountsFile {
+        crate::accounts::AccountsFile {
+            default: default.map(String::from),
+            default_mail: mail.map(String::from),
+            default_calendar: calendar.map(String::from),
+            accounts: Vec::new(),
+        }
+    }
 
     fn tools_over(names: &[&str], default: Option<&str>) -> MailTools {
         let accounts = names
@@ -1707,7 +1767,75 @@ mod tests {
             definitions: Vec::new(),
             accounts,
             default: default.map(String::from),
+            default_mail: None,
+            default_calendar: None,
         }
+    }
+
+    #[test]
+    fn mail_and_calendar_can_default_to_different_accounts() {
+        // The case this exists for, in the owner's words: mail out from the
+        // work address, events on the personal calendar. One `default` made
+        // that a single choice, so setting either moved both.
+        let mut tools = tools_over(&["personal", "dartmouth"], None);
+        tools.default_mail = Some("dartmouth".into());
+        tools.default_calendar = Some("personal".into());
+
+        let send = tools.pick(None, Mode::Create(Surface::Mail)).unwrap();
+        assert_eq!(send[0].name, "dartmouth");
+        let event = tools.pick(None, Mode::Create(Surface::Calendar)).unwrap();
+        assert_eq!(event[0].name, "personal");
+
+        // An explicit `account` still wins over both, on either surface.
+        let named = tools
+            .pick(Some("personal"), Mode::Create(Surface::Mail))
+            .unwrap();
+        assert_eq!(named[0].name, "personal");
+    }
+
+    #[test]
+    fn a_surface_with_no_opinion_falls_back_to_the_general_default() {
+        // The upgrade path: a file that predates the split has only
+        // `default`, and both creates must keep resolving exactly as they
+        // did. Setting one surface must not orphan the other.
+        let mut tools = tools_over(&["personal", "dartmouth"], Some("personal"));
+        for mode in [Mode::Create(Surface::Mail), Mode::Create(Surface::Calendar)] {
+            assert_eq!(tools.pick(None, mode).unwrap()[0].name, "personal");
+        }
+        tools.default_mail = Some("dartmouth".into());
+        assert_eq!(
+            tools.pick(None, Mode::Create(Surface::Calendar)).unwrap()[0].name,
+            "personal",
+            "naming a mail default must not disturb the calendar"
+        );
+    }
+
+    #[test]
+    fn the_schema_tells_each_create_its_own_default() {
+        // The model omits `account` when the schema says it knows where the
+        // thing goes, so a note naming the wrong surface's default is worse
+        // than no note: it is confidently wrong at the moment of sending.
+        let defs = tool_definitions(
+            &names(&["personal", "dartmouth"]),
+            &conf(None, Some("dartmouth"), Some("personal")),
+        );
+        let note = |tool: &str| -> String {
+            defs.iter().find(|d| d["name"] == tool).unwrap()["inputSchema"]["properties"]["account"]
+                ["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(
+            note("mail_send").contains("`dartmouth`"),
+            "{}",
+            note("mail_send")
+        );
+        assert!(
+            note("calendar_create_event").contains("`personal`"),
+            "{}",
+            note("calendar_create_event")
+        );
     }
 
     /// The booking sweep resolves where its events land once, up front —

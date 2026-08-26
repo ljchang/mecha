@@ -73,8 +73,29 @@ pub struct AccountsFile {
     /// ask the user, rather than guessed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
+    /// Per-surface overrides of [`AccountsFile::default`], because the two
+    /// creates are not one decision: mail from the address people write back
+    /// to, events on the calendar the rest of life is already in. Absent
+    /// means "whatever `default` says", so a config that never needed the
+    /// distinction keeps working and never had to learn it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_mail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_calendar: Option<String>,
     #[serde(default, rename = "account")]
     pub accounts: Vec<AccountEntry>,
+}
+
+impl AccountsFile {
+    /// The account a new *message* goes from, and the one a new *event* goes
+    /// on. One place, so the fallback cannot be spelled two ways.
+    pub fn mail_default(&self) -> Option<&str> {
+        self.default_mail.as_deref().or(self.default.as_deref())
+    }
+
+    pub fn calendar_default(&self) -> Option<&str> {
+        self.default_calendar.as_deref().or(self.default.as_deref())
+    }
 }
 
 /// The registry directory: `$MECHA_MAIL_DIR` or `~/.mecha/mail`.
@@ -143,9 +164,18 @@ fn validate(file: &AccountsFile) -> Result<()> {
             bail!("account `{}` is listed twice", entry.name);
         }
     }
-    if let Some(default) = &file.default {
-        if !seen.contains(default.as_str()) {
-            bail!("default account `{default}` is not in the account list");
+    // Every default, by the name the file uses for it — a per-surface
+    // override naming a deleted account is the same broken state as the
+    // general one, and it would otherwise fail at send time instead of here.
+    for (label, value) in [
+        ("default", &file.default),
+        ("default_mail", &file.default_mail),
+        ("default_calendar", &file.default_calendar),
+    ] {
+        if let Some(name) = value {
+            if !seen.contains(name.as_str()) {
+                bail!("{label} account `{name}` is not in the account list");
+            }
         }
     }
     Ok(())
@@ -158,6 +188,8 @@ mod tests {
     fn file(names: &[&str], default: Option<&str>) -> AccountsFile {
         AccountsFile {
             default: default.map(String::from),
+            default_mail: None,
+            default_calendar: None,
             accounts: names
                 .iter()
                 .map(|n| AccountEntry {
@@ -173,6 +205,8 @@ mod tests {
     fn round_trips_through_toml() {
         let original = AccountsFile {
             default: Some("dartmouth".into()),
+            default_mail: None,
+            default_calendar: None,
             accounts: vec![
                 AccountEntry {
                     name: "dartmouth".into(),
