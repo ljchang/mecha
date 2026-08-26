@@ -1637,6 +1637,7 @@ impl Agent {
                             &mut trace,
                             &mut taint,
                             &mut blocked_sends,
+                            self.output_budget(cx, pressure, messages),
                         )
                         .await;
 
@@ -2223,6 +2224,59 @@ impl Agent {
     /// Approval is sequential because it may block on a human. Execution is
     /// concurrent, because by then all the decisions are made.
     #[allow(clippy::too_many_arguments)]
+    /// What this turn's tool results may weigh, together.
+    ///
+    /// `[tools] output_budget_bytes` is the standing figure and is derived
+    /// once from the context window — an eighth of it, on the argument that
+    /// "one turn's results must not leap the gap between the threshold and the
+    /// window itself". That sizes the gap from the window. Under pressure the
+    /// gap is not the window's; it is whatever is left before the threshold,
+    /// which the tracker can say.
+    ///
+    /// Three rules, and the first is the one that keeps this a disposition
+    /// rather than a policy change:
+    ///
+    /// - **It is a `min`, so it can only ever narrow.** §7.3 again: the
+    ///   configured budget is a ceiling nothing here may raise, and a run with
+    ///   room to spare gets exactly the budget it always got.
+    /// - **It narrows only when there is somewhere to spill.** `cap_result`
+    ///   moves over-cap bytes to a file the path jail admits and hands the
+    ///   model an `fs_read` to fetch them, so a tighter cap *relocates* output
+    ///   rather than losing it. With `spill_dir` unset the same cap drops the
+    ///   tail for good, which is not the strictly-better trade §7's table
+    ///   claims, so it is not taken.
+    /// - **It never returns zero.** `run_tools` floors each result at
+    ///   `SPILL_FLOOR_BYTES` regardless, because a result truncated to nothing
+    ///   is worse than an oversized one: it costs a turn and says nothing.
+    fn output_budget(
+        &self,
+        cx: &RunContext,
+        pressure: &crate::pressure::ContextTracker,
+        messages: &[Message],
+    ) -> usize {
+        let configured = cx.tools.output_budget_bytes;
+        if cx.tools.spill_dir.is_none() {
+            return configured;
+        }
+        let Some(limit) = self.compact_limit(cx) else {
+            return configured;
+        };
+        let Some(afford) =
+            pressure.affordable_output_bytes(limit, crate::pressure::message_bytes(messages))
+        else {
+            return configured;
+        };
+        if afford < configured {
+            tracing::debug!(
+                configured,
+                afford,
+                "narrowing this turn's tool-output budget; the rest spills"
+            );
+        }
+        configured.min(afford)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn run_tools(
         &self,
         cx: &RunContext,
@@ -2231,6 +2285,7 @@ impl Agent {
         trace: &mut Vec<ToolCallTrace>,
         taint: &mut Taint,
         blocked_sends: &mut u32,
+        output_budget: usize,
     ) -> Vec<Block> {
         let calls: Vec<(String, String, Value)> = assistant
             .tool_uses()
@@ -2700,8 +2755,8 @@ impl Agent {
         // covers MCP results too, which have no cap of their own. Applied
         // before the untrusted wrapper so the wrapper's closing tag can
         // never be what gets cut off.
-        let result_cap = (cx.tools.output_budget_bytes / executed.len().max(1))
-            .max(crate::tool::SPILL_FLOOR_BYTES);
+        let result_cap =
+            (output_budget / executed.len().max(1)).max(crate::tool::SPILL_FLOOR_BYTES);
 
         for (i, id, name, mut out) in executed {
             out.content = crate::tool::cap_result(
@@ -4355,6 +4410,175 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    /// The budget narrows as the transcript fills, and the bytes it no longer
+    /// admits go to the spill file rather than being lost.
+    ///
+    /// The sizing is deliberate. Pressure has to be high enough to narrow the
+    /// budget and *not* high enough to trip the compaction threshold, or the
+    /// summary relieves the pressure first and the assertion measures
+    /// compaction instead — which is what the first draft of this did, and it
+    /// read as the narrowing not working. Two different `n` values, so nothing
+    /// is superseded and eviction leaves both results alone.
+    #[tokio::test]
+    async fn under_pressure_a_turns_tool_output_is_capped_tighter_and_spilled() {
+        let spill = std::env::temp_dir().join(format!("mecha-step4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&spill);
+
+        let call = |id: &str, n: u64| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "bulk".into(),
+                    input: json!({ "n": n }),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let provider = SizedProvider::new(
+            None,
+            vec![
+                call("t1", 240_000),
+                call("t2", 200_000),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+        );
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(BulkTool));
+        let agent = Agent::new(
+            shared(&provider),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                output_budget_bytes: 200_000,
+                spill_dir: Some(spill.clone()),
+                ..Default::default()
+            },
+            AgentConfig {
+                // ~200 KB of transcript prices at ~67k, two thirds of the way
+                // to this threshold: enough room left to matter, not enough to
+                // fit another 200 KB.
+                compact_at_tokens: Some(100_000),
+                ..AgentConfig::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.text, "done");
+        assert_eq!(outcome.compactions, 0, "no summary relieved the pressure");
+
+        let results: Vec<usize> = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content.len()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 2, "two calls, two results: {results:?}");
+        // The first turn has no anchor, so the configured budget stands and
+        // this is exactly the behaviour that shipped before.
+        assert!(
+            results[0] > 150_000,
+            "the first turn is unchanged: {results:?}"
+        );
+        assert!(
+            results[1] < results[0] / 2,
+            "the second is cut to what the remaining room affords: {results:?}"
+        );
+
+        // And what was cut is on disk with the marker naming it — the whole
+        // reason narrowing is allowed to happen without asking.
+        let spilled: Vec<_> = std::fs::read_dir(&spill)
+            .map(|d| d.filter_map(Result::ok).collect())
+            .unwrap_or_default();
+        assert!(!spilled.is_empty(), "the over-cap bytes were saved");
+        let second = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content),
+                _ => None,
+            })
+            .nth(1)
+            .unwrap();
+        assert!(
+            second.contains("The full output is saved at"),
+            "the model is told where the rest went"
+        );
+
+        let _ = std::fs::remove_dir_all(&spill);
+    }
+
+    /// With nowhere to spill, the same cap would drop the tail for good — so
+    /// it is not applied, and the configured budget stands.
+    #[tokio::test]
+    async fn with_no_spill_directory_the_budget_is_never_narrowed() {
+        let provider = SizedProvider::new(
+            None,
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "bulk".into(),
+                        input: json!({"n": 90_000}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+        );
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(BulkTool));
+        let cx = ToolCtx {
+            workspace: std::env::temp_dir(),
+            shell_timeout: std::time::Duration::from_secs(1),
+            output_budget_bytes: 200_000,
+            spill_dir: None,
+            ..Default::default()
+        };
+        let agent = Agent::new(
+            shared(&provider),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            cx,
+            AgentConfig {
+                compact_at_tokens: Some(1),
+                ..AgentConfig::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        agent.run(&mut convo, None).await.unwrap();
+        let biggest = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content.len()),
+                _ => None,
+            })
+            .max()
+            .unwrap();
+        assert!(
+            biggest > 80_000,
+            "a threshold of 1 token would narrow to nothing if spilling were \
+             not required: {biggest}"
+        );
     }
 
     /// The failure predictive compaction exists to prevent, driven end to end.
