@@ -3804,6 +3804,30 @@ its child's account of what it did, not its exit code, whenever the child can
 partially succeed** — and when two surfaces drive one verb, the tally belongs
 in one shared function, or the second one relearns it the expensive way.
 
+**A number measured in a shared checkout describes a tree that exists on one
+disk and in no commit — and two sessions made that mistake on the same tree
+within an hour.** On 2026-08-26 three lanes were live in one working copy.
+Both a handoff sweep and an independent reviewer ran `cargo test --workspace`
+to write the count into `HANDOFF.md`, and both got a number that included a
+third lane's *uncommitted* work: 1,405 and 1,406 against a real 1,406 and
+1,408 at the commits they each named. Neither was reading the other; the tree
+was simply lying to both in the same way.
+
+Two things make this worth an entry rather than a shrug. **The error is
+invisible in its own output** — `cargo test` prints a total, not a
+provenance, so the number looks exactly as authoritative as a correct one.
+And **the doc's format invites it**: "measured at `<commit>`" is a claim about
+a commit, so the measurement has to happen on a tree that *is* that commit.
+
+So: `git status --porcelain` is the precondition of any number you write down,
+not a nicety. If it is not empty, either the number is not about the commit
+you are naming, or you take it somewhere else — `git worktree add` a private
+tree (note it refuses a branch already checked out elsewhere, which is itself
+the signal that you are not alone in there). The corollary that caught this
+one: state counts **per crate and attributed per range**, because a total
+nobody can decompose is a total nobody can check — the disagreement only
+surfaced because a second reader could subtract.
+
 **An idempotent upsert writes every field it is handed, including the ones
 you did not think about.** The graph's `upsert_episode` defaults
 `occurred_at` to *now* when it is absent, so the first cut of "edit a note"
