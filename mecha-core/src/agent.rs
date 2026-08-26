@@ -1298,9 +1298,23 @@ impl Agent {
                 // and `message_bytes` renders every `ToolUse` input to
                 // measure it — a cost that grows with the transcript, paid on
                 // the turns least able to afford it.
+                // The model's own request, taken and cleared. `||`, so it can
+                // only ever *add* a compaction — §7.3's monotonicity, which is
+                // what makes handing this decision to the model safe in the
+                // first place: the harness floor below is untouched, and no
+                // reasoning the model does (or is steered into) can make a run
+                // compact later than it would have.
+                let asked = cx
+                    .tools
+                    .compact_requested
+                    .as_ref()
+                    .is_some_and(|f| f.swap(false, std::sync::atomic::Ordering::Relaxed));
+                if asked {
+                    tracing::info!("the model asked to compact");
+                }
                 if !compaction_gave_up
                     && !loop_detected
-                    && pressure.over(limit, crate::pressure::message_bytes(messages))
+                    && (asked || pressure.over(limit, crate::pressure::message_bytes(messages)))
                 {
                     // What is about to be rewritten, kept for the recording:
                     // the front-end records at run end, so without this the
@@ -1723,6 +1737,10 @@ impl Agent {
                             &mut taint,
                             &mut blocked_sends,
                             self.output_budget(cx, pressure, messages),
+                            self.compact_limit(cx).and_then(|limit| {
+                                pressure
+                                    .forecast(limit, crate::pressure::message_bytes(messages))
+                            }),
                         )
                         .await;
 
@@ -2371,6 +2389,7 @@ impl Agent {
         taint: &mut Taint,
         blocked_sends: &mut u32,
         output_budget: usize,
+        context: Option<crate::pressure::Forecast>,
     ) -> Vec<Block> {
         let calls: Vec<(String, String, Value)> = assistant
             .tool_uses()
@@ -2823,15 +2842,17 @@ impl Agent {
                 // stamped too, so `message_send` labels its messages with
                 // what this conversation (and this turn's batch) has read —
                 // the harness's snapshot, never the model's claim.
-                let tool_ctx = if cx.tools.events.is_some() || cx.mailbox.is_some() {
-                    Arc::new(ToolCtx {
-                        call_id: Some(id.clone()),
-                        taint: Some(turn_taint),
-                        ..(*cx.tools).clone()
-                    })
-                } else {
-                    Arc::clone(&cx.tools)
-                };
+                // The reading changes every turn, so it cannot ride on the
+                // run's shared context — this per-call clone is where a
+                // per-turn value can live. The `else` arm is gone: `context`
+                // is `Some` on any run with a compaction threshold, which is
+                // every run against a provider that declares its window.
+                let tool_ctx = Arc::new(ToolCtx {
+                    call_id: Some(id.clone()),
+                    taint: Some(turn_taint),
+                    context,
+                    ..(*cx.tools).clone()
+                });
                 async move {
                     let out = match tool.call(input, &tool_ctx).await {
                         Ok(out) => out,

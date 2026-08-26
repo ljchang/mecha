@@ -336,6 +336,26 @@ pub struct ToolCtx {
     /// tainted): a subagent's context, or any run wired outside the loop,
     /// must never pass as a clean sender by omission.
     pub taint: Option<crate::agent::Taint>,
+    /// What the next request is predicted to cost, as of this turn.
+    ///
+    /// Run-scoped state a tool may read, like `taint` and `call_id` — and like
+    /// them, the loop stamps it without knowing which tool cares. Only `todo`
+    /// reads it today, because a plan is the one place a headroom number
+    /// changes a decision; §4.3's rule is that most state belongs to the
+    /// harness and never reaches the model at all.
+    ///
+    /// **Never the system prompt.** Render order is tools → system → messages
+    /// with the cache breakpoint on the last system block, so a per-turn value
+    /// there would re-pay the entire prefix, tools included, on every request.
+    /// A tool result is where a changing reading is affordable.
+    pub context: Option<crate::pressure::Forecast>,
+    /// Set by the `compact` tool; read and cleared by the loop between turns.
+    ///
+    /// Shared rather than returned, on `cancel`'s precedent one field up: a
+    /// tool cannot rewrite the transcript — it has no access to it — so what
+    /// it can do is ask, and the loop is what acts. `None` where nothing
+    /// registered the tool.
+    pub compact_requested: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Default for ToolCtx {
@@ -352,6 +372,8 @@ impl Default for ToolCtx {
             withheld: std::sync::Arc::from(Vec::new()),
             call_id: None,
             taint: None,
+            context: None,
+            compact_requested: None,
         }
     }
 }
