@@ -58,6 +58,7 @@ pub mod distill;
 pub mod doctor;
 pub mod eval;
 pub mod frontdoor;
+pub mod goal;
 pub mod gossip;
 pub mod harness;
 pub mod hooks;
