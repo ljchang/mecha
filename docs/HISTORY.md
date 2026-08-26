@@ -2142,6 +2142,92 @@ as a **delta**, not a level: a run that stages nine drafts raises the outbox by
 nine, so a level at run end cannot separate a run's own output from what it
 inherited.
 
+**2026-08-26 (eighth pass) — delegation became a conversation, which is what
+D2 said it was.** The owner tapped *ask mecha*, the card moved to `waiting`
+and vanished out of the view it was tapped in, and nothing happened that
+could be talked to: *"there is no chat UI or any way for me to communicate
+with the agent."* The card was telling the truth — `planning` is what
+`stateOf` derives while a run is in flight — but the web path spawned a
+**detached unattended child**, so the only conversation on offer was the one
+you could read afterwards. D2 has said the opposite since the design was
+written: *"the run is a conversation from the start, not a fire-and-forget
+job."*
+
+So the tap opens the task's conversation as an ordinary chat session, and
+everything asked for arrives with it because it *is* the chat surface —
+voice, uploads, the live todo panel, approval cards, and typing at a run in
+flight being the steering the loop already understands. The model speaks
+first (*"it doesn't make suggestions or ask me anything"* was the complaint
+under the complaint), and nothing on the board moves, because `waiting_on`
+names who has the ball and while the owner is in the conversation they do.
+
+**Three things had to become true for that to be safe, and each is a rule
+that had only ever been enforced one way.**
+
+D6 — *the agent may not close its own task* — worked by a spawned child
+taking `kg_task_update` off its **own private registry**, and a web process
+holds one `Arc<Agent>` for every session. So the narrowing moved onto the
+run: `RunContext::withheld`, a denylist beside the skill allowlist, checked
+at the dispatch seam and landing on the same `Blocked by policy` refusal
+(never an environment error — the counters read that rate), inherited by
+subagents the way hooks and the outbox route are, and matched through a
+server prefix so `prefix_tools` cannot switch it off silently. A resumed task
+transcript keeps it, because D6 is a property of the conversation rather than
+of how it was opened.
+
+*One conversation, one writer* was enforced **within** a process and nowhere
+else, which was fine while every resume-capable surface owned its own runs.
+A detached child broke it: resuming a delegation mid-flight would have put
+two writers on one JSONL. The run marker now names the session it is writing,
+`live_writer_of` asks that question of the other processes, and both doors —
+`/api/resume` and `mecha chat --resume` — answer with the task named. A guard
+on one door is a UI condition.
+
+And *the map is a cache; the transcript is the record*. A task conversation
+lives in serve's memory and in a JSONL, and only the second survives a
+restart — so re-opening after one minted a blank conversation under the same
+key, losing the thread, the header and the withholding together. The board
+had held the link since the conversation opened; nothing read it back.
+
+**Hand-over is a transfer of the single writer, not a copy.** serve releases
+the session, the child loads the same transcript — messages *and* recorded
+taint — and continues in it; the turn that starts it says only what changed,
+that the owner has gone, because the plan is already above it and restating
+it would replace what was agreed with a paraphrase of it. That one shipped
+**broken and looking healthy**: `--resume` was parsed, passed, and never
+used, so the child opened a new transcript whose first line was *"carry on
+from what you have both agreed above"* with nothing above it. The board
+moved, the run started, exit 0. Only asking which transcript *grew* found it.
+
+**A question with nobody there now parks.** The obvious reading of
+"interactive when the page is open, autonomous when it is closed" is a switch
+on whether anyone is connected, and that gets the one case that matters
+wrong: a backgrounded phone stays connected, so the card is shown to an empty
+room and expires into a refusal. So the card is offered whenever anyone might
+see it and *both* ways of going unanswered end the same — stored question,
+ended run, no slot and no cached prefix held. Waiting indefinitely costs
+nothing because nothing is left waiting.
+
+**And delegations got their own turn ceiling, after the two limits turned out
+not to compose.** `cx.budget.max_turns.unwrap_or(cfg.max_turns)` is an
+*override*, not a minimum, so a task run inherited whichever surface it
+started from — 12 from `[agent] max_turns` on this machine, or a hardcoded 40
+in the web chat, neither chosen for autonomous work. Twelve tool round-trips
+is an errand; a real delegation stopped mid-way reporting `MaxTurns`, which
+reads to the owner as the model giving up. 200 now (Terminal-Bench's figure),
+on the argument that a turn ceiling is a backstop rather than a policy: the
+loop guard, the token budget and compaction are what stop a runaway run, so
+the ceiling should only ever stop an honest one.
+
+Verified live end to end rather than asserted: a conversation opened on a real
+board task ran 8 turns and 13 tool calls unprompted — graph, web, two mail
+threads, the `research` subagent — and came back with a proposal and its
+questions; a restart of `mecha-serve` then returned the same session with 15
+entries and the header intact; and a hand-over took the transcript from 19
+records to 38 in one file, carrying `private + untrusted` across the change of
+hands, staging a draft rather than sending it, and returning the board to the
+owner.
+
 **2026-08-26 (seventh pass) — a run in another process can be told
 something.** The report was *"I pressed ask mecha, the card said planning,
 and nothing happened"* — and the card was right: a run was in flight, and
@@ -2795,6 +2881,23 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+- **Everything observable said the hand-over worked, and it had thrown the
+  conversation away.** `--resume` was parsed by clap, printed in the child's
+  argv, and never used: an earlier patch had aborted on a failed assertion
+  and written nothing, so the code still unconditionally created a session.
+  The board moved to `waiting on mecha`, the run started, the exit code was
+  0, and the first line of the *new* transcript was "carry on from what you
+  have both agreed above" with nothing above it. The general lesson is about
+  what to check rather than about patches: when an operation is supposed to
+  act on an **existing object**, verify *which object grew*, not that
+  something happened. Every signal here was about the operation and none was
+  about its target — the same blindness as releasing a staged call against
+  the reviewer's workspace, which is why the outbox records the jail. And the
+  cheap habit that catches it: after a scripted edit, grep for a distinctive
+  string from the change before building on it, because a build that succeeds
+  proves the file compiles, not that it changed.
+
 
 **A fixture whose node name equalled its own id could not tell a producer
 writing names from one writing ids**, and hid the bug for as long as the

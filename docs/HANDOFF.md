@@ -109,12 +109,12 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,505 tests**, no failures — measured 2026-08-26 late evening on
-`main` at `9fbc8bd` plus D4's five uncommitted `commands/tasks.rs` tests.
+Expect **1,514 tests**, no failures — measured 2026-08-26 late evening on
+`feat/task-seed-context` (the task-conversation arc), not on `main`.
 That last clause is the honest version of a clause that has been wrong
 twice: a count taken while any lane's work sits uncommitted in this shared
 checkout describes one disk and no commit, so say which. Breakdown: **520**
-in `mecha-cli` with 1 ignored, **760** in `mecha-core`, 6 + 9 in its two
+in `mecha-cli` with 1 ignored, **767** in `mecha-core`, 6 + 9 in its two
 integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75**
 in `mecha-slack`, and 1 doctest.
 
@@ -181,7 +181,7 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 760 |
+| `mecha-core` unit | 767 |
 | `mecha-cli` unit | 520 (1 ignored) |
 | `mecha-mail` unit | 129 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
@@ -1078,6 +1078,27 @@ the mechanism and every decision. What it left standing:
   navigation/widgets. Triaged there, not restated here. The plain inbox +
   compose and the notes/tasks voice capture shipped 2026-08-24 night (Arcs B
   and C); the rest stands.
+- **Delegation is a conversation as of 2026-08-26 (eighth pass)**, which
+  closes the phone surface's biggest gap and opens two smaller ones.
+  `ask mecha` opens the task's chat session — voice, uploads, todo panel,
+  approval cards, steering by typing — the model speaks first, the board does
+  not move, and *let it carry on without me* hands the same transcript to a
+  detached child. HISTORY has the narrative and `CLAUDE.md` the invariants.
+  What that leaves open:
+  - **Admission control (R1 / phase 6) is now due.** It was deferred with a
+    stated trigger — *"worth building once more than one delegation at a time
+    is routine, and not before"* — and this arc is what makes it routine: a
+    delegation can now run 200 turns on the same llama-server as chat, voice
+    and the triggers. Nothing decides what runs when, and the owner has
+    already asked for the missing half by name (*"when the question is
+    answered it should resume in the queue"* — answering spawns the resumed
+    run immediately). The design's own input for it is R3's measurement.
+  - **`mecha serve` still has no graceful shutdown**, and it now costs more
+    than it did: a restart kills a conversation-owned run mid-flight, where a
+    handed-over one survives. The conversation itself survives either way
+    (the transcript is the record), so what is lost is the partial turn. Same
+    unresolved question as before — who owns SIGTERM in a process holding SSE
+    streams and pending approval cards.
 - **The task→agent handoff is built through phase 4** —
   `docs/TASK-AGENT-DESIGN.md` is its authority and HISTORY has what shipped.
   The return path and D16's card states closed on 2026-08-26 (second pass);
