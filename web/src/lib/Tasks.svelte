@@ -319,21 +319,31 @@
     return bits.length ? bits.join(' · ') : null;
   }
 
+  // **Ask mecha opens the conversation; it does not fire a run off.**
+  //
+  // D2 — "the run is a conversation from the start, not a fire-and-forget
+  // job" — which the old path dropped: it spawned a detached unattended
+  // child, so the board moved to `waiting` on the tap, the card vanished out
+  // of whatever view it was tapped in, and the only conversation available
+  // was the one you could read afterwards. Now the tap lands in the chat
+  // view, which is where voice, uploads, approval cards and steering already
+  // live, and the board is left alone because while the owner is in the
+  // conversation they are the one holding the ball.
   async function askMecha(task) {
     busy = true;
     try {
-      const res = await fetch('/api/tasks/work', {
+      const res = await fetch('/api/tasks/chat', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ task }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
-      // The run is detached, so there is nothing to await. The board is the
-      // meeting point: reload until it says the agent has the task, then
-      // keep watching while it does.
+      const { session } = await res.json();
       error = null;
-      await load();
-      watch();
+      // The session id rather than the key: `#chat/<id>` resumes, and resume
+      // hands back the live key when this process already holds the
+      // conversation. One door into the chat view.
+      location.hash = `chat/${encodeURIComponent(session)}`;
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {

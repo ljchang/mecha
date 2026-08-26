@@ -81,6 +81,13 @@ pub enum Cmd {
         /// yourself; `""` clears it.
         #[arg(long)]
         waiting_on: Option<String>,
+        /// The agent conversation working this task. **Set by a harness that
+        /// starts one, never typed** — it is the link the board offers as
+        /// *open the conversation*, and D5's rule that a run's state is
+        /// derived from the record rather than self-reported only holds if
+        /// the record is written by the thing that knows.
+        #[arg(long)]
+        session: Option<String>,
     },
     /// Read what the task was captured from — the mail that asked, the
     /// stranger's request, the conversation it fell out of.
@@ -140,6 +147,18 @@ pub enum Cmd {
         /// waiting on a person who is not there.
         #[arg(long)]
         unattended: bool,
+        /// Continue an existing conversation instead of starting one.
+        ///
+        /// **The hand-over.** A task planned in the web chat lives in a
+        /// session this process does not own; taking it over means loading
+        /// that transcript — messages *and* taint, so the interlock is not
+        /// laundered by the change of hands — and carrying on in it, rather
+        /// than starting again from a seed that would re-plan what was
+        /// already agreed. The caller must have released it first: one
+        /// conversation, one writer, and the run marker names the session so
+        /// every `resume` surface can see who holds it.
+        #[arg(long)]
+        resume: Option<String>,
     },
 }
 
@@ -162,7 +181,13 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             defer,
             context,
             waiting_on,
-        } => set(global, &task, status, due, defer, context, waiting_on).await,
+            session,
+        } => {
+            set(
+                global, &task, status, due, defer, context, waiting_on, session,
+            )
+            .await
+        }
         Cmd::Source { task, json } => source(global, &task, json).await,
         Cmd::Stop { task } => {
             if markers()?.request_cancel(&task)? {
@@ -197,9 +222,18 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             note,
             again,
             unattended,
+            resume,
         } => {
             let note = (!note.is_empty()).then(|| note.join(" "));
-            work(global, &task, note.as_deref(), again, unattended).await
+            work(
+                global,
+                &task,
+                note.as_deref(),
+                again,
+                unattended,
+                resume.as_deref(),
+            )
+            .await
         }
     }
 }
@@ -327,6 +361,11 @@ async fn add(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // one parameter per `kg_task_update`
+                                     // field; grouping them into a struct
+                                     // would put the tool's schema in two
+                                     // places, which is the drift this file
+                                     // avoids everywhere else.
 async fn set(
     global: &GlobalOpts,
     task: &str,
@@ -335,6 +374,7 @@ async fn set(
     defer: Option<String>,
     context: Option<String>,
     waiting_on: Option<String>,
+    session: Option<String>,
 ) -> Result<()> {
     let mut args = json!({ "task": task });
     // Every field `kg_task_update` takes, because the modal drives the CLI and
@@ -345,6 +385,7 @@ async fn set(
         ("defer", defer),
         ("context", context),
         ("waiting_on", waiting_on),
+        ("session", session),
     ] {
         if let Some(v) = value {
             args[key] = json!(v);
@@ -408,6 +449,29 @@ pub(crate) fn markers() -> Result<mecha_core::runmarker::RunMarkers> {
 /// The agent, as the board names it. A node of kind `agent`, shipped with the
 /// graph's schema — deliberately not a person, because delegation is not
 /// assignment and responsibility does not transfer.
+/// How many loop turns a delegated run gets, wherever it runs.
+///
+/// **A backstop, not a policy, and it had been acting as a policy.** The
+/// ceiling a task run inherited was whatever the surface it started from
+/// happened to use — `[agent] max_turns` for the CLI (12 on this machine) and
+/// a hardcoded 40 in the web chat, neither chosen for autonomous work. Twelve
+/// tool round-trips is a short errand; a real one stops mid-way with
+/// `StopCause::MaxTurns`, which reads to the owner as *it gave up* rather
+/// than as *the harness cut it off*.
+///
+/// The number is Terminal-Bench's, which is the nearest published reference
+/// for how many steps agentic work actually takes. It is safe to be this
+/// generous because the ceiling is not what stops a runaway run: the loop
+/// guard catches a run re-living what a compaction dropped, the token budget
+/// bounds the spend, and compaction bounds the context. A turn limit is the
+/// thing that stops an *honest* run, so it should be far enough out that
+/// hitting it means something.
+///
+/// Note how the two limits combine — `cx.budget.max_turns.unwrap_or(cfg)` is
+/// an override rather than a minimum, so setting this genuinely raises the
+/// ceiling for a delegation without touching what a chat turn gets.
+pub(crate) const TASK_MAX_TURNS: u32 = 200;
+
 pub(crate) const AGENT: &str = "mecha";
 
 /// Whoever this graph is about, resolved graph-side so mecha never has to
@@ -588,6 +652,7 @@ async fn work(
     note: Option<&str>,
     again: bool,
     unattended: bool,
+    resume: Option<&str>,
 ) -> Result<()> {
     // **Interactive, unlike `mail draft`**, and the difference is what the two
     // runs are for. Drafting only ever needs to *stage*, so the outbox catches
@@ -820,13 +885,22 @@ async fn work(
     // is: what the seed may point at is what the run can actually dispatch,
     // and this surface has had a tool taken off it (D6) and one added (D13).
     let reach = Reach::of(prepared.agent.registry());
-    let user = mecha_core::message::Message::user(work_prompt(
-        &task,
-        board["today"].as_str().unwrap_or_default(),
-        note,
-        unattended,
-        &reach,
-    ));
+    // **What the owner just did, said to the run.** A hand-over is a change of
+    // posture, not a new task: the plan is already above this in the same
+    // conversation, so restating it would replace what was agreed with a
+    // paraphrase of it — the compaction lesson, arriving through a door where
+    // nothing was even under pressure.
+    let user = mecha_core::message::Message::user(if resume.is_some() {
+        handover_prompt(note)
+    } else {
+        work_prompt(
+            &task,
+            board["today"].as_str().unwrap_or_default(),
+            note,
+            unattended,
+            &reach,
+        )
+    });
     convo.push(user.clone());
     session.append(&mecha_core::session::Record::Message(user))?;
     let recorded = convo.messages.clone();
@@ -836,9 +910,13 @@ async fn work(
     let steering = std::sync::Arc::new(std::sync::Mutex::new(
         std::collections::VecDeque::<String>::new(),
     ));
-    let cx = (**prepared.agent.context())
+    let mut cx = (**prepared.agent.context())
         .clone()
         .with_queued_input(std::sync::Arc::clone(&steering));
+    // Delegated work gets a delegation's ceiling rather than the terminal's.
+    if cx.budget.max_turns.is_none() {
+        cx.budget.max_turns = Some(TASK_MAX_TURNS);
+    }
     let outcome = crate::interrupt::run_interruptible_watching(
         &prepared.agent,
         &cx,
@@ -1018,7 +1096,7 @@ async fn work(
 /// is worse than the plain provenance line, which is what `mecha tasks source`
 /// is for.
 #[derive(Default)]
-struct Reach {
+pub(crate) struct Reach {
     /// The mail-thread reader, if this surface has one.
     mail_thread: Option<String>,
     /// The graph lookups present, in the order a run would reach for them.
@@ -1028,7 +1106,7 @@ struct Reach {
 impl Reach {
     /// Read off the registry, never off config: what a run may call is what
     /// survived every narrowing, and `tasks work` narrows (D6).
-    fn of(registry: &mecha_core::tool::Registry) -> Self {
+    pub(crate) fn of(registry: &mecha_core::tool::Registry) -> Self {
         let named = |bare: &str| find_tool(registry, bare).map(|t| t.name().to_string());
         Self {
             mail_thread: named("mail_get_thread"),
@@ -1090,6 +1168,175 @@ impl Reach {
 /// open. The tool's own schema says "in one sentence", which is right for a
 /// present human answering interactively and is overridden here rather than
 /// widened for everyone: a general rule is not loosened to serve one caller.
+/// The turn that starts autonomous work on a conversation already had.
+///
+/// **Everything it needs to know is above it**, which is the point of handing
+/// a conversation over rather than starting a run from a seed: the task, the
+/// plan, the owner's answers and whatever was read along the way are all in
+/// the transcript this arrives at the end of. So this says only what
+/// *changed* — that the owner has gone.
+///
+/// The three standing facts are repeated anyway, and deliberately: they were
+/// last said in a different posture. Sends staged and the status not being
+/// the model's to move were true in the conversation too; **asking is what
+/// actually changes**, from a paragraph the owner reads in a second to a
+/// question that ends the run and waits for a morning. A run that did not
+/// know that would ask three times where it should have asked once.
+pub(crate) fn handover_prompt(note: Option<&str>) -> String {
+    let mut p = String::from(
+        "The owner has handed this over and left. Carry on from what you have both agreed \
+         above — do not start again or re-plan it.\n\n\
+         What is different now that they are gone:\n\n\
+         - Nobody is at a keyboard. Anything needing approval will be refused, so do the \
+          part you can do and say plainly what needs a person.\n\
+         - If you genuinely need a decision, ask it in ONE `ask_user` call covering \
+          everything, with concrete `options` where you can. The run ENDS on your question \
+          and resumes later with their answer as the next turn — so a question you could \
+          have answered by looking costs them a morning, and three questions asked \
+          separately cost three.\n\
+         - Anything you send or publish is still STAGED for their review, not delivered.\n\
+         - The task's status is still theirs to move, and you still have no tool that does. \
+          Say where you got to in your last words: they are what you will be reading when \
+          you come back.\n",
+    );
+    if let Some(note) = note {
+        p.push_str(&format!("\nThe owner adds: {note}\n"));
+    }
+    p
+}
+
+/// The task, as facts, with no instructions attached.
+///
+/// Split out of [`work_prompt`] when a second caller needed the same brief
+/// for a different purpose: an unattended run is *told what to do*, and a
+/// conversation with the owner present is *told what this is about*. The
+/// facts are identical and the instructions are opposites, so sharing the
+/// half that is identical is the whole point — a second transcription of the
+/// board's fields is a second place for `defer_until` to go missing, which is
+/// how it went missing the first time.
+pub(crate) fn task_brief(task: &Value, today: &str, reach: &Reach) -> String {
+    let field = |k: &str| task[k].as_str().filter(|v| !v.is_empty());
+    let mut p = String::from("Task: ");
+    p.push_str(field("name").unwrap_or("(unnamed)"));
+    p.push('\n');
+    for (key, label) in [
+        ("id", "Id"),
+        ("status", "Status"),
+        ("project", "Project"),
+        ("context", "Context"),
+        ("waiting_on", "Waiting on"),
+    ] {
+        if let Some(v) = field(key) {
+            p.push_str(&format!("{label}: {v}\n"));
+        }
+    }
+    if let Some(due) = field("due_at") {
+        let overdue = if task["overdue"].as_bool().unwrap_or(false) {
+            " (overdue)"
+        } else {
+            ""
+        };
+        p.push_str(&format!("Due: {due}{overdue}\n"));
+    }
+    if let Some(defer) = field("defer_until") {
+        p.push_str(&format!("Deferred until: {defer}\n"));
+    }
+    if !today.is_empty() {
+        p.push_str(&format!("Today: {today}\n"));
+    }
+    let captured = &task["captured_from"];
+    if let Some(kind) = captured["kind"].as_str().filter(|k| !k.is_empty()) {
+        let at = |k: &str| captured[k].as_str().filter(|v| !v.is_empty());
+        let mut line = format!("Captured from: {kind}");
+        if let Some(id) = at("id") {
+            line.push_str(&format!(" {id}"));
+        }
+        let aside: Vec<String> = [
+            at("account").map(|a| format!("account {a}")),
+            at("at").map(str::to_string),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !aside.is_empty() {
+            line.push_str(&format!(" ({})", aside.join(", ")));
+        }
+        p.push_str(&format!("{line}\n"));
+    }
+    let _ = reach;
+    p
+}
+
+/// The opening of a conversation about a task, with the owner present.
+///
+/// **The other half of D2, which the web path had quietly dropped.** *"The
+/// run is a conversation from the start, not a fire-and-forget job"* — and
+/// tapping *ask mecha* spawned a detached unattended child, so the only
+/// conversation available was the one you could read afterwards. The measured
+/// case is that a human joins the loop (52.3% of Copilot's agent PRs needed
+/// direct human commits; 86.2% with intervention against 55.1% without), so
+/// the design that assumes it is the one designing for what happens.
+///
+/// Two differences from [`work_prompt`], and both follow from somebody being
+/// here. **It opens by proposing and asking**, rather than working as far as
+/// it can and parking a question at the end: a question costs a sentence when
+/// the owner is reading, where in an unattended run it costs the whole run
+/// and a morning. And **`ask_user` is not the channel** — the owner is in the
+/// conversation, so a question is just the turn's last paragraph, which is
+/// also why nothing here mentions the run ending.
+///
+/// What does not change: sends stage, and the status is not the model's to
+/// move — the second enforced by absence rather than instruction, here as
+/// everywhere (`RunContext::withheld`).
+pub(crate) fn discuss_prompt(task: &Value, today: &str, reach: &Reach) -> String {
+    let mut p = String::from(
+        "The owner has opened a conversation with you about one task from their board. \
+         They are here, reading this now.\n\n",
+    );
+    p.push_str(&task_brief(task, today, reach));
+    p.push_str(
+        "\nStart by working out what this actually needs, and say so in your first reply: \
+         what you understand the task to be, how you would go about it, and — most \
+         importantly — what you need from them that you cannot find out yourself. Ask it \
+         plainly, in your own words, at the end of the reply. They can answer in one line.\n\n\
+         Look things up before you ask about them.\n",
+    );
+    if let Some(mail) = &reach.mail_thread {
+        if task["captured_from"]["kind"].as_str() == Some("mail") {
+            let at = |k: &str| task["captured_from"][k].as_str().unwrap_or_default();
+            if !at("id").is_empty() {
+                let mut how = format!("`{mail}` with thread_id \"{}\"", at("id"));
+                if !at("account").is_empty() {
+                    how.push_str(&format!(" and account \"{}\"", at("account")));
+                }
+                p.push_str(&format!(
+                    "This task was captured from a mail thread: read it first with {how}, \
+                     so your first reply is about what the message actually says.\n"
+                ));
+            }
+        }
+    }
+    if !reach.graph.is_empty() {
+        let names = reach
+            .graph
+            .iter()
+            .map(|n| format!("`{n}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        p.push_str(&format!(
+            "What the owner already knows is on your tool surface: {names} — use it for any \
+             project, person or thing here you do not recognise.\n"
+        ));
+    }
+    p.push_str(
+        "\nThen work on it together. Anything you send or publish is STAGED for their \
+         review rather than delivered, so draft properly and say what you staged. Whether \
+         the task is finished is their call, not yours — you have no tool that changes its \
+         status. Keep a `todo` list once there are steps to keep; they can watch it.\n",
+    );
+    p
+}
+
 fn work_prompt(
     task: &Value,
     today: &str,

@@ -363,9 +363,14 @@ async fn answer_and_resume(
     let steering = std::sync::Arc::new(std::sync::Mutex::new(
         std::collections::VecDeque::<String>::new(),
     ));
-    let cx = (**prepared.agent.context())
+    let mut cx = (**prepared.agent.context())
         .clone()
         .with_queued_input(std::sync::Arc::clone(&steering));
+    // A resumed delegation is a delegation: same ceiling, or answering a
+    // question would drop the run back to the terminal's twelve turns.
+    if cx.budget.max_turns.is_none() {
+        cx.budget.max_turns = Some(super::tasks::TASK_MAX_TURNS);
+    }
     let outcome = crate::interrupt::run_interruptible_watching(
         &prepared.agent,
         &cx,

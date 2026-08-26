@@ -241,6 +241,30 @@ pub struct RunContext {
     /// tools it asked for. Interrupting sooner would mean discarding a turn the
     /// user already paid for.
     pub queued_input: Option<Arc<Mutex<VecDeque<String>>>>,
+    /// Tools this *run* may not dispatch, whatever the registry holds.
+    ///
+    /// **A narrowing that belongs to one run rather than to the agent.** The
+    /// existing restriction (`Tool::narrows_surface_to`, which skills use)
+    /// lives on the registry, which is right when one agent serves one
+    /// conversation and wrong the moment one agent serves many: a web process
+    /// holds a single `Arc<Agent>` and a `Conversation` per session, so a
+    /// registry-level narrowing for one session narrows every other session
+    /// with it.
+    ///
+    /// The case that needed it is D6 — *the agent may not close its own task*
+    /// — which a spawned child enforces by taking `kg_task_update` off its own
+    /// private registry. A task conversation inside a shared-agent process has
+    /// no private registry to take it off, so without this the model working a
+    /// task would be handed the tool that closes it: a lane promoting itself,
+    /// which is `ladder.rs`'s oldest rule.
+    ///
+    /// A **denylist**, deliberately, where the skill restriction is an
+    /// allowlist. They compose without either having to know about the other,
+    /// and they fail in the same safe direction: an allowlist that forgets a
+    /// tool makes it unreachable, and a denylist that forgets one leaves it
+    /// reachable — so the harness names what must never be called and the
+    /// skill names what may be.
+    pub withheld: Arc<[String]>,
     /// Lifecycle hooks. `pre_tool` runs after the interlock and before the
     /// approver — mechanical policy is cheaper than an interruption, and a
     /// hook cannot be talked into clicking yes. Empty by default and free.
@@ -287,6 +311,7 @@ impl RunContext {
             phase: Phase::default(),
             compact_at_tokens: None,
             queued_input: None,
+            withheld: Arc::from(Vec::new()),
             hooks: Arc::new(crate::hooks::HookSet::default()),
             outbox: None,
             mailbox: None,
@@ -360,6 +385,24 @@ impl RunContext {
     pub fn with_queued_input(mut self, queue: Arc<Mutex<VecDeque<String>>>) -> Self {
         self.queued_input = Some(queue);
         self
+    }
+
+    /// Withhold tools from this run's dispatch. See [`RunContext::withheld`].
+    pub fn withholding(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.withheld = names.into_iter().collect::<Vec<_>>().into();
+        self
+    }
+
+    /// Is this name out of reach for this run?
+    ///
+    /// Matched on the **registered** name and on a bare suffix, the way
+    /// `setup::find_tool` resolves one: a deployment with `prefix_tools` on
+    /// registers `graph__kg_task_update`, and a withholding that silently
+    /// stopped applying there is a control that reads as enforced and is not.
+    pub fn is_withheld(&self, name: &str) -> bool {
+        self.withheld
+            .iter()
+            .any(|w| w == name || name.ends_with(&format!("__{w}")))
     }
 
     pub fn cancelled(&self) -> bool {
@@ -1022,6 +1065,7 @@ impl Agent {
                 events: events.clone(),
                 cancel: cx.cancel.clone(),
                 phase: cx.phase,
+                withheld: cx.withheld.clone(),
                 ..(*cx.tools).clone()
             }),
             ..cx.clone()
@@ -2199,7 +2243,15 @@ impl Agent {
             // genuinely out of reach rather than merely absent from the spec
             // list, or narrowing would be advisory the moment a model named a
             // tool it remembered from three turns ago.
-            let Some(tool) = self.registry.available(name) else {
+            // The run's own withholding, ahead of the registry's: a tool this
+            // run may not dispatch is out of reach exactly as one outside an
+            // active skill restriction is, and lands on the same refusal
+            // below rather than a second spelling of it.
+            let Some(tool) = self
+                .registry
+                .available(name)
+                .filter(|_| !cx.is_withheld(name))
+            else {
                 // Two different answers wearing one shape. A tool that is
                 // registered but outside the active restriction was *withheld
                 // by policy*; one that was never registered is a name the
@@ -2210,6 +2262,9 @@ impl Agent {
                 // the candidate gate scores against — the same mistake as
                 // `"Blocked by a hook:"` being mined as a user correction.
                 let withheld = self.registry.get(name).is_some();
+                debug_assert!(
+                    !withheld || cx.is_withheld(name) || self.registry.available(name).is_none()
+                );
                 let content = if withheld {
                     format!(
                         "Blocked by policy: `{name}` is withheld by an active restriction \
@@ -2954,6 +3009,108 @@ mod tests {
             ),
             other => panic!("expected a tool result, got {other:?}"),
         }
+    }
+
+    /// **D6 in a shared-agent process.** A spawned child enforces *the agent
+    /// may not close its own task* by taking `kg_task_update` off its own
+    /// private registry; a web process holds one `Arc<Agent>` across every
+    /// session, so there is no private registry to take it off. The run
+    /// carries the withholding instead — and it must land on the same refusal
+    /// a skill restriction produces, because the counters read
+    /// `unknown || (is_error && !denied)` as an environment failure and this
+    /// is the harness working.
+    #[tokio::test]
+    async fn a_tool_withheld_by_the_run_is_out_of_reach_and_reads_as_policy() {
+        let (agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "echo".into(),
+                        input: json!({"text": "hi"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("ok")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(EchoTool)],
+            PermissionMode::Allow,
+        );
+
+        let cx = (**agent.context())
+            .clone()
+            .withholding(["echo".to_string()]);
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        let call = outcome
+            .tool_calls
+            .iter()
+            .find(|c| c.name == "echo")
+            .expect("the call was attempted");
+        assert!(call.denied, "withheld by policy, so it is a denial");
+        assert!(!call.unknown, "registered, just out of reach for this run");
+        let mut stats = crate::session::RunStats::default();
+        stats.absorb(&outcome);
+        assert_eq!(stats.tool_errors, 0, "the environment did not fail");
+        assert_eq!(stats.tool_denied, 1);
+        match &convo.messages[2].content[0] {
+            Block::ToolResult { content, .. } => assert!(
+                content.starts_with("Blocked by policy:"),
+                "one refusal, not a second spelling of it: {content}"
+            ),
+            other => panic!("expected a tool result, got {other:?}"),
+        }
+    }
+
+    /// The withholding is per *run*, so the agent it was applied to keeps
+    /// serving every other conversation unchanged — which is the whole reason
+    /// it is not a registry narrowing.
+    #[tokio::test]
+    async fn withholding_one_run_leaves_the_shared_agent_alone() {
+        let (agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "echo".into(),
+                        input: json!({"text": "hi"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("ok")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(EchoTool)],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert!(
+            !outcome.tool_calls[0].denied,
+            "a run that withheld nothing dispatches normally"
+        );
+    }
+
+    /// `prefix_tools` turns `kg_task_update` into `graph__kg_task_update`, and
+    /// a withholding that silently stopped applying under a prefix would read
+    /// as enforced while handing the model the tool it names. `find_tool`'s
+    /// rule, in the other direction — the same one `withhold_tool` follows.
+    #[test]
+    fn a_withheld_name_matches_through_a_server_prefix() {
+        let cx = RunContext::new(
+            ToolCtx::default().with_workspace(std::env::temp_dir()),
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+        )
+        .withholding(["kg_task_update".to_string()]);
+        assert!(cx.is_withheld("kg_task_update"));
+        assert!(cx.is_withheld("graph__kg_task_update"));
+        assert!(!cx.is_withheld("kg_task_list"));
+        assert!(
+            !cx.is_withheld("my_kg_task_update"),
+            "a suffix is not a match — only a server prefix is"
+        );
     }
 
     #[tokio::test]
