@@ -38,6 +38,22 @@ pub enum Cmd {
     /// Answer, and resume the run that asked.
     Answer {
         question: String,
+        /// Nobody is at a terminal — take the unattended posture.
+        ///
+        /// **The same D3 decision `tasks work --unattended` carries, and it
+        /// is load-bearing rather than ergonomic here.** Resuming builds an
+        /// interactive agent, which installs `TerminalApprover`; detached
+        /// from the web its stdin is `/dev/null`, `read_line` returns
+        /// `Ok(0)`, and EOF-is-not-consent turns every approval into
+        /// `Decision::Deny("the user declined this call")` — which the loop
+        /// renders `"Denied by the user: "`, the exact string the learning
+        /// miner reads a *correction* out of. So the run would not merely
+        /// fail; it would teach mecha rules from a person who was never
+        /// asked. `ModeApprover` says no in the machine's voice instead, and
+        /// D3 stands: a run gets more permission by acquiring a human, never
+        /// by asking for one.
+        #[arg(long)]
+        unattended: bool,
         /// Your answer. Trailing words are joined, so it needs no quoting.
         #[arg(required = true, num_args = 1..)]
         answer: Vec<String>,
@@ -50,9 +66,11 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     match args.cmd.unwrap_or(Cmd::List { all: false }) {
         Cmd::List { all } => list(all),
         Cmd::Show { question } => show(&question),
-        Cmd::Answer { question, answer } => {
-            answer_and_resume(global, &question, &answer.join(" ")).await
-        }
+        Cmd::Answer {
+            question,
+            unattended,
+            answer,
+        } => answer_and_resume(global, &question, &answer.join(" "), unattended).await,
         Cmd::Abandon { question } => {
             let q = store()?.abandon(&question)?;
             // `short`, not `&id[..8]` — the head of a `Session::new_id` is a
@@ -157,7 +175,12 @@ fn warn_if_tainted(q: &Question) {
     }
 }
 
-async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Result<()> {
+async fn answer_and_resume(
+    global: &GlobalOpts,
+    id: &str,
+    answer: &str,
+    unattended: bool,
+) -> Result<()> {
     let store = store()?;
     let q = store.find(id)?;
     if !q.is_open() {
@@ -171,7 +194,7 @@ async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Resul
     if opts.workspace.is_none() {
         opts.workspace = q.workspace.clone();
     }
-    let mut prepared = setup::prepare(&opts, true).await?;
+    let mut prepared = setup::prepare(&opts, !unattended).await?;
 
     // The same refusal `tasks work` makes, for the same reason: this is that
     // delegated run continuing, with the same tools and the same ability to
@@ -318,6 +341,21 @@ async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Resul
     }
     session.record_run(&recorded, &convo)?;
     session.append(&Record::Taint(convo.taint))?;
+    // **How the run went, beside what it said.** A resumed delegation is a
+    // run like any other, and every other front-end writes this — without it
+    // a task's transcript records what was said and nothing about whether the
+    // saying worked, so `runlog` cannot see delegations at all and a card has
+    // no way to tell "it finished" from "it broke" (D16's rule that `failed`
+    // must never render as `idle`).
+    //
+    // After the transcript, never before, and by reference so the failure
+    // branch below still owns the error: an outcome describes a transcript
+    // that is already safe on disk.
+    if let Ok(o) = &outcome {
+        if let Err(e) = session.record_outcome(o) {
+            eprintln!("warning: this run's outcome was not recorded: {e:#}");
+        }
+    }
     asker.stamp_taint(convo.taint);
 
     if let Err(e) = outcome {

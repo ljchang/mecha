@@ -22,8 +22,93 @@
     } catch (e) {
       error = String(e?.message ?? e);
     }
+    await loadQuestions();
   }
   load();
+
+  // **What a delegated run got stuck on** (D13). A run that needed a decision
+  // ended rather than waiting, and until this the only place to answer was a
+  // terminal — so the phone could start a delegation and never finish one.
+  //
+  // Read beside the board rather than folded into it: the board is the
+  // graph's store reached over MCP and this one is mecha's own, so they are
+  // two reads that happen to be drawn on one card. `null` until the first
+  // answers, because "no questions" and "have not looked" are different
+  // things and only one of them should quiet the card.
+  let questions = $state(null);
+  const questionFor = (t) => (questions ?? []).find((q) => q.task === t.id);
+  // Open questions whose task is not on this board at all — a run that asked
+  // without a task, or one whose task was dropped underneath it. They would
+  // otherwise be reachable from nowhere, which is how a queue reaches 6,434
+  // items, so they get their own cards in the view for blocked work.
+  const orphanQuestions = $derived.by(() => {
+    const known = new Set((data?.items ?? []).map((t) => t.id));
+    return (questions ?? []).filter((q) => !q.task || !known.has(q.task));
+  });
+
+  async function loadQuestions() {
+    try {
+      const res = await fetch('/api/questions');
+      if (!res.ok) throw new Error((await res.text()).trim());
+      questions = (await res.json()).items ?? [];
+    } catch (e) {
+      // Loud, not quiet. A question store that will not load looks exactly
+      // like an empty one from a blank card, and those are opposite findings
+      // — the dash-never-zero rule, on the surface where the consequence is a
+      // delegation frozen with nobody able to see why.
+      questions = [];
+      error = `questions: ${String(e?.message ?? e)}`;
+    }
+  }
+
+  // The owner's words, per question, kept while they type. Not sent until
+  // they say so: answering resumes a run, and a keystroke must not.
+  let answers = $state({});
+  let answering = $state(null);
+
+  async function answerQuestion(q, text) {
+    const answer = (text ?? answers[q.id] ?? '').trim();
+    if (!answer) return;
+    answering = q.id;
+    try {
+      const res = await fetch('/api/questions/answer', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ question: q.id, answer }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      error = null;
+      answers[q.id] = '';
+      // The resume is detached, so there is nothing to await — the same
+      // arrangement `ask mecha` has, and the board is the meeting point for
+      // the same reason. It takes a moment for the child to move the ball
+      // back to the agent, so the watcher does the looking.
+      await load();
+      watch();
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      answering = null;
+    }
+  }
+
+  async function abandonQuestion(q) {
+    answering = q.id;
+    try {
+      const res = await fetch('/api/questions/abandon', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ question: q.id }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      error = null;
+      await load();
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      answering = null;
+    }
+  }
 
   // The GTD views, drawer entries rather than chips: each says what it
   // MEANS, because 'waiting' as a bare word on a chip explained nothing.
@@ -50,6 +135,98 @@
   // writes to rather than by anything the run says about itself (D5/D16).
   const AGENT = 'mecha';
   const working = (t) => t.status === 'waiting' && t.waiting_on === AGENT;
+
+  // **D16 — the card's state is derived, and no two states render alike.**
+  //
+  // Two rules carry it, and both are about a *pair* of states that must not
+  // look the same. `waiting on you` is the only state that stalls
+  // indefinitely and the only one whose remedy is a person, so it is loud.
+  // And `failed` must never render as `idle`: "nothing is happening" and "it
+  // broke" are opposite findings, and a card that renders them alike is how a
+  // delegation that died looks like one nobody started — doctor's
+  // dash-never-zero rule, one surface over.
+  //
+  // Derived from three sources, none of which is the run's own account of
+  // itself (D5): the board says who holds the ball, the question store says
+  // whether it is blocked on an answer, and the transcript's outcome record
+  // says how the last run stopped. A run that reported "all done" while its
+  // last three calls were blocked is exactly the case this arrangement
+  // exists to catch.
+  //
+  // `unknown` is the honest seventh state and is not a hedge. A transcript
+  // with no outcome record is a run that never got as far as saying how it
+  // went — a crash, a kill, or a session written before the record existed —
+  // and calling that either `failed` or `ready` would be inventing the one
+  // fact the card is about.
+  const STATES = {
+    working:  { word: 'mecha is on it',    cls: 'agent' },
+    planning: { word: 'planning',          cls: 'agent' },
+    needs:    { word: 'answer needed',     cls: 'needs' },
+    failed:   { word: 'the run failed',    cls: 'broke' },
+    ready:    { word: 'ready for review',  cls: 'ready' },
+    unknown:  { word: 'outcome unknown',   cls: 'broke' },
+    idle:     { word: null,                cls: null },
+  };
+
+  // A task the owner has already ruled on. Its run's state is history, not a
+  // thing to act on — so a closed task is quiet, and the evidence line below
+  // carries what the run did instead of a chip in hazard colour drawing the
+  // eye to work that is over.
+  const CLOSED = ['done', 'dropped'];
+  const closed = (t) => CLOSED.includes(t.status);
+
+  function stateOf(t) {
+    // In flight outranks everything: it is the only state that is about right
+    // now rather than about what happened.
+    if (working(t)) {
+      const plan = plans[t.id];
+      // No list yet is not "no plan" while a run is starting — it is the
+      // window before the first `todo` write, which is what `planning` names.
+      return plan?.length ? 'working' : 'planning';
+    }
+    // A blocked run outranks the ordinary `waiting on @owner` every finished
+    // delegation leaves behind, which says nothing about this one.
+    if (questionFor(t)) return 'needs';
+    // Disposed of. Reported after the question check on purpose: a closed
+    // task with a question still open is a real inconsistency — a run frozen
+    // on an answer for something the owner has since dropped — and hiding it
+    // would leave the question reachable from nowhere.
+    if (closed(t)) return 'idle';
+    // Nothing ever ran, so there is nothing to report. A task the owner typed
+    // and never delegated is the common case and must stay quiet.
+    if (!t.session) return 'idle';
+    const run = t.run;
+    if (!run || !run.recorded) return 'unknown';
+    // `Interrupted` is a person stopping a run, which is the system working —
+    // never a failure, on doctor's own rule for the same field.
+    if (run.stop_cause === 'interrupted') return 'ready';
+    if (run.cut_short || run.ended_on_failed_call) return 'failed';
+    return 'ready';
+  }
+
+  // The `[~]` item, as D16's subtitle for a run in flight. The plan is
+  // already fetched for a working task, so this costs nothing extra.
+  const nowDoing = (t) =>
+    plans[t.id]?.find((i) => i.status === 'in_progress')?.content ?? null;
+
+  // What `ready for review` arrives with. D16: it is the agent proposing
+  // completion *with its evidence attached* — not `done`, because D6 stands
+  // and the status is not the run's to move. Counted, never judged: a denial
+  // is the approver working and is reported beside the errors rather than
+  // averaged into them.
+  function evidence(t) {
+    const r = t.run;
+    if (!r?.recorded) return null;
+    const bits = [];
+    if (r.turns) bits.push(`${r.turns} turn${r.turns === 1 ? '' : 's'}`);
+    if (r.tool_calls) bits.push(`${r.tool_calls} tool call${r.tool_calls === 1 ? '' : 's'}`);
+    if (r.tool_staged) bits.push(`${r.tool_staged} staged`);
+    if (r.tool_errors) bits.push(`${r.tool_errors} failed`);
+    if (r.tool_denied) bits.push(`${r.tool_denied} refused`);
+    if (r.ended_on_failed_call) bits.push('stopped on a failed call');
+    if (r.stop_cause && r.stop_cause !== 'completed') bits.push(`stopped: ${r.stop_cause}`);
+    return bits.length ? bits.join(' · ') : null;
+  }
 
   async function askMecha(task) {
     busy = true;
@@ -177,8 +354,11 @@
         await load();
         // While a run is in flight its plan is the thing worth watching, so
         // an open card follows it rather than showing where it started.
+        // Every task in flight, not only the open one: the collapsed card
+        // now shows the `[~]` item and tells `planning` from `working`, and
+        // both read from this. There is rarely more than one.
         for (const t of (data?.items ?? []).filter(working)) {
-          if (selected === t.id) await loadPlan(t);
+          await loadPlan(t);
         }
         if (!(data?.items ?? []).some(working)) break;
       }
@@ -186,9 +366,14 @@
       watching = false;
     }
   }
-  // A run may already have been in flight when this page opened.
+  // A run may already have been in flight when this page opened — and its
+  // plan has to arrive with the first paint, or the card reads `planning`
+  // for a run that is well past it.
   $effect(() => {
-    if ((data?.items ?? []).some(working)) watch();
+    const live = (data?.items ?? []).filter(working);
+    if (!live.length) return;
+    for (const t of live) if (!plans[t.id]) loadPlan(t);
+    watch();
   });
 
   async function setStatus(task, status) {
@@ -254,6 +439,81 @@
   ];
 </script>
 
+<!-- **`waiting on you`, and it is the loud one** (D16). It is the only state
+     that stalls indefinitely and the only one whose remedy is a person, so it
+     gets a card of its own rather than a chip — a question rendered as a chip
+     is a delegation frozen behind a word nobody taps.
+
+     The question is shown whole, its proposed answers are one tap each, and
+     the free-text box is there because the tool's own contract says the
+     options are never exhaustive. Both are the measured `ask_user` finding
+     from the other side: a visible default a person taps is the opposite
+     arrangement to a model told to proceed with its best interpretation. -->
+{#snippet questionCard(q, taskName)}
+  <div class="qcard">
+    <div class="qhead">
+      <span class="qlabel">waiting on you</span>
+      <span class="qhandle">{q.handle}</span>
+    </div>
+    {#if taskName}<div class="qtask">{taskName}</div>{/if}
+    {#if q.tainted}
+      <!-- Not decoration. An injected run asks well-formed questions —
+           "which credential should I use for the deploy?" is indistinguishable
+           in shape from a reasonable one — and the owner is the one composing
+           the answer. `mecha questions` says this on stderr, which a browser
+           cannot see, so without it this would be the one surface that knows
+           and does not say. It warns and does not block: the answer is the
+           owner's own words, and a confirm immediately after they typed them
+           would buy nothing and teach them to tap through. -->
+      <div class="qwarn">
+        {@render hazardGlyph(12)}
+        <span>third-party content was in this conversation when the question was
+          asked — read the question itself as possibly not the assistant's own.</span>
+      </div>
+    {/if}
+    <div class="qtext">{q.question}</div>
+    {#if q.options.length}
+      <div class="qopts">
+        {#each q.options as opt}
+          <button
+            class="statusbtn qopt"
+            disabled={answering === q.id}
+            onclick={() => answerQuestion(q, opt)}
+          >{opt}</button>
+        {/each}
+      </div>
+    {/if}
+    <div class="namerow">
+      <input
+        class="field"
+        placeholder="or answer in your own words"
+        bind:value={answers[q.id]}
+        onkeydown={(e) => { if (e.key === 'Enter') answerQuestion(q); }}
+      />
+      <Dictate onText={(text, err) => { if (text) answers[q.id] = answers[q.id] ? `${answers[q.id]} ${text}` : text; if (err) error = err; }} />
+    </div>
+    <div class="statusrow">
+      <button
+        class="statusbtn askbtn"
+        disabled={answering === q.id || !(answers[q.id] ?? '').trim()}
+        onclick={() => answerQuestion(q)}
+      >answer &amp; resume</button>
+      <button
+        class="statusbtn"
+        onclick={() => (location.hash = `chat/${encodeURIComponent(q.session)}`)}
+      >open the conversation</button>
+      <!-- Giving up is a decision about the question, not a reply to it, so
+           it writes no answer and resumes nothing. The task stays where it
+           is; only the question stops asking. -->
+      <button
+        class="statusbtn"
+        disabled={answering === q.id}
+        onclick={() => abandonQuestion(q)}
+      >give up on it</button>
+    </div>
+  </div>
+{/snippet}
+
 {#snippet hazardGlyph(size = 12)}
   <svg viewBox="0 0 24 24" width={size} height={size} style="flex-shrink: 0" fill="none" stroke="var(--hazard)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <path d="M12 4l9 16H3z" /><path d="M12 11v4M12 17.5v.5" />
@@ -278,7 +538,15 @@
           <button class="drow" class:dactive={filter === name} onclick={() => { filter = name; drawer = false; }}>
             <span class="dname">{name}</span>
             <span class="dcount">{count(name) || ''}</span>
-            <span class="dblurb">{blurb}</span>
+            <!-- The one view whose blurb is not a constant. "Blocked on
+                 someone else" is true of a task a colleague owes you and of a
+                 delegation stopped mid-flight waiting on *you*, and only the
+                 second is something to do right now. -->
+            <span class="dblurb">
+              {#if name === 'waiting' && (questions ?? []).length}
+                {(questions ?? []).length} waiting on your answer
+              {:else}{blurb}{/if}
+            </span>
           </button>
         {/each}
       </div>
@@ -290,7 +558,24 @@
     {#if data === null && !error}
       <div class="empty">reaching the graph…</div>
     {/if}
+    <!-- Questions whose task is not on this board — asked without one, or
+         asked about a task that was dropped underneath the run. They belong
+         in the view for blocked work rather than nowhere: a question nothing
+         renders is a delegation frozen forever, which is exactly the shape
+         `/queues` exists because of. -->
+    {#if filter === 'waiting'}
+      {#each orphanQuestions as q}
+        {@render questionCard(q, q.task ? `task ${q.task}` : 'asked outside the board')}
+      {/each}
+    {/if}
     {#each tasks as t}
+      <!-- The card and its question are siblings, never nested. The row is
+           itself a `<button>`, and a text field inside one is invalid HTML
+           that browsers disagree about and assistive tech cannot traverse —
+           the same reason the two navigation controls inside the strip are
+           buttons rather than anchors, one step further: an `<input>` there
+           cannot reliably be focused or typed into at all. -->
+      <div class="cardwrap">
       <button
         class="card row"
         onclick={() => {
@@ -317,12 +602,41 @@
           {#if t.captured_from}
             <span class="chip dim">from {sourceWord(t)}</span>
           {/if}
-          {#if working(t)}
-            <span class="chip agent">mecha is on it</span>
-          {:else if t.waiting_on}
+          <!-- One chip, one state, derived (D16). It replaces the old pair
+               of `mecha is on it` / `waiting on {waiting_on}` — which put a
+               run that died, one waiting on an answer, one finished and one
+               nobody ever delegated under the same three words. -->
+          {#if STATES[stateOf(t)].word}
+            <span class="chip {STATES[stateOf(t)].cls}">{STATES[stateOf(t)].word}</span>
+          {/if}
+          <!-- The person a task is blocked on, when it is a person and not
+               this machine. Kept beside the state rather than replaced by it:
+               "waiting on a colleague" is what the view is for. -->
+          {#if stateOf(t) === 'idle' && t.waiting_on && t.waiting_on !== AGENT}
             <span class="chip dim">waiting on {t.waiting_on}</span>
           {/if}
         </div>
+        {#if nowDoing(t)}
+          <!-- D16's subtitle: what it is doing right now, on the collapsed
+               card, because a pulsing chip that says only "on it" for twenty
+               minutes tells you nothing you did not already know. -->
+          <div class="nowline">{nowDoing(t)}</div>
+        {/if}
+        {#if stateOf(t) === 'failed' && evidence(t)}
+          <div class="evline broke">{evidence(t)}</div>
+        {:else if stateOf(t) === 'unknown'}
+          <!-- Named, not blank. A run that never recorded how it went is a
+               third finding, and a card that said nothing here would be the
+               `idle` rendering this state exists to avoid. -->
+          <div class="evline broke">this run never recorded how it ended — open the conversation to see how far it got</div>
+        {:else if evidence(t)}
+          <!-- `ready for review` is the agent proposing completion *with its
+               evidence attached*, and it is deliberately not `done`: D6
+               stands, and the status is not the run's to move. The same line
+               stays on a task the owner has since closed, where it is the
+               record of what that delegation actually did. -->
+          <div class="evline">{evidence(t)}</div>
+        {/if}
         {#if selected === t.id}
           {#if plans[t.id]?.length}
             <ul class="plan">
@@ -423,6 +737,10 @@
           {/if}
         {/if}
       </button>
+      {#if questionFor(t)}
+        {@render questionCard(questionFor(t), null)}
+      {/if}
+      </div>
     {:else}
       {#if data}<div class="empty">Nothing here.</div>{/if}
     {/each}
@@ -472,6 +790,12 @@
   /* Stopping keeps the partial turn, so this is not a destructive action and
      does not wear the hazard colour — it is the ordinary way to end a run. */
   .stopbtn { color: var(--text); border-color: var(--accent-400); }
+  /* A disabled control has to look disabled. `.statusbtn` had no
+     `:disabled` rule, which was survivable while every one of them was only
+     disabled for the instant `busy` was true — and is not, now that
+     `answer & resume` sits disabled until there is something to send. A
+     button that looks tappable and does nothing is read as broken. */
+  .statusbtn:disabled { opacity: 0.45; cursor: default; }
   /* Open, so the control says what pressing it does rather than sitting
      inert while the pane it opened is on screen. */
   .srcopen { color: var(--accent-400); border-color: var(--accent-400); }
@@ -492,6 +816,33 @@
   .agent { color: var(--accent-400); border-color: var(--accent-700); animation: agent-pulse 2.4s ease-in-out infinite; }
   @keyframes agent-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
   @media (prefers-reduced-motion: reduce) { .agent { animation: none; } }
+  .cardwrap { display: flex; flex-direction: column; gap: 6px; }
+  /* A question is not a chip. It gets the accent edge the agent chip wears,
+     because this is the only state whose remedy is a person — and it must not
+     be mistakable for the ordinary `waiting on someone` a board is full of. */
+  .qcard { background: var(--surface); border: 1px solid var(--accent-400); border-radius: var(--radius); padding: 13px 14px; display: flex; flex-direction: column; gap: 10px; }
+  .qhead { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .qlabel { font-size: 12px; font-weight: 500; color: var(--accent-400); letter-spacing: -0.01em; }
+  /* The handle the CLI prints, so `mecha questions show <handle>` reaches the
+     same question from a terminal. */
+  .qhandle { font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
+  .qtask { font-size: 12px; color: var(--text-muted); }
+  .qtext { font-size: 14px; line-height: 1.5; }
+  .qwarn { display: flex; gap: 8px; font-size: 11.5px; color: var(--hazard); line-height: 1.45; }
+  .qopts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .qopt { color: var(--accent-400); border-color: var(--accent-700); }
+  /* Loud, and not the hazard colour: nothing is wrong, somebody is waited on. */
+  .needs { color: var(--accent-400); border-color: var(--accent-400); }
+  /* A run that broke, or one that never said how it ended. Not the agent
+     accent and not a chip that reads like the others: the whole rule is that
+     this cannot be mistaken for "nothing is happening". */
+  .broke { color: var(--hazard); border-color: var(--hazard); }
+  /* Finished, with evidence — the quiet end of the set, because nothing is
+     wrong and nothing is owed until a person looks. */
+  .ready { color: var(--text); border-color: var(--accent-400); }
+  .nowline { font-size: 12px; color: var(--accent-400); line-height: 1.45; }
+  .evline { font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); line-height: 1.5; }
+  .evline.broke { color: var(--hazard); border: none; }
   .warnline { display: flex; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; }
   .empty { color: var(--text-muted); font-size: 14px; padding: 20px 0; text-align: center; }
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; padding-top: 6px; }

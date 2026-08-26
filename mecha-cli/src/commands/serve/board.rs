@@ -17,14 +17,113 @@ use super::review::{self_json, verb};
 
 type St = State<super::WebState>;
 
-/// GET /api/tasks — the board, straight off `kg_task_list`'s own JSON.
+/// GET /api/tasks — the board, straight off `kg_task_list`'s own JSON, with
+/// how each delegated run *went* attached (D16).
+///
 /// The child pays an MCP startup (~a second against the graph server), which
 /// is why the timeout is generous and the page shows its own loading state.
+///
+/// **Attached here rather than fetched per card**, and that is the whole of
+/// D16 rather than a performance note. The rule is that no two card states
+/// render alike and that `failed` must never render as `idle` — a board that
+/// paints every task as idle and then flickers into its real state is that
+/// rule broken for the first second, on the surface people glance at. One
+/// request, every card correct on first paint.
+///
+/// Bounded the way `runlog`'s scans are: only sessions the board actually
+/// names, and only their outcome records — no message parsing, no
+/// `Session::load`. Measured, a task transcript is 9–76 KB and a board names
+/// a handful, so this is a few tens of milliseconds beside a child process
+/// that pays an MCP startup.
 pub async fn tasks(State(state): St) -> Response {
-    match self_json(&state, &["tasks", "list", "--json"]).await {
-        Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    // **`--closed`, because the page has a view for closed tasks.** The
+    // drawer's `done` filter selects `done | dropped`, and without this the
+    // list it filters never contains either — so that view has been
+    // structurally empty since it shipped, in the way that reads as "you have
+    // finished nothing" rather than as a filter that cannot match. No other
+    // view widens: the three above it select `next|inbox`, `scheduled` and
+    // `waiting`, none of which a closed task can be.
+    let mut board = match self_json(&state, &["tasks", "list", "--closed", "--json"]).await {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    };
+    if let Ok(dir) = mecha_core::session::Session::default_dir() {
+        attach_runs(&mut board, &dir);
     }
+    Json(board).into_response()
+}
+
+/// Put each task's run beside it, and **only where there was one**.
+///
+/// A task nobody ever handed to the agent gets no `run` key at all, rather
+/// than an empty one. That absence is what the card reads as `idle`, and it
+/// is the common case — most of a board is things the owner typed. An
+/// object saying "no outcome recorded" on every hand-written task would put
+/// every one of them into the state reserved for a delegation that broke.
+fn attach_runs(board: &mut serde_json::Value, dir: &std::path::Path) {
+    let Some(items) = board["items"].as_array_mut() else {
+        return;
+    };
+    for task in items.iter_mut() {
+        let Some(id) = task["session"].as_str().map(str::to_string) else {
+            continue;
+        };
+        task["run"] = run_summary(dir, &id);
+    }
+}
+
+/// How the run on a session went — or that nobody can say.
+///
+/// **Three answers, never two.** An outcome record says how the loop stopped;
+/// its *absence* on a session that exists says the run did not get as far as
+/// recording one — a crash, a kill, or a transcript written before the record
+/// existed. That third answer is reported as itself and never folded into
+/// either of the others: doctor's rule that a rate over a zero denominator is
+/// `None` and never zero, one surface over, where the consequence of getting
+/// it wrong is a delegation that died reading exactly like one nobody started
+/// (or, in the other direction, every run from before this shipped shouting
+/// that it failed).
+///
+/// The last outcome wins. A session is resumed by answering a question, and
+/// what the owner is deciding about is where it stands now.
+fn run_summary(dir: &std::path::Path, session_id: &str) -> serde_json::Value {
+    let Ok(path) = mecha_core::session::Session::find(dir, session_id) else {
+        // The transcript is gone. Not "the run failed" and not "it finished":
+        // the record this answer is made of is missing.
+        return serde_json::json!({ "recorded": false, "transcript": false });
+    };
+    let last = mecha_core::session::Session::outcomes(&path)
+        .ok()
+        .and_then(|mut o| o.pop());
+    let Some(stats) = last else {
+        return serde_json::json!({ "recorded": false, "transcript": true });
+    };
+    serde_json::json!({
+        "recorded": true,
+        "transcript": true,
+        // `None` when the loop never named one; the page renders that as
+        // unknown rather than as completion, for the reason above.
+        "stop_cause": stats.stop_cause,
+        // The harness cut it short — as distinct from the model finishing or
+        // a person stopping it. One definition, `StopCause`'s own, because
+        // there were two once and they disagreed.
+        "cut_short": stats.stop_cause.is_some_and(|c| c.is_early()),
+        // The silent failure: the model stopped of its own accord with its
+        // last call failed and answered as though it had not. An observation
+        // rather than an error — a task whose right answer is "that file does
+        // not exist" ends this way legitimately — so the card shows it and
+        // does not rule on it.
+        "ended_on_failed_call": stats.ended_on_failed_call,
+        // The evidence `ready for review` is supposed to arrive with.
+        "turns": stats.turns,
+        "tool_calls": stats.tool_calls,
+        // Never `tool_errors` alone: a denial is the approver doing its job,
+        // and averaging it into failure is how a read-only run reports the
+        // harness working as a harness fault.
+        "tool_errors": stats.tool_errors,
+        "tool_denied": stats.tool_denied,
+        "tool_staged": stats.tool_staged,
+    })
 }
 
 #[derive(serde::Deserialize)]
@@ -316,5 +415,146 @@ pub async fn notes(State(state): St) -> Response {
     match self_json(&state, &["kg", "notes", "--json"]).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::agent::StopCause;
+    use mecha_core::session::{Record, RunStats, Session, SessionMeta};
+
+    /// A private directory per test, on this repo's own convention — no
+    /// `tempfile` dependency in the binary that reads the owner's stores.
+    fn tmpdir(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("mecha-board-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn session(dir: &std::path::Path, id: &str) -> Session {
+        Session::create(
+            dir,
+            SessionMeta {
+                id: id.into(),
+                created_at: chrono::Utc::now(),
+                provider: "local".into(),
+                model: "a-model".into(),
+                workspace: dir.to_path_buf(),
+                title: Some("task: something".into()),
+            },
+        )
+        .unwrap()
+    }
+
+    /// **The third answer, and the reason it exists.** A transcript with no
+    /// outcome record is a run that never got as far as saying how it went —
+    /// a crash, a kill, or a session written before the record existed. It is
+    /// not a failure and it is not a completion, and folding it into either
+    /// is how every delegation from before this shipped would shout that it
+    /// broke (or how one that really did break would read as idle, which is
+    /// the rule D16 states outright).
+    #[test]
+    fn a_run_that_recorded_no_outcome_says_so_rather_than_guessing() {
+        let dir = tmpdir("unrecorded");
+        session(&dir, "20260826T090000-aaaaaaaa");
+        let v = run_summary(&dir, "20260826T090000-aaaaaaaa");
+        assert_eq!(v["transcript"], serde_json::json!(true));
+        assert_eq!(v["recorded"], serde_json::json!(false));
+        assert!(
+            v["stop_cause"].is_null(),
+            "and it must not invent one — unknown is the answer"
+        );
+    }
+
+    /// A session the board names that is not on disk is a third thing again:
+    /// the record this answer would be made of is missing.
+    #[test]
+    fn a_missing_transcript_is_not_a_failed_run() {
+        let dir = tmpdir("missing");
+        let v = run_summary(&dir, "20260826T090000-nosuch01");
+        assert_eq!(v["transcript"], serde_json::json!(false));
+        assert_eq!(v["recorded"], serde_json::json!(false));
+    }
+
+    /// The state D16 says must never render as `idle`. `NoOutput` is a real
+    /// failure the loop names — the run produced nothing and did not recover
+    /// — and the card has to be able to tell it from a completion.
+    #[test]
+    fn a_run_the_harness_cut_short_is_distinguishable_from_one_that_finished() {
+        let dir = tmpdir("cutshort");
+        let s = session(&dir, "20260826T090000-bbbbbbbb");
+        s.append(&Record::Outcome(RunStats {
+            stop_cause: Some(StopCause::NoOutput),
+            tool_calls: 3,
+            ..RunStats::default()
+        }))
+        .unwrap();
+        let v = run_summary(&dir, "20260826T090000-bbbbbbbb");
+        assert_eq!(v["recorded"], serde_json::json!(true));
+        assert_eq!(v["cut_short"], serde_json::json!(true));
+
+        let s = session(&dir, "20260826T090000-cccccccc");
+        s.append(&Record::Outcome(RunStats {
+            stop_cause: Some(StopCause::Completed),
+            tool_calls: 3,
+            tool_staged: 1,
+            ..RunStats::default()
+        }))
+        .unwrap();
+        let v = run_summary(&dir, "20260826T090000-cccccccc");
+        assert_eq!(v["cut_short"], serde_json::json!(false));
+        assert_eq!(v["tool_staged"], serde_json::json!(1));
+    }
+
+    /// **A task nobody delegated has no run, not an empty one.** The card
+    /// reads the key's absence as `idle`, and most of a board is things the
+    /// owner typed — so a summary attached to every row would put every
+    /// hand-written task into the state reserved for a delegation that broke.
+    #[test]
+    fn a_task_that_was_never_delegated_gets_no_run_at_all() {
+        let dir = tmpdir("never");
+        let mut board = serde_json::json!({
+            "items": [
+                { "id": "task-1", "session": null },
+                { "id": "task-2" },
+                { "id": "task-3", "session": "20260826T090000-eeeeeeee" },
+            ]
+        });
+        session(&dir, "20260826T090000-eeeeeeee");
+        attach_runs(&mut board, &dir);
+        assert!(board["items"][0].get("run").is_none());
+        assert!(board["items"][1].get("run").is_none());
+        assert_eq!(
+            board["items"][2]["run"]["transcript"],
+            serde_json::json!(true),
+            "and the one that was delegated is answered for"
+        );
+    }
+
+    /// **The last outcome wins.** A session is resumed by answering a
+    /// question, so a task that asked, was answered and then finished must
+    /// not still be reported by the run that stopped to ask — which is the
+    /// state the owner already dealt with.
+    #[test]
+    fn a_resumed_session_is_reported_by_where_it_stands_now() {
+        let dir = tmpdir("resumed");
+        let s = session(&dir, "20260826T090000-dddddddd");
+        s.append(&Record::Outcome(RunStats {
+            stop_cause: Some(StopCause::Interrupted),
+            ..RunStats::default()
+        }))
+        .unwrap();
+        s.append(&Record::Outcome(RunStats {
+            stop_cause: Some(StopCause::Completed),
+            turns: 9,
+            ..RunStats::default()
+        }))
+        .unwrap();
+        let v = run_summary(&dir, "20260826T090000-dddddddd");
+        assert_eq!(v["cut_short"], serde_json::json!(false));
+        assert_eq!(v["turns"], serde_json::json!(9));
     }
 }

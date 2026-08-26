@@ -37,6 +37,7 @@ mod files;
 mod frontdoor;
 mod mail;
 mod present;
+mod questions;
 mod review;
 
 #[derive(clap::Args, Debug)]
@@ -272,6 +273,15 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/tasks/plan", axum::routing::post(board::task_plan))
         .route("/api/tasks/source", axum::routing::post(board::task_source))
         .route("/api/tasks/add", axum::routing::post(board::task_add))
+        .route("/api/questions", get(questions::list))
+        .route(
+            "/api/questions/answer",
+            axum::routing::post(questions::answer),
+        )
+        .route(
+            "/api/questions/abandon",
+            axum::routing::post(questions::abandon),
+        )
         .route("/api/notes", get(board::notes).post(board::note))
         .route("/api/notes/edit", axum::routing::post(board::note_edit))
         .route("/api/frontdoor", get(frontdoor::list))
