@@ -30,6 +30,11 @@ enum Command {
         /// Loopback port for the OAuth redirect.
         #[arg(long, default_value_t = auth::DEFAULT_REDIRECT_PORT)]
         port: u16,
+        /// Do not listen: print the URL and read back the address the browser
+        /// landed on. For a machine you are only ssh'd into — no tunnel, no
+        /// forwarded port, and the browser can be on any device.
+        #[arg(long)]
+        paste: bool,
     },
     /// Serve MCP over stdio (the default when no subcommand is given).
     Serve,
@@ -44,7 +49,8 @@ async fn main() -> Result<()> {
             client_id,
             client_secret,
             port,
-        }) => authenticate(client_id, client_secret, port).await,
+            paste,
+        }) => authenticate(client_id, client_secret, port, paste).await,
         Some(Command::Serve) | None => {
             let manager = token::TokenManager::load(token::default_path()?)?;
             mcp::serve(GoogleTools { manager }).await
@@ -56,6 +62,7 @@ async fn authenticate(
     client_id: Option<String>,
     client_secret: Option<String>,
     port: u16,
+    paste: bool,
 ) -> Result<()> {
     let path = token::default_path()?;
 
@@ -69,7 +76,12 @@ async fn authenticate(
         .or_else(|| existing.as_ref().map(|c| c.client_secret.clone()))
         .unwrap_or_default();
 
-    let creds = auth::interactive_flow(client_id, client_secret, port).await?;
+    let capture = if paste {
+        auth::Capture::Paste
+    } else {
+        auth::Capture::Listen
+    };
+    let creds = auth::interactive_flow(client_id, client_secret, port, capture).await?;
     let account = creds.account.clone().unwrap_or_default();
     token::save(&path, &creds)?;
     eprintln!(
