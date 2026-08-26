@@ -903,6 +903,29 @@ there is worse than the plain fact. Progressive disclosure is the argument for
 the whole shape — the seed is the front of a prefix every turn re-sends, so
 pasted context is paid for on all of them and a sentence is paid once.
 
+**A delegated run is detached, so talking to it is a file — and the same
+file settles who owns the transcript.** `tasks work` runs as a child of
+whatever launched it, so its `Conversation` lives in memory no other process
+shares and its JSONL has one writer. Two consequences, both structural.
+**Steering is `<task>.steer`**, appended by `mecha tasks steer` and drained
+by a poller into the run's own `queued_input` — the queue a TUI's typed
+steering already feeds, so the loop sees an instruction arrive on the message
+carrying the tool results and never learns it came from a file.
+`run_interruptible_watching`'s `pump` is named for that ignorance: something
+to do on every tick, not "check for steering". The store's own three rules
+carry over — appended (two sentences a second apart are two intentions),
+drained (a file that survives delivery arrives again every turn), and cleared
+at `mark_running` (a steer left by a kill must not reach the next run, which
+is the stale-cancel bug this module was extracted for). **And the run marker
+names the session it is writing**, because "one conversation, one writer" had
+only ever been checked *within* a process: `resume` refuses a twin of a
+session this process holds and could not see a detached child, so resuming a
+delegation mid-flight would have put two writers on one transcript.
+`live_writer_of` asks the marker directory instead, a dead marker is swept on
+the way past so a crash cannot lock a transcript out, and the refusal names
+the task so the owner can stop or steer it instead. A UI condition is not a
+guard.
+
 **A delegated run that needs a decision ends, and its question is a store**
 (`questions.rs`, `mecha questions`, `/api/questions`). The outbox's inbound
 twin, and the reasoning is the outbox's run backwards: a staged send is a

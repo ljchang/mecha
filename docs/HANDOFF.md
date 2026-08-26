@@ -1119,6 +1119,23 @@ the mechanism and every decision. What it left standing:
     that a delegated run's subject line is attacker-influenced. Pre-existing
     since capture shipped 2026-08-26; nothing regressed, and it is written
     down here because `CLAUDE.md` previously read as though the boundary held.
+  - **The seed's bullet order is now pinned by a test, and the reason it
+    moved did not survive its own measurement.** The pointer bullets first
+    shipped directly beneath *"do not ask what you can find out"*, so the
+    section ended on two consecutive reasons not to ask; pooling every
+    substantive run of the day made that look like a regression —
+    `ask_user` in 5 of 6 runs under the previous seed against 0 of 4 under
+    the new one — and the bullets were moved above the asking block on that
+    reading. **The pooled number is confounded by task and should not be
+    quoted.** The arms ran different tasks; the only within-task series is
+    one board item (*decide whether to submit to a conference*, six runs),
+    and there `ask_user` fired once in two old-seed runs, zero in two
+    ask-first runs, and zero in two lookup-first runs. So the order change
+    is justified on reading order — here is what you can find out, *then*
+    ask about what is left — and **not** on a measured effect, and the
+    question of whether this model asks less under the new seed is still
+    open at n far too small. The test asserts the order rather than the
+    outcome, which is the part that is actually decided.
   - **Front-loading landed as prose, not as a parked question, on the one
     run that had questions to ask.** The mail run ended `completed` with six
     numbered decisions in its final answer and **zero `ask_user` calls**,
