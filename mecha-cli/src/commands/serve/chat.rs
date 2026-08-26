@@ -214,6 +214,94 @@ pub(super) fn session_workspace(key: &str) -> Result<PathBuf> {
 // The wire: what the page receives, over SSE and in the transcript read.
 // Pure functions of core types, so they are testable without a server.
 
+/// [`mecha_core::outbox::DraftView`] on the wire.
+///
+/// A projection rather than a `Serialize` on the type itself: the store's
+/// shape is the store's, and a page is not the only thing that reads it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WireDraft {
+    pub headers: Vec<(String, String)>,
+    pub body: Option<String>,
+    pub other: Vec<(String, String)>,
+}
+
+/// How much of one field a card carries, and why there is a bound at all.
+///
+/// The arguments beside it have been clipped since the card existed; the
+/// shaped view has to be, for the same reason and one more. `content` is a
+/// body field, so a `fs_write` of a large file would put the whole file in
+/// the card — broadcast to every open page, held for the reload path, and
+/// re-sent on every transcript read after that. It would also push Allow
+/// and Deny off the bottom of a phone, which is the surface this is for.
+///
+/// A clip is marked where it cuts. The exact bytes were never here to begin
+/// with — that is what the session record is — and a card claiming to show
+/// a whole call it silently shortened is the failure this shaping exists to
+/// prevent, arriving one layer in.
+const CARD_BODY_CHARS: usize = 2_000;
+const CARD_VALUE_CHARS: usize = 400;
+
+fn clip_to(text: String, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text;
+    }
+    let head: String = text.chars().take(max).collect();
+    format!("{head}… (clipped — the whole call is in the session record)")
+}
+
+impl WireDraft {
+    /// `None` when the call has nothing a person would read as a message —
+    /// an empty object, or a card that is prose already. A card with no
+    /// shape falls back to the arguments, which is what it always showed.
+    pub fn of(input: &serde_json::Value) -> Option<WireDraft> {
+        let view = mecha_core::outbox::DraftView::of(input);
+        if view.headers.is_empty() && view.body.is_none() && view.other.is_empty() {
+            return None;
+        }
+        let clip_fields = |fields: Vec<(String, String)>| {
+            fields
+                .into_iter()
+                .map(|(k, v)| (k, clip_to(v, CARD_VALUE_CHARS)))
+                .collect()
+        };
+        Some(WireDraft {
+            headers: clip_fields(view.headers),
+            body: view.body.map(|b| clip_to(b, CARD_BODY_CHARS)),
+            other: clip_fields(view.other),
+        })
+    }
+}
+
+/// The one spelling of a permission mode on the wire.
+///
+/// The state read seeds the page's chip and [`WireEvent::Mode`] keeps it
+/// honest afterwards; both go through here, because two spellings of one
+/// mode is a chip that disagrees with the run it describes. The page
+/// switches on these exact strings.
+/// The inverse of [`mode_wire`], and the only place a mode is parsed.
+///
+/// The pair has to round-trip: a mode the page can be *told* about but not
+/// *ask for* is what the surface shipped with — the state read answered
+/// `"allow"` and the POST refused it — so the chip could render a mode no
+/// tap could reach. `read-only` is accepted alongside the canonical spelling
+/// because the hyphen is what a person types by hand.
+pub(super) fn parse_mode(raw: &str) -> Option<PermissionMode> {
+    match raw {
+        "ask" => Some(PermissionMode::Ask),
+        "allow" => Some(PermissionMode::Allow),
+        "read_only" | "read-only" => Some(PermissionMode::ReadOnly),
+        _ => None,
+    }
+}
+
+pub(super) fn mode_wire(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Ask => "ask",
+        PermissionMode::Allow => "allow",
+        PermissionMode::ReadOnly => "read_only",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WireEvent {
@@ -250,11 +338,29 @@ pub enum WireEvent {
     Notice {
         text: String,
     },
+    /// The session's permission mode, whenever it changes. Structured, and
+    /// deliberately not left to the notice beside it: the chip this drives
+    /// tells a person whether the next write stops to ask, so deriving it
+    /// from prose would break the first time the sentence was reworded —
+    /// and a stale chip is a person believing a run is gated when it is not.
+    Mode {
+        mode: String,
+    },
     Question {
         qid: u64,
         kind: String,
         tool: Option<String>,
         args: Option<String>,
+        /// The call as a person reads one, when there is a shape to read —
+        /// `None` for an `ask_user` card, which is already prose.
+        ///
+        /// The arguments stay in `args` beside it and nothing is dropped:
+        /// this is the *essentials*, and the reviewer expands to the whole
+        /// call. The outbox's rule, arriving where it was always needed —
+        /// an approval card is a review surface, and one that prints
+        /// `{"body_markdown": "Dear Dirk,\n\nThank…"}` is asking for a
+        /// decision it has made hard to take.
+        draft: Option<WireDraft>,
         question: Option<String>,
         options: Vec<String>,
         timeout_secs: u64,
@@ -510,15 +616,7 @@ pub async fn transcript(
         None => (Vec::new(), None),
     };
     let usage = ws.last_usage.lock().ok().and_then(|u| u.clone());
-    let mode = ws
-        .mode
-        .lock()
-        .map(|m| match *m {
-            PermissionMode::Ask => "ask",
-            PermissionMode::Allow => "allow",
-            PermissionMode::ReadOnly => "read_only",
-        })
-        .unwrap_or("read_only");
+    let mode = ws.mode.lock().map(|m| mode_wire(*m)).unwrap_or("read_only");
     Json(serde_json::json!({
         "session": ws.session.meta.id,
         "model": chat.model,
@@ -1070,7 +1168,19 @@ pub struct ModeBody {
     pub mode: String,
 }
 
-/// POST /api/chat/{key}/mode — read_only | ask, an explicit control only.
+/// POST /api/chat/{key}/mode — read_only | ask | allow, an explicit control
+/// only: a mode is never inferred from anything the model or a page said.
+///
+/// `allow` is sticky like the other two, and the argument for that is what
+/// it does *not* waive. The interlock runs ahead of the approver, so a
+/// conversation holding private data and third-party text still refuses an
+/// `external_send` tool with nobody asked; outbox-routed calls still stage
+/// rather than send. What `allow` removes is the tap, which is the part a
+/// person who set it deliberately is choosing to stop giving. A mode that
+/// decayed on a timer would instead put the tap back at an unpredictable
+/// moment — silently, on a page nobody is looking at — and "why did that
+/// run park for two minutes" is the same unanswerable question the chip
+/// staleness bug produced.
 pub async fn set_mode(
     State(state): Chat,
     axum::extract::Path(key): axum::extract::Path<String>,
@@ -1080,19 +1190,14 @@ pub async fn set_mode(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    let mode = match body.mode.as_str() {
-        "ask" => PermissionMode::Ask,
-        "read_only" | "read-only" => PermissionMode::ReadOnly,
-        "allow" => {
+    let mode = match parse_mode(&body.mode) {
+        Some(mode) => mode,
+        None => {
             return (
-                StatusCode::FORBIDDEN,
-                "allow is deliberately not offered from the page yet — approve calls \
-                 one at a time in ask mode\n",
+                StatusCode::BAD_REQUEST,
+                format!("unknown mode {:?}\n", body.mode),
             )
                 .into_response()
-        }
-        other => {
-            return (StatusCode::BAD_REQUEST, format!("unknown mode {other:?}\n")).into_response()
         }
     };
     let mut sessions = chat.sessions.lock().await;
@@ -1100,11 +1205,32 @@ pub async fn set_mode(
         Ok(ws) => ws,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
     };
-    if let Ok(mut cell) = ws.mode.lock() {
-        *cell = mode;
+    // A lock we could not take is a mode that did not change, so it must
+    // not be announced as one — that is the staleness bug in miniature, and
+    // it lies in the dangerous direction in both: a chip reading `allow`
+    // over a run still parking on every write, or reading `read_only` over
+    // one that is not. The approver falls back to `ReadOnly` on the same
+    // poisoned lock, so refusing here leaves the page and the run agreeing.
+    match ws.mode.lock() {
+        Ok(mut cell) => *cell = mode,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the mode could not be changed; this session is still running at \
+                 whatever it was\n",
+            )
+                .into_response()
+        }
     }
+    // Both, and they are not redundant: the event is the state every open
+    // page reconciles its chip against — the reason a change made on a
+    // phone reaches the laptop watching the same session — and the notice
+    // is the line in the transcript saying a person changed it and when.
+    let _ = ws.events.send(WireEvent::Mode {
+        mode: mode_wire(mode).to_string(),
+    });
     let _ = ws.events.send(WireEvent::Notice {
-        text: format!("mode set to {}", body.mode),
+        text: format!("mode set to {}", mode_wire(mode)),
     });
     Json(serde_json::json!({ "ok": true })).into_response()
 }
@@ -1470,6 +1596,109 @@ mod wire_tests {
         .unwrap();
         assert_eq!(wire["type"], "user");
         assert_eq!(wire["text"], "book the room");
+    }
+
+    #[test]
+    fn every_mode_the_page_can_be_told_about_is_one_it_can_ask_for() {
+        // The bug this names shipped: the state read answered "allow" and
+        // the POST refused it, so a mode was renderable and unreachable.
+        // Renderer and parser are two matches over one enum, which is
+        // exactly the pair that drifts, so the round-trip is asserted
+        // rather than remembered.
+        use super::{mode_wire, parse_mode};
+        for mode in [
+            PermissionMode::Ask,
+            PermissionMode::Allow,
+            PermissionMode::ReadOnly,
+        ] {
+            assert_eq!(
+                parse_mode(mode_wire(mode)),
+                Some(mode),
+                "{} does not round-trip",
+                mode_wire(mode)
+            );
+        }
+        assert_eq!(parse_mode("read-only"), Some(PermissionMode::ReadOnly));
+        assert_eq!(parse_mode("plan"), None, "an unknown mode must not resolve");
+    }
+
+    #[test]
+    fn a_mode_change_reaches_the_page_under_the_name_the_page_switches_on() {
+        // The chip keys on the literal `"mode"` and reads `ev.mode`; a
+        // rename here leaves every open page showing the mode it had when
+        // it loaded, which is the staleness this event exists to end — and
+        // it looks exactly like the feature working on the tab that tapped.
+        let wire = serde_json::to_value(WireEvent::Mode {
+            mode: super::mode_wire(PermissionMode::Allow).to_string(),
+        })
+        .unwrap();
+        assert_eq!(wire["type"], "mode");
+        assert_eq!(wire["mode"], "allow");
+    }
+
+    #[test]
+    fn an_approval_card_leads_with_the_essentials_and_keeps_the_whole_call() {
+        // What a person needs to answer "may I?" about a meeting is its
+        // name and when it is — not an argument map in alphabetical order,
+        // where an event reads end before start.
+        let event = serde_json::json!({
+            "title": "B4 brown bag",
+            "start_time": "2026-08-28T12:00:00-04:00",
+            "end_time": "2026-08-28T13:30:00-04:00",
+            "account": "dartmouth",
+            "attendees": ["menghan@example.edu"],
+        });
+        let draft = super::WireDraft::of(&event).expect("a calendar call has a shape");
+        let heads: Vec<&str> = draft.headers.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(heads, ["title", "start_time", "end_time", "account"]);
+        // Nothing the reviewer would need is only in the expansion, and
+        // nothing is dropped: what is not an essential is still carried.
+        assert!(draft.other.iter().any(|(k, _)| k == "attendees"));
+
+        // A letter's essentials are its addressing; its body is the prose,
+        // with real newlines rather than escape sequences.
+        let mail = serde_json::json!({
+            "to": "dirk@example.edu",
+            "subject": "Re: the letter",
+            "body": "Dear Dirk,\n\nThank you for the note.",
+        });
+        let draft = super::WireDraft::of(&mail).expect("a mail call has a shape");
+        assert_eq!(draft.headers[0], ("to".into(), "dirk@example.edu".into()));
+        assert!(draft.body.as_deref().unwrap().contains('\n'));
+    }
+
+    #[test]
+    fn a_large_write_does_not_put_the_whole_file_on_the_card() {
+        // `content` is a body field, so the unbounded version of this put a
+        // whole file into an event broadcast to every page and re-sent on
+        // every transcript read after that — and pushed the buttons off a
+        // phone. The arguments beside it were clipped all along.
+        let big = "x".repeat(50_000);
+        let draft = super::WireDraft::of(&serde_json::json!({
+            "path": "notes.md",
+            "content": big,
+        }))
+        .unwrap();
+        let body = draft.body.unwrap();
+        assert!(
+            body.chars().count() < 2_200,
+            "body was {} chars",
+            body.chars().count()
+        );
+        assert!(
+            body.ends_with("in the session record)"),
+            "a clip has to say so"
+        );
+    }
+
+    #[test]
+    fn a_card_with_no_shape_still_shows_everything_it_ever_did() {
+        // The fallback matters more than the shaping: an unanticipated tool
+        // must degrade to the raw arguments, never to an empty card that
+        // reads as "nothing to see" over a call that does something.
+        assert_eq!(super::WireDraft::of(&serde_json::json!({})), None);
+        let odd = super::WireDraft::of(&serde_json::json!({"pattern": "*.rs"})).unwrap();
+        assert_eq!(odd.other, vec![("pattern".to_string(), "*.rs".to_string())]);
     }
 
     #[test]
