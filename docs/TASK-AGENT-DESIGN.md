@@ -553,13 +553,37 @@ decrypt and fork**, because the target runs migrations before the copy and
 already held the row the source was about to send. `nodes` joined the
 `INSERT OR IGNORE` pass `predicate` has always been in.
 
-**Phase 4 — the phone.** *Ask mecha* on the task row, *open the
-conversation*, *stop*, the drawer filter and chip (D10), the plan gate
-(D12), the derived card states and the rendered todo list (D16). Board
-decisions B1 and B2 ride along, since they touch the same row. *Verify: tap
-→ a session appears in the drawer → opening it shows the plan → editing the
-plan changes what runs → steering works → stop works → a failed run reads as
-failed and not as idle.*
+**Phase 4 — the phone. Built 2026-08-26, except D12, B1 and B2.** *Ask
+mecha* on the task row, *open the conversation*, *stop*, the drawer filter
+and chip (D10), the rendered todo list, and — in a second pass the same day
+— the **return path** and the derived card states (D16). Still open: the
+plan gate (D12) and the two board decisions (B1, B2), which touch the same
+row and can be done independently.
+
+The return path was not on this list and is the half of D13 the first pass
+left implicit: a question could be *asked* from the phone's delegation and
+answered only from a terminal, so the gesture the phone exists for opened a
+loop the phone could not close. `/api/questions` list/answer/abandon, with
+the card on its task — D13's own "no new noun" argument — and answering
+spawning the resume detached, `--unattended`.
+
+Two findings from building it, both recorded in HISTORY under Traps and
+worth knowing before touching this arc again:
+
+- **`questions answer` built an interactive agent.** Detached with
+  `/dev/null` on stdin, that files every approval as
+  `"Denied by the user: "` — the string the learning miner reads a
+  *correction* out of. The flag is a precondition for the web reaching the
+  verb at all, not an ergonomic.
+- **No task run had ever written a `RunStats`.** `tasks work` and
+  `questions answer` were the two front-ends missing `record_outcome`, so
+  the corpus this document's own "task shape" question defers to had never
+  seen a delegation. It has, from 2026-08-26.
+
+*Verified: tap → a session appears in the drawer → opening it shows the plan
+→ steering works → stop works → a failed run reads as failed and not as
+idle. Not yet verified, because D12 is unbuilt: editing the plan changes
+what runs.*
 
 **Phase 5 — narrowing and context.** The context assembler (D4). D6's
 narrowing arrived early with Phase 1, because shipping a task runner that

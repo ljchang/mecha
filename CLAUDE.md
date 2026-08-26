@@ -59,6 +59,7 @@ skill.rs     user-authored procedures: the store, and the level-1 prompt block
 hooks.rs     user commands at lifecycle points; pre_tool can deny a call
 outbox.rs    the store behind staged sends and publishes
 outbox_source.rs  what a staged draft answers, joined out of the staging session
+questions.rs the outbox's inbound twin: a delegated run's question, and the resume
 mailbox.rs   inter-agent messages between sessions; taint travels with them
 sandbox.rs   bwrap/docker confinement for shell and MCP servers
 compact.rs   the cut, the rebuild, and the state carried across one
@@ -870,6 +871,48 @@ missing from a script. Three decisions on top of that:
 An edit form offers due, defer and context and *not* the name, because
 `kg_task_update` has no rename — a box that silently discarded what was typed
 in it would be worse than not offering one.
+
+**A delegated run that needs a decision ends, and its question is a store**
+(`questions.rs`, `mecha questions`, `/api/questions`). The outbox's inbound
+twin, and the reasoning is the outbox's run backwards: a staged send is a
+run's *outbound* act surviving the run's end, and nothing let a run's
+*question* do the same — `ask_user` parks the run itself, which is right for
+a page open in a hand and wrong for a task, where the honest case is that
+nobody answers until morning. So `ParkingAsker` cancels the run's own token
+(keeping the partial turn, exactly as Ctrl-C does), stores the question, and
+`waiting_on` moves to the owner; answering **is** resuming — the answer
+becomes the next user turn of the conversation that asked, in the jail it
+asked from, with its plan rehydrated. No slot and no cached prefix are held
+overnight, and the ball-passing needed no new noun, because `waiting_on`
+alternating between owner and agent is the GTD semantics the board already
+has.
+
+Two rules on the surfaces over it. **Reading is a store read and every
+mutation is a `mecha …` child**, which is `review.rs`'s split rather than
+`board.rs`'s — the question store is mecha's own type, where the board
+belongs to another repository and must go through MCP or become a second
+reader of somebody else's schema. And **the two mutations spawn
+differently**: abandoning writes one record and is synchronous, while
+answering is a whole agent run and detaches, with `--unattended` — which is
+load-bearing rather than ergonomic, because an interactive agent spawned with
+`/dev/null` on stdin takes EOF as a refusal and files every one as
+`"Denied by the user: "`, the string the learning miner reads a *correction*
+out of. A question answered from a phone would otherwise teach rules from a
+person who was never asked.
+
+**And the card's state is derived, from three sources, none of which is the
+run's account of itself.** The board says who holds the ball, the question
+store says whether it is blocked, and the transcript's `Record::Outcome` says
+how the last run stopped — so a run that reported "all done" with its last
+three calls blocked is caught by construction. Two states carry the weight:
+*answer needed* is loud, because it is the only one that stalls indefinitely
+and the only one whose remedy is a person; and *failed* must never render as
+*idle*, because "nothing is happening" and "it broke" are opposite findings.
+That second rule is why there is a seventh state — a transcript with no
+outcome record is a run that never got as far as saying how it went, and
+reporting it as either of the other two invents the one fact the card is
+about. `Interrupted` reads as finished and never as failed, on doctor's own
+rule for the same field: a person stopping a run is the system working.
 
 ## The unified queue — `/queues`
 

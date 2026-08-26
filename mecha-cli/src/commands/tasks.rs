@@ -787,6 +787,25 @@ async fn work(
     if let Err(e) = &recording {
         eprintln!("warning: this run was not fully recorded: {e:#}");
     }
+    // **How the run went, beside what it said** — the record every other
+    // front-end writes and this one did not. A delegated run was therefore
+    // invisible to `runlog` and to `sessions health`, which is the corpus the
+    // design doc's own open question ("which kinds of board item are worth
+    // delegating") says already holds the answer; it did not, for exactly the
+    // runs it was about. It is also what lets a card tell a run that finished
+    // from one that broke, which D16 requires and the board alone cannot say:
+    // a failed run restores the status it found, so the board looks like a
+    // task nobody ever handed over.
+    //
+    // Separate from `record_run` and after it, on `record_outcome`'s own rule:
+    // a run that errored mid-flight still has messages worth keeping and no
+    // outcome to describe. By reference, so the failure branch below still
+    // owns the error.
+    if let Ok(o) = &outcome {
+        if let Err(e) = session.record_outcome(o) {
+            eprintln!("warning: this run's outcome was not recorded: {e:#}");
+        }
+    }
     // Taint lives on the conversation and a tool cannot see it, so the
     // snapshot is stamped on afterwards. The run ended at the question, so
     // this *is* the question's taint — and where a question shared a turn

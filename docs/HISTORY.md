@@ -1831,6 +1831,62 @@ transcript on the way (D14/D15), which is what made the card possible at all.
 Two code reviews at high effort ran against it; the first found ten things,
 including delegation as a way around D6.
 
+**2026-08-26 (second pass) — the delegation loop closed at the phone end.**
+Phase 4 could *start* a delegation and could not finish one: *ask mecha* had
+been on the task row since that morning, a run that needed a decision ended
+and stored its question (D13), and the only surface that could answer was a
+terminal. So the gesture the phone exists for opened a loop the phone could
+not close — and the board sat in `waiting` with nobody able to see why from
+the device it was read on. `GET /api/questions` is a direct `QuestionStore`
+read on `review.rs`'s pattern (mecha's own store, unlike the board, which
+must go through the CLI because its store belongs to another repository);
+answering spawns `mecha questions answer --unattended` **detached**, because
+answering *is* a whole agent run; abandoning is synchronous, because writing
+one record is instant. The card lands on its task rather than on a new page,
+which is D13's own argument — the Waiting view *becomes* the queue of blocked
+delegations, with no new noun — and a question whose task is off the board
+still gets a card, because a question nothing renders is a delegation frozen
+forever.
+
+Two things that were not on anyone's list came out of building it, and both
+were the same shape: a rule this project states everywhere, quietly untrue in
+one place. **`--unattended` on the resume is load-bearing, not ergonomic** —
+`answer_and_resume` built an *interactive* agent, so a detached child would
+have installed `TerminalApprover`, read `/dev/null`, taken EOF as a refusal
+and filed every one as `Decision::Deny("the user declined this call")`, which
+the loop renders `"Denied by the user: "`: the exact string the learning
+miner reads a **correction** out of. A question answered from a phone would
+have taught mecha rules from a person who was never asked. And **no task run
+had ever written a `RunStats`**: `record_outcome` had ten call sites and
+neither `tasks work` nor `questions answer` was among them, so the corpus
+CLAUDE.md describes as written "once per finished run by every front-end" had
+never seen a delegation.
+
+That second one is what made D16 buildable honestly rather than by guessing.
+The card's state is derived from three sources and none of them is the run's
+account of itself: the board says who holds the ball, the question store says
+whether it is blocked, the transcript's outcome record says how the last run
+stopped. Seven states, no two rendering alike, and the seventh is the
+interesting one — `outcome unknown`, for a transcript with no outcome record,
+which is a run that never got as far as saying how it went (a crash, a kill,
+or a session written before the record existed). Folding that into `failed`
+would have made every delegation from before this shipped shout that it
+broke; folding it into `ready` would have made one that really died read as
+finished, which is the exact rule D16 states outright. `Interrupted` reads as
+ready and never as failed, on doctor's own rule for the same field: a person
+stopping a run is the system working.
+
+One unrelated bug fell out of looking: **`/api/tasks` never passed
+`--closed`**, so the drawer's `done` view — which filters on
+`done | dropped` — had been filtering a list that could contain neither since
+the day it shipped. It read as "you have finished nothing", which is the
+failure mode a filter that cannot match always takes.
+
+Verified by driving the real page in a headless browser rather than by
+reading it: the answer button disabled while empty and enabled on the first
+keystroke, an option tap posting the option's own words, abandon posting the
+id, and *open the conversation* landing on `#chat/<session>`.
+
 **2026-08-25 (night) — real people out of a public repository.** The
 2026-08-07 history rewrite stripped *operational inventory* and did not touch
 a second kind that kept accumulating afterwards: real people used as
@@ -2890,6 +2946,19 @@ All found by pre-push review or by running it.
   a check, verify the thing it is complaining about, not the reason you think
   it is complaining.
 
+- **"Every front-end writes this" was true of eight of ten.** `Record::Outcome`
+  is documented as written once per finished run by every front-end, and
+  `record_outcome` had ten call sites — `run`, `chat`, `tui`, `trigger`,
+  `frontdoor`, `slack`, `voice`, `serve/chat` — with `tasks work` and
+  `questions answer` in neither. So the run-quality corpus had never seen a
+  delegated run, and the task-agent design's own open question ("`RunStats`
+  already records enough to answer this later") was false for exactly the runs
+  it was about. Nothing failed: both callers bound the outcome and checked only
+  its `Err`, which reads as complete. **A claim of the form "every X does Y" is
+  a grep, not a belief** — and the component that is missing Y cannot see that
+  it is, because from inside it there is nothing to compare against. Found by
+  counting call sites while looking for something else.
+
 - **The "edit-distance gate" was never code, and the handoff carried it as an
   open item for weeks.** It was described as observed working live; a
   verification sweep on 2026-08-09 found no threshold, no `levenshtein`, and
@@ -3297,6 +3366,21 @@ and is what finally exercised the path.)
   from run boundaries. If a handler removes work from a store before handing it
   on, every exit from that handler must either deliver it or put it back —
   including the exits you did not write, like a run that simply ends.
+
+- **`interactive` is a claim about who is watching, and a detached child is
+  never watching.** `mecha questions answer` resumed a delegated run with
+  `setup::prepare(&opts, true)`, which is right for the terminal it was
+  written for and became wrong the moment a web surface wanted to spawn it:
+  detached, stdin is `/dev/null`, `TerminalApprover` reads `Ok(0)`,
+  EOF-is-not-consent turns it into `"n"`, and every approval becomes
+  `Decision::Deny("the user declined this call")` — the string the learning
+  miner reads a *correction* out of (Learning → "a refusal nobody made"). Not
+  a failed run: a run that teaches rules from a person who was never asked.
+  `tasks work` had already learned this and carried the flag; the second door
+  onto the same conversation did not. **When one entry point takes a posture
+  argument, every entry point onto the same run needs the same argument** —
+  and the posture must be passed in rather than sniffed from a tty, or it
+  becomes a property of how the process happened to be launched.
 
 - **`read_only` decides approval, never ordering.** `show_file` called in the
   same turn as the `fs_write` that made the file found nothing there:
