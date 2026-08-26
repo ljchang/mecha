@@ -362,6 +362,132 @@ pub async fn task_stop(State(state): St, Json(body): Json<TaskStopBody>) -> Resp
 }
 
 #[derive(serde::Deserialize)]
+pub struct TaskChatBody {
+    pub task: String,
+}
+
+/// POST /api/tasks/chat — open the conversation about a task.
+///
+/// **D2, which the detached path had quietly dropped.** *"The run is a
+/// conversation from the start, not a fire-and-forget job"* — and `ask mecha`
+/// spawned an unattended child, so the board moved to `waiting` on the tap
+/// and the only conversation available was the one you could read afterwards.
+/// This opens the same chat surface everything else here uses: the model's
+/// transcript streams to the page, voice and uploads work because they are
+/// the chat's, a question is a card, and typing at a run in flight is
+/// steering the loop already understands.
+///
+/// **Nothing on the board moves.** `waiting_on` names who has the ball, and
+/// while the owner is in the conversation they do — so the card stays where
+/// it was instead of vanishing out of the view it was tapped in. The session
+/// id is recorded on the task, because that link is how the card offers the
+/// way back, and it is set by the harness rather than by the model (D5).
+///
+/// Returns the session id and not the key: the page navigates to
+/// `#chat/<id>`, whose `resume` already hands back the live key when this
+/// process holds the conversation. One door into the chat view.
+pub async fn task_chat(State(state): St, Json(body): Json<TaskChatBody>) -> Response {
+    let task_id = body.task.trim().to_string();
+    if task_id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which task?\n").into_response();
+    }
+    match super::chat::open_task_conversation(&state, &task_id).await {
+        Ok(session) => Json(serde_json::json!({ "session": session })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct TaskHandoverBody {
+    pub task: String,
+    pub note: Option<String>,
+}
+
+/// POST /api/tasks/handover — let the conversation carry on without you.
+///
+/// **The crossing between the two postures**, and the only place the choice
+/// is made. Planning happens in a chat session in this process, where a
+/// question is a card and an answer is a second away; autonomous work happens
+/// in a detached child, where a question **ends the run** and waits in the
+/// question store until morning. Neither is more capable — the chat loop runs
+/// unattended just as long — the difference is what happens when nobody is
+/// there, and that is a fact about the owner rather than about the run.
+///
+/// What crossing buys, precisely: the child survives a restart of this
+/// process, its questions park instead of expiring on a 120-second card, and
+/// the board can honestly say `waiting on mecha`, because now it is.
+///
+/// Release first, then spawn. Reversing them would have two processes willing
+/// to append to one transcript for as long as the child takes to start, which
+/// is the failure every `resume` surface here is guarded against.
+pub async fn task_handover(State(state): St, Json(body): Json<TaskHandoverBody>) -> Response {
+    let task = body.task.trim().to_string();
+    if task.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which task?\n").into_response();
+    }
+    let session = match super::chat::release_task_conversation(&state, &task).await {
+        Ok(id) => id,
+        Err(e) => return (StatusCode::CONFLICT, format!("{e:#}\n")).into_response(),
+    };
+    let mut argv: Vec<String> = vec![
+        "tasks".into(),
+        "work".into(),
+        task,
+        "--unattended".into(),
+        "--again".into(),
+        "--resume".into(),
+        session,
+    ];
+    if let Some(note) = body
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        argv.push("--note".into());
+        argv.push(note.into());
+    }
+    super::mail::spawn_detached_note(
+        &argv,
+        "handed over — it carries on from here, and its questions will wait for you",
+    )
+}
+
+#[derive(serde::Deserialize)]
+pub struct TaskSteerBody {
+    pub task: String,
+    pub text: String,
+}
+
+/// POST /api/tasks/steer — redirect a run in flight without stopping it.
+///
+/// **The one thing a detached run could not be told.** Everything else the
+/// card offers is a fact about the board; this is text for the run itself,
+/// and the run is in another process — so it travels the way `stop` does, as
+/// a file the runner polls, and lands in the same `queued_input` a TUI's
+/// typed steering goes into. The loop sees what it always saw: an
+/// instruction arriving on the message that carries the tool results.
+///
+/// Synchronous, unlike `work`. Queueing is a file write, and the answer the
+/// page needs — *was anything actually running?* — is known immediately;
+/// spawning it detached would report success for a run that had already
+/// ended, which is the confusion `stop`'s non-zero exit was written to stop.
+pub async fn task_steer(State(state): St, Json(body): Json<TaskSteerBody>) -> Response {
+    let task = body.task.trim();
+    let text = body.text.trim();
+    if task.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which task?\n").into_response();
+    }
+    if text.is_empty() {
+        // Nothing to say is not an instruction. Refused here rather than
+        // queued, because an empty steer would still cost the run a turn's
+        // attention on a user message with no content in it.
+        return (StatusCode::BAD_REQUEST, "steer it with what?\n").into_response();
+    }
+    verb(&state, &["tasks", "steer", task, text]).await
+}
+
+#[derive(serde::Deserialize)]
 pub struct TaskAddBody {
     pub name: String,
     pub due: Option<String>,

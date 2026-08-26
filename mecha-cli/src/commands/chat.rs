@@ -30,6 +30,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     if let Some(id) = &args.resume {
         let path = Session::find(&session_dir, id)?;
+        // **The other door onto one transcript.** A delegated run is a
+        // detached child, so nothing in *this* process can see that its
+        // conversation is live; picking the file up anyway would give it two
+        // writers, the child appending its turns and this session appending
+        // the owner's. The web's `resume` learned to ask the run markers and
+        // this one had not, which would have left the rule enforced on the
+        // surface that happens to have a card for it and nowhere else — a
+        // guard that is really a UI condition.
+        if let Some(task) = crate::commands::tasks::markers()
+            .ok()
+            .and_then(|m| m.live_writer_of(id))
+        {
+            anyhow::bail!(
+                "a run is working {task} in this transcript — `mecha tasks stop {task}` ends \
+                 it and keeps what it has, or `mecha tasks steer {task} \"...\"` redirects it \
+                 where it is"
+            );
+        }
         let (meta, prior) = Session::load(&path)?;
         println!("resumed {} ({} messages)", meta.id, prior.messages.len());
         // D15: restore the plan from the transcript the model is about to
