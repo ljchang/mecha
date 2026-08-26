@@ -791,19 +791,51 @@ async fn work(
     };
 
     let session_dir = mecha_core::session::Session::default_dir()?;
-    let session = mecha_core::session::Session::create(
-        &session_dir,
-        mecha_core::session::SessionMeta {
-            id: mecha_core::session::Session::new_id(),
-            created_at: chrono::Utc::now(),
-            provider: prepared.provider_name.clone(),
-            model: prepared.model.clone(),
-            workspace: prepared.workspace.clone(),
-            // D10 — the drawer filters on this prefix. A run the owner cannot
-            // find is a run they will start twice.
-            title: Some(format!("task: {name}")),
-        },
-    )?;
+    // **Taking a conversation over, or starting one.** A hand-over continues
+    // the transcript the planning happened in — `Session::load` restores the
+    // messages *and* the recorded taint, so a change of hands cannot launder
+    // what the conversation already read — and the run picks up where the
+    // owner left off rather than from a seed that would re-plan what was
+    // already agreed.
+    //
+    // The caller must have released it first. This refuses a transcript
+    // another live run is writing, which is `live_writer_of`'s whole job:
+    // one conversation, one writer, checked here as well as at every
+    // `resume` surface, because a guard on one door is a UI condition.
+    let (session, mut convo) = match resume {
+        Some(id) => {
+            if let Some(other) = markers()?.live_writer_of(id) {
+                bail!(
+                    "a run is already working {other} in that conversation — \
+                     `mecha tasks stop {other}` first"
+                );
+            }
+            let path = mecha_core::session::Session::find(&session_dir, id)?;
+            let (meta, prior) = mecha_core::session::Session::load(&path)?;
+            eprintln!(
+                "taking over {} ({} message(s) already said)",
+                meta.id,
+                prior.messages.len()
+            );
+            (mecha_core::session::Session { meta, path }, prior)
+        }
+        None => (
+            mecha_core::session::Session::create(
+                &session_dir,
+                mecha_core::session::SessionMeta {
+                    id: mecha_core::session::Session::new_id(),
+                    created_at: chrono::Utc::now(),
+                    provider: prepared.provider_name.clone(),
+                    model: prepared.model.clone(),
+                    workspace: prepared.workspace.clone(),
+                    // D10 — the drawer filters on this prefix. A run the owner
+                    // cannot find is a run they will start twice.
+                    title: Some(format!("task: {name}")),
+                },
+            )?,
+            mecha_core::agent::Conversation::new(),
+        ),
+    };
     if let Some(route) = &prepared.agent.context().outbox {
         route.set_session_id(&session.meta.id);
     }
@@ -880,7 +912,6 @@ async fn work(
     );
     eprintln!("{name}");
 
-    let mut convo = mecha_core::agent::Conversation::new();
     // **After every registry mutation**, for the same reason `RunConfig::of`
     // is: what the seed may point at is what the run can actually dispatch,
     // and this surface has had a tool taken off it (D6) and one added (D13).
