@@ -24,7 +24,7 @@ use crate::commands::diagnose::{
 use crate::harness_probe;
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
-use mecha_core::candidate::{judge, ChangeClass, Disposition, Pair, Prediction};
+use mecha_core::candidate::{judge_drawn, ChangeClass, Disposition, Pair, Prediction};
 use mecha_core::harness::{
     parse_change, AcceptedOverride, HarnessCandidate, HarnessStore, Measurement, STATUS_ACCEPTED,
     STATUS_REJECTED, STATUS_REVERTED, STATUS_STAGED,
@@ -254,8 +254,28 @@ async fn measure(
     let (_, provider_cfg) = prepared.config.provider(global.provider.as_deref())?;
 
     let sessions_dir = Session::default_dir()?;
-    let (preps, unusable) = harness_probe::sample_episodes(&sessions_dir, model, sessions)?;
-    if preps.is_empty() {
+    // Seeded off the candidate id rather than the clock: re-measuring the same
+    // candidate must draw the same holdout, or "confirmed on unseen work"
+    // means something different every night. Printed, because a sample nobody
+    // can redraw is a sample nobody can check.
+    let seed = {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in cand.id.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100_0000_01b3);
+        }
+        h
+    };
+    let draw = harness_probe::draw_episodes(
+        &sessions_dir,
+        model,
+        cand.metric,
+        sessions,
+        holdout_in,
+        seed,
+    )?;
+    let unusable = draw.skipped;
+    if draw.selection.is_empty() && draw.holdout.is_empty() {
         cand.reason = Some(format!(
             "no replayable sessions recorded for `{model}` — staged unmeasured"
         ));
@@ -265,30 +285,46 @@ async fn measure(
     }
 
     eprintln!(
-        "\nmeasuring `{}` over {} episode(s) × 2 arms ({} unusable session(s) passed over)",
+        "\nmeasuring `{}` over {} selected + {} held-out episode(s) × 2 arms \
+         (seed {}, {} unusable session(s) passed over)",
         change.spec(),
-        preps.len(),
+        draw.selection.len(),
+        draw.holdout.len(),
+        draw.seed,
         unusable
     );
 
-    let mut pairs: Vec<Pair> = Vec::new();
+    let mut selection_pairs: Vec<Pair> = Vec::new();
+    let mut holdout_pairs: Vec<Pair> = Vec::new();
     let mut diverged: Vec<String> = Vec::new();
     let mut skipped = unusable;
-    for (i, prep) in preps.iter().enumerate() {
-        eprint!("· {} ({}/{}) baseline…", prep.id, i + 1, preps.len());
-        let baseline =
-            match harness_probe::drive_episode(&prepared, provider_cfg, model, prep, None).await? {
-                Ok(arm) => arm,
-                Err(why) => {
-                    eprintln!(" skipped: {why}");
-                    skipped += 1;
-                    continue;
-                }
-            };
-        eprint!(" candidate…");
-        let candidate =
-            match harness_probe::drive_episode(&prepared, provider_cfg, model, prep, Some(&change))
-                .await?
+    let total = draw.selection.len() + draw.holdout.len();
+    let slices = [("select", &draw.selection), ("hold  ", &draw.holdout)];
+    let mut n = 0usize;
+    for (label, preps) in slices {
+        for prep in preps.iter() {
+            n += 1;
+            eprint!("· [{label}] {} ({}/{}) baseline…", prep.id, n, total);
+            let baseline =
+                match harness_probe::drive_episode(&prepared, provider_cfg, model, prep, None)
+                    .await?
+                {
+                    Ok(arm) => arm,
+                    Err(why) => {
+                        eprintln!(" skipped: {why}");
+                        skipped += 1;
+                        continue;
+                    }
+                };
+            eprint!(" candidate…");
+            let candidate = match harness_probe::drive_episode(
+                &prepared,
+                provider_cfg,
+                model,
+                prep,
+                Some(&change),
+            )
+            .await?
             {
                 Ok(arm) => arm,
                 Err(why) => {
@@ -297,24 +333,30 @@ async fn measure(
                     continue;
                 }
             };
-        if baseline.diverged || candidate.diverged {
-            // The recording has nothing truthful to say past a divergence;
-            // stats over the tracked prefix would grade a behaviour-visible
-            // change on the fraction it happened to track.
-            eprintln!(" diverged — dropped");
-            diverged.push(prep.id.clone());
-            continue;
+            if baseline.diverged || candidate.diverged {
+                // The recording has nothing truthful to say past a divergence;
+                // stats over the tracked prefix would grade a behaviour-visible
+                // change on the fraction it happened to track.
+                eprintln!(" diverged — dropped");
+                diverged.push(prep.id.clone());
+                continue;
+            }
+            eprintln!(" paired");
+            let pair = Pair {
+                episode: prep.id.clone(),
+                baseline: baseline.stats,
+                candidate: candidate.stats,
+            };
+            if label == "select" {
+                selection_pairs.push(pair);
+            } else {
+                holdout_pairs.push(pair);
+            }
         }
-        eprintln!(" paired");
-        pairs.push(Pair {
-            episode: prep.id.clone(),
-            baseline: baseline.stats,
-            candidate: candidate.stats,
-        });
     }
 
     let now = chrono::Utc::now().to_rfc3339();
-    if pairs.is_empty() {
+    if selection_pairs.is_empty() && holdout_pairs.is_empty() {
         cand.reason = Some(format!(
             "nothing measurable: {} diverged, {} skipped — a change the replay cannot hold on \
              the recording needs the eval arm instead",
@@ -333,8 +375,12 @@ async fn measure(
         metric: cand.metric,
         rationale: cand.rationale.clone(),
     };
-    let judgement = judge(cand.class, &prediction, &pairs, holdout_in);
-    let episodes: Vec<String> = pairs.iter().map(|p| p.episode.clone()).collect();
+    let judgement = judge_drawn(cand.class, &prediction, &selection_pairs, &holdout_pairs);
+    let episodes: Vec<String> = selection_pairs
+        .iter()
+        .chain(holdout_pairs.iter())
+        .map(|p| p.episode.clone())
+        .collect();
     cand.measurement = Some(Measurement::record(
         &judgement,
         model,
