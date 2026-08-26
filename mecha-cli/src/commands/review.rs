@@ -948,6 +948,17 @@ pub enum Draw {
     },
 }
 
+/// How many rows a named id set may return: exactly as many as were named.
+///
+/// Separate and tested because the failure it prevents is invisible — a cap
+/// that trims a set is indistinguishable from a set that was that size.
+fn ids_limit(ids: &str) -> usize {
+    ids.split(',')
+        .filter(|s| !s.trim().is_empty())
+        .count()
+        .max(1)
+}
+
 /// Individual candidates from one class.
 ///
 /// The selection happens in `mecha-graph`, which owns the queue — pulling
@@ -957,7 +968,24 @@ fn items(proposer: Option<&str>, predicate: Option<&str>, draw: Draw, as_json: b
     let (count, seed, limit, ids) = match &draw {
         Draw::Sample { count, seed } => (Some(count.to_string()), *seed, None, None),
         Draw::Head { limit } => (None, None, Some(limit.to_string()), None),
-        Draw::Ids { ids } => (None, None, None, Some(ids.clone())),
+        // A named set carries its own limit, and forgetting that was a
+        // silent cap: `--top` defaults to **10** in the graph, and it bounds
+        // `--ids` too, so a dive into a group of seventeen showed ten
+        // members and said nothing. Not a listing that got long — a set the
+        // caller enumerated, seven of which simply were not there. Every
+        // surface over this inherited it: the TUI's group dive since it
+        // shipped, and the phone's the day it was written.
+        //
+        // The rule is the one the review sampler already states out loud —
+        // if coverage is bounded, say what was dropped. Here there is
+        // nothing to say, because there is no reason to bound it: the count
+        // is the caller's own list length.
+        Draw::Ids { ids } => (
+            None,
+            None,
+            Some(ids_limit(ids).to_string()),
+            Some(ids.clone()),
+        ),
     };
     let seed_s = seed.map(|s| s.to_string());
     let mut args: Vec<&str> = vec!["review"];
@@ -1207,6 +1235,26 @@ pub fn decide_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A named set is never trimmed. `--top` defaults to 10 in the graph and
+    /// bounds `--ids` as well, so before this the dive into a 17-member
+    /// similarity group returned 10 rows and said nothing about the other
+    /// seven — a set the caller enumerated, silently answered short.
+    #[test]
+    fn a_named_id_set_asks_for_exactly_as_many_as_it_names() {
+        assert_eq!(ids_limit("9281"), 1);
+        assert_eq!(ids_limit("9281,9286,9799"), 3);
+        assert_eq!(
+            ids_limit("9281,9286,9799,9800,10028,10035,10089,10679,10836,11564,9302,9310"),
+            12,
+            "past the default cap of ten, which is the case that was broken"
+        );
+        // Trailing and empty fields are not ids; the floor keeps a malformed
+        // list from asking the graph for zero rows, which reads as an empty
+        // group rather than as a bad request.
+        assert_eq!(ids_limit("9281,"), 1);
+        assert_eq!(ids_limit(""), 1);
+    }
 
     /// The count comes off the child's report, not off the row.
     ///
