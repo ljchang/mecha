@@ -405,6 +405,62 @@ the same board verbs a person uses. It may not reopen the closed one, and it
 may not close anything (D6). One follow-up per closure; a second is the
 signal to tell the owner rather than to keep going.
 
+### 5.5 The fourth moment: appraise the step
+
+Three moments is one too few. A plan that is only appraised when the *run*
+ends is a plan whose steps can each go wrong silently, and the whole point of
+`todo.rs` — *"a list it rewrites as it goes stays honest"* — depends on
+something noticing when a step did not do what it said.
+
+**The trigger already exists.** A `TodoItem` moving to `Status::Completed` is
+a tool call the model makes, echoed on every subsequent tool result. That
+transition is the appraisal point; nothing new has to be instrumented.
+
+**And it is exactly a self-report, which is the thing D5 says never to
+trust.** The symmetry with the tier above is the argument:
+
+| tier | who says it is done | who checks |
+|---|---|---|
+| medium — a board task | the **owner** (D6) | — |
+| short — a todo step | the **agent** | **the harness** |
+
+The agent checks neither. At the medium tier a person is the check; at the
+short tier there is no person, so the check has to be structural.
+
+**Deterministic first; a model only on ambiguity.** An appraisal after every
+step, if it costs an inference, roughly doubles the turns in a planned run —
+the turn tax §7.4 refuses. But the evidence is already in the transcript span
+between `in_progress` and `completed`, and most of it is free to read:
+
+| signal | reading |
+|---|---|
+| **zero tool calls in the span** | the **null step** — the step-level null run `WORK_FLOOR` exists to catch |
+| unrecovered errors in the span | the step did not land |
+| a verify-shaped call that passed | the eval rig's rule: grade the artifact, never the claim |
+| same target read repeatedly | boredom (§9.1), fired one tier down |
+| span far longer than the step's siblings | the plan's decomposition was wrong, not the step |
+
+A model call is spent only when those are ambiguous, or negative and
+unattributed.
+
+**The output is a plan action, not a record.** This is what makes the plan
+adaptive rather than a list that only accumulates ticks:
+
+1. **Accept** — the step landed.
+2. **Revise the step** — it did not, and the same step is worth another shape.
+3. **Revise the plan** — the step landed and revealed the decomposition was
+   wrong. Re-write the list, which `todo.rs` is built for.
+4. **Escalate** — rung 4 of §9.1: ask, and hand the ball back.
+
+`TASK-AGENT-DESIGN.md` D12 already holds that *the plan is a living list and
+the gate is on its first version*; this is what keeps it living after that
+gate.
+
+**Bounded, on §5.4's rule.** One revision per step. A step already revised
+once escalates rather than looping — otherwise "revise the step" is a way for
+a run to spend its whole budget on the same item, which is the local minimum
+§9.1 exists to escape, arriving through the door meant to prevent it.
+
 ---
 
 ## 6. The affect readout is derived, never reported
@@ -880,10 +936,104 @@ thing to keep in sync.
 
 ---
 
-## 13. Phasing
+## 13. What this asks of the existing architecture
+
+Four consolidations. They are here rather than in a backlog because this
+design **creates the need for each** — a fifth caller, a third caller, a
+fourth reader — and doing them after the fact means doing them with the new
+caller already copy-pasted.
+
+### 13.1 One quarantined-pass constructor
+
+`grep -c "tools: Vec::new()"` over `mecha-core/src` returns **20**. Several
+are unrelated. The ones that matter share a safety property and establish it
+by hand, each at its own site:
+
+| pass | site |
+|---|---|
+| the front door's extractor | `frontdoor.rs:582` — `system: None`, one user message, no tools |
+| the distiller | `distill.rs:299` |
+| the reflector | `learning.rs:1459` |
+| the learner | `learning.rs:1906` |
+| **the appraiser** | this design, the fifth |
+
+The property is *no tools, no conversation — nothing for an injected
+instruction to reach*, and it is the whole reason the front door's extractor
+is safe to point at a stranger's prose. Right now it is a convention repeated
+five times, which is one `messages.push` away from not holding.
+
+A `QuarantinedPass` whose constructor **cannot** attach tools or history makes
+it structural instead. That is this project's own move:
+`Record::for_privileged_run` is a function with no argument that returns the
+prose, precisely so it cannot be asked for.
+
+**Do this before writing the appraiser**, not after.
+
+### 13.2 One probe abstraction
+
+`counterfactual.rs` has two callers today — `validate` (a rule set, verdict by
+steer/denial tracking) and `harness_probe` (a config change, verdict by
+`candidate::judge`). §5.3 adds a third with a third verdict rule.
+
+Two callers is a pattern; three is a shape that wants naming. `ProbePoint` is
+already shared; what is not is *what a verdict means*. Give it a `ProbeKind`
+before the third caller is written, or the third is a copy of the second with
+the comparison swapped.
+
+### 13.3 One scan, three views
+
+Three readers walk the same five stores:
+
+| reader | question |
+|---|---|
+| `doctor` | what is silently wrong |
+| `mecha review` / `/queues` | what is waiting on a person |
+| the value reader (§1) | what is going well or badly against goals |
+
+The scan is the expensive part and the three differ only in what they compute
+from it. doctor already shares `runlog::Scan` with the corpus reader, so half
+the precedent exists. Extract the store walk; keep three views.
+
+One invariant all three need, stated once so it cannot drift between them:
+**an unreadable store is a dash, never a zero.** doctor has it, `/queues` has
+it, and the value reader must — "nothing went wrong" and "could not look" are
+opposite findings.
+
+### 13.4 Two mechanical fixes this makes expensive
+
+Pre-existing drift that an aggregator over value has to pay for:
+
+- **Two status vocabularies for one lifecycle** — `Proposal` is
+  `pending|accepted|rejected|rejected_by_gate`, `HarnessCandidate` is
+  `staged|accepted|rejected|reverted`, both string-typed on the wire-format
+  rule, and `/queues` already knows both.
+- **`Tally` and `TallyRecord`**, converted between in `Measurement::record`.
+- **`Evidence` meaning two things** — a provenance narrowing at
+  `learning.rs:104`, a counters brief at `diagnose.rs:85`.
+
+### 13.5 What must *not* be consolidated
+
+- **The five stores stay five** (§1). Doctor's shape — convention plus an
+  aggregator — not a shared type. A shared record type across five loops with
+  different lifecycles is how one loop's migration breaks another's ledger.
+- **`Metric`, `Setpoint` and `GoalRef` stay three types.** `Metric` is
+  monotone cost, for the gate. `Setpoint` is two-sided, for regulation.
+  `GoalRef` is a reference. Collapsing any two re-introduces exactly the mixed
+  polarity `Metric`'s docstring exists to forbid.
+
+  The one link worth adding is cheap and one-directional: **a `Metric` cites a
+  `GoalRef`**, so a gate judgement can be read as a goal error without the
+  gate learning what a goal is.
+
+---
+
+## 14. Phasing
 
 Each rung is independently useful and independently measurable.
 
+0. **The quarantined-pass constructor** (§13.1) and the `ProbeKind` naming
+   (§13.2). Both are cheap, both are needed by rungs below, and both get more
+   expensive once the new caller exists.
 1. **`GoalRef` and the upward-citation rule.** `serves:` on `TodoItem`, the
    goal rendered above the list in `carried_state`. No model anywhere.
    Targets plan decay directly.
@@ -898,10 +1048,13 @@ Each rung is independently useful and independently measurable.
    improves a shipped system, cheapest large win on the list.
 5. **Predictive compaction and task sizing** (§4.4, §7.1). The first
    disposition, in the class with no adversary.
-6. **Boredom, rungs 1–3** (§9.1). Within-run strategy switching off signals
-   that already exist. No model, no spending, no adversary — and it fills in
-   the gap between "proceeding" and the loop guard's "dead".
-7. **The appraisal store and the pure `Affect` function** (§5, §6).
+6. **Boredom, rungs 1–3** (§9.1), and the **deterministic half of step
+   appraisal** (§5.5). Both read signals that already exist, both are free,
+   and together they are what makes the plan adaptive. No model, no spending,
+   no adversary — and they fill in the gap between "proceeding" and the loop
+   guard's "dead".
+7. **The appraisal store and the pure `Affect` function** (§5, §6), and the
+   model half of step appraisal — the escalation, not the common path.
    Observation only — build the corpus and check the labels are not
    degenerate before anything consumes them. If 95% come back neutral the
    channel is dead, learned cheaply.
@@ -917,7 +1070,7 @@ the clearest payoff are also the parts with nothing to be injected.
 
 ---
 
-## 14. Deliberately absent
+## 15. Deliberately absent
 
 - **No affect in the system prompt** (§4.3), and no state block there either.
   Not a preference — a prefix-cache fault.
@@ -951,7 +1104,7 @@ the clearest payoff are also the parts with nothing to be injected.
 
 ---
 
-## 15. Open, and named so it is not rediscovered
+## 16. Open, and named so it is not rediscovered
 
 - **What the TUI strip says when affect is neutral.** A gauge that is always
   showing something trains people to stop seeing it; a gauge that appears only
