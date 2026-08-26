@@ -17,6 +17,12 @@
   let entries = $state([]);
   let streaming = $state('');
   let running = $state(false);
+  // The agent's plan for this session, live. Rendered rather than summarised:
+  // a paraphrase of a plan is a different plan, and this is the one part of a
+  // long run that says how far it got rather than what is true.
+  let todo = $state([]);
+  let todoOpen = $state(true);
+  const MARK = { completed: '[x]', in_progress: '[~]', pending: '[ ]' };
   let taint = $state(null);
   let usage = $state(null);
   let model = $state('');
@@ -48,6 +54,17 @@
     });
   }
 
+  async function refreshTodo() {
+    try {
+      const res = await fetch(`/api/chat/${key}`);
+      if (!res.ok) return;
+      todo = (await res.json()).todo ?? [];
+    } catch {
+      // A plan that failed to refresh is stale, not wrong, and saying so
+      // in the transcript would be noise about the UI rather than the run.
+    }
+  }
+
   async function load() {
     try {
       const res = await fetch(`/api/chat/${key}`);
@@ -57,6 +74,7 @@
         e.kind === 'tool' ? { ...e, pending: false } : e
       );
       running = data.running;
+      todo = data.todo ?? [];
       taint = data.taint;
       model = data.model;
       mode = data.mode ?? 'read_only';
@@ -118,6 +136,11 @@
             open.pending = false;
             open.is_error = ev.is_error;
           }
+          // Every plan change already arrives here as a tool call, so the
+          // list needs no event of its own — re-read on the one that means
+          // it changed. Cheap while a run holds the conversation, because
+          // the transcript read returns no entries then.
+          if (ev.name === 'todo' && !ev.is_error) refreshTodo();
           break;
         }
         case 'denied':
@@ -687,6 +710,30 @@
     </aside>
   {/if}
 
+  {#if todo.length}
+    <!-- Above the transcript rather than in it: the plan is current state,
+         not something that was said at a moment. Scrolling back through a
+         long run should not scroll past where it got to. -->
+    <div class="todo">
+      <button class="todohead" onclick={() => (todoOpen = !todoOpen)}>
+        <span class="todocount">{todo.filter((i) => i.status === 'completed').length}/{todo.length}</span>
+        <span class="todonow">
+          {todo.find((i) => i.status === 'in_progress')?.content ?? 'plan'}
+        </span>
+        <span class="todochev">{todoOpen ? '−' : '+'}</span>
+      </button>
+      {#if todoOpen}
+        <ul class="todolist">
+          {#each todo as item}
+            <li class:tdone={item.status === 'completed'} class:tnow={item.status === 'in_progress'}>
+              <span class="tmark">{MARK[item.status] ?? '[ ]'}</span>{item.content}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
+  {/if}
+
   <div class="transcript" bind:this={transcriptEl}>
     {#if error}
       <div class="notice">{error}</div>
@@ -1207,6 +1254,19 @@
     color: var(--hazard);
     font-size: 9px;
   }
+  .todo { border-bottom: 1px solid var(--accent-900); background: var(--surface); flex: 0 0 auto; }
+  .todohead { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: none; padding: 8px 14px; cursor: pointer; text-align: left; }
+  .todocount { font-family: var(--mono); font-size: 11px; color: var(--accent-400); }
+  .todonow { flex: 1; font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .todochev { font-family: var(--mono); font-size: 13px; color: var(--text-muted); }
+  .todolist { list-style: none; margin: 0; padding: 0 14px 10px; }
+  .todolist li { font-size: 12px; line-height: 1.6; color: var(--text); }
+  .tmark { font-family: var(--mono); color: var(--text-muted); margin-right: 7px; }
+  /* Done is dimmed rather than struck through: a finished step is still part
+     of the record of what happened, and a page of strikethrough reads as a
+     list of mistakes. */
+  .todolist li.tdone { color: var(--text-muted); }
+  .todolist li.tnow { color: var(--accent-400); }
   .transcript {
     flex: 1;
     overflow-y: auto;

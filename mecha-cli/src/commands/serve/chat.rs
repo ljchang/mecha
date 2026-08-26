@@ -630,6 +630,17 @@ pub async fn transcript(
         "running": running,
         "questions": ws.questions.cards(),
         "held_by_run": ws.conversation.is_none(),
+        // The plan, live. Keyed by this session's jail (D14), so one shared
+        // agent hands back the right list — and readable *while a run holds
+        // the conversation*, which is exactly when it is worth looking at.
+        // The page refetches when the SSE stream announces a `todo` result;
+        // no new event type is needed because every write already shows up
+        // there as a tool call.
+        "todo": chat
+            .todo
+            .as_ref()
+            .map(|t| t.items_in(&ws.workspace))
+            .unwrap_or_default(),
         "entries": entries,
         "taint": taint.map(|t| serde_json::json!({
             "private": t.private, "untrusted": t.untrusted,

@@ -73,6 +73,27 @@
     }
   }
 
+  // The plan a task's run wrote, fetched when its card is opened and while
+  // the agent is working it. Cached per task so reopening a card is instant
+  // and a board of twenty tasks does not read twenty transcripts.
+  let plans = $state({});
+  const MARK = { completed: '[x]', in_progress: '[~]', pending: '[ ]' };
+  async function loadPlan(t) {
+    if (!t.session) return;
+    try {
+      const res = await fetch('/api/tasks/plan', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ session: t.session }),
+      });
+      if (!res.ok) return;
+      plans[t.id] = (await res.json()).todo ?? [];
+    } catch {
+      // A plan that will not load is not a task without one; the card simply
+      // shows no plan rather than claiming there is none.
+    }
+  }
+
   async function stopMecha(task) {
     busy = true;
     try {
@@ -104,6 +125,11 @@
       for (let i = 0; i < 240; i++) {
         await new Promise((r) => setTimeout(r, 5000));
         await load();
+        // While a run is in flight its plan is the thing worth watching, so
+        // an open card follows it rather than showing where it started.
+        for (const t of (data?.items ?? []).filter(working)) {
+          if (selected === t.id) await loadPlan(t);
+        }
         if (!(data?.items ?? []).some(working)) break;
       }
     } finally {
@@ -215,7 +241,13 @@
       <div class="empty">reaching the graph…</div>
     {/if}
     {#each tasks as t}
-      <button class="card row" onclick={() => (selected = selected === t.id ? null : t.id)}>
+      <button
+        class="card row"
+        onclick={() => {
+          selected = selected === t.id ? null : t.id;
+          if (selected === t.id) loadPlan(t);
+        }}
+      >
         <div class="name">{t.name}</div>
         <div class="meta">
           <span class="chip">{t.status}</span>
@@ -235,6 +267,15 @@
           {/if}
         </div>
         {#if selected === t.id}
+          {#if plans[t.id]?.length}
+            <ul class="plan">
+              {#each plans[t.id] as item}
+                <li class:pdone={item.status === 'completed'} class:pnow={item.status === 'in_progress'}>
+                  <span class="pmark">{MARK[item.status] ?? '[ ]'}</span>{item.content}
+                </li>
+              {/each}
+            </ul>
+          {/if}
           <div class="statusrow">
             {#if working(t)}
               <button
@@ -328,6 +369,11 @@
   /* Stopping keeps the partial turn, so this is not a destructive action and
      does not wear the hazard colour — it is the ordinary way to end a run. */
   .stopbtn { color: var(--text); border-color: var(--accent-400); }
+  .plan { list-style: none; margin: 10px 0 0; padding: 0; text-align: left; }
+  .plan li { font-size: 12px; line-height: 1.65; color: var(--text); }
+  .pmark { font-family: var(--mono); color: var(--text-muted); margin-right: 7px; }
+  .plan li.pdone { color: var(--text-muted); }
+  .plan li.pnow { color: var(--accent-400); }
   /* A run in flight, and the only chip that is not a noun about the task —
      it says what is happening right now, so it reads live rather than dim. */
   .agent { color: var(--accent-400); border-color: var(--accent-700); animation: agent-pulse 2.4s ease-in-out infinite; }
