@@ -97,6 +97,11 @@ pub enum Cmd {
         /// Start a run on a task already handed over.
         #[arg(long)]
         again: bool,
+        /// Nobody is at the terminal: run at the trigger posture — reads run,
+        /// sends stage, anything needing approval is refused rather than
+        /// waiting on a person who is not there.
+        #[arg(long)]
+        unattended: bool,
     },
 }
 
@@ -120,9 +125,14 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             context,
             waiting_on,
         } => set(global, &task, status, due, defer, context, waiting_on).await,
-        Cmd::Work { task, note, again } => {
+        Cmd::Work {
+            task,
+            note,
+            again,
+            unattended,
+        } => {
             let note = (!note.is_empty()).then(|| note.join(" "));
-            work(global, &task, note.as_deref(), again).await
+            work(global, &task, note.as_deref(), again, unattended).await
         }
     }
 }
@@ -318,7 +328,13 @@ pub(crate) async fn move_task(
 /// - **The seed is built here, from the record** (D4). No model writes it. A
 ///   model-written seed is an unreviewed instruction entering a privileged
 ///   run, which is the front door's argument arriving through another door.
-async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: bool) -> Result<()> {
+async fn work(
+    global: &GlobalOpts,
+    task_id: &str,
+    note: Option<&str>,
+    again: bool,
+    unattended: bool,
+) -> Result<()> {
     // **Interactive, unlike `mail draft`**, and the difference is what the two
     // runs are for. Drafting only ever needs to *stage*, so the outbox catches
     // its one outbound act and a blocked write costs nothing. A task run does
@@ -333,7 +349,17 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
     // who just typed the command. `--yes` stays the unattended path, and the
     // phone's button (Phase 4) will acquire its human through the web
     // approver instead.
-    let mut prepared = setup::prepare(global, true).await?;
+    // **D3, made explicit rather than inferred.** Interactive when a person
+    // ran the command, because they are the human a run acquires more
+    // permission by having. Unattended when a detached caller says so — the
+    // phone's button, a trigger — and then the trigger posture is the honest
+    // one: reads run, sends stage, and anything needing approval is refused
+    // by `ModeApprover` rather than waiting on a terminal that is not there.
+    //
+    // Not sniffed from stdin. A tty check would make the posture depend on
+    // how the process happened to be launched, which is exactly the kind of
+    // thing that is right in testing and wrong in the shipped unit file.
+    let mut prepared = setup::prepare(global, !unattended).await?;
 
     // `mail draft`'s rule: without the route, a send the model makes actually
     // sends. A task run is exactly the context where that is discovered too
@@ -490,6 +516,7 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
         &task,
         board["today"].as_str().unwrap_or_default(),
         note,
+        unattended,
     ));
     convo.push(user.clone());
     session.append(&mecha_core::session::Record::Message(user))?;
@@ -594,7 +621,7 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
 /// last is Phase 1's honest posture — D13 turns "stop and say what you need"
 /// into a stored question the owner answers later, and until it exists,
 /// stopping is better than guessing.
-fn work_prompt(task: &Value, today: &str, note: Option<&str>) -> String {
+fn work_prompt(task: &Value, today: &str, note: Option<&str>, unattended: bool) -> String {
     let field = |k: &str| task[k].as_str().filter(|v| !v.is_empty());
     let mut p =
         String::from("You have been handed one task from the owner's task board.\n\nTask: ");
@@ -624,6 +651,16 @@ fn work_prompt(task: &Value, today: &str, note: Option<&str>) -> String {
     }
     if let Some(note) = note {
         p.push_str(&format!("\nThe owner adds: {note}\n"));
+    }
+    if unattended {
+        // Told, because it changes what is worth attempting. A run that
+        // discovers its writes are refused one call at a time spends its
+        // budget finding out what it could have been told once.
+        p.push_str(
+            "\nNobody is at a keyboard for this run: you can read and you can draft, but \
+             anything needing approval will be refused. Do the part you can do, and say \
+             plainly what needs a person.\n",
+        );
     }
     p.push_str(
         "\nWork this task as far as you can. How this run works, so you can plan around it:\n\n\
@@ -661,7 +698,7 @@ mod tests {
     /// D4: the seed is the record, and every field of it reaches the run.
     #[test]
     fn the_seed_is_built_from_the_record() {
-        let p = work_prompt(&task(), "2026-08-26", Some("keep it short"));
+        let p = work_prompt(&task(), "2026-08-26", Some("keep it short"), false);
         for expect in [
             "Follow up with Dirk about the Psych 62 approval",
             "Id: task-1a2b3c4d",
@@ -682,7 +719,7 @@ mod tests {
     #[test]
     fn absent_fields_are_omitted_not_blanked() {
         let bare = json!({"id": "task-9", "name": "Water the plants", "status": "inbox"});
-        let p = work_prompt(&bare, "", None);
+        let p = work_prompt(&bare, "", None, false);
         for absent in [
             "Project:",
             "Context:",
@@ -704,7 +741,7 @@ mod tests {
     /// unattended run believes it may do.
     #[test]
     fn the_run_is_told_what_it_cannot_discover() {
-        let p = work_prompt(&task(), "2026-08-26", None);
+        let p = work_prompt(&task(), "2026-08-26", None, false);
         assert!(p.contains("STAGED"), "sends stage, and it must know");
         assert!(
             p.contains("cannot change this task's status"),
@@ -720,12 +757,26 @@ mod tests {
         );
     }
 
+    /// An unattended run is told so, because it changes what is worth
+    /// attempting: a run that discovers its writes are refused one call at a
+    /// time spends its budget finding out what one sentence could have said.
+    #[test]
+    fn an_unattended_run_is_told_nobody_is_there() {
+        let attended = work_prompt(&task(), "2026-08-26", None, false);
+        let alone = work_prompt(&task(), "2026-08-26", None, true);
+        assert!(!attended.contains("Nobody is at a keyboard"));
+        assert!(alone.contains("Nobody is at a keyboard"));
+        // And both still know asking is the move — the question outlives the
+        // run either way, so an unattended run is not a mute one.
+        assert!(alone.contains("ask_user"));
+    }
+
     /// A note is the owner's words and is passed through, not summarised or
     /// reworded — the same rule capture follows for a task's own name.
     #[test]
     fn the_note_is_passed_through_verbatim() {
         let note = "ask for the *signed* copy, not the scan";
-        let p = work_prompt(&task(), "2026-08-26", Some(note));
+        let p = work_prompt(&task(), "2026-08-26", Some(note), false);
         assert!(p.contains(note));
     }
 }

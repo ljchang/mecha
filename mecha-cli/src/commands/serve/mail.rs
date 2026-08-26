@@ -279,8 +279,18 @@ fn spawn_detached(args: &[&str]) -> Response {
     spawn_detached_named(&argv)
 }
 
-/// The whole-argv detached spawn, shared with the frontdoor page.
+/// What every drafting caller said before the note became an argument.
 pub(super) fn spawn_detached_named(argv: &[String]) -> Response {
+    spawn_detached_note(argv, "drafting — the result lands in the outbox for review")
+}
+
+/// The whole-argv detached spawn, shared with the frontdoor and board pages.
+///
+/// The note is the caller's because the callers do different things. Mail and
+/// the front door draft, so "the result lands in the outbox" is true of them;
+/// a task run may write files, ask a question, or simply report, and telling
+/// its owner to go and look in the outbox sends them to an empty queue.
+pub(super) fn spawn_detached_note(argv: &[String], note: &str) -> Response {
     let mut cmd = std::process::Command::new(crate::exe::self_exe());
     if let Some(dir) = super::child_cwd() {
         cmd.current_dir(dir);
@@ -295,7 +305,7 @@ pub(super) fn spawn_detached_named(argv: &[String]) -> Response {
         Ok(_) => Json(serde_json::json!({
             "ok": true,
             "detached": true,
-            "note": "drafting — the result lands in the outbox for review",
+            "note": note,
         }))
         .into_response(),
         Err(e) => (

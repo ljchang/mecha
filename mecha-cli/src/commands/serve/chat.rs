@@ -1300,7 +1300,13 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
     metas.retain(|(m, _)| {
         m.title
             .as_deref()
-            .is_some_and(|t| t.starts_with("web: ") || t.starts_with("voice: "))
+            // D10 — a run the owner cannot find is a run they will start
+            // twice, and a task run is the one they are most likely to want
+            // back: it was started from a card and left a question or a
+            // draft behind.
+            .is_some_and(|t| {
+                t.starts_with("web: ") || t.starts_with("voice: ") || t.starts_with("task: ")
+            })
     });
     metas.sort_by_key(|(m, _)| std::cmp::Reverse(m.created_at));
     let mut rows = Vec::new();
@@ -1311,14 +1317,10 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
         let Some(snippet) = first_user_snippet(&path) else {
             continue; // a page load that never spoke is not a conversation
         };
-        let kind = if meta
-            .title
-            .as_deref()
-            .is_some_and(|t| t.starts_with("voice"))
-        {
-            "voice"
-        } else {
-            "web"
+        let kind = match meta.title.as_deref() {
+            Some(t) if t.starts_with("voice") => "voice",
+            Some(t) if t.starts_with("task: ") => "task",
+            _ => "web",
         };
         rows.push(serde_json::json!({
             "id": meta.id,
