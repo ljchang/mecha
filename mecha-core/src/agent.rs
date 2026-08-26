@@ -1200,9 +1200,14 @@ impl Agent {
                 // and *only* adds reasons to compact — the reactive arm is
                 // still the first thing consulted, so no state of the tracker
                 // can make this fire later than it did before.
-                if pressure.over(limit, crate::pressure::message_bytes(messages))
-                    && !compaction_gave_up
+                // Cheap guards first: a run that has given up on compaction
+                // or is about to stop has no use for a full transcript walk,
+                // and `message_bytes` renders every `ToolUse` input to
+                // measure it — a cost that grows with the transcript, paid on
+                // the turns least able to afford it.
+                if !compaction_gave_up
                     && !loop_detected
+                    && pressure.over(limit, crate::pressure::message_bytes(messages))
                 {
                     // What is about to be rewritten, kept for the recording:
                     // the front-end records at run end, so without this the
@@ -1489,6 +1494,15 @@ impl Agent {
                     // What the cut turn had already cost, on top of the turns
                     // that completed.
                     usage.add(&spent);
+                    // And the size it was cut at. The input tokens arrive in
+                    // the first frame, so this is a real measurement even
+                    // though the output half never came — and the interrupted
+                    // run is exactly the one whose pressure is worth knowing,
+                    // since people stop runs that have got big. Without it
+                    // `peak_prompt_tokens` reports the previous, smaller turn.
+                    if spent.total_input() > 0 {
+                        pressure.observe(spent.total_input(), sent_bytes);
+                    }
                     let outcome = self.interrupted(
                         partial,
                         usage,
