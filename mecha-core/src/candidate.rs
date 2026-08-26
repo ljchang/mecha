@@ -57,6 +57,30 @@ pub enum Metric {
 }
 
 impl Metric {
+    /// How much this episode can say about the metric, higher being more.
+    ///
+    /// **The priority for a prioritised replay draw, and it needs no new
+    /// concept: it is the metric's own value on the recorded run.** Every
+    /// metric here is a cost, so an episode already at zero has no room to
+    /// improve — whatever the change does, that pair can only tie or worsen,
+    /// and it costs a real model run per arm to learn that. An episode with a
+    /// high recorded cost is the one that can discriminate.
+    ///
+    /// This is prioritised experience replay's shape with the sensor that
+    /// exists today. PER samples by |TD error| because a surprising transition
+    /// carries the most information; here the same argument is made with
+    /// headroom, because the appraisal record that would supply a goal error
+    /// is not built yet. When it is, |goal error| joins this rather than
+    /// replacing it — a run can be uninformative about a metric and still be
+    /// the most instructive thing that happened all week.
+    ///
+    /// **It is only ever a priority, never a score.** Drawing the *selection*
+    /// slice this way is safe precisely because selection only picks; the
+    /// holdout, drawn uniformly, is what confirms. See [`judge_drawn`].
+    pub fn headroom(&self, recorded: &RunStats) -> f64 {
+        self.of(recorded)
+    }
+
     /// The metric's value for one run. Lower is better for every metric here,
     /// which is a deliberate constraint rather than a coincidence: a mixed
     /// polarity is the kind of thing that inverts a comparison silently, so
@@ -241,6 +265,45 @@ pub fn judge(
     )
 }
 
+/// Judge two slices the caller drew: selection by priority, holdout uniformly.
+///
+/// The replay path's entry point. `judge` hash-partitions one pool and is
+/// still right for `eval --ab-config`, where every case runs and the pool is
+/// therefore already uniform. A replay corpus is *sampled*, and once it is
+/// sampled by informativeness the partition inherits the bias — see
+/// [`judge_slices`].
+pub fn judge_drawn(
+    class: ChangeClass,
+    prediction: &Prediction,
+    selection: &[Pair],
+    holdout: &[Pair],
+) -> Judgement {
+    let metric = prediction.metric;
+    let sel: Vec<&Pair> = selection.iter().collect();
+    let hold: Vec<&Pair> = holdout.iter().collect();
+    judge_slices(
+        class,
+        &sel,
+        &hold,
+        // Inline rather than bound: a named closure here cannot be inferred
+        // as higher-ranked over the borrow, the same reason `judge` spells
+        // these out at the call.
+        |p| {
+            (
+                p.episode.as_str(),
+                metric.of(&p.baseline),
+                metric.of(&p.candidate),
+            )
+        },
+        |p| {
+            (
+                u64::from(p.baseline.tool_calls),
+                u64::from(p.candidate.tool_calls),
+            )
+        },
+    )
+}
+
 /// The same gate over anything that can name an episode and produce a cost.
 ///
 /// Two currencies grade a candidate here and they are not interchangeable.
@@ -263,7 +326,29 @@ pub fn judge_with<T>(
     let (holdout, selection): (Vec<&T>, Vec<&T>) = pairs
         .iter()
         .partition(|p| is_holdout(cost(p).0, holdout_in));
+    judge_slices(class, &selection, &holdout, cost, work)
+}
 
+/// The gate over two slices the caller drew itself.
+///
+/// **Extracted because prioritising a corpus prioritises both halves of a
+/// partition of it.** [`is_holdout`] splits one pool, which is right when the
+/// pool was gathered uniformly — every eval case runs, so `--ab-config` still
+/// uses it. It is wrong the moment the pool is drawn by informativeness:
+/// hashing a biased pool yields two biased slices, and the holdout stops being
+/// the thing that corrects the selection's bias. Prioritised experience replay
+/// has the same problem and answers it with importance weights; here the
+/// answer is that the two slices are **drawn separately** — the holdout
+/// uniformly, the selection by [`Metric::headroom`] — and this function's job
+/// is to score whatever it is handed rather than to decide what goes where.
+pub fn judge_slices<T>(
+    class: ChangeClass,
+    selection: &[&T],
+    holdout: &[&T],
+    cost: impl for<'a> Fn(&'a T) -> (&'a str, f64, f64),
+    work: impl Fn(&T) -> (u64, u64),
+) -> Judgement {
+    let (selection, holdout) = (selection.to_vec(), holdout.to_vec());
     let tally = |slice: &[&T]| {
         let mut t = Tally::default();
         for p in slice {
@@ -603,5 +688,107 @@ mod tests {
         let pairs = pair_arms(&baseline, &candidate);
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].episode, "a");
+    }
+}
+
+#[cfg(test)]
+mod prioritised_tests {
+    use super::*;
+
+    fn stats(tool_calls: u32, tool_errors: u32) -> RunStats {
+        RunStats {
+            tool_calls,
+            tool_errors,
+            ..RunStats::default()
+        }
+    }
+
+    /// Headroom is the metric's own value, and an episode at the floor is the
+    /// one worth *not* spending a replay on: whatever the change does, it can
+    /// only tie or worsen.
+    #[test]
+    fn an_episode_with_no_room_to_improve_has_no_priority() {
+        let m = Metric::ToolErrorRate;
+        assert_eq!(m.headroom(&stats(10, 5)), 0.5);
+        assert_eq!(m.headroom(&stats(10, 0)), 0.0, "clean run, nothing to fix");
+        assert_eq!(
+            m.headroom(&stats(0, 0)),
+            0.0,
+            "no calls is no evidence, which the metric already says"
+        );
+        assert!(m.headroom(&stats(10, 9)) > m.headroom(&stats(10, 1)));
+    }
+
+    /// **The reason the slices are drawn separately.** `is_holdout` partitions
+    /// one pool, so if that pool was gathered by headroom, *both* halves carry
+    /// only high-headroom episodes and the holdout stops being a check on the
+    /// selection's bias. Drawing it uniformly from the whole corpus is what
+    /// keeps "confirmed on unseen work" meaning what it says.
+    #[test]
+    fn hashing_a_prioritised_pool_yields_a_prioritised_holdout() {
+        let corpus: Vec<(String, RunStats)> = (0..40)
+            .map(|i| {
+                // Half the corpus is clean and can say nothing about the
+                // error rate; half has real headroom.
+                let s = if i % 2 == 0 {
+                    stats(10, 0)
+                } else {
+                    stats(10, 4)
+                };
+                (format!("ep-{i:02}"), s)
+            })
+            .collect();
+        let m = Metric::ToolErrorRate;
+
+        // Gather by priority, then hash-split it the old way.
+        let mut by_priority = corpus.clone();
+        by_priority.sort_by(|a, b| m.headroom(&b.1).partial_cmp(&m.headroom(&a.1)).unwrap());
+        let pool: Vec<&(String, RunStats)> = by_priority.iter().take(20).collect();
+        let hashed_holdout: Vec<_> = pool.iter().filter(|p| is_holdout(&p.0, 2)).collect();
+        assert!(
+            !hashed_holdout.is_empty(),
+            "the split has to produce a holdout for this to be a real comparison"
+        );
+        assert!(
+            hashed_holdout.iter().all(|p| m.headroom(&p.1) > 0.0),
+            "every episode in it came from the prioritised pool, so it inherits the bias"
+        );
+
+        // Drawn uniformly from the *whole* corpus instead, it is representative.
+        let drawn = crate::sample::take_uniform(corpus.clone(), 7, 20);
+        let zero = drawn.iter().filter(|p| m.headroom(&p.1) == 0.0).count();
+        assert!(
+            zero > 0,
+            "a uniform draw contains episodes the priority would have excluded"
+        );
+    }
+
+    /// The gate still gates: `judge_drawn` scores the slices it is handed and
+    /// applies the same guardrails in the same order.
+    #[test]
+    fn the_drawn_gate_applies_the_same_guardrails() {
+        let pair = |id: &str, before: u32, after: u32| Pair {
+            episode: id.into(),
+            baseline: stats(10, before),
+            candidate: stats(10, after),
+        };
+        let prediction = Prediction {
+            metric: Metric::ToolErrorRate,
+            rationale: String::new(),
+        };
+        let selection: Vec<Pair> = (0..MIN_SELECTION_PAIRS)
+            .map(|i| pair(&format!("s{i}"), 5, 2))
+            .collect();
+        let holdout: Vec<Pair> = (0..MIN_HOLDOUT_PAIRS)
+            .map(|i| pair(&format!("h{i}"), 5, 4))
+            .collect();
+        let j = judge_drawn(ChangeClass::Config, &prediction, &selection, &holdout);
+        assert_eq!(j.disposition, Disposition::Accept);
+        assert_eq!(j.selection.wins, MIN_SELECTION_PAIRS);
+
+        // A thin holdout proposes rather than accepting — unchanged behaviour,
+        // reached through the new entry point.
+        let j = judge_drawn(ChangeClass::Config, &prediction, &selection, &holdout[..1]);
+        assert!(matches!(j.disposition, Disposition::Propose(_)));
     }
 }
