@@ -1738,8 +1738,7 @@ impl Agent {
                             &mut blocked_sends,
                             self.output_budget(cx, pressure, messages),
                             self.compact_limit(cx).and_then(|limit| {
-                                pressure
-                                    .forecast(limit, crate::pressure::message_bytes(messages))
+                                pressure.forecast(limit, crate::pressure::message_bytes(messages))
                             }),
                         )
                         .await;

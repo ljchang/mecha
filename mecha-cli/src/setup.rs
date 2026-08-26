@@ -62,6 +62,21 @@ pub struct PreparedTools {
     /// holds a clone, the agent's context gets it attached in `build`, and
     /// the front-end sets the run's identity on it once a session exists.
     pub mailbox: Option<Arc<mecha_core::mailbox::MailboxRoute>>,
+    /// The `compact` tool's channel to the loop, resolved once here because
+    /// two callers must answer the same question and one of them cannot see
+    /// the other's answer: the registry is assembled in `prepare_tools` (the
+    /// tool has to exist before subagents are built, so a child that
+    /// allowlists it shares the parent's), while `ToolCtx` is built in
+    /// `build`. Computing "does this run compact at all" in both places is
+    /// two spellings of one rule, which is how a run gets the tool and no
+    /// channel — or a channel and no tool.
+    ///
+    /// `Some` only when the run has a compaction threshold at all:
+    /// `[agent] compact_at_tokens` is off by default and derives from the
+    /// window, so a provider that declares no window has compaction disabled
+    /// — and paraphrasing somebody's conversation because it got long is
+    /// their decision, not one a tool may take on their behalf.
+    pub compact_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub _mcp: Vec<Arc<McpClient>>,
 }
 
@@ -168,16 +183,9 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         output_budget_bytes: cfg
             .tools
             .resolved_output_budget(provider_cfg.context_window),
-        // The `compact` tool's channel to the loop. `Some` only when this run
-        // has a compaction threshold at all: `[agent] compact_at_tokens` is
-        // off by default and derives from the window, so a provider that
-        // declares no window has compaction disabled — and paraphrasing
-        // somebody's conversation because it got long is their decision, not
-        // one a tool may take on their behalf.
-        compact_requested: cfg
-            .agent
-            .compact_at(provider_cfg.context_window)
-            .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))),
+        // Resolved in `prepare_tools` beside the tool's registration; see
+        // `PreparedTools::compact_requested` for why it is not decided twice.
+        compact_requested: tools.compact_requested.clone(),
         ..ToolCtx::default()
     };
 
@@ -631,8 +639,14 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     // the same list.
     // `compact` exists only where compaction does, on `web_search`'s rule: a
     // tool that can only ever answer "not enabled here" is worse than no tool,
-    // and it would cost a slot in every prompt to say so.
-    if ctx.compact_requested.is_some() {
+    // and it would cost a slot in every prompt to say so. Resolved here and
+    // carried on `PreparedTools`, so `build` fits `ToolCtx` with this same
+    // channel rather than deciding the question a second time.
+    let compact_requested = cfg
+        .agent
+        .compact_at(cfg.provider(opts.provider.as_deref())?.1.context_window)
+        .map(|_| Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    if compact_requested.is_some() {
         registry.insert(Arc::new(mecha_core::tool::builtin::CompactTool));
     }
 
@@ -801,6 +815,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         todo,
         skill,
         mailbox,
+        compact_requested,
         _mcp: clients,
     })
 }
