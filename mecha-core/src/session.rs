@@ -476,6 +476,36 @@ impl Session {
             .collect())
     }
 
+    /// The most recent outcome, without parsing the transcript that precedes
+    /// it.
+    ///
+    /// [`outcomes`](Session::outcomes) reads every line because it answers
+    /// "how did each run on this session go" — right for the corpus, and
+    /// wrong for a display asking only where a session stands *now*. A
+    /// transcript is mostly messages and an outcome is appended last, so
+    /// scanning backwards finds it in one parse instead of thousands.
+    ///
+    /// `Ok(None)` means the transcript held no outcome at all, which is a
+    /// third answer and not a failure: a run that never got as far as
+    /// recording one, or a session written before the record existed.
+    /// Callers must not fold it into either success or failure.
+    ///
+    /// Still one reader of the record format — this lives beside `outcomes`
+    /// rather than in a caller, so a change to `Record` cannot leave a
+    /// second, private parser behind.
+    pub fn last_outcome(path: &Path) -> Result<Option<RunStats>> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        Ok(text
+            .lines()
+            .rev()
+            .filter(|l| !l.trim().is_empty())
+            .find_map(|l| match serde_json::from_str(l) {
+                Ok(Record::Outcome(s)) => Some(s),
+                _ => None,
+            }))
+    }
+
     /// One before→after step. When the run only appended, the new tail is
     /// appended here too. When it rewrote what was already recorded —
     /// compaction, eviction, thinning, all of which edit earlier messages in

@@ -134,11 +134,24 @@ pub struct AnswerBody {
 /// back to the agent for the life of the resumed run, exactly as it does for
 /// `/api/tasks/work`.
 ///
-/// The store records the answer *before* the run starts (that is
-/// `questions answer`'s own ordering), so a resume that dies still leaves the
-/// owner's words on file and does not ask them the same thing twice. That is
-/// what makes detaching safe here: the part that must not be lost is written
-/// synchronously by the child before it spends a token.
+/// **What this cannot tell you, stated rather than implied.** The child's
+/// stdout and stderr go to `/dev/null`, so every way the resume can fail —
+/// the outbox route unset, the graph server down so `setup::prepare` bails, a
+/// subagent holding `kg_task_update`, the asking session deleted — is
+/// invisible here and the page would show a cheerful acknowledgement for a
+/// run that never started. An earlier draft of this comment claimed the
+/// answer was "written synchronously by the child before it spends a token";
+/// it is written *after* `setup::prepare` and the bails that follow it, so a
+/// failed resume loses the owner's words entirely.
+///
+/// Two things narrow that rather than closing it. The cheap failures are
+/// checked **here, synchronously** — an id that names nothing, and a question
+/// already answered or abandoned — which are the two a person actually hits.
+/// And the page keeps the text in the box until a later poll shows the
+/// question closed, so the words survive a resume that dies for one of the
+/// reasons this cannot see. The card staying is the failure signal; there is
+/// deliberately no second one, because a status this endpoint invented would
+/// be a claim about a process it cannot observe.
 pub async fn answer(State(state): St, Json(body): Json<AnswerBody>) -> Response {
     let _ = state; // the store and the board are the meeting points, not this process
     let id = body.question.trim();
@@ -157,6 +170,37 @@ pub async fn answer(State(state): St, Json(body): Json<AnswerBody>) -> Response 
         )
             .into_response();
     }
+    // The two failures worth catching before a detached child swallows them.
+    // Not a substitute for the run's own errors — see the note above — but an
+    // id that matches nothing, or a question somebody already answered from
+    // the terminal, should not come back as "resuming…".
+    match QuestionStore::open_existing_default() {
+        Some(store) => match store.find(id) {
+            Ok(q) if !q.is_open() => {
+                return (
+                    StatusCode::CONFLICT,
+                    format!(
+                        "that question is already {} — answering it again would resume a \
+                         conversation that has already moved on\n",
+                        q.status
+                    ),
+                )
+                    .into_response()
+            }
+            Ok(_) => {}
+            Err(e) => return (StatusCode::NOT_FOUND, format!("{e:#}\n")).into_response(),
+        },
+        // No store at all is not "the question is fine": it is the same
+        // "could not look" that the listing reports as a dash.
+        None => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                "there is no question store to answer from\n",
+            )
+                .into_response()
+        }
+    }
+
     let argv: Vec<String> = vec![
         "questions".into(),
         "answer".into(),

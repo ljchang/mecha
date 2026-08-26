@@ -48,7 +48,31 @@ pub async fn tasks(State(state): St) -> Response {
         Err(e) => return (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
     };
     if let Ok(dir) = mecha_core::session::Session::default_dir() {
-        attach_runs(&mut board, &dir);
+        // **Off the executor.** Even resolved to one `stat` and one read per
+        // delegated task, this is blocking filesystem work inside an async
+        // handler, and `Tasks.svelte` polls this route every five seconds
+        // while a run is in flight. `spawn_blocking` keeps a slow disk from
+        // stalling the SSE streams and approval cards this process is also
+        // holding.
+        board = match tokio::task::spawn_blocking(move || {
+            attach_runs(&mut board, &dir);
+            board
+        })
+        .await
+        {
+            Ok(b) => b,
+            // The board itself is the answer; the run summaries are a
+            // decoration on it. Losing the join is not a reason to fail the
+            // page — but it is a reason to say so rather than serve a board
+            // whose every card silently reads `idle`.
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("reading how the runs went: {e}\n"),
+                )
+                    .into_response()
+            }
+        };
     }
     Json(board).into_response()
 }
@@ -86,16 +110,32 @@ fn attach_runs(board: &mut serde_json::Value, dir: &std::path::Path) {
 ///
 /// The last outcome wins. A session is resumed by answering a question, and
 /// what the owner is deciding about is where it stands now.
+///
+/// **Resolved by name, not by search.** `Session::find` scans the whole
+/// session directory and reads the header of every transcript in it, because
+/// it accepts an id *prefix*; the board always stores a full id, and
+/// `Session::create` names a file `<id>.jsonl`, so a `join` answers it. The
+/// first cut called `find` once per delegated task — 423 header reads apiece
+/// on this box, on a route polled every five seconds — while carrying a
+/// comment claiming it was bounded. The scan survives only as the fallback
+/// for a stored id that is somehow not a filename.
 fn run_summary(dir: &std::path::Path, session_id: &str) -> serde_json::Value {
-    let Ok(path) = mecha_core::session::Session::find(dir, session_id) else {
-        // The transcript is gone. Not "the run failed" and not "it finished":
-        // the record this answer is made of is missing.
-        return serde_json::json!({ "recorded": false, "transcript": false });
+    let direct = dir.join(format!("{session_id}.jsonl"));
+    let path = if direct.is_file() {
+        direct
+    } else {
+        match mecha_core::session::Session::find(dir, session_id) {
+            Ok(p) => p,
+            // The transcript is gone. Not "the run failed" and not "it
+            // finished": the record this answer is made of is missing.
+            Err(_) => return serde_json::json!({ "recorded": false, "transcript": false }),
+        }
     };
-    let last = mecha_core::session::Session::outcomes(&path)
-        .ok()
-        .and_then(|mut o| o.pop());
-    let Some(stats) = last else {
+    // `last_outcome`, not `outcomes`: this needs where the session stands
+    // now, and an outcome is appended last, so scanning backwards finds it in
+    // one parse instead of one per line of a transcript that is mostly
+    // messages.
+    let Ok(Some(stats)) = mecha_core::session::Session::last_outcome(&path) else {
         return serde_json::json!({ "recorded": false, "transcript": true });
     };
     serde_json::json!({
@@ -104,10 +144,18 @@ fn run_summary(dir: &std::path::Path, session_id: &str) -> serde_json::Value {
         // `None` when the loop never named one; the page renders that as
         // unknown rather than as completion, for the reason above.
         "stop_cause": stats.stop_cause,
-        // The harness cut it short — as distinct from the model finishing or
-        // a person stopping it. One definition, `StopCause`'s own, because
-        // there were two once and they disagreed.
-        "cut_short": stats.stop_cause.is_some_and(|c| c.is_early()),
+        // **`cut_short`, which is `StopCause::cut_short()` and not
+        // `is_early()`.** The two disagree on exactly one variant —
+        // `Interrupted` — and that is the variant a person pressing stop
+        // produces, which is the system working and must never read as a
+        // failure. Shipping `is_early()` under this name put the broad
+        // definition behind the narrow word: harmless only because the page
+        // happened to test `stop_cause === 'interrupted'` on the line before
+        // it read this, so reordering two lines or adding one consumer would
+        // have rendered every stopped run as failed. `cut_short()` exists
+        // precisely because there were once two definitions and they
+        // disagreed; using the other one here recreated that.
+        "cut_short": stats.stop_cause.is_some_and(|c| c.cut_short()),
         // The silent failure: the model stopped of its own accord with its
         // last call failed and answered as though it had not. An observation
         // rather than an error — a task whose right answer is "that file does
@@ -507,6 +555,66 @@ mod tests {
         let v = run_summary(&dir, "20260826T090000-cccccccc");
         assert_eq!(v["cut_short"], serde_json::json!(false));
         assert_eq!(v["tool_staged"], serde_json::json!(1));
+    }
+
+    /// **A person pressing stop is not a failed run**, and `cut_short` is the
+    /// field that decides which. `is_early()` and `cut_short()` differ on
+    /// exactly this variant, so the first cut's `is_early()` reported every
+    /// stopped run as cut short — masked only by the page testing
+    /// `stop_cause` first, which means reordering two lines of Svelte or
+    /// adding a second consumer would have rendered a Ctrl-C as "the run
+    /// failed". Doctor excludes `Interrupted` from its own thresholds for
+    /// this reason; so does this.
+    #[test]
+    fn a_run_a_person_stopped_is_not_reported_as_cut_short() {
+        let dir = tmpdir("stopped");
+        let s = session(&dir, "20260826T090000-ffffffff");
+        s.append(&Record::Outcome(RunStats {
+            stop_cause: Some(StopCause::Interrupted),
+            tool_calls: 4,
+            ..RunStats::default()
+        }))
+        .unwrap();
+        let v = run_summary(&dir, "20260826T090000-ffffffff");
+        assert_eq!(
+            v["cut_short"],
+            serde_json::json!(false),
+            "Interrupted is the system working — `is_early()` would say true here"
+        );
+        assert_eq!(v["stop_cause"], serde_json::json!("interrupted"));
+    }
+
+    /// **The path comes from the id, not from a search.** `Session::find`
+    /// reads the header of every transcript in the directory because it
+    /// accepts a prefix; the board stores full ids, and this route is polled
+    /// every five seconds. The assertion is that a decoy session in the same
+    /// directory is never opened to answer about another one — which a scan
+    /// cannot promise.
+    #[test]
+    fn a_session_is_found_by_name_rather_than_by_reading_every_transcript() {
+        let dir = tmpdir("byname");
+        let wanted = session(&dir, "20260826T090000-11111111");
+        wanted
+            .append(&Record::Outcome(RunStats {
+                stop_cause: Some(StopCause::Completed),
+                turns: 3,
+                ..RunStats::default()
+            }))
+            .unwrap();
+        // A sibling that must not be consulted, and would be by a scan.
+        let decoy = dir.join("20260826T090000-22222222.jsonl");
+        std::fs::write(
+            &decoy,
+            "this is not JSON at all
+",
+        )
+        .unwrap();
+        let v = run_summary(&dir, "20260826T090000-11111111");
+        assert_eq!(v["turns"], serde_json::json!(3));
+        // And a torn sibling does not make the answer about it fail either.
+        let v = run_summary(&dir, "20260826T090000-22222222");
+        assert_eq!(v["transcript"], serde_json::json!(true));
+        assert_eq!(v["recorded"], serde_json::json!(false));
     }
 
     /// **A task nobody delegated has no run, not an empty one.** The card
