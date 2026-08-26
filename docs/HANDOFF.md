@@ -109,10 +109,11 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,551 tests**, no failures — measured 2026-08-26 late evening on the
-merge of the task-conversation arc into `main` at `be75b73`, which is neither
-side's own number: main's count predates this arc and the arc's predates the
-context-pressure work it merged. That clause is load-bearing and has been
+Expect **1,551 tests**, no failures — measured 2026-08-26 late evening on
+`main` at **4d111d8**, the merge of the task-conversation arc. Neither side's
+own number survived that merge: main's count predated the arc and the arc's
+predated the context-pressure work it merged, so it was re-measured rather
+than picked. That clause is load-bearing and has been
 wrong twice: a count taken while any lane's work sits uncommitted in this
 shared checkout describes one disk and no commit, so say which tree.
 Breakdown: **524** in `mecha-cli` with 1 ignored, **802** in `mecha-core`,
