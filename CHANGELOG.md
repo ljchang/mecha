@@ -120,6 +120,17 @@ each simply told you something other than what was true.
   screen already open, which is the kind of confirmation that teaches people
   to tap through, and what that trains away is the armed one.
 
+- **The voice logo reconnects, as its own label had been promising.** The
+  idle state has said "tap to reconnect" since the overlay shipped, and the
+  logo was an `<svg role="img">` with no handler — an affordance described
+  but never wired, appearing only at the moment a call had already failed.
+  It is a button now, live only while idle. Reconnecting ends the dead
+  session first, or the previous peer connection and its microphone track
+  stay open for the life of the page; the call transcript survives, because
+  the transport dropping is not the conversation ending. The two idle labels
+  that never mentioned reconnecting now do — offering a way back from three
+  of five states is how a working affordance still reads as broken.
+
 - **One number from `[slack]` no longer requires the whole config to parse.**
   `show_file` loaded the global config at call time to read
   `slack.max_upload_mb`, which made an unrelated config edit surface hours
