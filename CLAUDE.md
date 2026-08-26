@@ -27,6 +27,15 @@ The user-facing half of this reasoning is published at
 <https://docs.mecha-factory.ai/>; `website/docs/principles.md` is that site's
 restatement of the invariants below, without the incident behind each one.
 
+**`docs/README.md` is the map of everything else** — which document holds what,
+and the routing question to ask before writing a line anywhere. Two of its
+rules govern *this* file, which is the expensive one because it rides in every
+agent's context on every run: **state the rule, then the incident in one
+sentence**, never the other way round; and where a topic doc already covers
+something, point at it rather than restating it, because duplication across
+documents is how they drift into disagreeing with no way for a reader to tell
+which is current.
+
 ## Build & test
 
 ```bash
@@ -113,6 +122,8 @@ message.rs   provider-agnostic Message/Block/Usage/StopReason types
 image.rs     a file on disk to a bounded image block, capped at the door
 provider/    Provider trait + anthropic.rs (raw HTTP) + openai.rs (compatible)
 quarantine.rs a one-shot with no tools and no history: the property in the type
+mail_triage.rs the front door's shape one directory over: a typed verdict per
+             thread, out of a quarantined pass the privileged run never reads
 tool/        Tool trait, Registry, Approver, builtin.rs
 mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
 search.rs    web_search: a chain of backends, first to answer wins
@@ -127,20 +138,27 @@ questions.rs the outbox's inbound twin: a delegated run's question, and the resu
 mailbox.rs   inter-agent messages between sessions; taint travels with them
 sandbox.rs   bwrap/docker confinement for shell and MCP servers
 compact.rs   the cut, the rebuild, and the state carried across one
+pressure.rs  how big the *next* request will be, from what the last one cost
 cron.rs      five-field cron, resolved in an IANA zone (both DST directions)
 trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
+runmarker.rs "is a run in flight, and please stop it", as two files in a directory
 frontdoor.rs inbound requests from strangers, and the quarantine over them
 goal.rs      what a run is for: charter, board task, or setpoint, by reference
+capture.rs   what a typed or spoken capture says about *when* — detected and
+             reported, never resolved, and the name handed back untouched
 harness.rs   the self-improvement record: candidates, their judgements, and
              the override layer an accepted config change rides in
 learning.rs  the reflection/rule store behind reflect, learn, validate
 counterfactual.rs  did the rules change the answer at the recorded moment?
 distill.rs   session → episode, staged to the knowledge graph over MCP
+gossip.rs    two readers over independent *sources*, asking each other questions:
+             the contradiction a template and two filtered retrievals cannot find
 session.rs   append-only JSONL transcripts; a rewrite record when compaction edits history,
              and a `RunStats` outcome record per run — how it went, beside what it said
 runlog.rs    the run-quality corpus: every recorded outcome, read back across sessions
 homeostat.rs the conditions a run happened under, recorded beside what it did
 backlog.rs   what waits on the owner across five stores; one walk, three readers
+doctor.rs    every store's distress, read in one pass — no network, no model
 candidate.rs a proposed harness change, its falsifiable prediction, and the gate
 sample.rs    seeded uniform draws: the holdout that prioritised replay cannot bias
 diagnose.rs  the one place a model authors a change: counters in, a typed candidate out
@@ -150,6 +168,8 @@ work.rs      ~/.mecha/work/<producer>/ — a run's workspace, and its retention
 batch.rs     bounded-concurrency fan-out over many prompts
 eval.rs      case types, graders, the LLM judge
 config.rs    layered TOML config
+onboarding.rs what a new install still needs, and the one command that fixes each;
+             never writes down a number the user merely believes
 ```
 
 `RunContext` is what one *run* gets: the path jail, the approver, its budget,
@@ -1856,33 +1876,6 @@ timezone is written into the trigger file at `add` time, resolved from
 `[agent] timezone` then, so editing that config later cannot silently move
 every existing trigger.
 
-**Every modal sizes its list through one helper**, `tui::list_height`. The
-obvious inline spelling — `rows.clamp(1, terminal_height.saturating_sub(4))` —
-is a *panic*, not a layout bug: the subtraction saturates to zero the moment
-the terminal is four rows or fewer, and `clamp` asserts `min <= max`. So
-shrinking a window with any modal open took the whole session down, partial
-answer and all. It was found in `/doctor`, then written again in `/skills`, and
-five more modals had their own copy — because a new modal is written by opening
-whichever sibling is nearest, which is what makes this a shared function rather
-than seven fixes. Flooring the bound at one row degrades a tiny terminal to a
-one-row box instead. Each modal carries a draw-at-tiny-sizes test whose
-assertion *is* the draw, verified to fail on the old line (`min > max. min = 1,
-max = 0`) rather than merely to pass on the new one.
-
-**And the eighth site is the one worth remembering**, because it survived the
-sweep that fixed the other seven. `/mail` renders its key legend *inside* the
-block rather than in the title, so its box needs a floor of **two** — it spelled
-its clamp `clamp(2, …)`, matched no grep aimed at `clamp(1, …)`, and collided
-with the ceiling one row earlier than everywhere else (dead at five rows, not
-four). The lesson is not "grep harder": the two-argument helper **could not
-express that box**, and a helper that cannot say what a caller means is how a
-caller keeps saying it inline. `list_height_reserving(rows, height, reserved)`
-can, `list_height` delegates to it with `reserved = 0`, and the degradation runs
-the safe way — the ceiling floors at one row and then the *floor is pulled down
-to meet it*, so a terminal too short for the strip and a row of list gets a
-useless live box instead of a dead session. The general form to search for is
-`.clamp(` near `saturating_sub(4)`, not either literal.
-
 **The TUI's `/triggers` modal drives the CLI, not the store.** Every action —
 run now, cancel, enable, delete, edit — shells out to `mecha trigger ...` as a
 child process. Firing builds a whole separate agent (its own provider, tool
@@ -1907,14 +1900,6 @@ The action is a **prompt**, never a command — scheduled commands are what cron
 is for, and giving one a home here would mean re-answering how it gets
 confined and which environment it sees. `scripts/ruminate.sh` therefore stays
 its own systemd timer.
-
-**A new field on `Config` is two edits, not one.** Files are parsed into
-`ConfigLayer` — every field optional, so a project file can override one
-setting — and a field added to `Config` alone makes its TOML table a *parse
-error* that kills startup, while every unit test stays green because tests
-build the types directly. That is exactly how hooks shipped unreachable.
-`every_field_of_config_is_reachable_from_a_file` now round-trips a serialised
-default through the layer to catch it.
 
 ## The run-quality corpus
 
@@ -2147,46 +2132,49 @@ The decisions that carry it, each a bug if undone:
 ## The doctor
 
 `mecha doctor` (`doctor.rs`, `commands/doctor.rs`) reads every store in one
-pass — no network, no model, no tokens — and reports what is silently wrong:
-dead auth markers, releases that errored, drafts and requests waiting on you
-past a threshold, triggers whose slots stopped advancing, triggers quietly
-failing a large share of their tool calls (an unattended run has nobody
-watching it fail: the briefing still arrives and the ledger still says `ok`,
-so the only evidence is the call counts the record now carries — silent below
-ten calls in five runs, because a rate over three of them is noise), triggers
-whose most recent run succeeded having done *nothing* (the rate check cannot
-see that one: a rate over zero calls is undefined rather than bad, so a
-trigger that made thirty calls a morning and now makes none is silent in every
-other signal — measured against the trigger's own earlier runs and never an
-absolute floor, or a prompt that legitimately needs no tools would read as the
-broken one, and suppressed when the run also errored, because that already has
-a finding), failed
-`mecha-*` units, graph nightlies that stopped writing their daily log, a rule
-learner starved by provenance (every domain below the learn floor while ten or
-more reflections sit excluded by origin and new ones keep arriving — the gate
-working exactly as designed, nightly, with nothing downstream to show for it,
-which no per-night `ok` line can distinguish from a healthy quiet night; the
-floor is `LEARN_MIN_REFLECTIONS`, shared with `learn --min` so the check and
-the gate cannot drift, and the finding proposes a *decision* rather than a
-command — its remedy shows classifications and nothing may loosen the gate),
-harness candidates staged past 72h, and the
-population signals in the run-quality corpus — a model finishing a fifth of
-its runs over a failed call, failing a quarter of its tool calls, or having a
-quarter of its runs cut short by a ceiling (thresholds deliberately **high**,
-because rule-based evaluators are measured to under-report success and a
-doctor that cries wolf stops being read; `Interrupted` excluded, since a
-person pressing Ctrl-C is the system working and counting it would make an
-attentive user look like a problem; per model with a 20-run floor, since a
-blend across models describes neither and names the wrong one) (cron exec
-failures die before the script's own logging starts, and cron mails the
-error to an MTA that isn't there — 2026-08-17's missing execute bit). It exists because of 2026-08-11: a revoked OAuth token took scheduling
-down for three days while five stores each recorded the distress correctly
-and nothing read across them. Error handling here is deliberately a
-*convention plus an aggregator*, not a shared type — each boundary keeps its
-own taxonomy (`ProviderError`, `SlackError`, `MailError`), each long-lived
-component leaves durable machine-readable markers in its own store, and
-doctor is the one reader. A new failure mode costs a marker and a check,
-never a cross-crate dependency.
+pass — no network, no model, no tokens — and reports what is silently wrong. It
+exists because of 2026-08-11: a revoked OAuth token took scheduling down for
+three days while five stores each recorded the distress correctly and nothing
+read across them. Error handling here is deliberately a *convention plus an
+aggregator*, not a shared type — each boundary keeps its own taxonomy
+(`ProviderError`, `SlackError`, `MailError`), each long-lived component leaves
+durable machine-readable markers in its own store, and doctor is the one
+reader. A new failure mode costs a marker and a check, never a cross-crate
+dependency.
+
+Most checks are self-evident: dead auth markers, releases that errored, drafts
+and requests waiting past a threshold, triggers whose slots stopped advancing,
+failed `mecha-*` units, graph nightlies that stopped writing their daily log,
+harness candidates staged past 72h. Four carry a threshold whose reasoning is
+not recoverable from the code:
+
+- **A trigger failing a large share of its tool calls.** An unattended run has
+  nobody watching it fail — the briefing still arrives and the ledger still
+  says `ok` — so the call counts on the record are the only evidence. Silent
+  below ten calls in five runs, because a rate over three of them is noise.
+- **A trigger whose most recent run succeeded having done *nothing*.** The rate
+  check cannot see this one: a rate over zero calls is undefined rather than
+  bad, so a trigger that made thirty calls a morning and now makes none is
+  silent in every other signal. Measured against the trigger's own earlier runs
+  and never an absolute floor, or a prompt that legitimately needs no tools
+  reads as the broken one; suppressed when the run also errored, because that
+  already has a finding.
+- **A rule learner starved by provenance** — every domain below the learn floor
+  while ten or more reflections sit excluded by origin and new ones keep
+  arriving: the gate working exactly as designed, nightly, with nothing
+  downstream to show for it, which no per-night `ok` line can distinguish from
+  a healthy quiet night. The floor is `LEARN_MIN_REFLECTIONS`, shared with
+  `learn --min` so the check and the gate cannot drift, and the finding
+  proposes a *decision* rather than a command — its remedy shows
+  classifications and nothing may loosen the gate.
+- **The population signals in the run-quality corpus** — a model finishing a
+  fifth of its runs over a failed call, failing a quarter of its tool calls, or
+  having a quarter of its runs cut short by a ceiling. Thresholds deliberately
+  **high**, because rule-based evaluators are measured to under-report success
+  and a doctor that cries wolf stops being read; `Interrupted` excluded, since
+  a person pressing Ctrl-C is the system working and counting it would make an
+  attentive user look like a problem; per model with a 20-run floor, since a
+  blend across models describes neither and names the wrong one.
 
 Three rules, each load-bearing:
 
@@ -2221,6 +2209,26 @@ Three rules, each load-bearing:
 - A tool result must exist for every `tool_use` id, or the next request 400s.
 - Tool order in the registry is stable (`BTreeMap`) because the tool list is the
   front of the cached prefix — reordering it invalidates the cache every turn.
+
+**Every modal sizes its list through `tui::list_height`** — or
+`list_height_reserving`, where the box keeps rows back for a legend of its own.
+The inline spelling `rows.clamp(1, terminal_height.saturating_sub(4))` is a
+*panic* rather than a layout bug: the subtraction saturates to zero on a
+four-row terminal and `clamp` asserts `min <= max`, so shrinking a window with
+any modal open took the whole session down, partial answer and all. Eight sites
+had their own copy, because a new modal is written by opening whichever sibling
+is nearest — which is why this is a shared function and not eight fixes. Grep
+for `.clamp(` near `saturating_sub(4)`, never either literal: the eighth site
+spelled it `clamp(2, …)` and survived a sweep aimed at `clamp(1, …)`.
+`docs/HISTORY.md` carries the sweep.
+
+**A new field on `Config` is two edits, not one.** Files are parsed into
+`ConfigLayer` — every field optional, so a project file can override one
+setting — and a field added to `Config` alone makes its TOML table a *parse
+error* that kills startup, while every unit test stays green because tests
+build the types directly. That is exactly how hooks shipped unreachable.
+`every_field_of_config_is_reachable_from_a_file` now round-trips a serialised
+default through the layer to catch it.
 
 ## Context, and knowing how much is left
 
