@@ -358,19 +358,24 @@ impl ParkingAsker {
         self.parked.lock().map(|p| p.clone()).unwrap_or_default()
     }
 
-    /// Stamp the conversation's taint onto everything this run parked.
+    /// Merge the conversation's post-run taint into everything this run
+    /// parked — a refinement of what `ToolCtx` already knew, never a
+    /// replacement for it.
     ///
-    /// Called by the front-end *after* the run, because taint lives on the
-    /// `Conversation` and a tool cannot see it. That is not a compromise: the
-    /// run ends at the question, so the post-run snapshot is the question's
-    /// own. Where a question shared a turn with a tool that armed taint, the
-    /// snapshot includes it — over-tainting, which is the direction this
-    /// project's taint accounting always errs in, and the same rule
-    /// `Session::taint_timeline` states for checkpoints.
+    /// **Merges rather than overwrites, and that is load-bearing.** The park
+    /// seeds fail-closed when the context carries no taint, so an overwrite
+    /// here would let a clean post-run snapshot *downgrade* a question that
+    /// was recorded as unknown-and-therefore-untrusted. Taint only ever grows;
+    /// so does this.
+    ///
+    /// Best-effort by design: a question is already correct at park time, and
+    /// this only sharpens it. That matters because both callers reach this
+    /// line through `?` operators on session writes — an I/O failure must not
+    /// be able to leave a question recorded as cleaner than it was.
     pub fn stamp_taint(&self, taint: Taint) {
         for id in self.parked() {
             let updated = self.store.get(&id).map(|mut q| {
-                q.taint = taint;
+                q.taint.merge(taint);
                 q
             });
             if let Ok(q) = updated {
@@ -382,14 +387,32 @@ impl ParkingAsker {
         }
     }
 
-    fn record(&self, question: &str, options: &[String], workspace: Option<PathBuf>) -> String {
+    fn record(
+        &self,
+        question: &str,
+        options: &[String],
+        workspace: Option<PathBuf>,
+        taint: Option<Taint>,
+    ) -> String {
+        // **Unknown taint is untrusted, at the moment of writing.** The stamp
+        // that follows the run is a refinement, and everything between park
+        // and stamp — two `?` on session writes, a kill, a full disk — would
+        // otherwise leave a question asked out of a conversation full of
+        // third-party text recorded as clean, with no warning on `show` and a
+        // zero in `/queues`. Every other unknown in this codebase reads as
+        // untrusted (`distill::corrections_for`, `Session::taint_timeline`);
+        // so does this one.
+        let taint = taint.unwrap_or(Taint {
+            private: true,
+            untrusted: true,
+        });
         match self.store.park(
             question,
             options.to_vec(),
             &self.session_id,
             self.task_id.clone(),
             workspace,
-            Taint::default(),
+            taint,
         ) {
             Ok(q) => {
                 if let Ok(mut p) = self.parked.lock() {
@@ -422,7 +445,7 @@ impl crate::tool::ask::Asker for ParkingAsker {
     /// so the question is stored and the run carries on. Reachable only from a
     /// caller that never routes through `ask_in`, which no front-end here does.
     async fn ask(&self, question: &str, options: &[String]) -> Option<String> {
-        Some(self.record(question, options, None))
+        Some(self.record(question, options, None, None))
     }
 
     async fn ask_in(
@@ -432,7 +455,7 @@ impl crate::tool::ask::Asker for ParkingAsker {
         options: &[String],
     ) -> Option<String> {
         let before = self.parked().len();
-        let answer = self.record(question, options, Some(ctx.workspace.clone()));
+        let answer = self.record(question, options, Some(ctx.workspace.clone()), ctx.taint);
         // Only stop if it actually landed. A question that failed to store
         // leaves the run alive to report, per `record`.
         if self.parked().len() > before {
@@ -612,21 +635,80 @@ mod tests {
         assert!(answer.contains("could not be stored"));
     }
 
+    /// Taint is recorded **at park time** from the context, so nothing that
+    /// happens between the question and the end of the run can leave it
+    /// looking clean. The later stamp only sharpens it.
     #[tokio::test]
-    async fn taint_is_stamped_on_after_the_run() {
+    async fn taint_is_recorded_when_the_question_is_parked() {
         let s = std::sync::Arc::new(store("taint"));
         let asker = ParkingAsker::new(std::sync::Arc::clone(&s), "sess-7", None);
-        let ctx = ToolCtx::default();
+        let ctx = ToolCtx {
+            taint: Some(Taint {
+                private: true,
+                untrusted: true,
+            }),
+            ..Default::default()
+        };
         asker.ask_in(&ctx, "Which address?", &[]).await.unwrap();
 
-        let id = asker.parked()[0].clone();
-        assert!(!s.get(&id).unwrap().taint.untrusted);
+        let q = s.get(&asker.parked()[0]).unwrap();
+        assert!(
+            q.taint.private && q.taint.untrusted,
+            "the warning must not depend on a stamp that may never run"
+        );
+    }
 
-        asker.stamp_taint(Taint {
-            private: true,
+    /// **Unknown taint is untrusted.** A context with no snapshot is not
+    /// evidence of a clean conversation, and every other unknown in this
+    /// codebase reads the same way. Fails on the old behaviour, which
+    /// defaulted the field and left the question recorded as clean until a
+    /// post-run stamp that two `?` operators could skip.
+    #[tokio::test]
+    async fn a_context_with_no_taint_parks_as_untrusted() {
+        let s = std::sync::Arc::new(store("taint-unknown"));
+        let asker = ParkingAsker::new(std::sync::Arc::clone(&s), "sess-7", None);
+        asker
+            .ask_in(&ToolCtx::default(), "Which address?", &[])
+            .await
+            .unwrap();
+
+        let q = s.get(&asker.parked()[0]).unwrap();
+        assert!(q.taint.untrusted, "unknown must not read as clean");
+    }
+
+    /// The stamp merges and never replaces. Overwriting would let a clean
+    /// post-run snapshot downgrade a question parked as unknown — taint only
+    /// grows, and so must this.
+    #[tokio::test]
+    async fn the_stamp_can_only_add_taint_never_remove_it() {
+        let s = std::sync::Arc::new(store("taint-merge"));
+        let asker = ParkingAsker::new(std::sync::Arc::clone(&s), "sess-7", None);
+        asker
+            .ask_in(&ToolCtx::default(), "Which address?", &[])
+            .await
+            .unwrap();
+        let id = asker.parked()[0].clone();
+
+        asker.stamp_taint(Taint::default());
+        assert!(
+            s.get(&id).unwrap().taint.untrusted,
+            "a clean stamp must not launder an unknown park"
+        );
+
+        // And it does still sharpen a known-clean one upward.
+        let s2 = std::sync::Arc::new(store("taint-merge-2"));
+        let a2 = ParkingAsker::new(std::sync::Arc::clone(&s2), "sess-8", None);
+        let clean = ToolCtx {
+            taint: Some(Taint::default()),
+            ..Default::default()
+        };
+        a2.ask_in(&clean, "Which?", &[]).await.unwrap();
+        let id2 = a2.parked()[0].clone();
+        assert!(!s2.get(&id2).unwrap().taint.untrusted);
+        a2.stamp_taint(Taint {
+            private: false,
             untrusted: true,
         });
-        let q = s.get(&id).unwrap();
-        assert!(q.taint.private && q.taint.untrusted, "review must see this");
+        assert!(s2.get(&id2).unwrap().taint.untrusted, "growth still lands");
     }
 }

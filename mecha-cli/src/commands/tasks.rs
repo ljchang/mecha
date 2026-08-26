@@ -356,6 +356,16 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
     // D5/D6, structurally: the tool that moves a status leaves the model's
     // surface and stays here. Not "the model is told not to" — the model has
     // nothing to call.
+    // A child registry is built before this runs and keeps its own handle, so
+    // withholding here would leave delegation as the way around D6.
+    let holders = setup::subagents_holding(&prepared.config, "kg_task_update");
+    if !holders.is_empty() {
+        bail!(
+            "subagent(s) {} allowlist `kg_task_update`, so a delegated run could close its own \
+             task. Remove it from their `tools` in config before handing tasks to the agent.",
+            holders.join(", ")
+        );
+    }
     let Some((_withheld, update)) = withhold_tool(prepared.agent.registry_mut(), "kg_task_update")
     else {
         bail!("`kg_task_update` is not on the tool surface — this run could not be recorded");
@@ -375,18 +385,6 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
             title: Some(format!("task: {name}")),
         },
     )?;
-    // The tool list is part of this record, which is what makes the withheld
-    // `kg_task_update` *evidence* rather than a claim — and what lets `mecha
-    // replay` reconstruct the run at all. Absent until the first live run went
-    // looking for proof the withholding had happened and found the transcript
-    // could not say.
-    session.append(&mecha_core::session::Record::Config(
-        mecha_core::session::RunConfig::of(
-            &prepared.agent,
-            &prepared.config,
-            &prepared.provider_name,
-        ),
-    ))?;
     if let Some(route) = &prepared.agent.context().outbox {
         route.set_session_id(&session.meta.id);
     }
@@ -410,6 +408,20 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
             std::sync::Arc::clone(&asker) as std::sync::Arc<dyn mecha_core::tool::ask::Asker>
         ),
     ));
+
+    // **After every registry mutation, not before.** `RunConfig::of` snapshots
+    // the tool list at call time, so appending it earlier recorded a surface
+    // that never existed — one still holding `kg_task_update` and still
+    // missing `ask_user`. This record is what makes the withholding evidence
+    // rather than a claim, and what `mecha replay` rebuilds the run from, so a
+    // record of the wrong surface is worse than none.
+    session.append(&mecha_core::session::Record::Config(
+        mecha_core::session::RunConfig::of(
+            &prepared.agent,
+            &prepared.config,
+            &prepared.provider_name,
+        ),
+    ))?;
 
     let staged_before = staged_ids(&session.meta.id);
 
@@ -440,14 +452,27 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
         None,
     )
     .await;
-    session.record_run(&recorded, &convo)?;
-    session.append(&mecha_core::session::Record::Taint(convo.taint))?;
+    // Not `?`. The status was moved to `waiting` before the run, and every
+    // early return between here and the restore below leaves the board saying
+    // somebody has the ball with no run in flight — the queue growing for a
+    // reason nobody can see, which is what the restore exists to prevent.
+    let recording = session
+        .record_run(&recorded, &convo)
+        .and_then(|()| session.append(&mecha_core::session::Record::Taint(convo.taint)));
+    if let Err(e) = &recording {
+        eprintln!("warning: this run was not fully recorded: {e:#}");
+    }
     // Taint lives on the conversation and a tool cannot see it, so the
     // snapshot is stamped on afterwards. The run ended at the question, so
     // this *is* the question's taint — and where a question shared a turn
     // with something that armed it, over-tainting is the direction to err in.
     asker.stamp_taint(convo.taint);
 
+    // Only a failed *run* restores the status. A run that worked and then
+    // failed to record is a task that genuinely is waiting on the owner —
+    // drafts may be staged and files written — so putting the board back to
+    // `next` would be the lie in the other direction. The warning above is the
+    // right response to a torn transcript; a status change is not.
     if let Err(e) = outcome {
         // Nothing happened, so the board must not say something did. A task
         // parked in `waiting` by a run that died is the queue growing for a

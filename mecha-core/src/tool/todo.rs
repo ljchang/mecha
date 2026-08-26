@@ -298,6 +298,27 @@ impl Tool for TodoTool {
         })
     }
 
+    /// `/clear` and a finished batch item both mean "this conversation is
+    /// over", and the plan is conversation state like any other.
+    ///
+    /// It went unimplemented while the list was agent-wide, when the same
+    /// omission merely meant a stale pane. Keyed by workspace it is worse: a
+    /// cleared conversation and the next one share a jail, so yesterday's plan
+    /// would survive into today's run *and* be spliced into its compaction by
+    /// `carried_state` — which is precisely the "plausible list belonging to
+    /// something else" the keying was introduced to prevent, arriving through
+    /// the one door the keying does not close.
+    ///
+    /// Clears every workspace rather than one, because the trait method says
+    /// nothing about which conversation ended and the registry calls it on a
+    /// front-end that has exactly one. That is also what bounds the map: a
+    /// long-lived process minting a new session key per conversation
+    /// (`serve::session_workspace`) would otherwise accumulate one entry per
+    /// session for the life of the process.
+    fn forget_conversation_state(&self) {
+        self.lists.lock().unwrap().clear();
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(raw) = input.get("items").and_then(Value::as_array) else {
             return Ok(ToolOutput::err(
@@ -621,6 +642,31 @@ mod tests {
     fn a_transcript_with_no_plan_restores_nothing() {
         assert!(TodoTool::from_transcript(&[Message::user("hello")]).is_none());
         assert!(TodoTool::from_transcript(&[]).is_none());
+    }
+
+    /// `/clear` ends a conversation, and the plan is conversation state. With
+    /// the list keyed by workspace and a cleared conversation keeping the same
+    /// jail, a surviving list would be spliced into the *next* conversation's
+    /// compaction by `carried_state` — the exact failure the keying was for,
+    /// through the one door keying does not close.
+    #[tokio::test]
+    async fn clearing_a_conversation_drops_its_plan() {
+        let tool = TodoTool::new();
+        let ctx = ToolCtx::default();
+        tool.call(
+            json!({"items": [{"content": "old business", "status": "in_progress"}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tool.items_in(&ctx.workspace).len(), 1);
+
+        tool.forget_conversation_state();
+        assert!(tool.items_in(&ctx.workspace).is_empty(), "the plan is gone");
+        assert!(
+            tool.carried_state(&ctx).is_none(),
+            "and cannot reach the next conversation's compaction"
+        );
     }
 
     /// A compaction carries the *compacting run's* plan, not whichever list

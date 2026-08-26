@@ -2277,7 +2277,6 @@ async fn draft(
     Ok(())
 }
 
-/// Outbox item ids this session staged.
 /// What the drafting run is asked to do.
 ///
 /// **The thread is named, not pasted.** The run has `mail_get_thread` and
