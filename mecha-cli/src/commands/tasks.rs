@@ -390,6 +390,27 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
     if let Some(route) = &prepared.agent.context().outbox {
         route.set_session_id(&session.meta.id);
     }
+
+    // **D13.** `ask_user` is registered here, and only here, because this is
+    // the front-end that owns the human — asynchronously. The asker does not
+    // block on an answer; it stores the question and ends the run, so the
+    // owner can answer at breakfast without a slot and a cached prefix being
+    // held all night waiting for them. Registered *after* the session exists,
+    // because the session id is how an answer finds its way back.
+    let questions = std::sync::Arc::new(mecha_core::questions::QuestionStore::open(
+        mecha_core::questions::QuestionStore::default_root()?,
+    )?);
+    let asker = std::sync::Arc::new(mecha_core::questions::ParkingAsker::new(
+        std::sync::Arc::clone(&questions),
+        &session.meta.id,
+        Some(task_id.to_string()),
+    ));
+    prepared.agent.registry_mut().insert(std::sync::Arc::new(
+        mecha_core::tool::ask::AskUserTool::new(
+            std::sync::Arc::clone(&asker) as std::sync::Arc<dyn mecha_core::tool::ask::Asker>
+        ),
+    ));
+
     let staged_before = staged_ids(&session.meta.id);
 
     // Moved before the model sees anything, so the board tells the truth for
@@ -421,6 +442,11 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
     .await;
     session.record_run(&recorded, &convo)?;
     session.append(&mecha_core::session::Record::Taint(convo.taint))?;
+    // Taint lives on the conversation and a tool cannot see it, so the
+    // snapshot is stamped on afterwards. The run ended at the question, so
+    // this *is* the question's taint — and where a question shared a turn
+    // with something that armed it, over-tainting is the direction to err in.
+    asker.stamp_taint(convo.taint);
 
     if let Err(e) = outcome {
         // Nothing happened, so the board must not say something did. A task
@@ -450,6 +476,22 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
             staged.len()
         );
     }
+    // A parked question is the *reason* the run stopped, so it leads. The
+    // owner's next move is answering it, not disposing of the task, and a
+    // task blocked on them reads very differently from one merely finished.
+    if let Some(id) = asker.parked().first() {
+        if let Ok(q) = questions.get(id) {
+            println!("it needs an answer before it can go further:\n");
+            println!("  {}", q.question.trim());
+            for opt in &q.options {
+                println!("    - {opt}");
+            }
+            let short = mecha_core::questions::QuestionStore::short(&q.id);
+            println!("\n  mecha questions answer {short} \"...\"   # resumes the run");
+            return Ok(());
+        }
+    }
+
     println!("{task_id} is `waiting` — you decide what it becomes next:");
     println!("  mecha tasks set {task_id} --status done     # or next, dropped");
     println!(
@@ -505,9 +547,11 @@ fn work_prompt(task: &Value, today: &str, note: Option<&str>) -> String {
          Draft it properly and say what you staged. Do not look for a way around the queue.\n\
          - You cannot change this task's status and have no tool that does. Whether it is \
          finished is the owner's call, not yours. Report what you did and what is left.\n\
-         - Nobody is watching this run, so there is nobody to ask part-way through. If a \
-         decision is genuinely the owner's to make, stop and say plainly what you need and \
-         why. That is a useful outcome, not a failure.\n\
+         - If a decision is genuinely the owner's to make, ask with `ask_user`. They are \
+         not sitting here, so the run will END on your question and resume later with their \
+         answer as the next turn — no time is spent waiting. Ask early rather than guessing. \
+         Say where you got to in your last words, because they are what you will be reading \
+         when you come back.\n\
          - If this takes more than a few steps, keep a `todo` list. The owner can watch it, \
          and it survives into the conversation if they pick this up later.\n",
     );
@@ -583,8 +627,12 @@ mod tests {
             "D6: the owner disposes"
         );
         assert!(
-            p.contains("Nobody is watching"),
-            "D3/Phase 1: there is no one to ask mid-run"
+            p.contains("ask_user"),
+            "D13: asking is the move, and the run ends on it"
+        );
+        assert!(
+            p.contains("END on your question"),
+            "the model must know asking costs the run, so it asks early"
         );
     }
 
