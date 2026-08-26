@@ -19,8 +19,7 @@ use anyhow::Result;
 use mecha_core::agent::{Agent, RunContext};
 use mecha_core::config::{PermissionMode, ProviderConfig};
 use mecha_core::counterfactual::{
-    denial_verdict, locate_denial, locate_steer, steer_verdict, truncate_after_run, ProbePoint,
-    ProbeVerdict,
+    locate_denial, locate_steer, truncate_after_run, verdict, ProbePoint, ProbeVerdict,
 };
 use mecha_core::learning::{strip_rules_block, Reflexion, Trigger};
 use mecha_core::replay::{extract, Trajectory};
@@ -47,7 +46,6 @@ pub struct ProbePrep {
     point: ProbePoint,
     recorded: RunConfig,
     base_system: String,
-    steer: bool,
 }
 
 /// Load the recording behind a steer/denial reflection. `Err(reason)` in the
@@ -61,8 +59,7 @@ pub fn prepare_probe(sessions_dir: &Path, r: &Reflexion) -> Result<Result<ProbeP
         Ok(loaded) => loaded,
         Err(e) => return Ok(Err(format!("session unreadable: {e:#}"))),
     };
-    let steer = r.trigger == Trigger::Steer.as_str();
-    let point = if steer {
+    let point = if r.trigger == Trigger::Steer.as_str() {
         locate_steer(&convo.messages, &r.intervention)
     } else if r.trigger == Trigger::Denial.as_str() {
         locate_denial(&convo.messages, &r.intervention)
@@ -100,7 +97,6 @@ pub fn prepare_probe(sessions_dir: &Path, r: &Reflexion) -> Result<Result<ProbeP
         point,
         recorded,
         base_system,
-        steer,
     }))
 }
 
@@ -168,11 +164,9 @@ pub async fn drive_arm(
         .with_cancel(cancel)
         .with_compact_at(recorded.compact_at_tokens);
     match drive(&agent, &cx, &prep.trajectory).await {
-        Ok(report) => Ok(Ok(if prep.steer {
-            steer_verdict(&report, &prep.point)
-        } else {
-            denial_verdict(&report, &prep.point)
-        })),
+        // Which rule grades this is carried by the point itself, so a kind
+        // the caller has not heard of cannot be graded as a denial by default.
+        Ok(report) => Ok(Ok(verdict(&report, &prep.point))),
         Err(e) => Ok(Err(format!("replay failed: {e:#}"))),
     }
 }
