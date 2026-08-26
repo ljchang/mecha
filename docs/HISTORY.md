@@ -2142,6 +2142,52 @@ as a **delta**, not a level: a run that stages nine drafts raises the outbox by
 nine, so a level at run end cannot separate a run's own output from what it
 inherited.
 
+**2026-08-26 (sixth pass) — D4, and the assembler that points instead of
+pasting.** The last open item of the task-agent arc, and it needed less
+building than the design implied, because three things had become true that
+D4 predated. `kg_task_list` returns `captured_from` on every row — the
+provenance pointer that shipped that morning — and `work_prompt` never
+mentioned it, so a task captured from an email reached the agent as a bare
+sentence while `mecha tasks source` sat on the CLI able to fetch the thread.
+`defer_until` was dropped the same way. And the run's own surface already
+held `kg_search`, `kg_entity`, `kg_related` and `kg_timeline`, so the
+project neighbourhood D4 wanted assembled into the prompt was one call away.
+
+So the seed **points**: the provenance line, `defer_until`, a bullet naming
+the mail reader when the capture is mail, and a bullet naming the graph
+lookups. A seed is the front of a cached prefix every turn of every task run
+re-sends, so pasted context is paid for on all of them where a sentence
+naming a tool is paid once and followed only by the runs that need it —
+`skill.rs`'s progressive disclosure one door over.
+
+**The constraint that decided the shape is not the token budget.**
+`captured_from` can point at *mail*. Pasting a thread body into the seed
+would arm `untrusted` before the run's first turn **and** put
+attacker-controlled bytes into a privileged run's opening instruction, which
+is `frontdoor::Record::for_privileged_run`'s argument arriving through a
+third door. The seed therefore carries kind, id, account and timestamp, and
+never the `label` — a subject line is prose somebody else composed, and the
+test fixture's label is an injection so that the assertion is the boundary
+rather than a formatting check. The bytes arrive as a tool result, where the
+interlock accounts for them and the `<untrusted-content>` envelope is
+already around them.
+
+**Tools are named by their registered name, and this deployment proved why
+in one command.** `mecha tools --json` here shows the graph tools bare
+(`kg_search`) and mail prefixed (`mail__mail_get_thread`) — one machine, two
+conventions — so a seed hardcoding bare names would have pointed the run at
+a tool it could not dispatch in exactly one of the two bullets. That is the
+level-3 skill bug, which was found by running it rather than by reading it.
+`Reach::of` reads the registry, after the D6 withholding and the D13
+`ask_user` insertion, for the same reason `RunConfig::of` does.
+
+And D4's own line — *"measured in Phase 4, not assumed in Phase 1"* — was
+finally honoured, on the first run: a throwaway task named only `mecha` as
+its project, and the run made **seven graph calls** (`kg_search` ×4,
+`kg_entity` ×3) with no other prompting than the bullet. One run on one task
+is a data point rather than a result, but it is the direction the decision
+rests on, and pasting stays available if later runs ignore the pointer.
+
 
 ## The measurement record
 

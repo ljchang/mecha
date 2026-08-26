@@ -268,6 +268,49 @@ project-neighbourhood context (`kg_related` on the project node) is
 therefore likely worth its prefix cost — but it is measured in Phase 4, not
 assumed in Phase 1.
 
+> **Amended 2026-08-26, when Phase 5 was built.** The decision holds — the
+> seed is still built by code from the record, and no model writes it. What
+> changes is the *assembler*: it points, and does not paste.
+>
+> **Three things were already true that this decision predates.** The run's
+> tool surface holds `kg_search`, `kg_entity`, `kg_related` and
+> `kg_timeline`, so the neighbourhood is one call away rather than something
+> only the seed could deliver. `kg_task_list` returns `captured_from` on
+> every row — the provenance pointer that shipped the same day — so a task
+> captured from an email knows which thread asked for it. And a seed is the
+> front of a cached prefix that every turn of every task run re-sends, so
+> pasted context is paid for on all of them while a sentence naming a tool
+> is paid once and followed only by the runs that need it. That is
+> `skill.rs`'s progressive disclosure, one door over.
+>
+> **And a constraint this decision does not state, which decides the shape.**
+> `captured_from` can point at *mail*. Pasting a thread body into the seed
+> would arm `untrusted` before the run's first turn **and** put
+> attacker-controlled bytes into a privileged run's opening instruction —
+> `frontdoor::Record::for_privileged_run`'s argument arriving through a third
+> door. So the seed carries the **pointer**, never the content: kind, id,
+> account and timestamp, and never the `label`, which is a subject line and
+> therefore prose somebody else composed. The bytes arrive as a tool result,
+> where the interlock accounts for them and the `<untrusted-content>`
+> envelope is already around them. Any future assembler inherits that rule.
+>
+> **What the seed gained** (`Reach`, `commands/tasks.rs`): the provenance
+> line, `defer_until` (on every row and previously dropped), a bullet naming
+> the mail reader when the capture is mail *and* this surface holds one, and
+> a bullet naming the graph lookups it holds. Tools are named by their
+> **registered** name — `prefix_tools` makes `mail_get_thread` into
+> `mail__mail_get_thread`, and a seed naming a tool the run cannot dispatch
+> is the level-3 skill bug, which was found by running it rather than by
+> reading it. A capture kind with no reader (`frontdoor`, `session`) is named
+> as provenance and offered nothing.
+>
+> **The measurement this decision asked for is now the next step rather than
+> a premise.** *"Measured in Phase 4, not assumed in Phase 1"* was never
+> honoured, and can be from here: task runs write a `Record::Outcome` as of
+> 2026-08-26, and whether a run follows the pointer is a scan of task-titled
+> transcripts for a call to the tool the seed named. Paste only if they do
+> not.
+
 **D5 — State is derived from the record, never self-reported.** Linear
 derives an agent session's state from the last emitted activity; the agent
 never sets it. mecha already holds this rule elsewhere — the TUI reads a
@@ -694,9 +737,10 @@ worth knowing before touching this arc again:
 idle. Not yet verified, because D12 is unbuilt: editing the plan changes
 what runs.*
 
-**Phase 5 — narrowing and context.** The context assembler (D4). D6's
-narrowing arrived early with Phase 1, because shipping a task runner that
-could close its own task was not an option worth a phase boundary.
+**Phase 5 — narrowing and context.** The context assembler (D4) — shipped
+2026-08-26, as a **pointer** rather than an assembler; see D4's amendment.
+D6's narrowing arrived early with Phase 1, because shipping a task runner
+that could close its own task was not an option worth a phase boundary.
 
 **Phase 6 — admission control (R1).** Worth building once more than one
 delegation at a time is routine, and not before: with four slots and one

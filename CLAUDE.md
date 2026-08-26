@@ -874,6 +874,27 @@ An edit form offers due, defer and context and *not* the name, because
 `kg_task_update` has no rename — a box that silently discarded what was typed
 in it would be worse than not offering one.
 
+**A delegated run's seed points at context; it never pastes it.** The prompt
+is built by code from the board record (D4) — name, project, context, dates,
+`defer_until`, the owner's note — plus `captured_from`, the pointer saying
+what asked for the task. What the run may look up is *named*: the mail-thread
+reader when the capture is mail, and whichever of `kg_search` / `kg_entity` /
+`kg_related` / `kg_timeline` this surface holds. Three rules on it, each a bug
+if undone. **The pointer, never the prose** — `captured_from` can point at
+mail, and a pasted body would arm `untrusted` before the run's first turn and
+put attacker-controlled bytes in a privileged run's opening instruction, so
+the seed carries kind/id/account/timestamp and never the subject line; the
+bytes arrive as a tool result the interlock accounts for.
+**Registered names, resolved off the registry after every narrowing** — this
+box registers the graph tools bare and mail as `mail__mail_get_thread`, so a
+bare name in the seed would be a call the run cannot dispatch, which is the
+level-3 skill bug one door over. And **a tool that is absent is named
+nowhere**: a capture kind with no reader (`frontdoor`, `session`) is stated as
+provenance and offered nothing, because a pointer to a reader that is not
+there is worse than the plain fact. Progressive disclosure is the argument for
+the whole shape — the seed is the front of a prefix every turn re-sends, so
+pasted context is paid for on all of them and a sentence is paid once.
+
 **A delegated run that needs a decision ends, and its question is a store**
 (`questions.rs`, `mecha questions`, `/api/questions`). The outbox's inbound
 twin, and the reasoning is the outbox's run backwards: a staged send is a
