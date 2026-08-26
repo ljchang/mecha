@@ -289,19 +289,13 @@ impl Distiller {
     /// unusably (logged, not fatal). `Err` is the provider failing — or the
     /// reply being cut off, which is not the same thing as a skip.
     pub async fn distill(&self, transcript: &str) -> Result<Option<Distilled>> {
-        let request = crate::message::CompletionRequest {
-            model: self.model.clone(),
-            system: Some(DISTILLER_SYSTEM.to_string()),
-            messages: vec![Message::user(format!(
+        let request = crate::quarantine::QuarantinedPass::new(&self.model, self.max_tokens)
+            .system(DISTILLER_SYSTEM)
+            .cache_prompt(true)
+            .ask(format!(
                 "<transcript>\n{transcript}\n</transcript>\n\n\
                  What belongs in the knowledge graph? Reply with the JSON object only."
-            ))],
-            tools: Vec::new(),
-            max_tokens: self.max_tokens,
-            effort: None,
-            thinking: false,
-            cache_prompt: true,
-        };
+            ));
         let response = self.provider.complete(&request, None).await?;
         let text = response.message.text();
         let parsed = parse_distiller_reply(&text);

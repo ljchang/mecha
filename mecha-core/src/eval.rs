@@ -756,17 +756,11 @@ impl Judge {
              Does the answer meet the rubric? Reply with the JSON object only."
         );
 
-        let request = crate::message::CompletionRequest {
-            model: self.model.clone(),
-            system: Some(JUDGE_SYSTEM.to_string()),
-            messages: vec![crate::message::Message::user(user)],
-            tools: Vec::new(),
-            max_tokens: self.max_tokens,
-            effort: None,
-            thinking: false,
-            // The system prompt is identical for every case, so it caches.
-            cache_prompt: true,
-        };
+        // The system prompt is identical for every case, so it caches.
+        let request = crate::quarantine::QuarantinedPass::new(&self.model, self.max_tokens)
+            .system(JUDGE_SYSTEM)
+            .cache_prompt(true)
+            .ask(user);
 
         let response = self.provider.complete(&request, None).await?;
         let text = response.message.text();

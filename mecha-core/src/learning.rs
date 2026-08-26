@@ -1452,16 +1452,10 @@ impl Reflector {
             },
         );
 
-        let request = crate::message::CompletionRequest {
-            model: self.model.clone(),
-            system: Some(system.to_string()),
-            messages: vec![Message::user(user)],
-            tools: Vec::new(),
-            max_tokens: self.max_tokens,
-            effort: None,
-            thinking: false,
-            cache_prompt: true,
-        };
+        let request = crate::quarantine::QuarantinedPass::new(&self.model, self.max_tokens)
+            .system(system)
+            .cache_prompt(true)
+            .ask(user);
 
         let response = self.provider.complete(&request, None).await?;
         let text = response.message.text();
@@ -1899,16 +1893,10 @@ impl Learner {
             },
         );
 
-        let request = crate::message::CompletionRequest {
-            model: self.model.clone(),
-            system: Some(learner_frames(domain)),
-            messages: vec![Message::user(user)],
-            tools: Vec::new(),
-            max_tokens: self.max_tokens,
-            effort: None,
-            thinking: false,
-            cache_prompt: true,
-        };
+        let request = crate::quarantine::QuarantinedPass::new(&self.model, self.max_tokens)
+            .system(learner_frames(domain))
+            .cache_prompt(true)
+            .ask(user);
 
         let response = self.provider.complete(&request, None).await?;
         let text = response.message.text();
