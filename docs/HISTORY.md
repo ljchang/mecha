@@ -1762,6 +1762,42 @@ No surface may offer a verb the policy cannot recognise, so the follow-on is
 a whole question. Proven end to end on a real calendar event, which was
 created by a spoken "yes" and then deleted.
 
+**2026-08-26 — the board learned to delegate.** Phases 1–4a of
+`docs/TASK-AGENT-DESIGN.md`, plus the graph change underneath them. `mecha
+tasks work <id>` turns a board item into a seeded run in its own session —
+outbox-bound, its status moved by the harness, and unable to close its own
+task because `kg_task_update` leaves the model's surface and stays with the
+harness (`setup::withhold_tool`, which hands the tool back so one Arc serves
+D5 and D6 at once). A run that needs a decision **ends** rather than waiting:
+`mecha_core::questions` is the outbox's inbound twin, the run cancels its own
+token, and `mecha questions answer` resumes the session with the owner's
+words as the next turn — so nobody holds one of four llama-server slots
+overnight for an answer that comes at breakfast. `/queues` gained a sixth row
+and doctor watches it at 24h, shorter than the outbox's 48h because a pending
+draft is finished work sitting safely while an unanswered question is a
+delegation frozen mid-flight.
+
+The graph side made the board able to say *who* has a task: `waiting_on` and
+`session` on `kg_task_update`, an `agent` node kind — deliberately not a
+person, because delegation is not assignment and a person node would answer
+"who is responsible" with the wrong kind of thing — and `@owner`, so a
+harness never carries the owner's name. D9 was **reversed while building
+it**: the design proposed a `worked_on` fact, and an episode turned out to
+exist only for the runs the distiller judged worth remembering, which are
+precisely not the runs a person needs help finding. The session id is a task
+attribute instead, and is strictly the more general of the two — the
+episode's idempotence key *is* the session id.
+
+On the web surface: *ask mecha*, *stop*, *open the conversation*, an agent
+chip derived from the board rather than self-reported, `task:` sessions in
+the chat drawer, and the plan rendered in both places you watch a run —
+reading the live tool in chat and the transcript on the card, because a
+`tasks work` run is a separate process and its list is not in `serve`'s
+memory. `TodoTool` was keyed per run and taught to rehydrate from a
+transcript on the way (D14/D15), which is what made the card possible at all.
+Two code reviews at high effort ran against it; the first found ten things,
+including delegation as a way around D6.
+
 **2026-08-25 (night) — real people out of a public repository.** The
 2026-08-07 history rewrite stripped *operational inventory* and did not touch
 a second kind that kept accumulating afterwards: real people used as
@@ -2972,6 +3008,51 @@ All found by pre-push review or by running it.
   wrong answer is the one you were hoping for.
 
 ### Containment and state
+
+**A tool removed from the parent registry was still reachable through a
+subagent, because the child's copy was made before the removal.**
+`tasks work` withholds `kg_task_update` so a delegated run cannot close its
+own task — but `build_subagent` clones each allowed tool out of the pool into
+a separate registry while the agent is being *prepared*, so removing it from
+the parent afterwards left any profile that allowlisted it holding a live
+handle. A run told "you have no tool that sets status" could simply delegate.
+Found by a review, not by testing, because every test had an empty subagent
+list. The general shape: **a removal only reaches the copies that had not
+been made yet — before trusting one as a control, ask who already took a
+reference.** The fix refuses to start rather than stripping silently, on
+`build_subagent`'s own precedent that a child quietly missing a tool its
+description promises is worse than a loud failure.
+
+**A session recorded the tool list before the tools were changed, so its
+config record described a surface that never existed.** `RunConfig::of`
+snapshots `agent.registry()` at call time, and both task entry points
+appended the record *before* withholding `kg_task_update` and inserting
+`ask_user` — so the transcript claimed a run had the tool it had been denied
+and lacked the one it used, and `mecha replay` would rebuild the opposite
+surface. Found while trying to *prove* the withholding had happened and
+discovering the evidence disagreed with the code. The lesson: **a record that
+snapshots live state has to be written after the state is final, and a record
+of the wrong state is worse than no record** — the wrong one is believed.
+
+**Seeding one row of data in a migration broke encrypt, decrypt and fork.**
+The graph's V020 seeds an `agent-mecha` node so a task can be delegated on a
+graph nobody has hand-populated. Every copy path runs migrations on the
+*target* first and then copies the source's rows in, so the target already
+held the row the source was about to send and the straight `INSERT` hit the
+primary key. Caught by `test_copy_tables_covers_schema`'s neighbours rather
+than the canary itself, and confirmed by running them on `main` first. The
+general shape: **seeding schema is free and seeding data is not, wherever a
+copy or fork path exists** — `nodes` joined the `INSERT OR IGNORE` pass that
+`predicate` had been in all along, for one row.
+
+**A "must already exist" check that mutated before it validated cleared the
+real answer on a typo.** `set_task_waiting_on` retired the old `waiting_on`
+fact and then resolved the new name, so `--waiting-on Nadai` did not merely
+fail — it turned "Nadia owes me this" into "nobody owes me this", with an
+error message that mentioned neither. The test written *for* the typo
+protection is what caught the protection being incomplete. **Resolve
+everything that can fail before touching anything that persists**, and where
+a store has no transaction to lean on, that ordering is the whole guarantee.
 
 **`current_exe` of a replaced binary is a path that does not exist, so a
 long-lived TUI lost every child it tried to spawn.** Rust's `current_exe`
