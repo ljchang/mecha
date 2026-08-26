@@ -1099,6 +1099,26 @@ the mechanism and every decision. What it left standing:
     query is a scan of task-titled transcripts for a call to the tool the
     seed named, and pasting the context stays available if runs stop
     following it.
+  - **A captured task's *name* is untrusted text, and the seed cannot fix
+    it.** D4 withholds the pointer's `label` because a subject line is prose
+    somebody else composed — but `mail task` defaults the task **name** to
+    the classifier's `one_line`, falling back to the raw subject
+    (`commands/mail.rs:1947`), so a default capture puts a model's paraphrase
+    of a stranger's mail at the top of a privileged run's opening
+    instruction. The front door's own rule is that *a paraphrase of an
+    injection is the injection rearranged*, and this is that rule's own
+    counterexample sitting one store over. Found by the PR reviewer on #68,
+    not by the tests — which passed because the fixture's name and label
+    differ, and in production they usually will not.
+    **Not fixable in the seed**: the name is what the task *is*, and a run
+    that cannot see it cannot work it. So the question is what capture should
+    default to, and the options are worth pricing before one is picked —
+    require `--name` and refuse to default (safest, and friction on the verb
+    that exists to be cheap), keep the default but mark a derived name on the
+    record so the seed can say where it came from, or leave it and accept
+    that a delegated run's subject line is attacker-influenced. Pre-existing
+    since capture shipped 2026-08-26; nothing regressed, and it is written
+    down here because `CLAUDE.md` previously read as though the boundary held.
   - **Front-loading landed as prose, not as a parked question, on the one
     run that had questions to ask.** The mail run ended `completed` with six
     numbered decisions in its final answer and **zero `ask_user` calls**,

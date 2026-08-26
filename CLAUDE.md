@@ -883,8 +883,16 @@ reader when the capture is mail, and whichever of `kg_search` / `kg_entity` /
 if undone. **The pointer, never the prose** — `captured_from` can point at
 mail, and a pasted body would arm `untrusted` before the run's first turn and
 put attacker-controlled bytes in a privileged run's opening instruction, so
-the seed carries kind/id/account/timestamp and never the subject line; the
-bytes arrive as a tool result the interlock accounts for.
+the seed carries kind/id/account/timestamp and never the pointer's `label`;
+the bytes arrive as a tool result the interlock accounts for. **The residual
+is the task's own name, and it is capture's rather than the seed's**:
+`mail task` defaults the name to the classifier's `one_line` and then to the
+raw subject, so a default capture puts a model's paraphrase of somebody
+else's mail at the top of a privileged run's instruction — and the front
+door's own rule is that a paraphrase of an injection is the injection
+rearranged. The name has to reach the run, so this is not fixable by
+withholding; it is a question about what capture should default to, and it is
+named in HANDOFF rather than papered over here.
 **Registered names, resolved off the registry after every narrowing** — this
 box registers the graph tools bare and mail as `mail__mail_get_thread`, so a
 bare name in the seed would be a call the run cannot dispatch, which is the
