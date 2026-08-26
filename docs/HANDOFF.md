@@ -109,14 +109,14 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,500 tests**, no failures — measured 2026-08-26 evening on `main`
-at `efa04e2`, on a **clean tree**, after five branches merged by a second
-lane and one by a third. That clause is load-bearing and has been wrong
+Expect **1,505 tests**, no failures — measured 2026-08-26 late evening on
+`main` at `9fbc8bd` plus D4's five uncommitted `commands/tasks.rs` tests.
+That last clause is the honest version of a clause that has been wrong
 twice: a count taken while any lane's work sits uncommitted in this shared
-checkout describes one disk and no commit. Breakdown: **515** in `mecha-cli`
-with 1 ignored, **760** in `mecha-core`, 6 + 9 in its two integration
-suites, **133** in `mecha-mail` plus 1 in a mail binary, **75** in
-`mecha-slack`, and 1 doctest.
+checkout describes one disk and no commit, so say which. Breakdown: **520**
+in `mecha-cli` with 1 ignored, **760** in `mecha-core`, 6 + 9 in its two
+integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75**
+in `mecha-slack`, and 1 doctest.
 
 Clippy and rustfmt are clean at that commit, **measured locally**. CI is a
 separate claim and a weaker one: `efa04e2` has **no successful run** — its
@@ -181,17 +181,17 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 683 |
-| `mecha-cli` unit | 466 (1 ignored) |
+| `mecha-core` unit | 760 |
+| `mecha-cli` unit | 520 (1 ignored) |
 | `mecha-mail` unit | 129 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
 | doctest | 1 |
 
-Measured 2026-08-25 on the merged tree at e3af3b6. The table had drifted
-two counts behind the prose above it, which is the failure mode of stating
-one fact twice — read the prose if they ever disagree again, and fix the
-table.
+Measured 2026-08-26 late evening, same tree as the prose above. The table
+had drifted two counts behind that prose once already, which is the failure
+mode of stating one fact twice — read the prose if they ever disagree again,
+and fix the table.
 
 The integration tests need docker (with `debian:stable-slim` and `python:3-slim`
 pulled) and `python3`; without them they skip and say so. CI sets
@@ -1083,37 +1083,20 @@ the mechanism and every decision. What it left standing:
   The return path and D16's card states closed on 2026-08-26 (second pass);
   B1 and B2 closed the same evening, both **amended first** — re-reading
   them against the shipped row changed both, and the amendments sit beside
-  the originals in the design doc. **What is left is one item: D4.**
-  - **D4 / Phase 5 — the context assembler**, and it needs less building
-    than the design implies. Three things are already true that D4 predates.
-
-    **The run does not know its task came from anywhere.** `kg_task_list`
-    returns `captured_from` on every row — the provenance pointer that
-    shipped 2026-08-26 — and `work_prompt` never mentions it, so a task
-    captured from an email reaches the agent as a bare sentence while
-    `mecha tasks source <id>` sits on the CLI able to fetch the thread.
-    `defer_until` is dropped too. Naming both is a deterministic line each
-    and makes a shipped feature reachable.
-
-    **D4 assumes context is assembled *into* the prompt, and the run can
-    already fetch it.** `kg_search`, `kg_related`, `kg_entity` and
-    `kg_timeline` are on its surface. Pasting the project neighbourhood
-    costs prefix tokens on every turn of every run; naming what exists and
-    how to reach it costs a sentence — `skill.rs`'s progressive disclosure,
-    applied one door over. So: point at it, then measure whether runs
-    follow the pointer, and only paste if they do not.
-
-    **A constraint D4 does not state, which decides the shape.**
-    `captured_from` can point at *mail*. Pasting a body into the seed would
-    arm `untrusted` before the run's first turn **and** put
-    attacker-controlled bytes into a privileged run's opening instruction —
-    the front door's argument exactly. The seed carries the **pointer**,
-    never the content, so the bytes arrive as a tool result the interlock
-    accounts for. Any assembler inherits that rule.
-
-    D4's own line — *"measured in Phase 4, not assumed in Phase 1"* — was
-    never honoured, and now can be: `RunStats` on task runs exists as of
-    2026-08-26.
+  the originals in the design doc. **D4 shipped 2026-08-26 (sixth pass) —
+  the seed points at context rather than assembling it into the prompt; the
+  amendment sits beside D4 in the design doc and HISTORY has the narrative.
+  What is left of the arc is one measurement and one deferred decision.**
+  - **Whether runs follow the pointer, which is D4's own acceptance test.**
+    *"Measured in Phase 4, not assumed in Phase 1"* now has one data point,
+    and one is not a result: the first run under the new seed made seven
+    graph calls (`kg_search` ×4, `kg_entity` ×3) on a task naming only a
+    project. The mail half is unexercised live — no task on this board
+    carries a `captured_from` yet, since capture shipped the same day — so
+    whether a run actually follows a mail pointer is untested outside the
+    unit tests. The query is a scan of task-titled transcripts for a call to
+    the tool the seed named; paste the context only if the pointer is being
+    ignored.
   - **D12, the plan gate — decided against as written, on 2026-08-26, and
     the cheap half shipped instead.** Do not build it from the design doc;
     read `work_prompt`'s doc comment in `commands/tasks.rs` first, which
