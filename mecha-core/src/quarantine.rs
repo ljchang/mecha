@@ -6,12 +6,16 @@
 //! still do nothing, because it has no tool to call, no history to poison and
 //! no prefix shared with anything that does.
 //!
-//! That property was established by hand at eight call sites — the front
-//! door's extractor, the mail classifier, the distiller, the reflector, the
-//! learner, the eval judge, the compaction summariser and its validator —
-//! each spelling out `tools: Vec::new()` and a single-element `messages`
-//! vector beside four other fields. Two of them are visibly copies of a
-//! third, down to the comment. A property re-asserted eight times is one
+//! That property was established by hand at nine call sites — the front
+//! door's extractor, the mail classifier, the mail *corrections* reflector,
+//! the distiller, the reflector, the learner, the eval judge, the compaction
+//! summariser and its validator — each spelling out `tools: Vec::new()` and a
+//! single-element `messages` vector beside four other fields. Two of them are
+//! visibly copies of a third, down to the comment, and the ninth was found by
+//! a reviewer rather than by the sweep that produced this module: it lives in
+//! `mecha-cli`, and the sweep had grepped `mecha-core`. Which is the argument
+//! restated — a property held by convention is held only as far as whoever
+//! last looked. A property re-asserted eight times is one
 //! `messages.push` away from not holding, and the failure is silent: the call
 //! succeeds, the answer parses, and the isolation is gone.
 //!
@@ -32,7 +36,10 @@
 //!
 //! Three fields are fixed rather than offered:
 //!
-//! - **`tools` is always empty**, which is the point.
+//! - **`tools` is always empty**, which is the point. The mail corrections
+//!   reflector states the stakes best, in its own comment: *a reflector with a
+//!   tool surface is a reflector that can be talked into using it, and the mail
+//!   it reads is the least trusted input in the system.*
 //! - **`messages` is always exactly one user turn.** Each [`ask`] builds a
 //!   fresh request, so a retry loop that calls it twice sends two isolated
 //!   questions rather than growing a conversation — which is what the
