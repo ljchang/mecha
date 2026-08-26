@@ -1145,3 +1145,83 @@ audio-understanding turns it was always the right model for
 proven: a synthesized "briefly, what is on my calendar today?" came back
 as the owner's actual day — a real `mail`/calendar tool call through the
 shared agent, times spoken as words per D10. The voice assistant works.
+
+**The voice was flat because `exaggeration` defaulted to zero, and zero is
+not neutral (2026-08-26).** The complaint was that mecha sounded dull beside
+ChatGPT's voice, and the first instinct — swap the TTS model — would have
+measured a handicapped baseline. `chatterbox_server.py` set
+`exaggeration: float = 0.0` and `worker.py` never sent the field at all, so
+every utterance since launch went out at the **monotone end** of a 0–1
+scale whose library default is 0.5. The wrapper's comment reads
+"passed through when a client wants them": plumbing, not a tuning decision,
+and 0.0 was picked as a float that looks like *no opinion*. It is an
+opinion, at the bad end. The same shape as a rate over an empty denominator
+printing `0` instead of `—` — a default that renders "unset" as a real
+value, degrading silently, indistinguishable from "this is just how the
+model sounds".
+
+`cfg_weight` was worse: not plumbed at all, so it could not be reached even
+by a client that knew to ask. It is the other half of the pair and moves
+*against* exaggeration — Resemble's expressive recipe is a high
+exaggeration with a **lowered** cfg_weight, because a high one rushes the
+cadence. Both are now bounds-checked on `set_speed`'s clamp-and-refuse rule
+and sent on every request from `TTS_EXAGGERATION` / `TTS_CFG_WEIGHT`
+(0.8 / 0.3). The server's own defaults moved to the library's 0.5 / 0.5:
+two places holding an opinion about how mecha sounds is one too many, and
+the worker is the one that should hold it.
+
+**And a Kokoro reference caps expressiveness however high the knob goes.**
+Chatterbox clones prosodic *style*, not only timbre, so a voice built from
+`make-voices.py` is conditioned on an 82M preset TTS reading deliberately
+meaningless filler — the flattest available source. The script records the
+risk that a synthesized reference *clones badly*; this is a different cost
+and was not recorded. It does not touch the default voice, which is
+Chatterbox's own built-in and no reference file at all — worth knowing
+before diagnosing, because the two failure modes look identical from the
+outside and only one of them was ever in play for `voice="default"`.
+
+`add-vctk-voices.py` is the answer and is deliberately a **second script
+rather than a flag on the first**: these references are recordings of real
+people, where Kokoro's are synthesized, and that difference cuts both ways.
+A real speaker carries prosody a preset TTS never had to give. And consent
+has to be a property of the *source* rather than of anyone's intentions, so
+the corpus is CC BY 4.0, recorded for this purpose, redistributable with
+attribution — written to `ATTRIBUTION.md` beside the voices, where it
+cannot drift from what is installed. Nothing in it takes a URL, and there
+is no argument that would let it cut audio off the internet. The installed
+set is pinned in `CURATED`, not left as an audition list: the voice mecha
+speaks in is a decision, and one living only on somebody's disk is not a
+reviewable one.
+
+The limit found by auditioning all 63 women in the corpus: **VCTK is
+university students reading newspaper sentences** — median age 23, five
+speakers over 26. That is a hard ceiling on a lower, settled, conversational
+register, and it is the corpus rather than the settings. If that register is
+wanted later, the move is an expressive/conversational speech dataset, not
+another knob.
+
+**Standing gap: the prosody ceiling is architectural, not a model choice.**
+The blind Speech Arena has the best open-weight TTS around 1,118 Elo against
+closed leaders at 1,236 — but the gap being *felt* is that ChatGPT's voice is
+speech-to-speech, emitting audio tokens from the model that understood the
+conversation, where a cascaded TTS is handed a finished string and infers
+emotion from punctuation. NVIDIA's `DuplexS2SModel` would close it and is
+unadoptable here for a structural reason rather than a practical one: it
+does not replace the TTS leg, it replaces *mecha* — the thing generating
+audio would no longer be the local model running the agent loop with tools,
+taint and the outbox. Cascaded is the price of an assistant that can read
+your mail, and the ceiling comes with it. The cascaded approximation, not
+built: `exaggeration` is a per-request scalar and the model authored the
+sentence, so it could set expressiveness per reply — as a **bounded value
+the harness parses and clamps**, never inline tags, on `parse_answer`'s rule,
+since reply text can quote untrusted content.
+
+Unwritten from the same session and still owed: Nemotron 3.5 ASR Streaming
+as the named streaming-STT path in §2.1 (cache-aware FastConformer-RNNT, so
+it passes the no-LLM-decoder rule; ~7.07% WER at the published 560 ms
+sherpa-onnx export against Parakeet's 6.32% offline; buys model-side
+endpointing and instant barge-in, not a faster answer), MagpieTTS in §2.2's
+streaming-TTFB lane (357M, ~600 ms/sentence *measured on a DGX Spark* — the
+only candidate with a number on this hardware), and Multitalker Parakeet
+Streaming as the lead that could retire the echo text filter structurally
+rather than by string-matching the bot's own words back out.
