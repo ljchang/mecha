@@ -762,6 +762,26 @@ pub struct RunOutcome {
     /// produced without any, and only one of them tests that summaries carry
     /// the task forward.
     pub compactions: u32,
+    /// How many times a prompt was refused as too large and the run recovered.
+    ///
+    /// Distinct from `compactions`, and the distinction is the whole reason
+    /// this exists. `compactions` counts *summaries*, so an overflow the
+    /// recovery answered with eviction and thinning alone — which is the
+    /// common shape, because those cost no request — incremented nothing and
+    /// was invisible in every store. The harness caught a 400, rebuilt the
+    /// transcript and retried, and no counter anywhere said so.
+    ///
+    /// What it measures is the reactive threshold failing: `compact_at` is
+    /// checked between turns against the *previous* prompt's size, so a turn's
+    /// parallel tool results can take the next request over the window from
+    /// under the threshold. Every recovery is one instance of that, and the
+    /// count is the baseline any change claiming to predict the overflow has
+    /// to be measured against.
+    ///
+    /// Recoveries *attempted*, all of which either succeeded or ended the run:
+    /// a retry that overflows again propagates, so there is no outcome to
+    /// record and no third case to count.
+    pub overflow_recoveries: u32,
     /// False when `usage` is a *lower bound* rather than a measurement.
     ///
     /// A run cancelled mid-stream keeps the input tokens, which arrive in the
@@ -992,7 +1012,14 @@ impl Agent {
         convo: &mut Conversation,
         events: Option<UnboundedSender<AgentEvent>>,
     ) -> Result<RunOutcome> {
-        let mut outcome = self.run_loop(cx, convo, events).await?;
+        // Counted here rather than by the builders, for the same reason the
+        // snapshot below is: the loop returns from six places, and the count
+        // lives in a local behind all of them.
+        let mut overflow_recoveries = 0u32;
+        let mut outcome = self
+            .run_loop(cx, convo, events, &mut overflow_recoveries)
+            .await?;
+        outcome.overflow_recoveries = overflow_recoveries;
         // One place, after every exit. The loop returns from six of them, and
         // a snapshot attached at five is worse than one attached at none —
         // a field that is present for most runs reads as a sampling failure
@@ -1009,6 +1036,7 @@ impl Agent {
         cx: &RunContext,
         convo: &mut Conversation,
         events: Option<UnboundedSender<AgentEvent>>,
+        overflow_recoveries: &mut u32,
     ) -> Result<RunOutcome> {
         // Run-scoped state a tool cannot otherwise see, stamped onto the
         // `ToolCtx` once here rather than at every call site that builds a
@@ -1290,6 +1318,7 @@ impl Agent {
                 let cost = self.cost(&usage);
                 let outcome = RunOutcome {
                     homeostat: None,
+                    overflow_recoveries: 0,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -1345,6 +1374,11 @@ impl Agent {
             // attempted at all.
             let completion = match self.complete(cx, &request, &events).await {
                 Err(e) if is_context_overflow(&e) => {
+                    // Counted before the recovery rather than after it: what
+                    // this measures is the threshold having failed to prevent
+                    // the overflow, which is already true at this line however
+                    // well the rebuild below goes.
+                    *overflow_recoveries += 1;
                     tracing::warn!("prompt overflowed the context window; compacting to recover");
                     // Kept for the recording, as at the threshold site — but
                     // compared at the end rather than pushed per pass, because
@@ -1951,8 +1985,12 @@ impl Agent {
             taint,
             // Filled by `run_in` once, rather than by every builder: the loop
             // has six exit points and a field set at five of them is worse
-            // than one set at none.
+            // than one set at none. `overflow_recoveries` rides the same seam,
+            // and for a second reason — it would arrive here as a tenth
+            // positional `u32` immediately after `compactions`, where a
+            // swapped pair of arguments compiles.
             homeostat: None,
+            overflow_recoveries: 0,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -2089,6 +2127,7 @@ impl Agent {
             blocked_sends,
             taint,
             homeostat: None,
+            overflow_recoveries: 0,
             stop_cause: StopCause::Interrupted,
             compactions,
             cost_usd: self.cost(&usage),
@@ -4102,6 +4141,73 @@ mod tests {
         }
     }
 
+    /// The counter exists to be a *baseline*, so what matters is that it
+    /// survives the trip into `RunStats` — a number the loop knows and the
+    /// record does not is worth nothing to the reader that has to compare
+    /// across runs.
+    #[tokio::test]
+    async fn a_recovered_overflow_is_counted_and_reaches_the_record() {
+        let provider = Arc::new(OverflowScript {
+            turns: Mutex::new(vec![
+                None, // refused as too large
+                Some(assistant(vec![Block::text("done")], StopReason::EndTurn)),
+            ]),
+            seen: Mutex::new(Vec::new()),
+        });
+
+        struct Shared(Arc<OverflowScript>);
+        #[async_trait]
+        impl Provider for Shared {
+            fn id(&self) -> &str {
+                self.0.id()
+            }
+            fn default_model(&self) -> &str {
+                self.0.default_model()
+            }
+            async fn complete(
+                &self,
+                req: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                self.0.complete(req, sink).await
+            }
+        }
+
+        let agent = Agent::new(
+            Box::new(Shared(Arc::clone(&provider))),
+            Registry::new(),
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+            AgentConfig::default(),
+            None,
+        )
+        .unwrap();
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.text, "done");
+        assert_eq!(outcome.overflow_recoveries, 1);
+        // `Some(1)`, never a bare 1: a live run always knows its count, so the
+        // record says so — and that is what separates it from a row written
+        // before the sensor existed, which stays `None`.
+        let stats = crate::session::RunStats::from(&outcome);
+        assert_eq!(stats.overflow_recoveries, Some(1));
+        // A run that never overflowed records `Some(0)` — "the sensor was
+        // here and saw nothing" — which is a different claim from `None`.
+        let clean = crate::session::RunStats::from(&RunOutcome {
+            overflow_recoveries: 0,
+            ..outcome.clone()
+        });
+        assert_eq!(clean.overflow_recoveries, Some(0));
+    }
+
     #[tokio::test]
     async fn overflow_recovery_still_thins_after_a_summary_was_not_worthwhile() {
         // The regression this pins: the first recovery finds nothing worth
@@ -4169,6 +4275,11 @@ mod tests {
         let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert_eq!(outcome.text, "done");
+        // Both recoveries are counted, not just the one that summarised —
+        // which is the whole distinction from `compactions`. Neither overflow
+        // here produced a summary, so `compactions` sees nothing at all.
+        assert_eq!(outcome.overflow_recoveries, 2);
+        assert_eq!(outcome.compactions, 0);
         let seen = provider.seen.lock().unwrap();
         assert_eq!(seen.len(), 4, "both overflows must be retried");
         // The retry after the second overflow carried the thinned result, not
