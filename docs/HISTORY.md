@@ -2143,6 +2143,82 @@ nine, so a level at run end cannot separate a run's own output from what it
 inherited.
 
 
+**2026-08-26 (sixth pass) — the harness stopped finding out by being refused.**
+Rungs 4 and 5 of the goal system, and one measurement that had to exist before
+either could be judged.
+
+Rung 4 made the replay corpus a *draw* rather than a recency slice
+(`harness_probe.rs`), and review caught the two things that decided what it
+measures. `holdout_n` was clamped to the pool while `selection_n` came off the
+unclamped want, so a corpus smaller than asked for went almost entirely to the
+holdout — five held and one selected at the defaults over six eligible
+episodes, which is five sixths of the real-model-run budget spent on the slice
+that cannot decide anything. And headroom was read from `Session::last_outcome`
+while an episode is the *whole session*: `drive_episode` replays every recorded
+user turn and folds each with `absorb`, so the priority signal was sized in a
+different unit from the arms it feeds, and it inverted — nine error-heavy runs
+and a clean tenth scored zero and sorted last. Fixing the second needed a fold
+over recorded rows, and writing a second fold would have been the hazard the
+fold exists to close, so `absorb` split into `of_run` + `merge` with
+`Session::episode_stats` folding through the same `merge`.
+
+Rung 5 is `pressure.rs`. `compact_at` is checked at the top of the loop against
+what the provider charged for the *previous* request — but by then the
+assistant turn and a batch of tool results are already in `messages` and nobody
+has priced them, so the reading the decision is made from describes a list one
+turn out of date. §4.4 of the design proposed predicting from an observed
+growth rate; building it corrected that, because **there is nothing to
+extrapolate**: the un-priced tail is measurable in bytes, and the provider
+re-supplies the byte-to-token conversion every turn by pricing a list whose
+size is known. So the predictor is arithmetic on two measurements — no tuned
+parameter, no model call, which §7.4 requires of anything running during a
+turn.
+
+Four things carry it. The **delta form** anchors on the last real measurement
+and adds only the marginal cost of what changed, which removes the system
+prompt and tool specs from the arithmetic because they are already in the
+anchor. The rate is **clamped into the band a tokenizer can occupy** — never
+below the plain-text rate, never above one token per byte, and not measured at
+all from a delta under 512 bytes. `over` is spelled `reported || predicted` and
+never the prediction alone, which is §7.3's monotonicity as one line of code
+with a property test over a grid of states. And a **rewrite retires the reading
+it invalidated**, which is the one thing here that can move a decision later
+and is not an exception: a reported size is a measurement *of a particular
+message list*, and once eviction rewrites that list the number is not a reading
+of anything.
+
+That last one fixed something that had never worked. After the free passes
+freed space the loop `continue`d, meaning to "give it a turn to take effect
+before paying for a summary" — but it jumped to the top without sending a
+request, `prompt_tokens` is assigned in exactly one place and only after a
+response, and the three passes are idempotent, so the re-entered check saw the
+identical stale value and the summary was paid for anyway one iteration later.
+Measured on the test fixture: **three summary requests, all waste.**
+
+Rung 5 then took the tool-output budget too. `[tools] output_budget_bytes`
+sizes "the gap between the threshold and the window" from the *window*, once,
+at startup; the tracker knows where the transcript actually is, so under
+pressure the cap is `min(configured, affordable)` — a `min`, so it can only
+narrow, and gated on `spill_dir` being set, because `cap_result` relocates
+over-cap bytes to a file the jail admits only when there is somewhere to put
+them. That condition is what §7's table needs to be true and does not state.
+
+And the series moved onto `Conversation`, beside taint. One submission is one
+run in chat and the TUI, so a per-run tracker started empty on every user turn;
+it resets when the model, system prompt or tool surface changes, because an
+anchor is a token count for a byte count under one tokenizer and there is
+nothing to convert it *to*.
+
+Underneath all of it, `context_overflows` on `RunStats` — the measurement that
+had to land first, in its own change, because a baseline established in the
+same commit as the thing it grades is not one. `compactions` counts summaries,
+so an overflow answered by eviction and thinning alone incremented nothing and
+was invisible in every store; the harness caught a 400, rebuilt the transcript
+and retried, and nothing said it had. It is the one counter on `RunStats` typed
+`Option`, because the corpus it is read from spans the commit that introduced
+it and a plain `u32` would read every older row as a run that overflowed zero
+times — quietly diluting the rate it exists to establish.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -2686,6 +2762,48 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**Three tests in one arc passed for reasons unrelated to what they asserted**,
+and each was caught only by running it against the pre-change code rather than
+by reading it. One asserted "no summary was requested" on a transcript too
+short for `worth_compacting`, so neither arm requested one. One drove the loop
+through a provider that reported a hardcoded ten tokens per request instead of
+pricing what it was sent, so every prediction under test was a measurement of
+the fixture. One asserted a series survived a run boundary while the revert
+that was meant to break it still wrote the value back. The general shape:
+**verifying a fix means making the test fail on the old behaviour, and a green
+test proves nothing about which mechanism made it green** — three plausible
+green tests here were measuring an absent precondition, a constant, and the
+half of the change that was left in.
+
+**A test that has to sit between two thresholds needs to assert it is still
+between them.** Pressure high enough to narrow the tool-output budget is also
+pressure high enough to trip the compaction threshold, so the first version
+measured a summary thinning the transcript and reported the first result at 174
+bytes — which reads exactly like the feature not working. The fix was to size
+it deliberately between the two *and* assert `compactions == 0`, so it cannot
+drift back into measuring the other mechanism. Where two mechanisms relieve one
+condition, a test of either must pin the other off.
+
+**The predictive check made the obvious test for the next change impossible,
+and that was the finding.** Sizing a test for the cross-run series by letting
+run 1 grow the transcript with tool calls could not discriminate, because the
+predictive check fires *inside* run 1 the turn before that growth is priced. It
+narrows when a carried anchor is the deciding signal to exactly one situation:
+when the transcript grows **between** runs — a model answering and then a large
+message arriving, which is how a chat session actually gets big. A change that
+makes a test hard to write is sometimes telling you the case is narrower than
+you thought.
+
+**A fresh mtime is not a fresh build.** An installed `mecha` was argued current
+because its mtime post-dated the commit and the tree added no Rust after it —
+both premises true, the inference false. Running `sessions health --json`
+settled it in one command: the binary was the morning's and lacked the arc
+entirely, while the version string read 0.1.15 on both sides of the feature.
+Ask the artifact what it can do; no reconstruction of *when* an install
+happened can answer *what* it contains. The same rule the harness already
+follows against llama-server — ask `GET /props` what is served, never assert
+it.
 
 **A fixture whose node name equalled its own id could not tell a producer
 writing names from one writing ids**, and hid the bug for as long as the
