@@ -130,7 +130,7 @@ struct Observation {
     bytes: usize,
 }
 
-/// The size series for one run. In memory only; nothing here is stored.
+/// The size series for one conversation. In memory only; nothing is stored.
 #[derive(Debug, Clone, Default)]
 pub struct ContextTracker {
     last: Option<Observation>,
@@ -138,11 +138,65 @@ pub struct ContextTracker {
     /// `last` describes a message list that has since been rewritten.
     stale: bool,
     peak_tokens: u64,
+    /// What the anchor was measured under. See [`ContextTracker::carry_into`].
+    surface: Option<u64>,
+}
+
+/// What a request looks like apart from its messages: the model, the system
+/// prompt, and the tool surface.
+///
+/// An anchor is a token count for a byte count *under a particular one of
+/// these*, and it means nothing under another — a different tokenizer prices
+/// the same transcript differently, and a narrowed tool surface changes the
+/// constant part of every request. Hashed rather than held so the tracker
+/// stays a handful of integers.
+pub fn surface_fingerprint<'a>(
+    model: &str,
+    system: Option<&str>,
+    tools: impl Iterator<Item = &'a str>,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    model.hash(&mut h);
+    system.hash(&mut h);
+    for name in tools {
+        name.hash(&mut h);
+    }
+    h.finish()
 }
 
 impl ContextTracker {
     pub fn new() -> ContextTracker {
         ContextTracker::default()
+    }
+
+    /// Carry the series into a new run, or start clean if the request shape
+    /// changed underneath it.
+    ///
+    /// The series lives on the `Conversation` rather than on the run, for the
+    /// reason taint does: it is a fact about the messages, and bundling it with
+    /// them makes the right thing the default. It matters because in `mecha
+    /// chat` and the TUI **one submission is one run** — so a per-run tracker
+    /// started empty on every user turn, and the first request of each turn
+    /// went out unpredicted however heavy the transcript was.
+    ///
+    /// The reset is the other half. An anchor is a measurement under one
+    /// model, one system prompt and one tool surface; `/model` replaces all
+    /// three and would leave the next prediction extrapolating from a
+    /// tokenizer that is no longer answering. Discarding is the only safe
+    /// response — there is nothing to convert it *to* — and it costs one
+    /// unpredicted turn, which is exactly what every run cost before.
+    ///
+    /// Not fixed by this: a session resumed from disk starts unanchored,
+    /// because a transcript records what runs *cost in total* and never what
+    /// the last request weighed. It predicts from its second turn on.
+    pub fn carry_into(&mut self, surface: u64) {
+        if self.surface != Some(surface) {
+            *self = ContextTracker {
+                surface: Some(surface),
+                ..ContextTracker::default()
+            };
+        }
     }
 
     /// Record what the provider charged for a list of a known size.
@@ -463,6 +517,45 @@ mod tests {
         assert_eq!(t.predict(30_000), Some(11_000));
         // And a rewrite that freed too little still compacts.
         assert!(t.over(20_000, 58_000));
+    }
+
+    /// The gap this closes: one submission is one run in chat and the TUI, so
+    /// a per-run series was empty at the top of every turn.
+    #[test]
+    fn the_series_survives_a_run_boundary_under_the_same_surface() {
+        let surface =
+            surface_fingerprint("opus", Some("be helpful"), ["fs_read", "shell"].into_iter());
+        let mut t = ContextTracker::new();
+        t.carry_into(surface);
+        t.observe(50_000, 150_000);
+
+        // Next run, same everything.
+        t.carry_into(surface);
+        assert_eq!(t.reported(), Some(50_000), "the anchor is still there");
+        assert_eq!(t.predict(153_000), Some(51_000), "and still predicts");
+    }
+
+    /// And is discarded when it would be extrapolating from a tokenizer that
+    /// is no longer answering.
+    #[test]
+    fn a_changed_request_shape_discards_the_anchor_rather_than_converting_it() {
+        let base = ["fs_read", "shell"];
+        let before = surface_fingerprint("opus", Some("be helpful"), base.into_iter());
+        let mut t = ContextTracker::new();
+        t.carry_into(before);
+        t.observe(50_000, 150_000);
+
+        for after in [
+            surface_fingerprint("haiku", Some("be helpful"), base.into_iter()),
+            surface_fingerprint("opus", Some("be terse"), base.into_iter()),
+            surface_fingerprint("opus", Some("be helpful"), ["fs_read"].into_iter()),
+        ] {
+            let mut switched = t.clone();
+            switched.carry_into(after);
+            assert_eq!(switched.reported(), None, "the anchor is gone");
+            assert_eq!(switched.predict(153_000), None, "not converted, discarded");
+            assert_eq!(switched.peak_tokens(), 0, "and the run's peak with it");
+        }
     }
 
     #[test]
