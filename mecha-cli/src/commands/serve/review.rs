@@ -358,6 +358,45 @@ pub async fn groups(State(state): St, Query(q): Query<GroupsQuery>) -> Response 
 }
 
 #[derive(serde::Deserialize)]
+pub struct ItemsQuery {
+    /// Candidate ids, comma-separated, in the order to show them — a
+    /// similarity group's members, leader first.
+    pub ids: String,
+}
+
+/// GET /api/queue/items?ids=… — the named candidates, in full.
+///
+/// The way into a group without covering it: a group verdict is one
+/// keystroke over every member, which is right when they repeat and wrong
+/// when they merely *rhyme* — seven near-repeats naming three different
+/// children are contradictory facts a single Accept would assert together.
+/// So the members are readable one at a time, and each verdict there is a
+/// plain verdict on one candidate: no cascade, nothing labeled, one human
+/// decision per fact.
+///
+/// **A named set, re-fetched by id — never a redraw.** The set is what the
+/// sitting is about (the TUI's rule at the same depth), so this route takes
+/// ids and has deliberately no sampling parameter: a second draw here would
+/// answer a question nobody asked and quietly change which items a person
+/// believes they have judged.
+pub async fn items(State(state): St, Query(q): Query<ItemsQuery>) -> Response {
+    let ids = q.ids.trim();
+    // An empty list would reach the CLI as `--ids ""` and come back as the
+    // whole class head — a listing where the caller asked for a named set.
+    if ids.is_empty() || !ids.split(',').all(|p| p.trim().parse::<i64>().is_ok()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "ids must be a comma-separated list of candidate ids\n",
+        )
+            .into_response();
+    }
+    match self_json(&state, &["review", "items", "--ids", ids, "--json"]).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
 pub struct SampleBody {
     pub proposer: Option<String>,
     pub predicate: Option<String>,

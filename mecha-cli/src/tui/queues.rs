@@ -350,6 +350,19 @@ pub fn review_from_json(raw: &str) -> anyhow::Result<Vec<ReviewRow>> {
         .collect())
 }
 
+/// A bind target being typed, and the candidate it will bind.
+///
+/// `b` takes the graph's top suggestion, which is the whole answer when the
+/// subject is a name the graph *almost* knows. It is no answer at all when
+/// there is nothing to suggest — `suggest_entities` matches names, so a
+/// subject that is not name-shaped can never produce one, and the graph's
+/// own refusal says what to do instead: *name a target with --to*. Nothing
+/// here could, so the key that surfaced the error could not act on it.
+pub struct BindPrompt {
+    pub id: i64,
+    pub buffer: String,
+}
+
 pub struct QueuesModal {
     pub level: Level,
     /// Rows and verbs for the generic review level, set when it is entered.
@@ -393,6 +406,10 @@ pub struct QueuesModal {
     /// The mechanism the candidate list is narrowed to, if any.
     pub filter: Option<String>,
     pub status: Option<String>,
+    /// Open while a bind target is being typed. It owns the keyboard: the
+    /// level's own letters are text while it is up, or typing a name with a
+    /// `d` in it would file verdicts.
+    pub bind_to: Option<BindPrompt>,
     pub help: bool,
 }
 
@@ -401,6 +418,7 @@ impl QueuesModal {
         Self {
             level: Level::Queues,
             queues,
+            bind_to: None,
             review: vec![],
             review_source: None,
             review_detail: None,
@@ -574,6 +592,9 @@ impl QueuesModal {
     }
 
     fn key_strip(&self) -> String {
+        if self.bind_to.is_some() {
+            return "the exact display name of the entity · Enter binds · Esc cancels".into();
+        }
         match self.level {
             Level::Review => {
                 if self.review_detail.is_some() {
@@ -592,11 +613,12 @@ impl QueuesModal {
                     .into()
             }
             Level::Groups => {
-                "j/k · Enter items · a/r whole group · b bind · A accept new · [/] threshold"
+                "j/k · Enter items · a/r group · b bind · B bind to… · A accept new · [/] threshold"
                     .into()
             }
             Level::Items => {
-                "j/k · Enter full · a accept · r reject · b bind subject · A accept new · n resample".into()
+                "j/k · Enter full · a/r verdict · b bind · B bind to… · A accept new · n resample"
+                    .into()
             }
         }
     }
@@ -633,8 +655,10 @@ impl QueuesModal {
         let width = 122u16.min(frame.area().width);
         let strip_lines = strip_height(&strip_text, width.saturating_sub(2));
         // Status occupies a line when present, so it is reserved with the
-        // strip rather than allowed to push the list past the box.
-        let reserved = strip_lines + u16::from(self.status.is_some());
+        // strip rather than allowed to push the list past the box. The bind
+        // prompt is the same deal — one more reserved line while it is up.
+        let reserved =
+            strip_lines + u16::from(self.status.is_some()) + u16::from(self.bind_to.is_some());
         let height = super::list_height_reserving(body.len() as u16, frame.area().height, reserved);
         let area = super::centered(frame.area(), width, height);
         frame.render_widget(Clear, area);
@@ -656,6 +680,28 @@ impl QueuesModal {
             },
         );
         let mut used = lines;
+        // Above the status, because the status is usually the failure this
+        // prompt is answering and the answer belongs under the question.
+        if let Some(p) = &self.bind_to {
+            if used < inner.height {
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            format!("  bind #{} to: ", p.id),
+                            Style::new().fg(Color::DarkGray),
+                        ),
+                        Span::styled(p.buffer.clone(), Style::new().fg(Color::White)),
+                        Span::styled("▏", Style::new().fg(Color::Cyan)),
+                    ])),
+                    Rect {
+                        y: inner.y + used,
+                        height: 1,
+                        ..inner
+                    },
+                );
+                used += 1;
+            }
+        }
         if let Some(s) = &self.status {
             if used < inner.height {
                 frame.render_widget(
@@ -1019,6 +1065,9 @@ const HELP: &str = "
              seed's subject to the graph's closest entity — the group
              shares its subject (that is what made it a group), so one
              bind unblocks the whole cascade
+    B        the same, naming the target yourself. What `b` answers with
+             when it has no suggestion — and a subject that is not
+             name-shaped can never have one
     A        accept creating the subject as a NEW topic node, for a
              subject that is genuinely new rather than misspelled
     A group verdict is ONE human verdict — yours, on the top item — and
@@ -1033,6 +1082,8 @@ const HELP: &str = "
     b        an accept failed on `cannot resolve subject`? bind the
              subject to the graph's closest entity — the old spelling
              becomes an alias, so the fix outlives this item — then a
+    B        the same, naming the target yourself (exact display name).
+             Opens on its own when `b` had nothing to suggest
     A        accept creating the subject as a NEW topic node, for a
              subject that is genuinely new rather than misspelled
     n        draw a new sample
@@ -1643,6 +1694,24 @@ mod tests {
                 term.draw(|f| m.draw(f)).unwrap();
             }
         }
+        // The bind prompt reserves a third line beside the strip and the
+        // status, which is the arithmetic that goes negative first. A
+        // long target on a narrow box exercises the same line wrapping.
+        m.bind_to = Some(BindPrompt {
+            id: 9281,
+            buffer: "A Rather Long Entity Name Somebody Typed".into(),
+        });
+        for level in [Level::Groups, Level::Items] {
+            m.level = level;
+            for h in 1..=8u16 {
+                for w in [8u16, 30, 130] {
+                    let backend = ratatui::backend::TestBackend::new(w, h);
+                    let mut term = Terminal::new(backend).unwrap();
+                    term.draw(|f| m.draw(f)).unwrap();
+                }
+            }
+        }
+        m.bind_to = None;
         // The item detail, including at sizes where the naive clamp panics,
         // and the emptied-sample fall-through.
         m.level = Level::Items;
