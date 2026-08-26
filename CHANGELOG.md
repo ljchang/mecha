@@ -93,6 +93,20 @@ each simply told you something other than what was true.
 
 ### Fixed
 
+- **A draft that failed to send says why.** A failed release leaves the item
+  pending — the draft is good, the delivery was not — with the reason recorded
+  on it. The page received every other field and not that one, so a draft that
+  could never succeed looked exactly like one nobody had tried yet, and the
+  only signal was `1 of 1 item(s) did not send` in a notice. The reviewer now
+  reads the actual reason on the card, which for the case that found this was
+  a calendar create with no `account` against a mail config with no default.
+
+- **Approving a clean draft is one step, not two.** The confirm sheet earns
+  its place on an armed draft, where it shows the exact arguments — more than
+  the detail view behind it. On a clean draft it showed strictly less than the
+  screen already open, which is the kind of confirmation that teaches people
+  to tap through, and what that trains away is the armed one.
+
 - **One number from `[slack]` no longer requires the whole config to parse.**
   `show_file` loaded the global config at call time to read
   `slack.max_upload_mb`, which made an unrelated config edit surface hours

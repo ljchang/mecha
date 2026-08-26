@@ -209,6 +209,13 @@ fn detail_json(item: &OutboxItem, sources: &[outbox_source::SourceRead]) -> serd
         "body": view.body,
         "other": view.other,
         "edited": item.edited(),
+        // Why the last release attempt failed, when one did. The store has
+        // carried this since failed sends started surviving as pending, and
+        // the page could only ever say "1 of 1 item(s) did not send" — a
+        // reviewer looking straight at an item that cannot succeed, with the
+        // reason on disk two fields away. A queue that cannot say why it is
+        // stuck is a queue that grows.
+        "error": item.error,
         "args": item.args,
         "session_id": item.session_id,
         "sources": sources.iter().map(|s| serde_json::json!({
@@ -826,5 +833,26 @@ mod tests {
         }
         assert!(detail["taint"]["armed"].as_bool().unwrap());
         assert_eq!(detail["args"], item.args, "the exact bytes must ride along");
+    }
+
+    #[test]
+    fn a_failed_send_tells_the_reviewer_why() {
+        // A failed release leaves the item pending with the reason recorded,
+        // and the page used to receive everything about that item except the
+        // reason — so a draft that could never succeed looked identical to
+        // one nobody had tried yet, and the only signal was a summary count
+        // in a notice. The field is the whole fix; the test is here because
+        // dropping one key from a payload is invisible in review.
+        let mut item = item("x", "pending", "2026-08-24T10:00:00Z");
+        assert_eq!(
+            detail_json(&item, &[])["error"],
+            serde_json::Value::Null,
+            "an untried item has no failure to report"
+        );
+        item.error = Some("no default account is set".into());
+        assert_eq!(
+            detail_json(&item, &[])["error"],
+            "no default account is set"
+        );
     }
 }
