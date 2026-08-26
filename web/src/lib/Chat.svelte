@@ -388,9 +388,13 @@
     vSession?.voiceConfig({ speed: Number(value) });
   }
 
-  function startVoice() {
+  // `keep` is the reconnect path: the words already spoken stay on screen,
+  // because the call dropping is not the conversation ending — D3 means the
+  // session outlived the transport, and clearing the pane would say
+  // otherwise to the one person who just watched it fail.
+  function startVoice({ keep = false } = {}) {
     // connect() inside the tap handler — the audio unlock needs the gesture.
-    vEntries = [];
+    if (!keep) vEntries = [];
     vState = { name: 'connecting', label: 'connecting' };
     vSession = createVoiceSession({
       // Same-origin: serve proxies to the loopback runner, so the offer
@@ -413,7 +417,10 @@
           vRestored = false;
         }
         if (!live && voiceOpen) {
-          vState = { name: 'idle', label: 'line dropped' };
+          // Every idle label offers the same way back, because they are all
+          // the same situation to the person looking at them: the call is
+          // gone and the logo is how you get it again.
+          vState = { name: 'idle', label: 'line dropped — tap the logo to reconnect' };
         }
       },
       onBotTurnEnd: () => {},
@@ -423,8 +430,28 @@
     vRestored = false;
     voiceOpen = true;
     vSession.connect().catch((e) => {
-      vState = { name: 'idle', label: `could not connect: ${e?.message ?? e}` };
+      vState = {
+        name: 'idle',
+        label: `could not connect: ${e?.message ?? e} — tap the logo to try again`,
+      };
     });
+  }
+
+  // The state label has said "tap to reconnect" since voice shipped and
+  // nothing was listening: the logo is an <svg role="img">, so the sentence
+  // described an affordance that did not exist. Ending the dead session
+  // first is the part that is not just wiring — `startVoice` overwrites
+  // `vSession`, so reconnecting without this leaves the previous peer
+  // connection and its microphone track open for the life of the page.
+  function reconnectVoice() {
+    if (vState.name !== 'idle') return;
+    try {
+      vSession?.end();
+    } catch {
+      // Already dead is the normal case here; it is what we are recovering from.
+    }
+    vSession = null;
+    startVoice({ keep: true });
   }
 
   let vMuted = $state(false);
@@ -892,18 +919,30 @@
         <span class="chip">speaking into {key === 'main' ? 'your chat' : `“${key}”`} — same conversation, same memory</span>
       </div>
       <div class="voice-stage">
-        <svg viewBox="0 0 63 54" width="112" height="96" role="img" aria-label="mecha {vState.label}">
-          <g fill="var(--accent-700)">
-            <path d="M0 0h24l7.5 8.5L39 0h24v16H0z" />
-            <path d="M0 20h14v15H0zM49 20h14v15H49zM0 39h14v15H0zM49 39h14v15H49z" />
-            <path d="M14 39v15h13.24zM49 39v15H35.76z" />
-          </g>
-          <path
-            d="M21 24h21v7H21z"
-            class="slot {vState.name}"
-            style:opacity={vState.name === 'listening' ? 0.7 + vLevel * 0.3 : 1}
-          />
-        </svg>
+        <!-- A button, not decoration: the idle label tells people to tap this
+             to get the call back, so it has to be the thing that does it. It
+             is only live when idle, or a tap mid-call would tear down a
+             working line. -->
+        <button
+          class="logo"
+          class:tappable={vState.name === 'idle'}
+          disabled={vState.name !== 'idle'}
+          onclick={reconnectVoice}
+          aria-label={vState.name === 'idle' ? 'reconnect the call' : `mecha ${vState.label}`}
+        >
+          <svg viewBox="0 0 63 54" width="112" height="96" aria-hidden="true">
+            <g fill="var(--accent-700)">
+              <path d="M0 0h24l7.5 8.5L39 0h24v16H0z" />
+              <path d="M0 20h14v15H0zM49 20h14v15H49zM0 39h14v15H0zM49 39h14v15H49z" />
+              <path d="M14 39v15h13.24zM49 39v15H35.76z" />
+            </g>
+            <path
+              d="M21 24h21v7H21z"
+              class="slot {vState.name}"
+              style:opacity={vState.name === 'listening' ? 0.7 + vLevel * 0.3 : 1}
+            />
+          </svg>
+        </button>
         <div class="voice-state">
           <span class="vdot" class:live={vLinked}></span>
           <span>{vState.label}</span>
@@ -1617,6 +1656,21 @@
   .voice-settings.refused .vselect {
     color: var(--hazard);
     border-color: var(--hazard);
+  }
+  .logo {
+    background: none;
+    border: none;
+    padding: 0;
+    display: block;
+    /* The disabled state is the ordinary one — mid-call this is a picture,
+       and it must look exactly as it did before it became a button. */
+    opacity: 1;
+  }
+  .logo:disabled {
+    cursor: default;
+  }
+  .logo.tappable {
+    cursor: pointer;
   }
   .voice-overlay {
     position: absolute;
