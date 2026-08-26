@@ -113,6 +113,46 @@ pub async fn task_work(State(state): St, Json(body): Json<TaskWorkBody>) -> Resp
 }
 
 #[derive(serde::Deserialize)]
+pub struct TaskPlanBody {
+    pub session: String,
+}
+
+/// POST /api/tasks/plan — the plan a task run wrote, read from its transcript.
+///
+/// **Not from the shared agent's todo tool**, and the difference is not an
+/// implementation detail. A chat session runs *in this process*, so its plan
+/// is in memory keyed by the session's jail. A `tasks work` run is a separate
+/// process: nothing of its list is here, and asking the tool would answer
+/// with an empty list for every task on the board.
+///
+/// The transcript is the meeting point, exactly as it is for the board and
+/// the outbox — and `TodoTool::from_transcript` already knows how to read a
+/// plan back out of one, including the compacted case where the `todo` calls
+/// are gone and only the carried block survives. Built for resuming (D15),
+/// reused here without change.
+pub async fn task_plan(State(state): St, Json(body): Json<TaskPlanBody>) -> Response {
+    let _ = state;
+    let id = body.session.trim();
+    if id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which session?\n").into_response();
+    }
+    let found = mecha_core::session::Session::default_dir()
+        .and_then(|dir| mecha_core::session::Session::find(&dir, id))
+        .and_then(|path| mecha_core::session::Session::load(&path));
+    match found {
+        Ok((_, convo)) => Json(serde_json::json!({
+            "todo": mecha_core::tool::todo::TodoTool::from_transcript(&convo.messages)
+                .unwrap_or_default(),
+        }))
+        .into_response(),
+        // A session that cannot be read is not a task with no plan. The page
+        // shows nothing either way, but saying which is which keeps a broken
+        // store from reading as a quiet one.
+        Err(e) => (StatusCode::NOT_FOUND, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
 pub struct TaskStopBody {
     pub task: String,
 }
