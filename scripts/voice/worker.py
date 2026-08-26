@@ -15,6 +15,9 @@ The three legs are env-configurable base URLs (D6):
     MECHA_VOICE_TTS_VOICE  voice name for the TTS leg (start value; the
                       page can change it per session)
     MECHA_VOICE_TTS_SPEED  speaking rate, 0.5-2.0 (start value, likewise)
+    MECHA_VOICE_TTS_EXAGGERATION  emotion intensity, 0.0-1.0
+    MECHA_VOICE_TTS_CFG_WEIGHT    guidance weight, 0.0-1.0 (lower = more
+                      expressive pacing; it moves *against* exaggeration)
 """
 
 import os
@@ -55,6 +58,18 @@ TTS_SPEED = float(os.environ.get("MECHA_VOICE_TTS_SPEED", "1.0"))
 # 4x and learn it was refused mid-sentence is a worse control than one
 # that cannot ask.
 MIN_SPEED, MAX_SPEED = 0.5, 2.0
+
+# Chatterbox's expressiveness pair, and the whole reason the voice sounded
+# flat: the serving wrapper defaulted `exaggeration` to 0.0 - the monotone
+# end of the scale, not the neutral middle - and nothing here sent the
+# field at all, so every utterance since launch went out at the minimum.
+# Resemble's expressive recipe raises exaggeration against a *lowered*
+# cfg_weight, because a high one rushes the cadence. Sent on every request
+# rather than left to the server's default: two places holding an opinion
+# about how mecha sounds is one place too many, and the server's is now
+# the library's neutral rather than this one.
+TTS_EXAGGERATION = float(os.environ.get("MECHA_VOICE_TTS_EXAGGERATION", "0.8"))
+TTS_CFG_WEIGHT = float(os.environ.get("MECHA_VOICE_TTS_CFG_WEIGHT", "0.3"))
 
 # Pinned per the build log (docs/VOICE-RESEARCH.md S7): this wording
 # transcribes; "from beginning to end" phrasing makes the model refuse, and
@@ -205,9 +220,13 @@ class LocalTTS(OpenAITTSService):
     another's, and there is deliberately no way to set them globally from
     a message."""
 
-    def __init__(self, *args, speed: float = 1.0, **kwargs):
+    def __init__(self, *args, speed: float = 1.0,
+                 exaggeration: float = TTS_EXAGGERATION,
+                 cfg_weight: float = TTS_CFG_WEIGHT, **kwargs):
         super().__init__(*args, **kwargs)
         self._speed = speed
+        self._exaggeration = exaggeration
+        self._cfg_weight = cfg_weight
 
     @property
     def speed(self) -> float:
@@ -235,6 +254,14 @@ class LocalTTS(OpenAITTSService):
                 "voice": self._settings.voice,
                 "speed": self._speed,
                 "response_format": "pcm",
+                # Not fields of OpenAI's speech API, so they ride in
+                # extra_body rather than being silently dropped by the
+                # typed client - which is how a knob gets plumbed to a
+                # server that accepts it and still never arrives.
+                "extra_body": {
+                    "exaggeration": self._exaggeration,
+                    "cfg_weight": self._cfg_weight,
+                },
             }
             async with self._client.audio.speech.with_streaming_response.create(
                 **create_params
@@ -260,6 +287,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         base_url=TTS_URL,
         settings=OpenAITTSService.Settings(voice=TTS_VOICE, model="tts"),
         speed=TTS_SPEED,
+        exaggeration=TTS_EXAGGERATION,
+        cfg_weight=TTS_CFG_WEIGHT,
     )
     # The facade ignores the re-sent history (the Conversation is the
     # server's state) and the system prompt rides in mecha's cached prefix,
