@@ -214,9 +214,12 @@ async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Resul
     // task (D6), and it may still need to ask again — a task can take more
     // than one round trip, and the second question is as legitimate as the
     // first.
-    if q.task_id.is_some() {
-        withhold_tool(prepared.agent.registry_mut(), "kg_task_update");
-    }
+    // Kept, not discarded: the same handle that takes the tool off the
+    // model's surface is what the harness moves the board with (D5/D6).
+    let update = match q.task_id.as_deref() {
+        Some(_) => withhold_tool(prepared.agent.registry_mut(), "kg_task_update").map(|(_, t)| t),
+        None => None,
+    };
     let questions = std::sync::Arc::new(store);
     let asker = std::sync::Arc::new(ParkingAsker::new(
         std::sync::Arc::clone(&questions),
@@ -243,6 +246,19 @@ async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Resul
     )))?;
 
     let staged_before = staged_ids(&q.session_id);
+    let tctx = std::sync::Arc::clone(&prepared.agent.context().tools);
+
+    // The ball comes back to the agent for as long as the run lasts. Without
+    // this the board would say the task is waiting on *you* while a run is
+    // actively working it — the same lie `tasks work` moves the status to
+    // avoid, one door over.
+    if let (Some(update), Some(task)) = (&update, q.task_id.as_deref()) {
+        if let Err(e) =
+            super::tasks::move_task(update, &tctx, task, "waiting", super::tasks::AGENT).await
+        {
+            eprintln!("warning: the board still says you hold {task}: {e:#}");
+        }
+    }
 
     // Recorded before the run, so a run that dies still leaves the question
     // closed and the answer on file. The alternative loses the owner's words
@@ -287,6 +303,18 @@ async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Resul
 
     if let Err(e) = outcome {
         bail!("the resumed run failed: {e:#}");
+    }
+
+    // And back to you when it stops, for the reason it went the other way.
+    if let (Some(update), Some(task)) = (&update, q.task_id.as_deref()) {
+        if let Err(e) =
+            super::tasks::move_task(update, &tctx, task, "waiting", super::tasks::OWNER).await
+        {
+            eprintln!(
+                "warning: the board still says {} has {task}: {e:#}",
+                super::tasks::AGENT
+            );
+        }
     }
 
     let staged: Vec<String> = staged_ids(&q.session_id)
