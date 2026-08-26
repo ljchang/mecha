@@ -1666,6 +1666,129 @@ transcribes as faithful words obeyed by nobody. An orphaned Slack
 tasks/board WIP from an earlier session was adopted, reviewed, and landed
 the same night. The `update` skill gained the web assets as surface 1b.
 
+**2026-08-25 (afternoon) — three things the phone could not do, reported
+from the phone.** All three were found by using it, and the pattern under
+two of them was the same: **a surface reporting success it had not
+verified.**
+
+*Notes could not be opened or edited.* The page listed them and stopped
+there, and the reason was a missing key rather than a missing button:
+`kg_notes` returned each episode's `uid`, which names the row and cannot
+write to it — the graph's episode key is `(source, source_id)`, and
+re-upserting under that is an update. Without it the best any surface could
+do was capture a second note beside the first. The graph now returns
+`source_id` too, `mecha kg note --edit <source_id>` is the verb, and the page
+drives it. The trap was the *other* field: `upsert_episode` writes every
+field it is handed and `occurred_at` defaults to **now**, so an edit that did
+not carry it would move the note to today — a notebook rewriting when things
+happened because somebody fixed a typo. It is read back from the same
+listing the id came from, so no surface can get it wrong on its own.
+
+*A graph verdict could fail with nowhere to go.* Accepting a similarity group
+failed with `cannot resolve subject 'X'` and the page printed it at the top
+of the screen with nothing to do about it — while both ways through had
+existed in the TUI since the modal was written (`b` binds the subject, `A`
+accepts it as a new topic). They are on the card that failed now, offered
+only after a failure, because `--create-subjects` invents a topic node.
+Underneath was the invisible half: **`mecha-graph accept <id>` reports a
+per-candidate failure on stdout and exits zero.** Right for a bulk run where
+one of five hundred cannot resolve; a lie for a page that keyed on the exit
+code, dropped the card it had just sent, and counted it as one of the twelve
+verdicts the sitting claims to describe — while the candidate sat pending.
+The child's report is tallied through `review::tally_report` now, the same
+function the TUI reads.
+
+*Calls ended by themselves*, for two independent reasons and neither was
+network flakiness in the way it looked. The common one is a default nobody
+chose: **pipecat cancels an idle pipeline — and the runner with it — after
+300 seconds**, where idle means neither side produced a speaking frame. Five
+minutes of silence is a conversational pause on a phone, and the log names
+it outright (`11:36:23 connected` → `11:41:50 Idle timeout detected`). The
+timeout is kept, because an abandoned tab otherwise holds VAD, turn
+detection, STT and TTS open on a box with one GPU, but it is raised past any
+pause that is still a conversation and it now *announces itself* over the
+data channel. The rarer one was ours: `voice-core.js` treated ICE
+`disconnected` as loss, when it is the browser reporting that packets have
+stopped arriving *for now*. Only `failed` and `closed` are terminal now.
+Deliberately no ICE restart to shorten the grace window — pipecat's
+`restart_pc` fires the very `disconnected` event this worker cancels the
+pipeline on, so reconnecting would destroy the bot being reconnected to.
+
+**2026-08-25 (evening) — a draft you can say yes to, including out loud.**
+`ReviewMode::Now` — *a draft you just asked for is a draft you are about to
+read* — had been the default in the TUI and Slack since the policy was
+written, and `mecha serve` was the one surface with no release policy at all:
+every staged draft went silently to the outbox and the badge. On the page it
+is now a card, built from `/api/outbox/{id}` rather than from the event that
+announced it — ids on the wire, bytes from the store, because a reviewer
+reading one thing while approving another is the failure the outbox exists to
+prevent.
+
+In a call the same offer has to be spoken and answered aloud, and that is a
+different problem, because the answer arrives as text in the model's own
+medium. **The harness asks and the harness hears**: the offer is composed
+from the store through `DraftView::spoken`, the reply is matched by
+`review_policy::parse_answer` before the request reaches a model, and the
+release decision never enters a context window at any point. It is
+`mecha review`'s oldest rule in new clothes — the graph's tool surface has no
+`kg_accept` because a model that can accept candidates can accept the ones
+its own extractor proposed, and a model that could release drafts could
+release the ones an injection wrote.
+
+Four rules carry it. The match is **whole-utterance, never substring**, and
+the failure direction is the argument: "yes" is an answer, "yes but change
+the time first" is not, and reaches the model as ordinary words with nothing
+released — verified live before it landed. An unanswered offer is *dropped*
+rather than held, or every later "yes" in the call lands on a forgotten
+draft. The draft is **uttered whole or not offered**, because a listener
+cannot skim back over the line where the extra recipient was, so a spoken
+paraphrase is not a smaller review but a different document missing exactly
+the field an injection would add; under 400 characters it is read out entire,
+over it the choice of hearing it is the owner's, and a publish is never
+offered by ear at all because its reviewable object is a rendered page.
+Taint does not block — it is *spoken*, since the listener is the one person
+who cannot re-read the addressing line. And **nothing spoken can discard a
+draft**: rejecting takes a reason the learning miner reads, so "no" parks it
+in the outbox where it already was, and the safe answer to every ambiguity is
+the same one.
+
+Two bugs the tests caught before a person would have. A datetime with no
+offset read out as `2026-08-28T16:00:00`, so timestamps are spoken as dates
+and times **in the offset the string itself carries** — converting one would
+be the wrong-bytes review arriving through the ear. And a reply promised
+"say next to hear it", a word `parse_answer` does not know: every listener
+who said it would have been answered by the model while the draft sat there.
+No surface may offer a verb the policy cannot recognise, so the follow-on is
+a whole question. Proven end to end on a real calendar event, which was
+created by a spoken "yes" and then deleted.
+
+**2026-08-25 (night) — real people out of a public repository.** The
+2026-08-07 history rewrite stripped *operational inventory* and did not touch
+a second kind that kept accumulating afterwards: real people used as
+convenient fixture data. Sixty-six replacements across fifteen files — two of
+the owner's children by name, a spouse in three statements about their
+marriage, four colleagues (two with working addresses), an old personal
+address, a real Slack id, and the tailnet hostname of the machine all of it
+runs on. Sites were three TUI modules, four core modules, twelve
+`results/*.json` benchmark artifacts, and — worst — `website/docs/features/
+queues.md`, which is *published*, and demonstrated similarity grouping using
+the marriage statements. The feature's own screenshot was the private data it
+exists to help review.
+
+None of it was load-bearing: a fixture asserts a shape, and a shape does not
+care whose name is in it. They were there because they were the nearest real
+data to hand while building against a live personal graph, which is exactly
+the pressure that will produce the next one. The tailnet host got a different
+fix, because `--allowed-origins` is load-bearing security config: the tracked
+unit ships a placeholder and the real values moved to gitignored
+`OPERATIONS.md`, and an unedited copy fails in the safe direction — no
+matching origin means the worker refuses every offer, where the wrong way to
+be wrong is a value that parses as permissive. **Forward-only, by the owner's
+ruling**: the names remain in git history and in published crates.io
+tarballs, which a force-push over a public repo would not reach in forks and
+clones anyway, and published crates can only be yanked rather than edited.
+The only actively served copy was the docs site, redeployed and verified.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -3640,6 +3763,57 @@ handled.**
   enumerated the reasoning and never the vocabulary — answering correctly
   about its frame and silently about the reader's, which is the entry's
   thesis one turn further in.
+
+**"Clippy clean" is a statement about one toolchain, and the gate runs a
+different one.** `main` went red for six hours on 2026-08-25 while
+`cargo clippy --workspace --all-targets --all-features` was clean on this
+box, exit 0. CI uses `dtolnay/rust-toolchain@stable` and had clippy **1.98**;
+the box has **1.97**, where `clippy::result_large_err` does not exist — so a
+`Result<String, Response>` whose error variant is a 128-byte axum Response
+passed locally and failed under `-D warnings` upstream. Both facts were true
+at once, which is why the local run felt like evidence. The general shape is
+the same one the `update` skill exists for: **a check is only as current as
+the thing running it**, and a green local gate proves the code passes *your*
+toolchain, never the one that decides. When CI disagrees with a clean local
+run, read the version in the log before reading the code.
+
+**A default nobody chose ended calls for five months of wall-clock silence.**
+Pipecat's `PipelineWorker` cancels an "idle" pipeline — and the runner with
+it — after `idle_timeout_secs`, default **300**, where idle means neither
+side produced a speaking frame. Nothing in this repo set it, so a voice call
+died five minutes into any pause: the log said `Idle timeout detected` and
+the client, which has no way to be told, showed only a peer connection that
+closed. It was diagnosed from the journal in a minute and would have been
+unfalsifiable from the client forever. **Two lessons, and the second is the
+one that transfers.** A framework default is a decision your project made by
+not making it — audit the ones that *terminate* things. And a component that
+stops must be able to say why: the fix raises the timeout, but the part worth
+keeping is that it now announces itself over the data channel before it tears
+the call down.
+
+**A child process that reports failure on stdout and exits zero will be
+believed.** `mecha-graph accept <id>` prints `#id FAILED: cannot resolve
+subject …` and exits **0** — correct for a bulk run where one candidate of
+five hundred cannot resolve, and a lie to every caller that keys on the exit
+code. The phone's queue page did exactly that: it dropped the card it had
+just sent, reported success, and counted the verdict in a sample whose whole
+purpose is to produce a number somebody quotes — while the candidate stayed
+pending. The TUI had already learned this and tallied the report; the web
+surface, written later against the same CLI, had not. **A driver must read
+its child's account of what it did, not its exit code, whenever the child can
+partially succeed** — and when two surfaces drive one verb, the tally belongs
+in one shared function, or the second one relearns it the expensive way.
+
+**An idempotent upsert writes every field it is handed, including the ones
+you did not think about.** The graph's `upsert_episode` defaults
+`occurred_at` to *now* when it is absent, so the first cut of "edit a note"
+would have moved every edited note to today — a notebook silently rewriting
+when things happened because somebody fixed a typo. Caught before shipping
+only because the round-trip was tested against a real note rather than
+asserted about. **When re-upserting to update, enumerate what the write
+touches and carry forward everything you are not deliberately changing**; the
+dangerous fields are the ones with a plausible default, because those fail
+silently rather than erroring.
 
 ## Design notes worth keeping
 
