@@ -7,6 +7,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-08-26
+
+Five surfaces that described themselves wrongly, found by using them. A chip
+that said a run would stop and ask when it would not, a card that printed
+JSON at somebody about to approve it, a queue verdict that could fail with
+nowhere to go, a call that ended without saying why, and a gate that read the
+label the proposer had written on its own change. None of them errored;
+each simply told you something other than what was true.
+
+### Added
+
+- **`allow` is reachable from the web page, and asks before it lets go of the
+  gate.** The page offered `read-only` and `ask` and refused `allow` with a
+  403, on the argument that a surface which can grant blanket permission from
+  a phone is a surface that will, one distracted tap at a time. The argument
+  was right about the risk and wrong about the remedy: the mode was already
+  *renderable* — the state read answered `"allow"` — so it was reachable in
+  display and not in fact. It is a mode now, sticky per session, entered
+  through a confirmation and left in one tap, because a change that only adds
+  a gate should not ask and a change that removes one should. What it does not
+  waive is unchanged: the trifecta interlock still refuses a send once the
+  conversation holds private and outside content, whoever approved what, and
+  outbox-routed calls still stage.
+
+- **A draft can be confirmed where you are standing.** `review now` — a draft
+  you just asked for is a draft you are about to read — had been the TUI and
+  Slack default since the policy was written, and `mecha serve` had no release
+  policy at all, so every staged draft went silently to the outbox and the
+  badge. On the page it is a card built from `/api/outbox/{id}`: ids on the
+  wire, bytes from the store, because a reviewer reading one thing while
+  approving another is the failure the outbox exists to prevent. In a call the
+  offer is spoken from the store and the answer matched before the request
+  reaches a model, so the release decision never enters a context window.
+
+- **A note can be opened and edited from the page.** The notes list listed and
+  did nothing else — a long note was an unclamped wall of text with no way to
+  change it. The verb is `mecha kg note --edit <source_id>`, terminal first
+  and the page driving it, keyed on the graph's `(source, source_id)` episode
+  key so a rewrite is an update that drops the stale embedding rather than a
+  second note beside the first.
+
+- **A failed graph verdict offers the two ways through.** Accepting a
+  similarity group could fail with `cannot resolve subject` and print it at
+  the top of the phone with nothing to do about it. Binding the subject to a
+  real entity and accepting it as a new topic have existed in the TUI since
+  that modal was written; they are offered here on the card that failed, and
+  only after a failure, because inventing a topic node is not a default.
+
+### Changed
+
+- **An approval card shows the call the way a person reads one.** A calendar
+  call leads with its title and when it is — in reading order, not
+  alphabetical, where an event reads end before start — and a letter leads
+  with its addressing and its prose with real newlines. The exact arguments
+  are one tap away. Nothing is hidden: an argument with no header or body
+  shape, which is where `shell` keeps its entire contents, is shown outright,
+  and the whole view is clipped the way the arguments always were so a large
+  write cannot put a file into every open page.
+
+- **The web session's permission mode travels as its own event.** The chip was
+  set by the tap that changed it and by nothing else, so a change made on the
+  phone left the laptop showing the mode it had at load, and a request whose
+  response was lost left the tab that sent it wrong in the other direction.
+  What the chip is for is telling a person whether the next write stops to
+  ask, which makes a stale one a security cost rather than a cosmetic one.
+
+- **A candidate's class is derived from the change, not read off the line the
+  model wrote.** `class` decides whether a proposal reaches a human at all —
+  Security is never measured and never auto-applied. It held until now by
+  coincidence: the closed override set is four benign knobs, so a security
+  change mislabelled as config failed for being outside the set rather than
+  for being security. On 2026-08-25 the nightly proposed disabling a taint
+  control, class `config`. The class is now derived by naming the guarded
+  settings — three config sections that are boundaries, plus every
+  `SecurityConfig` field — and only ever raises toward review.
+
+- **A call no longer ends by itself without saying so.** Pipecat cancels an
+  idle pipeline after 300 seconds, where idle means neither side produced a
+  speaking frame — so thinking, reading, or putting the phone in a pocket
+  killed the call and the client saw only the peer connection close. The
+  timeout is kept, because an abandoned tab otherwise holds VAD, turn
+  detection, STT and TTS open on a box with one GPU, but it is raised past any
+  pause that is still a conversation and it now says why on the way out.
+
+### Fixed
+
+- **One number from `[slack]` no longer requires the whole config to parse.**
+  `show_file` loaded the global config at call time to read
+  `slack.max_upload_mb`, which made an unrelated config edit surface hours
+  later as a file-sending failure in a long-lived process. The value is
+  captured at registration instead.
+
 ## [0.1.14] - 2026-08-25
 
 A day of using the last release rather than building the next one, which is
