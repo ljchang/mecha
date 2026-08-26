@@ -133,13 +133,78 @@ struct Observation {
 /// The size series for one conversation. In memory only; nothing is stored.
 #[derive(Debug, Clone, Default)]
 pub struct ContextTracker {
-    last: Option<Observation>,
-    prev: Option<Observation>,
-    /// `last` describes a message list that has since been rewritten.
+    /// Newest last, capped at [`RECENT`].
+    ///
+    /// Two would do for the prediction — it needs one anchor and one delta —
+    /// but [`ContextTracker::forecast`] answers "how many turns of headroom is
+    /// that", and a single turn is a terrible estimate of a run's pace. The
+    /// turn that read one file and the turn that read eight differ by an order
+    /// of magnitude, and the model is being asked to decide *between steps*,
+    /// which is precisely where the last turn is least representative of the
+    /// next one.
+    recent: std::collections::VecDeque<Observation>,
+    /// The newest entry describes a message list that has since been rewritten.
     stale: bool,
     peak_tokens: u64,
     /// What the anchor was measured under. See [`ContextTracker::carry_into`].
     surface: Option<u64>,
+}
+
+/// How many observations the pace is averaged over.
+const RECENT: usize = 5;
+
+/// What the model is told, when it asks its plan a question.
+///
+/// Every field is a **measurement or arithmetic on measurements** — nothing
+/// here asks a model to estimate its own token use, which is a thing models
+/// are bad at and which would put the least reliable number in the most
+/// load-bearing place. The one judgement left is the one the model is
+/// genuinely better at: how much of its own plan remains.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Forecast {
+    /// What the next request is predicted to cost.
+    pub used: u64,
+    /// The ceiling being measured against — the compaction threshold when
+    /// there is one, else the context window.
+    pub limit: u64,
+    /// `limit - used`, floored at zero.
+    pub headroom: u64,
+    /// Mean growth per turn across the recent window, when there is more than
+    /// one observation to difference.
+    pub per_turn: Option<u64>,
+    /// `headroom / per_turn`. `None` when the pace is unknown or zero — a run
+    /// that has not grown has no meaningful number of turns left, and
+    /// reporting a huge one would be a lie in the reassuring direction.
+    pub turns_left: Option<u64>,
+}
+
+impl std::fmt::Display for Forecast {
+    /// One line, and deliberately a statement of fact with no instruction in
+    /// it. The model is being told what is true, not what to do about it —
+    /// §16's caution is that exposing a resource number invites reasoning
+    /// about resource use, and an imperative would guarantee it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pct = if self.limit > 0 {
+            (self.used as f64 / self.limit as f64 * 100.0).round() as u64
+        } else {
+            0
+        };
+        write!(
+            f,
+            "context: {}k of {}k before compaction ({pct}%)",
+            self.used / 1000,
+            self.limit / 1000
+        )?;
+        match (self.per_turn, self.turns_left) {
+            (Some(rate), Some(turns)) => write!(
+                f,
+                "; recent turns cost ~{}k each, so about {turns} more at this pace",
+                rate.max(1) / 1000
+            ),
+            (Some(rate), None) => write!(f, "; recent turns cost ~{}k each", rate.max(1) / 1000),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// What a request looks like apart from its messages: the model, the system
@@ -201,10 +266,21 @@ impl ContextTracker {
 
     /// Record what the provider charged for a list of a known size.
     pub fn observe(&mut self, tokens: u64, bytes: usize) {
-        self.prev = self.last;
-        self.last = Some(Observation { tokens, bytes });
+        if self.recent.len() == RECENT {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(Observation { tokens, bytes });
         self.stale = false;
         self.peak_tokens = self.peak_tokens.max(tokens);
+    }
+
+    fn last(&self) -> Option<Observation> {
+        self.recent.back().copied()
+    }
+
+    fn prev(&self) -> Option<Observation> {
+        let n = self.recent.len();
+        (n >= 2).then(|| self.recent[n - 2])
     }
 
     /// The transcript was rewritten under the last reading, so it is no longer
@@ -219,7 +295,7 @@ impl ContextTracker {
     /// The last measured prompt size, or `None` when there is not one that
     /// describes the current transcript.
     pub fn reported(&self) -> Option<u64> {
-        (!self.stale).then_some(self.last?.tokens)
+        (!self.stale).then_some(self.last()?.tokens)
     }
 
     /// The largest prompt this run ever actually sent. A measurement
@@ -238,7 +314,7 @@ impl ContextTracker {
     /// missing bound skips a summary that was needed.
     fn tokens_per_byte(&self) -> f64 {
         let floor = 1.0 / BYTES_PER_TOKEN;
-        let (Some(last), Some(prev)) = (self.last, self.prev) else {
+        let (Some(last), Some(prev)) = (self.last(), self.prev()) else {
             return floor;
         };
         let d_bytes = last.bytes as f64 - prev.bytes as f64;
@@ -255,7 +331,7 @@ impl ContextTracker {
     /// measurement to extrapolate from, and a guess made entirely of constants
     /// would be a tuned parameter wearing a prediction's clothes.
     pub fn predict(&self, bytes: usize) -> Option<u64> {
-        let last = self.last?;
+        let last = self.last()?;
         let delta = (bytes as f64 - last.bytes as f64) * self.tokens_per_byte();
         Some((last.tokens as f64 + delta).max(0.0) as u64)
     }
@@ -290,6 +366,48 @@ impl ContextTracker {
         let predicted = self.predict(current_bytes)?;
         let room = limit.saturating_sub(predicted) as f64;
         Some((room / self.tokens_per_byte()) as usize)
+    }
+
+    /// What the model is shown when it looks at its plan.
+    ///
+    /// `None` before the first response — with no anchor there is no reading,
+    /// and inventing one would put a guess where the whole point is that every
+    /// number is measured.
+    ///
+    /// The pace is the mean growth across the recent window, not the last
+    /// turn's: a run alternates cheap turns and expensive ones, and the model
+    /// is deciding *between plan steps*, which is exactly where one turn is
+    /// least representative of the next.
+    pub fn forecast(&self, limit: u64, current_bytes: usize) -> Option<Forecast> {
+        let used = self.predict(current_bytes)?;
+        let headroom = limit.saturating_sub(used);
+
+        // Growth per turn, over the differences the window actually holds.
+        // A rewrite inside the window makes a difference negative; those are
+        // dropped rather than clamped, because a compaction is not a turn
+        // that cost nothing — it is a turn whose cost is not this measure's
+        // to report, and averaging a zero in would understate the pace.
+        let steps: Vec<u64> = self
+            .recent
+            .iter()
+            .zip(self.recent.iter().skip(1))
+            .filter_map(|(a, b)| b.tokens.checked_sub(a.tokens))
+            .filter(|d| *d > 0)
+            .collect();
+        let per_turn = (!steps.is_empty())
+            .then(|| steps.iter().sum::<u64>() / steps.len() as u64)
+            .filter(|rate| *rate > 0);
+
+        Some(Forecast {
+            used,
+            limit,
+            headroom,
+            per_turn,
+            // No pace, no estimate. A run that has not grown has no
+            // meaningful number of turns left, and reporting an enormous one
+            // would be a lie in the reassuring direction.
+            turns_left: per_turn.map(|rate| headroom / rate),
+        })
     }
 
     /// Share of the window the largest request used, for the record.
@@ -620,6 +738,80 @@ mod tests {
             dense_room < prose_room,
             "dense {dense_room} should afford less than prose {prose_room}"
         );
+    }
+
+    #[test]
+    fn the_forecast_is_arithmetic_on_measurements() {
+        let mut t = ContextTracker::new();
+        // Four turns costing 10k, 4k, 6k and 8k more than the one before.
+        for (tok, by) in [
+            (10_000u64, 30_000usize),
+            (20_000, 60_000),
+            (24_000, 72_000),
+            (30_000, 90_000),
+            (38_000, 114_000),
+        ] {
+            t.observe(tok, by);
+        }
+        let f = t.forecast(100_000, 114_000).unwrap();
+        assert_eq!(f.used, 38_000);
+        assert_eq!(f.headroom, 62_000);
+        // (10 + 4 + 6 + 8) / 4 = 7k a turn.
+        assert_eq!(f.per_turn, Some(7_000));
+        assert_eq!(f.turns_left, Some(8));
+    }
+
+    /// A run that has not grown has no pace, and therefore no number of turns
+    /// left — reporting an enormous one would be a lie in the reassuring
+    /// direction, which is the null-run bug in a new place.
+    #[test]
+    fn no_growth_means_no_estimate_rather_than_a_large_one() {
+        let mut t = ContextTracker::new();
+        t.observe(10_000, 30_000);
+        t.observe(10_000, 30_000);
+        let f = t.forecast(100_000, 30_000).unwrap();
+        assert_eq!(f.per_turn, None);
+        assert_eq!(f.turns_left, None);
+        assert_eq!(f.headroom, 90_000, "the headroom is still a fact");
+
+        assert!(
+            ContextTracker::new().forecast(100_000, 30_000).is_none(),
+            "and with nothing measured there is no forecast at all"
+        );
+    }
+
+    /// A compaction inside the window is not a turn that cost nothing.
+    #[test]
+    fn a_rewrite_inside_the_window_does_not_flatten_the_pace() {
+        let mut t = ContextTracker::new();
+        t.observe(10_000, 30_000);
+        t.observe(20_000, 60_000); // +10k
+        t.observe(6_000, 18_000); // a summary landed
+        t.observe(16_000, 48_000); // +10k
+        let f = t.forecast(100_000, 48_000).unwrap();
+        assert_eq!(
+            f.per_turn,
+            Some(10_000),
+            "the two real steps, not averaged with the drop"
+        );
+    }
+
+    #[test]
+    fn the_line_the_model_reads_states_facts_and_asks_for_nothing() {
+        let mut t = ContextTracker::new();
+        t.observe(10_000, 30_000);
+        t.observe(40_000, 120_000);
+        let line = t.forecast(100_000, 120_000).unwrap().to_string();
+        assert_eq!(
+            line,
+            "context: 40k of 100k before compaction (40%); recent turns cost \
+             ~30k each, so about 2 more at this pace"
+        );
+        // No imperative anywhere: the model is told what is true and left to
+        // decide, which is what keeps this a reading rather than a nudge.
+        for word in ["should", "must", "consider", "prefer", "avoid"] {
+            assert!(!line.contains(word), "the line instructs: {line}");
+        }
     }
 
     #[test]

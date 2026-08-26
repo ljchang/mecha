@@ -168,6 +168,16 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         output_budget_bytes: cfg
             .tools
             .resolved_output_budget(provider_cfg.context_window),
+        // The `compact` tool's channel to the loop. `Some` only when this run
+        // has a compaction threshold at all: `[agent] compact_at_tokens` is
+        // off by default and derives from the window, so a provider that
+        // declares no window has compaction disabled — and paraphrasing
+        // somebody's conversation because it got long is their decision, not
+        // one a tool may take on their behalf.
+        compact_requested: cfg
+            .agent
+            .compact_at(provider_cfg.context_window)
+            .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))),
         ..ToolCtx::default()
     };
 
@@ -619,6 +629,13 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     // config may have disabled the tool, and then there is nothing to watch.
     // Before subagents are built, so a child that allowlists `todo` shares
     // the same list.
+    // `compact` exists only where compaction does, on `web_search`'s rule: a
+    // tool that can only ever answer "not enabled here" is worse than no tool,
+    // and it would cost a slot in every prompt to say so.
+    if ctx.compact_requested.is_some() {
+        registry.insert(Arc::new(mecha_core::tool::builtin::CompactTool));
+    }
+
     let todo = registry.get("todo").is_some().then(|| {
         let handle = Arc::new(mecha_core::tool::todo::TodoTool::new());
         registry.insert(Arc::clone(&handle) as Arc<dyn mecha_core::tool::Tool>);

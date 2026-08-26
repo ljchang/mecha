@@ -498,7 +498,24 @@ impl Tool for TodoTool {
             .lock()
             .unwrap()
             .insert(ctx.workspace.clone(), plan);
-        Ok(ToolOutput::ok(format!("{rendered}{note}")))
+        // The headroom reading, on the one result where it changes a
+        // decision. Not the turn tail and not the system prompt: the tail
+        // would leave one stale reading per turn in an append-only transcript
+        // — the distractor shape `evict_superseded_results` exists to remove —
+        // and the system prompt sits inside the cached prefix, so a per-turn
+        // value there re-pays the whole thing including the tool specs. Here
+        // it costs nothing on any turn that does not touch the plan, and an
+        // earlier `todo` result is superseded by this one anyway.
+        //
+        // Absent when the run has no compaction threshold or has not sent a
+        // request yet — a missing line is right where there is no measurement,
+        // and inventing one would put a guess in the one place every other
+        // number is measured.
+        let context = match &ctx.context {
+            Some(f) => format!("\n\n{f}"),
+            None => String::new(),
+        };
+        Ok(ToolOutput::ok(format!("{rendered}{note}{context}")))
     }
 }
 

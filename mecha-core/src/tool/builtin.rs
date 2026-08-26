@@ -969,3 +969,80 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+/// Summarise the middle of the transcript now, rather than when the threshold
+/// says so.
+///
+/// **The one tool whose whole effect is on the harness.** It rewrites nothing
+/// itself — a tool has no access to the transcript — it sets the flag the loop
+/// reads between turns, on `cancel`'s precedent. `docs/GOAL-SYSTEM-DESIGN.md`
+/// §7's table puts the compaction threshold in the row with **no adversary**,
+/// where a disposition may take over from a constant outright; this is that
+/// takeover, and the model is the disposition.
+///
+/// Three decisions:
+///
+/// - **It only ever adds a compaction.** The loop's condition is `asked ||
+///   over(...)`, so the structural floor is untouched and no reasoning the
+///   model does — or is steered into by something it read — can make a run
+///   compact *later* than it would have. §7.3's monotonicity, and the reason
+///   handing this decision over is safe rather than merely convenient. The
+///   lever an attacker gets points at "compact too eagerly", which is
+///   annoying and visible.
+/// - **It is not approved and not `destructive`.** Compaction is lossy but not
+///   irreversible: the loop snapshots each pre-rewrite state onto
+///   `Conversation::rewritten`, the session records them, and `recall`
+///   searches the union of everything the transcript ever held. A
+///   confirmation on a routine reversible action is what teaches people to
+///   approve without reading, which is what the outbox's confirmations then
+///   have to fight.
+/// - **No arguments.** Nothing about *how* to compact is the model's to
+///   choose — the cut point has to be legal, and `compact.rs` is the pure,
+///   unit-tested code that decides where. All the model contributes is
+///   *when*, which is the part it knows and the harness does not: how much of
+///   its own plan is left.
+pub struct CompactTool;
+
+#[async_trait]
+impl Tool for CompactTool {
+    fn name(&self) -> &str {
+        "compact"
+    }
+
+    fn description(&self) -> &str {
+        "Summarise the earlier part of this conversation to free context, before starting \
+         the next step of your plan. The `todo` tool reports how much room is left and what \
+         recent turns have cost. Takes effect before your next turn; earlier tool results \
+         are replaced by a summary, and `recall` can still search what they said."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "properties": {}})
+    }
+
+    fn read_only(&self) -> bool {
+        true
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        // Reaches nobody and reads nothing of the user's: it acts on the
+        // conversation the model is already holding. Not `destructive`
+        // either — see the type docs.
+        Capabilities::default()
+    }
+
+    async fn call(&self, _input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+        let Some(flag) = &ctx.compact_requested else {
+            // An expected failure the model can route around, per the
+            // convention: say what is true rather than erroring the run.
+            return Ok(ToolOutput::err(
+                "compaction is not enabled for this run, so there is nothing to request; \
+                 continue without it.",
+            ));
+        };
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(ToolOutput::ok(
+            "Requested. The transcript will be summarised before your next turn.",
+        ))
+    }
+}
