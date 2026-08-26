@@ -1,7 +1,13 @@
 # Remote control — design
 
-Decided 2026-08-20, **unbuilt**. This is the shape to build, written so
-someone can start. `docs/SLACK-DESIGN.md` is the parent — everything about
+**Built 2026-08-20** — `/remote-control` is live in the TUI and the Slack
+connector; `docs/HISTORY.md` records what shipped and `CLAUDE.md`'s *The remote
+control* holds the invariants. The body below is the design as proposed and is
+deliberately not rewritten: the gap between the two is evidence about how the
+built thing came to be shaped that way.
+
+Decided 2026-08-20. This is the shape that was built, written so
+someone could start. `docs/SLACK-DESIGN.md` is the parent — everything about
 the transport, the owner allowlist and the thread state machine lives there
 and is not restated. Where the two disagree about a *live terminal session*,
 this file wins.
