@@ -274,6 +274,12 @@ fn list(store: &OutboxStore, kind: Option<&str>, via: Option<&str>) -> Result<()
     // list: `list` shows resolved items too, and an empty *pending* set is an
     // ordinary morning rather than an error.
     let pending = select(items.clone(), &filter).unwrap_or_default();
+    // Over the same slice the listing describes, so the number and the rows
+    // agree about what is being talked about.
+    let tally =
+        mecha_core::outbox::WritingTally::of(items.iter().filter(|i| {
+            kind.is_none_or(|k| i.kind == k) && via.is_none_or(|t| i.tool.contains(t))
+        }));
     let resolved: Vec<OutboxItem> = items
         .into_iter()
         .filter(|i| i.status != "pending")
@@ -310,6 +316,19 @@ fn list(store: &OutboxStore, kind: Option<&str>, via: Option<&str>) -> Result<()
         for item in &resolved {
             println!("  {}", line(item));
         }
+    }
+    // The one measure here that says something went *well*: drafts the owner
+    // read and sent as written. Omitted rather than shown as 0% when nothing
+    // has been sent — "nothing was edited" and "nothing has gone out" are
+    // opposite findings, and `unchanged_rate` returns `None` for exactly that
+    // reason.
+    if let Some(rate) = tally.unchanged_rate() {
+        println!(
+            "\ndrafting: {} of {} sent as drafted ({:.0}%)",
+            tally.unchanged,
+            tally.sent(),
+            rate * 100.0
+        );
     }
     Ok(())
 }
