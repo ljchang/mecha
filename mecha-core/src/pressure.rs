@@ -216,6 +216,28 @@ impl ContextTracker {
             || self.predict(bytes).is_some_and(|t| t >= limit)
     }
 
+    /// How many bytes of tool output the next turn can take before the
+    /// transcript crosses `limit`.
+    ///
+    /// The other half of §4.4's cliff-to-gradient: the compaction threshold
+    /// decides *when* to summarise, and this decides how much a single turn is
+    /// allowed to add in the first place. They serve one constraint —
+    /// `resolved_output_budget`'s docstring already states it — that "one
+    /// turn's results must not leap the gap between the threshold and the
+    /// window itself". That budget sizes the gap from the *window*, once, at
+    /// startup. This sizes it from where the transcript actually is.
+    ///
+    /// Converted at the measured rate rather than the floor, which is the
+    /// conservative direction: a higher rate buys fewer bytes.
+    ///
+    /// `None` before the first response, where there is no anchor and so no
+    /// claim worth making.
+    pub fn affordable_output_bytes(&self, limit: u64, current_bytes: usize) -> Option<usize> {
+        let predicted = self.predict(current_bytes)?;
+        let room = limit.saturating_sub(predicted) as f64;
+        Some((room / self.tokens_per_byte()) as usize)
+    }
+
     /// Share of the window the largest request used, for the record.
     pub fn peak_pressure(&self, window: Option<u64>) -> Option<f32> {
         let window = window.filter(|w| *w > 0)?;
@@ -465,6 +487,45 @@ mod tests {
             ContextTracker::new().peak_pressure(Some(100)),
             None,
             "and a run that sent nothing has no pressure, rather than zero"
+        );
+    }
+
+    #[test]
+    fn what_a_turn_can_afford_shrinks_as_the_transcript_grows() {
+        let mut t = ContextTracker::new();
+        t.observe(10_000, 30_000); // 1/3 tok per byte
+
+        // 20,000 tokens of room, at 3 bytes a token, is 60,000 bytes.
+        assert_eq!(t.affordable_output_bytes(30_000, 30_000), Some(60_000));
+        // Closer to the threshold, less is affordable — the gradient the flat
+        // budget cannot express.
+        assert_eq!(t.affordable_output_bytes(12_000, 30_000), Some(6_000));
+        // Past it, nothing is: the compaction check has already fired.
+        assert_eq!(t.affordable_output_bytes(9_000, 30_000), Some(0));
+        // And with no anchor there is no claim.
+        assert_eq!(
+            ContextTracker::new().affordable_output_bytes(30_000, 30_000),
+            None
+        );
+    }
+
+    /// A denser measured rate buys *fewer* bytes, which is the direction that
+    /// keeps the turn inside the gap rather than the one that flatters it.
+    #[test]
+    fn a_denser_rate_affords_less() {
+        let mut dense = ContextTracker::new();
+        dense.observe(10_000, 30_000);
+        dense.observe(20_000, 40_000); // 10k tokens over 10k bytes → r = 1.0
+        let dense_room = dense.affordable_output_bytes(30_000, 40_000).unwrap();
+
+        let mut prose = ContextTracker::new();
+        prose.observe(10_000, 30_000);
+        prose.observe(20_000, 60_000); // r floors at 1/3
+        let prose_room = prose.affordable_output_bytes(30_000, 60_000).unwrap();
+
+        assert!(
+            dense_room < prose_room,
+            "dense {dense_room} should afford less than prose {prose_room}"
         );
     }
 
