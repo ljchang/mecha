@@ -143,16 +143,96 @@ impl OutboxItem {
     /// is filtered structurally rather than by a prompt asking the reflector to
     /// use its judgement:
     ///
-    /// - **Sent, and edited.** An unedited release is not a correction (that it
-    ///   is *positive* evidence is a separate, unread signal); a rejected one
-    ///   never went out.
+    /// - **Sent, and edited.** An unedited release is not a correction — it is
+    ///   *positive* evidence, which is [`WritingOutcome::SentUnchanged`] and no
+    ///   longer unread. A rejected one never went out.
     /// - **A message.** A publish's `diff(args_before, args)` is a changed
     ///   filesystem path or visibility flag. Mining it would teach voice rules
     ///   from bookkeeping — the same mistake as learning from
     ///   `"Blocked by a hook:"`, which is machine policy read as a human
     ///   correction.
     pub fn mineable_as_writing(&self) -> bool {
-        self.kind == OutboxKind::Message && self.status == "sent" && self.edited()
+        self.writing_outcome() == Some(WritingOutcome::SentEdited)
+    }
+
+    /// What this item says about the drafting, if it says anything.
+    ///
+    /// **The signed half of the outbox's evidence, and the cheapest signal in
+    /// the goal system** (`docs/GOAL-SYSTEM-DESIGN.md` §5.2). Every evaluative
+    /// signal mecha had was a cost or a correction: `Trigger` is four ways of
+    /// saying a person stepped in, and every `Metric` is phrased so that lower
+    /// is better. So a draft could be recorded as *wrong* and never as *right*,
+    /// and the `writing` domain learned only from what displeased.
+    ///
+    /// This needed no new recording. `args_before` has always been kept beside
+    /// `args`, so "the owner read a letter written in their name and sent it as
+    /// drafted" was already on disk and simply had no reader.
+    ///
+    /// **It is the owner's judgement, not the agent's**, which is what makes it
+    /// immune to the failure that rules out scoring your own work: nothing the
+    /// model does can produce a `SentUnchanged` except drafting something a
+    /// person then chose to send unaltered.
+    ///
+    /// `None` for anything that says nothing about drafting — a pending item
+    /// (undecided), a rejected one (never went out, and its reason is the
+    /// record), or a publish (whose diff is a path and a visibility flag, not
+    /// prose).
+    pub fn writing_outcome(&self) -> Option<WritingOutcome> {
+        if self.kind != OutboxKind::Message || self.status != "sent" {
+            return None;
+        }
+        Some(match self.edited() {
+            true => WritingOutcome::SentEdited,
+            false => WritingOutcome::SentUnchanged,
+        })
+    }
+}
+
+/// What a released draft says about how it was written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WritingOutcome {
+    /// The owner sent it as drafted. Positive evidence.
+    SentUnchanged,
+    /// The owner rewrote it before sending. The correction `reflect` mines.
+    SentEdited,
+}
+
+/// How the drafting has been going, counted over released items.
+///
+/// Deliberately counts and never judges — the threshold for "well enough"
+/// belongs to whoever acts on it, the same division `runlog` keeps.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WritingTally {
+    pub unchanged: usize,
+    pub edited: usize,
+}
+
+impl WritingTally {
+    pub fn of<'a>(items: impl IntoIterator<Item = &'a OutboxItem>) -> WritingTally {
+        let mut tally = WritingTally::default();
+        for item in items {
+            match item.writing_outcome() {
+                Some(WritingOutcome::SentUnchanged) => tally.unchanged += 1,
+                Some(WritingOutcome::SentEdited) => tally.edited += 1,
+                None => {}
+            }
+        }
+        tally
+    }
+
+    pub fn sent(&self) -> usize {
+        self.unchanged + self.edited
+    }
+
+    /// The share of sent drafts that went out as written.
+    ///
+    /// `None` over an empty denominator, never zero. "Nothing was edited" and
+    /// "nothing has been sent" are opposite findings, and rendering the second
+    /// as 0% would report an outbox nobody has used as one whose every draft
+    /// was rewritten — the null-run bug, in the one measure here that is
+    /// supposed to say something went *well*.
+    pub fn unchanged_rate(&self) -> Option<f64> {
+        (self.sent() > 0).then(|| self.unchanged as f64 / self.sent() as f64)
     }
 }
 
@@ -988,6 +1068,87 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The signal that had no reader: the owner read a letter written in their
+    /// name and sent it as drafted. Positive evidence, and deliberately *not*
+    /// a correction — mining it as one would teach voice rules from approval.
+    #[test]
+    fn a_draft_sent_as_written_is_positive_evidence_and_never_a_correction() {
+        let root = scratch("writing-outcome");
+        let store = OutboxStore::open(&root).unwrap();
+        let stage = |kind| {
+            store
+                .stage(
+                    "x__send",
+                    kind,
+                    json!({"body": "Dear Dirk,"}),
+                    Taint::default(),
+                    None,
+                    None,
+                )
+                .unwrap()
+        };
+
+        let mut unchanged = stage(OutboxKind::Message);
+        unchanged.status = "sent".into();
+        assert_eq!(
+            unchanged.writing_outcome(),
+            Some(WritingOutcome::SentUnchanged)
+        );
+        assert!(
+            !unchanged.mineable_as_writing(),
+            "approval is not a correction"
+        );
+
+        let mut edited = stage(OutboxKind::Message);
+        edited.status = "sent".into();
+        edited.args = json!({"body": "Dear Dr Baumgartner,"});
+        assert_eq!(edited.writing_outcome(), Some(WritingOutcome::SentEdited));
+        assert!(edited.mineable_as_writing());
+
+        // Says nothing about drafting: undecided, never went out, or not prose.
+        let pending = stage(OutboxKind::Message);
+        assert_eq!(pending.writing_outcome(), None);
+
+        let mut rejected = stage(OutboxKind::Message);
+        rejected.status = "rejected".into();
+        assert_eq!(rejected.writing_outcome(), None);
+
+        let mut published = stage(OutboxKind::Publish);
+        published.status = "sent".into();
+        assert_eq!(published.writing_outcome(), None);
+
+        let tally = WritingTally::of([&unchanged, &edited, &pending, &rejected, &published]);
+        assert_eq!(
+            tally,
+            WritingTally {
+                unchanged: 1,
+                edited: 1
+            }
+        );
+        assert_eq!(tally.unchanged_rate(), Some(0.5));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// "Nothing was edited" and "nothing has been sent" are opposite findings.
+    /// Reporting the second as 0% would describe an outbox nobody has used as
+    /// one whose every draft was rewritten — the null-run bug, arriving in the
+    /// one measure here whose job is to say something went well.
+    #[test]
+    fn a_rate_over_nothing_sent_is_absent_rather_than_zero() {
+        assert_eq!(WritingTally::default().unchanged_rate(), None);
+        assert_eq!(WritingTally::default().sent(), 0);
+        assert_eq!(
+            WritingTally {
+                unchanged: 0,
+                edited: 3
+            }
+            .unchanged_rate(),
+            Some(0.0),
+            "every draft rewritten is a real zero, and is not the same finding"
+        );
     }
 
     /// The kind is config's to declare, and anything unnamed stays a message —
