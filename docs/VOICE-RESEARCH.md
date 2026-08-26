@@ -81,11 +81,18 @@ extension (`media.ts`, has the MIME rewrite), KiroCrew, agents-party.
 
 For *async* notes and for *turn-based* real-time alike, VAD-segmented
 utterances go to an offline (non-streaming) recognizer — streaming ASR buys
-nothing this design needs.
+nothing this design needs. **Amended 2026-08-26: it buys two things, and
+they were not visible until the loop existed.** §7's turn-start fix left
+barge-in as "finish the phrase and it stops", because an offline transcript
+exists only once the utterance ends; and §3.2's largest hidden latency term
+is VAD silence padding, which a transducer that knows when it stopped
+emitting *tokens* can beat. Neither is an accuracy argument, and neither
+makes the answer arrive sooner — see the Nemotron row.
 
 | Model | WER | Speed | License | Runs via |
 |---|---|---|---|---|
 | **Parakeet TDT 0.6B v3** (NVIDIA) | 6.32% | RTFx ~3,300 | CC-BY-4.0 | ONNX / sherpa-onnx, **CPU is enough** |
+| *Nemotron 3.5 ASR Streaming 0.6B* (NVIDIA, 2026-06) | 7.07% @560ms (6.93 @1.12s, 8.43 @80ms) | 100 concurrent streams/H100 | OpenMDW-1.1 | **sherpa-onnx `OnlineRecognizer`, int8, already-installed runtime** |
 | **Voxtral Mini 3B** (2507) | beats Whisper large-v3 | ~9.5 GB bf16 | Apache 2.0 | **llama.cpp natively (libmtmd, GGUF)**; vLLM |
 | Canary-Qwen 2.5B | 5.63% | RTFx ~418 | CC-BY-4.0 | NeMo only — container-or-bust here |
 | IBM Granite Speech 4.1 2B | 5.33% | RTFx ~231 | Apache 2.0 | transformers |
@@ -106,6 +113,20 @@ GLM-4-Voice (each loses to a standing pick at its own game), Reverb ASR
 (non-commercial license trap), Canary-1B-v2 (the multilingual upgrade path
 if ever needed). Newer Voxtral: *Transcribe 2* batch is **API-only**; the
 open 4B Realtime model's streaming buys nothing for VAD-segmented turns.
+
+**Nemotron 3.5 ASR Streaming is the named streaming path, and it is a
+sibling rather than a rival** (§6.8). Same lab, same size, same
+FastConformer lineage; the only difference is a training-time clamp on how
+far ahead the encoder may look — `att_context_size = [70, 6]`, ~560 ms of
+future instead of the whole utterance. It passes the criterion that
+outranks WER: RNNT, a from-scratch transcription decoder, no LLM. NVIDIA's
+own selection guide splits the two by task and answers "stream audio in
+real-time" with this and only this, which settles the tempting
+alternative — Parakeet TDT v3 has no stateful streaming session in
+sherpa-onnx, and the available workaround is re-decoding a growing buffer,
+which is the *buffered* streaming that cache-aware training exists to
+replace. Also in the guide: **Multitalker Parakeet Streaming** (§6.10),
+which matters here for a reason the ASR framing hides.
 
 **The criterion that outranks WER: the transcriber must not have an LLM
 decoder.** Added 2026-08-24 after the field bug in §7 — a chat model asked
@@ -141,11 +162,16 @@ alternative if utterance latency ever needs the ~instant transcriber.
 | **Chatterbox / Turbo** (Resemble) | ~0.5B | MIT | beat ElevenLabs in blind prefs; 5-sec cloning; ~2–3 GB; streaming forks hit ~80 ms TTFB |
 | **Zonos2** (Zyphra, 2026-06) | 8B MoE (~900M active) | Apache 2.0 | the gap-sweep find: *working* zero-shot cloning, 44.1 kHz; footprint irrelevant at 128 GB unified |
 | **Qwen3-TTS** | 0.6B/1.7B | Apache 2.0 | best cloning+emotion package at low VRAM; ~97 ms streaming |
+| *MagpieTTS Multilingual* (NVIDIA) | 357M | NVIDIA Open Model | zero-shot cloning from 5–30 s; **~600 ms/sentence measured on a DGX Spark**, hybrid streaming claims ~3× on first chunk |
+| *Step Audio EditX* (StepFun, 3B) | 3B | Apache 2.0 (**code** — verify the weights) | #1 open weight on the blind arena, 1,118 Elo; emotion/style/paralinguistic control |
 | NeuTTS Air | 0.5B | Apache 2.0 | cloning **in GGUF/llama.cpp form** — dark horse for this box |
 | Voxtral-4B-TTS | 4B | Apache 2.0 | arena-strong but public checkpoint **omits the speaker encoder** (no local cloning) and wants vLLM-Omni — both wrong for this box |
 
-License traps recorded so they stay avoided: Spark-TTS re-licensed
-Apache→CC-BY-NC-SA after release; Higgs Audio v3 went non-commercial (v2 is
+License traps recorded so they stay avoided: **Fish Audio S2 Pro** (1,110
+Elo, second on the open arena) ships open weights under the *Fish Audio
+Research License* — free for research, commercial use needs a paid licence,
+which is the XTTS-v2/F5-TTS shape wearing an open-weights label;
+Spark-TTS re-licensed Apache→CC-BY-NC-SA after release; Higgs Audio v3 went non-commercial (v2 is
 Apache — do not upgrade blindly); MegaTTS3 withholds its cloning encoder;
 XTTS-v2/F5-TTS non-commercial; VibeVoice was pulled entirely. Piper is
 obsolete — Kokoro beats it on CPU.
@@ -160,7 +186,9 @@ token-level streaming, so first-sound waits on a whole sentence. Qwen3-TTS
 1.7B's ~97 ms dual-track streaming is the claim to test (UNVERIFIED,
 vendor), and the Chatterbox community streaming fork (~80 ms) is the
 cheaper first move because it keeps the container, the voice and the
-cloning references. Audio8 TTS 0.6B (Apache, July 2026, ONNX INT4, CPU
+cloning references. **MagpieTTS is the third candidate and the only one
+with a figure on this hardware** (§6.9) — every other number in this lane
+is an H100 or a vendor claim. Audio8 TTS 0.6B (Apache, July 2026, ONNX INT4, CPU
 zero-shot cloning) is worth knowing about but is demoted by the same fact:
 its selling point is cloning without PyTorch, and PyTorch is already paid
 for here.**
@@ -584,6 +612,51 @@ Phase 1 only.
    absorbs it properly, an all-llama.cpp STT+TTS stack becomes possible
    and the Kokoro sidecar exception (D6) could close. Re-check when
    revisiting the TTS leg — not before.
+8. **Watch item — Nemotron 3.5 ASR Streaming, if turn-taking becomes the
+   complaint.** Not an upgrade: it *loses* ~0.75 WER to Parakeet (7.07% at
+   the published 560 ms export against 6.32% offline) because it sees
+   560 ms of future instead of all of it. It buys model-side endpointing
+   and instant barge-in, and it explicitly does **not** buy a faster
+   answer — speculative generation on a partial transcript is cheap in a
+   normal voice stack and expensive here, because a mecha turn is an agent
+   run with tool calls and taint rather than a discardable completion, and
+   the prompt's cost is a cached prefix that ~15 more tokens do not move.
+   The runtime is already paid for: sherpa-onnx 1.13.6 is installed, k2-fsa
+   published int8 packages against 1.13.4, and the footprint is a wash
+   (641 MB vs. 682 MB). What is *not* paid for is the seam —
+   `parakeet_server.py` is request/response behind `BaseWhisperSTTService`,
+   `SegmentGatedSTT`'s energy gate is a property of a segment and a
+   streaming feed has none, and §7's turn-start fix rests on
+   `run_stt` emitting no frame for empty text, which has to be
+   re-established rather than inherited. Stand it up on a second port
+   beside :8992 and keep Parakeet live while testing: a bench under test is
+   not the standby that §7 removed.
+9. **Watch item — MagpieTTS for the streaming-TTFB lane.** 357M, zero-shot
+   cloning from a 5–30 s reference (the `make-voices.py` output is already
+   that shape), and **~600 ms per sentence measured on a DGX Spark** with a
+   documented hybrid streaming mode claiming ~3× on first-chunk latency —
+   the only candidate in this lane with a number on *this* hardware rather
+   than an H100 or a vendor slide. Two costs: deployment is NIM-container
+   or NeMo, which §2.3's "container-or-bust" verdict makes an unverified
+   claim on sm_121 even though the Chatterbox gauntlet is already paid; and
+   the licence is the NVIDIA Open Model License, not Apache — read it,
+   given how much of §2.2 is a list of licences that turned out not to mean
+   what the badge said. It does not displace the Chatterbox streaming fork
+   as the cheap first move, which keeps the container, the voice and the
+   references untouched.
+10. **Watch item — Multitalker Parakeet Streaming, against the echo
+   filter.** NVIDIA's model for overlapping speech with speaker-adapted
+   decoding, and the reason to care is not meetings: §7 records that a
+   faithful transcriber faithfully transcribes the bot's own speaker when
+   client echo cancellation fails, and the defence is an echo **text**
+   filter — string-matching mecha's own words back out of a transcript, a
+   heuristic sitting on the untrusted-content path. Separating two speakers
+   at the model is the structural version of that fix, and it is streaming,
+   so it would cover barge-in on the same swap. Three things to establish
+   before it is a candidate at all, in this order: whether its decoder is
+   from-scratch (the §2.1 rule, which no scorecard measures), whether an
+   ONNX/sherpa-onnx export exists, and what it costs on CPU. Nemotron 3.5
+   has both of the last two; this may have neither.
 
 
 ---
@@ -1145,3 +1218,134 @@ audio-understanding turns it was always the right model for
 proven: a synthesized "briefly, what is on my calendar today?" came back
 as the owner's actual day — a real `mail`/calendar tool call through the
 shared agent, times spoken as words per D10. The voice assistant works.
+
+**The voice was flat because `exaggeration` defaulted to zero, and zero is
+not neutral (2026-08-26).** The complaint was that mecha sounded dull beside
+ChatGPT's voice, and the first instinct — swap the TTS model — would have
+measured a handicapped baseline. `chatterbox_server.py` set
+`exaggeration: float = 0.0` and `worker.py` never sent the field at all, so
+every utterance since launch went out at the **monotone end** of a 0–1
+scale whose library default is 0.5. The wrapper's comment reads
+"passed through when a client wants them": plumbing, not a tuning decision,
+and 0.0 was picked as a float that looks like *no opinion*. It is an
+opinion, at the bad end. The same shape as a rate over an empty denominator
+printing `0` instead of `—` — a default that renders "unset" as a real
+value, degrading silently, indistinguishable from "this is just how the
+model sounds".
+
+`cfg_weight` was worse: not plumbed at all, so it could not be reached even
+by a client that knew to ask. It is the other half of the pair and moves
+*against* exaggeration — Resemble's expressive recipe is a high
+exaggeration with a **lowered** cfg_weight, because a high one rushes the
+cadence. Both are now bounds-checked on `set_speed`'s clamp-and-refuse rule
+and sent on every request from `TTS_EXAGGERATION` / `TTS_CFG_WEIGHT`
+(0.8 / 0.3). The server's own defaults moved to the library's 0.5 / 0.5:
+two places holding an opinion about how mecha sounds is one too many, and
+the worker is the one that should hold it.
+
+**And a Kokoro reference caps expressiveness however high the knob goes.**
+Chatterbox clones prosodic *style*, not only timbre, so a voice built from
+`make-voices.py` is conditioned on an 82M preset TTS reading deliberately
+meaningless filler — the flattest available source. The script records the
+risk that a synthesized reference *clones badly*; this is a different cost
+and was not recorded. It does not touch the default voice, which is
+Chatterbox's own built-in and no reference file at all — worth knowing
+before diagnosing, because the two failure modes look identical from the
+outside and only one of them was ever in play for `voice="default"`.
+
+`add-vctk-voices.py` is the answer and is deliberately a **second script
+rather than a flag on the first**: these references are recordings of real
+people, where Kokoro's are synthesized, and that difference cuts both ways.
+A real speaker carries prosody a preset TTS never had to give. And consent
+has to be a property of the *source* rather than of anyone's intentions, so
+the corpus is CC BY 4.0, recorded for this purpose, redistributable with
+attribution — written to `ATTRIBUTION.md` beside the voices, where it
+cannot drift from what is installed. Nothing in it takes a URL, and there
+is no argument that would let it cut audio off the internet. The installed
+set is pinned in `CURATED`, not left as an audition list: the voice mecha
+speaks in is a decision, and one living only on somebody's disk is not a
+reviewable one.
+
+The limit found by auditioning all 63 women in the corpus: **VCTK is
+university students reading newspaper sentences** — median age 23, five
+speakers over 26. That is a hard ceiling on a lower, settled, conversational
+register, and it is the corpus rather than the settings. If that register is
+wanted later, the move is an expressive/conversational speech dataset, not
+another knob.
+
+**Standing gap: the prosody ceiling is architectural, not a model choice.**
+The blind Speech Arena has the best open-weight TTS around 1,118 Elo against
+closed leaders at 1,236 — but the gap being *felt* is that ChatGPT's voice is
+speech-to-speech, emitting audio tokens from the model that understood the
+conversation, where a cascaded TTS is handed a finished string and infers
+emotion from punctuation. NVIDIA's `DuplexS2SModel` would close it and is
+unadoptable here for a structural reason rather than a practical one: it
+does not replace the TTS leg, it replaces *mecha* — the thing generating
+audio would no longer be the local model running the agent loop with tools,
+taint and the outbox. Cascaded is the price of an assistant that can read
+your mail, and the ceiling comes with it. The cascaded approximation, not
+built: `exaggeration` is a per-request scalar and the model authored the
+sentence, so it could set expressiveness per reply — as a **bounded value
+the harness parses and clamps**, never inline tags, on `parse_answer`'s rule,
+since reply text can quote untrusted content.
+
+The survey the same session produced is written into the sections it
+belongs in rather than left here: Nemotron 3.5 ASR Streaming in §2.1 and
+§6.8, MagpieTTS in §2.2 and §6.9, Multitalker Parakeet in §6.10. All three
+are watch items on §6.7's terms — re-check when revisiting that leg, not
+before. Recorded because the expensive half of each is the survey, and a
+survey nobody wrote down gets run again.
+
+**Pace, and a bug that passed every check I ran (2026-08-26).** The speed
+control was `librosa.effects.time_stretch` — an STFT phase vocoder, applied
+to finished audio, and phasey enough on speech that the slider was
+unusable. Replaced with WSOLA, which searches for the splice point whose
+waveform best continues the previous frame so pitch periods stay aligned
+across the cut. Hand-rolled in numpy rather than shelled out: the serving
+container has no ffmpeg and no `torchaudio.sox_effects`, and **the image is
+built ad-hoc with no Dockerfile in the repo**, so a dependency there is a
+build step nothing tracks. That absence is real debt and is the fallback if
+the hand-rolled path ever needs to go.
+
+The first implementation chained the analysis pointer off each *adjusted*
+position instead of a nominal one. The perfect continuation sits at
+`prev + Hs`, and at 1.2x the search radius is 10 ms against an `Ha - Hs`
+gap of 3 ms — so the perfect match was always in the window and always won,
+the pointer advanced by the *synthesis* hop every frame, and the output was
+the input at normal speed truncated where the shorter buffer ended. The fix
+is `nominal = k * Ha`, computed from the frame index, with the search as a
+bounded non-accumulating perturbation.
+
+**What makes it worth writing down is that it measured fine.** Duration
+5.63s against a 5.57s target — 1% off. Peak sane, RMS sane, all finite, no
+NaN, bounds still enforced. Every instrument said pass, because "played at
+normal speed and cut off" and "correctly compressed" produce the *same
+shorter file*, and no metadata check can separate them. It was caught by
+the owner listening, in one pass, from the symptom alone. The eval rig's
+oldest rule arriving in a new costume: everything a model says about its
+own work is hearsay, grade the artifact — and a duration is not the
+artifact.
+
+**And the stretch is a repair; pace really lives upstream.** Chatterbox
+clones speaking *style*, so a briskier reference yields a briskier voice
+with no per-utterance DSP at all — `vctk_p276_brisk` is p276's reference at
+tempo 1.18 (paid once, on 17s, by rubberband on the host), rendering ~14%
+quicker natively. The same shape as `exaggeration` one layer up: the knob
+that was reachable operated on the wrong object, and the one that controls
+the property was never spelled as a knob. Measured and negative:
+`cfg_weight` is **not** a speed lever — lowering it to 0.2 and 0.15 made
+the line longer. Cost of the repair path, for the record: 79 ms on a 6.7s
+utterance at 1.2x, and `speed == 1.0` short-circuits to zero, so the
+default pays nothing.
+
+**Voice and speed are remembered per browser**, in `voice-core.js`.
+Deliberately not a server default: `LocalTTS` is per-connection so one
+listener's choice cannot reach another's, and a server-side default would
+spend that property on a problem that is really "this browser forgot".
+What is stored is the server's *reply* and never the request — the rule the
+UI already followed for rendering — which makes a stale preference
+self-healing: a remembered voice whose file has since been deleted is
+refused, the server answers with what it is actually speaking as, and that
+is what gets written back. It survives exactly one connection. Storage
+throws outright in a private window, so every access is guarded and a
+failure degrades to what existed before: ask, and take the answer.
