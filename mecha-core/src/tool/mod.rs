@@ -160,7 +160,8 @@ pub trait Tool: Send + Sync {
     ///
     /// `None` — the default — means "nothing worth carrying", which is the
     /// honest answer for every stateless tool.
-    fn carried_state(&self) -> Option<CarriedState> {
+    fn carried_state(&self, ctx: &ToolCtx) -> Option<CarriedState> {
+        let _ = ctx;
         None
     }
 
@@ -636,10 +637,16 @@ impl Registry {
     /// MCP server's — the loop does not learn which tools have state, only
     /// that some do, which is the same reason it never learns where a tool
     /// came from.
-    pub fn carried_state(&self) -> Vec<CarriedState> {
+    ///
+    /// The context is passed because one agent serves many conversations and a
+    /// tool's state may be per-run: the compaction happening is *this* run's,
+    /// so the state carried across it must be too. The loop still learns
+    /// nothing about which tools those are — it hands over the run it is
+    /// compacting and asks.
+    pub fn carried_state(&self, ctx: &ToolCtx) -> Vec<CarriedState> {
         self.tools
             .values()
-            .filter_map(|t| t.carried_state())
+            .filter_map(|t| t.carried_state(ctx))
             .collect()
     }
 

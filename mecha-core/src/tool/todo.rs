@@ -14,6 +14,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,10 +42,26 @@ pub struct TodoItem {
     pub status: Status,
 }
 
-/// Holds the list for the lifetime of the agent.
+/// One list per conversation, keyed by the run's workspace.
+///
+/// It held a single list for the lifetime of the *agent* until 2026-08-26,
+/// which was correct while every front-end holding one served a single
+/// conversation. `mecha serve` is one shared agent across every session, so
+/// two runs shared one list and overwrote each other — and a UI polling the
+/// handle rendered the wrong conversation's plan, which is worse than
+/// rendering none, because a plausible list belonging to something else is
+/// indistinguishable from this one's.
+///
+/// The key is the run's workspace, on the precedent [`Asker::ask_in`] set for
+/// exactly this shape: one agent, many conversations, and the jail as the only
+/// thing in scope at call time that says which is which. Two runs sharing a
+/// workspace share a list, which is right — that is the same conversation
+/// resumed, not two.
+///
+/// [`Asker::ask_in`]: super::ask::Asker::ask_in
 #[derive(Default)]
 pub struct TodoTool {
-    items: Mutex<Vec<TodoItem>>,
+    lists: Mutex<HashMap<PathBuf, Vec<TodoItem>>>,
 }
 
 impl TodoTool {
@@ -51,9 +69,18 @@ impl TodoTool {
         Self::default()
     }
 
-    /// Current list, for a UI that wants to render progress live.
-    pub fn items(&self) -> Vec<TodoItem> {
-        self.items.lock().unwrap().clone()
+    /// One run's list, for a UI that wants to render progress live.
+    ///
+    /// An absent key is an empty list rather than an error: a conversation
+    /// that has not written a plan and one that never will look the same from
+    /// here, and both render as no pane.
+    pub fn items_in(&self, workspace: &Path) -> Vec<TodoItem> {
+        self.lists
+            .lock()
+            .unwrap()
+            .get(workspace)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn render(items: &[TodoItem]) -> String {
@@ -133,8 +160,9 @@ impl Tool for TodoTool {
     /// Rendered rather than summarised, because the tool holds the exact
     /// current answer and a summariser would only be a lossy path to a worse
     /// copy of it.
-    fn carried_state(&self) -> Option<CarriedState> {
-        let items = self.items.lock().unwrap();
+    fn carried_state(&self, ctx: &ToolCtx) -> Option<CarriedState> {
+        let lists = self.lists.lock().unwrap();
+        let items = lists.get(&ctx.workspace)?;
         // An empty list is genuinely nothing to carry, and an empty section in
         // the prompt reads as "the plan is finished" rather than "there was
         // never a plan".
@@ -143,11 +171,11 @@ impl Tool for TodoTool {
         }
         Some(CarriedState {
             label: "todo".into(),
-            body: Self::render(&items),
+            body: Self::render(items),
         })
     }
 
-    async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+    async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(raw) = input.get("items").and_then(Value::as_array) else {
             return Ok(ToolOutput::err(
                 "`items` must be an array of {content, status}",
@@ -189,7 +217,10 @@ impl Tool for TodoTool {
         }
 
         let rendered = Self::render(&items);
-        *self.items.lock().unwrap() = items;
+        self.lists
+            .lock()
+            .unwrap()
+            .insert(ctx.workspace.clone(), items);
         Ok(ToolOutput::ok(format!("{rendered}{note}")))
     }
 }
@@ -201,6 +232,7 @@ mod tests {
     #[tokio::test]
     async fn writing_the_list_echoes_it_back_with_progress() {
         let tool = TodoTool::new();
+        let ctx = ToolCtx::default();
         let out = tool
             .call(
                 json!({"items": [
@@ -208,7 +240,7 @@ mod tests {
                     {"content": "fix the port", "status": "in_progress"},
                     {"content": "run the tests", "status": "pending"}
                 ]}),
-                &ToolCtx::default(),
+                &ctx,
             )
             .await
             .unwrap();
@@ -218,7 +250,7 @@ mod tests {
         assert!(out.content.contains("[x] read the config"));
         assert!(out.content.contains("[~] fix the port"));
         assert!(out.content.contains("[ ] run the tests"));
-        assert_eq!(tool.items().len(), 3);
+        assert_eq!(tool.items_in(&ctx.workspace).len(), 3);
     }
 
     #[tokio::test]
@@ -238,7 +270,7 @@ mod tests {
         .await
         .unwrap();
 
-        let items = tool.items();
+        let items = tool.items_in(&ctx.workspace);
         assert_eq!(items.len(), 1, "a write replaces the whole list");
         assert_eq!(items[0].content, "b");
     }
@@ -246,16 +278,86 @@ mod tests {
     #[tokio::test]
     async fn a_bad_status_is_reported_rather_than_silently_dropped() {
         let tool = TodoTool::new();
+        let ctx = ToolCtx::default();
         let out = tool
-            .call(
-                json!({"items": [{"content": "a", "status": "done"}]}),
-                &ToolCtx::default(),
-            )
+            .call(json!({"items": [{"content": "a", "status": "done"}]}), &ctx)
             .await
             .unwrap();
         assert!(out.is_error);
         assert!(out.content.contains("expected pending"));
-        assert!(tool.items().is_empty(), "a rejected write changes nothing");
+        assert!(
+            tool.items_in(&ctx.workspace).is_empty(),
+            "a rejected write changes nothing"
+        );
+    }
+
+    fn ctx_in(dir: &str) -> ToolCtx {
+        ToolCtx {
+            workspace: PathBuf::from(dir),
+            ..Default::default()
+        }
+    }
+
+    /// The D14 property, and the reason this tool stopped holding one list.
+    ///
+    /// Fails on the old behaviour: a single `Mutex<Vec<TodoItem>>` returns
+    /// b's plan for a's workspace, which is precisely the "plausible list
+    /// belonging to something else" a UI cannot detect.
+    #[tokio::test]
+    async fn two_workspaces_keep_separate_lists() {
+        let tool = TodoTool::new();
+        let (a, b) = (ctx_in("/w/a"), ctx_in("/w/b"));
+
+        tool.call(
+            json!({"items": [{"content": "a", "status": "pending"}]}),
+            &a,
+        )
+        .await
+        .unwrap();
+        tool.call(
+            json!({"items": [{"content": "b", "status": "pending"}]}),
+            &b,
+        )
+        .await
+        .unwrap();
+
+        let (ia, ib) = (tool.items_in(&a.workspace), tool.items_in(&b.workspace));
+        assert_eq!(ia.len(), 1);
+        assert_eq!(ib.len(), 1);
+        assert_eq!(ia[0].content, "a", "b's write must not reach a's list");
+        assert_eq!(ib[0].content, "b");
+    }
+
+    /// A compaction carries the *compacting run's* plan, not whichever list
+    /// was written most recently by anyone.
+    #[tokio::test]
+    async fn carried_state_belongs_to_the_run_being_compacted() {
+        let tool = TodoTool::new();
+        let (a, b) = (ctx_in("/w/a"), ctx_in("/w/b"));
+
+        tool.call(
+            json!({"items": [{"content": "ship a", "status": "in_progress"}]}),
+            &a,
+        )
+        .await
+        .unwrap();
+        tool.call(
+            json!({"items": [{"content": "ship b", "status": "in_progress"}]}),
+            &b,
+        )
+        .await
+        .unwrap();
+
+        let carried = tool.carried_state(&a).expect("a has a list to carry");
+        assert!(carried.body.contains("ship a"));
+        assert!(
+            !carried.body.contains("ship b"),
+            "a compaction must not carry another conversation's plan"
+        );
+
+        // A run that never wrote a list carries nothing, rather than
+        // inheriting a neighbour's.
+        assert!(tool.carried_state(&ctx_in("/w/c")).is_none());
     }
 
     #[tokio::test]
