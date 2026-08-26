@@ -45,6 +45,7 @@ use serde_json::{json, Value};
 use mecha_core::frontdoor::{self, Frontdoor};
 use mecha_core::learning::LearningStore;
 use mecha_core::outbox::OutboxStore;
+use mecha_core::questions::QuestionStore;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -572,6 +573,42 @@ fn collect_queues() -> Vec<Queue> {
         depth,
         detail,
         opens: "mecha outbox",
+        oldest,
+    });
+
+    // Beside the outbox because it is its inbound twin: one queue is what a
+    // run wants to send, the other is what it needs to know. A question that
+    // is never answered is a delegation that never finishes, and it is
+    // exactly the sort of store that reaches five figures because nothing
+    // counted it — which is the incident this whole surface exists because of.
+    let (depth, detail, oldest) = match QuestionStore::open_existing_default() {
+        Some(store) => match store.items() {
+            Ok(items) => {
+                let open: Vec<_> = items.iter().filter(|q| q.is_open()).collect();
+                let tainted = open.iter().filter(|q| q.taint.untrusted).count();
+                let d = if open.is_empty() {
+                    format!("{} answered or abandoned", items.len())
+                } else if tainted > 0 {
+                    format!("{tainted} asked with third-party content in the conversation")
+                } else {
+                    format!("{} answered or abandoned", items.len() - open.len())
+                };
+                let oldest = oldest_age(open.iter().map(|q| q.asked_at.as_str()));
+                (Some(open.len()), d, oldest)
+            }
+            Err(e) => (None, format!("{e:#}"), None),
+        },
+        // A store that does not exist yet is genuinely empty, not unreadable.
+        // The dash is for "could not look", and reporting it here would make
+        // a machine that has never delegated a task indistinguishable from one
+        // whose question store is broken.
+        None => (Some(0), "no run has needed to ask yet".to_string(), None),
+    };
+    out.push(Queue {
+        name: "blocked questions",
+        depth,
+        detail,
+        opens: "mecha questions",
         oldest,
     });
 

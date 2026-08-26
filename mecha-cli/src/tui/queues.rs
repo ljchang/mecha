@@ -1252,6 +1252,29 @@ mod tests {
         }
     }
 
+    /// A new queue needs no code here, and this asserts that rather than
+    /// assuming it. Both `is_graph` and `review_source` key on the name the
+    /// command emits, so the only queue this modal knows by name is the graph
+    /// one it reviews in place — everything else, including `blocked
+    /// questions`, renders and hands off to the verb the row carries. A
+    /// second list of queues on this side is the thing that would have to be
+    /// kept in step with the first.
+    #[test]
+    fn a_queue_the_modal_has_never_heard_of_renders_and_hands_off() {
+        let q = row("blocked questions", 3, "mecha questions");
+        assert!(!q.is_graph(), "not reviewed in place");
+        assert!(q.review_source().is_none(), "hands off to its own verb");
+
+        let m = QueuesModal::new(vec![q]);
+        let text: String = m
+            .queue_lines()
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(text.contains("blocked questions"), "{text}");
+        assert!(text.contains('3'), "the depth is shown: {text}");
+    }
+
     /// The age sits beside the depth, and an unknown one is a dash rather
     /// than a zero — "nothing waiting" and "waiting since a moment ago" are
     /// opposite findings, exactly as for the count. This column exists
