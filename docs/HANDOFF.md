@@ -1067,11 +1067,14 @@ the mechanism and every decision. What it left standing:
   compose and the notes/tasks voice capture shipped 2026-08-24 night (Arcs B
   and C); the rest stands. **The task→agent handoff is designed and not
   built** — `docs/TASK-RESEARCH.md` and `docs/TASK-AGENT-DESIGN.md` are its
-  authority (merged 2026-08-24 night at `995aed0`, extended 2026-08-26 with
-  the session-scoping decisions D12–D16 and Part 3). Six phases; Phase 1 is
-  a CLI verb (`mecha tasks work <id>`) and nothing on the phone. Part 3
-  records a refusal worth knowing before it is proposed a third time: **no
-  KV-offload manager** — `-cram` already is one, and the hand-rolled
+  authority. **Phases 1-3 shipped 2026-08-26**: `mecha tasks work <id>`
+  seeds a run from a board item, a run that needs a decision *ends* and
+  parks its question (`mecha questions`, a sixth `/queues` row, doctor at
+  24h), and the graph can say who holds a task (`waiting_on`, the
+  `agent-mecha` node, `@owner`) and which conversation worked it. Phase 4
+  (the phone) is the next one and the largest. Part 3 records a refusal
+  worth knowing before it is proposed a third time: **no KV-offload
+  manager** — `-cram` already is one, and the hand-rolled
   `--cache-idle-slots` was measured costing 20.5s re-prefills and removed.
 - **`--voice-yes` is a deliberate posture with a named risk.** Voice runs
   get `ModeApprover { Allow }` (`voice/mod.rs:552`; the unit runs the flag)

@@ -1,6 +1,6 @@
 # Tasks: the board, and handing one to the agent
 
-> **Status: designed, not built.** Written 2026-08-24 after the owner's first
+> **Status: phases 1–3 built 2026-08-26; 4–6 open.** Written 2026-08-24 after the owner's first
 > real day on the phone app. `TASK-RESEARCH.md` is the evidence; this is the
 > argument. `REMOTE-SURFACE-DESIGN.md` §12 holds the rest of that day's
 > backlog — this is the item large enough to need its own document.
@@ -252,12 +252,55 @@ Rejected: a mecha-side store of "runs about tasks" — a second source of
 truth about task state, disagreeing with the graph the first time a run
 dies.
 
-**D9 — The link from task to session is a fact, not a filename.** The run
-must be findable from the task later. A session title (`task: <name>`) is a
-convention, not an index, and titles are not unique. Preferred: a
-`worked_on` fact written through the tool surface — the graph already holds
-`originated_in` facts pointing at episodes, so this is a shape it knows.
-The task row then offers *open the conversation*.
+**D9 — The link from task to session is an index, not a filename — and an
+attribute, not a fact.** The run must be findable from the task later. A
+session title (`task: <name>`) is a convention rather than an index, and
+titles are not unique.
+
+The first draft proposed a `worked_on` fact, reasoning that the graph
+already holds `originated_in` facts pointing at episodes. **Reversed on
+2026-08-26 while building it**, for a reason that only shows up in
+`distill.rs`: an episode is *evidence of what happened*, so it exists only
+after a run **and** only when the distiller judged the run worth
+remembering — and it deliberately does not for "smoke tests, one-line
+lookups, greetings, aborted or purely mechanical runs", marking those
+skipped forever. Those are exactly the runs a person half-remembers and
+wants to reopen. An edge-based link would therefore be missing precisely
+where it is wanted and present only where a summary already says what
+happened.
+
+Creating the episode at run *start* to close that gap was considered and
+refused: it inverts the same rule from the other side — evidence of
+something that has not happened — and pre-empts a judgement the distiller
+exists to make, into a review queue already holding five figures.
+
+So the session id is a **task attribute** (`kg_task_update`'s `session`,
+stored on the node's properties, shown in the board row's tail). It is also
+the more general of the two, which settles it: `distill::upsert_args` sends
+`source_id: session_id`, so the episode's idempotence key *is* the session
+id and a task holding it finds the episode too, whenever one appears. The
+`originated_in` edge stays available later as an **addition** — it answers
+traversal and provenance where this answers "which conversation", and two
+answers to different questions cannot disagree.
+
+**D9a — The agent is a node kind, not a person.** `waiting_on` was seeded
+as "Task is waiting on Person" and the shortcut is to file `mecha` as one.
+That is wrong for D1's reason: an agent cannot be held accountable, so
+delegation is not assignment. A person node would also put the agent in
+every people-shaped view — who owes me things, who I collaborate with — and
+answer "who is responsible" with the wrong kind of thing. `agent` joined the
+graph's closed node-type set, `agent-mecha` ships with the schema, and the
+predicate's description says Person **or** Agent, because that description
+is what a reader and the extractor go by.
+
+**D9b — `@owner` names whoever the graph is about.** The callers handing
+work back to a person are harnesses, and a person's name is exactly what a
+harness should not carry — it would ship in config on every machine and be
+wrong the day it changes. The graph already records its owner explicitly
+(`owner_node`), so `waiting_on: "@owner"` asks it. A graph with no owner set
+is a named failure, never a silent no-op: "waiting on nobody" and "waiting
+on you" are opposite states and the board is the one place that must not
+confuse them.
 
 **D10 — Task sessions belong in the drawer, labelled.**
 `serve/chat.rs::history` filters to titles starting `web: ` or `voice: `,
@@ -476,38 +519,56 @@ sessions miss, the answer is a larger `-cram` before it is anything cleverer.
 
 ## Phases
 
-**Phase 1 — the CLI verb.** `mecha tasks work <id> [--note ...]`: seeded run,
-own session, outbox-bound, prints the session id and what it staged. Carries
-D14 and D15 with it, because this verb is the first thing to put a second
-conversation on one agent and the first to resume one. Nothing on the phone yet.
-*Verify: the run appears in `mecha sessions`; a send it drafts appears in
-`mecha outbox`; the task's status moves; Ctrl-C stops it and keeps the partial
-answer; two concurrent runs keep separate todo lists; a resumed task renders its
-progress rather than an empty list.*
+**Phase 1 — the CLI verb. Built 2026-08-26.** `mecha tasks work <id>
+[--note ...]`: seeded run, own session, outbox-bound, prints the session id
+and what it staged. Carried D14 and D15 with it, because this verb is the
+first thing to put a second conversation on one agent and the first to
+resume one.
 
-**Phase 2 — the question store (D13).** A question ends the run and waits; an
-answer resumes the session. `/queues` gains the row. *Verify: a delegated run
-that asks a question leaves no process running and no slot held; answering it a
-day later resumes the same session with its history intact; `mecha review` counts
-the outstanding questions.*
+Three things the first live run taught, none visible from the code. The run
+was **non-interactive and could therefore do nothing** — it made three
+`fs_write` calls, had all three blocked, and reported back the contents of
+files it had not been allowed to create; `mail draft`'s `prepare(_, false)`
+is right for a run whose only outbound act stages, and wrong for one that
+does work. The session **recorded no config**, so the withheld
+`kg_task_update` was a claim rather than evidence and `replay` could not
+rebuild the surface. And `withhold_tool` **could not reach subagent
+registries** — `build_subagent` clones tools out of the pool during
+`prepare`, so a profile allowlisting the withheld tool left delegation as
+the way around D6; both entry points now refuse to start rather than strip
+silently.
 
-**Phase 3 — the graph side.** `waiting_on` on `kg_task_update`, a `mecha` node,
-the `worked_on` fact (D8, D9). *Verify: the waiting view distinguishes
-agent-held from person-held tasks.*
+**Phase 2 — the question store (D13). Built 2026-08-26.** A question ends
+the run and waits; an answer resumes the session. `/queues` gained the row
+and doctor watches it at 24h — shorter than the outbox's 48h, because a
+pending draft is finished work sitting safely while an unanswered question
+is a delegation frozen mid-flight.
 
-**Phase 4 — the phone.** *Ask mecha* on the task row, *open the conversation*,
-*stop*, the drawer filter and chip (D10), the plan gate (D12), the derived card
-states and the rendered todo list (D16). Board decisions B1 and B2 ride along,
-since they touch the same row. *Verify: tap → a session appears in the drawer →
-opening it shows the plan → editing the plan changes what runs → steering works →
-stop works → a failed run reads as failed and not as idle.*
+**Phase 3 — the graph side. Built 2026-08-26.** `waiting_on` and `session`
+on `kg_task_update`, the `agent-mecha` node, `@owner` (D8, D9, D9a, D9b).
+Two traps worth keeping: the first cut **retired the old `waiting_on` before
+resolving the new name**, so a typo did not merely fail — it cleared who
+actually had the ball; and **seeding a node in a migration broke encrypt,
+decrypt and fork**, because the target runs migrations before the copy and
+already held the row the source was about to send. `nodes` joined the
+`INSERT OR IGNORE` pass `predicate` has always been in.
 
-**Phase 5 — narrowing and context.** The tool-surface narrowing (D6) and the
-context assembler (D4), both of which the earlier phases make measurable.
+**Phase 4 — the phone.** *Ask mecha* on the task row, *open the
+conversation*, *stop*, the drawer filter and chip (D10), the plan gate
+(D12), the derived card states and the rendered todo list (D16). Board
+decisions B1 and B2 ride along, since they touch the same row. *Verify: tap
+→ a session appears in the drawer → opening it shows the plan → editing the
+plan changes what runs → steering works → stop works → a failed run reads as
+failed and not as idle.*
+
+**Phase 5 — narrowing and context.** The context assembler (D4). D6's
+narrowing arrived early with Phase 1, because shipping a task runner that
+could close its own task was not an option worth a phase boundary.
 
 **Phase 6 — admission control (R1).** Worth building once more than one
-delegation at a time is routine, and not before: with four slots and one owner,
-the contention it manages may simply not arise. R3's measurement is the input.
+delegation at a time is routine, and not before: with four slots and one
+owner, the contention it manages may simply not arise. R3's measurement is
+the input.
 
 ## Open at design time
 
