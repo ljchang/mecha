@@ -254,7 +254,7 @@ async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Resul
     // avoid, one door over.
     if let (Some(update), Some(task)) = (&update, q.task_id.as_deref()) {
         if let Err(e) =
-            super::tasks::move_task(update, &tctx, task, "waiting", super::tasks::AGENT).await
+            super::tasks::move_task(update, &tctx, task, "waiting", super::tasks::AGENT, None).await
         {
             eprintln!("warning: the board still says you hold {task}: {e:#}");
         }
@@ -308,7 +308,7 @@ async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Resul
     // And back to you when it stops, for the reason it went the other way.
     if let (Some(update), Some(task)) = (&update, q.task_id.as_deref()) {
         if let Err(e) =
-            super::tasks::move_task(update, &tctx, task, "waiting", super::tasks::OWNER).await
+            super::tasks::move_task(update, &tctx, task, "waiting", super::tasks::OWNER, None).await
         {
             eprintln!(
                 "warning: the board still says {} has {task}: {e:#}",
