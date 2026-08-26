@@ -265,6 +265,20 @@
     loadHistory();
   }
 
+  // A session id in the route (`#chat/<id>`), from the board's "open the
+  // conversation". Resumed once: the endpoint returns the live key of a
+  // session this process already holds rather than minting a twin, so a
+  // second attempt would be harmless — but a re-run on every route change
+  // would fight the user switching sessions by hand.
+  let { resume = null } = $props();
+  let resumed = $state(null);
+  $effect(() => {
+    if (resume && resume !== resumed) {
+      resumed = resume;
+      resumeSession(resume);
+    }
+  });
+
   async function resumeSession(id) {
     try {
       const res = await fetch('/api/resume', {
@@ -282,7 +296,7 @@
   }
 
   const sessionLabel = (s) =>
-    (s.title ?? s.key).replace(/^(web|voice): /, '') || s.key;
+    (s.title ?? s.key).replace(/^(web|voice|task): /, '') || s.key;
 
   function newSession() {
     const name = prompt('Session name (lowercase, dashes):');
@@ -648,6 +662,7 @@
             <span class="raildot" class:on={s.running}></span>
             <span class="dname">{sessionLabel(s)}</span>
             {#if s.title?.startsWith('voice')}<span class="dkind">voice</span>{/if}
+            {#if s.title?.startsWith('task: ')}<span class="dkind">task</span>{/if}
             {#if s.taint?.untrusted}<span class="railtaint">▲</span>{/if}
           </button>
         {/each}
@@ -660,6 +675,7 @@
               <span class="dsnippet">{h.snippet}</span>
               <span class="dmeta">
                 {#if h.kind === 'voice'}<span class="dkind">voice</span>{/if}
+                {#if h.kind === 'task'}<span class="dkind">task</span>{/if}
                 {h.created_at.slice(0, 10)}
               </span>
             </button>

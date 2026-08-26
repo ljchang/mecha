@@ -44,6 +44,56 @@
     return (data?.items ?? []).filter(pred).length;
   };
 
+  // **The agent's state is derived from the board, never self-reported.**
+  // `waiting_on` names the agent while a run is in flight and the owner when
+  // it stops, so "is work happening?" is answered by the store the run
+  // writes to rather than by anything the run says about itself (D5/D16).
+  const AGENT = 'mecha';
+  const working = (t) => t.status === 'waiting' && t.waiting_on === AGENT;
+
+  async function askMecha(task) {
+    busy = true;
+    try {
+      const res = await fetch('/api/tasks/work', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ task }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      // The run is detached, so there is nothing to await. The board is the
+      // meeting point: reload until it says the agent has the task, then
+      // keep watching while it does.
+      error = null;
+      await load();
+      watch();
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  // Poll only while something is actually in flight, and stop when nothing
+  // is. A board that reloads forever is a phone that never sleeps.
+  let watching = $state(false);
+  async function watch() {
+    if (watching) return;
+    watching = true;
+    try {
+      for (let i = 0; i < 240; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        await load();
+        if (!(data?.items ?? []).some(working)) break;
+      }
+    } finally {
+      watching = false;
+    }
+  }
+  // A run may already have been in flight when this page opened.
+  $effect(() => {
+    if ((data?.items ?? []).some(working)) watch();
+  });
+
   async function setStatus(task, status) {
     busy = true;
     try {
@@ -157,9 +207,34 @@
           {/if}
           {#if t.context}<span class="chip">{t.context}</span>{/if}
           {#if t.project}<span class="chip dim">{t.project}</span>{/if}
+          {#if working(t)}
+            <span class="chip agent">mecha is on it</span>
+          {:else if t.waiting_on}
+            <span class="chip dim">waiting on {t.waiting_on}</span>
+          {/if}
         </div>
         {#if selected === t.id}
           <div class="statusrow">
+            {#if !working(t)}
+              <button
+                class="statusbtn askbtn"
+                disabled={busy}
+                onclick={(e) => {
+                  e.stopPropagation();
+                  askMecha(t.id);
+                }}
+              >ask mecha</button>
+            {/if}
+            {#if t.session}
+              <!-- The way back into the run that worked this. The board
+                   holds the session id, so this is a lookup rather than a
+                   search through titles that are not unique. -->
+              <a
+                class="statusbtn"
+                href={`#chat/${encodeURIComponent(t.session)}`}
+                onclick={(e) => e.stopPropagation()}
+              >open the conversation</a>
+            {/if}
             {#each ACTIONS.filter(([status]) => status !== t.status) as [status, verb]}
               <button
                 class="statusbtn"
@@ -217,7 +292,14 @@
   .due.hazard { color: var(--hazard); }
   .dim { color: var(--accent-700); }
   .statusrow { display: flex; gap: 6px; flex-wrap: wrap; border-top: 1px solid var(--accent-900); padding-top: 10px; }
-  .statusbtn { font-family: var(--mono); font-size: 11px; color: var(--text); background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 9px 12px; min-height: 40px; cursor: pointer; }
+  .statusbtn { font-family: var(--mono); font-size: 11px; color: var(--text); background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 9px 12px; min-height: 40px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; }
+  /* The one action on this row that starts work rather than filing it. */
+  .askbtn { color: var(--accent-400); border-color: var(--accent-400); }
+  /* A run in flight, and the only chip that is not a noun about the task —
+     it says what is happening right now, so it reads live rather than dim. */
+  .agent { color: var(--accent-400); border-color: var(--accent-700); animation: agent-pulse 2.4s ease-in-out infinite; }
+  @keyframes agent-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+  @media (prefers-reduced-motion: reduce) { .agent { animation: none; } }
   .warnline { display: flex; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; }
   .empty { color: var(--text-muted); font-size: 14px; padding: 20px 0; text-align: center; }
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; padding-top: 6px; }

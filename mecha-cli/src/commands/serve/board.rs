@@ -60,6 +60,59 @@ pub async fn task_set(State(state): St, Json(body): Json<TaskSetBody>) -> Respon
 }
 
 #[derive(serde::Deserialize)]
+pub struct TaskWorkBody {
+    pub task: String,
+    pub note: Option<String>,
+}
+
+/// POST /api/tasks/work — hand a task to the agent.
+///
+/// **Detached and unattended**, which are two decisions rather than one.
+/// Detached because this is a whole agent run that can take twenty minutes,
+/// and a request holding a connection open for that is a request that times
+/// out — the mail page's drafting verbs spawn the same way, and the board is
+/// the meeting point rather than the child.
+///
+/// Unattended because the approver in this process cannot reach a child
+/// process: the web approval cards belong to a chat session's `RunContext`,
+/// and a spawned `mecha tasks work` builds its own agent. So the run takes
+/// the trigger posture — reads run, sends stage, anything needing approval is
+/// refused — which is D3's rule exactly: *a run gets more permission by
+/// acquiring a human, never by asking for one*. The way to give this run more
+/// is to open its conversation, where `ask` mode's cards already work.
+///
+/// Nothing is returned but an acknowledgement. What happened is on the board:
+/// `waiting_on` names the agent while the run is in flight and the owner when
+/// it stops, so the page derives the card's state from the store rather than
+/// from anything the run says about itself (D5, D16).
+pub async fn task_work(State(state): St, Json(body): Json<TaskWorkBody>) -> Response {
+    let _ = state; // the board is the meeting point, not this process
+    let task = body.task.trim();
+    if task.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which task?\n").into_response();
+    }
+    let mut argv: Vec<String> = vec![
+        "tasks".into(),
+        "work".into(),
+        task.into(),
+        "--unattended".into(),
+    ];
+    if let Some(note) = body
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        argv.push("--note".into());
+        argv.push(note.into());
+    }
+    super::mail::spawn_detached_note(
+        &argv,
+        "handed to mecha — the board says who has it, and the conversation is on the card",
+    )
+}
+
+#[derive(serde::Deserialize)]
 pub struct TaskAddBody {
     pub name: String,
     pub due: Option<String>,

@@ -35,7 +35,7 @@
 
 <div class="screen">
   {#if view === 'chat'}
-    <Chat />
+    <Chat resume={route.sub} />
   {:else if view === 'mail'}
     <Mail />
   {:else if view === 'review'}
