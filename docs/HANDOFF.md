@@ -118,11 +118,18 @@ with 1 ignored, **760** in `mecha-core`, 6 + 9 in its two integration
 suites, **133** in `mecha-mail` plus 1 in a mail binary, **75** in
 `mecha-slack`, and 1 doctest.
 
-Clippy and rustfmt are clean at that commit, and CI passed on it — though
-see Traps → Environment before trusting that sentence anywhere else: push
-events were being dropped by a GitHub Actions outage that afternoon, so the
-runs for several of the day's commits were dispatched by hand and the run
-history shows a gap rather than a failure.
+Clippy and rustfmt are clean at that commit, **measured locally**. CI is a
+separate claim and a weaker one: `efa04e2` has **no successful run** — its
+push run and a dispatch were both `cancelled` — so the merge commit itself
+is *unverified*, and the first sentence of this paragraph is local evidence
+about the same code rather than CI evidence about that commit. The doc
+commit after it (`2b5e575`) has a dispatched run that **passed**, which is
+the newest sha anyone has actually verified.
+
+That distinction is not pedantry; it cost an hour and a wrong sentence in
+this file. Read Traps → Environment before writing "CI passed" anywhere:
+three separate mechanisms were producing green-looking evidence for
+untested commits on 2026-08-26.
 
 **Measure the merge, not either side of it, and attribute with a commit
 range** — the lesson of this particular count, and the reason those numbers
