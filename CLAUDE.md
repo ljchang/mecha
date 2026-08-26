@@ -49,6 +49,7 @@ the benchmark both run *release* paths that a debug build never touches.
 message.rs   provider-agnostic Message/Block/Usage/StopReason types
 image.rs     a file on disk to a bounded image block, capped at the door
 provider/    Provider trait + anthropic.rs (raw HTTP) + openai.rs (compatible)
+quarantine.rs a one-shot with no tools and no history: the property in the type
 tool/        Tool trait, Registry, Approver, builtin.rs
 mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
 search.rs    web_search: a chain of backends, first to answer wins
@@ -66,6 +67,7 @@ compact.rs   the cut, the rebuild, and the state carried across one
 cron.rs      five-field cron, resolved in an IANA zone (both DST directions)
 trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
 frontdoor.rs inbound requests from strangers, and the quarantine over them
+goal.rs      what a run is for: charter, board task, or setpoint, by reference
 harness.rs   the self-improvement record: candidates, their judgements, and
              the override layer an accepted config change rides in
 learning.rs  the reflection/rule store behind reflect, learn, validate
@@ -1341,6 +1343,14 @@ knowledge of the outbox to be covered by it. Decisions that carry it:
   steer/denial rather than excluding followup. `mecha learn` consolidates the
   writing domain with its own frame too (`learner_frames`): voice rules, a
   positive/negative mix, and never a one-recipient rule.
+  **And the unedited release is the other half of that pair.** `sent &&
+  !edited()` is the owner reading a letter written in their name and sending it
+  as drafted — the only signal in this system that says something went *well*,
+  recorded since the outbox existed and unread until `WritingOutcome` had a
+  reader. It is deliberately **not** mined as a correction (approval is not a
+  correction, the `"Blocked by a hook:"` rule in its positive form), and its
+  rate is `None` over an empty denominator, never zero: "nothing was edited"
+  and "nothing has gone out" are opposite findings.
 - **Subagents inherit the parent's route** (like hooks), or delegating is the
   way to send unstaged. `mecha eval` forces `--no-outbox`, like MCP and hooks,
   for the same reproducibility reason.

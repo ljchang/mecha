@@ -205,6 +205,18 @@ pub struct RunContext {
     pub cancel: Option<CancellationToken>,
     /// Which tools this run may see at all. See [`Phase`].
     pub phase: Phase,
+    /// Conditions sampled when this run began — see [`Homeostat`].
+    ///
+    /// Opt-in for the same shape of reason `cancel` is: sampling walks five
+    /// stores, and more importantly `mecha eval` and the replay probes must
+    /// not read *live* machine state. A scorecard that varies with how busy
+    /// the box was is not a scorecard, and a replayed arm that samples today's
+    /// backlog measures the afternoon rather than the change. So a front-end
+    /// that records sessions turns this on; a harness that reconstructs a run
+    /// reads what was recorded.
+    ///
+    /// [`Homeostat`]: crate::homeostat::Homeostat
+    pub homeostat: Option<crate::homeostat::Homeostat>,
     /// Compaction threshold for this run, overriding the agent's own.
     ///
     /// Here rather than only in `AgentConfig` for the same reason the budget
@@ -267,6 +279,7 @@ impl Budget {
 impl RunContext {
     pub fn new(tools: ToolCtx, approver: Arc<dyn Approver>) -> Self {
         RunContext {
+            homeostat: None,
             tools: Arc::new(tools),
             approver,
             budget: Budget::default(),
@@ -291,6 +304,15 @@ impl RunContext {
             approver,
             ..self.clone()
         }
+    }
+
+    /// Sample the conditions this run starts under.
+    ///
+    /// Opt-in: see the field. A front-end that records sessions calls this;
+    /// `eval` and the replay probes must not.
+    pub fn with_homeostat(mut self) -> Self {
+        self.homeostat = Some(crate::homeostat::Homeostat::at_start());
+        self
     }
 
     pub fn with_budget(mut self, budget: Budget) -> Self {
@@ -707,6 +729,8 @@ pub struct RunOutcome {
     pub blocked_sends: u32,
     /// Taint state when the run ended.
     pub taint: Taint,
+    /// Conditions the run happened under, when the caller asked for them.
+    pub homeostat: Option<crate::homeostat::Homeostat>,
     pub stop_cause: StopCause,
     /// Cost of this run, when the provider has prices configured.
     pub cost_usd: Option<f64>,
@@ -811,6 +835,19 @@ impl Agent {
     /// Attach per-million-token prices so cost budgets and reporting work.
     pub fn with_pricing(mut self, pricing: Option<Pricing>) -> Self {
         self.pricing = pricing;
+        self
+    }
+
+    /// Sample run conditions on this agent's own context.
+    ///
+    /// Reaches every front-end that calls [`Agent::run`], and deliberately not
+    /// `eval`, `batch` or the replay probes — each of those supplies its own
+    /// [`RunContext`] per case or per item, which leaves the snapshot off.
+    /// That is the same boundary those paths already draw for MCP, hooks,
+    /// learned rules and the outbox, and for the same reason: a measurement
+    /// that varies with how busy the machine was is not a measurement.
+    pub fn with_homeostat(mut self) -> Self {
+        self.cx = std::sync::Arc::new((*self.cx).clone().with_homeostat());
         self
     }
 
@@ -950,6 +987,24 @@ impl Agent {
     /// cache — can then serve concurrent runs that are jailed to different
     /// directories under different permissions.
     pub async fn run_in(
+        &self,
+        cx: &RunContext,
+        convo: &mut Conversation,
+        events: Option<UnboundedSender<AgentEvent>>,
+    ) -> Result<RunOutcome> {
+        let mut outcome = self.run_loop(cx, convo, events).await?;
+        // One place, after every exit. The loop returns from six of them, and
+        // a snapshot attached at five is worse than one attached at none —
+        // a field that is present for most runs reads as a sampling failure
+        // for the rest rather than as the plumbing gap it is.
+        outcome.homeostat = cx
+            .homeostat
+            .clone()
+            .map(crate::homeostat::Homeostat::finish);
+        Ok(outcome)
+    }
+
+    async fn run_loop(
         &self,
         cx: &RunContext,
         convo: &mut Conversation,
@@ -1234,6 +1289,7 @@ impl Agent {
 
                 let cost = self.cost(&usage);
                 let outcome = RunOutcome {
+                    homeostat: None,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -1585,31 +1641,24 @@ impl Agent {
         // Replaying it means sending `tool_result`s on a request that declares
         // no tools, which llama-server answers with an empty completion.
         let rendered = crate::compact::render_for_summary(&messages[..cut], 2_000);
-        let prompt = vec![Message::user(format!(
+
+        // The summariser's own budget, not the agent's: a summary's length has
+        // no reason to track the answer budget, and tying them was measured to
+        // kill runs — at [agent] max_tokens = 4096 the summariser hit its limit
+        // mid-summary, the truncation guard (correctly) refused it, and the run
+        // gave up compacting and died of context pressure. 2/5 on
+        // chain-total-compacted in BOTH validation arms, same empty-completion
+        // deaths. The frame is not the agent's own system prompt: that one
+        // tells it to use tools and would invite it to resume the task instead
+        // of describing it. Uncached, because the prefix is about to change.
+        let pass = crate::quarantine::QuarantinedPass::new(&self.model, 8192)
+            .system(crate::compact::SUMMARY_SYSTEM)
+            .effort(self.cfg.effort);
+
+        let request = pass.ask(format!(
             "{rendered}\n---\n{}",
             crate::compact::SUMMARY_INSTRUCTION
-        ))];
-
-        let request = CompletionRequest {
-            model: self.model.clone(),
-            // Not the agent's own system prompt: that one tells it to use tools
-            // and would invite it to resume the task instead of describing it.
-            system: Some(crate::compact::SUMMARY_SYSTEM.to_string()),
-            messages: prompt,
-            tools: Vec::new(),
-            // The summariser's own budget, not the agent's: a summary's length
-            // has no reason to track the answer budget, and tying them was
-            // measured to kill runs — at [agent] max_tokens = 4096 the
-            // summariser hit its limit mid-summary, the truncation guard
-            // (correctly) refused it, and the run gave up compacting and died
-            // of context pressure. 2/5 on chain-total-compacted in BOTH
-            // validation arms, same empty-completion deaths.
-            max_tokens: 8192,
-            effort: self.cfg.effort,
-            thinking: false,
-            // The prefix is about to change, so there is nothing to reuse.
-            cache_prompt: false,
-        };
+        ));
 
         let response = match self.complete(cx, &request, events).await? {
             Completion::Finished(response) => *response,
@@ -1649,14 +1698,14 @@ impl Agent {
                         omissions = omissions.len(),
                         "summary failed validation; regenerating with the omissions named"
                     );
-                    let retry = vec![Message::user(format!(
+                    // A second isolated question, never a follow-up turn:
+                    // handing the summariser its own rejected output as
+                    // conversation is what `QuarantinedPass::ask` makes
+                    // impossible to do by accident.
+                    let request = pass.ask(format!(
                         "{rendered}\n---\n{}",
                         crate::compact::retry_instruction(&omissions)
-                    ))];
-                    let request = CompletionRequest {
-                        messages: retry,
-                        ..request
-                    };
+                    ));
                     if let Completion::Finished(second) =
                         self.complete(cx, &request, events).await?
                     {
@@ -1727,19 +1776,11 @@ impl Agent {
         summary: &str,
         events: &Option<UnboundedSender<AgentEvent>>,
     ) -> Result<(Usage, Option<Vec<String>>)> {
-        let request = CompletionRequest {
-            model: self.model.clone(),
-            system: Some(crate::compact::VALIDATE_SYSTEM.to_string()),
-            messages: vec![Message::user(crate::compact::validate_instruction(
-                rendered, summary,
-            ))],
-            tools: Vec::new(),
-            // Same rule as the summariser: its own budget, not the agent's.
-            max_tokens: 8192,
-            effort: self.cfg.effort,
-            thinking: false,
-            cache_prompt: false,
-        };
+        // Same rule as the summariser: its own budget, not the agent's.
+        let request = crate::quarantine::QuarantinedPass::new(&self.model, 8192)
+            .system(crate::compact::VALIDATE_SYSTEM)
+            .effort(self.cfg.effort)
+            .ask(crate::compact::validate_instruction(rendered, summary));
         let response = match self.complete(cx, &request, events).await? {
             Completion::Finished(response) => *response,
             // Cancelled mid-verdict: the run is ending, install what exists.
@@ -1908,6 +1949,10 @@ impl Agent {
             malformed_tool_args,
             blocked_sends,
             taint,
+            // Filled by `run_in` once, rather than by every builder: the loop
+            // has six exit points and a field set at five of them is worse
+            // than one set at none.
+            homeostat: None,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -2043,6 +2088,7 @@ impl Agent {
             malformed_tool_args,
             blocked_sends,
             taint,
+            homeostat: None,
             stop_cause: StopCause::Interrupted,
             compactions,
             cost_usd: self.cost(&usage),

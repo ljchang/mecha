@@ -46,9 +46,11 @@
 //! ```
 
 pub mod agent;
+pub mod backlog;
 pub mod batch;
 pub mod cache_lens;
 pub mod candidate;
+pub mod capture;
 pub mod compact;
 pub mod config;
 pub mod counterfactual;
@@ -58,8 +60,10 @@ pub mod distill;
 pub mod doctor;
 pub mod eval;
 pub mod frontdoor;
+pub mod goal;
 pub mod gossip;
 pub mod harness;
+pub mod homeostat;
 pub mod hooks;
 pub mod image;
 pub mod learning;
@@ -71,6 +75,7 @@ pub mod onboarding;
 pub mod outbox;
 pub mod outbox_source;
 pub mod provider;
+pub mod quarantine;
 pub mod questions;
 pub mod replay;
 pub mod replay_run;

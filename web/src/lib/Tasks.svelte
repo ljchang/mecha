@@ -8,6 +8,7 @@
   let filter = $state('actionable');
   let selected = $state(null);
   let adding = $state(false);
+  let moreFields = $state(false);
   let addName = $state('');
   let addDue = $state('');
   let addContext = $state('');
@@ -185,6 +186,8 @@
   // it stops, so "is work happening?" is answered by the store the run
   // writes to rather than by anything the run says about itself (D5/D16).
   const AGENT = 'mecha';
+  const CLOSED_STATUSES = ['done', 'dropped'];
+  const closed = (t) => CLOSED_STATUSES.includes(t.status);
   const working = (t) => t.status === 'waiting' && t.waiting_on === AGENT;
 
   // **D16 — the card's state is derived, and no two states render alike.**
@@ -223,9 +226,6 @@
   // thing to act on — so a closed task is quiet, and the evidence line below
   // carries what the run did instead of a chip in hazard colour drawing the
   // eye to work that is over.
-  const CLOSED = ['done', 'dropped'];
-  const closed = (t) => CLOSED.includes(t.status);
-
   function stateOf(t) {
     // In flight outranks everything: it is the only state that is about right
     // now rather than about what happened.
@@ -462,6 +462,42 @@
     }
   }
 
+  // **B2 — what the capture says about `when`, as a chip you can dismiss.**
+  //
+  // Parsed in Rust (`capture::find_when`) rather than by a model: a capture
+  // that costs a model call is a capture nobody uses, and a model that
+  // rewrites what you typed is worse than one that does nothing. The name is
+  // sent **verbatim** — Things' side of the one thing the surveyed apps
+  // disagree about — and the token is only ever *reported*.
+  //
+  // `dismissed` is separate from `when` on purpose: dismissing has to survive
+  // the next keystroke, and re-parsing on every input would otherwise put the
+  // chip straight back. It resets when the sentence it was about is gone.
+  let when = $state(null);
+  let whenDismissed = $state(false);
+  let parseSeq = 0;
+
+  async function parseWhen(text) {
+    const seq = ++parseSeq;
+    try {
+      const res = await fetch('/api/tasks/parse', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) return;
+      const w = await res.json();
+      // Out-of-order responses would make the chip describe an earlier
+      // sentence. Typing is faster than a round trip.
+      if (seq !== parseSeq) return;
+      if (!w || when?.text !== w?.text) whenDismissed = false;
+      when = w;
+    } catch {
+      // A capture whose date could not be parsed is still a capture. The
+      // chip simply does not appear; nothing blocks on this.
+    }
+  }
+
   async function add() {
     if (!addName.trim()) return;
     busy = true;
@@ -470,14 +506,18 @@
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          // Verbatim. The parsed token is not stripped out — the store holds
+          // the owner's own intentions and this is where that is decided.
           name: addName.trim(),
-          due: addDue.trim() || null,
+          due: (!whenDismissed && when?.due) || addDue.trim() || null,
           context: addContext.trim() || null,
         }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       adding = false;
       addName = addDue = addContext = '';
+      when = null;
+      whenDismissed = false;
       await load();
     } catch (e) {
       error = String(e?.message ?? e);
@@ -497,11 +537,20 @@
 
   // Actions as verbs, not status nouns: what tapping DOES, in words. Each
   // is one kg_task_update, one tap, reversible — the board has no delete.
-  const ACTIONS = [
-    ['done', '✓ done'],
+  //
+  // **B1, amended: grouped, not hidden.** The original decision put four of
+  // these behind a `…` sheet, translating the survey's "one gesture, then a
+  // sheet" into "one button, then a sheet". But that survey is about *swipe*
+  // actions on a **collapsed** row, and this strip does not exist until the
+  // card is tapped open — so the six equal-weight chips the owner called "a
+  // little bizarre" were never in anyone's way, and the expanded card already
+  // *is* the sheet. A `…` inside it nests a sheet in a sheet. What the chips
+  // lacked was shape, not depth: `done` has left for the row itself, and what
+  // remains is ordered by how far it moves the task, with a label saying so.
+  const LIFECYCLE = [
     ['next', 'do next'],
-    ['waiting', 'waiting on someone'],
     ['scheduled', 'schedule'],
+    ['waiting', 'waiting on someone'],
     ['inbox', 'back to inbox'],
     ['dropped', 'drop'],
   ];
@@ -655,8 +704,39 @@
            buttons rather than anchors, one step further: an `<input>` there
            cannot reliably be focused or typed into at all. -->
       <div class="cardwrap">
+      <div class="rowline">
+      <!-- **B1 — complete is a tap, not a trip through a menu.** In Things it
+           is "a tap on the circle only"; mecha's rows had no circle, so the
+           single most frequent action on a board was the one that cost an
+           expand. A sibling of the card rather than a child, for the reason
+           every other control here is: the card row is itself a `<button>`.
+
+           `done` and nothing else. `schedule` is the other one-gesture action
+           in the survey, but it sets a value and so opens a picker, which is
+           a second interaction wherever it lives — it stays in the card. -->
+      {#if !closed(t)}
+        <button
+          class="tick"
+          disabled={busy}
+          title="done"
+          aria-label="mark done"
+          onclick={() => setStatus(t.id, 'done')}
+        >
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5.5 5.5L20 6.5" /></svg>
+        </button>
+      {/if}
+      <!-- **The card is a `<div>`; only its header is a `<button>`.** It was
+           a button wrapping everything, so every control in the expanded
+           strip was interactive content nested inside one — invalid HTML that
+           browsers disagree about and assistive tech cannot traverse, which
+           is why three separate comments here explain choosing a `<button>`
+           over an `<a>` to make the nesting *less* bad. Amended B1 is what
+           makes the fix obvious rather than fiddly: the expanded card is the
+           sheet, so its contents are siblings of the header, not children of
+           it. Six compiler warnings, all of them real, gone. -->
+      <div class="card row">
       <button
-        class="card row"
+        class="cardhead"
         onclick={() => {
           selected = selected === t.id ? null : t.id;
           if (selected === t.id) loadPlan(t);
@@ -716,6 +796,7 @@
                record of what that delegation actually did. -->
           <div class="evline">{evidence(t)}</div>
         {/if}
+      </button>
         {#if selected === t.id}
           {#if plans[t.id]?.length}
             <ul class="plan">
@@ -727,6 +808,7 @@
             </ul>
           {/if}
           <div class="statusrow">
+            <span class="grouplabel">{working(t) ? 'in flight' : 'hand it over'}</span>
             {#if working(t)}
               <button
                 class="statusbtn stopbtn"
@@ -774,10 +856,12 @@
                 }}
               >{openSource === t.id ? 'hide' : 'read'} the {sourceWord(t)}</button>
             {/if}
-            {#each ACTIONS.filter(([status]) => status !== t.status) as [status, verb]}
+          </div>
+          <div class="grouprow">
+            <span class="grouplabel">move it</span>
+            {#each LIFECYCLE.filter(([status]) => status !== t.status) as [status, verb]}
               <button
                 class="statusbtn"
-                class:donebtn={status === 'done'}
                 disabled={busy}
                 onclick={(e) => {
                   e.stopPropagation();
@@ -785,6 +869,15 @@
                 }}
               >{verb}</button>
             {/each}
+            {#if closed(t)}
+              <!-- A closed task's one useful move is back out of closed, and
+                   `done` is not on this list because the row's tick owns it. -->
+              <button
+                class="statusbtn"
+                disabled={busy}
+                onclick={(e) => { e.stopPropagation(); setStatus(t.id, 'next'); }}
+              >reopen</button>
+            {/if}
           </div>
           {#if openSource === t.id}
             <!-- **Third-party text, marked as third-party text.** These are
@@ -815,7 +908,8 @@
             </div>
           {/if}
         {/if}
-      </button>
+      </div>
+      </div>
       {#each questionsFor(t) as q}
         {@render questionCard(q, null, questionsFor(t).length)}
       {/each}
@@ -835,14 +929,44 @@
     <div class="sheet">
       <div class="grip"></div>
       <div class="sheettitle">Capture — lands in inbox</div>
+      <!-- **One box** (B2). It asked for a name, a due date and a context,
+           which broke the survey's own invariant: capture lands in Inbox and
+           organization is deferred — no app makes you choose a project at
+           capture time. Say when in the sentence and the chip below picks it
+           up; the two fields are behind `more` for the times you want them.
+
+           This is also what makes dictation worth the button. A spoken
+           capture arrives as ONE string with no second field to fill, so
+           without the parse the microphone could only ever produce an undated
+           inbox item. -->
       <div class="namerow">
-      <input class="field" placeholder="The task, phrased as an action" bind:value={addName} />
-        <Dictate onText={(text, err) => { if (text) addName = addName ? `${addName} ${text}` : text; if (err) error = err; }} />
+      <input
+        class="field"
+        placeholder="Call Bob tomorrow about the grant"
+        bind:value={addName}
+        oninput={(e) => parseWhen(e.currentTarget.value)}
+      />
+        <Dictate onText={(text, err) => { if (text) { addName = addName ? `${addName} ${text}` : text; parseWhen(addName); } if (err) error = err; }} />
       </div>
-      <div class="fieldrow">
-        <input class="field" placeholder="due: today, +3d, 2026-09-05" bind:value={addDue} />
-        <input class="field" placeholder="@context" bind:value={addContext} />
-      </div>
+      {#if when && !whenDismissed}
+        <!-- Dismissable, and the name is untouched either way. Todoist strips
+             the token out of the title; Things keeps it. This is Things —
+             a capture surface that silently edits what you said is the wrong
+             default for a store meant to hold your own intentions. -->
+        <div class="whenrow">
+          <button class="whenchip" onclick={() => (whenDismissed = true)} title="not a date — ignore it">
+            due {when.due} · from “{when.text}” ✕
+          </button>
+        </div>
+      {/if}
+      {#if moreFields}
+        <div class="fieldrow">
+          <input class="field" placeholder="due: today, +3d, 2026-09-05" bind:value={addDue} />
+          <input class="field" placeholder="@context" bind:value={addContext} />
+        </div>
+      {:else}
+        <button class="morebtn" onclick={() => (moreFields = true)}>more — due, context</button>
+      {/if}
       <div class="btnrow">
         <button class="btn" onclick={() => (adding = false)}>Cancel</button>
         <button class="btn primary" disabled={busy || !addName.trim()} onclick={add}>Capture</button>
@@ -856,13 +980,20 @@
   header { display: flex; align-items: center; justify-content: space-between; padding: 22px 20px 12px; }
   .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; }
   .scroll { flex: 1; overflow-y: auto; padding: 2px 20px 90px; display: flex; flex-direction: column; gap: 10px; }
-  .row { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 8px; cursor: pointer; color: var(--text); font: inherit; }
+  .row { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 8px; color: var(--text); }
+  /* Only this is the tap target that opens the card. */
+  .cardhead { text-align: left; display: flex; flex-direction: column; gap: 8px; background: none; border: none; padding: 0; margin: 0; color: inherit; font: inherit; cursor: pointer; width: 100%; }
   .name { font-size: 14px; font-weight: 500; line-height: 1.4; }
   .meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .due { display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
   .due.hazard { color: var(--hazard); }
   .dim { color: var(--accent-700); }
-  .statusrow { display: flex; gap: 6px; flex-wrap: wrap; border-top: 1px solid var(--accent-900); padding-top: 10px; }
+  .statusrow { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; border-top: 1px solid var(--accent-900); padding-top: 10px; }
+  .grouprow { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding-top: 8px; }
+  /* The shape the six chips were missing. A label costs one line and turns a
+     wall of equal-weight options into two answers to two different
+     questions. */
+  .grouplabel { font-family: var(--mono); font-size: 10px; color: var(--text-muted); width: 100%; }
   .statusbtn { font-family: var(--mono); font-size: 11px; color: var(--text); background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 9px 12px; min-height: 40px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; }
   /* The one action on this row that starts work rather than filing it. */
   .askbtn { color: var(--accent-400); border-color: var(--accent-400); }
@@ -896,6 +1027,13 @@
   @keyframes agent-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
   @media (prefers-reduced-motion: reduce) { .agent { animation: none; } }
   .cardwrap { display: flex; flex-direction: column; gap: 6px; }
+  /* The tick sits outside the card so it is not interactive content nested
+     in a `<button>`, and the card still fills the row. */
+  .rowline { display: flex; align-items: flex-start; gap: 8px; }
+  .rowline > .card { flex: 1; min-width: 0; }
+  .tick { flex-shrink: 0; margin-top: 14px; width: 30px; height: 30px; border-radius: 50%; background: var(--surface); border: 1px solid var(--accent-700); color: var(--accent-700); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  .tick:hover, .tick:focus-visible { color: var(--accent-400); border-color: var(--accent-400); }
+  .tick:disabled { opacity: 0.45; cursor: default; }
   /* A question is not a chip. It gets the accent edge the agent chip wears,
      because this is the only state whose remedy is a person — and it must not
      be mistakable for the ordinary `waiting on someone` a board is full of. */
@@ -923,6 +1061,11 @@
   .nowline { font-size: 12px; color: var(--accent-400); line-height: 1.45; }
   .evline { font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); line-height: 1.5; }
   .evline.broke { color: var(--hazard); border: none; }
+  .whenrow { display: flex; }
+  /* The chip is a control, so it looks like one you can dismiss — not a
+     label reporting a decision already made on your behalf. */
+  .whenchip { font-family: var(--mono); font-size: 11px; color: var(--accent-400); background: var(--surface); border: 1px solid var(--accent-400); border-radius: var(--radius-chip); padding: 7px 10px; min-height: 36px; cursor: pointer; }
+  .morebtn { align-self: flex-start; background: none; border: none; color: var(--text-muted); font-size: 12px; padding: 4px 0; min-height: 32px; cursor: pointer; text-decoration: underline; }
   .warnline { display: flex; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; }
   .empty { color: var(--text-muted); font-size: 14px; padding: 20px 0; text-align: center; }
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; padding-top: 6px; }
