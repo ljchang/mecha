@@ -762,7 +762,15 @@ pub struct RunOutcome {
     /// produced without any, and only one of them tests that summaries carry
     /// the task forward.
     pub compactions: u32,
-    /// How many times a prompt was refused as too large and the run recovered.
+    /// How many times a prompt was refused as too large.
+    ///
+    /// Named for the *observation*, not the response. An earlier spelling
+    /// counted recoveries, which left the one overflow that is never recovered
+    /// — the forced final-answer turn, whose failure is swallowed so the run
+    /// can still return its text — recorded as `Some(0)`: sensor present, saw
+    /// nothing. The question this field exists to answer is whether the
+    /// threshold failed, and whether the harness got out of it afterwards is a
+    /// separate fact.
     ///
     /// Distinct from `compactions`, and the distinction is the whole reason
     /// this exists. `compactions` counts *summaries*, so an overflow the
@@ -778,10 +786,10 @@ pub struct RunOutcome {
     /// count is the baseline any change claiming to predict the overflow has
     /// to be measured against.
     ///
-    /// Recoveries *attempted*, all of which either succeeded or ended the run:
-    /// a retry that overflows again propagates, so there is no outcome to
-    /// record and no third case to count.
-    pub overflow_recoveries: u32,
+    /// A retry that overflows again propagates and ends the run, so it leaves
+    /// no outcome to be recorded on — the count on a row that exists is always
+    /// of overflows the run survived.
+    pub context_overflows: u32,
     /// False when `usage` is a *lower bound* rather than a measurement.
     ///
     /// A run cancelled mid-stream keeps the input tokens, which arrive in the
@@ -1015,11 +1023,11 @@ impl Agent {
         // Counted here rather than by the builders, for the same reason the
         // snapshot below is: the loop returns from six places, and the count
         // lives in a local behind all of them.
-        let mut overflow_recoveries = 0u32;
+        let mut context_overflows = 0u32;
         let mut outcome = self
-            .run_loop(cx, convo, events, &mut overflow_recoveries)
+            .run_loop(cx, convo, events, &mut context_overflows)
             .await?;
-        outcome.overflow_recoveries = overflow_recoveries;
+        outcome.context_overflows = context_overflows;
         // One place, after every exit. The loop returns from six of them, and
         // a snapshot attached at five is worse than one attached at none —
         // a field that is present for most runs reads as a sampling failure
@@ -1036,7 +1044,7 @@ impl Agent {
         cx: &RunContext,
         convo: &mut Conversation,
         events: Option<UnboundedSender<AgentEvent>>,
-        overflow_recoveries: &mut u32,
+        context_overflows: &mut u32,
     ) -> Result<RunOutcome> {
         // Run-scoped state a tool cannot otherwise see, stamped onto the
         // `ToolCtx` once here rather than at every call site that builds a
@@ -1117,7 +1125,7 @@ impl Agent {
             // call. Stop where we are and hand back what there is.
             if cx.cancelled() {
                 tracing::info!(turns, "interrupted");
-                let outcome = self.interrupted(
+                let mut outcome = self.interrupted(
                     messages.last().map(Message::text).unwrap_or_default(),
                     usage,
                     turns,
@@ -1127,7 +1135,7 @@ impl Agent {
                     taint,
                     compactions,
                 );
-                emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
+                emit_done(&events, &mut outcome, *context_overflows);
                 return Ok(outcome);
             }
 
@@ -1299,7 +1307,18 @@ impl Agent {
                     match self.final_answer(cx, messages, &events).await {
                         Ok(Some(answer)) => text = answer,
                         Ok(None) => {}
-                        Err(e) => tracing::warn!(error = %e, "final-answer turn failed"),
+                        Err(e) => {
+                            // The failure is swallowed so the run still
+                            // returns the text it has — but if it was an
+                            // overflow, the threshold failed and the row must
+                            // say so. This turn is a real candidate for one:
+                            // it is sent at a ceiling, on top of whatever the
+                            // last turn's tool results added.
+                            if is_context_overflow(&e) {
+                                *context_overflows += 1;
+                            }
+                            tracing::warn!(error = %e, "final-answer turn failed");
+                        }
                     }
                 }
 
@@ -1316,9 +1335,9 @@ impl Agent {
                 }
 
                 let cost = self.cost(&usage);
-                let outcome = RunOutcome {
+                let mut outcome = RunOutcome {
                     homeostat: None,
-                    overflow_recoveries: 0,
+                    context_overflows: 0,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -1338,7 +1357,7 @@ impl Agent {
                     compactions,
                     usage_complete: true,
                 };
-                emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
+                emit_done(&events, &mut outcome, *context_overflows);
                 return Ok(outcome);
             }
             turns += 1;
@@ -1378,7 +1397,7 @@ impl Agent {
                     // this measures is the threshold having failed to prevent
                     // the overflow, which is already true at this line however
                     // well the rebuild below goes.
-                    *overflow_recoveries += 1;
+                    *context_overflows += 1;
                     tracing::warn!("prompt overflowed the context window; compacting to recover");
                     // Kept for the recording, as at the threshold site — but
                     // compared at the end rather than pushed per pass, because
@@ -1443,7 +1462,7 @@ impl Agent {
                     // What the cut turn had already cost, on top of the turns
                     // that completed.
                     usage.add(&spent);
-                    let outcome = self.interrupted(
+                    let mut outcome = self.interrupted(
                         partial,
                         usage,
                         turns,
@@ -1453,7 +1472,7 @@ impl Agent {
                         taint,
                         compactions,
                     );
-                    emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
+                    emit_done(&events, &mut outcome, *context_overflows);
                     return Ok(outcome);
                 }
             };
@@ -1567,7 +1586,7 @@ impl Agent {
                     // has a matching tool_result, so this must never be empty
                     // when the model asked for tools.
                     if results.is_empty() {
-                        let outcome = self.finish(
+                        let mut outcome = self.finish(
                             text,
                             &response,
                             usage,
@@ -1578,7 +1597,7 @@ impl Agent {
                             taint,
                             compactions,
                         );
-                        emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
+                        emit_done(&events, &mut outcome, *context_overflows);
                         return Ok(outcome);
                     }
 
@@ -1638,7 +1657,7 @@ impl Agent {
                         outcome.stop_cause = StopCause::NoOutput;
                         outcome.exhausted = true;
                     }
-                    emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
+                    emit_done(&events, &mut outcome, *context_overflows);
                     return Ok(outcome);
                 }
             }
@@ -1985,12 +2004,12 @@ impl Agent {
             taint,
             // Filled by `run_in` once, rather than by every builder: the loop
             // has six exit points and a field set at five of them is worse
-            // than one set at none. `overflow_recoveries` rides the same seam,
+            // than one set at none. `context_overflows` rides the same seam,
             // and for a second reason — it would arrive here as a tenth
             // positional `u32` immediately after `compactions`, where a
             // swapped pair of arguments compiles.
             homeostat: None,
-            overflow_recoveries: 0,
+            context_overflows: 0,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -2127,7 +2146,7 @@ impl Agent {
             blocked_sends,
             taint,
             homeostat: None,
-            overflow_recoveries: 0,
+            context_overflows: 0,
             stop_cause: StopCause::Interrupted,
             compactions,
             cost_usd: self.cost(&usage),
@@ -2688,6 +2707,25 @@ impl Agent {
 
         results.into_iter().flatten().collect()
     }
+}
+
+/// Announce a finished run, with the fields the builders could not fill.
+///
+/// `AgentEvent::Done` carries a whole `RunOutcome`, and `run_in` patches
+/// `context_overflows` onto the returned value *after* the loop — so the event
+/// went out with a zero. That is worse than `homeostat`'s identical gap, where
+/// the field is `Option` and `None` honestly reads as "not sampled": a `u32`
+/// zero is indistinguishable from a run that really had none, and
+/// `slack/pump.rs` already reads `compactions` off this same event.
+///
+/// One place, because the loop emits `Done` from five of them.
+fn emit_done(
+    events: &Option<UnboundedSender<AgentEvent>>,
+    outcome: &mut RunOutcome,
+    context_overflows: u32,
+) {
+    outcome.context_overflows = context_overflows;
+    emit(events, AgentEvent::Done(Box::new(outcome.clone())));
 }
 
 fn emit(events: &Option<UnboundedSender<AgentEvent>>, event: AgentEvent) {
@@ -4193,19 +4231,101 @@ mod tests {
         let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert_eq!(outcome.text, "done");
-        assert_eq!(outcome.overflow_recoveries, 1);
+        assert_eq!(outcome.context_overflows, 1);
         // `Some(1)`, never a bare 1: a live run always knows its count, so the
         // record says so — and that is what separates it from a row written
         // before the sensor existed, which stays `None`.
         let stats = crate::session::RunStats::from(&outcome);
-        assert_eq!(stats.overflow_recoveries, Some(1));
+        assert_eq!(stats.context_overflows, Some(1));
         // A run that never overflowed records `Some(0)` — "the sensor was
         // here and saw nothing" — which is a different claim from `None`.
         let clean = crate::session::RunStats::from(&RunOutcome {
-            overflow_recoveries: 0,
+            context_overflows: 0,
             ..outcome.clone()
         });
-        assert_eq!(clean.overflow_recoveries, Some(0));
+        assert_eq!(clean.context_overflows, Some(0));
+    }
+
+    /// The overflow that is never recovered, and was therefore never counted.
+    ///
+    /// `final_answer` runs at a ceiling and its failure is swallowed on
+    /// purpose, so the run still returns the text it has. But a swallowed
+    /// *overflow* is the threshold having failed, and recording `Some(0)` for
+    /// it is the false zero the `Option` on this field exists to prevent — the
+    /// sensor present and reporting nothing. Counting the observation rather
+    /// than the recovery is what makes this fall in naturally.
+    #[tokio::test]
+    async fn an_overflow_in_the_forced_final_turn_is_counted_even_though_it_is_swallowed() {
+        let provider = Arc::new(OverflowScript {
+            turns: Mutex::new(vec![
+                Some(assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "echo".into(),
+                        input: json!({"value": "hi"}),
+                    }],
+                    StopReason::ToolUse,
+                )),
+                // The turn ceiling lands here, so the next request is the
+                // forced final answer — and it is refused as too large.
+                None,
+            ]),
+            seen: Mutex::new(Vec::new()),
+        });
+
+        struct Shared(Arc<OverflowScript>);
+        #[async_trait]
+        impl Provider for Shared {
+            fn id(&self) -> &str {
+                self.0.id()
+            }
+            fn default_model(&self) -> &str {
+                self.0.default_model()
+            }
+            async fn complete(
+                &self,
+                req: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                self.0.complete(req, sink).await
+            }
+        }
+
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(EchoTool));
+        let cfg = AgentConfig {
+            max_turns: 1,
+            ..AgentConfig::default()
+        };
+        let agent = Agent::new(
+            Box::new(Shared(Arc::clone(&provider))),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+            cfg,
+            None,
+        )
+        .unwrap();
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::MaxTurns);
+        assert_eq!(
+            outcome.context_overflows, 1,
+            "the final-answer turn overflowed; the row must not read as a run \
+             that never did"
+        );
+        assert_eq!(
+            crate::session::RunStats::from(&outcome).context_overflows,
+            Some(1)
+        );
     }
 
     #[tokio::test]
@@ -4278,7 +4398,7 @@ mod tests {
         // Both recoveries are counted, not just the one that summarised —
         // which is the whole distinction from `compactions`. Neither overflow
         // here produced a summary, so `compactions` sees nothing at all.
-        assert_eq!(outcome.overflow_recoveries, 2);
+        assert_eq!(outcome.context_overflows, 2);
         assert_eq!(outcome.compactions, 0);
         let seen = provider.seen.lock().unwrap();
         assert_eq!(seen.len(), 4, "both overflows must be retried");

@@ -264,7 +264,7 @@ pub struct RunStats {
     /// `None` says the sensor was not there. Absent is not zero, the rule
     /// [`crate::homeostat`] and [`crate::backlog`] both state at length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub overflow_recoveries: Option<u32>,
+    pub context_overflows: Option<u32>,
     /// The conditions this run happened under, when the front-end asked for
     /// them. Recorded here rather than derived later because a run
     /// reconstructed against *today's* machine state is measuring the
@@ -326,7 +326,7 @@ impl RunStats {
         // Summed through the `Option`, on `cost_usd`'s shape above: a live run
         // always knows its own count, so the `None` case only arises folding a
         // row read back off disk, and `or` keeps whichever arm had a sensor.
-        self.overflow_recoveries = match (self.overflow_recoveries, Some(o.overflow_recoveries)) {
+        self.context_overflows = match (self.context_overflows, Some(o.context_overflows)) {
             (Some(a), Some(b)) => Some(a + b),
             (a, b) => a.or(b),
         };
@@ -811,7 +811,7 @@ mod homeostat_record_tests {
     #[test]
     fn the_conditions_a_run_happened_under_reach_its_record() {
         let bare = || crate::agent::RunOutcome {
-            overflow_recoveries: 0,
+            context_overflows: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),
@@ -1308,7 +1308,7 @@ mod tests {
         };
         let outcome = RunOutcome {
             homeostat: None,
-            overflow_recoveries: 0,
+            context_overflows: 0,
             text: "done".into(),
             stop_reason: StopReason::EndTurn,
             usage: Usage {
@@ -1372,7 +1372,7 @@ mod tests {
         let outcome =
             |turns: u32, calls: usize, errored: bool, ended_failed: bool, cause| RunOutcome {
                 homeostat: None,
-                overflow_recoveries: 0,
+                context_overflows: 0,
                 text: String::new(),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage {
@@ -1440,7 +1440,7 @@ mod tests {
 
         let mut incomplete = RunOutcome {
             homeostat: None,
-            overflow_recoveries: 0,
+            context_overflows: 0,
             text: String::new(),
             stop_reason: StopReason::Other,
             usage: Usage::default(),
