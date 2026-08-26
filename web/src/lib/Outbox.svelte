@@ -182,6 +182,19 @@
         </div>
       {/each}
 
+      {#if detail.error}
+        <!-- A failed send stays pending: the draft is good, the delivery was
+             not. Saying which is the difference between an item somebody can
+             fix and an item that sits in the queue being tapped at. -->
+        <div class="failline">
+          {@render hazardGlyph()}
+          <div>
+            <div class="failhead">The last attempt did not send</div>
+            <div class="failwhy">{detail.error}</div>
+          </div>
+        </div>
+      {/if}
+
       <div class="provenance">
         staged {age(detail.created_at)}{detail.session_id ? ` · session ${detail.session_id}` : ''}{detail.edited ? ' · edited' : ''}
       </div>
@@ -198,8 +211,18 @@
           >Edit prose</button>
           <button class="btn" disabled={busy} onclick={() => (rejecting = true)}>Reject…</button>
         </div>
-        <button class="btn primary tall" disabled={busy} onclick={() => (confirming = true)}>
-          Approve — confirms first
+        <!-- The confirm sheet earns its place on an armed draft, where it
+             shows the exact arguments — more than this screen does. On a
+             clean one it showed strictly less than the detail already open,
+             which is a confirmation that teaches people to tap through, and
+             what that trains away is the armed one. So: one step here, two
+             when the trifecta was armed. -->
+        <button
+          class="btn primary tall"
+          disabled={busy}
+          onclick={() => (detail.taint.armed ? (confirming = true) : approve())}
+        >
+          {busy ? 'sending…' : detail.taint.armed ? 'Approve — confirms first' : 'Approve and send'}
         </button>
       {/if}
     </div>
@@ -207,13 +230,8 @@
     {#if confirming}
       <div class="sheet">
         <div class="sheet-grip"></div>
-        {#if detail.taint.armed}
-          <div class="warnline">{@render hazardGlyph()}<span>This draft was written while the trifecta was armed. The exact arguments:</span></div>
-          <pre class="argdump">{JSON.stringify(detail.args, null, 2)}</pre>
-        {:else}
-          <div class="sheet-text">Approve this {detail.label.toLowerCase()}?</div>
-          <div class="sheet-sub">{detail.headline || detail.tool}</div>
-        {/if}
+        <div class="warnline">{@render hazardGlyph()}<span>This draft was written while the trifecta was armed. The exact arguments:</span></div>
+        <pre class="argdump">{JSON.stringify(detail.args, null, 2)}</pre>
         <div class="btnrow">
           <button class="btn" onclick={() => (confirming = false)}>Back</button>
           <button class="btn primary" disabled={busy} onclick={approve}>
@@ -270,6 +288,24 @@
   .quoted { display: flex; gap: 10px; }
   .gutter { width: 2px; background: var(--hazard); flex-shrink: 0; }
   .qtext { font-size: 13px; line-height: 1.55; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .failline {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 10px 12px;
+    border: 1px solid var(--hazard);
+    border-radius: var(--radius);
+  }
+  .failhead {
+    font-size: 13px;
+    color: var(--hazard);
+  }
+  .failwhy {
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
   .provenance { font-family: var(--mono); font-size: 10px; color: var(--accent-700); }
   .btnrow { display: flex; gap: 10px; }
   .btn { flex: 1; min-height: 48px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; cursor: pointer; }
@@ -280,6 +316,5 @@
   .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--accent-500); border-radius: 16px 16px 0 0; padding: 14px 20px 28px; display: flex; flex-direction: column; gap: 12px; }
   .sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-900); align-self: center; }
   .sheet-text { font-size: 15px; font-weight: 500; }
-  .sheet-sub { font-size: 13px; color: var(--text-muted); }
   .argdump { background: var(--void); border: 1px solid var(--accent-900); border-radius: var(--radius); padding: 12px; font-family: var(--mono); font-size: 11px; line-height: 1.5; overflow-x: auto; max-height: 240px; margin: 0; color: var(--text); }
 </style>
