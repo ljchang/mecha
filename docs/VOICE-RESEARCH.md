@@ -1295,3 +1295,57 @@ belongs in rather than left here: Nemotron 3.5 ASR Streaming in §2.1 and
 are watch items on §6.7's terms — re-check when revisiting that leg, not
 before. Recorded because the expensive half of each is the survey, and a
 survey nobody wrote down gets run again.
+
+**Pace, and a bug that passed every check I ran (2026-08-26).** The speed
+control was `librosa.effects.time_stretch` — an STFT phase vocoder, applied
+to finished audio, and phasey enough on speech that the slider was
+unusable. Replaced with WSOLA, which searches for the splice point whose
+waveform best continues the previous frame so pitch periods stay aligned
+across the cut. Hand-rolled in numpy rather than shelled out: the serving
+container has no ffmpeg and no `torchaudio.sox_effects`, and **the image is
+built ad-hoc with no Dockerfile in the repo**, so a dependency there is a
+build step nothing tracks. That absence is real debt and is the fallback if
+the hand-rolled path ever needs to go.
+
+The first implementation chained the analysis pointer off each *adjusted*
+position instead of a nominal one. The perfect continuation sits at
+`prev + Hs`, and at 1.2x the search radius is 10 ms against an `Ha - Hs`
+gap of 3 ms — so the perfect match was always in the window and always won,
+the pointer advanced by the *synthesis* hop every frame, and the output was
+the input at normal speed truncated where the shorter buffer ended. The fix
+is `nominal = k * Ha`, computed from the frame index, with the search as a
+bounded non-accumulating perturbation.
+
+**What makes it worth writing down is that it measured fine.** Duration
+5.63s against a 5.57s target — 1% off. Peak sane, RMS sane, all finite, no
+NaN, bounds still enforced. Every instrument said pass, because "played at
+normal speed and cut off" and "correctly compressed" produce the *same
+shorter file*, and no metadata check can separate them. It was caught by
+the owner listening, in one pass, from the symptom alone. The eval rig's
+oldest rule arriving in a new costume: everything a model says about its
+own work is hearsay, grade the artifact — and a duration is not the
+artifact.
+
+**And the stretch is a repair; pace really lives upstream.** Chatterbox
+clones speaking *style*, so a briskier reference yields a briskier voice
+with no per-utterance DSP at all — `vctk_p276_brisk` is p276's reference at
+tempo 1.18 (paid once, on 17s, by rubberband on the host), rendering ~14%
+quicker natively. The same shape as `exaggeration` one layer up: the knob
+that was reachable operated on the wrong object, and the one that controls
+the property was never spelled as a knob. Measured and negative:
+`cfg_weight` is **not** a speed lever — lowering it to 0.2 and 0.15 made
+the line longer. Cost of the repair path, for the record: 79 ms on a 6.7s
+utterance at 1.2x, and `speed == 1.0` short-circuits to zero, so the
+default pays nothing.
+
+**Voice and speed are remembered per browser**, in `voice-core.js`.
+Deliberately not a server default: `LocalTTS` is per-connection so one
+listener's choice cannot reach another's, and a server-side default would
+spend that property on a problem that is really "this browser forgot".
+What is stored is the server's *reply* and never the request — the rule the
+UI already followed for rendering — which makes a stale preference
+self-healing: a remembered voice whose file has since been deleted is
+refused, the server answers with what it is actually speaking as, and that
+is what gets written back. It survives exactly one connection. Storage
+throws outright in a private window, so every access is guarded and a
+failure degrades to what existed before: ask, and take the answer.
