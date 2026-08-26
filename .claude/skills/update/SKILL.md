@@ -164,8 +164,30 @@ server (its MCP children are spawned at connector start). What this surface
 still owns: **a repo build is no longer an install here either** — a
 `cargo build --release` in the graph repo changes nothing mecha can see,
 which is the same trap as mecha's own binaries wearing a different repo.
-The graph repo's *own* nightly (`scripts/nightly.sh`, cron 01:30) builds and
-runs from its repo tree and is not mecha's concern.
+**And there is a seventh binary, which no `cargo install` reaches.** This
+paragraph used to say the graph repo's own nightly "builds and runs from its
+repo tree and is not mecha's concern". It does not build, and it is:
+`scripts/nightly.sh` sets `PKG="$REPO_DIR/target/release/mecha-graph"` and
+**executes whatever is sitting there**. Its `link --auto` step runs the kNN
+linker, straight into the owner's graph, at 01:30.
+
+Found 2026-08-26, hours after a session repaired a linker bug out of the live
+graph — 30 placeholder nodes merged, 121 payloads rewritten, 23 accepted facts
+re-pointed. That binary was dated **Aug 25**. Left alone, the nightly would
+have re-run the old linker and re-staged the same damage while every version
+string on the machine read current. So:
+
+```bash
+cd ~/Github/personalized_knowledge_graph && cargo build --release
+ls -l target/release/mecha-graph     # must be today
+```
+
+**Do not assume `cargo install --path` refreshed it** — where cargo puts an
+install's intermediate artifacts is not a promise about that path, so check
+the date rather than reason about it. This is the skill's own thesis failing
+inside the skill's own text: *verify the running thing, never the repo* — and
+a cron job's binary is a running thing that answers to no `--version` anybody
+types.
 
 mecha itself needs no change when graph tools change — it discovers tools
 via `tools/list`.
@@ -284,6 +306,15 @@ a different repository on a different version line.
   What this finds is everything *else*: a TUI, a `mecha chat`, anything a
   person left open in another terminal — none of which any `systemctl` line
   reaches.
+
+  **Some of what it finds will not be yours.** On a machine running several
+  Claude sessions against one checkout, the sweep surfaces other sessions'
+  test servers and their MCP children — 2026-08-26 it found three on a peer's
+  `./target/debug/mecha serve --port 8894`. Walk the parent (`/proc/<pid>/status`
+  `PPid`, then that pid's `cmdline`) before doing anything: a stale process is
+  a thing to *report to its owner*, not to kill. Killing another session's
+  process in a shared tree is the same accident the worktree rule exists to
+  prevent.
 - **Never build while a benchmark is running.** This host has unified memory
   and llama.cpp inference is bandwidth-bound; a parallel `cargo` build starves
   it. `scripts/start-moe-mtp.sh` records the day a "50x slowdown" was blamed on

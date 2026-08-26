@@ -1938,6 +1938,69 @@ review` and were then dropped or reworked rather than marked done. The
 reviewable-document version gets built when that number argues for it, and
 gets built as a document separate from the todos.
 
+**2026-08-26 (fourth pass) — the graph queue was asking for verdicts it
+could not show, on candidates it could not accept.** Four bugs, found by the
+owner reviewing on a phone, and they compound in that order.
+
+The card said **`undefined — undefined — undefined`**. `Queue.svelte` spelled
+its fallback ``payload.statement ?? `${subject} — ${predicate} — ${object}` ``
+— and a template literal is never nullish, so `??` stops at it. A commitment
+payload carries `{who, what, when, direction}` and no s/p/o at all, so all
+**695** `llm:commitment` cards asked for a verdict on a belief nobody could
+read. The correct chain existed twice in Rust with a test named on the
+commitment case (`tui/queues.rs`, `items_from_json`); the page was the third
+reader and re-derived it wrong. One `faceOf()` now, matched to the Rust rather
+than improved on.
+
+Underneath it, **`linker:knn` was writing node ids into `subject` and
+`object`, which are names.** `ProposedFact.subject` is what `accept_candidate`
+hands to `resolve_entity` — canonical name, alias, identifier, fuzzy — with no
+tier that reads `nodes.id`, and it is also the `kg_upsert` wire format. The
+linker looked both names up for its statement and then stored the ids
+(`linkers.rs`), so **every candidate it staged was unacceptable**, `bind` could
+never suggest anything (`suggest_entities` matches names; a uuid is not a
+misspelling), and `accept --create-subjects` — one of the two ways the card
+offered through the failure — minted topic nodes whose *display name* was
+another node's id.
+
+That last part is what made it worse than a stuck queue. **Thirty** such
+placeholders were in the live graph, and once one exists the id *resolves* —
+to the placeholder — so the next candidate carrying it accepts cleanly and
+asserts a belief about a node standing for nothing. Candidate #16644 no longer
+failed; it answered `already resolves — nothing to bind`. A queue item that
+fails loudly is a bug; one that succeeds into a fiction is the shape this cost
+an afternoon to see. `repair-id-payloads` merged the 30 placeholders into the
+nodes they were named after, rewrote **121 of 8,988** pending payloads to
+names, and re-pointed **23 accepted facts** at real entities; idempotent on a
+second run. Applied to the live store the same day.
+
+**The bind target existed on the server and on no surface.** `BindBody.to` had
+always been there and `mecha review bind --to` too, but neither the web nor the
+TUI could send one — so the card displayed the graph's own instruction, *name a
+target with `--to`*, and could not carry it out. The phone gets a field after a
+failed bind (never after a failed accept, where naming a target is not the
+answer); the TUI gets `B`, and a failed `b` opens the same prompt. The prompt
+owns the keyboard while it is up, which it has to: `a`, `r` and `d` are verdict
+keys, so a target named "Dana" typed into a live list would have filed three.
+
+Last, **`--ids` was bounded by `--top`, which defaults to 10** — so a named id
+set was silently trimmed. Found by the other session's review of a smaller bug
+in the same code (a progress counter reading the *requested* count rather than
+the returned rows) and worse than what it was reviewing: the TUI's group dive
+has shown at most ten members of any group since that level shipped. Enter on
+a group of seventeen, get ten, nothing says so. `mecha review items` now asks
+for exactly as many as it names.
+
+What made all of this reviewable in the first place is the fifth change:
+**a group can be opened and its members verdicted one at a time** on the web
+(`GET /api/queue/items`, "Review each of the N"), which the TUI has had and
+the phone had not. The case for it is one real group — seventeen near-repeats
+naming Emmy, Sage, Katie, Joseph, Eni, Justin and Jesse as the owner's
+children, mostly Bee mishearing two names. Similarity is the grouping key, not
+agreement, so "Accept all 17" would have asserted every one of them. A verdict
+inside a group is deliberately plain — no cascade — because telling the
+members apart is the reason for being in there.
+
 **2026-08-25 (night) — real people out of a public repository.** The
 2026-08-07 history rewrite stripped *operational inventory* and did not touch
 a second kind that kept accumulating afterwards: real people used as
@@ -2509,6 +2572,43 @@ matters is the general shape.
 
 ### Measuring
 
+**A fixture whose node name equalled its own id could not tell a producer
+writing names from one writing ids**, and hid the bug for as long as the
+linker existed. `seed_node` built every test node with
+`Node::new(id, node_type, id)`, so `linker:knn` storing `subject: <node id>`
+and `subject: <node name>` produce byte-identical payloads under test. The
+assertion that would have caught it — the payload contains "hyperalignment" —
+passed either way, and so did the accept path, because in that fixture the id
+*was* a resolvable name. Reverting the fix against a fixture with distinct
+names fails on `left: "topic-1f0a", right: "Hyperalignment"`, which is what a
+test for this was always supposed to say.
+
+**When a fixture makes two fields equal, every test over it is blind to
+which one the code used.** The tell is a helper that fills several arguments
+from one value for brevity; the fix is to make them differ in the fixture
+*before* asking what a test proves. Verified the way this file asks for —
+by reverting the change and watching the new tests fail, not by watching
+them pass.
+
+**A named id set was silently trimmed to ten, because `--top` bounds `--ids`
+as well as a listing.** `mecha review items --ids a,b,c…` passes the ids
+through to `mecha-graph review`, whose `--top` defaults to 10 — so a dive into
+a similarity group of seventeen returned ten rows and said nothing about the
+other seven. Every surface over it inherited that: the TUI's group dive since
+the level shipped, and the phone's the day it was written. Found only because
+a review of a *different* bug in the same code (a progress counter reading the
+requested count instead of the returned rows) put two numbers on screen that
+disagreed.
+
+**A limit meant for an open-ended listing becomes a silent truncation the
+moment the caller enumerates what it wants.** The two cases want opposite
+defaults and share one flag. This is the queue's own "no silent caps" rule
+failing one function away from the sampler that states it — `review sample`
+announces its bound and why, and the path beside it trimmed an enumerated set
+in silence. Where a cap and a named set meet, the set wins, and the count
+comes from the caller's own list length (`review.rs`, `ids_limit`, tested past
+the default of ten).
+
 **A count taken on your own branch describes a tree nobody will check out**,
 and three sessions proposed three mechanisms for how it went wrong before one
 of them was measured. Worth the space, because the wrong two are both
@@ -3009,6 +3109,22 @@ All found by pre-push review or by running it.
   a grep, not a belief** — and the component that is missing Y cannot see that
   it is, because from inside it there is nothing to compare against. Found by
   counting call sites while looking for something else.
+
+- **A cron job's binary is a running thing that answers to no `--version`.**
+  The `update` skill said the graph repo's nightly "builds and runs from its
+  repo tree and is not mecha's concern". It does not build — `nightly.sh` sets
+  `PKG="$REPO_DIR/target/release/mecha-graph"` and executes whatever is there —
+  and it is very much mecha's concern, because its `link --auto` step writes
+  into the owner's graph at 01:30. Found on 2026-08-26 hours after a session
+  repaired a linker bug out of the live graph (30 placeholder nodes merged, 121
+  payloads rewritten, 23 accepted facts re-pointed); that binary was dated Aug
+  25, so the nightly would have re-run the old linker and re-staged the same
+  damage while every version string on the machine read current. The general
+  shape: **an inventory of "what is running" that only lists things with a
+  `--version` will miss every scheduled job**, and a skill's own claim about a
+  script is worth checking against the script — this one was refuted by two
+  lines of `grep`. Fixed in the skill, with the date check spelled out and a
+  warning not to assume `cargo install --path` refreshed that path.
 
 - **The "edit-distance gate" was never code, and the handoff carried it as an
   open item for weeks.** It was described as observed working live; a
@@ -4275,6 +4391,39 @@ The fourth command never ran, and the run was never stopped and restarted. This
 is the only recorded demonstration of steering in the repository.
 
 ### The web surface
+
+**A fallback chain written with `??` and a template literal cannot fall
+through, and rendered `undefined — undefined — undefined` on 695 review
+cards.** ``payload.statement ?? `${subject} — ${predicate} — ${object}` ``
+reads as two tiers and is one: a template literal is always a string, so the
+right-hand side is never nullish and nothing after it can be reached. It
+looked correct because the shape it was written for — subject/predicate/object
+— is most of the queue; a commitment payload carries `{who, what, when,
+direction}` and matched none of it. **A `??` chain only guards its left
+operands; anything interpolated is already an answer.** The general form to
+distrust is a fallback whose last tier *constructs* a value rather than naming
+one.
+
+The cost is not cosmetic and that is the part worth carrying: the card was
+asking a person to accept a belief with nothing on it they could read, which
+is the outbox's own rule — a field the reviewer cannot see is a field they
+decided unread — arriving in a different store. Two Rust readers had the
+right chain (`statement` → `what` → a named absence) with a test on the
+commitment case; the page was the third and re-derived it. **A rule with a
+test in one language is not a rule the other language's reader knows**, and
+the fix is one function on the page matched to the Rust rather than improved
+on: a card here that said more than the TUI's would be the same drift in a
+better costume.
+
+**A surface printed a remedy it could not perform.** The graph answers an
+unbindable subject with *name a target with `--to`*, `mecha review bind --to`
+existed, and `BindBody.to` had been on the web handler since it was written —
+but neither the page nor the TUI could send one, so the instruction was
+displayed to somebody holding no way to follow it. It survived because the
+capability was present at every layer *except* the one with the keyboard, so
+any reading of the server or the CLI says the feature is there. **Check a
+remedy from the surface that prints it, not from the layer that implements
+it.**
 
 **Twenty-four mail cards rendered as 30px slivers on the first real phone
 tap — chips visible, every summary gone.** The list's cards carry
