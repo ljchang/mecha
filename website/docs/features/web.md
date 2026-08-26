@@ -90,15 +90,37 @@ is staged in the [outbox](/docs/features/outbox) instead. Switching a
 session to `ask` turns every other tool call into an approval card on the
 page — with a real reason field, because a denial with a reason is a
 correction the [learner](/docs/features/learning) can use and a bare "no" is
-not.
+not. `allow` runs them without asking.
 
-Two properties worth knowing:
+The chip in the header is the control and the display, and it cycles in
+ascending order of what runs unasked. **Entering `allow` asks first; leaving
+it does not** — every other change only ever *adds* a gate, and a
+confirmation on a harmless change is what teaches people to tap through the
+ones that matter.
 
+Four properties worth knowing:
+
+- **The chip tracks the session, not your tap.** The mode travels as its own
+  event, so changing it on the phone moves the chip on the laptop watching
+  the same session, and a request whose response was lost leaves the chip
+  where the server actually is. What the chip is *for* is telling you whether
+  the next write stops to ask, so a stale one is a security cost rather than
+  a cosmetic one.
+- **A card shows the call the way a person reads one.** A calendar call leads
+  with its title and when it is — in reading order, not alphabetical, where
+  an event reads end before start — and a letter leads with its addressing
+  and its prose. The whole call is one tap away and nothing is hidden: an
+  argument with no header or body shape, which is where `shell` keeps its
+  entire contents, is shown outright.
 - A card is **claimed atomically**. Answer on the laptop and the phone's
   copy goes stale rather than double-answering.
 - **A pending card survives a locked phone.** The card rides the transcript
   read, so reloading the page lands you back on the question instead of on a
   run that silently parked.
+
+Read-only tools never generate a card in any mode — `web_search`, `fs_read`
+and `recall` declare themselves read-only and are allowed without asking,
+which is why turning on `ask` does not make a research run unusable.
 
 An unanswered card times out as *blocked by policy*, not as a user denial —
 machine refusals and human corrections are different facts and only one of
@@ -135,9 +157,15 @@ typing still works.
   their own; three agent-owning processes against one llama-server is the
   live shape, and whether serve should become the shared backend is an open
   question rather than a plan.
-- **There is no `allow` mode from the page.** Approve one call at a time in
-  `ask` mode; a surface that could grant blanket permission from a phone is
-  a surface that will, one distracted tap at a time.
+- **It does not put `allow` one tap from the default.** The mode exists on
+  the page now, and the argument against it was never wrong — a surface that
+  can grant blanket permission from a phone is a surface that will, one
+  distracted tap at a time. What answers it is a confirmation on the way in
+  and nowhere else, plus what `allow` still cannot waive: the
+  [interlock](/docs/features/security) refuses a send once the conversation
+  holds both private and outside content, whoever approved what, and
+  outbox-routed calls stage rather than send. `allow` removes the tap, not
+  the boundary.
 - **There is no push yet.** A page that is open streams; a page that is
   closed catches up on reload. [Slack](/docs/features/slack) remains the
   channel that can reach you when nothing is open.
