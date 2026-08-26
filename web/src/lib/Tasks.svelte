@@ -57,6 +57,7 @@
       const res = await fetch('/api/questions');
       if (!res.ok) throw new Error((await res.text()).trim());
       questions = (await res.json()).items ?? [];
+      reconcileResuming();
     } catch (e) {
       // Loud, not quiet. A question store that will not load looks exactly
       // like an empty one from a blank card, and those are opposite findings
@@ -71,6 +72,24 @@
   // they say so: answering resumes a run, and a keystroke must not.
   let answers = $state({});
   let answering = $state(null);
+  // Questions whose answer has been handed to a detached child that has not
+  // yet been seen to act.
+  //
+  // **The card must stop inviting a second tap.** The endpoint returns as
+  // soon as the child is spawned, so the next poll still lists the question
+  // and the card used to re-render with every option live and the text box
+  // cleared. On a phone, where nothing visibly happened, tapping again is the
+  // expected move — and it starts a *second* concurrent resume of the same
+  // conversation, which the CLI now refuses but which should never have been
+  // offered.
+  //
+  // **And the words stay in the box until the store says otherwise.** The
+  // child writes the answer only after building an agent, so an unset outbox
+  // route or a graph server that is down loses it — and clearing the input on
+  // a 200 meant the owner's sentence then existed nowhere. Keeping it is the
+  // whole recovery: the card is still there, the text is still in it.
+  let resuming = $state({});
+  const RESUME_GRACE_POLLS = 6; // ~30s: provider preflight plus MCP startup
 
   async function answerQuestion(q, text) {
     const answer = (text ?? answers[q.id] ?? '').trim();
@@ -84,7 +103,7 @@
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       error = null;
-      answers[q.id] = '';
+      resuming[q.id] = 0;
       // The resume is detached, so there is nothing to await — the same
       // arrangement `ask mecha` has, and the board is the meeting point for
       // the same reason. It takes a moment for the child to move the ball
@@ -95,6 +114,32 @@
       error = String(e?.message ?? e);
     } finally {
       answering = null;
+    }
+  }
+
+  // Retire a `resuming` mark once the store agrees, or give it back when the
+  // child plainly never got going.
+  //
+  // Giving it back matters more than it looks: the endpoint cannot see why a
+  // resume failed (the child's output goes to `/dev/null`), so a card stuck
+  // on "resuming…" forever would be the only evidence, and it would read as
+  // work in progress. After the grace window the control returns, with the
+  // owner's text still in it and a line saying what to do.
+  function reconcileResuming() {
+    const open = new Set((questions ?? []).map((q) => q.id));
+    for (const id of Object.keys(resuming)) {
+      if (!open.has(id)) {
+        delete resuming[id];
+        answers[id] = '';
+        continue;
+      }
+      resuming[id] += 1;
+      if (resuming[id] > RESUME_GRACE_POLLS) {
+        delete resuming[id];
+        error =
+          'that answer did not start a run — the outbox route or the graph server is the ' +
+          'usual reason. Your words are still in the box; try again, or run it from a terminal.';
+      }
     }
   }
 
@@ -355,6 +400,17 @@
     if (watching) return;
     watching = true;
     try {
+      // **Do not give up before the run has announced itself.** Both callers
+      // spawn a detached child that sets `waiting_on` to the agent only after
+      // `setup::prepare` — provider preflight plus an MCP startup, routinely
+      // longer than one poll. Breaking at the first quiet poll therefore
+      // stopped watching *while the run it was waiting for was still
+      // starting*, and since the effect below only re-fires on a data change,
+      // nothing restarted it: the card sat on its old state until a manual
+      // reload. So a quiet poll ends the loop only once a run has been seen,
+      // or once the startup window has plainly passed.
+      let sawRun = false;
+      let quiet = 0;
       for (let i = 0; i < 240; i++) {
         await new Promise((r) => setTimeout(r, 5000));
         await load();
@@ -366,7 +422,13 @@
         for (const t of (data?.items ?? []).filter(working)) {
           await loadPlan(t);
         }
-        if (!(data?.items ?? []).some(working)) break;
+        if ((data?.items ?? []).some(working)) {
+          sawRun = true;
+          quiet = 0;
+          continue;
+        }
+        quiet += 1;
+        if (sawRun || quiet > RESUME_GRACE_POLLS) break;
       }
     } finally {
       watching = false;
@@ -484,12 +546,15 @@
            them. Better said here than discovered from a queue that grew. -->
       <div class="qnote">{more} questions parked on this task — answering one resumes the run, so answer or abandon the others too.</div>
     {/if}
+    {#if resuming[q.id] !== undefined}
+      <div class="qnote">resuming — this card clears itself when the run picks it up.</div>
+    {/if}
     {#if q.options.length}
       <div class="qopts">
         {#each q.options as opt}
           <button
             class="statusbtn qopt"
-            disabled={answering === q.id}
+            disabled={answering === q.id || resuming[q.id] !== undefined}
             onclick={() => answerQuestion(q, opt)}
           >{opt}</button>
         {/each}
@@ -507,7 +572,9 @@
     <div class="statusrow">
       <button
         class="statusbtn askbtn"
-        disabled={answering === q.id || !(answers[q.id] ?? '').trim()}
+        disabled={answering === q.id
+          || resuming[q.id] !== undefined
+          || !(answers[q.id] ?? '').trim()}
         onclick={() => answerQuestion(q)}
       >answer &amp; resume</button>
       <button
@@ -519,7 +586,7 @@
            is; only the question stops asking. -->
       <button
         class="statusbtn"
-        disabled={answering === q.id}
+        disabled={answering === q.id || resuming[q.id] !== undefined}
         onclick={() => abandonQuestion(q)}
       >give up on it</button>
     </div>

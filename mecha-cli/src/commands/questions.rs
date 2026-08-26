@@ -188,6 +188,38 @@ async fn answer_and_resume(
     }
     warn_if_tainted(&q);
 
+    // **D11 on this door too: one live run per task.**
+    //
+    // `tasks work` has refused to start a second run on a held task since
+    // phase 1; the resume — which is also a run, on the same session, moving
+    // the same board — never learned it, and unconditionally
+    // `mark_running`s below. Answering two questions on one session is not a
+    // theoretical path: a run can park more than one, and the surfaces now
+    // *tell* the owner to answer the others too. Three things break
+    // concurrently: the second `mark_running` overwrites the first's pid, so
+    // `tasks stop` ends the wrong run; whichever finishes first calls
+    // `clear`, disarming the stop button for the one still going; and both
+    // record against an independently loaded transcript, so `record_run`
+    // sees divergence and writes a `rewrite` that clobbers the other's
+    // history.
+    //
+    // Checked before `setup::prepare`, which pays an MCP startup: a refusal
+    // that costs a second is a refusal people read.
+    //
+    // Keyed on the task rather than the session because the marker store is,
+    // and because that is what `stop` addresses. A question with no task
+    // cannot be guarded here — no front-end produces one today, since both
+    // askers are installed with a task in hand.
+    if let Some(task) = q.task_id.as_deref() {
+        if super::tasks::markers()?.running(task).is_some() {
+            bail!(
+                "a run is already working {task} — answering now would start a second \
+                 one on the same conversation. `mecha tasks stop {task}` ends it \
+                 first, or wait for it to finish and answer then."
+            );
+        }
+    }
+
     // The recorded jail, for the outbox's reason one door over: a continuation
     // resolved against a different root is a different run.
     let mut opts = global.clone();
