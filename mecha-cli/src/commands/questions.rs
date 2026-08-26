@@ -310,7 +310,10 @@ async fn answer_and_resume(
     // running must be stoppable by the same token.
     let run_markers = super::tasks::markers()?;
     if let Some(task) = q.task_id.as_deref() {
-        run_markers.mark_running(task, None)?;
+        // Named with its transcript, like the first run of this task was:
+        // a resumed delegation is a run like any other, and a `resume`
+        // elsewhere must be able to see that this process holds the file.
+        run_markers.mark_running_for(task, None, Some(&q.session_id))?;
     }
 
     // The ball comes back to the agent for as long as the run lasts. Without
@@ -355,9 +358,22 @@ async fn answer_and_resume(
     mecha_core::agent::append_user_text(&mut convo.messages, text);
 
     eprintln!("resuming {} with the answer", q.session_id);
+    // Steerable for the same reason the first pass is: this run is just as
+    // detached, just as long, and the owner is just as absent from it.
+    let steering = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::VecDeque::<String>::new(),
+    ));
+    let mut cx = (**prepared.agent.context())
+        .clone()
+        .with_queued_input(std::sync::Arc::clone(&steering));
+    // A resumed delegation is a delegation: same ceiling, or answering a
+    // question would drop the run back to the terminal's twelve turns.
+    if cx.budget.max_turns.is_none() {
+        cx.budget.max_turns = Some(super::tasks::TASK_MAX_TURNS);
+    }
     let outcome = crate::interrupt::run_interruptible_watching(
         &prepared.agent,
-        prepared.agent.context(),
+        &cx,
         &mut convo,
         None,
         q.task_id.as_deref().map(|task| {
@@ -366,6 +382,9 @@ async fn answer_and_resume(
             std::sync::Arc::new(move || m.as_ref().is_some_and(|m| m.cancel_requested(&id)))
                 as std::sync::Arc<dyn Fn() -> bool + Send + Sync>
         }),
+        q.task_id
+            .as_deref()
+            .map(|task| super::tasks::steer_pump(task, steering)),
     )
     .await;
     if let Some(task) = q.task_id.as_deref() {

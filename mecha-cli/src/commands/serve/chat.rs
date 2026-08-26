@@ -61,8 +61,18 @@ pub(super) fn valid_key(key: &str) -> bool {
 /// The sync routing table `WebAsker` reads: session key → question plumbing.
 /// Separate from the async sessions map so a tool call can route without an
 /// async lock.
-type QuestionRoutes =
-    Arc<StdMutex<HashMap<String, (super::present::Questions, broadcast::Sender<WireEvent>)>>>;
+type QuestionRoutes = Arc<
+    StdMutex<
+        HashMap<
+            String,
+            (
+                super::present::Questions,
+                broadcast::Sender<WireEvent>,
+                Option<Arc<mecha_core::questions::ParkingAsker>>,
+            ),
+        >,
+    >,
+>;
 
 pub struct ChatState {
     agent: Arc<Agent>,
@@ -93,6 +103,22 @@ struct WebSession {
     events: broadcast::Sender<WireEvent>,
     /// Last reported usage, for the context gauge on a fresh page load.
     last_usage: Arc<StdMutex<Option<Usage>>>,
+    /// Tools this session's runs may not dispatch, whatever the shared
+    /// registry holds.
+    ///
+    /// **D6, in a process that has one agent for every conversation.** A
+    /// spawned `mecha tasks work` keeps *the agent may not close its own
+    /// task* by taking `kg_task_update` off its own private registry; there is
+    /// no private registry here, so the rule rides on the run instead. Per
+    /// session and not per process, or opening one task conversation would
+    /// narrow every other chat with it.
+    withheld: Arc<[String]>,
+    /// The board task this conversation is about, when it is about one —
+    /// the record as the board returned it, kept so the page can head the
+    /// conversation with the goal and its details without a second trip.
+    /// "I can't see what the goal is" was a complaint about a chat that knew
+    /// perfectly well and did not say.
+    task: Option<serde_json::Value>,
     /// Permission posture for this session's runs. Read-only is the default
     /// (the trigger posture: reads run, sends stage); `ask` turns tool calls
     /// into live approval cards. `allow` is deliberately not offered from
@@ -552,24 +578,260 @@ fn chat_state(state: &super::WebState) -> Result<&Arc<ChatState>, axum::response
     })
 }
 
+/// Open (or re-open) the conversation about a board task, and return its
+/// session id.
+///
+/// **One chat surface, not a second one shaped like it.** Everything the
+/// owner asked for here — voice, uploads, watching it work, answering its
+/// questions, steering it mid-run — already exists on a chat session, so a
+/// task conversation *is* a chat session with three differences: its jail is
+/// the task's own work directory (the same producer directory a spawned
+/// `tasks work` uses, so the two agree about where a relative path points),
+/// its title is `task: …`, and it withholds `kg_task_update` (D6).
+///
+/// Idempotent by key, so tapping twice returns the conversation rather than
+/// minting a twin — one conversation, one writer, the rule this file already
+/// enforces two other ways.
+pub(super) async fn open_task_conversation(
+    state: &super::WebState,
+    task_id: &str,
+) -> anyhow::Result<String> {
+    let chat = chat_state(state)
+        .map_err(|_| anyhow::anyhow!("this process has no chat agent configured"))?
+        .clone();
+
+    // The record, through the same door the board page reads it through.
+    let board = super::review::self_json(state, &["tasks", "list", "--closed", "--json"]).await?;
+    let task = board["items"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .find(|t| t["id"].as_str() == Some(task_id))
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no such task: {task_id}"))?;
+    let name = task["name"].as_str().unwrap_or("(unnamed)").to_string();
+
+    let key = task_key(task_id);
+    let workspace = mecha_core::work::ensure(task_id)?;
+    let seed = crate::commands::tasks::discuss_prompt(
+        &task,
+        board["today"].as_str().unwrap_or_default(),
+        &crate::commands::tasks::Reach::of(chat.agent.registry()),
+    );
+
+    let (session_id, fresh) = {
+        let mut sessions = chat.sessions.lock().await;
+        let ws = ensure_session_as(
+            &chat,
+            &mut sessions,
+            &key,
+            SessionInit {
+                // **Pick the recorded conversation back up.** The board has
+                // held this link since the conversation was opened, and it is
+                // what makes a task chat survive a restart of this process:
+                // the map is a cache, the transcript is the record. Refused
+                // by `Session::find` if it is gone, which falls back to a new
+                // conversation rather than to an error — a task whose
+                // transcript was swept still deserves to be talked about.
+                resume_from: task["session"].as_str().map(str::to_string),
+                workspace: Some(workspace),
+                title: Some(format!("{TASK_TITLE_PREFIX}{name}")),
+                withheld: vec!["kg_task_update".to_string()],
+                task: Some(task.clone()),
+            },
+        )?;
+        let fresh = ws
+            .conversation
+            .as_ref()
+            .is_some_and(|c| c.messages.is_empty());
+        (ws.session.meta.id.clone(), fresh)
+    };
+
+    // **The link the card offers as "open the conversation".** Written by the
+    // harness, never by the model (D5) — and without moving the status, because
+    // `waiting_on` says who has the ball and while the owner is reading this,
+    // they do. That is also why the card no longer vanishes out of the view it
+    // was tapped in.
+    let _ = super::review::verb_output(state, &["tasks", "set", task_id, "--session", &session_id])
+        .await;
+
+    // The model speaks first, but only on a conversation that has not started:
+    // re-opening is picking a conversation back up, and re-seeding it would
+    // restate the brief over the top of whatever was agreed.
+    if fresh {
+        let mut sessions = chat.sessions.lock().await;
+        let _ = begin_turn(
+            &chat,
+            &mut sessions,
+            &key,
+            &seed,
+            TurnOpts {
+                spoken: false,
+                approve_all: false,
+            },
+        );
+    }
+    Ok(session_id)
+}
+
+/// Release a task's conversation so a detached run can take it over.
+///
+/// **A transfer of the single writer, not a copy.** The conversation is
+/// already on disk; what this process holds is the right to append to it. So
+/// handing over is: refuse if a run is in flight here (a conversation cannot
+/// be in two loops at once), drop the session out of the map, and let the
+/// child load the same transcript — messages *and* taint, so the change of
+/// hands cannot launder what was read. The run marker the child writes is
+/// what stops this process reclaiming it, and `resume` answers 409 until it
+/// is done.
+///
+/// The question routing goes with it. A card this process is still willing to
+/// show for a conversation it no longer owns is a card nobody will ever
+/// answer, and its 120-second expiry would resolve as a refusal inside
+/// somebody else's run.
+pub(super) async fn release_task_conversation(
+    state: &super::WebState,
+    task_id: &str,
+) -> anyhow::Result<String> {
+    let chat = chat_state(state)
+        .map_err(|_| anyhow::anyhow!("this process has no chat agent configured"))?
+        .clone();
+    let key = task_key(task_id);
+    let mut sessions = chat.sessions.lock().await;
+    let ws = sessions
+        .get(&key)
+        .ok_or_else(|| anyhow::anyhow!("no open conversation for {task_id}"))?;
+    if ws.live.is_some() {
+        // Not a race to win: the loop owns the message list right now, and a
+        // hand-over mid-turn would take a transcript out from under it.
+        anyhow::bail!(
+            "it is working right now — let it finish, or stop it first, then hand it over"
+        );
+    }
+    let id = ws.session.meta.id.clone();
+    sessions.remove(&key);
+    if let Ok(mut routes) = chat.routes.lock() {
+        routes.remove(&key);
+    }
+    Ok(id)
+}
+
+/// A task's conversation key: stable, so tapping twice reaches one
+/// conversation, and derived from the id rather than stored anywhere.
+fn task_key(task_id: &str) -> String {
+    let tail: String = task_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("t-{}", tail.to_ascii_lowercase())
+}
+
+/// What a task conversation may not call, from its recorded title.
+///
+/// D6 — *the agent may not close its own task* — enforced by absence rather
+/// than by asking. The harness keeps its own handle on `kg_task_update` and
+/// moves the status itself; the model working the task simply has no tool
+/// that does, exactly as a spawned `mecha tasks work` arranges by taking it
+/// off a private registry.
+pub(super) fn task_withholding(title: &Option<String>) -> Vec<String> {
+    match title {
+        Some(t) if t.starts_with(TASK_TITLE_PREFIX) => vec!["kg_task_update".to_string()],
+        _ => Vec::new(),
+    }
+}
+
+/// The prefix the drawer filters on and `task_withholding` reads.
+pub(super) const TASK_TITLE_PREFIX: &str = "task: ";
+
+/// What a session should be created *as*, when it does not exist yet.
+///
+/// Only a task conversation needs any of this today, and it is threaded
+/// through the one constructor rather than given a second one: two creation
+/// sites is how two kinds of session silently stop agreeing about the jail,
+/// the recorded config, or the question routing.
+#[derive(Default)]
+pub(super) struct SessionInit {
+    /// A recorded transcript to pick back up instead of starting fresh.
+    ///
+    /// **The board is the durable index; this map is a cache.** A task
+    /// conversation lives in this process's memory and in a JSONL, and only
+    /// the second survives a restart — so re-opening a task after one was
+    /// minting a blank conversation under the same key, losing the thread,
+    /// the task header and the D6 withholding in one go. The session id has
+    /// been recorded on the task since the conversation was opened; it simply
+    /// was not read back.
+    pub resume_from: Option<String>,
+    pub workspace: Option<PathBuf>,
+    pub title: Option<String>,
+    pub withheld: Vec<String>,
+    pub task: Option<serde_json::Value>,
+}
+
 fn ensure_session<'a>(
     chat: &Arc<ChatState>,
     sessions: &'a mut HashMap<String, WebSession>,
     key: &str,
 ) -> Result<&'a mut WebSession> {
+    ensure_session_as(chat, sessions, key, SessionInit::default())
+}
+
+fn ensure_session_as<'a>(
+    chat: &Arc<ChatState>,
+    sessions: &'a mut HashMap<String, WebSession>,
+    key: &str,
+    init: SessionInit,
+) -> Result<&'a mut WebSession> {
     if !sessions.contains_key(key) {
-        let workspace = session_workspace(key)?;
-        let session = Session::create(
-            &Session::default_dir()?,
-            SessionMeta {
-                id: Session::new_id(),
-                created_at: chrono::Utc::now(),
-                provider: chat.provider_name.clone(),
-                model: chat.model.clone(),
-                workspace: workspace.clone(),
-                title: Some(format!("web: {key}")),
-            },
-        )?;
+        // Picking one back up, or starting one. `Session::load` restores the
+        // messages *and* the recorded taint, so a conversation that read a
+        // hostile page before the restart still remembers after it.
+        let recorded = init.resume_from.as_deref().and_then(|id| {
+            let dir = Session::default_dir().ok()?;
+            let path = Session::find(&dir, id).ok()?;
+            Session::load(&path)
+                .ok()
+                .map(|(meta, convo)| (meta, path, convo))
+        });
+        let workspace = match init.workspace {
+            Some(w) => {
+                std::fs::create_dir_all(&w)?;
+                w
+            }
+            None => session_workspace(key)?,
+        };
+        let (session, conversation) = match recorded {
+            Some((meta, path, convo)) => {
+                // The plan comes back with it (D15), from the transcript the
+                // model is about to re-read anyway.
+                if let Some(todo) = &chat.todo {
+                    todo.rehydrate(&workspace, &convo.messages);
+                }
+                (Session { meta, path }, convo)
+            }
+            None => (
+                Session::create(
+                    &Session::default_dir()?,
+                    SessionMeta {
+                        id: Session::new_id(),
+                        created_at: chrono::Utc::now(),
+                        provider: chat.provider_name.clone(),
+                        model: chat.model.clone(),
+                        workspace: workspace.clone(),
+                        // `task: …` for a delegation, so the drawer's task filter
+                        // and `runlog` see it as the delegation it is rather than as
+                        // an unrelated web chat that happens to mention one.
+                        title: Some(init.title.clone().unwrap_or_else(|| format!("web: {key}"))),
+                    },
+                )?,
+                Conversation::new(),
+            ),
+        };
         session.append(&Record::Config(RunConfig::of(
             &chat.agent,
             &chat.config,
@@ -577,13 +839,33 @@ fn ensure_session<'a>(
         )))?;
         let (events, _) = broadcast::channel(512);
         let questions = super::present::Questions::default();
+        // **Only a delegation parks.** A question in an ordinary chat is
+        // asked of somebody who is reading; a question in a task
+        // conversation may be asked at four in the morning of a run nobody
+        // is watching, and the honest ending for that one is a stored
+        // question and a stopped run rather than a decline the model then
+        // reasons around.
+        let park = init
+            .task
+            .as_ref()
+            .and_then(|t| t["id"].as_str().map(str::to_string))
+            .and_then(|task| {
+                let store = mecha_core::questions::QuestionStore::default_root()
+                    .and_then(mecha_core::questions::QuestionStore::open)
+                    .ok()?;
+                Some(Arc::new(mecha_core::questions::ParkingAsker::new(
+                    Arc::new(store),
+                    session.meta.id.clone(),
+                    Some(task.clone()),
+                )))
+            });
         if let Ok(mut routes) = chat.routes.lock() {
-            routes.insert(key.to_string(), (questions.clone(), events.clone()));
+            routes.insert(key.to_string(), (questions.clone(), events.clone(), park));
         }
         sessions.insert(
             key.to_string(),
             WebSession {
-                conversation: Some(Conversation::new()),
+                conversation: Some(conversation),
                 session: Arc::new(session),
                 workspace,
                 live: None,
@@ -592,6 +874,8 @@ fn ensure_session<'a>(
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
                 questions,
                 last_turn_spoken: false,
+                withheld: Arc::from(init.withheld),
+                task: init.task,
             },
         );
     }
@@ -628,6 +912,12 @@ pub async fn transcript(
         "model": chat.model,
         "mode": mode,
         "running": running,
+        // What this conversation is *about*, when it is about a board task.
+        // The record as the board returned it, so the page can head the
+        // transcript with the goal, the dates and where it came from —
+        // absent for an ordinary chat, which the page renders as it always
+        // did.
+        "task": ws.task,
         "questions": ws.questions.cards(),
         "held_by_run": ws.conversation.is_none(),
         // The plan, live. Keyed by this session's jail (D14), so one shared
@@ -826,11 +1116,25 @@ fn begin_turn(
             timeout: super::present::APPROVAL_TIMEOUT,
         })
     };
+    // **A delegation's ceiling, not a chat's.** These two numbers are the
+    // only thing standing between a run and forever, and neither was chosen
+    // for the other's work: forty round trips is generous for a conversation
+    // and short for a task, where stopping at the limit reports as
+    // `MaxTurns` and reads to the owner as the model giving up. Note this is
+    // an override rather than a minimum — `budget.max_turns.unwrap_or(cfg)`
+    // — so a machine whose `[agent] max_turns` is tightened for chat does not
+    // silently tighten delegations with it.
     if cx.budget.max_turns.is_none() {
-        cx.budget.max_turns = Some(40);
+        cx.budget.max_turns = Some(match ws.task {
+            Some(_) => crate::commands::tasks::TASK_MAX_TURNS,
+            None => 40,
+        });
     }
     cx.cancel = Some(cancel.clone());
     cx.queued_input = Some(Arc::clone(&queue));
+    // Whatever this session may not dispatch. Empty for an ordinary chat, so
+    // the assignment costs nothing and there is one place it is applied.
+    cx.withheld = Arc::clone(&ws.withheld);
     if let Some(shared) = &chat.agent.context().outbox {
         if let Ok(store) = OutboxStore::open(&chat.outbox_root) {
             let mine = OutboxRoute::new(
@@ -1387,6 +1691,28 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
     {
         return Json(serde_json::json!({ "key": k })).into_response();
     }
+    // **And the same question asked of the other processes.** The check above
+    // is this process's own, and a delegated run is a *detached child*: its
+    // `Conversation` lives in memory nothing here shares, and the transcript
+    // has one writer. Resuming a run still in flight would give that JSONL
+    // two — the child appending its turns and this process appending the
+    // owner's — which is the failure the in-process check exists to prevent,
+    // arriving through the one door it cannot see. The marker names the
+    // session it is writing, and a marker whose process is gone is swept on
+    // the way past, so a crashed run does not lock its transcript out.
+    if let Some(task) = crate::commands::tasks::markers()
+        .ok()
+        .and_then(|m| m.live_writer_of(&body.id))
+    {
+        return (
+            StatusCode::CONFLICT,
+            format!(
+                "a run is working {task} in this transcript — stop it first \
+                 (`mecha tasks stop {task}`), or steer it where it is\n"
+            ),
+        )
+            .into_response();
+    }
     let path = match Session::find(&dir, &body.id) {
         Ok(p) => p,
         Err(e) => return (StatusCode::NOT_FOUND, format!("{e:#}\n")).into_response(),
@@ -1423,6 +1749,7 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
         )
             .into_response();
     }
+    let withheld = task_withholding(&meta.title);
     let session = Session { meta, path };
     // On resume as on create: a session picked up under different flags
     // should say so in its own record.
@@ -1436,7 +1763,21 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
     let (events, _) = broadcast::channel(512);
     let questions = super::present::Questions::default();
     if let Ok(mut routes) = chat.routes.lock() {
-        routes.insert(key.clone(), (questions.clone(), events.clone()));
+        // A resumed task transcript parks too — the title is what says it is
+        // one, the same signal `task_withholding` reads for D6.
+        let park = (!withheld.is_empty())
+            .then(|| {
+                let store = mecha_core::questions::QuestionStore::default_root()
+                    .and_then(mecha_core::questions::QuestionStore::open)
+                    .ok()?;
+                Some(Arc::new(mecha_core::questions::ParkingAsker::new(
+                    Arc::new(store),
+                    session.meta.id.clone(),
+                    None,
+                )))
+            })
+            .flatten();
+        routes.insert(key.clone(), (questions.clone(), events.clone(), park));
     }
     sessions.insert(
         key.clone(),
@@ -1450,6 +1791,14 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
             mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
             questions,
             last_turn_spoken: false,
+            // **A resumed delegation is still a delegation.** D6 is a
+            // property of the conversation, not of how it was opened, so
+            // picking a task transcript back up must not hand back the tool
+            // that closes the task. The title is the signal because the
+            // harness is its only writer — `tasks work` and the task chat
+            // both stamp `task: …`, and nothing lets a model set one.
+            withheld: Arc::from(withheld),
+            task: None,
         },
     );
     Json(serde_json::json!({ "key": key })).into_response()

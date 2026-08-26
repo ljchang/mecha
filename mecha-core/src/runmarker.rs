@@ -37,6 +37,22 @@ pub struct RunMarker {
     /// Absent for anything a person started by hand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<DateTime<Utc>>,
+    /// The transcript this run is writing, when it has one.
+    ///
+    /// **So another process can ask "does a live run own this session?"
+    /// without asking the run.** A `Conversation` — messages and taint — lives
+    /// in the memory of the process holding it and the session JSONL has one
+    /// writer, so anything that would pick a transcript up (`mecha chat
+    /// --resume`, `/api/resume`) has to be able to find out that somebody
+    /// already has it. The in-process check those surfaces already do cannot
+    /// see a detached child, and the board can only say a run is in flight,
+    /// not which file it is appending to.
+    ///
+    /// Defaulted on load, like every other field written to a store that
+    /// outlives a release: a marker from a run that started before this field
+    /// existed reads as "no session named", which is what it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 /// A directory of run markers, keyed by whatever the caller calls its runs.
@@ -61,9 +77,24 @@ impl RunMarkers {
         self.dir.join(format!("{name}.cancel"))
     }
 
+    fn steer_path(&self, name: &str) -> PathBuf {
+        self.dir.join(format!("{name}.steer"))
+    }
+
     /// Announce that a run has started, for anything that wants to *display*
     /// whether one is in flight.
     pub fn mark_running(&self, name: &str, slot: Option<DateTime<Utc>>) -> Result<()> {
+        self.mark_running_for(name, slot, None)
+    }
+
+    /// The same, naming the transcript this run is writing — see
+    /// [`RunMarker::session`] for why anything else would have to ask the run.
+    pub fn mark_running_for(
+        &self,
+        name: &str,
+        slot: Option<DateTime<Utc>>,
+        session: Option<&str>,
+    ) -> Result<()> {
         crate::create_private_dir(&self.dir)?;
         // **A run starts uncancelled, whatever was left lying around.**
         // `clear` removes both files, but a cancel written in the window
@@ -73,10 +104,17 @@ impl RunMarkers {
         // stop itself two seconds in and report a near-empty partial that
         // looks exactly like a model giving up.
         let _ = std::fs::remove_file(self.cancel_path(name));
+        // **And uninstructed, for the same reason.** A steer queued in the
+        // window before the previous run's `clear`, or left by a kill, would
+        // otherwise be drained into the *next* run's first turn — an
+        // instruction about work that is already over, arriving as though the
+        // owner had just typed it.
+        let _ = std::fs::remove_file(self.steer_path(name));
         let marker = RunMarker {
             pid: std::process::id(),
             started_at: Utc::now(),
             slot,
+            session: session.map(str::to_string),
         };
         let path = self.marker_path(name);
         let tmp = path.with_extension("running.tmp");
@@ -89,6 +127,86 @@ impl RunMarkers {
     pub fn clear(&self, name: &str) {
         let _ = std::fs::remove_file(self.marker_path(name));
         let _ = std::fs::remove_file(self.cancel_path(name));
+        let _ = std::fs::remove_file(self.steer_path(name));
+    }
+
+    /// Which live run, if any, is writing this transcript.
+    ///
+    /// **The cross-process half of "one conversation, one writer".** Every
+    /// surface that picks a session back up already refuses to mint a twin of
+    /// one *this* process holds; none of them could see a detached child, so
+    /// resuming a delegation mid-flight would have given one JSONL two
+    /// writers — the child appending its turns and the reader appending the
+    /// owner's. Dead markers are swept by [`Self::running`] on the way past,
+    /// so a crashed run does not lock its transcript out forever.
+    ///
+    /// Returns the run's name (a task id, here), because a caller that has to
+    /// refuse should be able to say what it is refusing for.
+    pub fn live_writer_of(&self, session: &str) -> Option<String> {
+        let names: Vec<String> = std::fs::read_dir(&self.dir)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                e.file_name()
+                    .to_str()
+                    .and_then(|n| n.strip_suffix(".running"))
+                    .map(str::to_string)
+            })
+            .collect();
+        names.into_iter().find(|name| {
+            self.running(name)
+                .and_then(|m| m.session)
+                .is_some_and(|s| s == session)
+        })
+    }
+
+    /// Queue an instruction for the run in flight, to be folded into the
+    /// message carrying its next tool results.
+    ///
+    /// **Appended, never overwritten.** Two instructions typed a second apart
+    /// are two things the owner meant; a file that held only the newest would
+    /// drop the first silently, which is the failure a queue exists to
+    /// prevent. One JSON string per line, so a newline in the text cannot
+    /// split one instruction into two.
+    ///
+    /// `false` when nothing is running, exactly as [`Self::request_cancel`]
+    /// reports it — a steer written for a run that will never read it is not
+    /// a queued instruction, it is a file waiting to ambush the next run.
+    pub fn queue_steer(&self, name: &str, text: &str) -> Result<bool> {
+        if self.running(name).is_none() {
+            return Ok(false);
+        }
+        crate::create_private_dir(&self.dir)?;
+        let mut line = serde_json::to_string(text)?;
+        line.push('\n');
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.steer_path(name))?;
+        f.write_all(line.as_bytes())?;
+        Ok(true)
+    }
+
+    /// Take everything queued, leaving nothing behind.
+    ///
+    /// **Drained rather than read**, because this module has already learned
+    /// what a file left lying around does: a steer that survived its own
+    /// delivery would be re-folded into every later turn, so one sentence
+    /// would arrive again and again for the rest of the run.
+    ///
+    /// A line that will not parse is skipped rather than failing the drain —
+    /// the alternative is one malformed byte silencing every instruction
+    /// behind it, and the caller is a poller with nowhere to report to.
+    pub fn take_steer(&self, name: &str) -> Vec<String> {
+        let path = self.steer_path(name);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        let _ = std::fs::remove_file(&path);
+        text.lines()
+            .filter_map(|l| serde_json::from_str::<String>(l).ok())
+            .collect()
     }
 
     /// The run in flight, if there is one.
@@ -162,6 +280,91 @@ mod tests {
         assert!(
             !m.dir().join("a.running").exists(),
             "and the stale marker is swept on the way past"
+        );
+    }
+
+    /// The cross-process half of "one conversation, one writer": a reader in
+    /// another process can find out that a live run owns a transcript, which
+    /// is the only thing standing between `resume` and two writers on one
+    /// JSONL. A dead marker must not lock a transcript out forever, so the
+    /// sweep in `running` is load-bearing here too.
+    #[test]
+    fn a_live_marker_names_the_transcript_it_is_writing() {
+        let m = RunMarkers::new(scratch("writer"));
+        m.mark_running_for("task-1", None, Some("20260826T1200-abc"))
+            .unwrap();
+        assert_eq!(
+            m.live_writer_of("20260826T1200-abc").as_deref(),
+            Some("task-1"),
+            "the owner is findable by the file it is writing"
+        );
+        assert!(
+            m.live_writer_of("20260826T1200-other").is_none(),
+            "and only that file"
+        );
+        m.clear("task-1");
+        assert!(
+            m.live_writer_of("20260826T1200-abc").is_none(),
+            "a finished run releases its transcript"
+        );
+    }
+
+    /// A marker written before the field existed reads as naming no session,
+    /// which is what it was — the store outlives the release, so a missing
+    /// field must load rather than fail the record.
+    #[test]
+    fn a_marker_without_a_session_still_loads() {
+        let m = RunMarkers::new(scratch("oldmarker"));
+        crate::create_private_dir(m.dir()).unwrap();
+        std::fs::write(
+            m.dir().join("t.running"),
+            serde_json::json!({"pid": std::process::id(), "started_at": Utc::now().to_rfc3339()})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(m.running("t").is_some(), "it is still a running run");
+        assert!(m.live_writer_of("anything").is_none());
+    }
+
+    /// Two instructions typed a second apart are two things the owner meant.
+    /// Overwriting would drop the first silently, which is the one failure a
+    /// queue exists to prevent.
+    #[test]
+    fn steers_queue_up_and_drain_exactly_once() {
+        let m = RunMarkers::new(scratch("steer"));
+        m.mark_running("t", None).unwrap();
+        assert!(m.queue_steer("t", "check the dates first").unwrap());
+        assert!(m.queue_steer("t", "and use\nthe short form").unwrap());
+        assert_eq!(
+            m.take_steer("t"),
+            vec!["check the dates first", "and use\nthe short form"],
+            "both, in order, and a newline does not split one into two"
+        );
+        assert!(
+            m.take_steer("t").is_empty(),
+            "drained, or one sentence arrives on every later turn for the rest                  of the run"
+        );
+    }
+
+    /// A steer for a run that is not there is not a queued instruction — it
+    /// is a file waiting to ambush the next run, which is exactly what the
+    /// stale-cancel test above was written for.
+    #[test]
+    fn a_steer_needs_a_run_to_steer_and_never_outlives_one() {
+        let m = RunMarkers::new(scratch("steerstale"));
+        assert!(
+            !m.queue_steer("t", "too late").unwrap(),
+            "nothing running, so nothing queued — and the caller is told"
+        );
+        m.mark_running("t", None).unwrap();
+        assert!(m.take_steer("t").is_empty(), "and nothing was written");
+
+        // The shape a kill leaves: a steer with no run to consume it.
+        m.queue_steer("t", "from the run that died").unwrap();
+        m.mark_running("t", None).unwrap();
+        assert!(
+            m.take_steer("t").is_empty(),
+            "a new run starts uninstructed, like it starts uncancelled"
         );
     }
 

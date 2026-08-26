@@ -109,12 +109,14 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,537 tests**, no failures — measured 2026-08-26 late evening on
-`main` at `be75b73`, on a **clean tree**, after the context-pressure arc
-(#66–#72) and a voice lane's pushes. That clause is load-bearing and has been
+Expect **1,551 tests**, no failures — measured 2026-08-26 late evening on the
+merge of the task-conversation arc into `main` at `be75b73`, which is neither
+side's own number: main's count predates this arc and the arc's predates the
+context-pressure work it merged. That clause is load-bearing and has been
 wrong twice: a count taken while any lane's work sits uncommitted in this
-shared checkout describes one disk and no commit. Breakdown: **517** in
-`mecha-cli` with 1 ignored, **795** in `mecha-core`, 6 + 9 in its two
+shared checkout describes one disk and no commit, so say which tree.
+Breakdown: **524** in `mecha-cli` with 1 ignored, **802** in `mecha-core`,
+6 + 9 in its two
 integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75**
 in `mecha-slack`, and 1 doctest.
 
@@ -183,17 +185,17 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 683 |
-| `mecha-cli` unit | 466 (1 ignored) |
+| `mecha-core` unit | 802 |
+| `mecha-cli` unit | 524 (1 ignored) |
 | `mecha-mail` unit | 129 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
 | doctest | 1 |
 
-Measured 2026-08-25 on the merged tree at e3af3b6. The table had drifted
-two counts behind the prose above it, which is the failure mode of stating
-one fact twice — read the prose if they ever disagree again, and fix the
-table.
+Measured 2026-08-26 late evening, same tree as the prose above. The table
+had drifted two counts behind that prose once already, which is the failure
+mode of stating one fact twice — read the prose if they ever disagree again,
+and fix the table.
 
 The integration tests need docker (with `debian:stable-slim` and `python:3-slim`
 pulled) and `python3`; without them they skip and say so. CI sets
@@ -1080,42 +1082,102 @@ the mechanism and every decision. What it left standing:
   navigation/widgets. Triaged there, not restated here. The plain inbox +
   compose and the notes/tasks voice capture shipped 2026-08-24 night (Arcs B
   and C); the rest stands.
+- **Delegation is a conversation as of 2026-08-26 (eighth pass)**, which
+  closes the phone surface's biggest gap and opens two smaller ones.
+  `ask mecha` opens the task's chat session — voice, uploads, todo panel,
+  approval cards, steering by typing — the model speaks first, the board does
+  not move, and *let it carry on without me* hands the same transcript to a
+  detached child. HISTORY has the narrative and `CLAUDE.md` the invariants.
+  What that leaves open:
+  - **Admission control (R1 / phase 6) is now due.** It was deferred with a
+    stated trigger — *"worth building once more than one delegation at a time
+    is routine, and not before"* — and this arc is what makes it routine: a
+    delegation can now run 200 turns on the same llama-server as chat, voice
+    and the triggers. Nothing decides what runs when, and the owner has
+    already asked for the missing half by name (*"when the question is
+    answered it should resume in the queue"* — answering spawns the resumed
+    run immediately). The design's own input for it is R3's measurement.
+  - **`mecha serve` still has no graceful shutdown**, and it now costs more
+    than it did: a restart kills a conversation-owned run mid-flight, where a
+    handed-over one survives. The conversation itself survives either way
+    (the transcript is the record), so what is lost is the partial turn. Same
+    unresolved question as before — who owns SIGTERM in a process holding SSE
+    streams and pending approval cards.
 - **The task→agent handoff is built through phase 4** —
   `docs/TASK-AGENT-DESIGN.md` is its authority and HISTORY has what shipped.
   The return path and D16's card states closed on 2026-08-26 (second pass);
   B1 and B2 closed the same evening, both **amended first** — re-reading
   them against the shipped row changed both, and the amendments sit beside
-  the originals in the design doc. **What is left is one item: D4.**
-  - **D4 / Phase 5 — the context assembler**, and it needs less building
-    than the design implies. Three things are already true that D4 predates.
-
-    **The run does not know its task came from anywhere.** `kg_task_list`
-    returns `captured_from` on every row — the provenance pointer that
-    shipped 2026-08-26 — and `work_prompt` never mentions it, so a task
-    captured from an email reaches the agent as a bare sentence while
-    `mecha tasks source <id>` sits on the CLI able to fetch the thread.
-    `defer_until` is dropped too. Naming both is a deterministic line each
-    and makes a shipped feature reachable.
-
-    **D4 assumes context is assembled *into* the prompt, and the run can
-    already fetch it.** `kg_search`, `kg_related`, `kg_entity` and
-    `kg_timeline` are on its surface. Pasting the project neighbourhood
-    costs prefix tokens on every turn of every run; naming what exists and
-    how to reach it costs a sentence — `skill.rs`'s progressive disclosure,
-    applied one door over. So: point at it, then measure whether runs
-    follow the pointer, and only paste if they do not.
-
-    **A constraint D4 does not state, which decides the shape.**
-    `captured_from` can point at *mail*. Pasting a body into the seed would
-    arm `untrusted` before the run's first turn **and** put
-    attacker-controlled bytes into a privileged run's opening instruction —
-    the front door's argument exactly. The seed carries the **pointer**,
-    never the content, so the bytes arrive as a tool result the interlock
-    accounts for. Any assembler inherits that rule.
-
-    D4's own line — *"measured in Phase 4, not assumed in Phase 1"* — was
-    never honoured, and now can be: `RunStats` on task runs exists as of
-    2026-08-26.
+  the originals in the design doc. **D4 shipped 2026-08-26 (sixth pass) —
+  the seed points at context rather than assembling it into the prompt; the
+  amendment sits beside D4 in the design doc and HISTORY has the narrative.
+  What is left of the arc is one measurement and one deferred decision.**
+  - **Whether runs follow the pointer, which is D4's own acceptance test.**
+    *"Measured in Phase 4, not assumed in Phase 1"* has two runs behind it,
+    which is a direction rather than a result. Both followed. A task naming
+    only a project drew seven graph calls (`kg_search` ×4, `kg_entity` ×3);
+    a task captured from a real three-message mail thread called
+    `mail__mail_get_thread` **as its first act**, before anything else, and
+    the recorded taint came back `private + untrusted` — the bytes arriving
+    as a tool result the interlock accounted for, which is the whole reason
+    the seed carries a pointer. Keep watching rather than concluding: the
+    query is a scan of task-titled transcripts for a call to the tool the
+    seed named, and pasting the context stays available if runs stop
+    following it.
+  - **A captured task's *name* is untrusted text, and the seed cannot fix
+    it.** D4 withholds the pointer's `label` because a subject line is prose
+    somebody else composed — but `mail task` defaults the task **name** to
+    the classifier's `one_line`, falling back to the raw subject
+    (`commands/mail.rs:1947`), so a default capture puts a model's paraphrase
+    of a stranger's mail at the top of a privileged run's opening
+    instruction. The front door's own rule is that *a paraphrase of an
+    injection is the injection rearranged*, and this is that rule's own
+    counterexample sitting one store over. Found by the PR reviewer on #68,
+    not by the tests — which passed because the fixture's name and label
+    differ, and in production they usually will not.
+    **Not fixable in the seed**: the name is what the task *is*, and a run
+    that cannot see it cannot work it. So the question is what capture should
+    default to, and the options are worth pricing before one is picked —
+    require `--name` and refuse to default (safest, and friction on the verb
+    that exists to be cheap), keep the default but mark a derived name on the
+    record so the seed can say where it came from, or leave it and accept
+    that a delegated run's subject line is attacker-influenced. Pre-existing
+    since capture shipped 2026-08-26; nothing regressed, and it is written
+    down here because `CLAUDE.md` previously read as though the boundary held.
+  - **The seed's bullet order is now pinned by a test, and the reason it
+    moved did not survive its own measurement.** The pointer bullets first
+    shipped directly beneath *"do not ask what you can find out"*, so the
+    section ended on two consecutive reasons not to ask; pooling every
+    substantive run of the day made that look like a regression —
+    `ask_user` in 5 of 6 runs under the previous seed against 0 of 4 under
+    the new one — and the bullets were moved above the asking block on that
+    reading. **The pooled number is confounded by task and should not be
+    quoted.** The arms ran different tasks; the only within-task series is
+    one board item (*decide whether to submit to a conference*, six runs),
+    and there `ask_user` fired once in two old-seed runs, zero in two
+    ask-first runs, and zero in two lookup-first runs. So the order change
+    is justified on reading order — here is what you can find out, *then*
+    ask about what is left — and **not** on a measured effect, and the
+    question of whether this model asks less under the new seed is still
+    open at n far too small. The test asserts the order rather than the
+    outcome, which is the part that is actually decided.
+  - **Front-loading landed as prose, not as a parked question, on the one
+    run that had questions to ask.** The mail run ended `completed` with six
+    numbered decisions in its final answer and **zero `ask_user` calls**,
+    with the tool on its surface (63 tools, `ask_user` among them,
+    `kg_task_update` correctly withheld). So the questions exist only inside
+    a session transcript: `mecha questions list` does not show them, the
+    phone's card cannot offer them, and the delegation reads as finished
+    rather than as blocked — which is the state D13 exists to make
+    impossible. One run, and the mechanism does fire elsewhere (two
+    questions are parked from other tasks), so this is a prompt-adherence
+    observation and not a broken store. It is also the exact seam D12 was
+    decided against on: the seed asks on the user turn because that is the
+    channel this model obeys, and here it obeyed the *content* of the
+    instruction (ask first, one question, list every unknown) while ignoring
+    its *mechanism*. Worth a second look before concluding anything — if it
+    repeats, the cheap fix is naming the tool call in the sentence that
+    already says what to ask.
   - **D12, the plan gate — decided against as written, on 2026-08-26, and
     the cheap half shipped instead.** Do not build it from the design doc;
     read `work_prompt`'s doc comment in `commands/tasks.rs` first, which

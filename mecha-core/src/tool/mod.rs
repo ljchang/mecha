@@ -317,6 +317,11 @@ pub struct ToolCtx {
     /// is not the way to get a write executed from a planning run. Stamped by
     /// `Agent::run_in`, like `events`.
     pub phase: crate::agent::Phase,
+    /// Tools the run this call belongs to may not dispatch, carried here so a
+    /// tool that *contains* a run — a subagent — inherits the withholding
+    /// instead of becoming the way around it. Same reasoning as `phase`
+    /// directly above: delegating from a narrowed run must not widen it.
+    pub withheld: std::sync::Arc<[String]>,
     /// The `tool_use` id of the call this context was built for. Stamped per
     /// dispatch (only when `events` is watched), so a tool that contains a
     /// run can tag its forwarded events with the call that spawned it — two
@@ -344,6 +349,7 @@ impl Default for ToolCtx {
             events: None,
             cancel: None,
             phase: crate::agent::Phase::default(),
+            withheld: std::sync::Arc::from(Vec::new()),
             call_id: None,
             taint: None,
         }
