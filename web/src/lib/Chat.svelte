@@ -523,20 +523,44 @@
   const MODES = ['read_only', 'ask', 'allow'];
   const MODE_LABEL = { read_only: 'read-only', ask: 'ask', allow: 'allow' };
 
+  // Entering `allow` asks; leaving it does not. Every other mode change is
+  // one tap because it only ever *adds* a gate, and a confirmation on a
+  // harmless change is what teaches people to tap through the ones that
+  // matter. This one is a mis-tap away from the default posture and turns
+  // off every approval for the session, so it is the exception.
+  function nextMode() {
+    const next = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
+    if (next === 'allow') {
+      const ok = confirm(
+        'Allow: tool calls run without asking, for this session until you change it.\n\n' +
+          'Sends still stage in the outbox, and the interlock still refuses them once ' +
+          'this conversation holds both private and outside content.'
+      );
+      if (!ok) return;
+    }
+    setMode(next);
+  }
+
   async function setMode(next) {
+    // Optimistic, so the chip moves under the thumb and a second tap cycles
+    // from where the first left it — reading `mode` after the await made
+    // two quick taps on a slow link compute the same next mode twice. The
+    // server's own event is still what settles it; this only reverts a
+    // change that never landed.
+    const prev = mode;
+    mode = next;
     try {
       const res = await fetch(`/api/chat/${key}/mode`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ mode: next }),
       });
-      // The mode event does this too; setting it here as well is only so a
-      // phone on a slow link sees the tap register. A failed POST falls
-      // through to the catch and the chip stays where the server is.
-      if (res.ok) mode = next;
-      else pushEntry({ kind: 'notice', text: (await res.text()).trim() });
+      if (!res.ok) {
+        mode = prev;
+        pushEntry({ kind: 'notice', text: (await res.text()).trim() });
+      }
     } catch {
-      // header chip keeps showing the real mode from the last load
+      mode = prev;
     }
   }
 
@@ -573,7 +597,7 @@
         class="chip modechip"
         class:ask={mode === 'ask'}
         class:allow={mode === 'allow'}
-        onclick={() => setMode(MODES[(MODES.indexOf(mode) + 1) % MODES.length])}
+        onclick={nextMode}
         title="read-only: reads run, sends stage · ask: every other call becomes an approval card · allow: nothing asks (the interlock still refuses sends once this conversation holds private and untrusted content)"
       >{MODE_LABEL[mode] ?? mode}</button>
       <span class="chip">{model || '…'}</span>
@@ -712,6 +736,18 @@
               </dl>
             {/if}
             {#if entry.draft.body}<p class="qbody">{entry.draft.body}</p>{/if}
+            <!-- After the body and never behind the toggle: `shell` has no
+                 header or body field at all, so hiding `other` rendered an
+                 empty card over `rm -rf build`. The expansion is for the
+                 exact bytes, never for a field the reviewer needs. -->
+            {#if entry.draft.other.length}
+              <dl class="qfields">
+                {#each entry.draft.other as [k, v]}
+                  <dt>{k.replace(/_/g, ' ')}</dt>
+                  <dd>{v}</dd>
+                {/each}
+              </dl>
+            {/if}
             {#if entry.args}
               <button class="qmore" onclick={() => (entry.expanded = !entry.expanded)}>
                 {entry.expanded ? 'less' : 'the whole call'}

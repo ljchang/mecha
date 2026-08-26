@@ -225,6 +225,30 @@ pub struct WireDraft {
     pub other: Vec<(String, String)>,
 }
 
+/// How much of one field a card carries, and why there is a bound at all.
+///
+/// The arguments beside it have been clipped since the card existed; the
+/// shaped view has to be, for the same reason and one more. `content` is a
+/// body field, so a `fs_write` of a large file would put the whole file in
+/// the card — broadcast to every open page, held for the reload path, and
+/// re-sent on every transcript read after that. It would also push Allow
+/// and Deny off the bottom of a phone, which is the surface this is for.
+///
+/// A clip is marked where it cuts. The exact bytes were never here to begin
+/// with — that is what the session record is — and a card claiming to show
+/// a whole call it silently shortened is the failure this shaping exists to
+/// prevent, arriving one layer in.
+const CARD_BODY_CHARS: usize = 2_000;
+const CARD_VALUE_CHARS: usize = 400;
+
+fn clip_to(text: String, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text;
+    }
+    let head: String = text.chars().take(max).collect();
+    format!("{head}… (clipped — the whole call is in the session record)")
+}
+
 impl WireDraft {
     /// `None` when the call has nothing a person would read as a message —
     /// an empty object, or a card that is prose already. A card with no
@@ -234,10 +258,16 @@ impl WireDraft {
         if view.headers.is_empty() && view.body.is_none() && view.other.is_empty() {
             return None;
         }
+        let clip_fields = |fields: Vec<(String, String)>| {
+            fields
+                .into_iter()
+                .map(|(k, v)| (k, clip_to(v, CARD_VALUE_CHARS)))
+                .collect()
+        };
         Some(WireDraft {
-            headers: view.headers,
-            body: view.body,
-            other: view.other,
+            headers: clip_fields(view.headers),
+            body: view.body.map(|b| clip_to(b, CARD_BODY_CHARS)),
+            other: clip_fields(view.other),
         })
     }
 }
@@ -1635,6 +1665,30 @@ mod wire_tests {
         let draft = super::WireDraft::of(&mail).expect("a mail call has a shape");
         assert_eq!(draft.headers[0], ("to".into(), "dirk@example.edu".into()));
         assert!(draft.body.as_deref().unwrap().contains('\n'));
+    }
+
+    #[test]
+    fn a_large_write_does_not_put_the_whole_file_on_the_card() {
+        // `content` is a body field, so the unbounded version of this put a
+        // whole file into an event broadcast to every page and re-sent on
+        // every transcript read after that — and pushed the buttons off a
+        // phone. The arguments beside it were clipped all along.
+        let big = "x".repeat(50_000);
+        let draft = super::WireDraft::of(&serde_json::json!({
+            "path": "notes.md",
+            "content": big,
+        }))
+        .unwrap();
+        let body = draft.body.unwrap();
+        assert!(
+            body.chars().count() < 2_200,
+            "body was {} chars",
+            body.chars().count()
+        );
+        assert!(
+            body.ends_with("in the session record)"),
+            "a clip has to say so"
+        );
     }
 
     #[test]
