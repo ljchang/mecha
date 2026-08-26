@@ -82,6 +82,35 @@ move to waiting, drop, change context, ask mecha — lives in a sheet behind a
 `…`. This is the one place in the project where copying the consensus is
 right: four apps that disagree about everything else agree about this.
 
+> **Amended 2026-08-26, after phase 4 shipped.** The decision above holds on
+> its evidence and is wrong in its translation of it. Both halves below;
+> build the amended one.
+>
+> **What survives.** *ask mecha* belongs behind the extra tap, and not merely
+> because this was written first — §1.3's invariant names it: *"complete and
+> schedule are one gesture; move, **delegate** and edit open a sheet."*
+> Delegation is in the sheet list explicitly. A later reading that promotes it
+> because it is this project's differentiator is re-deciding a settled
+> question on taste.
+>
+> **What does not.** §1.3 surveys **swipe** actions on a *collapsed* row, and
+> mecha's row has no actions at all until it is tapped open. So the six chips
+> the owner called *"a little bizarre"* were never in anyone's way — they
+> appear only after a deliberate act, and **the expanded card already is the
+> sheet.** Putting a `…` inside it nests a sheet in a sheet, which is worse
+> than the thing it fixes. The strip's problem is not depth, it is that six
+> equal-weight chips have no shape.
+>
+> Note also what B1 dropped when it turned "one gesture" into "one button":
+> in Things, complete is *"a tap on the circle only"* — not a swipe, and not
+> a button in a strip. mecha's rows have no circle, so the single most
+> frequent action on a board is the one action that costs an expand.
+>
+> **So:** `✓` becomes a tap-target on the **collapsed** row. The expanded card
+> **groups** rather than hides — lifecycle, delegation, provenance — and
+> `schedule` keeps its mini date picker per §1.3. Nothing moves behind a
+> second tap, because the first tap already bought one.
+
 **B2 — Natural-language capture, parsed deterministically, title kept
 literal.** "Call Bob tomorrow at 3" should set a date. Two rules: the parse
 happens in **Rust, not a model** (a capture that costs a model call is a
@@ -95,6 +124,33 @@ hold your own intentions verbatim.
 This pairs with dictation (shipped 2026-08-24): spoken capture and date
 parsing are the same feature from the owner's side — *"remind me to call
 Bob tomorrow"* said out loud.
+
+> **Amended 2026-08-26.** The decision holds; its worked example does not, and
+> one thing it left unsaid is the real win.
+>
+> **The example is unrepresentable.** *"Call Bob tomorrow at 3"* cannot set a
+> time, because there is nowhere to put one: `gtd::parse_due` accepts exactly
+> `today | tomorrow | +Nd | YYYY-MM-DD`, and `due_at` is written
+> `%Y-%m-%d`. **The board has no time-of-day.** So the chip reads `tomorrow`
+> and *"at 3"* stays in the name — which is, at least, consistent with the
+> Things side of the disagreement this decision already picked. Adding a time
+> is a schema change in the other repo and is not in this arc.
+>
+> **The unsaid win: capture collapses to one box.** The sheet currently asks
+> for a name, a due date and a context, which quietly breaks §2.1's own
+> invariant — *"capture lands in Inbox and organization is deferred; no app
+> makes you choose a project at capture time."* One box that parses is not a
+> convenience on top of three fields, it is the removal of two of them.
+>
+> **And it is worth more than when it was written**, because dictation landed
+> in between. A spoken capture arrives as **one string** with no second field
+> to fill, so without this the microphone can only ever produce an undated
+> inbox item. B2 is what makes that button worth pressing.
+>
+> **One split to hold:** mecha detects the *token* and hands it to the
+> graph's `parse_due`; it does not resolve dates itself. Two date parsers in
+> two repositories is the divergence this project refuses everywhere else,
+> and the graph already owns the meaning of `+3d`.
 
 **B3 — The views are named for what they mean, and there are few of them.**
 Things ships six opinionated views and no user-defined ones; Todoist ships

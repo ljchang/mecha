@@ -385,6 +385,44 @@ pub async fn task_add(State(state): St, Json(body): Json<TaskAddBody>) -> Respon
 }
 
 #[derive(serde::Deserialize)]
+pub struct ParseBody {
+    pub text: String,
+}
+
+/// POST /api/tasks/parse — what a capture says about *when* (B2).
+///
+/// **In-process, and the only handler here that spawns nothing.** Every other
+/// verb on this page drives a `mecha …` child, which is right when the child
+/// owns something — the board, the outbox, a run. This owns nothing: it is
+/// `capture::find_when`, a pure function over a string, called while somebody
+/// is typing. A child process per keystroke would pay a fork and an MCP
+/// startup to answer a question with no state in it, which is how a feature
+/// meant to make capture cheaper makes it slower than the form it replaces.
+///
+/// The `/triggers` rule is untouched by that: it says a UI must not reach past
+/// what the command line can do, and `mecha tasks add` runs the same function
+/// on the same string. Nothing here is reachable only from a browser.
+///
+/// **Returns the span, never a rewritten name.** The page draws a dismissable
+/// chip and sends the owner's words unchanged; Things' side of the one
+/// disagreement the surveyed apps have.
+pub async fn task_parse(State(state): St, Json(body): Json<ParseBody>) -> Response {
+    let _ = state;
+    match mecha_core::capture::find_when(&body.text) {
+        Some(w) => Json(serde_json::json!({
+            "due": w.due,
+            "text": w.text,
+            "start": w.start,
+            "end": w.end,
+        }))
+        .into_response(),
+        // A capture with no date is the ordinary case, not a failure — most
+        // things somebody types have no deadline in them.
+        None => Json(serde_json::json!(null)).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
 pub struct NoteBody {
     pub text: String,
 }
