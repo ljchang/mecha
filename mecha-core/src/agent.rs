@@ -515,6 +515,12 @@ pub struct Conversation {
     ///
     /// [`Session::record_run`]: crate::session::Session::record_run
     pub rewritten: Vec<Vec<Message>>,
+    /// What the last requests on this conversation cost, so the next one can
+    /// be predicted. Here rather than on the run for the reason `taint` is —
+    /// see [`ContextTracker::carry_into`], which also explains when it resets.
+    ///
+    /// [`ContextTracker::carry_into`]: crate::pressure::ContextTracker::carry_into
+    pub pressure: crate::pressure::ContextTracker,
 }
 
 impl Conversation {
@@ -528,6 +534,7 @@ impl Conversation {
             messages: vec![Message::user(text)],
             taint: Taint::default(),
             rewritten: Vec::new(),
+            pressure: crate::pressure::ContextTracker::default(),
         }
     }
 
@@ -538,6 +545,10 @@ impl Conversation {
             messages,
             taint,
             rewritten: Vec::new(),
+            // A transcript records what runs cost in total and never what the
+            // last request weighed, so a resumed conversation has no anchor
+            // and predicts from its second turn on.
+            pressure: crate::pressure::ContextTracker::default(),
         }
     }
 
@@ -564,6 +575,7 @@ impl From<Vec<Message>> for Conversation {
             messages,
             taint: Taint::default(),
             rewritten: Vec::new(),
+            pressure: crate::pressure::ContextTracker::default(),
         }
     }
 }
@@ -805,6 +817,34 @@ pub struct RunOutcome {
     /// produced without any, and only one of them tests that summaries carry
     /// the task forward.
     pub compactions: u32,
+    /// How many times a prompt was refused as too large.
+    ///
+    /// Named for the *observation*, not the response. An earlier spelling
+    /// counted recoveries, which left the one overflow that is never recovered
+    /// — the forced final-answer turn, whose failure is swallowed so the run
+    /// can still return its text — recorded as `Some(0)`: sensor present, saw
+    /// nothing. The question this field exists to answer is whether the
+    /// threshold failed, and whether the harness got out of it afterwards is a
+    /// separate fact.
+    ///
+    /// Distinct from `compactions`, and the distinction is the whole reason
+    /// this exists. `compactions` counts *summaries*, so an overflow the
+    /// recovery answered with eviction and thinning alone — which is the
+    /// common shape, because those cost no request — incremented nothing and
+    /// was invisible in every store. The harness caught a 400, rebuilt the
+    /// transcript and retried, and no counter anywhere said so.
+    ///
+    /// What it measures is the reactive threshold failing: `compact_at` is
+    /// checked between turns against the *previous* prompt's size, so a turn's
+    /// parallel tool results can take the next request over the window from
+    /// under the threshold. Every recovery is one instance of that, and the
+    /// count is the baseline any change claiming to predict the overflow has
+    /// to be measured against.
+    ///
+    /// A retry that overflows again propagates and ends the run, so it leaves
+    /// no outcome to be recorded on — the count on a row that exists is always
+    /// of overflows the run survived.
+    pub context_overflows: u32,
     /// False when `usage` is a *lower bound* rather than a measurement.
     ///
     /// A run cancelled mid-stream keeps the input tokens, which arrive in the
@@ -1035,7 +1075,30 @@ impl Agent {
         convo: &mut Conversation,
         events: Option<UnboundedSender<AgentEvent>>,
     ) -> Result<RunOutcome> {
-        let mut outcome = self.run_loop(cx, convo, events).await?;
+        // Counted here rather than by the builders, for the same reason the
+        // snapshot below is: the loop returns from six places, and the count
+        // lives in a local behind all of them.
+        let mut context_overflows = 0u32;
+        // Taken off the conversation and put back below, rather than borrowed
+        // out of it: the loop already holds `&mut convo.messages` for its whole
+        // body, and a second field borrow alongside would mean destructuring
+        // `convo` at the top and rewriting every `convo.taint = …` site with
+        // it. Moving a handful of integers out and back is cheaper to read.
+        let mut pressure = std::mem::take(&mut convo.pressure);
+        // Continued if this run sends the same shape of request the last one
+        // did, discarded if it does not — a `/model` switch replaces the
+        // tokenizer the anchor was measured under.
+        pressure.carry_into(self.request_surface(cx));
+
+        let ran = self
+            .run_loop(cx, convo, events, &mut context_overflows, &mut pressure)
+            .await;
+        // Before the `?`. The series is a fact about the conversation, so a run
+        // that errored still leaves behind what it measured — and the next run
+        // on this conversation is the one that needs it most.
+        convo.pressure = pressure.clone();
+        let mut outcome = ran?;
+        outcome.context_overflows = context_overflows;
         // One place, after every exit. The loop returns from six of them, and
         // a snapshot attached at five is worse than one attached at none —
         // a field that is present for most runs reads as a sampling failure
@@ -1043,8 +1106,24 @@ impl Agent {
         outcome.homeostat = cx
             .homeostat
             .clone()
-            .map(crate::homeostat::Homeostat::finish);
+            .map(|h| h.finish(&pressure, self.context_window));
         Ok(outcome)
+    }
+
+    /// What this run's requests look like apart from their messages.
+    ///
+    /// Read once per run rather than per turn: the surface *can* move mid-run
+    /// — loading a skill narrows the tool list — but the anchor is re-measured
+    /// every turn anyway, so a mid-run change costs one slightly-off
+    /// prediction and corrects itself. The case worth catching is the one that
+    /// happens *between* runs, where nothing else would notice.
+    fn request_surface(&self, cx: &RunContext) -> u64 {
+        let specs = self.registry.specs_for(cx.phase);
+        crate::pressure::surface_fingerprint(
+            &self.model,
+            self.system.as_deref(),
+            specs.iter().map(|s| s.name.as_str()),
+        )
     }
 
     async fn run_loop(
@@ -1052,6 +1131,8 @@ impl Agent {
         cx: &RunContext,
         convo: &mut Conversation,
         events: Option<UnboundedSender<AgentEvent>>,
+        context_overflows: &mut u32,
+        pressure: &mut crate::pressure::ContextTracker,
     ) -> Result<RunOutcome> {
         // Run-scoped state a tool cannot otherwise see, stamped onto the
         // `ToolCtx` once here rather than at every call site that builds a
@@ -1133,7 +1214,7 @@ impl Agent {
             // call. Stop where we are and hand back what there is.
             if cx.cancelled() {
                 tracing::info!(turns, "interrupted");
-                let outcome = self.interrupted(
+                let mut outcome = self.interrupted(
                     messages.last().map(Message::text).unwrap_or_default(),
                     usage,
                     turns,
@@ -1143,7 +1224,7 @@ impl Agent {
                     taint,
                     compactions,
                 );
-                emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
+                emit_done(&events, &mut outcome, *context_overflows);
                 return Ok(outcome);
             }
 
@@ -1203,7 +1284,24 @@ impl Agent {
             // `!loop_detected`: the run is about to stop; a summary spent on a
             // transcript that is about to be abandoned is pure waste.
             if let Some(limit) = self.compact_limit(cx) {
-                if prompt_tokens >= limit && !compaction_gave_up && !loop_detected {
+                // `reported || predicted`, which is what the tracker's `over`
+                // spells and why it spells it that way. The reported size is
+                // one turn out of date by the time this check runs: the
+                // assistant turn and its tool results are already in
+                // `messages` and nobody has priced them. Predicting from the
+                // last real measurement plus the bytes since closes that gap,
+                // and *only* adds reasons to compact — the reactive arm is
+                // still the first thing consulted, so no state of the tracker
+                // can make this fire later than it did before.
+                // Cheap guards first: a run that has given up on compaction
+                // or is about to stop has no use for a full transcript walk,
+                // and `message_bytes` renders every `ToolUse` input to
+                // measure it — a cost that grows with the transcript, paid on
+                // the turns least able to afford it.
+                if !compaction_gave_up
+                    && !loop_detected
+                    && pressure.over(limit, crate::pressure::message_bytes(messages))
+                {
                     // What is about to be rewritten, kept for the recording:
                     // the front-end records at run end, so without this the
                     // turns a rewrite replaces were never anyone's to write.
@@ -1248,50 +1346,69 @@ impl Agent {
                                 prompt_tokens,
                             },
                         );
-                        // Give it a turn to take effect before paying for a
-                        // summary: the next reported prompt size says whether
-                        // this was enough, and a summary is lossy where this is
-                        // merely lossy about the middle of a file.
-                        //
-                        // `collapsed` is recorded above but deliberately not
-                        // counted here: it removes repetition, not bulk, so
-                        // treating it as "freed enough" would spend a turn
-                        // arriving back at the same threshold.
-                        if evicted + thinned > 0 {
-                            continue;
-                        }
+                        // These passes rewrote the list the reported size was
+                        // a measurement *of*, so that number is no longer a
+                        // reading of anything. Retiring it is what lets the
+                        // question be asked again below against the transcript
+                        // as it now is.
+                        pressure.invalidate();
                     }
 
-                    match self.compact(cx, messages, &events).await {
-                        Ok(Some(spent)) => {
-                            // `Some` is compact's word that a summary was
-                            // installed — the rewrite happened. `take` because
-                            // an earlier pass in this same turn may already
-                            // have recorded the pre-pass state, and two copies
-                            // of it would write two identical rewrite records.
-                            if let Some(pre) = pre_rewrite.take() {
-                                convo.rewritten.push(pre);
+                    // Ask again before paying for a summary. This is the
+                    // deferral the `continue` here used to intend and never
+                    // achieved: it jumped to the top of the loop without
+                    // sending a request, `prompt_tokens` is assigned in one
+                    // place and only after a response, so the re-entered check
+                    // saw the identical stale value — and the three passes are
+                    // idempotent, with tests saying so, so they freed nothing
+                    // the second time and the summary was paid for anyway one
+                    // iteration later. Answering it needed a reading the
+                    // reactive check cannot produce without spending a
+                    // request, which is exactly what the prediction is.
+                    //
+                    // It also dissolves the special case above. `collapsed`
+                    // was excluded from "freed enough" because finding out
+                    // cost a whole turn, so a cosmetic saving was worse than
+                    // not trying; measuring the bytes costs nothing, so
+                    // whatever any pass genuinely freed now counts, and
+                    // whatever it did not still compacts.
+                    if !pressure.over(limit, crate::pressure::message_bytes(messages)) {
+                        tracing::debug!("the free passes freed enough; no summary this turn");
+                    } else {
+                        match self.compact(cx, messages, &events).await {
+                            Ok(Some(spent)) => {
+                                // `Some` is compact's word that a summary was
+                                // installed — the rewrite happened. `take` because
+                                // an earlier pass in this same turn may already
+                                // have recorded the pre-pass state, and two copies
+                                // of it would write two identical rewrite records.
+                                if let Some(pre) = pre_rewrite.take() {
+                                    convo.rewritten.push(pre);
+                                }
+                                usage.add(&spent);
+                                compactions += 1;
+                                loop_guard.arm();
+                                // A summary rewrites the list too, so the same
+                                // rule applies to it as to the free passes.
+                                pressure.invalidate();
                             }
-                            usage.add(&spent);
-                            compactions += 1;
-                            loop_guard.arm();
-                        }
-                        // Nothing legal to drop — a short conversation holding
-                        // one enormous tool result, usually. Cheap to
-                        // re-evaluate next turn, since it costs no request.
-                        Ok(None) => tracing::debug!(
-                            prompt_tokens,
-                            "over the compaction threshold with nothing safe to drop"
-                        ),
-                        // A failed summary is not a reason to abandon the run:
-                        // the oversized request might still succeed, and if it
-                        // does not, the provider's own error is clearer than
-                        // ours. But stop trying — each attempt is a request of
-                        // its own, and retrying a failure every turn would cost
-                        // more than the compaction was going to save.
-                        Err(e) => {
-                            tracing::warn!(error = %e, "compaction failed; continuing uncompacted");
-                            compaction_gave_up = true;
+                            // Nothing legal to drop — a short conversation holding
+                            // one enormous tool result, usually. Cheap to
+                            // re-evaluate next turn, since it costs no request.
+                            Ok(None) => tracing::debug!(
+                                prompt_tokens,
+                                "over the compaction threshold with nothing safe to drop"
+                            ),
+                            // A failed summary is not a reason to abandon the run:
+                            // the oversized request might still succeed, and if it
+                            // does not, the provider's own error is clearer than
+                            // ours. But stop trying — each attempt is a request of
+                            // its own, and retrying a failure every turn would cost
+                            // more than the compaction was going to save.
+                            Err(e) => {
+                                tracing::warn!(error = %e, "compaction failed; continuing uncompacted");
+                                compaction_gave_up = true;
+                            }
                         }
                     }
                 }
@@ -1315,7 +1432,18 @@ impl Agent {
                     match self.final_answer(cx, messages, &events).await {
                         Ok(Some(answer)) => text = answer,
                         Ok(None) => {}
-                        Err(e) => tracing::warn!(error = %e, "final-answer turn failed"),
+                        Err(e) => {
+                            // The failure is swallowed so the run still
+                            // returns the text it has — but if it was an
+                            // overflow, the threshold failed and the row must
+                            // say so. This turn is a real candidate for one:
+                            // it is sent at a ceiling, on top of whatever the
+                            // last turn's tool results added.
+                            if is_context_overflow(&e) {
+                                *context_overflows += 1;
+                            }
+                            tracing::warn!(error = %e, "final-answer turn failed");
+                        }
                     }
                 }
 
@@ -1332,8 +1460,9 @@ impl Agent {
                 }
 
                 let cost = self.cost(&usage);
-                let outcome = RunOutcome {
+                let mut outcome = RunOutcome {
                     homeostat: None,
+                    context_overflows: 0,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -1353,12 +1482,17 @@ impl Agent {
                     compactions,
                     usage_complete: true,
                 };
-                emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
+                emit_done(&events, &mut outcome, *context_overflows);
                 return Ok(outcome);
             }
             turns += 1;
             emit(&events, AgentEvent::TurnStart { turn: turns });
 
+            // The size of exactly what is about to go on the wire. Taken here
+            // rather than after the response, because the overflow arm below
+            // rewrites `messages` between the two and the pair must describe
+            // one request.
+            let mut sent_bytes = crate::pressure::message_bytes(messages);
             let mut request = CompletionRequest {
                 model: self.model.clone(),
                 system: self.system.clone(),
@@ -1389,6 +1523,11 @@ impl Agent {
             // attempted at all.
             let completion = match self.complete(cx, &request, &events).await {
                 Err(e) if is_context_overflow(&e) => {
+                    // Counted before the recovery rather than after it: what
+                    // this measures is the threshold having failed to prevent
+                    // the overflow, which is already true at this line however
+                    // well the rebuild below goes.
+                    *context_overflows += 1;
                     tracing::warn!("prompt overflowed the context window; compacting to recover");
                     // Kept for the recording, as at the threshold site — but
                     // compared at the end rather than pushed per pass, because
@@ -1435,6 +1574,12 @@ impl Agent {
                         convo.rewritten.push(pre_rewrite);
                     }
                     request.messages = messages.clone();
+                    // The retry carries a different list; the anchor has to
+                    // describe the one that was actually priced, or the next
+                    // prediction is measured from a transcript that was never
+                    // sent.
+                    pressure.invalidate();
+                    sent_bytes = crate::pressure::message_bytes(messages);
                     self.complete(cx, &request, &events).await?
                 }
                 other => other?,
@@ -1453,7 +1598,16 @@ impl Agent {
                     // What the cut turn had already cost, on top of the turns
                     // that completed.
                     usage.add(&spent);
-                    let outcome = self.interrupted(
+                    // And the size it was cut at. The input tokens arrive in
+                    // the first frame, so this is a real measurement even
+                    // though the output half never came — and the interrupted
+                    // run is exactly the one whose pressure is worth knowing,
+                    // since people stop runs that have got big. Without it
+                    // `peak_prompt_tokens` reports the previous, smaller turn.
+                    if spent.total_input() > 0 {
+                        pressure.observe(spent.total_input(), sent_bytes);
+                    }
+                    let mut outcome = self.interrupted(
                         partial,
                         usage,
                         turns,
@@ -1463,12 +1617,15 @@ impl Agent {
                         taint,
                         compactions,
                     );
-                    emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
+                    emit_done(&events, &mut outcome, *context_overflows);
                     return Ok(outcome);
                 }
             };
             usage.add(&response.usage);
             prompt_tokens = response.usage.total_input();
+            // One real measurement, and the only one there is: the provider
+            // reports what a prompt cost and never what is left.
+            pressure.observe(prompt_tokens, sent_bytes);
             malformed += response.malformed_tool_args;
             emit(&events, AgentEvent::TurnUsage(response.usage.clone()));
 
@@ -1565,6 +1722,7 @@ impl Agent {
                             &mut trace,
                             &mut taint,
                             &mut blocked_sends,
+                            self.output_budget(cx, pressure, messages),
                         )
                         .await;
 
@@ -1577,7 +1735,7 @@ impl Agent {
                     // has a matching tool_result, so this must never be empty
                     // when the model asked for tools.
                     if results.is_empty() {
-                        let outcome = self.finish(
+                        let mut outcome = self.finish(
                             text,
                             &response,
                             usage,
@@ -1588,7 +1746,7 @@ impl Agent {
                             taint,
                             compactions,
                         );
-                        emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
+                        emit_done(&events, &mut outcome, *context_overflows);
                         return Ok(outcome);
                     }
 
@@ -1648,7 +1806,7 @@ impl Agent {
                         outcome.stop_cause = StopCause::NoOutput;
                         outcome.exhausted = true;
                     }
-                    emit(&events, AgentEvent::Done(Box::new(outcome.clone())));
+                    emit_done(&events, &mut outcome, *context_overflows);
                     return Ok(outcome);
                 }
             }
@@ -1995,8 +2153,12 @@ impl Agent {
             taint,
             // Filled by `run_in` once, rather than by every builder: the loop
             // has six exit points and a field set at five of them is worse
-            // than one set at none.
+            // than one set at none. `context_overflows` rides the same seam,
+            // and for a second reason — it would arrive here as a tenth
+            // positional `u32` immediately after `compactions`, where a
+            // swapped pair of arguments compiles.
             homeostat: None,
+            context_overflows: 0,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -2133,6 +2295,7 @@ impl Agent {
             blocked_sends,
             taint,
             homeostat: None,
+            context_overflows: 0,
             stop_cause: StopCause::Interrupted,
             compactions,
             cost_usd: self.cost(&usage),
@@ -2146,6 +2309,59 @@ impl Agent {
     /// Approval is sequential because it may block on a human. Execution is
     /// concurrent, because by then all the decisions are made.
     #[allow(clippy::too_many_arguments)]
+    /// What this turn's tool results may weigh, together.
+    ///
+    /// `[tools] output_budget_bytes` is the standing figure and is derived
+    /// once from the context window — an eighth of it, on the argument that
+    /// "one turn's results must not leap the gap between the threshold and the
+    /// window itself". That sizes the gap from the window. Under pressure the
+    /// gap is not the window's; it is whatever is left before the threshold,
+    /// which the tracker can say.
+    ///
+    /// Three rules, and the first is the one that keeps this a disposition
+    /// rather than a policy change:
+    ///
+    /// - **It is a `min`, so it can only ever narrow.** §7.3 again: the
+    ///   configured budget is a ceiling nothing here may raise, and a run with
+    ///   room to spare gets exactly the budget it always got.
+    /// - **It narrows only when there is somewhere to spill.** `cap_result`
+    ///   moves over-cap bytes to a file the path jail admits and hands the
+    ///   model an `fs_read` to fetch them, so a tighter cap *relocates* output
+    ///   rather than losing it. With `spill_dir` unset the same cap drops the
+    ///   tail for good, which is not the strictly-better trade §7's table
+    ///   claims, so it is not taken.
+    /// - **It never returns zero.** `run_tools` floors each result at
+    ///   `SPILL_FLOOR_BYTES` regardless, because a result truncated to nothing
+    ///   is worse than an oversized one: it costs a turn and says nothing.
+    fn output_budget(
+        &self,
+        cx: &RunContext,
+        pressure: &crate::pressure::ContextTracker,
+        messages: &[Message],
+    ) -> usize {
+        let configured = cx.tools.output_budget_bytes;
+        if cx.tools.spill_dir.is_none() {
+            return configured;
+        }
+        let Some(limit) = self.compact_limit(cx) else {
+            return configured;
+        };
+        let Some(afford) =
+            pressure.affordable_output_bytes(limit, crate::pressure::message_bytes(messages))
+        else {
+            return configured;
+        };
+        if afford < configured {
+            tracing::debug!(
+                configured,
+                afford,
+                "narrowing this turn's tool-output budget; the rest spills"
+            );
+        }
+        configured.min(afford)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn run_tools(
         &self,
         cx: &RunContext,
@@ -2154,6 +2370,7 @@ impl Agent {
         trace: &mut Vec<ToolCallTrace>,
         taint: &mut Taint,
         blocked_sends: &mut u32,
+        output_budget: usize,
     ) -> Vec<Block> {
         let calls: Vec<(String, String, Value)> = assistant
             .tool_uses()
@@ -2634,8 +2851,8 @@ impl Agent {
         // covers MCP results too, which have no cap of their own. Applied
         // before the untrusted wrapper so the wrapper's closing tag can
         // never be what gets cut off.
-        let result_cap = (cx.tools.output_budget_bytes / executed.len().max(1))
-            .max(crate::tool::SPILL_FLOOR_BYTES);
+        let result_cap =
+            (output_budget / executed.len().max(1)).max(crate::tool::SPILL_FLOOR_BYTES);
 
         for (i, id, name, mut out) in executed {
             out.content = crate::tool::cap_result(
@@ -2704,6 +2921,25 @@ impl Agent {
 
         results.into_iter().flatten().collect()
     }
+}
+
+/// Announce a finished run, with the fields the builders could not fill.
+///
+/// `AgentEvent::Done` carries a whole `RunOutcome`, and `run_in` patches
+/// `context_overflows` onto the returned value *after* the loop — so the event
+/// went out with a zero. That is worse than `homeostat`'s identical gap, where
+/// the field is `Option` and `None` honestly reads as "not sampled": a `u32`
+/// zero is indistinguishable from a run that really had none, and
+/// `slack/pump.rs` already reads `compactions` off this same event.
+///
+/// One place, because the loop emits `Done` from five of them.
+fn emit_done(
+    events: &Option<UnboundedSender<AgentEvent>>,
+    outcome: &mut RunOutcome,
+    context_overflows: u32,
+) {
+    outcome.context_overflows = context_overflows;
+    emit(events, AgentEvent::Done(Box::new(outcome.clone())));
 }
 
 fn emit(events: &Option<UnboundedSender<AgentEvent>>, event: AgentEvent) {
@@ -4225,6 +4461,609 @@ mod tests {
         assert_eq!(provider.seen.lock().unwrap().len(), 6);
     }
 
+    /// A small call with a large result, which is the shape that breaks the
+    /// reactive threshold: `EchoTool` returns its own argument, so making its
+    /// result big makes the *call* big too, and the assistant turn then grows
+    /// in lockstep with the result — hiding the very asymmetry under test.
+    struct BulkTool;
+
+    #[async_trait]
+    impl Tool for BulkTool {
+        fn name(&self) -> &str {
+            "bulk"
+        }
+        fn description(&self) -> &str {
+            "Return n bytes."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            let n = input.get("n").and_then(Value::as_u64).unwrap_or(0) as usize;
+            Ok(ToolOutput::ok("z".repeat(n)))
+        }
+    }
+
+    /// Prices what it is sent instead of reporting a constant, and refuses a
+    /// request over its window — which is what a real backend does and what
+    /// no other test provider here can express. Without both, the gap
+    /// predictive compaction closes is not reachable in a test: the gap *is*
+    /// the difference between what the last request cost and what the next one
+    /// will, and a provider reporting 10 tokens for everything has no such
+    /// difference.
+    struct SizedProvider {
+        turns: Mutex<Vec<CompletionResponse>>,
+        /// Prompt size and whether the request was the summariser's, per call.
+        seen: Mutex<Vec<(u64, bool)>>,
+        window: Option<u64>,
+    }
+
+    impl SizedProvider {
+        fn new(window: Option<u64>, turns: Vec<CompletionResponse>) -> Arc<SizedProvider> {
+            Arc::new(SizedProvider {
+                turns: Mutex::new(turns),
+                seen: Mutex::new(Vec::new()),
+                window,
+            })
+        }
+        fn summaries(&self) -> usize {
+            self.seen.lock().unwrap().iter().filter(|(_, s)| *s).count()
+        }
+    }
+
+    #[async_trait]
+    impl Provider for SizedProvider {
+        fn id(&self) -> &str {
+            "sized"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-1"
+        }
+        async fn complete(
+            &self,
+            req: &CompletionRequest,
+            _sink: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            // The same rate the predictor floors at, so the arithmetic under
+            // test is the loop's and not this fixture's.
+            let tokens = (crate::pressure::message_bytes(&req.messages) as f64 / 3.0) as u64;
+            // The summariser is the one request with no tools on it.
+            self.seen
+                .lock()
+                .unwrap()
+                .push((tokens, req.tools.is_empty()));
+            if self.window.is_some_and(|w| tokens > w) {
+                anyhow::bail!(
+                    "request ({tokens} tokens) exceeds the available context size ({} tokens)",
+                    self.window.unwrap()
+                );
+            }
+            // Report what this prompt cost. Without it the loop anchors on
+            // `assistant`'s hardcoded ten tokens and every prediction is a
+            // measurement of the fixture — which is exactly what happened
+            // the first time this was written, and it looked like the
+            // predictor not working.
+            let priced = |mut r: CompletionResponse| {
+                r.usage = Usage {
+                    input_tokens: tokens,
+                    ..r.usage
+                };
+                r
+            };
+            if req.tools.is_empty() {
+                // A plausible summary, so the run continues past it.
+                return Ok(priced(assistant(
+                    vec![Block::text("Earlier: the assistant read some files.")],
+                    StopReason::EndTurn,
+                )));
+            }
+            let mut turns = self.turns.lock().unwrap();
+            anyhow::ensure!(!turns.is_empty(), "provider ran out of scripted turns");
+            Ok(priced(turns.remove(0)))
+        }
+    }
+
+    fn shared(p: &Arc<SizedProvider>) -> Box<dyn Provider> {
+        struct Shared(Arc<SizedProvider>);
+        #[async_trait]
+        impl Provider for Shared {
+            fn id(&self) -> &str {
+                self.0.id()
+            }
+            fn default_model(&self) -> &str {
+                self.0.default_model()
+            }
+            async fn complete(
+                &self,
+                req: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                self.0.complete(req, sink).await
+            }
+        }
+        Box::new(Shared(Arc::clone(p)))
+    }
+
+    fn sized_agent(provider: &Arc<SizedProvider>, cfg: AgentConfig) -> Agent {
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(BulkTool));
+        Agent::new(
+            shared(provider),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                // Large enough that the fixture's results are not truncated
+                // before the sizes under test are reached.
+                output_budget_bytes: 400_000,
+                ..Default::default()
+            },
+            cfg,
+            None,
+        )
+        .unwrap()
+    }
+
+    /// A second run on the same conversation acts on the first one's
+    /// measurement — which is what `mecha chat` and the TUI are, since one
+    /// submission there is one run.
+    ///
+    /// Sizing this took a wrong turn worth recording. The obvious shape —
+    /// let run 1 grow the transcript with tool calls — cannot work, because
+    /// the predictive check fires *inside* run 1 the turn before the growth
+    /// is priced. That is the feature working, and it means the carried
+    /// anchor is only ever the deciding signal when the transcript grows
+    /// **between** runs: the model answers, and then a large message arrives.
+    /// Which is the ordinary way a chat session gets big.
+    ///
+    /// So: one quiet run to leave a measurement, a big user turn, and a
+    /// second run whose very first check is the assertion. Graded on eviction
+    /// having happened, because the free passes are what that check reaches
+    /// for and they are enough here.
+    #[tokio::test]
+    async fn a_second_run_on_one_conversation_acts_on_the_first_ones_anchor() {
+        let big = "z".repeat(90_000);
+        let bulk = json!({"n": 90_000});
+        let mut history = vec![Message::user("go")];
+        // Two identical calls, so the second run's eviction has something to
+        // supersede.
+        for id in ["a", "b"] {
+            history.push(Message::assistant(vec![Block::ToolUse {
+                id: id.into(),
+                name: "bulk".into(),
+                input: bulk.clone(),
+            }]));
+            history.push(Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: id.into(),
+                content: big.clone(),
+                is_error: false,
+            }]));
+        }
+
+        let provider = SizedProvider::new(
+            None,
+            vec![
+                assistant(vec![Block::text("one")], StopReason::EndTurn),
+                assistant(vec![Block::text("two")], StopReason::EndTurn),
+            ],
+        );
+        let agent = sized_agent(
+            &provider,
+            AgentConfig {
+                compact_at_tokens: Some(50_000),
+                ..AgentConfig::default()
+            },
+        );
+
+        // Run 1 answers in one turn, so its only check runs before it has
+        // measured anything and nothing fires.
+        let mut convo = Conversation::from(history);
+        let first = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(first.text, "one");
+        assert!(
+            convo.rewritten.is_empty(),
+            "run 1's single check had nothing to go on"
+        );
+        let anchor = convo
+            .pressure
+            .reported()
+            .expect("run 1 left its measurement on the conversation");
+        assert!(anchor > 50_000, "and it is over the threshold: {anchor}");
+
+        // The second submission. This check is the whole test: with the
+        // anchor it fires and evicts; without one there is nothing to fire on
+        // and the oversized transcript goes out unexamined.
+        convo.push(Message::user("next"));
+        let second = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(second.text, "two");
+        assert!(
+            !convo.rewritten.is_empty(),
+            "the second run's first check acted on the first run's measurement"
+        );
+        assert_eq!(
+            second.compactions, 0,
+            "and eviction was enough — no summary was paid for"
+        );
+    }
+
+    /// The other half: a `/model` switch rebuilds the agent, and an anchor
+    /// measured under the old tokenizer must not be extrapolated from.
+    #[tokio::test]
+    async fn a_model_switch_discards_the_anchor_instead_of_carrying_it() {
+        let first = SizedProvider::new(
+            None,
+            vec![assistant(vec![Block::text("one")], StopReason::EndTurn)],
+        );
+        let mut convo = Conversation::from(vec![Message::user("a".repeat(30_000))]);
+        sized_agent(&first, AgentConfig::default())
+            .run(&mut convo, None)
+            .await
+            .unwrap();
+        assert!(convo.pressure.reported().is_some());
+
+        // Same conversation, an agent whose surface differs.
+        let second = SizedProvider::new(
+            None,
+            vec![assistant(vec![Block::text("two")], StopReason::EndTurn)],
+        );
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(BulkTool));
+        registry.insert(Arc::new(EchoTool));
+        let switched = Agent::new(
+            shared(&second),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+            AgentConfig::default(),
+            None,
+        )
+        .unwrap();
+
+        convo.push(Message::user("again"));
+        // The anchor from the old surface is dropped at run start; this run's
+        // own measurement is what remains.
+        switched.run(&mut convo, None).await.unwrap();
+        let peak = convo.pressure.peak_tokens();
+        assert!(peak > 0, "the new surface measured its own request: {peak}");
+    }
+
+    /// The budget narrows as the transcript fills, and the bytes it no longer
+    /// admits go to the spill file rather than being lost.
+    ///
+    /// The sizing is deliberate. Pressure has to be high enough to narrow the
+    /// budget and *not* high enough to trip the compaction threshold, or the
+    /// summary relieves the pressure first and the assertion measures
+    /// compaction instead — which is what the first draft of this did, and it
+    /// read as the narrowing not working. Two different `n` values, so nothing
+    /// is superseded and eviction leaves both results alone.
+    #[tokio::test]
+    async fn under_pressure_a_turns_tool_output_is_capped_tighter_and_spilled() {
+        let spill = std::env::temp_dir().join(format!("mecha-step4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&spill);
+
+        let call = |id: &str, n: u64| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "bulk".into(),
+                    input: json!({ "n": n }),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let provider = SizedProvider::new(
+            None,
+            vec![
+                call("t1", 240_000),
+                call("t2", 200_000),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+        );
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(BulkTool));
+        let agent = Agent::new(
+            shared(&provider),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                output_budget_bytes: 200_000,
+                spill_dir: Some(spill.clone()),
+                ..Default::default()
+            },
+            AgentConfig {
+                // ~200 KB of transcript prices at ~67k, two thirds of the way
+                // to this threshold: enough room left to matter, not enough to
+                // fit another 200 KB.
+                compact_at_tokens: Some(100_000),
+                ..AgentConfig::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.text, "done");
+        assert_eq!(outcome.compactions, 0, "no summary relieved the pressure");
+
+        let results: Vec<usize> = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content.len()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 2, "two calls, two results: {results:?}");
+        // The first turn has no anchor, so the configured budget stands and
+        // this is exactly the behaviour that shipped before.
+        assert!(
+            results[0] > 150_000,
+            "the first turn is unchanged: {results:?}"
+        );
+        assert!(
+            results[1] < results[0] / 2,
+            "the second is cut to what the remaining room affords: {results:?}"
+        );
+
+        // And what was cut is on disk with the marker naming it — the whole
+        // reason narrowing is allowed to happen without asking.
+        let spilled: Vec<_> = std::fs::read_dir(&spill)
+            .map(|d| d.filter_map(Result::ok).collect())
+            .unwrap_or_default();
+        assert!(!spilled.is_empty(), "the over-cap bytes were saved");
+        let second = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content),
+                _ => None,
+            })
+            .nth(1)
+            .unwrap();
+        assert!(
+            second.contains("The full output is saved at"),
+            "the model is told where the rest went"
+        );
+
+        let _ = std::fs::remove_dir_all(&spill);
+    }
+
+    /// With nowhere to spill, the same cap would drop the tail for good — so
+    /// it is not applied, and the configured budget stands.
+    #[tokio::test]
+    async fn with_no_spill_directory_the_budget_is_never_narrowed() {
+        let provider = SizedProvider::new(
+            None,
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "bulk".into(),
+                        input: json!({"n": 90_000}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+        );
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(BulkTool));
+        let cx = ToolCtx {
+            workspace: std::env::temp_dir(),
+            shell_timeout: std::time::Duration::from_secs(1),
+            output_budget_bytes: 200_000,
+            spill_dir: None,
+            ..Default::default()
+        };
+        let agent = Agent::new(
+            shared(&provider),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            cx,
+            AgentConfig {
+                compact_at_tokens: Some(1),
+                ..AgentConfig::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        agent.run(&mut convo, None).await.unwrap();
+        let biggest = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content.len()),
+                _ => None,
+            })
+            .max()
+            .unwrap();
+        assert!(
+            biggest > 80_000,
+            "a threshold of 1 token would narrow to nothing if spilling were \
+             not required: {biggest}"
+        );
+    }
+
+    /// The failure predictive compaction exists to prevent, driven end to end.
+    ///
+    /// The threshold is checked between turns against the *previous* prompt's
+    /// size, and a turn's tool results land after that check — so a transcript
+    /// comfortably under the threshold can produce a request well over the
+    /// window. The reactive check cannot see it coming. The prediction can,
+    /// because the bytes are already in `messages`; nothing is extrapolated.
+    ///
+    /// The arithmetic, at 3 bytes a token, a 60k window and a 40k threshold:
+    ///
+    /// | after | messages | next request | reactive sees | predicted |
+    /// |---|---|---|---|---|
+    /// | turn 1 | 100 KB | 33k — fits | 0 | 33k — under |
+    /// | turn 2 | 200 KB | **67k — over the window** | 33k — under | 67k — over |
+    ///
+    /// So the reactive check declines to act on the one turn where acting was
+    /// the whole game, and finds out by being refused. Graded on
+    /// `context_overflows`, which is what that counter is for.
+    #[tokio::test]
+    async fn a_turns_results_no_longer_take_the_next_request_over_the_window() {
+        let call = |id: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "bulk".into(),
+                    input: json!({"n": 100_000}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let cfg = AgentConfig {
+            compact_at_tokens: Some(40_000),
+            ..AgentConfig::default()
+        };
+        let provider = SizedProvider::new(
+            Some(60_000),
+            vec![
+                call("t1"),
+                call("t2"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+        );
+        let agent = sized_agent(&provider, cfg);
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.text, "done");
+        assert_eq!(
+            outcome.context_overflows, 0,
+            "the prediction saw results that were already in `messages`; the \
+             reactive check could only have found out by sending them"
+        );
+        let sizes: Vec<u64> = provider
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(t, _)| *t)
+            .collect();
+        assert!(
+            sizes.iter().all(|t| *t <= 60_000),
+            "no request may exceed the window: {sizes:?}"
+        );
+        // And it acted rather than got lucky: the transcript was rewritten.
+        assert!(!convo.rewritten.is_empty());
+    }
+
+    /// The deferral the loop has always meant to make.
+    ///
+    /// A resumed conversation arrives already over the threshold and carrying
+    /// a superseded result — the ordinary shape, since a session long enough
+    /// to need compacting has usually read the same thing twice. Eviction
+    /// removes it for free. Whether that was *enough* is a question the
+    /// reactive check cannot answer without spending a request, so the old
+    /// code asked it by jumping to the top of the loop — where the same stale
+    /// number was waiting and the three passes, being idempotent, had nothing
+    /// left to free. It paid for a summary it did not need, every time.
+    ///
+    /// The history is long enough for a summary to be *worth* taking. Without
+    /// that, `worth_compacting` declines, no request is issued, and the test
+    /// passes against the old code for a reason that has nothing to do with
+    /// the deferral — which is what the first draft of it did.
+    #[tokio::test]
+    async fn eviction_that_frees_enough_is_not_followed_by_a_summary() {
+        let big = "z".repeat(100_000);
+        let bulk = json!({"n": 100_000});
+        let mut history = vec![Message::user("go")];
+        // Enough turns behind the cut point for a summary to be worthwhile.
+        for i in 0..5 {
+            history.push(Message::assistant(vec![Block::ToolUse {
+                id: format!("s{i}"),
+                name: "bulk".into(),
+                input: json!({"n": i}),
+            }]));
+            history.push(Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: format!("s{i}"),
+                content: "z".repeat(i),
+                is_error: false,
+            }]));
+        }
+        // Two identical calls: the older result is superseded by the newer.
+        for id in ["a", "b"] {
+            history.push(Message::assistant(vec![Block::ToolUse {
+                id: id.into(),
+                name: "bulk".into(),
+                input: bulk.clone(),
+            }]));
+            history.push(Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: id.into(),
+                content: big.clone(),
+                is_error: false,
+            }]));
+        }
+
+        let cfg = AgentConfig {
+            // ~200 KB of history prices at ~67k, so the run starts over the
+            // threshold on the *reported* size. Both the old code and the new
+            // one enter the compaction block; only one leaves without paying.
+            compact_at_tokens: Some(60_000),
+            ..AgentConfig::default()
+        };
+        let provider = SizedProvider::new(
+            None,
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "c".into(),
+                        name: "bulk".into(),
+                        input: json!({"n": 10}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+        );
+        let agent = sized_agent(&provider, cfg);
+
+        let mut convo = Conversation::from(history);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.text, "done");
+        assert_eq!(
+            provider.summaries(),
+            0,
+            "evicting the superseded result freed enough; the summary was waste"
+        );
+        assert_eq!(outcome.compactions, 0);
+        // And the block really was entered — otherwise this passes for the
+        // wrong reason, by never having been in a position to compact.
+        assert!(
+            !convo.rewritten.is_empty(),
+            "the transcript was rewritten, so the block was entered"
+        );
+    }
+
     /// Scripts errors as well as turns, which [`ScriptedProvider`] cannot:
     /// `None` answers the call with a context-overflow error.
     struct OverflowScript {
@@ -4257,6 +5096,155 @@ mod tests {
                 )),
             }
         }
+    }
+
+    /// The counter exists to be a *baseline*, so what matters is that it
+    /// survives the trip into `RunStats` — a number the loop knows and the
+    /// record does not is worth nothing to the reader that has to compare
+    /// across runs.
+    #[tokio::test]
+    async fn a_recovered_overflow_is_counted_and_reaches_the_record() {
+        let provider = Arc::new(OverflowScript {
+            turns: Mutex::new(vec![
+                None, // refused as too large
+                Some(assistant(vec![Block::text("done")], StopReason::EndTurn)),
+            ]),
+            seen: Mutex::new(Vec::new()),
+        });
+
+        struct Shared(Arc<OverflowScript>);
+        #[async_trait]
+        impl Provider for Shared {
+            fn id(&self) -> &str {
+                self.0.id()
+            }
+            fn default_model(&self) -> &str {
+                self.0.default_model()
+            }
+            async fn complete(
+                &self,
+                req: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                self.0.complete(req, sink).await
+            }
+        }
+
+        let agent = Agent::new(
+            Box::new(Shared(Arc::clone(&provider))),
+            Registry::new(),
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+            AgentConfig::default(),
+            None,
+        )
+        .unwrap();
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.text, "done");
+        assert_eq!(outcome.context_overflows, 1);
+        // `Some(1)`, never a bare 1: a live run always knows its count, so the
+        // record says so — and that is what separates it from a row written
+        // before the sensor existed, which stays `None`.
+        let stats = crate::session::RunStats::from(&outcome);
+        assert_eq!(stats.context_overflows, Some(1));
+        // A run that never overflowed records `Some(0)` — "the sensor was
+        // here and saw nothing" — which is a different claim from `None`.
+        let clean = crate::session::RunStats::from(&RunOutcome {
+            context_overflows: 0,
+            ..outcome.clone()
+        });
+        assert_eq!(clean.context_overflows, Some(0));
+    }
+
+    /// The overflow that is never recovered, and was therefore never counted.
+    ///
+    /// `final_answer` runs at a ceiling and its failure is swallowed on
+    /// purpose, so the run still returns the text it has. But a swallowed
+    /// *overflow* is the threshold having failed, and recording `Some(0)` for
+    /// it is the false zero the `Option` on this field exists to prevent — the
+    /// sensor present and reporting nothing. Counting the observation rather
+    /// than the recovery is what makes this fall in naturally.
+    #[tokio::test]
+    async fn an_overflow_in_the_forced_final_turn_is_counted_even_though_it_is_swallowed() {
+        let provider = Arc::new(OverflowScript {
+            turns: Mutex::new(vec![
+                Some(assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "echo".into(),
+                        input: json!({"value": "hi"}),
+                    }],
+                    StopReason::ToolUse,
+                )),
+                // The turn ceiling lands here, so the next request is the
+                // forced final answer — and it is refused as too large.
+                None,
+            ]),
+            seen: Mutex::new(Vec::new()),
+        });
+
+        struct Shared(Arc<OverflowScript>);
+        #[async_trait]
+        impl Provider for Shared {
+            fn id(&self) -> &str {
+                self.0.id()
+            }
+            fn default_model(&self) -> &str {
+                self.0.default_model()
+            }
+            async fn complete(
+                &self,
+                req: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                self.0.complete(req, sink).await
+            }
+        }
+
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(EchoTool));
+        let cfg = AgentConfig {
+            max_turns: 1,
+            ..AgentConfig::default()
+        };
+        let agent = Agent::new(
+            Box::new(Shared(Arc::clone(&provider))),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+            cfg,
+            None,
+        )
+        .unwrap();
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::MaxTurns);
+        assert_eq!(
+            outcome.context_overflows, 1,
+            "the final-answer turn overflowed; the row must not read as a run \
+             that never did"
+        );
+        assert_eq!(
+            crate::session::RunStats::from(&outcome).context_overflows,
+            Some(1)
+        );
     }
 
     #[tokio::test]
@@ -4326,6 +5314,11 @@ mod tests {
         let outcome = agent.run(&mut convo, None).await.unwrap();
 
         assert_eq!(outcome.text, "done");
+        // Both recoveries are counted, not just the one that summarised —
+        // which is the whole distinction from `compactions`. Neither overflow
+        // here produced a summary, so `compactions` sees nothing at all.
+        assert_eq!(outcome.context_overflows, 2);
+        assert_eq!(outcome.compactions, 0);
         let seen = provider.seen.lock().unwrap();
         assert_eq!(seen.len(), 4, "both overflows must be retried");
         // The retry after the second overflow carried the thinned result, not

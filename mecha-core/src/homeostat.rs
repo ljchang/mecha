@@ -41,6 +41,7 @@
 //! [`RunContext`]: crate::agent::RunContext
 
 use crate::backlog::{Backlog, BacklogDelta};
+use crate::pressure::ContextTracker;
 use serde::{Deserialize, Serialize};
 
 /// A run's conditions: sampled at start, completed at end.
@@ -62,6 +63,25 @@ pub struct Homeostat {
     /// inherited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backlog_delta: Option<BacklogDelta>,
+    /// The largest prompt this run actually sent.
+    ///
+    /// The **peak**, not the last and not the total. The total is what
+    /// `RunOutcome::usage` already reports and it is the wrong number for this
+    /// — it sums every prompt the run ever sent, so a long conversation shows
+    /// a figure several times the window and reads as impossible pressure. The
+    /// last is the wrong number too: a run that spent twenty turns at the
+    /// threshold and then compacted would record the small number, which is
+    /// the one moment it was not under pressure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_prompt_tokens: Option<u64>,
+    /// That peak as a share of the context window, when the window is known.
+    ///
+    /// `None` where it is not — the fraction is unknowable rather than zero,
+    /// and a provider with no declared `context_window` is common enough that
+    /// recording 0.0 there would put a floor of healthy-looking rows under
+    /// every later reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_context_pressure: Option<f32>,
 }
 
 impl Homeostat {
@@ -75,21 +95,23 @@ impl Homeostat {
         }
     }
 
-    /// Complete the snapshot at the end of a run, by differencing the backlog.
+    /// Complete the snapshot at the end of a run: difference the backlog, and
+    /// take the context pressure off the run's own size series.
     ///
-    /// **Context pressure is deliberately not here yet.** It wants the *last
-    /// request's* prompt size, and `RunOutcome::usage` is the run's total —
-    /// accumulated across turns, so its `total_input` is the sum of every
-    /// prompt the run ever sent, a number that exceeds the window in any long
-    /// conversation and would read as impossible pressure. The figure that is
-    /// wanted lives in a loop local behind six exit points, and the thing that
-    /// actually needs it is rung 5's in-run tracker, which keeps last turn's
-    /// size in memory and records nothing. So it arrives with that, rather
-    /// than as a field nothing sets.
-    pub fn finish(mut self) -> Homeostat {
+    /// The tracker is the source rather than `RunOutcome::usage` for the
+    /// reason `peak_prompt_tokens` gives — the usage total is a sum across
+    /// turns, and the quantity wanted is a maximum over them. It is passed in
+    /// rather than read from anywhere, because the series exists only in the
+    /// loop's memory and is deliberately never stored: what is worth keeping
+    /// is the one number below, not a per-turn trace of every run.
+    pub fn finish(mut self, pressure: &ContextTracker, window: Option<u64>) -> Homeostat {
         if let Some(before) = &self.backlog {
             self.backlog_delta = Some(Backlog::delta(before, &Backlog::read()));
         }
+        // Zero means the run never got a response — no request was ever
+        // priced — which is an absence and not a measurement of nought.
+        self.peak_prompt_tokens = (pressure.peak_tokens() > 0).then(|| pressure.peak_tokens());
+        self.peak_context_pressure = pressure.peak_pressure(window);
         self
     }
 }
@@ -127,6 +149,8 @@ mod tests {
             mem_available_kb: Some(21_000_000),
             backlog: Some(Backlog::default()),
             backlog_delta: Some(BacklogDelta::default()),
+            peak_prompt_tokens: Some(18_008),
+            peak_context_pressure: Some(0.0687),
         };
         let json = serde_json::to_string(&h).unwrap();
         assert_eq!(serde_json::from_str::<Homeostat>(&json).unwrap(), h);
@@ -135,6 +159,33 @@ mod tests {
         // as "nothing was sampled" rather than failing.
         let empty: Homeostat = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, Homeostat::default());
+    }
+
+    /// The peak, and the two ways it can be absent.
+    #[test]
+    fn the_recorded_pressure_is_the_runs_high_water_mark() {
+        let mut pressure = ContextTracker::new();
+        pressure.observe(4_000, 4_000);
+        pressure.observe(30_000, 30_000);
+        // A compaction brought it back down. The row must still say the run
+        // reached 30,000 — that is the pressure it ran under, and the last
+        // reading is the one moment it was not under it.
+        pressure.observe(6_000, 6_000);
+
+        let h = Homeostat::default().finish(&pressure, Some(60_000));
+        assert_eq!(h.peak_prompt_tokens, Some(30_000));
+        assert_eq!(h.peak_context_pressure, Some(0.5));
+
+        // No declared window: the count is still a fact, the fraction is not
+        // knowable, and neither is reported as zero.
+        let no_window = Homeostat::default().finish(&pressure, None);
+        assert_eq!(no_window.peak_prompt_tokens, Some(30_000));
+        assert_eq!(no_window.peak_context_pressure, None);
+
+        // A run that never got a response priced nothing at all.
+        let never = Homeostat::default().finish(&ContextTracker::new(), Some(60_000));
+        assert_eq!(never.peak_prompt_tokens, None, "absent, not zero");
+        assert_eq!(never.peak_context_pressure, None);
     }
 
     /// The sensors degrade rather than panic where /proc is absent or shaped
