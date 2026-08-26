@@ -346,6 +346,22 @@ impl RunStats {
         self.taint.merge(other.taint);
     }
 
+    /// Fold a session's recorded rows into the episode they describe.
+    ///
+    /// The seed is the first row rather than `default()`, because
+    /// `usage_complete` is ANDed down — starting from the default's `false`
+    /// would make every folded episode a lower bound.
+    pub fn fold(rows: impl IntoIterator<Item = RunStats>) -> Option<RunStats> {
+        let mut folded: Option<RunStats> = None;
+        for row in rows {
+            match &mut folded {
+                Some(acc) => acc.merge(&row),
+                None => folded = Some(row),
+            }
+        }
+        folded
+    }
+
     /// One run's outcome as a row, before any folding.
     fn of_run(o: &crate::agent::RunOutcome) -> RunStats {
         RunStats {
@@ -403,6 +419,27 @@ pub struct SessionMeta {
 pub struct Session {
     pub meta: SessionMeta,
     pub path: PathBuf,
+}
+
+/// A transcript read once: see [`Session::read`].
+pub struct Transcript {
+    pub meta: SessionMeta,
+    pub convo: Conversation,
+    /// Every `RunConfig` recorded, in order. The first is the run the session
+    /// began under; a `/model` switch appends another.
+    pub configs: Vec<RunConfig>,
+    /// Every recorded outcome, folded into the episode the session describes.
+    pub episode: Option<RunStats>,
+}
+
+/// Every `Record::Outcome` in a transcript, in order.
+fn outcomes_in(text: &str) -> impl Iterator<Item = RunStats> + '_ {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| match serde_json::from_str(l) {
+            Ok(Record::Outcome(s)) => Some(s),
+            _ => None,
+        })
 }
 
 impl Session {
@@ -569,19 +606,7 @@ impl Session {
     pub fn episode_stats(path: &Path) -> Result<Option<RunStats>> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let mut folded: Option<RunStats> = None;
-        for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            if let Ok(Record::Outcome(s)) = serde_json::from_str(line) {
-                match &mut folded {
-                    Some(acc) => acc.merge(&s),
-                    // The first row seeds it, so `usage_complete` starts from
-                    // a measurement rather than from `default()`'s false —
-                    // which would make every folded episode a lower bound.
-                    None => folded = Some(s),
-                }
-            }
-        }
-        Ok(folded)
+        Ok(RunStats::fold(outcomes_in(&text)))
     }
 
     pub fn last_outcome(path: &Path) -> Result<Option<RunStats>> {
@@ -623,9 +648,30 @@ impl Session {
     /// Unparseable lines are skipped rather than failing the load — a truncated
     /// final line is the normal result of a killed process.
     pub fn load(path: &Path) -> Result<(SessionMeta, Conversation)> {
+        let t = Session::read(path)?;
+        Ok((t.meta, t.convo))
+    }
+
+    /// Everything a reader can want from a transcript, in **one** pass.
+    ///
+    /// `load`, `run_configs` and `episode_stats` each open the file and walk
+    /// every line, so a caller that wants all three pays three reads and three
+    /// parses of the same JSONL. That is fine for a one-off and is not fine
+    /// for `harness_probe`'s pool, which considers four times the wanted
+    /// episode count on every nightly — sixty-four transcripts, hundreds of KB
+    /// apiece, read three times each to answer questions one walk can answer
+    /// together.
+    ///
+    /// The three keep their own entry points, because most callers want one
+    /// thing and a caller that wants one thing should not have to hold a
+    /// header it has no use for. This is the seam for the caller that wants
+    /// all of them.
+    pub fn read(path: &Path) -> Result<Transcript> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
+        let mut configs = Vec::new();
+        let mut outcomes = Vec::new();
         let mut meta = None;
         let mut messages = Vec::new();
         let mut taint = Taint::default();
@@ -640,13 +686,23 @@ impl Session {
                 // Merged rather than replaced: taint only ever grows, and a
                 // transcript written by an older build has none at all.
                 Ok(Record::Taint(t)) => taint.merge(t),
-                Ok(Record::Summary { .. }) | Ok(Record::Config(_)) | Ok(Record::Outcome(_)) => {}
+                // Kept rather than discarded: this is the pass that has them
+                // in hand, and the alternative is two more reads of the file
+                // it just walked.
+                Ok(Record::Config(c)) => configs.push(c),
+                Ok(Record::Outcome(o)) => outcomes.push(o),
+                Ok(Record::Summary { .. }) => {}
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
         }
 
         let meta = meta.with_context(|| format!("{} has no session header", path.display()))?;
-        Ok((meta, Conversation::resumed(messages, taint)))
+        Ok(Transcript {
+            meta,
+            convo: Conversation::resumed(messages, taint),
+            configs,
+            episode: RunStats::fold(outcomes),
+        })
     }
 
     /// Every message the conversation ever contained, in first-seen order.
@@ -924,6 +980,63 @@ mod homeostat_record_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// One walk has to answer exactly what three walks answered, or the
+    /// caller that swapped to it is reading a different transcript from the
+    /// one everything else reads.
+    #[test]
+    fn one_pass_agrees_with_the_three_readers_it_replaces() {
+        let dir = std::env::temp_dir().join(format!("mecha-onepass-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Session::create(
+            &dir,
+            SessionMeta {
+                id: "20260826T000000-x".into(),
+                created_at: chrono::Utc::now(),
+                provider: "local".into(),
+                model: "first".into(),
+                workspace: std::path::PathBuf::from("/tmp"),
+                title: None,
+            },
+        )
+        .unwrap();
+        s.append(&Record::Config(RunConfig {
+            provider: "local".into(),
+            model: "first".into(),
+            ..Default::default()
+        }))
+        .unwrap();
+        s.append_messages(&[crate::message::Message::user("go")])
+            .unwrap();
+        let row = |turns: u32, calls: u32| RunStats {
+            turns,
+            tool_calls: calls,
+            usage_complete: true,
+            stop_cause: Some(crate::agent::StopCause::Completed),
+            ..RunStats::default()
+        };
+        s.append(&Record::Outcome(row(2, 3))).unwrap();
+        s.append(&Record::Outcome(row(5, 7))).unwrap();
+
+        let read = Session::read(&s.path).unwrap();
+        let (meta, convo) = Session::load(&s.path).unwrap();
+        assert_eq!(read.meta.id, meta.id);
+        assert_eq!(read.convo.messages, convo.messages);
+        assert_eq!(
+            serde_json::to_string(&read.configs).unwrap(),
+            serde_json::to_string(&Session::run_configs(&s.path).unwrap()).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_string(&read.episode).unwrap(),
+            serde_json::to_string(&Session::episode_stats(&s.path).unwrap()).unwrap()
+        );
+        // And the fold is a fold, not the last row.
+        let episode = read.episode.clone().unwrap();
+        assert_eq!(episode.turns, 7);
+        assert_eq!(episode.tool_calls, 10);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
     use crate::message::Block;
 
