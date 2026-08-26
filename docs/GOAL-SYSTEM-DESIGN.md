@@ -104,10 +104,29 @@ pub enum GoalRef {
 }
 ```
 
-`TodoItem` gains `serves: Option<GoalRef>`, and `TodoTool::carried_state`
+The plan gains `serves: Option<GoalRef>`, and `TodoTool::carried_state`
 renders the **goal above the list**. That is the whole medium-tier fix: one
 field and one line of rendering, on machinery that already exists and already
 survives a summary verbatim.
+
+> **Built 2026-08-26** (`goal.rs`, `feat/goal-ref`), and building it corrected
+> this section. An earlier draft put `serves` on `TodoItem`. It belongs on the
+> **plan**: D11 is *one live run per task*, so a run maps to at most one board
+> task and a per-item reference models a situation that cannot arise — while
+> costing a field the model has to repeat correctly on every item of every
+> write, in the tool whose whole job is being cheap to keep updated. On the
+> plan the rendering also falls out as designed, one line above the list,
+> instead of a suffix that has to be told apart from free-text content on the
+> way back in.
+>
+> Parsing landed with **two policies**, which the design had not separated.
+> From the model a malformed reference is a `ToolOutput` error naming what was
+> wrong — it can fix that next call, and a silently dropped field leaves a plan
+> claiming to serve something it does not. From a *record* — a transcript, a
+> carried block — an unknown kind degrades to no reference, because those are
+> append-only and may have been written by a newer binary, where a strict
+> reader would make one unrecognised word discard a whole plan. `OutboxKind`
+> and `Proposed` set that rule; this is its third use.
 
 ### 2.1 The medium tier is the board, and it is being wired in another lane
 
@@ -903,6 +922,14 @@ charter is `Prose` class and cannot be cheaply A/B tested:
   enough small goods — the exact shape of the attack, *"this is urgent for
   many people"*. A lexicographic order is immune: no quantity of a
   lower-priority good outranks a higher-priority one, ever.
+
+  **The order is the file's line order, and there is no priority field.**
+  Rank derives from the record, exactly as `TASK-AGENT-DESIGN.md` R1 has task
+  urgency derive from `due_at` and `defer_until` rather than from a field
+  somebody maintains — a second statement of priority disagrees with the first
+  the moment either is edited. Re-ranking is moving a line, which is also the
+  only editing gesture that cannot produce a tie. `GoalRef::Charter` therefore
+  carries an id and no rank: it is a pointer, and the charter is the record.
 - **"Never disappoint" is a badly-formed line.** A disposition never to
   disappoint produces sycophancy, over-promising and withheld bad news — an
   already-documented LLM failure this would amplify rather than fix. The
