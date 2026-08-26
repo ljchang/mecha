@@ -627,6 +627,14 @@ pub(super) async fn open_task_conversation(
             &mut sessions,
             &key,
             SessionInit {
+                // **Pick the recorded conversation back up.** The board has
+                // held this link since the conversation was opened, and it is
+                // what makes a task chat survive a restart of this process:
+                // the map is a cache, the transcript is the record. Refused
+                // by `Session::find` if it is gone, which falls back to a new
+                // conversation rather than to an error — a task whose
+                // transcript was swept still deserves to be talked about.
+                resume_from: task["session"].as_str().map(str::to_string),
                 workspace: Some(workspace),
                 title: Some(format!("{TASK_TITLE_PREFIX}{name}")),
                 withheld: vec!["kg_task_update".to_string()],
@@ -749,6 +757,16 @@ pub(super) const TASK_TITLE_PREFIX: &str = "task: ";
 /// the recorded config, or the question routing.
 #[derive(Default)]
 pub(super) struct SessionInit {
+    /// A recorded transcript to pick back up instead of starting fresh.
+    ///
+    /// **The board is the durable index; this map is a cache.** A task
+    /// conversation lives in this process's memory and in a JSONL, and only
+    /// the second survives a restart — so re-opening a task after one was
+    /// minting a blank conversation under the same key, losing the thread,
+    /// the task header and the D6 withholding in one go. The session id has
+    /// been recorded on the task since the conversation was opened; it simply
+    /// was not read back.
+    pub resume_from: Option<String>,
     pub workspace: Option<PathBuf>,
     pub title: Option<String>,
     pub withheld: Vec<String>,
@@ -770,6 +788,16 @@ fn ensure_session_as<'a>(
     init: SessionInit,
 ) -> Result<&'a mut WebSession> {
     if !sessions.contains_key(key) {
+        // Picking one back up, or starting one. `Session::load` restores the
+        // messages *and* the recorded taint, so a conversation that read a
+        // hostile page before the restart still remembers after it.
+        let recorded = init.resume_from.as_deref().and_then(|id| {
+            let dir = Session::default_dir().ok()?;
+            let path = Session::find(&dir, id).ok()?;
+            Session::load(&path)
+                .ok()
+                .map(|(meta, convo)| (meta, path, convo))
+        });
         let workspace = match init.workspace {
             Some(w) => {
                 std::fs::create_dir_all(&w)?;
@@ -777,20 +805,33 @@ fn ensure_session_as<'a>(
             }
             None => session_workspace(key)?,
         };
-        let session = Session::create(
-            &Session::default_dir()?,
-            SessionMeta {
-                id: Session::new_id(),
-                created_at: chrono::Utc::now(),
-                provider: chat.provider_name.clone(),
-                model: chat.model.clone(),
-                workspace: workspace.clone(),
-                // `task: …` for a delegation, so the drawer's task filter
-                // and `runlog` see it as the delegation it is rather than as
-                // an unrelated web chat that happens to mention one.
-                title: Some(init.title.clone().unwrap_or_else(|| format!("web: {key}"))),
-            },
-        )?;
+        let (session, conversation) = match recorded {
+            Some((meta, path, convo)) => {
+                // The plan comes back with it (D15), from the transcript the
+                // model is about to re-read anyway.
+                if let Some(todo) = &chat.todo {
+                    todo.rehydrate(&workspace, &convo.messages);
+                }
+                (Session { meta, path }, convo)
+            }
+            None => (
+                Session::create(
+                    &Session::default_dir()?,
+                    SessionMeta {
+                        id: Session::new_id(),
+                        created_at: chrono::Utc::now(),
+                        provider: chat.provider_name.clone(),
+                        model: chat.model.clone(),
+                        workspace: workspace.clone(),
+                        // `task: …` for a delegation, so the drawer's task filter
+                        // and `runlog` see it as the delegation it is rather than as
+                        // an unrelated web chat that happens to mention one.
+                        title: Some(init.title.clone().unwrap_or_else(|| format!("web: {key}"))),
+                    },
+                )?,
+                Conversation::new(),
+            ),
+        };
         session.append(&Record::Config(RunConfig::of(
             &chat.agent,
             &chat.config,
@@ -824,7 +865,7 @@ fn ensure_session_as<'a>(
         sessions.insert(
             key.to_string(),
             WebSession {
-                conversation: Some(Conversation::new()),
+                conversation: Some(conversation),
                 session: Arc::new(session),
                 workspace,
                 live: None,
