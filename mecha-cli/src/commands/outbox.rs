@@ -1447,6 +1447,7 @@ mod tests {
                 todo: None,
                 skill: None,
                 mailbox: None,
+                compact_requested: None,
                 _mcp: Vec::new(),
             },
             ctx: mecha_core::tool::ToolCtx::default(),
