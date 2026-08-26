@@ -283,7 +283,21 @@ async fn move_status(
 ///   model-written seed is an unreviewed instruction entering a privileged
 ///   run, which is the front door's argument arriving through another door.
 async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: bool) -> Result<()> {
-    let mut prepared = setup::prepare(global, false).await?;
+    // **Interactive, unlike `mail draft`**, and the difference is what the two
+    // runs are for. Drafting only ever needs to *stage*, so the outbox catches
+    // its one outbound act and a blocked write costs nothing. A task run does
+    // work — it writes files, it runs commands — and non-interactive means
+    // `ModeApprover` refuses every one of them with "nothing is watching to
+    // answer". Found by running it: the first live run made three `fs_write`
+    // calls, had all three blocked, and reported back the contents of files it
+    // had not been allowed to create.
+    //
+    // This is D3 satisfied rather than bypassed: *a run gets more permission by
+    // acquiring a human, never by asking for one*, and the human is the person
+    // who just typed the command. `--yes` stays the unattended path, and the
+    // phone's button (Phase 4) will acquire its human through the web
+    // approver instead.
+    let mut prepared = setup::prepare(global, true).await?;
 
     // `mail draft`'s rule: without the route, a send the model makes actually
     // sends. A task run is exactly the context where that is discovered too
@@ -361,6 +375,18 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
             title: Some(format!("task: {name}")),
         },
     )?;
+    // The tool list is part of this record, which is what makes the withheld
+    // `kg_task_update` *evidence* rather than a claim — and what lets `mecha
+    // replay` reconstruct the run at all. Absent until the first live run went
+    // looking for proof the withholding had happened and found the transcript
+    // could not say.
+    session.append(&mecha_core::session::Record::Config(
+        mecha_core::session::RunConfig::of(
+            &prepared.agent,
+            &prepared.config,
+            &prepared.provider_name,
+        ),
+    ))?;
     if let Some(route) = &prepared.agent.context().outbox {
         route.set_session_id(&session.meta.id);
     }
