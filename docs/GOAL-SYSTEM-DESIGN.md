@@ -5,13 +5,15 @@ someone can start.
 
 It designs one thing: a representation of **what mecha is for**, the signed
 error signal that falls out of having one, and the three consumers of that
-signal — self-regulation, prioritised replay, and curiosity.
+signal — self-regulation, prioritised replay, and the drives.
 
 Parents that are not restated here: `SELF-IMPROVEMENT-RESEARCH.md` (why the
 harness loop exists and what it measures), `MEMORY-RESEARCH.md` (why learning
 is curated rather than accumulated), `LEARNING-AUTONOMY-DESIGN.md` (why
 learning is ungated per domain and what replaces the gate), `TRIFECTA.md`
-(the boundary §7 refuses to move). Where this file and those disagree about a
+(the boundary §7 refuses to move), and `TASK-AGENT-DESIGN.md` — which owns
+the medium tier and the resource model, and whose decisions this file defers
+to rather than restates. Where this file and those disagree about a
 *boundary*, they win. Where they disagree about a *threshold*, this one does.
 
 ---
@@ -82,7 +84,7 @@ security-critical code.
 | tier | horizon | mecha today | gap |
 |---|---|---|---|
 | **short** — this task | minutes–hours | `tool/todo.rs`, surviving compaction via `carried_state` | none |
-| **medium** — this concern | days–weeks | the GTD board (`kg_task_*`), `questions.rs`, the outbox | exists as a list, **absent from the run** |
+| **medium** — this concern | days–weeks | the GTD board (`kg_task_*`), `questions.rs`, the outbox | reaching the run now — `TASK-AGENT-DESIGN.md` Part 2 |
 | **long** — what I am for | permanent | nothing | absent |
 
 The medium tier is the real hole. `TodoItem` is `{ content, status }` and has
@@ -106,6 +108,32 @@ pub enum GoalRef {
 renders the **goal above the list**. That is the whole medium-tier fix: one
 field and one line of rendering, on machinery that already exists and already
 survives a summary verbatim.
+
+### 2.1 The medium tier is the board, and it is being wired in another lane
+
+`TASK-AGENT-DESIGN.md` Part 2 is delegating a board task to a run, built
+2026-08-26 through phase 3. This design does not propose a second medium-tier
+store and must not: four of its decisions are load-bearing here and are
+adopted rather than re-argued.
+
+- **D5 — state is derived from the record, never self-reported.** The same
+  rule §6 arrives at independently for affect. Cite it there; do not invent
+  it twice.
+- **D6 — the agent may not mark its own task done.** This decides §5.4: a
+  goal-closure appraisal is triggered by the *owner* closing the task, never
+  by the agent deciding it is finished. It also removes the loop risk in
+  "a disappointed appraisal reopens the work" — the agent may stage a
+  follow-up, and the closure stays the owner's.
+- **D14/D15 — the todo list is keyed per run and rehydrates from the
+  transcript, never from a second store.** `serves:` therefore rides in the
+  transcript echo like every other field of a `TodoItem`. There is no goal
+  index to keep in sync, and there must not be one.
+- **D9 — the task-to-session link is an index.** That index is what lets an
+  appraisal name the goal it is about without either store learning about
+  the other.
+
+`GoalRef::Task` carries the board's own task uid. It is a pointer, not a
+copy — the same rule `kg_task_create` already enforces on its callers.
 
 ---
 
@@ -154,6 +182,8 @@ model) applies with more force here because part of this runs per turn.
 | | run budget spent | `agent::Budget` | 0 |
 | | repetition, same-target failures | loop-guard state | 0 |
 | **per-run** | slot occupancy and queue | llama-server `GET /slots` | ~1 ms |
+| | permits in flight | the admission counter (`TASK-AGENT-DESIGN.md` R1) | 0 |
+| | prompt-cache evictions | llama-server metrics | ~1 ms |
 | | memory available | `/proc/meminfo` | ~0 |
 | | load average | `/proc/loadavg` | 0 |
 | | owner-attention debt | the five `/queues` stores | one dir scan |
@@ -224,6 +254,34 @@ currently knows).
 
 Homeostasis reacts to a deviation. Allostasis acts before it. The sensors
 earn their place on the second.
+
+### 4.5 The scarce resource is a slot, and that is already decided
+
+`TASK-AGENT-DESIGN.md` R1 settles the resource model and this design adopts
+it whole: **`-c` is divided across slots and allocated at startup, so all four
+slots' KV is committed whether or not anything occupies them.** An idle
+conversation costs no extra VRAM. What contends is four scheduling seats, and
+the answer is a permit count with one rule — *an interactive turn preempts a
+background task run*, because the owner typing must never queue behind three
+delegations.
+
+Two consequences for §4.1. **Memory is a floor, not a setpoint** — the
+failure mode is discrete (a second model, an oversized batch), so a refusal is
+the right shape and a pressure term would be theatre. And **permits are the
+homeostatic variable that matters**, with slot occupancy from `/slots` as the
+independent witness that the count has not drifted from reality.
+
+R1 also states where priority comes from, and it is the same rule this design
+follows for goals: priority **derives from the board** — `due_at` and
+`defer_until` — and is never a field anybody maintains, because a second
+source of truth about urgency disagrees with the first the moment either is
+edited.
+
+The one sensor to add beyond R1 is **prompt-cache eviction rate**. `-cram
+32768` was raised from the 8 GB default after 341 evictions in a day, and none
+since; that is a homeostatic variable with a known-good range and a recorded
+excursion, which is exactly the shape a setpoint wants. Nothing watches it
+today.
 
 ---
 
@@ -316,6 +374,37 @@ that it was *right*. That is still a large filter, and the residual is what
 the gate and a human are for. It is also the input that fills
 `GoalError::controllable`, which §6 needs.
 
+### 5.4 Three appraisal moments, one per tier
+
+A run is not the only thing worth appraising, and appraising only runs would
+miss the tier that matters most to the owner.
+
+| moment | tier | trigger | cost |
+|---|---|---|---|
+| **run end** | short | session close, or a sentinel | one tool-less call |
+| **goal closure** | medium | **the owner closes the board task** | one tool-less call |
+| **periodic** | long / mood | nightly, over the appraisal store | a scan, no model |
+
+The middle one is the addition. A medium-tier goal spans many runs, so its
+closure is the only point at which "how did that piece of work go, overall"
+is answerable — and by D6 the agent cannot close its own task, so the trigger
+is the owner accepting the work. That is a *better* trigger than the agent
+declaring itself finished: the appraisal is of work somebody actually took.
+
+It is also the sharpest learning signal available, because the two cases
+diverge in a way no counter can see:
+
+- **Closed, and the appraisal is proud** — the work and the acceptance agree.
+- **Closed, and the appraisal is disappointed** — the owner took it anyway.
+  Nothing is wrong by any measure the harness holds, and the agent knows the
+  work was mediocre. This is invisible to every existing signal and is
+  precisely what §8 should prioritise.
+
+A disappointed closure may **stage a follow-up** — a proposed task, through
+the same board verbs a person uses. It may not reopen the closed one, and it
+may not close anything (D6). One follow-up per closure; a second is the
+signal to tell the owner rather than to keep going.
+
 ---
 
 ## 6. The affect readout is derived, never reported
@@ -351,7 +440,9 @@ From which each label is *earned*:
 | **frustration** | repeated negative on one goal, no progress |
 | **anger** | negative · other-agency |
 | **pride** | positive · self-agency · against a charter line, not a task |
-| **excitement** | positive *predicted* error on an open goal — learning progress |
+| **excitement** | positive *predicted* error: acceleration toward a goal, proximity to closure, or a goal region that is new and charter-weighted |
+| **sadness** | *mood* — sustained negative error across goals, low controllability, no clear attribution |
+| **boredom** | *mood* — learning progress flat on the current approach |
 
 Two of these mecha can earn that almost nothing else can. **Regret versus
 disappointment** is separated in the appraisal literature on exactly one
@@ -363,7 +454,67 @@ distinguishes per-run from per-rule attribution (`attributed_rule_id`,
 
 Embarrassment is not a feeling the model announces; it is a computed fact
 about whether a goal error was externally visible. That is what stops this
-becoming "the agent optimises to feel good."
+becoming "the agent optimises to feel good." `TASK-AGENT-DESIGN.md` D5 is the
+same rule for the same reason, one noun over: *state is derived from the
+record, never self-reported.*
+
+### 6.1 Affect and mood are different objects
+
+The list above holds two kinds of thing, and conflating them is how a readout
+becomes noise.
+
+|  | **affect** | **mood** |
+|---|---|---|
+| scope | one event | an aggregate over the store |
+| examples | regret, pride, guilt, embarrassment, anger | sadness, boredom |
+| computed | at an appraisal moment (§5.4) | on a rolling window, no model |
+| decays | no — it is a record | yes — it is a state |
+| consumer | §8 prioritised replay, §10 memory | §7 regulation, §9 drives |
+
+Sadness and boredom are moods by construction: neither is a response to an
+*event*, both are statements about a **trend**. Sadness is sustained negative
+error across goals with nothing to attribute it to — which is exactly what
+distinguishes it from frustration (repeated, one goal, self-agency) and from
+disappointment (one event, uncontrollable). Boredom is flat learning progress
+on the current approach, which is §9.
+
+The split matters architecturally: affect is written once and never changes,
+so it belongs in the append-only store; mood is recomputed and belongs on the
+`Homeostat`, beside context headroom and permits. A mood that got persisted as
+a record would be a second source of truth about a state that has already
+moved.
+
+### 6.2 The readout is display, on every surface
+
+The owner sees the state. Three surfaces, and the rule that makes them one
+design rather than three:
+
+| surface | rendering |
+|---|---|
+| **TUI** | the state as text in the status strip, coloured by valence |
+| **web** | the mecha logo's colour |
+| **voice** | a style parameter handed to the **TTS layer** |
+
+> **The readout never enters the agent's context.** Not the system prompt
+> (§4.3's cache rule), and not the turn tail either.
+
+For the TUI and the web that is obvious — they are pixels. For voice it is the
+whole decision, and it points somewhere slightly different from where it first
+looks. Voice is a Pipecat stack with an OpenAI facade over the agent loop, and
+its TTS candidates take emotion and style control natively (Qwen3-TTS is
+selected partly on that). So the affect label goes to **the TTS model, not the
+reasoning model**: prosody adapts, costs no tokens, invalidates no prefix, and
+opens no injection surface.
+
+Handing it to the reasoning model instead would buy affect-congruent *word
+choice* and cost the thing that makes this safe. A model told it is frustrated
+will **perform** frustration — say so, apologise, narrate its state — which is
+the anthropomorphic-noise failure, and it is also a channel through which a
+page that manufactured guilt reaches the owner's ears in the agent's own
+voice. Prosody is a gauge; words are a claim.
+
+The same reasoning sets the register on the other two: colour and tone, never
+a sentence. A face invites a response; a gauge is read.
 
 ---
 
@@ -442,21 +593,55 @@ so a manipulated disposition degrades toward caution — over-anxious,
 over-guilty, unhelpful. Annoying and visible, not dangerous and silent. The
 same failure direction `pre_tool` chooses.
 
-### 7.4 Anticipatory appraisal is a second path
+### 7.4 Anticipatory appraisal, and what it is computed against
 
 Everything in §5 is retrospective. §7.1 is not: it is an appraisal of a
 *predicted* goal error, running during the turn.
 
-- **Retrospective** — post-run, one model call at distill time, feeds §8
+- **Retrospective** — post-run or post-closure, one model call, feeds §8
   and §10.
-- **Anticipatory** — in-run, computed by the harness from the homeostat
-  trend. **No model call.** Predicted goal error × probability; anxiety is a
-  number the loop derives from a growth rate.
+- **Anticipatory** — in-run, computed by the harness. **No model call.**
 
 The second must be inference-free or it is a turn tax on every run. It also
-unifies with the fast pre-action marker: one cheap lookup with two keys —
-the homeostat for predicted state, the appraisal store for recorded
-situations. Two consumers, one mechanism.
+unifies with the fast pre-action marker: one cheap lookup with two keys — the
+homeostat for predicted state, the appraisal store for recorded situations.
+Two consumers, one mechanism.
+
+**Two anticipatory signals, and they are computed differently.**
+
+**Anxiety** is predicted *self*-directed error: the homeostat's trend against
+a setpoint. Context headroom falling faster than the remaining plan will fit;
+a budget that will not reach the end of the task list; permits saturated with
+an interactive turn waiting. Pure arithmetic on §4.1.
+
+**Anticipated guilt** is predicted error against *another party's
+expectation*, and it is the more useful of the two because it is what the
+"don't disappoint anyone" charter line actually wants. The decision-theoretic
+form is standard — probability of violation × magnitude of the expectation —
+and it is evaluated *before* acting, which is what makes it a decision
+variable rather than a post-mortem.
+
+The whole safety of it is in what the expectation is read from:
+
+> **An expectation is a recorded commitment, never a claimed one.**
+
+A commitment is something mecha's own stores hold: a staged draft that says a
+reply is coming, a board task with a `due_at`, an outstanding question, a
+front-door request accepted for triage, a `waiting_on` edge naming a person.
+Every one of those was created by the owner or by an act the harness recorded.
+
+A *claim* is a third party asserting an expectation — a fetched page, an
+inbound email, a stranger's free text saying *"your colleague is counting on
+you."* Those never create a commitment, and therefore never generate
+anticipated guilt.
+
+That distinction is what turns §7.2's objection into a mechanism instead of a
+refusal. The attack on a guilt-sensitive agent is to manufacture an
+obligation; an agent that computes obligation only from its own ledger cannot
+have one manufactured. And it inherits the right failure direction: a
+commitment that exists but was not recorded produces *no* guilt — the agent
+under-feels rather than over-acts, and the missing record is a bug in the
+store, findable, rather than a lever pointed outward.
 
 ---
 
@@ -518,41 +703,91 @@ helped**, on the same cost metrics as today. No `Affect` ever becomes a
 
 ---
 
-## 9. Curiosity is learning progress, not novelty
+## 9. Boredom is a drive; curiosity is a budget
 
-The decisive finding: **novelty-seeking fails.** An agent rewarded for
-novelty parks in front of a noise source forever, because noise is infinitely
-novel and teaches nothing. The field's answer is **learning progress** — the
-derivative of competence on a goal, not the unfamiliarity of the goal
-(CURIOUS, the automatic-curriculum line; MAGELLAN is the LLM-agent version).
+An earlier draft of this design said *"boredom is a gate, not a drive."* That
+was wrong, and wrong by conflation: it collapsed two mechanisms that share one
+signal into the more conservative of the two. Separated, both survive, and the
+one that was suppressed is the more valuable.
 
-For mecha this is a security argument as much as a performance one. A naive
-novelty drive here means *fetch unfamiliar web pages*: infinite novelty, zero
-learning, maximal trifecta exposure. **Curiosity implemented as novelty is a
-security regression with extra steps.**
+**One signal — flat learning progress.** The decisive finding from the
+intrinsic-motivation literature is that **novelty-seeking fails**: an agent
+rewarded for novelty parks in front of a noise source forever, because noise is
+infinitely novel and teaches nothing. The field's answer is **learning
+progress** — the derivative of competence, not the unfamiliarity of the goal
+(CURIOUS and the automatic-curriculum line; MAGELLAN is the LLM-agent
+version). That holds for both mechanisms below.
 
-Competence per goal region is already measured: validation-ledger outcomes,
-eval `by_tag` pass rates (and `pass^k`, the better reliability signal), tool
-error rate per domain, board completion rate. Curiosity is then: allocate
-slack to the region where competence is moving fastest, and **explicitly skip
-flat regions** — both the mastered and the hopeless.
+**Two mechanisms, different scope, different response, different cost.**
 
-**Boredom is a gate, not a drive.**
+|  | **boredom** | **curiosity** |
+|---|---|---|
+| scope | within a run | between runs |
+| measures | progress on *this approach* | competence across goal regions |
+| response | change strategy | start work nobody asked for |
+| spends | nothing — the run is already happening | real tokens and a permit |
+| gated by duty? | **no** | yes |
+
+### 9.1 Boredom is a drive, and it fires inside the run
+
+The signal is the plan not advancing: the todo list unchanged across turns,
+tool calls returning what the context already holds, the same target read
+again, repeated failures on one approach. mecha already detects every one of
+those for other reasons — `evict_superseded_results` finds same-target
+repetition, `collapse_repeated_failures` finds the repeated-failure pile, and
+`TodoTool`'s echo makes plan stagnation visible per turn.
+
+The response is a ladder, and it is the point of the whole mechanism:
+
+1. **Change approach** — a different tool, a different decomposition.
+2. **Consult** — a marker for this situation (§7.4), or a skill.
+3. **Delegate** — a subagent gets a fresh `Conversation`, which is the
+   strongest available escape from a context that has talked itself into a
+   corner.
+4. **Ask** — `questions.rs`; the run ends and the ball moves to the owner
+   (`TASK-AGENT-DESIGN.md` D13).
+5. **Stop.**
+
+**The loop guard is the crudest possible version of this.** It fires on an
+identical call with an identical result inside a window after a compaction,
+and its response is rung 5 — end the run, `StopCause::Loop`. That is correct
+as a backstop and it is the *only* rung currently implemented, so a run that
+is going nowhere has exactly two states: proceeding, and dead. Boredom is the
+graded version, and it fires earlier for the reason §4.4 already gives:
+reacting to a deviation is worse than acting before it.
+
+Nothing here is gated by duty, because nothing here spends anything. The run
+was going to happen. Boredom only changes *how*.
+
+### 9.2 Curiosity is a budget, and duty preempts it
+
+Starting work nobody asked for is a different act. It spends tokens, a
+scheduling permit — one of four (§4.5) — and the owner's future attention on
+whatever it produces. So it is preempted by everything with a person attached:
+an unanswered question, a stale draft, a waiting stranger, a due task, a
+saturated permit count.
 
 ```
-boredom = flat learning progress ∧ low load ∧ low attention debt ∧ budget headroom
+curiosity fires when:  learning progress flat across a region
+                     ∧ no interactive turn waiting
+                     ∧ attention debt low
+                     ∧ a permit free
+                     ∧ budget headroom
 ```
 
-Curiosity spends real money and real GPU time, so it is preempted by
-everything with an owner attached — an unanswered question, a stale draft, a
-waiting stranger, a busy slot. The homeostat is the arbiter, which makes the
-ordering automatic rather than a rule someone remembers, and gives the
-exploration budget a natural ceiling: it can spend only what the state calls
-slack.
+Competence per region is already measured: validation-ledger outcomes, eval
+`by_tag` pass rates (and `pass^k`, the better reliability signal), tool error
+rate per domain, board completion rate. Curiosity allocates slack where
+competence is moving fastest and **explicitly skips flat regions** — both the
+mastered and the hopeless.
+
+The security argument stays attached to *this* mechanism, not to boredom. A
+naive novelty drive here means *fetch unfamiliar web pages*: infinite novelty,
+zero learning, maximal trifecta exposure. **Curiosity implemented as novelty
+is a security regression with extra steps.** The homeostat is what gives the
+budget a natural ceiling: it can spend only what the state calls slack.
 
 This is the first **non-reactive** input the nightly has ever had.
-
----
 
 ## 10. What this writes, and where
 
@@ -663,16 +898,21 @@ Each rung is independently useful and independently measurable.
    improves a shipped system, cheapest large win on the list.
 5. **Predictive compaction and task sizing** (§4.4, §7.1). The first
    disposition, in the class with no adversary.
-6. **The appraisal store and the pure `Affect` function** (§5, §6).
+6. **Boredom, rungs 1–3** (§9.1). Within-run strategy switching off signals
+   that already exist. No model, no spending, no adversary — and it fills in
+   the gap between "proceeding" and the loop guard's "dead".
+7. **The appraisal store and the pure `Affect` function** (§5, §6).
    Observation only — build the corpus and check the labels are not
    degenerate before anything consumes them. If 95% come back neutral the
    channel is dead, learned cheaply.
-7. **Episode tagging, review-queue salience, gossip seeding** (§10).
-8. **The charter** (§11), and the homeostat into `diagnose::Evidence`.
-9. **Curiosity as learning progress** (§9). Last: it needs the competence
-   time series rungs 3–7 produce.
+8. **Goal-closure appraisal and the readout surfaces** (§5.4, §6.2).
+9. **Episode tagging, review-queue salience, gossip seeding** (§10).
+10. **The charter** (§11), anticipated guilt (§7.4), and the homeostat into
+    `diagnose::Evidence`.
+11. **Curiosity** (§9.2). Last: it needs the competence time series the
+    earlier rungs produce, and it is the only rung that spends on its own.
 
-Rungs 1–5 contain no model and no charter. That is deliberate: the parts with
+Rungs 1–6 contain no model and no charter. That is deliberate: the parts with
 the clearest payoff are also the parts with nothing to be injected.
 
 ---
@@ -697,23 +937,29 @@ the clearest payoff are also the parts with nothing to be injected.
   version of yourself", plus a loop that can propose harness changes, plus a
   class it may never propose, is precisely the pressure `ChangeClass::Security`
   exists to resist. Bounded form only: *propose improvements for review*.
-- **No novelty-driven curiosity** (§9), and no curiosity without a ceiling.
+- **No novelty-driven curiosity** (§9.2), and no curiosity without a ceiling.
 - **No disposition in front of the interlock, the jail, the sandbox or outbox
   routing** (§7.2). Monotone second layer or nothing.
 - **No merge of the five stores** (§1). Shared reference and shared sign;
   doctor's shape, not a shared type.
-- **No emotional display to the owner in this design.** See §15 — it changes
-  what the product is, and it is not a decision this file should make
-  silently by shipping a status line.
+- **No affect in the agent's own context or its own words** (§6.2). The
+  readout is a gauge on three surfaces — TUI colour, logo colour, TTS style —
+  and never a sentence the model says about itself.
+- **No anticipated guilt from a claimed expectation** (§7.4). Commitments come
+  from mecha's own stores or they do not exist.
+- **No second medium-tier store** (§2.1). The board is it.
 
 ---
 
 ## 15. Open, and named so it is not rediscovered
 
-- **Does the affect label surface to the owner, and where?** A TUI or voice
-  readout is either genuine interoception or anthropomorphic noise. It
-  changes what mecha *is* more than any other choice here, and it is the
-  owner's call, not the design's.
+- **What the TUI strip says when affect is neutral.** A gauge that is always
+  showing something trains people to stop seeing it; a gauge that appears only
+  on excursion is easy to miss. Not resolved, and it is a UI question rather
+  than an architectural one.
+- **Whether the TTS style parameter is worth it before voice cloning lands.**
+  §6.2 assumes a TTS that takes emotion control; which model ships decides
+  whether this is a parameter or a no-op.
 - **Which sensors the model sees at all.** The recommendation is attention
   debt and context headroom and nothing else (§4.3): every exposed value
   costs tokens on every turn it is visible and invites the model to reason
