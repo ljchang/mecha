@@ -613,6 +613,40 @@ interactive turn preempts a background task run.** The owner typing must never
 queue behind three delegations. `batch.rs`'s bounded-concurrency fan-out is the
 shape to copy.
 
+> **Amended 2026-08-26, after R3 was run and after delegation became a
+> conversation.** The decision holds — a permit count, and the owner never
+> queueing — and three things about it change.
+>
+> **The number is measured now**: three background permits against four seats.
+> Throughput saturates at four concurrent conversations and buys 6% more going
+> to six, while per-conversation latency degrades 42% (7.1s → 18.0s → 25.6s
+> per turn at K=1/4/6). A fifth concurrent conversation is close to pure loss.
+> The measurement record has the table.
+>
+> **Reserve, do not preempt.** Preemption was proposed to protect the owner's
+> latency, and it cannot be done to a request in flight anyway; a reserved
+> seat gets the same outcome with nothing killed and nothing losing its place.
+> The reason preemption looked necessary — that a cancelled run's slot
+> affinity is lost and its prefix re-paid — turns out not to be a cost the
+> server charges (below).
+>
+> **And it is not about the prefix cache.** The obvious refinement, once
+> delegations grew 200-turn ceilings, was to bound *distinct conversations* so
+> they stop evicting each other's prefix. R3 refutes it: six conversations on
+> four slots re-prefilled **31 tokens** per turn after the first, with no
+> transcript ever re-paid. `-cram` already handles it, which is §3.3's claim
+> holding at a load nobody had tested. So the permit count is a latency
+> control and must be validated as one — throughput and per-turn latency,
+> never prefix reuse, which will show no effect because there is none to show.
+>
+> **`batch.rs` is no longer the shape to copy.** Its bounded concurrency is an
+> in-process semaphore, and a delegation is now either a chat session inside
+> `mecha serve` or a detached `tasks work` child — two processes that share
+> nothing but the filesystem. The shape is `runmarker.rs`: a directory of
+> files, pid-checked liveness, self-sweeping when a holder dies, which is
+> where the same four rules already live (and where the pid range check
+> already stops `kill(-1, 0)` reporting every dead holder as alive).
+
 Priority beyond that **derives from the board and is not a field anybody
 maintains**. `due_at` and `defer_until` are already there; a separate priority
 field is a second source of truth about urgency, which disagrees with the first
