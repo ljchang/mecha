@@ -75,6 +75,7 @@ pub mod questions;
 pub mod replay;
 pub mod replay_run;
 pub mod runlog;
+pub mod runmarker;
 pub mod sandbox;
 pub mod search;
 pub mod session;

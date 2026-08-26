@@ -73,6 +73,27 @@
     }
   }
 
+  async function stopMecha(task) {
+    busy = true;
+    try {
+      const res = await fetch('/api/tasks/stop', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ task }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      error = null;
+      // Not reloaded immediately: the run stops at its next safe point, so
+      // the board still says the agent has it for a moment. The watcher
+      // already running will see the change when it happens, and a reload
+      // here would only show the same thing and read as "nothing happened".
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      busy = false;
+    }
+  }
+
   // Poll only while something is actually in flight, and stop when nothing
   // is. A board that reloads forever is a phone that never sleeps.
   let watching = $state(false);
@@ -215,7 +236,16 @@
         </div>
         {#if selected === t.id}
           <div class="statusrow">
-            {#if !working(t)}
+            {#if working(t)}
+              <button
+                class="statusbtn stopbtn"
+                disabled={busy}
+                onclick={(e) => {
+                  e.stopPropagation();
+                  stopMecha(t.id);
+                }}
+              >stop</button>
+            {:else}
               <button
                 class="statusbtn askbtn"
                 disabled={busy}
@@ -295,6 +325,9 @@
   .statusbtn { font-family: var(--mono); font-size: 11px; color: var(--text); background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 9px 12px; min-height: 40px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; }
   /* The one action on this row that starts work rather than filing it. */
   .askbtn { color: var(--accent-400); border-color: var(--accent-400); }
+  /* Stopping keeps the partial turn, so this is not a destructive action and
+     does not wear the hazard colour — it is the ordinary way to end a run. */
+  .stopbtn { color: var(--text); border-color: var(--accent-400); }
   /* A run in flight, and the only chip that is not a noun about the task —
      it says what is happening right now, so it reads live rather than dim. */
   .agent { color: var(--accent-400); border-color: var(--accent-700); animation: agent-pulse 2.4s ease-in-out infinite; }

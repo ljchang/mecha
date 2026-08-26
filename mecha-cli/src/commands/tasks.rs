@@ -82,6 +82,15 @@ pub enum Cmd {
         #[arg(long)]
         waiting_on: Option<String>,
     },
+    /// Ask the run working a task to stop.
+    ///
+    /// It stops at the next safe point and keeps what it has — the same path
+    /// as Ctrl-C — rather than being killed, because the partial answer is
+    /// the thing worth preserving.
+    Stop {
+        /// The task's node id, from `tasks list`.
+        task: String,
+    },
     /// Hand a task to the agent: a seeded run in its own session.
     ///
     /// The task becomes the thing the run is *about* — a fresh conversation,
@@ -125,6 +134,16 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             context,
             waiting_on,
         } => set(global, &task, status, due, defer, context, waiting_on).await,
+        Cmd::Stop { task } => {
+            if markers()?.request_cancel(&task)? {
+                println!("asked the run on {task} to stop — it finishes the current step first");
+            } else {
+                // Said rather than pretended: a caller that gets "ok" for a
+                // stop that stopped nothing will believe the run ended.
+                println!("nothing is running on {task}");
+            }
+            Ok(())
+        }
         Cmd::Work {
             task,
             note,
@@ -269,6 +288,17 @@ async fn set(
     let out = call(global, "kg_task_update", args).await?;
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
+}
+
+/// Where a task run announces itself and watches to be stopped.
+///
+/// Its own directory rather than the work tree, because these are process
+/// facts with a lifetime of one run — `mecha work clean`'s retention is about
+/// artifacts, and sweeping a live run's marker would make it un-stoppable.
+fn markers() -> Result<mecha_core::runmarker::RunMarkers> {
+    Ok(mecha_core::runmarker::RunMarkers::new(
+        mecha_core::work::mecha_home()?.join("taskruns"),
+    ))
 }
 
 /// The agent, as the board names it. A node of kind `agent`, shipped with the
@@ -491,6 +521,12 @@ async fn work(
 
     let staged_before = staged_ids(&session.meta.id);
 
+    // Announced before the run so a UI can offer *stop* from the first
+    // moment, and swept on every exit below — a marker outliving its run
+    // makes the next `stop` claim to have stopped something.
+    let run_markers = markers()?;
+    run_markers.mark_running(task_id, None)?;
+
     // Moved before the model sees anything, so the board tells the truth for
     // the whole time the run is in flight rather than only after it lands —
     // and names the agent, so the Waiting view distinguishes a task the agent
@@ -522,13 +558,22 @@ async fn work(
     session.append(&mecha_core::session::Record::Message(user))?;
     let recorded = convo.messages.clone();
 
-    let outcome = crate::interrupt::run_interruptible(
+    let outcome = crate::interrupt::run_interruptible_watching(
         &prepared.agent,
         prepared.agent.context(),
         &mut convo,
         None,
+        Some({
+            // Ctrl-C for the terminal, this file for everything else. Both
+            // cancel the same token, so a run stopped from the web keeps its
+            // partial turn exactly as one stopped from a keyboard does.
+            let m = markers()?;
+            let id = task_id.to_string();
+            std::sync::Arc::new(move || m.cancel_requested(&id))
+        }),
     )
     .await;
+    run_markers.clear(task_id);
     // Not `?`. The status was moved to `waiting` before the run, and every
     // early return between here and the restore below leaves the board saying
     // somebody has the ball with no run in flight — the queue growing for a

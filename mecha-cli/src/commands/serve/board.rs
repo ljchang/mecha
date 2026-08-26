@@ -113,6 +113,31 @@ pub async fn task_work(State(state): St, Json(body): Json<TaskWorkBody>) -> Resp
 }
 
 #[derive(serde::Deserialize)]
+pub struct TaskStopBody {
+    pub task: String,
+}
+
+/// POST /api/tasks/stop — ask the run working a task to stop.
+///
+/// Synchronous, unlike starting one: writing a sentinel is instant, and the
+/// answer worth having is whether there was anything to stop. `tasks stop`
+/// says so rather than pretending, and that distinction has to survive the
+/// wire — a page told "ok" for a stop that stopped nothing will show the run
+/// as ended while it carries on.
+///
+/// It does not kill anything. The run finishes its current step and keeps the
+/// partial turn, exactly as Ctrl-C does in a terminal — Copilot's documented
+/// recovery for a stuck session is to unassign and reassign, and there is no
+/// excuse for reproducing that.
+pub async fn task_stop(State(state): St, Json(body): Json<TaskStopBody>) -> Response {
+    let task = body.task.trim();
+    if task.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which task?\n").into_response();
+    }
+    verb(&state, &["tasks", "stop", task]).await
+}
+
+#[derive(serde::Deserialize)]
 pub struct TaskAddBody {
     pub name: String,
     pub due: Option<String>,
