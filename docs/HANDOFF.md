@@ -109,10 +109,14 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,377 tests**, no failures — measured 2026-08-25 on `main` at
-897bd13. The 7 over the 1,370 measured at e3af3b6 are the two fixes of that
-evening: 6 in `mecha-core` for the derived candidate class, 1 in `mecha-cli`
-for `show_file`'s captured cap. The e3af3b6 breakdown, otherwise unchanged,
+Expect **1,406 tests**, no failures — measured 2026-08-26 on `main` at
+9f61f5c, on a clean tree (the shared checkout had another lane's uncommitted
+work in it earlier the same night, and a count taken then is a count of
+something nobody has). Breakdown: 492 in `mecha-cli` with 1 ignored, 693 in
+`mecha-core`, 6 + 9 in its two integration suites, 129 in `mecha-mail` plus 1
+in a mail binary, 75 in `mecha-slack`, and 1 doctest. The 29 over 1,377 at
+897bd13 are the phone-surface fixes, the inline-confirm arc and the approval
+surface. The older e3af3b6 breakdown, for comparison,
 was (466 in `mecha-cli` with 1 ignored, 683 in the
 `mecha-core` lib suite, 129 in `mecha-mail` plus 1 in its `mecha-mail`
 binary, 75 in `mecha-slack`, 15 across the two integration suites that need
@@ -332,9 +336,10 @@ own `/api/offer` proxy rather than directly). Web assets live at `~/.mecha/web/d
 them. 8080 re-verified this date: `total_slots=4`, `n_ctx` 262,144/slot,
 vision true. **Re-verified 2026-08-25** and all four unchanged
 (`total_slots=4`, `n_ctx` 262,144/slot, `model_alias qwen3.6-35b-a3b`,
-`modalities.vision` true). Workspace tests **2026-08-26: 1,405 pass, 0
-fail** (`main` at 874eb6a; 1,377 at 897bd13 the previous day). Eval: 36 cases,
-15 tags, plus 10 graph cases — all three re-counted 2026-08-26, unchanged. The `[web]` section is live in `~/.mecha/config.toml` —
+`modalities.vision` true). Workspace tests **2026-08-26: 1,406 pass, 0
+fail** (`main` at 9f61f5c, clean tree; 1,377 at 897bd13 the previous day).
+Eval: 36 cases, 15 tags, plus 10 graph cases — all three re-counted
+2026-08-26, unchanged. The `[web]` section is live in `~/.mecha/config.toml` —
 safe now that every installed binary parses it; the outage its early
 arrival caused is in HISTORY under Traps → Environment. A `llama-voxtral`
 unit still exists at the *system* level (voice arc's; healthy per their
