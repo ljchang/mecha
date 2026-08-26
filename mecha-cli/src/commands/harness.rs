@@ -299,9 +299,17 @@ async fn measure(
     let mut diverged: Vec<String> = Vec::new();
     let mut skipped = unusable;
     let total = draw.selection.len() + draw.holdout.len();
-    let slices = [("select", &draw.selection), ("hold  ", &draw.holdout)];
+    // The flag decides the slice; the label only decides the column width.
+    // These were one string: `if label == "select"` routed the pair, so
+    // renaming the display text — `"sel"` for a narrower line — would have
+    // sent every selection pair into the holdout, and the gate would have read
+    // a candidate that won on nothing and confirmed on everything.
+    let slices = [
+        (true, "select", &draw.selection),
+        (false, "hold  ", &draw.holdout),
+    ];
     let mut n = 0usize;
-    for (label, preps) in slices {
+    for (is_selection, label, preps) in slices {
         for prep in preps.iter() {
             n += 1;
             eprint!("· [{label}] {} ({}/{}) baseline…", prep.id, n, total);
@@ -347,7 +355,7 @@ async fn measure(
                 baseline: baseline.stats,
                 candidate: candidate.stats,
             };
-            if label == "select" {
+            if is_selection {
                 selection_pairs.push(pair);
             } else {
                 holdout_pairs.push(pair);
@@ -381,13 +389,18 @@ async fn measure(
         .chain(holdout_pairs.iter())
         .map(|p| p.episode.clone())
         .collect();
+    let holdout_episodes: Vec<String> = holdout_pairs.iter().map(|p| p.episode.clone()).collect();
     cand.measurement = Some(Measurement::record(
         &judgement,
         model,
         now.clone(),
-        episodes,
-        diverged,
-        skipped,
+        mecha_core::harness::Drawn {
+            episodes,
+            holdout_episodes,
+            seed: draw.seed,
+            diverged,
+            skipped,
+        },
     ));
 
     println!(
@@ -531,7 +544,22 @@ fn show(id: &str) -> Result<()> {
         println!("selection:  {}", m.selection);
         println!("holdout:    {}", m.holdout);
         println!("work:       {} → {}", m.work_baseline, m.work_candidate);
-        println!("episodes:   {}", m.episodes.join(", "));
+        // Named by slice, because "which episodes confirmed this" is the
+        // question a reader of a measurement actually has.
+        let held: std::collections::HashSet<&str> =
+            m.holdout_episodes.iter().map(String::as_str).collect();
+        let selected: Vec<&str> = m
+            .episodes
+            .iter()
+            .map(String::as_str)
+            .filter(|e| !held.contains(e))
+            .collect();
+        println!("selected:   {}", selected.join(", "));
+        println!(
+            "held out:   {} (seed {})",
+            m.holdout_episodes.join(", "),
+            m.seed
+        );
         if !m.diverged.is_empty() {
             println!(
                 "diverged:   {} (dropped, not scored)",

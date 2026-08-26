@@ -1790,8 +1790,18 @@ prediction that was made *before* either was measured.
   where. Selection happens on one slice and the winner is confirmed on a
   holdout it was never chosen on, because picking the best of N on the
   episodes that justify it is a multiple-comparisons trap that looks *better*
-  the more it overfits. The split is a hash of the episode id, never random: a
-  rerun that resplits is a holdout that means nothing.
+  the more it overfits. **The two slices are drawn separately, holdout first
+  and uniformly.** A hash of the episode id was the earlier answer and is the
+  wrong one once the pool is gathered by informativeness: hashing *one* pool
+  partitions it into two slices that are both biased the same way, and the
+  holdout stops being a check. Drawing the holdout uniformly from the whole
+  pool, then ordering the remainder by `Metric::headroom`, keeps the confirming
+  slice uncorrelated with what selected the candidate. The seed is chosen by
+  the caller and recorded on the measurement along with the holdout's episode
+  ids, because the split now depends on the corpus as it stood at measurement
+  time rather than on the ids alone — and a sample nobody can redraw is a
+  sample nobody can check. `judge_with` still hash-splits for
+  `eval --ab-config`, where every case runs and the pool is already uniform.
 - **The work guardrail outranks the score.** A change that improves its metric
   while tool calls fall below `WORK_FLOOR` is rejected, not ranked — "fewer
   errors" is trivially achieved by attempting less, which is the null run and
@@ -1911,7 +1921,8 @@ proposals-store conventions) → measure it by **counterfactual replay of
 recent sessions** (`harness_probe.rs`: up to `--sessions` recent sessions of
 the diagnosed model, each driven twice — recorded config against recorded
 config plus the candidate change, recorded tool results both times, whole
-trajectory, `RunStats` as the label) → judge through `candidate::judge` →
+trajectory, `RunStats` as the label; the pool is four times the wanted count
+and the draw is `judge_drawn`'s two slices, not a hash partition) → judge →
 dispose. A config change that wins on selection, is confirmed on the holdout,
 and holds the work guardrail **auto-accepts** (§13.3, the owner ruling);
 everything else stages for review or is rejected with the evidence attached.

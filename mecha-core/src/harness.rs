@@ -252,8 +252,23 @@ pub struct Measurement {
     pub holdout: TallyRecord,
     pub work_baseline: u64,
     pub work_candidate: u64,
-    /// Session ids paired and judged.
+    /// Session ids paired and judged, selection slice first.
     pub episodes: Vec<String>,
+    /// Which of those were the holdout, and the seed the uniform draw used.
+    ///
+    /// Recorded rather than recomputed, because it can no longer *be*
+    /// recomputed. The split used to be `is_holdout(id, holdout_in)` — a pure
+    /// function of the episode id, so any later reader could reconstruct which
+    /// episodes confirmed a result. Drawing uniformly from a pool makes the
+    /// split depend on the corpus as it stood at measurement time, which is
+    /// gone the moment another session is written. Without these two fields
+    /// "which episodes was this confirmed on" stops being answerable, which is
+    /// the property the drawing was introduced to protect: a sample nobody can
+    /// redraw is a sample nobody can check.
+    #[serde(default)]
+    pub holdout_episodes: Vec<String>,
+    #[serde(default)]
+    pub seed: u64,
     /// Sessions dropped because an arm left the recording — a divergent
     /// replay's stats describe a truncated run, and scoring one would let a
     /// behaviour-visible change be graded on the fraction it tracked.
@@ -263,15 +278,33 @@ pub struct Measurement {
     pub skipped: usize,
 }
 
+/// Which episodes a measurement drew, where they went, and what it could not
+/// use. One value rather than five arguments: they are produced together by
+/// one draw and read together by one reader, and threading them separately is
+/// how the seed came to be `eprintln!`'d and never stored.
+pub struct Drawn {
+    /// Every episode paired and judged, selection slice first.
+    pub episodes: Vec<String>,
+    pub holdout_episodes: Vec<String>,
+    pub seed: u64,
+    pub diverged: Vec<String>,
+    pub skipped: usize,
+}
+
 impl Measurement {
     pub fn record(
         judgement: &Judgement,
         model: &str,
         measured_at: String,
-        episodes: Vec<String>,
-        diverged: Vec<String>,
-        skipped: usize,
+        drawn: Drawn,
     ) -> Measurement {
+        let Drawn {
+            episodes,
+            holdout_episodes,
+            seed,
+            diverged,
+            skipped,
+        } = drawn;
         use crate::candidate::Disposition;
         let (disposition, reason) = match &judgement.disposition {
             Disposition::Accept => ("accept", String::new()),
@@ -293,6 +326,8 @@ impl Measurement {
             work_baseline: judgement.work_baseline,
             work_candidate: judgement.work_candidate,
             episodes,
+            holdout_episodes,
+            seed,
             diverged,
             skipped,
         }

@@ -285,33 +285,75 @@ impl RunStats {
     /// - `usage_complete` is an AND: one lower-bound turn makes the total a
     ///   lower bound.
     pub fn absorb(&mut self, o: &crate::agent::RunOutcome) {
-        self.turns += o.turns;
-        self.usage.add(&o.usage);
-        self.cost_usd = match (self.cost_usd, o.cost_usd) {
+        self.merge(&RunStats::of_run(o));
+    }
+
+    /// Fold another *row* in, by the rules above.
+    ///
+    /// Same code as `absorb`, deliberately: an episode is several runs, and
+    /// something has to be able to rebuild one from the rows a session
+    /// recorded — `harness_probe` sizes its priority signal that way, and it
+    /// has to fold exactly as the arm it will be compared against does. Two
+    /// spellings of this is how a measurement arm and the thing it measures
+    /// stop being comparable without anyone noticing.
+    ///
+    /// `homeostat` is untouched, as it always was: the conditions belong to
+    /// the run that sampled them, and an episode's several runs happened under
+    /// several. The first one set keeps the field.
+    pub fn merge(&mut self, other: &RunStats) {
+        self.turns += other.turns;
+        self.usage.add(&other.usage);
+        self.cost_usd = match (self.cost_usd, other.cost_usd) {
             (Some(a), Some(b)) => Some(a + b),
             (a, b) => a.or(b),
         };
-        self.usage_complete &= o.usage_complete;
-        self.stop_cause = Some(o.stop_cause);
-        self.exhausted = o.exhausted;
-        self.ended_on_failed_call = o.ended_on_failed_call;
-        self.tool_calls += o.tool_calls.len() as u32;
-        // `denied` is excluded, and the exclusion has to be written out: a
-        // denied trace carries `is_error: true` too, so filtering on
-        // `is_error` alone counts every refusal as an environment failure and
-        // averages "the harness working" into the rate the candidate gate and
-        // doctor both threshold on.
-        self.tool_errors += o
-            .tool_calls
-            .iter()
-            .filter(|c| c.unknown || (c.is_error && !c.denied))
-            .count() as u32;
-        self.tool_denied += o.tool_calls.iter().filter(|c| c.denied).count() as u32;
-        self.tool_staged += o.tool_calls.iter().filter(|c| c.staged).count() as u32;
-        self.malformed_tool_args += o.malformed_tool_args;
-        self.blocked_sends += o.blocked_sends;
-        self.compactions += o.compactions;
-        self.taint.merge(o.taint);
+        self.usage_complete &= other.usage_complete;
+        // Last wins, `None` included. Keeping an earlier cause when the
+        // final row has none would invent the one fact the field is about —
+        // doctor's rule for the same value: unrecorded is unknown, never
+        // assumed complete.
+        self.stop_cause = other.stop_cause;
+        self.exhausted = other.exhausted;
+        self.ended_on_failed_call = other.ended_on_failed_call;
+        self.tool_calls += other.tool_calls;
+        self.tool_errors += other.tool_errors;
+        self.tool_denied += other.tool_denied;
+        self.tool_staged += other.tool_staged;
+        self.malformed_tool_args += other.malformed_tool_args;
+        self.blocked_sends += other.blocked_sends;
+        self.compactions += other.compactions;
+        self.taint.merge(other.taint);
+    }
+
+    /// One run's outcome as a row, before any folding.
+    fn of_run(o: &crate::agent::RunOutcome) -> RunStats {
+        RunStats {
+            turns: o.turns,
+            usage: o.usage.clone(),
+            cost_usd: o.cost_usd,
+            usage_complete: o.usage_complete,
+            stop_cause: Some(o.stop_cause),
+            exhausted: o.exhausted,
+            ended_on_failed_call: o.ended_on_failed_call,
+            tool_calls: o.tool_calls.len() as u32,
+            // `denied` is excluded, and the exclusion has to be written out: a
+            // denied trace carries `is_error: true` too, so filtering on
+            // `is_error` alone counts every refusal as an environment failure
+            // and averages "the harness working" into the rate the candidate
+            // gate and doctor both threshold on.
+            tool_errors: o
+                .tool_calls
+                .iter()
+                .filter(|c| c.unknown || (c.is_error && !c.denied))
+                .count() as u32,
+            tool_denied: o.tool_calls.iter().filter(|c| c.denied).count() as u32,
+            tool_staged: o.tool_calls.iter().filter(|c| c.staged).count() as u32,
+            malformed_tool_args: o.malformed_tool_args,
+            blocked_sends: o.blocked_sends,
+            compactions: o.compactions,
+            homeostat: o.homeostat.clone(),
+            taint: o.taint,
+        }
     }
 }
 
@@ -319,13 +361,7 @@ impl From<&crate::agent::RunOutcome> for RunStats {
     fn from(o: &crate::agent::RunOutcome) -> Self {
         // `usage_complete` starts true and is ANDed down, so the default's
         // `false` would make every single-run row a lower bound.
-        let mut stats = RunStats {
-            homeostat: o.homeostat.clone(),
-            usage_complete: true,
-            ..RunStats::default()
-        };
-        stats.absorb(o);
-        stats
+        RunStats::of_run(o)
     }
 }
 
@@ -500,6 +536,30 @@ impl Session {
     /// Still one reader of the record format — this lives beside `outcomes`
     /// rather than in a caller, so a change to `Record` cannot leave a
     /// second, private parser behind.
+    /// Every outcome a session recorded, folded into the episode it describes.
+    ///
+    /// `last_outcome` answers a different question — how the session *ended* —
+    /// and using it as an episode's stats is a unit mismatch: a resumed chat
+    /// records one row per run, while anything replaying the session drives
+    /// every recorded user turn and folds all of them.
+    pub fn episode_stats(path: &Path) -> Result<Option<RunStats>> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut folded: Option<RunStats> = None;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            if let Ok(Record::Outcome(s)) = serde_json::from_str(line) {
+                match &mut folded {
+                    Some(acc) => acc.merge(&s),
+                    // The first row seeds it, so `usage_complete` starts from
+                    // a measurement rather than from `default()`'s false —
+                    // which would make every folded episode a lower bound.
+                    None => folded = Some(s),
+                }
+            }
+        }
+        Ok(folded)
+    }
+
     pub fn last_outcome(path: &Path) -> Result<Option<RunStats>> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
