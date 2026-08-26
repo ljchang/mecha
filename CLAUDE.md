@@ -66,6 +66,7 @@ compact.rs   the cut, the rebuild, and the state carried across one
 cron.rs      five-field cron, resolved in an IANA zone (both DST directions)
 trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
 frontdoor.rs inbound requests from strangers, and the quarantine over them
+goal.rs      what a run is for: charter, board task, or setpoint, by reference
 harness.rs   the self-improvement record: candidates, their judgements, and
              the override layer an accepted config change rides in
 learning.rs  the reflection/rule store behind reflect, learn, validate
