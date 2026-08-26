@@ -62,6 +62,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     if let Some(id) = &args.resume {
         let path = Session::find(&session_dir, id)?;
         let (meta, prior) = Session::load(&path)?;
+        // D15, as in the other three resume paths.
+        if let Some(todo) = &prepared.todo {
+            let ws = prepared.agent.context().tools.workspace.clone();
+            todo.rehydrate(&ws, &prior.messages);
+        }
         convo = prior;
         session = Some(Session { meta, path });
     } else if !args.no_session {
