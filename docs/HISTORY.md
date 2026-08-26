@@ -3268,6 +3268,17 @@ All found by pre-push review or by running it.
   in the one file whose job is to be reliable, because one session took a
   peer's verification claim as fact and wrote it down.
 
+  The narrower rule, offered by the session that made the unchecked claim
+  and worth more than "verify": **a verification claim should travel with
+  its run id.** A conclusion — "main is green" — can only be believed or
+  not; an id can be checked in one command, and `run 32992960643` would
+  have shown `head_sha=11a179d` immediately. This generalises past CI to
+  anything one agent tells another it confirmed: **send the handle, not the
+  verdict**, so the recipient checks the key rather than your reading of
+  it. Every misattribution this day produced had the same shape — a
+  conclusion transmitted where a checkable reference would have cost the
+  same to send.
+
 - **A cron job's binary is a running thing that answers to no `--version`.**
   The `update` skill said the graph repo's nightly "builds and runs from its
   repo tree and is not mecha's concern". It does not build — `nightly.sh` sets
