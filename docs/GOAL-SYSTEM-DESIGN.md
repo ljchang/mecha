@@ -1,11 +1,12 @@
 # The goal system — design
 
-Decided 2026-08-26. **Rungs 0–3 of §14 shipped the same day** (PRs #61–#65);
-rung 4 is open in #66. The body below is the design as proposed and is
+Decided 2026-08-26. **Rungs 0–5 of §14 shipped the same day** (PRs #61–#72);
+rung 6 is next, and rung 5's model-facing half is the open piece within it.
+The body below is the design as proposed and is
 deliberately not rewritten — `docs/HISTORY.md` records what was built, and the
 gap between the two is evidence about how the built thing came to be shaped
 that way. Where building corrected the design, the correction is recorded
-beside the original rather than replacing it (§2.1 is both instances).
+beside the original rather than replacing it (§2.1 and §4.4).
 
 | rung | what | state |
 |---|---|---|
@@ -315,6 +316,41 @@ parallel. Same for budget exhaustion (wind down deliberately rather than hit
 `MaxTurns` mid-task) and for delegation (a subagent gets a fresh
 `Conversation`, so context pressure is a *reason to delegate*, which nothing
 currently knows).
+
+> **Built 2026-08-26** (`pressure.rs`, #69/#71/#72), and building it corrected
+> this paragraph twice.
+>
+> **There is nothing to extrapolate, and no growth rate is needed.** The
+> threshold is checked at the top of the loop, *after* the assistant turn and
+> its tool results are already in `messages` and before anyone has priced
+> them. So the un-priced tail is not a forecast — it is sitting in the
+> transcript and can be measured in bytes. The only missing piece is the
+> byte-to-token conversion, and the provider re-supplies that every turn by
+> pricing a list whose size is known. That matters because a growth rate is a
+> tuned parameter and two measurements are not.
+>
+> **And the count of parallel calls is irrelevant.** `result_cap` is
+> `output_budget_bytes / n`, so a turn's results are bounded by
+> `output_budget_bytes` *whatever* `n` is. What bounds the next request is two
+> configured constants — that budget and `max_tokens` — plus the measured
+> tail. Nothing about the batch's shape enters it.
+
+**And the constant is wrong in both directions, which decides how much of this
+a disposition may fix.** At `max_tokens = 8192`, with `COMPACT_FRACTION` 0.66
+and the derived output budget:
+
+| window | threshold | margin to window | worst un-priced tail | |
+|---|---|---|---|---|
+| 32,768 | 21,626 | 11,142 | 8,192 + 4,096 = **12,288** | overflows by ~1,100 |
+| 262,144 | 173,015 | 89,129 | 8,192 + 8,000 = 16,192 | **5.5× oversized** |
+
+Predictive compaction fixes the first row: that overflow happens between the
+check and the next request regardless of who decided, so acting earlier is
+strictly better. It may **not** fix the second, and the asymmetry is §7.3's
+rather than an oversight — a disposition that could say *"you have 89k spare,
+hold more"* is relief compacting late, and a mechanism for reasoning its way
+into a larger attack surface. Lowering an over-conservative threshold stays a
+person setting a number.
 
 Homeostasis reacts to a deviation. Allostasis acts before it. The sensors
 earn their place on the second.
@@ -1119,7 +1155,9 @@ Each rung is independently useful and independently measurable.
 4. **Prioritised replay + uniform holdout** (§8.1). Independently valuable,
    improves a shipped system, cheapest large win on the list.
 5. **Predictive compaction and task sizing** (§4.4, §7.1). The first
-   disposition, in the class with no adversary.
+   disposition, in the class with no adversary. *Built 2026-08-26 apart from
+   task sizing, which needs the model to see a reading and is the open piece —
+   the harness half is #67, #69, #71, #72.*
 6. **Boredom, rungs 1–3** (§9.1), and the **deterministic half of step
    appraisal** (§5.5). Both read signals that already exist, both are free,
    and together they are what makes the plan adaptive. No model, no spending,
