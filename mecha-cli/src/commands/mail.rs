@@ -1859,16 +1859,7 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
             &c,
             &mecha_core::mail_triage::reflector_context(&r),
         );
-        let request = mecha_core::message::CompletionRequest {
-            model: model.clone(),
-            system: None,
-            messages: vec![mecha_core::message::Message::user(prompt)],
-            tools: Vec::new(),
-            max_tokens: 2048,
-            effort: None,
-            thinking: false,
-            cache_prompt: false,
-        };
+        let request = mecha_core::quarantine::QuarantinedPass::new(&model, 2048).ask(prompt);
         let key = mecha_core::mail_triage::correction_key(&r.account, &r.thread_id, &c);
         match provider.complete(&request, None).await {
             Err(e) => {
