@@ -45,6 +45,43 @@
  * trigger is the network dying, and a sound that must be downloaded
  * cannot play then.
  */
+/* Remembered voice and speed.
+ *
+ * Per browser, never on the server: `LocalTTS` is deliberately
+ * per-connection so one listener's choice cannot reach another's, and a
+ * server-side default would take that property away to solve a problem
+ * that is really "this browser forgot". Storage can throw outright in a
+ * private window, so every access is guarded and a failure degrades to
+ * the behaviour that existed before this: ask the server, take its answer.
+ *
+ * What is stored is the server's *reply*, never the request. That is the
+ * same rule the UI already follows for rendering, and it buys the
+ * self-healing case for free: a remembered voice whose file has since been
+ * deleted is refused, the server answers with what it is actually speaking
+ * as, and that is what gets written back. A stale preference therefore
+ * survives exactly one connection. */
+const PREFS_KEY = "mecha-voice-prefs";
+
+function readPrefs() {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw) return {};
+    const p = JSON.parse(raw), out = {};
+    if (typeof p.voice === "string") out.voice = p.voice;
+    if (typeof p.speed === "number") out.speed = p.speed;
+    return out;
+  } catch { return {}; }
+}
+
+function writePrefs(d) {
+  try {
+    const out = {};
+    if (typeof d?.voice === "string") out.voice = d.voice;
+    if (typeof d?.speed === "number") out.speed = d.speed;
+    localStorage.setItem(PREFS_KEY, JSON.stringify(out));
+  } catch { /* private window, or storage disabled - not worth a failure */ }
+}
+
 export function createVoiceSession(opts = {}) {
   const cfg = {
     offerUrl: "/api/offer",
@@ -137,7 +174,12 @@ export function createVoiceSession(opts = {}) {
       case "server-message":
         // Custom server→client payloads share one RTVI type, so they are
         // demultiplexed on `t` here rather than upstream.
-        if (msg.data?.t === "voice-config") cfg.onVoiceConfig(msg.data);
+        if (msg.data?.t === "voice-config") {
+          // Written before the UI renders it, and written from the
+          // server's state rather than from whatever was asked for.
+          writePrefs(msg.data);
+          cfg.onVoiceConfig(msg.data);
+        }
         // The worker announces a teardown it is about to perform. Held for
         // `end()` rather than acted on: the close arrives a moment later by
         // itself, and what was missing was never the ending - it was any
@@ -199,8 +241,11 @@ export function createVoiceSession(opts = {}) {
       dc.send(JSON.stringify({ label: "rtvi-ai", type: "client-ready", id: crypto.randomUUID() }));
       // Ask immediately: the picker must be populated from the server's
       // list, so the first thing a fresh connection does is find out what
-      // this worker can actually speak as.
-      voiceConfig({});
+      // this worker can actually speak as. With something remembered the
+      // same message carries it, so the preference is applied before the
+      // first word rather than after one spoken in the wrong voice - and
+      // with nothing remembered this is the empty read it always was.
+      voiceConfig(readPrefs());
     };
     dc.onmessage = (e) => { try { onRtvi(JSON.parse(e.data)); } catch { /* not rtvi */ } };
 
