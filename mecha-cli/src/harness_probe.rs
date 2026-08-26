@@ -23,6 +23,7 @@
 use crate::setup::Prepared;
 use anyhow::Result;
 use mecha_core::agent::{Agent, RunContext};
+use mecha_core::candidate::Metric;
 use mecha_core::config::{PermissionMode, ProviderConfig};
 use mecha_core::harness::ConfigChange;
 use mecha_core::replay::{extract, Trajectory};
@@ -69,37 +70,115 @@ pub fn prepare_episode(path: &Path, id: &str) -> Result<Result<EpisodePrep, Stri
 /// Newest-first replayable episodes for one model, up to `want`, from the
 /// default session store. Returns the preps and how many candidates were
 /// looked at and skipped.
-pub fn sample_episodes(
+/// The two slices a candidate is judged on, drawn separately on purpose.
+pub struct Draw {
+    /// Drawn by [`Metric::headroom`]: the episodes that can discriminate.
+    pub selection: Vec<EpisodePrep>,
+    /// Drawn uniformly from the same eligible pool, and drawn **first**.
+    pub holdout: Vec<EpisodePrep>,
+    /// Printed, because a sample nobody can redraw is one nobody can check.
+    pub seed: u64,
+    pub skipped: usize,
+}
+
+/// How much wider than the draw the eligible pool has to be.
+///
+/// **If the pool equals the draw there is no draw**: "prioritised" and
+/// "uniform" both degenerate to "all of them", and the holdout stops being
+/// independent of the selection because there was nothing to choose between.
+/// Four is enough for the two draws to differ and small enough that the walk
+/// stays bounded, which is `runlog::Scan`'s constraint.
+const POOL_MULTIPLE: usize = 4;
+
+/// Draw a selection and a holdout for one candidate.
+///
+/// **The holdout comes off the pool first, uniformly.** Prioritised experience
+/// replay samples by how much a transition can teach, which is right for
+/// choosing what to spend a replay on and wrong for confirming the result:
+/// prioritised sampling is biased sampling, and PER corrects it with
+/// importance weights. Here the correction is that the confirming slice is
+/// never prioritised. Taking it first also means the selection cannot quietly
+/// steal the episodes that would have checked it.
+///
+/// Eligibility stays recency-bounded, because the harness being graded is the
+/// one running now and the oldest sessions were recorded by versions of it
+/// that no longer exist. So the draw is uniform *over the eligible corpus*,
+/// which is the honest claim — not uniform over all history.
+pub fn draw_episodes(
     sessions_dir: &Path,
     model: &str,
+    metric: Metric,
     want: usize,
-) -> Result<(Vec<EpisodePrep>, usize)> {
+    holdout_in: u64,
+    seed: u64,
+) -> Result<Draw> {
     let mut listed: Vec<(SessionMeta, PathBuf)> = Session::list(sessions_dir)?;
-    // Newest first: the harness being graded is the one running now, and the
-    // oldest sessions were recorded by versions of it that no longer exist.
     listed.sort_by_key(|entry| std::cmp::Reverse(entry.0.created_at));
-    let mut preps = Vec::new();
+
+    // Build the eligible pool: model-matched, replayable, recency-bounded.
+    let pool_size = want.saturating_mul(POOL_MULTIPLE).max(want);
+    let mut pool: Vec<(EpisodePrep, f64)> = Vec::new();
     let mut skipped = 0usize;
     for (meta, path) in listed {
-        if preps.len() >= want {
+        if pool.len() >= pool_size {
             break;
         }
         // The header model, not per-run attribution: a whole-session replay
         // runs under one model, so the filter's job is only to keep the
-        // corpus representative of the model being graded. A rare
-        // mid-session `/model` switch stays comparable regardless — both
-        // arms replay under the same model either way.
+        // corpus representative of the model being graded.
         if meta.model != model {
             continue;
         }
         match prepare_episode(&path, &meta.id)? {
-            Ok(prep) => preps.push(prep),
+            Ok(prep) => {
+                // Headroom off the recorded outcome. A session with no
+                // recorded outcome scores zero rather than being dropped: it
+                // is still drawable by the uniform half, which is the half
+                // that must not be filtered by informativeness.
+                let headroom = Session::last_outcome(&path)
+                    .ok()
+                    .flatten()
+                    .map(|s| metric.headroom(&s))
+                    .unwrap_or(0.0);
+                pool.push((prep, headroom));
+            }
             Err(_) => skipped += 1,
         }
     }
-    Ok((preps, skipped))
-}
 
+    let holdout_n = (want / holdout_in.max(1) as usize).max(1).min(pool.len());
+    let selection_n = want.saturating_sub(holdout_n);
+
+    // Uniform first. Sorted by id before the shuffle, or the seed is a lie —
+    // a deterministic shuffle of a nondeterministic order is nondeterministic.
+    let mut ids: Vec<String> = pool.iter().map(|(p, _)| p.id.clone()).collect();
+    ids.sort();
+    let held: std::collections::HashSet<String> =
+        mecha_core::sample::take_uniform(ids, seed, holdout_n)
+            .into_iter()
+            .collect();
+
+    let (mut holdout, mut rest): (Vec<_>, Vec<_>) =
+        pool.into_iter().partition(|(p, _)| held.contains(&p.id));
+
+    // Then the selection, by what can discriminate.
+    rest.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.id.cmp(&b.0.id))
+    });
+    rest.truncate(selection_n);
+
+    Ok(Draw {
+        selection: rest.into_iter().map(|(p, _)| p).collect(),
+        holdout: std::mem::take(&mut holdout)
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect(),
+        seed,
+        skipped,
+    })
+}
 /// What one arm of one episode produced.
 pub struct ArmOutcome {
     pub stats: RunStats,

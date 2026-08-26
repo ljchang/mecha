@@ -1289,21 +1289,6 @@ fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>>
     Ok(out)
 }
 
-/// Deterministic shuffle so a scorecard is reproducible from its seed.
-fn shuffled<T>(mut v: Vec<T>, seed: u64) -> Vec<T> {
-    let mut st = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-    let mut next = || {
-        st = st
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (st >> 33) as usize
-    };
-    for i in (1..v.len()).rev() {
-        v.swap(i, next() % (i + 1));
-    }
-    v
-}
-
 async fn eval(
     global: &GlobalOpts,
     account: &str,
@@ -1362,7 +1347,7 @@ async fn eval(
     // on the stratum that carries no ground truth.
     let (yes, no): (Vec<_>, Vec<_>) = survivors.into_iter().partition(|t| t.replied);
     fn pick(v: Vec<&CorpusThread>, s: u64, n: usize) -> Vec<&CorpusThread> {
-        shuffled(v, s).into_iter().take(n).collect()
+        mecha_core::sample::take_uniform(v, s, n)
     }
     let chosen: Vec<&CorpusThread> = pick(yes, seed, sample)
         .into_iter()
