@@ -109,49 +109,20 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,461 tests**, no failures — measured 2026-08-26 on the
-`tasks-return-path` branch, whose two commits are not on `main`; 1,451 is the
-number on `main` alone, at 0872baf, on a clean tree with both of that day's
-earlier lanes committed. Stated rather than omitted, which is what the
-sentence below is about. That last
-clause is load-bearing: two sessions independently wrote down a count taken
-in the shared checkout while a third lane's uncommitted work sat in it,
-which is a count of something that exists on one disk and in no commit
-(Traps → Environment). The same shape nearly recurred today — a count taken
-while a peer's arc was mid-write is a count of neither commit. Breakdown:
-512 in
-`mecha-cli` with 1 ignored (502 on `main`, +10 on the branch: 3 on the
-question card, 5 on the derived run state, 2 on the front-loaded seed),
-724 in `mecha-core`, 6 + 9 in its two integration
-suites, 133 in `mecha-mail` plus 1 in a mail binary, 75 in `mecha-slack`, and
-1 doctest, plus the 2 below. The **31 over 1,377** at 897bd13 attribute
-exactly, counted as added `#[test]` lines per range and agreed by two
-readings: **+3** phone-surface fixes, **+21** the inline-confirm arc, **+0**
-the name scrub and the clippy fix, **+5** the approval surface, **+2** the
-guarded-settings test. The older e3af3b6 breakdown, for comparison,
-was (466 in `mecha-cli` with 1 ignored, 683 in the
-`mecha-core` lib suite, 129 in `mecha-mail` plus 1 in its `mecha-mail`
-binary, 75 in `mecha-slack`, 15 across the two integration suites that need
-real backends, and 1 doctest). The 27 over v0.1.13's 1,343 are attributed
-exactly rather than estimated, and across three lanes that ran the same
-day: **3 in `mecha-core`** (`outbox_source`'s returned-id join, 5b187c5),
-**19 in `mecha-cli`** from the review-surfaces day (the `/queues` proposal
-review and queue-age work, `/entity`'s search and merge keys, the
-mail-classify fixes, `harness`/`review`/`proposals`), and **5 in
-`mecha-cli`** from the voice-session arc (the two session headers, the
-voice block's switch-into-speech rule, and the three that pin what a spoken
-turn reads back as).
+Expect **1,500 tests**, no failures — measured 2026-08-26 evening on `main`
+at `efa04e2`, on a **clean tree**, after five branches merged by a second
+lane and one by a third. That clause is load-bearing and has been wrong
+twice: a count taken while any lane's work sits uncommitted in this shared
+checkout describes one disk and no commit. Breakdown: **515** in `mecha-cli`
+with 1 ignored, **760** in `mecha-core`, 6 + 9 in its two integration
+suites, **133** in `mecha-mail` plus 1 in a mail binary, **75** in
+`mecha-slack`, and 1 doctest.
 
-**2026-08-26, later — the tree runs 1,464 (515 in `mecha-cli`, 1 ignored),
-and exactly one of them is this note's to claim.** The graph-queue fixes add
-a single `#[test]` (`review.rs`, `ids_limit` past the default cap of ten) and
-it is **uncommitted**, so that count describes one disk and no commit — the
-condition the paragraph above names, stated rather than avoided, because the
-alternative is a number someone later reads as `main`'s. The remaining
-distance from the 512 above belongs to commits written after that paragraph
-was; whoever owns it should attribute them, not this note. In the graph repo,
-which has its own count, the same arc adds four (the linker's names-not-ids
-and staged-guard cases, and the repair's two) against 274 passing there.
+Clippy and rustfmt are clean at that commit, and CI passed on it — though
+see Traps → Environment before trusting that sentence anywhere else: push
+events were being dropped by a GitHub Actions outage that afternoon, so the
+runs for several of the day's commits were dispatched by hand and the run
+history shows a gap rather than a failure.
 
 **Measure the merge, not either side of it, and attribute with a commit
 range** — the lesson of this particular count, and the reason those numbers
@@ -257,7 +228,7 @@ A working agent harness, used and measured rather than just compiled.
 | Messaging | `[messages]` + `mecha msg send/list/show/dismiss/agents` — a file mailbox between this machine's sessions (`~/.mecha/messages/<recipient>/`, producer-name addressing, per-session liveness registry). Delivery folds in at the steering point with the sender's harness-stamped taint merged first, so a hop launders nothing; attended surfaces hold with a notice, unattended accept; global config only; full mailboxes refuse, identical pending sends dedup. `docs/MESSAGING-RESEARCH.md` is the design record; phase 2 (TUI modal/badge) is scoped there |
 | Workspaces | `~/.mecha/work/<producer>/` is a run's workspace and its output directory; `mecha work list/path/clean`, retention nightly. A workspace containing the mecha home is refused |
 | Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed. **`mail_triage`** (2026-08-18) adds archive/read/unread/spam/trash as a closed `TriageAction` enum, thread-level, in a third capability quadrant — `destructive` but *not* `external_send`, so it never routes through the outbox and a read-only run cannot reach it. Tagging is deliberately absent: a tag is mecha's own, on the triage record, not a Gmail label or a Graph category |
-| Tasks | `mecha tasks` list/add/set and the `/tasks` modal onto the graph's GTD board, reached only over `kg_task_*` — no dependency on mecha-graph and no second reader of its schema. Status letters match `mecha-graph tui` screen 6; nothing confirms (the board reaches nobody and has no delete); a reload re-finds the cursor by id because a status change reorders the board. **2026-08-26**: `tasks work <id>` seeds an agent run from a board item (own session titled `task: …`, outbox-bound, `--unattended` for the trigger posture a detached caller gets) and `tasks stop <id>` asks it to stop through a sentinel it polls — keeping the partial turn, never a kill. The harness moves `waiting_on` to `mecha` for the life of the run and to `@owner` when it ends, so "is work happening" is answered by the board rather than by the run; `kg_task_update` is withheld from the model for the same reason `kg_accept` does not exist, and `setup::subagents_holding` refuses to start when a profile would hand it back. `tasks set --waiting-on` is the hand-driven half. **D16 (2026-08-26, second pass)**: the card's state is derived from three sources and none of them is the run's account of itself — the board says who holds the ball, the question store says whether it is blocked, and the transcript's `Record::Outcome` says how the last run stopped. Seven states, no two rendering alike: `working` (with the `[~]` item as its subtitle), `planning`, `answer needed`, `ready for review` (with its evidence — turns, calls, staged, refused), `the run failed`, `outcome unknown`, and quiet. `unknown` is the honest seventh rather than a hedge: a transcript with no outcome record is a run that never got as far as saying how it went, and calling it either `failed` or `ready` invents the one fact the card is about. `Interrupted` reads as ready, never failed — a person stopping a run is the system working. **Provenance** (2026-08-26, a second lane): a task carries `captured_from` — a *pointer*, kind from a closed set of `mail | frontdoor | session` with unknown keys refused, so it can never become a copy of an email body. `mail task` writes it at capture, `mecha tasks source <id>` follows it with one reader per kind, `POST /api/tasks/source` and the card's `read the …` control do the same from the web, and the TUI offers `o` from the detail pane only — off the key strip, because it is inert on any task somebody typed |
+| Tasks | `mecha tasks` list/add/set and the `/tasks` modal onto the graph's GTD board, reached only over `kg_task_*` — no dependency on mecha-graph and no second reader of its schema. Status letters match `mecha-graph tui` screen 6; nothing confirms (the board reaches nobody and has no delete); a reload re-finds the cursor by id because a status change reorders the board. **2026-08-26**: `tasks work <id>` seeds an agent run from a board item (own session titled `task: …`, outbox-bound, `--unattended` for the trigger posture a detached caller gets) and `tasks stop <id>` asks it to stop through a sentinel it polls — keeping the partial turn, never a kill. The harness moves `waiting_on` to `mecha` for the life of the run and to `@owner` when it ends, so "is work happening" is answered by the board rather than by the run; `kg_task_update` is withheld from the model for the same reason `kg_accept` does not exist, and `setup::subagents_holding` refuses to start when a profile would hand it back. `tasks set --waiting-on` is the hand-driven half. **D16 (2026-08-26, second pass)**: the card's state is derived from three sources and none of them is the run's account of itself — the board says who holds the ball, the question store says whether it is blocked, and the transcript's `Record::Outcome` says how the last run stopped. Seven states, no two rendering alike: `working` (with the `[~]` item as its subtitle), `planning`, `answer needed`, `ready for review` (with its evidence — turns, calls, staged, refused), `the run failed`, `outcome unknown`, and quiet. `unknown` is the honest seventh rather than a hedge: a transcript with no outcome record is a run that never got as far as saying how it went, and calling it either `failed` or `ready` invents the one fact the card is about. `Interrupted` reads as ready, never failed — a person stopping a run is the system working. **Provenance** (2026-08-26, a second lane): a task carries `captured_from` — a *pointer*, kind from a closed set of `mail | frontdoor | session` with unknown keys refused, so it can never become a copy of an email body. `mail task` writes it at capture, `mecha tasks source <id>` follows it with one reader per kind, `POST /api/tasks/source` and the card's `read the …` control do the same from the web, and the TUI offers `o` from the detail pane only — off the key strip, because it is inert on any task somebody typed. **B1/B2 (2026-08-26 evening, both amended before building)**: `✓` is a tap on the collapsed row rather than a chip in the strip (Things: complete is "a tap on the circle only"), and the expanded card *groups* under `hand it over` / `move it` instead of hiding four chips behind a `…` — the survey it cites is about swipe actions on a *collapsed* row, and this card only exists once tapped, so it already is the sheet. Capture is **one box**: `capture::find_when` parses a `when` out of the sentence in Rust, shows it as a dismissable chip, and sends the name **verbatim** (Things, not Todoist), with due/context behind `more`. It detects and never resolves — the span goes to the graph's `parse_due`, so one date parser lives where `+3d` means something; weekdays are deliberately undetected because `parse_due` cannot take one and a chip that lies is worse than none. There is no time of day anywhere in the store, so "at 3" stays in the name |
 | Questions | `mecha_core::questions` + `mecha questions list/show/answer/abandon` — the outbox's inbound twin. A delegated run that needs a decision **ends**: `ParkingAsker` stores the question and cancels the run's own token, so the partial work survives and no slot is held waiting. Answering *is* resuming — the answer becomes the next user turn of the session that asked, in the jail it asked from, with its plan restored. Taint is recorded at park time and unknown reads as untrusted, because a question is an inbound request for information composed by a model that may have been reading third-party text. Sixth row in `/queues`; doctor flags one unanswered past 24h. **2026-08-26 (second pass)**: the phone can answer one — `GET /api/questions` is a direct store read (mecha's own store, so `review.rs`'s pattern rather than `board.rs`'s CLI child), the card lands on its task in `/tasks` because D13's own argument is that the Waiting view *becomes* the queue of blocked delegations with no new noun, options are one tap and the free-text box is there because the tool's contract says they are never exhaustive, the taint marker travels (stderr's `⚠` is invisible in a browser), a question whose task is off the board still gets a card, and answering spawns `questions answer --unattended` detached because answering *is* a whole agent run |
 | Graph reads | `mecha kg search\|entity\|note` (2026-08-23) — the graph for the person at the keyboard, over the same `kg_search`/`kg_entity`/`kg_upsert` surface the model uses. `/find` is the modal (entities open their full record, facts/episodes open in place, `/` re-edits the query); `/note` (or `/notes`) captures an episode with entities linked on landing, identically to `mecha-graph note`. All fetches off the event loop through watches |
 | Documents | `mecha-docs`, the fourth binary on `mecha-mail` — Google Docs/Sheets/Slides under **`drive.file` and nothing else**, so only files mecha created or the user picked in Google's own chooser are reachable, and no instruction inside a run can widen that. Reads are `untrusted_input` and never `openWorldHint`; writes are outbox-routed, because writing into a document a third party can read is a publish. No permanent-delete and no sharing verb, with tests on the absences |
@@ -1102,17 +1073,40 @@ the mechanism and every decision. What it left standing:
   and C); the rest stands.
 - **The task→agent handoff is built through phase 4** —
   `docs/TASK-AGENT-DESIGN.md` is its authority and HISTORY has what shipped.
-  The return path and D16's card states closed on 2026-08-26 (second pass),
-  which leaves the two board decisions and the plan gate. What is left,
-  cheapest first:
-  - **B2, natural-language capture** — "call Bob tomorrow at 3" should set a
-    date. Parsed in **Rust, not a model** (a capture that costs a model call
-    is a capture nobody uses), and following Things rather than Todoist on
-    the disagreement: the parsed token shows as a dismissable chip and the
-    task's name keeps the owner's words verbatim.
-  - **B1, the row's action strip** — six equal-weight status chips where
-    every surveyed app offers two. `✓ done` and `schedule` become the direct
-    actions; everything else moves behind a `…` sheet.
+  The return path and D16's card states closed on 2026-08-26 (second pass);
+  B1 and B2 closed the same evening, both **amended first** — re-reading
+  them against the shipped row changed both, and the amendments sit beside
+  the originals in the design doc. **What is left is one item: D4.**
+  - **D4 / Phase 5 — the context assembler**, and it needs less building
+    than the design implies. Three things are already true that D4 predates.
+
+    **The run does not know its task came from anywhere.** `kg_task_list`
+    returns `captured_from` on every row — the provenance pointer that
+    shipped 2026-08-26 — and `work_prompt` never mentions it, so a task
+    captured from an email reaches the agent as a bare sentence while
+    `mecha tasks source <id>` sits on the CLI able to fetch the thread.
+    `defer_until` is dropped too. Naming both is a deterministic line each
+    and makes a shipped feature reachable.
+
+    **D4 assumes context is assembled *into* the prompt, and the run can
+    already fetch it.** `kg_search`, `kg_related`, `kg_entity` and
+    `kg_timeline` are on its surface. Pasting the project neighbourhood
+    costs prefix tokens on every turn of every run; naming what exists and
+    how to reach it costs a sentence — `skill.rs`'s progressive disclosure,
+    applied one door over. So: point at it, then measure whether runs
+    follow the pointer, and only paste if they do not.
+
+    **A constraint D4 does not state, which decides the shape.**
+    `captured_from` can point at *mail*. Pasting a body into the seed would
+    arm `untrusted` before the run's first turn **and** put
+    attacker-controlled bytes into a privileged run's opening instruction —
+    the front door's argument exactly. The seed carries the **pointer**,
+    never the content, so the bytes arrive as a tool result the interlock
+    accounts for. Any assembler inherits that rule.
+
+    D4's own line — *"measured in Phase 4, not assumed in Phase 1"* — was
+    never honoured, and now can be: `RunStats` on task runs exists as of
+    2026-08-26.
   - **D12, the plan gate — decided against as written, on 2026-08-26, and
     the cheap half shipped instead.** Do not build it from the design doc;
     read `work_prompt`'s doc comment in `commands/tasks.rs` first, which
@@ -1144,9 +1138,8 @@ the mechanism and every decision. What it left standing:
     stage, and the downside of letting a run go is bounded by construction.
     That stops being true the moment a delegated run can get approval from a
     present human.
-  - **Phase 5** is the context assembler (D4) and **phase 6** admission
-    control (R1) — R1 explicitly not worth building until more than one
-    delegation at a time is routine.
+  - **Phase 6** is admission control (R1) — explicitly not worth building
+    until more than one delegation at a time is routine.
   Two things found while building the return path are worth knowing before
   touching this arc again. **A task run's `Record::Outcome` only exists from
   2026-08-26 (second pass) onward** — `tasks work` and `questions answer`
@@ -1735,15 +1728,19 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   17,600, about 44 nights — and bumping `PROMPT_VERSION` re-queues the whole
   corpus. Add the field; fix the comment before it sizes another batch.
 
-- **`mecha-graph fork` is broken**, which matters because it is the documented
-  test bed for anything that mutates. `fork --out …` fails with `Dimension
-  mismatch for inserted vector … Expected 768 dimensions but received 1024` —
-  the harrier embedding switch (2026-08-20) moved the live vectors and the
-  copy path still declares the old width. Found 2026-08-22 while looking for a
-  safe place to exercise a write path, and hit again 2026-08-26 for the same
-  reason — there is currently no way to exercise a graph write path anywhere
-  but the live store, which is why that day's repair was reviewed as a
-  `--dry-run` report rather than rehearsed.
+- ~~`mecha-graph fork` is broken~~ **Fixed 2026-08-26 evening** (graph
+  `237b686`), so there is a working test bed again — `fork --out …` completes
+  on the live 202 MB store in 1m38s with counts matching exactly. It was
+  never a bug in `fork`: all three copy paths run migrate-then-copy, the
+  harrier switch (2026-08-20) left the source's `vec0` tables wider than
+  `run_migrations` builds them, and the reconciliation had been added to
+  **one** of the three. `encrypt_in_place` was broken too and nobody noticed,
+  because `fork` is the only one of the three people run on a whim — so a bug
+  in two paths read as "forking is broken". Now in `copy_all_tables`, which
+  every path calls. **A step every copy path needs belongs in the function
+  every copy path calls**, and this trio has now broken together twice from a
+  change to the destination's schema made before the copy; the first was a
+  migration seeding a node.
 
 - **Gossip's rotation cannot fill its quota.** `probe-targets` returns exactly
   10 candidates; `GOSSIP_ENTITIES=3` with `GOSSIP_COOLDOWN_DAYS=7` demands 21
@@ -1777,10 +1774,19 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   2026-08-26 was three days old — old enough that the night after the
   linker fix would have re-staged up to `KNN_MAX_CANDIDATES` (40) of exactly
   the candidates that day's repair had just cleaned out of the store. Caught
-  before it fired. Either have the nightly build what it is about to run, or
-  add the explicit `cargo build --release` to the skill's step 1; the general
-  shape is that "install" and "every binary that runs" are different sets,
-  which is the same confusion the skill already documents one level up.
+  before it fired. **Half-closed the same evening**: the `update` skill now
+  names it as a seventh binary with its own `cargo build --release` and a
+  date check, and warns against assuming `cargo install --path` refreshed
+  that path (`80750bb`; the skill's own text had claimed the nightly
+  "builds"). The binary itself was rebuilt, so the 01:30 run is safe.
+
+  **What is still open is the better fix**: have the nightly build what it
+  is about to run, so it cannot go stale between deploys at all. A skill
+  step depends on somebody following a skill; a script that builds its own
+  binary depends on nothing. The general shape is that "install" and "every
+  binary that runs" are different sets — the same confusion the skill
+  documents one level up, and an inventory of "what is running" that only
+  lists things with a `--version` will always miss a cron job.
 
 - **A stranger-facing README pass.** The public README still reads like the
   private repo's; nothing in it walks a person from `cargo install
