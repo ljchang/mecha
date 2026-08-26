@@ -110,14 +110,35 @@ field and one line of rendering, on machinery that already exists and already
 survives a summary verbatim.
 
 > **Built 2026-08-26** (`goal.rs`, `feat/goal-ref`), and building it corrected
-> this section. An earlier draft put `serves` on `TodoItem`. It belongs on the
-> **plan**: D11 is *one live run per task*, so a run maps to at most one board
-> task and a per-item reference models a situation that cannot arise — while
-> costing a field the model has to repeat correctly on every item of every
+> this section twice.
+>
+> An earlier draft put `serves` on `TodoItem`. It belongs on the **plan** —
+> and the reason is a conjunction, half of it hours old. **D14** keys
+> `TodoTool` by the run's workspace, so one workspace is one list; and since
+> `b877e41` (2026-08-26) `tasks work` calls `work::ensure(task_id)`, so a task
+> run has a workspace of its own. Before that commit every task run used the
+> configured workspace and every task shared one key. Together they give *one
+> list, one task*, so a per-item reference models a state that cannot arise —
+> while costing a field the model must repeat correctly on every item of every
 > write, in the tool whose whole job is being cheap to keep updated. On the
 > plan the rendering also falls out as designed, one line above the list,
-> instead of a suffix that has to be told apart from free-text content on the
-> way back in.
+> instead of a suffix to be told apart from free-text content on the way back
+> in.
+>
+> **The first draft of this note cited D11, and D11 does not say it.** *One
+> live run per task* is a one-writer rule about two runs racing; "one run per
+> task" is not "one task per run", and the citation was the converse of what
+> the decision states. Recorded rather than quietly fixed, because a wrong
+> citation is load-bearing in exactly the way a right one is: the next reader
+> inherits it.
+>
+> **And "cannot arise" is true of task runs only.** `TodoTool` is registered
+> once and serves **chat** runs too, keyed the same way, and a long chat
+> session in one directory legitimately wanders across goals — so a reference
+> set early and never revised misdescribes the list above it. Accepted: the
+> field is optional, the failure is ordinary staleness the next write fixes,
+> and per-item references would tax every run to fix the one kind that
+> wanders.
 >
 > Parsing landed with **two policies**, which the design had not separated.
 > From the model a malformed reference is a `ToolOutput` error naming what was
