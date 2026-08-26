@@ -1887,6 +1887,57 @@ reading it: the answer button disabled while empty and enabled on the first
 keystroke, an option tap posting the option's own words, abandon posting the
 id, and *open the conversation* landing on `#chat/<session>`.
 
+**2026-08-26 (third pass) — the plan gate was decided against, and the seed
+got the cheap half.** D12 proposed stopping a delegated run after its first
+`todo` write to take the owner's edits. The owner's question — *"how is this
+different from todos? should a human ever edit or delete or add a todo? we
+already have an ask question system"* — is the defect: the gate made the
+**todo list** the human-editable object, and every system that has solved
+this keeps the reviewable plan and the agent's execution ledger apart
+(superpowers writes a plan document and then *"create todos for the plan
+items"*; Claude Code's plan mode writes `~/.claude/plans/` while `TodoWrite`
+is separate). `todo.rs` had forbidden the collapse in its own module doc
+since it was written — *"a list set by anything other than the model's own
+`todo` write … is a second author of state the tool is supposed to own"* —
+and nobody had noticed that this was the conflict, because D12 answers a
+*different* `todo.rs` objection (the stale plan *phase*) convincingly enough
+to look like it had answered them all.
+
+Two things then decided it, both already in the repository. **The project's
+own research argues against plan-first on this hardware**:
+`VERIFICATION-RESEARCH.md` has FORGE 2026 finding straight-shot often equals
+or beats Plan-and-Execute, small models *collapsing* under it (Llama 3.2 3B,
+0.23 → 0.05), and a bad plan measuring worse than no plan. And **the gate's
+trigger rested on a behaviour measured absent**: the 2026-08-04 probe found
+this model called `todo` zero times in 20 eval case-runs from prompting, and
+keeps a list reliably only when the *user turn* asks — so the gate would have
+fired when the model felt like letting it. D12's own cited evidence turned
+out to point elsewhere too: Copilot's 38.1% → 69% came *"purely on tuning
+`copilot-instructions.md`"*, which is the **seed**, not a checkpoint.
+
+So `work_prompt` now front-loads: work out what you need and ask it first, in
+one `ask_user` call covering everything, with an explicit guard against the
+opposite failure — *"do not ask what you can find out"* — because a prompt
+that only says "ask first" produces a run that asks instead of working. On
+the user turn, deliberately, since that is the one delivery channel the probe
+found this model obeys, and the tool's own "in one sentence" schema is
+*overridden here* rather than widened for everyone.
+
+One gap the change made likelier and therefore worth closing with it:
+**several `ask_user` calls in one turn all park**, and both surfaces rendered
+only the first — `parked().first()` in the CLI, `find` on the card — so the
+rest were reachable only from a verb nobody runs after being told what to do
+next. Both now render every one, and both say the surprising part out loud:
+answering *any* of them resumes the run, and the others stay open.
+
+What none of this reaches is the failure D12 was actually after —
+misalignment the model does not notice, where a confidently wrong plan asks
+nothing. That is now **countable** rather than arguable, because task runs
+record `RunStats` as of this morning: delegations that ended `ready for
+review` and were then dropped or reworked rather than marked done. The
+reviewable-document version gets built when that number argues for it, and
+gets built as a document separate from the todos.
+
 **2026-08-25 (night) — real people out of a public repository.** The
 2026-08-07 history rewrite stripped *operational inventory* and did not touch
 a second kind that kept accumulating afterwards: real people used as

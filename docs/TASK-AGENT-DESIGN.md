@@ -314,7 +314,17 @@ the rule the resume endpoint already enforces ("one conversation must never
 have two writers"). `waiting_on` is the flag that says a run exists.
 
 **D12 — The plan is a living list, and the gate is on its first version
-only.** The first draft left "does the first pass need a plan step?" open. It
+only.**
+
+> **Superseded 2026-08-26. Not built, and not to be built from this section.**
+> The reasoning below is kept because it is where the argument was made; what
+> replaced it, and why, is at the end of this decision. The short version: the
+> gate made the *todo list* the human-editable object, and every other system
+> — superpowers, Claude Code's plan mode, Cline's Plan/Act — keeps the
+> reviewable plan and the agent's execution ledger apart. `todo.rs` already
+> forbade the collapse and nobody noticed the conflict was that one.
+
+The first draft left "does the first pass need a plan step?" open. It
 does — but the answer has to be stated carefully, because `todo.rs` already
 argues the other way in its own module doc:
 
@@ -341,6 +351,48 @@ open question **carries a proposed answer**. The measured `ask_user` finding is
 that telling a model to proceed with its best interpretation makes it invent —
 a visible default a person taps is the opposite arrangement, because the guess
 is on the screen and a human owns it.
+
+**What replaced it.** Three findings, none of which was available when this
+was written:
+
+1. **`docs/VERIFICATION-RESEARCH.md` argues against plan-first on this
+   hardware.** FORGE 2026 (48,000 scenarios, 6 models, the only large study
+   with a non-agentic baseline) finds straight-shot often equals or beats
+   both ReAct and Plan-and-Execute; **small models collapse** under
+   plan-and-execute — Llama 3.2 3B goes 0.23 → 0.05; and **a bad plan
+   measures worse than no plan**. mecha's entire premise is a local
+   open-weight model. That doc existed and this section did not cite it.
+2. **The trigger rested on a behaviour measured absent.** "After its first
+   `todo` write" assumes the write happens. On 2026-08-04 this model called
+   `todo` **zero times in 20 eval case-runs** whether the directive sat in
+   the system prompt, the tool description, or both — and keeps a list
+   reliably only when the *user turn* asks. So the gate would have fired
+   when the model felt like letting it, which is a strange property for an
+   alignment checkpoint.
+3. **The evidence cited above is about the seed, not the gate.** Copilot's
+   38.1% → 69% came *"purely on tuning `copilot-instructions.md`"* — the
+   equivalent here is `work_prompt`, not a checkpoint. The 86.2%/55.1%
+   intervention split argues for a human in the loop, which D13's question
+   store already is.
+
+So the intervention went into the seed: **work out what you need and ask it
+first, in one question**, with a guard against the opposite failure (a run
+that asks about what it could have looked up), delivered on the user turn
+because that is the channel the probe found this model obeys. Questions at
+plan time are still the cheapest in the run — before a tool call, before
+taint is armed — which was D12's best argument and survives without it.
+
+**What this does not reach, and how the decision gets remade.**
+Front-loading improves *known* unknowns; a confidently wrong plan asks
+nothing. That failure is now countable — delegations that ended `ready for
+review` and were then dropped or reworked rather than marked done — because
+`RunStats` on task runs and the question store's timestamps both exist as of
+2026-08-26. If that number is large, build the reviewable object then, and
+build it as a **document separate from the todo list**, which is the split
+this section got wrong. The asymmetry that would force it sooner: a
+web-launched delegation is `--unattended`, so it can only read and stage,
+and letting a run go is bounded by construction — which stops being true the
+moment a delegated run can acquire a present human's approval.
 
 **D13 — A question ends the run; it never parks it.** `serve/present.rs` parks
 the run on `ask_user` for `ASK_TIMEOUT` (600s) and then declines. That is right
@@ -553,12 +605,13 @@ decrypt and fork**, because the target runs migrations before the copy and
 already held the row the source was about to send. `nodes` joined the
 `INSERT OR IGNORE` pass `predicate` has always been in.
 
-**Phase 4 — the phone. Built 2026-08-26, except D12, B1 and B2.** *Ask
+**Phase 4 — the phone. Built 2026-08-26; D12 superseded, B1 and B2 open.** *Ask
 mecha* on the task row, *open the conversation*, *stop*, the drawer filter
 and chip (D10), the rendered todo list, and — in a second pass the same day
-— the **return path** and the derived card states (D16). Still open: the
-plan gate (D12) and the two board decisions (B1, B2), which touch the same
-row and can be done independently.
+— the **return path** and the derived card states (D16). D12 was decided
+against as written (see the decision itself) and its cheap half — front-loaded
+questions in the seed — shipped in its place. Still open: the two board
+decisions (B1, B2), which touch the same row and can be done independently.
 
 The return path was not on this list and is the half of D13 the first pass
 left implicit: a question could be *asked* from the phone's delegation and
