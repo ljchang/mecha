@@ -2081,6 +2081,68 @@ tarballs, which a force-push over a public repo would not reach in forks and
 clones anyway, and published crates can only be yanked rather than edited.
 The only actively served copy was the docs site, redeployed and verified.
 
+**2026-08-26 (fifth pass) — a goal system, and the first signal that says
+something went well.** `docs/GOAL-SYSTEM-DESIGN.md` and rungs 0–3 of its
+phasing, in five PRs (#61–#65). The finding behind the whole arc is one a
+`grep` makes: **every evaluative signal mecha had was a cost or a
+correction.** `learning::Trigger` is four ways of saying a person stepped in;
+every `candidate::Metric` is phrased so lower is better, deliberately, so a
+comparison cannot invert silently. A run could therefore be recorded as having
+gone badly and never as having gone well, and nothing could start a learning
+loop unless the world acted first — `grep -i goal` over `mecha-core` returned
+four hits before this, all incidental prose.
+
+Rung 0 was a consolidation the arc created the need for. **Nine call sites
+established the same safety property by hand** — no tools, no conversation,
+nothing an injected instruction can reach — each spelling out `tools:
+Vec::new()` beside a one-element `messages` vector, two of them visibly copies
+of a third. `quarantine.rs` puts the property in the type: no field for tools,
+no way to add a second message, and `ask()` as the only exit. The ninth site
+was found by review, in `mecha-cli`, after a sweep that had grepped
+`mecha-core` and stopped — which is the argument for the module restated at
+its author's expense, and the doc says so. `Agent::final_answer` was
+deliberately *not* migrated: it is tool-less for an unrelated reason and sends
+the whole conversation, so **the distinction is history, not tools**. The same
+PR replaced `ProbePrep`'s `steer: bool` with `ProbeKind`, because grading read
+*not a steer* as *a denial* by assumption — undoing, one struct field later,
+the care `locate_denial` takes explicitly.
+
+Rung 1 is `GoalRef`, and building it corrected the design twice. The goal
+belongs to the **plan**, not to each `TodoItem`: D14 keys `TodoTool` by the
+run's workspace and `b877e41` gave each task run its own, which together give
+one list, one task. Both are cited because half the footing was hours old.
+The first draft cited D11 — a one-writer rule about two runs racing — which
+does not say a run serves one task; **the wrong citation is kept on the record
+beside the right one**, because a wrong citation is load-bearing in the same
+way a right one is. Parsing landed with two policies: strict toward the model,
+which can fix it, and lenient toward a record, which is append-only and may
+have been written by a newer binary.
+
+Rung 2 read a signal the outbox had recorded since the day it existed.
+`args_before` sits beside `args`, so `sent && !edited()` — the owner read a
+letter written in their name and sent it as drafted — needed no new recording,
+and `mineable_as_writing`'s own docstring had been naming the gap for months.
+`WritingOutcome` reads it; `SentUnchanged` is deliberately **not** mined as a
+correction, which is the `"Blocked by a hook:"` rule in its positive form. It
+is also immune to reward hacking by construction rather than by policy:
+nothing the model does can produce one except drafting something a person then
+chose to send unaltered. Its rate is `None` over an empty denominator, never
+zero — the null-run bug arriving in the one measure whose job is to say
+something went well.
+
+Rung 3 records the conditions a run happened under, read-only. `backlog.rs` is
+one walk over five stores for three readers' questions; `Homeostat` lands on
+`RunStats`, opt-in on `cancel`'s precedent so `eval` and the replay probes stay
+unsampled — **a scorecard that varies with how busy the box was is not a
+scorecard**. Two things were left deliberately absent rather than stubbed:
+context pressure, because `RunOutcome::usage` is the run's *total* and would
+read as impossible pressure, and `/slots`, because a sensor with no consumer
+should not put an HTTP call in every run's start. And the backlog is recorded
+as a **delta**, not a level: a run that stages nine drafts raises the outbox by
+nine, so a level at run end cannot separate a run's own output from what it
+inherited.
+
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own

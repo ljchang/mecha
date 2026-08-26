@@ -1303,6 +1303,60 @@ the mechanism and every decision. What it left standing:
   live recognizer sees it — otherwise a bad nightly write takes `:8992` down
   and voice goes deaf with no error text anywhere.
 
+### The goal system — rungs 0–3 shipped 2026-08-26, rung 4 open
+
+`docs/GOAL-SYSTEM-DESIGN.md` is the authority and carries a status header
+saying which rungs shipped. The arc's premise, which is what makes the rest
+follow: **every evaluative signal mecha had was a cost or a correction**, so a
+run could be recorded as having gone badly and never as having gone well.
+Rungs 0–3 are in `main` (#61–#65) and are everything with no model, no charter
+and no adversary in it — that ordering is §14's, not a coincidence.
+
+**Open now:**
+
+- **Rung 4 is #66 and unverified.** Prioritised replay: the corpus is sampled
+  by recency today, and `Metric::headroom` prioritises by what an episode can
+  say about the metric — an episode already at zero can only tie or worsen,
+  and finding that out costs two model runs. The part §8.1 of the design
+  understated is the load-bearing bit: `is_holdout` partitions *one pool*, so
+  hashing a pool gathered by informativeness gives **two** biased slices and
+  the holdout stops being a check. The slices are drawn separately — holdout
+  uniformly and first. `judge_with` keeps hash-splitting for
+  `eval --ab-config`, where every case runs and the pool is already uniform.
+  1,506 tests locally; **no CI run has ever fired on its head commit**, which
+  needs a `workflow_dispatch` before it merges on evidence.
+- **Rung 5 is next**: predictive compaction and task sizing — the first
+  *disposition*, in the class §7 says has no adversary. It is also where
+  context pressure arrives, via the in-run tracker rung 3 deliberately left
+  out.
+
+**Three things named rather than done**, recorded so they are not
+rediscovered as oversights:
+
+- **`/queues` still walks the stores itself.** `backlog.rs` is the shared
+  walk and the homeostat uses it, but rewiring `mecha review`'s
+  `collect_queues` onto it needs either a wider `Backlog` or the loss of its
+  per-item detail lines (*"3 drafted with the trifecta armed"*). That is a
+  design choice, not a mechanical port. Doctor is deliberately further out —
+  its per-store error isolation is load-bearing.
+- **Context pressure is absent from `Homeostat`.** It wants the *last
+  request's* prompt size; `RunOutcome::usage` is the run's total, which
+  exceeds the window in any long conversation and would read as impossible
+  pressure. The figure lives in a loop local behind six exit points, and the
+  thing that needs it is rung 5's tracker, which keeps it in memory and
+  records nothing.
+- **`/slots` is not sampled.** It is the best load signal available —
+  occupancy directly rather than by proxy, and a second witness to prompt-cache
+  reuse that `cache_lens` cannot get — but nothing reads it yet, and a sensor
+  with no consumer should not put an HTTP call in the path of every run's
+  start.
+
+**Not to be re-litigated** (all four are argued in the design): decomposition
+runs downward and appraisal upward; the affect label is derived, never
+self-reported; affect may only *narrow*, so a disposition is a monotone layer
+above a structural check and never a replacement for one; and affect is a
+priority function, never an objective.
+
 ### Cheap, and worth doing first
 
 - **Decide whether replayed reasoning stays unbounded.** As of 0.1.2 the
