@@ -153,6 +153,43 @@ pub async fn task_plan(State(state): St, Json(body): Json<TaskPlanBody>) -> Resp
 }
 
 #[derive(serde::Deserialize)]
+pub struct TaskSourceBody {
+    pub task: String,
+}
+
+/// POST /api/tasks/source — what the task was captured from, in full.
+///
+/// **The pointer is on the board and the bytes come from the source**, which
+/// is the same split `/api/outbox/{id}` uses for a draft: ids on the wire,
+/// content from the store, because a reviewer reading one thing while acting
+/// on another is what these surfaces exist to prevent. The page already holds
+/// `captured_from` from `/api/tasks` — enough to decide whether to *offer* a
+/// way back — and asks here only when somebody actually opens it, so a board
+/// of twenty tasks does not fetch twenty mail threads.
+///
+/// Through the CLI like every other verb here, so the one reader per kind is
+/// `mecha tasks source`'s and the page cannot drift from the terminal. Its
+/// budget is `self_text`'s minutes rather than seconds: following a mail
+/// pointer pays an MCP startup and may refresh an OAuth token.
+///
+/// **The answer is third-party text and reaches the page as text**, never as
+/// anything a run reads back. Nothing here re-enters a prompt and no taint
+/// moves: these bytes were accounted for when the mail was first read.
+pub async fn task_source(State(state): St, Json(body): Json<TaskSourceBody>) -> Response {
+    let task = body.task.trim();
+    if task.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which task?\n").into_response();
+    }
+    match super::mail::self_text(&state, &["tasks", "source", task]).await {
+        Ok(text) => text.into_response(),
+        // A source that cannot be read is not a task without one. The card
+        // says which, because a broken pointer and a hand-typed task look
+        // identical from a blank panel.
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
 pub struct TaskStopBody {
     pub task: String,
 }

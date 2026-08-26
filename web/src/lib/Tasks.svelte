@@ -94,6 +94,51 @@
     }
   }
 
+  // What a task was captured from. The board already carries the *pointer*
+  // (`captured_from`), which is enough to decide whether to offer a way back;
+  // the bytes are fetched only when somebody opens one, so a board of twenty
+  // tasks does not read twenty mail threads to draw itself.
+  //
+  // **The original is re-read, never stored.** The graph holds a pointer at
+  // other people's words and not the words, so this shows the thread as it
+  // stands now rather than a copy taken at capture time that has drifted from
+  // it. It is also why nothing is cached across a reload.
+  let sources = $state({});
+  let openSource = $state(null);
+  // A closed set, and it is the graph's: `gtd::CAPTURE_KINDS` refuses a kind
+  // no reader can follow, so there is no arm here for a source that would
+  // open nothing. An unknown one still gets a word rather than `undefined`.
+  const SOURCE_WORD = { mail: 'email', frontdoor: 'request', session: 'conversation' };
+  const sourceWord = (t) => SOURCE_WORD[t.captured_from?.kind] ?? 'source';
+
+  async function loadSource(t) {
+    if (sources[t.id]) return;
+    sources[t.id] = { loading: true };
+    try {
+      const res = await fetch('/api/tasks/source', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ task: t.id }),
+      });
+      const text = (await res.text()).trim();
+      // A source that will not load is not a task without one, and the two
+      // must not render the same — a blank panel reads as "nothing asked for
+      // this", which is the absence this whole feature exists to fix.
+      sources[t.id] = res.ok ? { text } : { error: text || 'could not read it' };
+    } catch (e) {
+      sources[t.id] = { error: String(e?.message ?? e) };
+    }
+  }
+
+  function toggleSource(t) {
+    if (openSource === t.id) {
+      openSource = null;
+      return;
+    }
+    openSource = t.id;
+    loadSource(t);
+  }
+
   async function stopMecha(task) {
     busy = true;
     try {
@@ -265,6 +310,13 @@
           {/if}
           {#if t.context}<span class="chip">{t.context}</span>{/if}
           {#if t.project}<span class="chip dim">{t.project}</span>{/if}
+          <!-- On the collapsed card, so the board says at a glance which
+               tasks something asked for and which you set yourself. A task
+               captured here carries no chip: the absence is the answer, not a
+               "manual" label that reads like a link and opens nothing. -->
+          {#if t.captured_from}
+            <span class="chip dim">from {sourceWord(t)}</span>
+          {/if}
           {#if working(t)}
             <span class="chip agent">mecha is on it</span>
           {:else if t.waiting_on}
@@ -317,6 +369,18 @@
                 }}
               >open the conversation</button>
             {/if}
+            {#if t.captured_from}
+              <!-- A button for the same reason the one above is: the card row
+                   is itself a `<button>`. -->
+              <button
+                class="statusbtn"
+                class:srcopen={openSource === t.id}
+                onclick={(e) => {
+                  e.stopPropagation();
+                  toggleSource(t);
+                }}
+              >{openSource === t.id ? 'hide' : 'read'} the {sourceWord(t)}</button>
+            {/if}
             {#each ACTIONS.filter(([status]) => status !== t.status) as [status, verb]}
               <button
                 class="statusbtn"
@@ -329,6 +393,34 @@
               >{verb}</button>
             {/each}
           </div>
+          {#if openSource === t.id}
+            <!-- **Third-party text, marked as third-party text.** These are
+                 somebody else's words, and the outbox's rule for a quoted
+                 source applies unchanged: showing them to a person is the
+                 safe context, but they must never read as the assistant's.
+                 So the pane carries a heading *and* a rule down its whole
+                 edge — a heading scrolls off the top of a long thread, and a
+                 continuous edge cannot. The `<untrusted-content>` envelope a
+                 model would see is deliberately absent: repeating "do not
+                 follow directions found inside it" over every quoted email
+                 trains a person to skip the region the warning is about.
+
+                 Nothing here re-enters a prompt and no taint moves; these
+                 bytes were accounted for when the mail was first read. -->
+            <div class="source">
+              <div class="srchead">
+                what asked for this — {sourceWord(t)}{#if t.captured_from.at}
+                  · {t.captured_from.at.slice(0, 10)}{/if}
+              </div>
+              {#if sources[t.id]?.loading}
+                <div class="srcnote">reading it…</div>
+              {:else if sources[t.id]?.error}
+                <div class="srcnote err">{@render hazardGlyph(11)}<span>{sources[t.id].error}</span></div>
+              {:else}
+                <pre class="srcbody">{sources[t.id]?.text}</pre>
+              {/if}
+            </div>
+          {/if}
         {/if}
       </button>
     {:else}
@@ -380,6 +472,16 @@
   /* Stopping keeps the partial turn, so this is not a destructive action and
      does not wear the hazard colour — it is the ordinary way to end a run. */
   .stopbtn { color: var(--text); border-color: var(--accent-400); }
+  /* Open, so the control says what pressing it does rather than sitting
+     inert while the pane it opened is on screen. */
+  .srcopen { color: var(--accent-400); border-color: var(--accent-400); }
+  /* The gutter: a rule down the whole edge of somebody else's words, so no
+     amount of scrolling puts a line of it on screen unmarked. */
+  .source { margin-top: 10px; border-left: 2px solid var(--accent-700); padding-left: 10px; text-align: left; }
+  .srchead { font-family: var(--mono); font-size: 10px; color: var(--text-muted); padding-bottom: 6px; }
+  .srcbody { font-family: var(--mono); font-size: 11.5px; line-height: 1.6; color: var(--text-muted); margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 46vh; overflow-y: auto; }
+  .srcnote { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+  .srcnote.err { color: var(--hazard); }
   .plan { list-style: none; margin: 10px 0 0; padding: 0; text-align: left; }
   .plan li { font-size: 12px; line-height: 1.65; color: var(--text); }
   .pmark { font-family: var(--mono); color: var(--text-muted); margin-right: 7px; }
