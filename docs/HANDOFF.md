@@ -1088,15 +1088,34 @@ the mechanism and every decision. What it left standing:
   amendment sits beside D4 in the design doc and HISTORY has the narrative.
   What is left of the arc is one measurement and one deferred decision.**
   - **Whether runs follow the pointer, which is D4's own acceptance test.**
-    *"Measured in Phase 4, not assumed in Phase 1"* now has one data point,
-    and one is not a result: the first run under the new seed made seven
-    graph calls (`kg_search` ×4, `kg_entity` ×3) on a task naming only a
-    project. The mail half is unexercised live — no task on this board
-    carries a `captured_from` yet, since capture shipped the same day — so
-    whether a run actually follows a mail pointer is untested outside the
-    unit tests. The query is a scan of task-titled transcripts for a call to
-    the tool the seed named; paste the context only if the pointer is being
-    ignored.
+    *"Measured in Phase 4, not assumed in Phase 1"* has two runs behind it,
+    which is a direction rather than a result. Both followed. A task naming
+    only a project drew seven graph calls (`kg_search` ×4, `kg_entity` ×3);
+    a task captured from a real three-message mail thread called
+    `mail__mail_get_thread` **as its first act**, before anything else, and
+    the recorded taint came back `private + untrusted` — the bytes arriving
+    as a tool result the interlock accounted for, which is the whole reason
+    the seed carries a pointer. Keep watching rather than concluding: the
+    query is a scan of task-titled transcripts for a call to the tool the
+    seed named, and pasting the context stays available if runs stop
+    following it.
+  - **Front-loading landed as prose, not as a parked question, on the one
+    run that had questions to ask.** The mail run ended `completed` with six
+    numbered decisions in its final answer and **zero `ask_user` calls**,
+    with the tool on its surface (63 tools, `ask_user` among them,
+    `kg_task_update` correctly withheld). So the questions exist only inside
+    a session transcript: `mecha questions list` does not show them, the
+    phone's card cannot offer them, and the delegation reads as finished
+    rather than as blocked — which is the state D13 exists to make
+    impossible. One run, and the mechanism does fire elsewhere (two
+    questions are parked from other tasks), so this is a prompt-adherence
+    observation and not a broken store. It is also the exact seam D12 was
+    decided against on: the seed asks on the user turn because that is the
+    channel this model obeys, and here it obeyed the *content* of the
+    instruction (ask first, one question, list every unknown) while ignoring
+    its *mechanism*. Worth a second look before concluding anything — if it
+    repeats, the cheap fix is naming the tool call in the sentence that
+    already says what to ask.
   - **D12, the plan gate — decided against as written, on 2026-08-26, and
     the cheap half shipped instead.** Do not build it from the design doc;
     read `work_prompt`'s doc comment in `commands/tasks.rs` first, which

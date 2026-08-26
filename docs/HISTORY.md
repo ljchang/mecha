@@ -2182,11 +2182,30 @@ level-3 skill bug, which was found by running it rather than by reading it.
 `ask_user` insertion, for the same reason `RunConfig::of` does.
 
 And D4's own line — *"measured in Phase 4, not assumed in Phase 1"* — was
-finally honoured, on the first run: a throwaway task named only `mecha` as
-its project, and the run made **seven graph calls** (`kg_search` ×4,
-`kg_entity` ×3) with no other prompting than the bullet. One run on one task
-is a data point rather than a result, but it is the direction the decision
-rests on, and pasting stays available if later runs ignore the pointer.
+finally honoured, on two runs. A throwaway task named only `mecha` as its
+project drew **seven graph calls** (`kg_search` ×4, `kg_entity` ×3) with no
+prompting but the bullet. Then a task captured from a real three-message
+mail thread called `mail__mail_get_thread` **as its first act**, before
+anything else, and the run's recorded taint came back `private +
+untrusted` — the bytes arriving as a tool result the interlock accounted
+for, which is the entire argument for carrying a pointer instead of a body,
+observed rather than asserted. Two runs are a direction and not a result;
+pasting stays available if later ones ignore the pointer.
+
+**The same run found the next thing to look at, which is not D4.** It ended
+`completed` with six numbered decisions in its closing text and **zero
+`ask_user` calls**, on a surface that held the tool (63 tools, `ask_user`
+among them; `kg_task_update` correctly absent, so D6 held). The seed's
+front-loading was obeyed in content — ask first, one question, list every
+unknown — and ignored in mechanism, so the questions live only in a
+transcript: `mecha questions list` cannot see them, the phone's card cannot
+offer them, and the delegation reads as *finished* rather than as *blocked*,
+which is the state D13 exists to prevent. The store is not broken (two
+questions are parked from other tasks), so this is prompt adherence on one
+run. It is worth naming because it is the precise seam D12 was decided
+against on: the argument for putting the intervention on the user turn was
+that this model obeys that channel, and here it obeyed the words while
+skipping the call.
 
 
 ## The measurement record
