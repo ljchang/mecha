@@ -49,6 +49,7 @@ the benchmark both run *release* paths that a debug build never touches.
 message.rs   provider-agnostic Message/Block/Usage/StopReason types
 image.rs     a file on disk to a bounded image block, capped at the door
 provider/    Provider trait + anthropic.rs (raw HTTP) + openai.rs (compatible)
+quarantine.rs a one-shot with no tools and no history: the property in the type
 tool/        Tool trait, Registry, Approver, builtin.rs
 mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
 search.rs    web_search: a chain of backends, first to answer wins
