@@ -46,6 +46,7 @@
 //! ```
 
 pub mod agent;
+pub mod backlog;
 pub mod batch;
 pub mod cache_lens;
 pub mod candidate;
@@ -62,6 +63,7 @@ pub mod frontdoor;
 pub mod goal;
 pub mod gossip;
 pub mod harness;
+pub mod homeostat;
 pub mod hooks;
 pub mod image;
 pub mod learning;

@@ -253,6 +253,12 @@ pub struct RunStats {
     pub blocked_sends: u32,
     #[serde(default)]
     pub compactions: u32,
+    /// The conditions this run happened under, when the front-end asked for
+    /// them. Recorded here rather than derived later because a run
+    /// reconstructed against *today's* machine state is measuring the
+    /// afternoon — see `GOAL-SYSTEM-DESIGN.md` §12.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub homeostat: Option<crate::homeostat::Homeostat>,
     /// What had entered the conversation by the end. Recorded here as well as
     /// in [`Record::Taint`] because this record is read on its own, by a
     /// reader that is counting rather than reconstructing.
@@ -314,6 +320,7 @@ impl From<&crate::agent::RunOutcome> for RunStats {
         // `usage_complete` starts true and is ANDed down, so the default's
         // `false` would make every single-run row a lower bound.
         let mut stats = RunStats {
+            homeostat: o.homeostat.clone(),
             usage_complete: true,
             ..RunStats::default()
         };
@@ -775,6 +782,62 @@ impl TaintTimeline {
 }
 
 #[cfg(test)]
+mod homeostat_record_tests {
+    use super::*;
+    use crate::backlog::{Backlog, BacklogDelta, Depth};
+    use crate::homeostat::Homeostat;
+
+    /// The snapshot has to reach the record, or rung 3 is a struct nothing
+    /// writes. `RunStats` is what replay, the gate and the diagnostician read.
+    #[test]
+    fn the_conditions_a_run_happened_under_reach_its_record() {
+        let bare = || crate::agent::RunOutcome {
+            text: String::new(),
+            stop_reason: crate::message::StopReason::EndTurn,
+            usage: crate::message::Usage::default(),
+            turns: 1,
+            refusal: None,
+            exhausted: false,
+            ended_on_failed_call: false,
+            tool_calls: Vec::new(),
+            malformed_tool_args: 0,
+            blocked_sends: 0,
+            taint: crate::agent::Taint::default(),
+            homeostat: None,
+            stop_cause: crate::agent::StopCause::Completed,
+            compactions: 0,
+            usage_complete: true,
+            cost_usd: None,
+        };
+        let mut outcome = bare();
+        outcome.homeostat = Some(Homeostat {
+            load_avg_1m: Some(0.56),
+            backlog: Some(Backlog {
+                outbox: Some(Depth {
+                    waiting: 2,
+                    oldest: Some("2026-08-20T09:00:00Z".into()),
+                }),
+                ..Backlog::default()
+            }),
+            backlog_delta: Some(BacklogDelta {
+                outbox: Some(9),
+                ..BacklogDelta::default()
+            }),
+            ..Homeostat::default()
+        });
+        let stats = RunStats::from(&outcome);
+        let h = stats.homeostat.expect("recorded");
+        assert_eq!(h.load_avg_1m, Some(0.56));
+        assert_eq!(h.backlog_delta.unwrap().outbox, Some(9));
+
+        // A run that did not ask for one records nothing rather than an empty
+        // snapshot — absent and zero stay different all the way down.
+        let unsampled = RunStats::from(&bare());
+        assert_eq!(unsampled.homeostat, None);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::message::Block;
@@ -1224,6 +1287,7 @@ mod tests {
             staged,
         };
         let outcome = RunOutcome {
+            homeostat: None,
             text: "done".into(),
             stop_reason: StopReason::EndTurn,
             usage: Usage {
@@ -1286,6 +1350,7 @@ mod tests {
 
         let outcome =
             |turns: u32, calls: usize, errored: bool, ended_failed: bool, cause| RunOutcome {
+                homeostat: None,
                 text: String::new(),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage {
@@ -1352,6 +1417,7 @@ mod tests {
         use crate::message::StopReason;
 
         let mut incomplete = RunOutcome {
+            homeostat: None,
             text: String::new(),
             stop_reason: StopReason::Other,
             usage: Usage::default(),
