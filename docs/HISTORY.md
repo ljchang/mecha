@@ -4107,6 +4107,29 @@ handled.**
   instance. If two lanes are in one tree, the check that works is staging
   named paths, not reading a clean-looking `git status`.
 
+- **And explicit-path staging is not enough, because the path can be shared.**
+  A third instance, 2026-08-26 — by a session that had spent the afternoon
+  being careful about exactly this. It refused `git add -A`, staged by named
+  path, verified a peer's route line was absent from its own commit, and
+  declined to run `cargo fmt --all` because two failing sites belonged to
+  someone else's in-flight file. Then it committed `docs/HISTORY.md` by name
+  and took 149 insertions, of which about seventeen were its own; the rest was
+  a peer mid-write in the same file. Content survived intact and was wanted —
+  the cost is that a pushed commit message now describes a tenth of its own
+  diff, and the record under-describes itself in the one file whose job is to
+  be the record.
+
+  The generalisation is the part worth keeping: **`git add <path>` is safe
+  against files you are not editing, not against files you are not the only
+  one editing** — and documentation is where that bites hardest, because the
+  `handoff` skill instructs every session to edit the same two files at the
+  end of the same session. Code lanes are partitioned by module and diverge
+  naturally; doc lanes are pointed at one target by procedure. Either stage a
+  doc file only when `git diff <path>` is exactly your own change, or write to
+  a per-session scratch section and merge deliberately. Verified-intact is not
+  a process; it is the outcome you get when the collision happens to be
+  additive.
+
 - **A check can only report on what it enumerates, so it is always silent
   about what you forgot to enumerate.** Three instances landed on 2026-08-25,
   in three different tools, and they read as unrelated bugs until they are put
