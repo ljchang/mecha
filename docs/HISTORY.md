@@ -2001,6 +2001,59 @@ agreement, so "Accept all 17" would have asserted every one of them. A verdict
 inside a group is deliberately plain — no cascade — because telling the
 members apart is the reason for being in there.
 
+**2026-08-26 (evening) — B1 and B2, after checking whether they still
+described the row.** Both board decisions predated phase 4, and re-reading
+them against the shipped implementation changed both; the originals stay in
+`TASK-AGENT-DESIGN.md` with amendments beside them, the way D12 does.
+
+**B1 was right about its evidence and wrong about its translation.** §1.3's
+invariant is *"complete and schedule are one gesture; move, **delegate** and
+edit open a sheet"* — delegation is on the sheet list explicitly, so *ask
+mecha* belongs behind the tap and a later reading that promotes it because
+it is this project's differentiator is re-deciding a settled question on
+taste. What did not survive: §1.3 surveys **swipe** actions on a *collapsed*
+row, and this row has no actions until it is tapped open. The six chips the
+owner called *"a little bizarre"* were never in anyone's way, and the
+expanded card already **is** the sheet — a `…` inside it nests a sheet in a
+sheet. Their problem was shape, not depth. `✓` moved to the collapsed row
+(`Tasks.svelte:722`), because in Things complete is *"a tap on the circle
+only"* and this board had no circle, so its most frequent action cost an
+expand; what remains is grouped under two labels (`:550`).
+
+That amendment made a long-standing HTML bug obvious rather than fiddly.
+The card was a `<button>` wrapping everything, so every control in the strip
+was interactive content nested in one — invalid, browsers disagree,
+assistive tech cannot traverse it — and *three separate comments in the file
+existed to explain choosing a `<button>` over an `<a>` to make the nesting
+less bad*. "The expanded card is the sheet" means its contents are siblings
+of the header, not children: the card became a `<div>` with a `cardhead`
+button (`:739`). Six compiler warnings, five of them predating the branch,
+went to zero. **A design correction can retire a workaround that had been
+mistaken for a constraint.**
+
+**B2's worked example turned out to be unrepresentable.** It promised *"call
+Bob tomorrow at 3"* would set a date; `gtd::parse_due` accepts exactly
+`today | tomorrow | +Nd | YYYY-MM-DD` and `due_at` is written `%Y-%m-%d`.
+**The board has no time of day.** So the chip reads `tomorrow` and *"at 3"*
+stays in the name — consistent with the Things side of the disagreement B2
+had already picked. What B2 never said is the actual win: **capture
+collapsed from three fields to one**, which is §2.1's own invariant
+(organization is deferred at capture time) that the sheet had been quietly
+breaking. And it is worth more than when written, because dictation landed
+in between: a spoken capture arrives as one string with no second field to
+fill, so without the parse the microphone could only ever produce an undated
+inbox item.
+
+`capture::find_when` (`mecha-core/src/capture.rs:61`) **detects; it does not
+resolve** — the span goes to the graph's `parse_due` as `--due`, so one date
+parser lives in the repo that owns what `+3d` means. Weekdays are
+deliberately undetected: `parse_due` cannot take one, so honouring a
+"friday" would mean resolving dates locally and detecting it without
+honouring it would draw a chip that lies. Served in-process by
+`POST /api/tasks/parse` (`serve/board.rs:409`) — the one handler on that
+page that spawns nothing, because a child process per keystroke would pay a
+fork and an MCP startup to answer a question with no state in it.
+
 **2026-08-25 (night) — real people out of a public repository.** The
 2026-08-07 history rewrite stripped *operational inventory* and did not touch
 a second kind that kept accumulating afterwards: real people used as
@@ -3109,6 +3162,32 @@ All found by pre-push review or by running it.
   a grep, not a belief** — and the component that is missing Y cannot see that
   it is, because from inside it there is nothing to compare against. Found by
   counting call sites while looking for something else.
+
+- **A tool that looks scoped and is not.** `cargo fmt -- path/to/one.rs`
+  does not format one file: rustfmt walks module declarations from the crate
+  root, so the argument narrows *what it starts from*, not what it touches.
+  It silently reformatted two files belonging to another lane in a shared
+  checkout, by a session that had spent the afternoon refusing `git add -A`
+  and staging by explicit path precisely to avoid that. The reformatting was
+  how a pre-existing nine-site drift became visible at all, so it ended
+  usefully — which is luck, not process. **`git add <path>` at least
+  advertises its scope; `cargo fmt -- <path>` advertises a scope it does not
+  honour.** Check `git status` after any whole-tree tool, however narrow the
+  invocation looked.
+
+- **A green run history is not a run on your commit.** Push-triggered CI
+  produced **zero** workflow runs for two pushes on 2026-08-26 — Actions
+  enabled, all six workflows `active`, GitHub holding the new sha as `main`,
+  and `total_count: 0` for it. A GitHub Actions **major outage** from
+  15:11 UTC was dropping push events; `gh workflow run CI --ref main` got
+  through and passed. The trap is that nothing looks wrong: a repo whose
+  recent runs are green, plus a push that succeeded, reads exactly like a
+  tested commit. **`gh api "…/actions/runs?head_sha=$(git rev-parse main)"
+  --jq .total_count` is the only form of the question that means anything** —
+  and polling the *top of the run list* has the same defect one level down,
+  because a dispatch defaults to the branch tip and the tip moves. Both
+  sessions on this machine hit it, so `main`'s history for that afternoon
+  shows a gap with two dispatch runs standing in for it.
 
 - **A cron job's binary is a running thing that answers to no `--version`.**
   The `update` skill said the graph repo's nightly "builds and runs from its
