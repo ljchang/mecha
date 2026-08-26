@@ -1016,6 +1016,22 @@ ceiling is not what stops a runaway run — the loop guard, the token budget
 and compaction are — so it should only ever stop an honest one, and stopping
 one reports as `MaxTurns`, which reads to the owner as the model giving up.
 
+**Background delegations queue against each other; the owner never queues.**
+`permit.rs` is a directory of files on `runmarker`'s rules, asked the
+neighbouring question — *may I start* rather than *am I running* — with the
+same pid-checked sweep, so a holder that is killed outright costs one stale
+file rather than a permanently smaller pool. Three seats against the server's
+four (`-np 4`), and the number is measured: throughput saturates at the seat
+count, so a sixth concurrent conversation buys 6% more work than four while
+costing 42% more latency per turn. **Interactive work takes no permit at
+all** — that is the reserve, implemented as an absence rather than as a
+mechanism, because a pool that could refuse the person at the keyboard is a
+control failing closed against the only user it exists for. The refusal names
+who is holding, since "busy" with no reason is not something a person can act
+on. And it is **not** a prefix-cache control: six conversations on four slots
+re-prefilled 31 tokens a turn, never a transcript, so anything validating
+this on cache reuse will find no effect — judge it on latency.
+
 **A delegated run is detached, so talking to it is a file — and the same
 file settles who owns the transcript.** `tasks work` runs as a child of
 whatever launched it, so its `Conversation` lives in memory no other process

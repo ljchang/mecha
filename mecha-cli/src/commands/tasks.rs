@@ -440,6 +440,18 @@ pub(crate) fn steer_pump(
     })
 }
 
+/// The background pool: how many delegations may hold the model at once.
+///
+/// Beside the run markers, because it is the same directory of the same kind
+/// of file answering the neighbouring question — *may I start* rather than
+/// *am I running* — and a second root would be a second thing to sweep.
+pub(crate) fn permits() -> Result<mecha_core::permit::Permits> {
+    Ok(mecha_core::permit::Permits::new(
+        mecha_core::work::mecha_home()?.join("permits"),
+        mecha_core::permit::DEFAULT_BACKGROUND_PERMITS,
+    ))
+}
+
 pub(crate) fn markers() -> Result<mecha_core::runmarker::RunMarkers> {
     Ok(mecha_core::runmarker::RunMarkers::new(
         mecha_core::work::mecha_home()?.join("taskruns"),
@@ -654,6 +666,40 @@ async fn work(
     unattended: bool,
     resume: Option<&str>,
 ) -> Result<()> {
+    // **A seat, if this run is a background one.** Unattended delegations
+    // queue against each other so the owner's own turn never does: throughput
+    // saturates at the server's seat count, so an extra concurrent run buys
+    // ~6% more work and costs everyone 42% more latency per turn. An
+    // *attended* run takes no permit at all — the person who typed the
+    // command is the one the reserve exists for, and admitting them through a
+    // pool that could refuse would be a mechanism failing closed against the
+    // only user it is meant to protect.
+    //
+    // Held for the life of this function: `Held` releases on drop, so every
+    // early return below frees it without remembering to.
+    let _seat = if unattended {
+        match permits()?.take(task_id)? {
+            Ok(held) => Some(held),
+            Err(busy) => {
+                let who: Vec<&str> = busy.iter().filter_map(|p| p.what.as_deref()).collect();
+                bail!(
+                    "the model is busy with {} background run(s) ({}) — this one would make \
+                     everything slower rather than finish sooner. Try again when one ends, or \
+                     `mecha tasks work {task_id}` from a terminal, which is attended and does \
+                     not queue.",
+                    busy.len(),
+                    if who.is_empty() {
+                        "unnamed".to_string()
+                    } else {
+                        who.join(", ")
+                    }
+                )
+            }
+        }
+    } else {
+        None
+    };
+
     // **Interactive, unlike `mail draft`**, and the difference is what the two
     // runs are for. Drafting only ever needs to *stage*, so the outbox catches
     // its one outbound act and a blocked write costs nothing. A task run does

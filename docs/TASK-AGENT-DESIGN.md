@@ -613,6 +613,40 @@ interactive turn preempts a background task run.** The owner typing must never
 queue behind three delegations. `batch.rs`'s bounded-concurrency fan-out is the
 shape to copy.
 
+> **Amended 2026-08-26, after R3 was run and after delegation became a
+> conversation.** The decision holds — a permit count, and the owner never
+> queueing — and three things about it change.
+>
+> **The number is measured now**: three background permits against four seats.
+> Throughput saturates at four concurrent conversations and buys 6% more going
+> to six, while per-conversation latency degrades 42% (7.1s → 18.0s → 25.6s
+> per turn at K=1/4/6). A fifth concurrent conversation is close to pure loss.
+> The measurement record has the table.
+>
+> **Reserve, do not preempt.** Preemption was proposed to protect the owner's
+> latency, and it cannot be done to a request in flight anyway; a reserved
+> seat gets the same outcome with nothing killed and nothing losing its place.
+> The reason preemption looked necessary — that a cancelled run's slot
+> affinity is lost and its prefix re-paid — turns out not to be a cost the
+> server charges (below).
+>
+> **And it is not about the prefix cache.** The obvious refinement, once
+> delegations grew 200-turn ceilings, was to bound *distinct conversations* so
+> they stop evicting each other's prefix. R3 refutes it: six conversations on
+> four slots re-prefilled **31 tokens** per turn after the first, with no
+> transcript ever re-paid. `-cram` already handles it, which is §3.3's claim
+> holding at a load nobody had tested. So the permit count is a latency
+> control and must be validated as one — throughput and per-turn latency,
+> never prefix reuse, which will show no effect because there is none to show.
+>
+> **`batch.rs` is no longer the shape to copy.** Its bounded concurrency is an
+> in-process semaphore, and a delegation is now either a chat session inside
+> `mecha serve` or a detached `tasks work` child — two processes that share
+> nothing but the filesystem. The shape is `runmarker.rs`: a directory of
+> files, pid-checked liveness, self-sweeping when a holder dies, which is
+> where the same four rules already live (and where the pid range check
+> already stops `kill(-1, 0)` reporting every dead holder as alive).
+
 Priority beyond that **derives from the board and is not a field anybody
 maintains**. `due_at` and `defer_until` are already there; a separate priority
 field is a second source of truth about urgency, which disagrees with the first
@@ -704,13 +738,21 @@ decrypt and fork**, because the target runs migrations before the copy and
 already held the row the source was about to send. `nodes` joined the
 `INSERT OR IGNORE` pass `predicate` has always been in.
 
-**Phase 4 — the phone. Built 2026-08-26; D12 superseded, B1 and B2 open.** *Ask
-mecha* on the task row, *open the conversation*, *stop*, the drawer filter
-and chip (D10), the rendered todo list, and — in a second pass the same day
-— the **return path** and the derived card states (D16). D12 was decided
-against as written (see the decision itself) and its cheap half — front-loaded
-questions in the seed — shipped in its place. Still open: the two board
-decisions (B1, B2), which touch the same row and can be done independently.
+**Phase 4 — the phone. Built 2026-08-26; D12 superseded, B1 and B2 amended
+and shipped.** *Ask mecha* on the task row, *open the conversation*, *stop*,
+the drawer filter and chip (D10), the rendered todo list, and — in a second
+pass the same day — the **return path** and the derived card states (D16).
+D12 was decided against as written (see the decision itself) and its cheap
+half — front-loaded questions in the seed — shipped in its place. B1 and B2
+closed that evening, both **amended first**: re-reading them against the
+shipped row changed both, and the amendments sit beside the originals.
+
+**And in an eighth pass the same day, *ask mecha* stopped being a
+fire-and-forget child at all** — it opens the task's chat session, the model
+speaks first, and the board does not move until the owner hands it over. That
+is D2 restored rather than a new decision; the mechanism and the four rules
+it needed are in `CLAUDE.md`'s task-board section, and HISTORY has the
+narrative.
 
 The return path was not on this list and is the half of D13 the first pass
 left implicit: a question could be *asked* from the phone's delegation and
@@ -742,10 +784,18 @@ what runs.*
 D6's narrowing arrived early with Phase 1, because shipping a task runner
 that could close its own task was not an option worth a phase boundary.
 
-**Phase 6 — admission control (R1).** Worth building once more than one
-delegation at a time is routine, and not before: with four slots and one
-owner, the contention it manages may simply not arise. R3's measurement is
-the input.
+**Phase 6 — admission control (R1). The only phase still unbuilt, and now
+due.** It was deferred on a stated trigger — *worth building once more than
+one delegation at a time is routine, and not before*, since with four slots
+and one owner the contention it manages may simply not arise. The eighth pass
+is what makes it routine: a delegation is now a conversation the owner opens
+by tapping, it carries its own 200-turn ceiling, and it runs on the same
+llama-server as chat, voice and the trigger daemon. Nothing decides what runs
+when, and answering a parked question spawns its resumed run immediately —
+which is the half the owner has already asked for by name (*"when the
+question is answered it should resume in the queue"*). R3's measurement is
+still the input, and the sharper version of the cost question below is now
+the argument.
 
 ## Open at design time
 
@@ -753,15 +803,19 @@ the input.
   R2 rests on a parked session getting its prefix back after a night of
   triggers and chat, and that has never been measured — only the absence of
   evictions at 32 GB under today's traffic, which is not the same claim.
-- **Should the plan gate be skippable?** D12 stops every delegated run for
-  approval, which is right while delegation is rare and may be friction once it
-  is routine. The honest way to find out is Phase 4 against real board items;
-  the wrong way is a preference toggle added before anyone has felt the cost.
-- **What does the owner see while it runs, on a sleeping phone?** The session
-  streams over SSE to an open page and catches up on reload; push
-  (remote-surface Phase 5) is the real answer and is not built. D13 softens this
-  — a run that ends on a question needs no live channel to be useful — but it
-  does not close it.
+- ~~**Should the plan gate be skippable?**~~ **Moot as of 2026-08-26**: D12
+  was decided against as written, so there is no gate to skip. What replaced
+  the question is a narrower one — whether a *reviewable plan document*,
+  separate from the todos, is worth building — and it has its own query
+  waiting on the corpus (delegations that ended `ready for review` and were
+  then dropped or reworked). Kept rather than deleted, because the next
+  reader will otherwise re-propose the gate.
+- **What does the owner see while it runs, on a sleeping phone?** Still push
+  (remote-surface Phase 5), still unbuilt. Narrowed twice since: D13 means a
+  run that ends on a question needs no live channel to be useful, and the
+  eighth pass means a question asked with nobody watching **parks** rather
+  than expiring — so the sleeping phone now costs a delay rather than a
+  refused call. What is left is genuinely the notification.
 - **Cost.** Every *ask mecha* is a full agent run on the local model, and there
   is no per-task accounting — `[agent] budget` is per run. Devin's most-cited
   complaint is exactly this opacity: with async delegation "you may not know the
