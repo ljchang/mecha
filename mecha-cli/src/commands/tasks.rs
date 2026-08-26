@@ -178,6 +178,10 @@ async fn list(global: &GlobalOpts, closed: bool, as_json: bool) -> Result<()> {
             ("project", "project"),
             ("context", "context"),
             ("waiting_on", "waiting on"),
+            // The way back into the run that worked this. Conditional like
+            // the rest of the tail, so a board of hand-written tasks looks
+            // exactly as it did.
+            ("session", "session"),
         ]
         .iter()
         .filter_map(|(key, label)| {
@@ -278,13 +282,16 @@ pub(crate) async fn move_task(
     task: &str,
     status: &str,
     waiting_on: &str,
+    session: Option<&str>,
 ) -> Result<()> {
-    let out = update
-        .call(
-            json!({ "task": task, "status": status, "waiting_on": waiting_on }),
-            ctx,
-        )
-        .await?;
+    let mut args = json!({ "task": task, "status": status, "waiting_on": waiting_on });
+    // Only the run that starts a conversation names one. A later move leaves
+    // the field alone rather than re-asserting it, so a failed run keeps
+    // pointing at the transcript of what it managed to do.
+    if let Some(session) = session {
+        args["session"] = json!(session);
+    }
+    let out = update.call(args, ctx).await?;
     if out.is_error {
         bail!("kg_task_update: {}", out.content.trim());
     }
@@ -462,7 +469,15 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
     // the whole time the run is in flight rather than only after it lands —
     // and names the agent, so the Waiting view distinguishes a task the agent
     // is working from one a person owes you.
-    move_task(&update, &tctx, task_id, "waiting", AGENT).await?;
+    move_task(
+        &update,
+        &tctx,
+        task_id,
+        "waiting",
+        AGENT,
+        Some(&session.meta.id),
+    )
+    .await?;
 
     eprintln!(
         "working {task_id} with {} ({}) · session {}",
@@ -513,7 +528,8 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
         // parked in `waiting` by a run that died is the queue growing for a
         // reason nobody can see — which is the whole failure `/queues` exists
         // to catch, reproduced one store over.
-        if let Err(restore) = move_task(&update, &tctx, task_id, &was, &was_waiting_on).await {
+        if let Err(restore) = move_task(&update, &tctx, task_id, &was, &was_waiting_on, None).await
+        {
             eprintln!("warning: could not put {task_id} back to {was}: {restore:#}");
         }
         bail!("the run failed, nothing staged: {e:#}");
@@ -523,7 +539,7 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
     // a question, or simply reported. Leaving it on the agent would make every
     // finished delegation look like one still running, which is the state the
     // Waiting view now exists to tell apart.
-    if let Err(e) = move_task(&update, &tctx, task_id, "waiting", OWNER).await {
+    if let Err(e) = move_task(&update, &tctx, task_id, "waiting", OWNER, None).await {
         eprintln!("warning: the board still says {AGENT} has {task_id}: {e:#}");
     }
 
