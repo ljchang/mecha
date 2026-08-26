@@ -113,8 +113,12 @@ struct WebSession {
     /// session and not per process, or opening one task conversation would
     /// narrow every other chat with it.
     withheld: Arc<[String]>,
-    /// The board task this conversation is about, when it is about one.
-    task: Option<String>,
+    /// The board task this conversation is about, when it is about one —
+    /// the record as the board returned it, kept so the page can head the
+    /// conversation with the goal and its details without a second trip.
+    /// "I can't see what the goal is" was a complaint about a chat that knew
+    /// perfectly well and did not say.
+    task: Option<serde_json::Value>,
     /// Permission posture for this session's runs. Read-only is the default
     /// (the trigger posture: reads run, sends stage); `ask` turns tool calls
     /// into live approval cards. `allow` is deliberately not offered from
@@ -626,7 +630,7 @@ pub(super) async fn open_task_conversation(
                 workspace: Some(workspace),
                 title: Some(format!("{TASK_TITLE_PREFIX}{name}")),
                 withheld: vec!["kg_task_update".to_string()],
-                task: Some(task_id.to_string()),
+                task: Some(task.clone()),
             },
         )?;
         let fresh = ws
@@ -748,7 +752,7 @@ pub(super) struct SessionInit {
     pub workspace: Option<PathBuf>,
     pub title: Option<String>,
     pub withheld: Vec<String>,
-    pub task: Option<String>,
+    pub task: Option<serde_json::Value>,
 }
 
 fn ensure_session<'a>(
@@ -800,16 +804,20 @@ fn ensure_session_as<'a>(
         // is watching, and the honest ending for that one is a stored
         // question and a stopped run rather than a decline the model then
         // reasons around.
-        let park = init.task.as_ref().and_then(|task| {
-            let store = mecha_core::questions::QuestionStore::default_root()
-                .and_then(mecha_core::questions::QuestionStore::open)
-                .ok()?;
-            Some(Arc::new(mecha_core::questions::ParkingAsker::new(
-                Arc::new(store),
-                session.meta.id.clone(),
-                Some(task.clone()),
-            )))
-        });
+        let park = init
+            .task
+            .as_ref()
+            .and_then(|t| t["id"].as_str().map(str::to_string))
+            .and_then(|task| {
+                let store = mecha_core::questions::QuestionStore::default_root()
+                    .and_then(mecha_core::questions::QuestionStore::open)
+                    .ok()?;
+                Some(Arc::new(mecha_core::questions::ParkingAsker::new(
+                    Arc::new(store),
+                    session.meta.id.clone(),
+                    Some(task.clone()),
+                )))
+            });
         if let Ok(mut routes) = chat.routes.lock() {
             routes.insert(key.to_string(), (questions.clone(), events.clone(), park));
         }
@@ -863,6 +871,12 @@ pub async fn transcript(
         "model": chat.model,
         "mode": mode,
         "running": running,
+        // What this conversation is *about*, when it is about a board task.
+        // The record as the board returned it, so the page can head the
+        // transcript with the goal, the dates and where it came from —
+        // absent for an ordinary chat, which the page renders as it always
+        // did.
+        "task": ws.task,
         "questions": ws.questions.cards(),
         "held_by_run": ws.conversation.is_none(),
         // The plan, live. Keyed by this session's jail (D14), so one shared
