@@ -903,6 +903,53 @@ there is worse than the plain fact. Progressive disclosure is the argument for
 the whole shape — the seed is the front of a prefix every turn re-sends, so
 pasted context is paid for on all of them and a sentence is paid once.
 
+**A delegated run is a conversation, and the two postures differ in exactly
+one thing.** `ask mecha` opens the task's own chat session in `mecha serve`
+(D2: *the run is a conversation from the start*) — the ordinary chat surface,
+so voice, uploads, the todo panel, approval cards and steering-by-typing come
+free rather than being rebuilt. The model speaks first, and **nothing on the
+board moves**: `waiting_on` names who has the ball, and while the owner is in
+the conversation they do. *Let it carry on without me* hands the same
+transcript to a detached `tasks work --resume` child. Neither posture is more
+capable — the loop runs unattended in serve just as long — the difference is
+**what happens when nobody answers**: a card in the conversation, and in the
+child a question that *ends the run* and waits in the store. That is a fact
+about the owner, not about the run, which is why the button is worded as
+leaving rather than as launching.
+
+Four rules make it safe, each one a rule that had previously been enforced in
+only one place:
+
+- **D6 rides on the run.** *The agent may not close its own task* was
+  enforced by a spawned child taking `kg_task_update` off its own private
+  registry; a web process holds one `Arc<Agent>` for every session, so there
+  is no private registry to take it off. `RunContext::withheld` is a
+  **denylist** beside the skill allowlist, checked at the dispatch seam,
+  landing on the same `Blocked by policy` refusal (never an environment
+  error), inherited by subagents like hooks and the outbox route, and matched
+  through a server prefix so `prefix_tools` cannot switch it off silently. A
+  resumed task transcript keeps it — D6 belongs to the conversation, not to
+  how it was opened.
+- **The transcript is the record; the session map is a cache.** Re-opening a
+  task after a restart resumes from the session id the board has held since
+  the conversation opened, rather than minting a blank one under the same key.
+- **Hand-over is a transfer of the single writer, not a copy**: release, then
+  spawn, and the child's turn says only what changed — the plan is already
+  above it, and restating it would replace what was agreed with a paraphrase.
+- **A question with nobody there parks.** Not a mode switch on whether a page
+  is connected: a backgrounded phone stays connected, so that switch shows a
+  card to an empty room and expires it into a refusal. The card is offered
+  whenever anyone might see it, and both ways of going unanswered end the same.
+
+**A delegation's turn ceiling is its own** (`TASK_MAX_TURNS`, 200 —
+Terminal-Bench's figure). The two limits compose by **override, not
+minimum** — `cx.budget.max_turns.unwrap_or(cfg.max_turns)` — so a task run
+inherited whichever surface launched it, and a tightened `[agent] max_turns`
+silently tightened delegations with it. The argument for being generous: the
+ceiling is not what stops a runaway run — the loop guard, the token budget
+and compaction are — so it should only ever stop an honest one, and stopping
+one reports as `MaxTurns`, which reads to the owner as the model giving up.
+
 **A delegated run is detached, so talking to it is a file — and the same
 file settles who owns the transcript.** `tasks work` runs as a child of
 whatever launched it, so its `Conversation` lives in memory no other process
