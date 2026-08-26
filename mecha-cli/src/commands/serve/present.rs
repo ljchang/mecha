@@ -157,6 +157,11 @@ impl Approver for WebApprover {
             kind: "approval".into(),
             tool: Some(tool.name().to_string()),
             args: Some(clip_args(input)),
+            // The essentials, with the whole call still beside them. A
+            // reviewer who cannot read what they are approving approves it
+            // anyway — which is the failure this card exists to prevent,
+            // not a cosmetic complaint about JSON.
+            draft: super::chat::WireDraft::of(input),
             question: None,
             options: Vec::new(),
             timeout_secs: self.timeout.as_secs(),
@@ -219,6 +224,9 @@ impl Asker for WebAsker {
             kind: "ask".into(),
             tool: None,
             args: None,
+            // An `ask_user` card is prose already; shaping it would be
+            // inventing headers for a sentence.
+            draft: None,
             question: Some(question.to_string()),
             options: options.to_vec(),
             timeout_secs: ASK_TIMEOUT.as_secs(),

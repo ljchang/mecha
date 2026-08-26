@@ -68,6 +68,8 @@
             qkind: q.kind,
             tool: q.tool,
             args: q.args,
+            draft: q.draft,
+            expanded: false,
             question: q.question,
             options: q.options ?? [],
             freeText: '',
@@ -127,6 +129,13 @@
         case 'notice':
           pushEntry({ kind: 'notice', text: ev.text });
           break;
+        case 'mode':
+          // The server is the owner of this, not the tap that asked for it:
+          // a change made on the phone has to reach the laptop watching the
+          // same session, and a POST whose response was lost must not leave
+          // the chip describing a run that is no longer gated that way.
+          mode = ev.mode;
+          break;
         case 'question':
           pushEntry({
             kind: 'question',
@@ -134,6 +143,8 @@
             qkind: ev.kind,
             tool: ev.tool,
             args: ev.args,
+            draft: ev.draft,
+            expanded: false,
             question: ev.question,
             options: ev.options ?? [],
             freeText: '',
@@ -505,6 +516,13 @@
     }
   }
 
+  // Ascending order of what the run may do without asking. Cycling forward
+  // rather than offering a menu keeps the control one tap on a phone; what
+  // stops it being a trap is that the chip reads back the server's answer,
+  // so a tap that did not land shows as a chip that did not move.
+  const MODES = ['read_only', 'ask', 'allow'];
+  const MODE_LABEL = { read_only: 'read-only', ask: 'ask', allow: 'allow' };
+
   async function setMode(next) {
     try {
       const res = await fetch(`/api/chat/${key}/mode`, {
@@ -512,7 +530,11 @@
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ mode: next }),
       });
+      // The mode event does this too; setting it here as well is only so a
+      // phone on a slow link sees the tap register. A failed POST falls
+      // through to the catch and the chip stays where the server is.
       if (res.ok) mode = next;
+      else pushEntry({ kind: 'notice', text: (await res.text()).trim() });
     } catch {
       // header chip keeps showing the real mode from the last load
     }
@@ -550,9 +572,10 @@
       <button
         class="chip modechip"
         class:ask={mode === 'ask'}
-        onclick={() => setMode(mode === 'ask' ? 'read_only' : 'ask')}
-        title="read_only: reads run, sends stage · ask: every other call becomes an approval card"
-      >{mode === 'ask' ? 'ask' : 'read-only'}</button>
+        class:allow={mode === 'allow'}
+        onclick={() => setMode(MODES[(MODES.indexOf(mode) + 1) % MODES.length])}
+        title="read-only: reads run, sends stage · ask: every other call becomes an approval card · allow: nothing asks (the interlock still refuses sends once this conversation holds private and untrusted content)"
+      >{MODE_LABEL[mode] ?? mode}</button>
       <span class="chip">{model || '…'}</span>
     </div>
   </header>
@@ -675,7 +698,29 @@
             <span class="qkicker">mecha wants to run</span>
             <span class="qtool">{entry.tool}</span>
           </div>
-          {#if entry.args}<pre class="qargs">{entry.args}</pre>{/if}
+          {#if entry.draft}
+            <!-- Essentials first, the whole call one tap away. A card that
+                 leads with a JSON blob is one people learn to approve
+                 without reading, which is the outbox's rule arriving where
+                 it was always needed. -->
+            {#if entry.draft.headers.length}
+              <dl class="qfields">
+                {#each entry.draft.headers as [k, v]}
+                  <dt>{k.replace(/_/g, ' ')}</dt>
+                  <dd>{v}</dd>
+                {/each}
+              </dl>
+            {/if}
+            {#if entry.draft.body}<p class="qbody">{entry.draft.body}</p>{/if}
+            {#if entry.args}
+              <button class="qmore" onclick={() => (entry.expanded = !entry.expanded)}>
+                {entry.expanded ? 'less' : 'the whole call'}
+              </button>
+              {#if entry.expanded}<pre class="qargs">{entry.args}</pre>{/if}
+            {/if}
+          {:else if entry.args}
+            <pre class="qargs">{entry.args}</pre>
+          {/if}
           {#if entry.denying}
             <input
               class="qinput"
@@ -1141,6 +1186,14 @@
     background: var(--accent-900);
     border-color: var(--accent-500);
   }
+  /* Hazard is a signal here, and per brand.md it stays text and a thin line
+     — never an area fill. `allow` is the one mode where nothing will stop
+     to ask, so it is the one chip that should catch the eye across a room. */
+  .modechip.allow {
+    color: var(--hazard);
+    background: var(--bg);
+    border-color: var(--hazard);
+  }
   .qcard {
     background: var(--surface);
     border: 1px solid var(--accent-500);
@@ -1235,6 +1288,41 @@
     font-size: 15px;
     font-weight: 500;
     line-height: 1.4;
+  }
+  .qfields {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2px 12px;
+    margin: 0;
+    font-size: 13px;
+  }
+  .qfields dt {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: lowercase;
+    align-self: baseline;
+  }
+  .qfields dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .qbody {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .qmore {
+    align-self: flex-start;
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--accent-400);
+    cursor: pointer;
   }
   .qargs {
     background: var(--void);
