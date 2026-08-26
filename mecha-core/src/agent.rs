@@ -165,7 +165,12 @@ enum Completion {
 /// providers reject outright. Folding the text into the existing user turn — the
 /// one carrying the tool results — is valid everywhere and reads the same to the
 /// model.
-fn append_user_text(messages: &mut Vec<Message>, text: String) {
+///
+/// Public because steering is no longer the only caller: answering a parked
+/// question continues a conversation whose last message may be the tool
+/// results of the turn the question was asked in, and a bare `push` there is
+/// the same invalid transcript by a different route.
+pub fn append_user_text(messages: &mut Vec<Message>, text: String) {
     match messages.last_mut() {
         Some(last) if last.role == Role::User => last.content.push(Block::text(text)),
         _ => messages.push(Message::user(text)),
@@ -1677,7 +1682,7 @@ impl Agent {
 
         // Asked at install time, not before the summariser ran: a tool's state
         // is whatever it is *now*, and now is after the round trip.
-        let carried = self.registry.carried_state();
+        let carried = self.registry.carried_state(&cx.tools);
         let carried: Vec<(&str, &str)> = carried
             .iter()
             .map(|state| (state.label.as_str(), state.body.as_str()))

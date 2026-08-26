@@ -73,6 +73,11 @@ pub struct ChatState {
     context_window: Option<u64>,
     outbox_root: PathBuf,
     sessions: Mutex<HashMap<String, WebSession>>,
+    /// The todo tool the shared agent is using, so a resumed session can have
+    /// its plan restored from its own transcript (D15). One handle, many
+    /// sessions: the list is keyed by each run's jail, which for this surface
+    /// is the session key's directory.
+    todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
     /// Dropping an MCP client kills its server; held for the process lifetime.
     _mcp: Vec<Arc<mecha_core::mcp::McpClient>>,
 }
@@ -166,6 +171,7 @@ impl ChatState {
             context_window,
             outbox_root,
             sessions: Mutex::new(HashMap::new()),
+            todo: prepared.todo,
             config: prepared.config,
             _mcp: prepared._mcp.clone(),
         })
@@ -1386,6 +1392,16 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
         .and_then(|()| mecha_core::work::ensure_outside_mecha_home(&workspace))
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
+    }
+    // D15 — the plan comes back with the conversation. Nothing in `serve/`
+    // renders it *yet*, so the effect here today is narrower than on the TUI
+    // and worth stating rather than overclaiming: it makes `carried_state`
+    // correct, so a resumed session that compacts carries its real plan
+    // instead of nothing. The page reading it back is Phase 4's work.
+    if let Some(todo) = &chat.todo {
+        if let Some(n) = todo.rehydrate(&workspace, &conversation.messages) {
+            tracing::debug!(items = n, "restored the resumed session's todo list");
+        }
     }
     let key = resume_key(&meta.id);
     if !valid_key(&key) || sessions.contains_key(&key) {

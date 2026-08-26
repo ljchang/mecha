@@ -703,6 +703,14 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     if let Some(id) = &resume {
         let path = Session::find(&session_dir, id)?;
         let (meta, prior) = Session::load(&path)?;
+        // D15, before anything renders: the live pane polls the todo handle,
+        // and a resumed conversation whose plan is only in the transcript
+        // shows an empty pane beside a model that knows exactly where it got
+        // to.
+        if let Some(todo) = &prepared.todo {
+            let ws = prepared.agent.context().tools.workspace.clone();
+            todo.rehydrate(&ws, &prior.messages);
+        }
         convo = prior;
         session = Some(Session { meta, path });
     } else if !no_session {
@@ -1015,7 +1023,10 @@ async fn run_loop(
         // Polled per frame rather than event-driven: the list lives behind a
         // Mutex the tool writes to, and a lock-and-clone at frame rate is
         // cheaper than being clever.
-        let todo_items = live.todo.as_ref().map(|t| t.items());
+        let todo_items = live
+            .todo
+            .as_ref()
+            .map(|t| t.items_in(&live.agent.context().tools.workspace));
         // CSI 2026: the terminal buffers everything between the pair and
         // presents it as one repaint. Follow-mode streaming scrolls the whole
         // transcript region every token, and over SSH that write arrives in

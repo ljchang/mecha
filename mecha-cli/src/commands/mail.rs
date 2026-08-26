@@ -2211,7 +2211,7 @@ async fn draft(
     if let Some(route) = &prepared.agent.context().outbox {
         route.set_session_id(&session.meta.id);
     }
-    let staged_before = staged_ids(&session.meta.id);
+    let staged_before = crate::setup::staged_ids(&session.meta.id);
 
     eprintln!(
         "drafting a {} with {} ({})",
@@ -2241,7 +2241,7 @@ async fn draft(
         bail!("the {} run failed, nothing staged: {e:#}", kind.verb());
     }
 
-    let staged: Vec<String> = staged_ids(&session.meta.id)
+    let staged: Vec<String> = crate::setup::staged_ids(&session.meta.id)
         .into_iter()
         .filter(|id| !staged_before.contains(id))
         .collect();
@@ -2275,20 +2275,6 @@ async fn draft(
         handle(thread_id)
     );
     Ok(())
-}
-
-/// Outbox item ids this session staged.
-fn staged_ids(session_id: &str) -> std::collections::HashSet<String> {
-    mecha_core::outbox::OutboxStore::open_existing_default()
-        .and_then(|s| s.items().ok())
-        .map(|items| {
-            items
-                .iter()
-                .filter(|i| i.session_id.as_deref() == Some(session_id))
-                .map(|i| i.id.clone())
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// What the drafting run is asked to do.

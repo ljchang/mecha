@@ -112,6 +112,7 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_mail(&home.join("mail")));
     findings.extend(check_legacy_mail(home));
     findings.extend(check_outbox(&home.join("outbox"), now));
+    findings.extend(check_questions(&home.join("questions"), now));
     findings.extend(check_frontdoor(&home.join("requests"), now));
     findings.extend(check_triggers(&home.join("triggers"), now));
     findings.extend(check_runs(&home.join("sessions")));
@@ -688,6 +689,112 @@ fn check_outbox(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             ),
             detail: stale.join("\n"),
             remedy: Some(review),
+        });
+    }
+    out
+}
+
+// --- questions nobody answered ----------------------------------------------
+
+/// A question older than this has most likely been missed rather than
+/// deliberately left.
+///
+/// **Shorter than a stale draft's 48h, and deliberately so.** A pending draft
+/// is work already done, sitting safely until someone looks. An unanswered
+/// question is a *delegation frozen mid-flight*: the run stopped, the task is
+/// parked in `waiting`, and nothing moves until a person types one sentence.
+/// The cost of the wait is higher, so the patience is shorter.
+const UNANSWERED_QUESTION_AFTER: chrono::Duration = chrono::Duration::hours(24);
+
+/// Read the question records directly, for the reason [`check_outbox`] does:
+/// an examination that creates or re-chmods the store is measuring itself.
+fn check_questions(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+    let mut out = Vec::new();
+    if !root.is_dir() {
+        // Never asked is not a problem, and must not read as one. A machine
+        // that has delegated no tasks looks exactly like this.
+        return out;
+    }
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(e) => {
+            out.push(Finding::unreadable(
+                "questions",
+                "the question store",
+                format!("{}: {e}", root.display()),
+            ));
+            return out;
+        }
+    };
+
+    let mut stale: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let q: crate::questions::Question =
+            match std::fs::read_to_string(&path).map(|t| serde_json::from_str(&t)) {
+                Ok(Ok(q)) => q,
+                Ok(Err(e)) => {
+                    out.push(Finding::unreadable(
+                        "questions",
+                        &format!(
+                            "question {} did not parse",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ),
+                        format!("{}: {e}", path.display()),
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    out.push(Finding::unreadable(
+                        "questions",
+                        &format!(
+                            "question {} could not be read",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ),
+                        format!("{}: {e}", path.display()),
+                    ));
+                    continue;
+                }
+            };
+        if !q.is_open() {
+            continue;
+        }
+        if age_of(&q.asked_at, now).is_some_and(|age| age > UNANSWERED_QUESTION_AFTER) {
+            stale.push(format!(
+                "{} · {} — asked {}",
+                crate::questions::QuestionStore::short(&q.id),
+                q.summary(),
+                render_age(now, &q.asked_at)
+            ));
+        }
+    }
+
+    if !stale.is_empty() {
+        stale.sort();
+        out.push(Finding {
+            component: "questions".to_string(),
+            severity: Severity::Attention,
+            summary: format!(
+                "{} question{} unanswered for more than 24h — {} run{} cannot continue",
+                stale.len(),
+                if stale.len() == 1 { "" } else { "s" },
+                stale.len(),
+                if stale.len() == 1 { "" } else { "s" }
+            ),
+            detail: stale.join("\n"),
+            // Lists rather than answers, on doctor's rule: findings propose
+            // and a human disposes. An answer is the owner's words, and a
+            // remedy that supplied them would be inventing the thing the
+            // question exists to obtain.
+            remedy: Some(Remedy {
+                description: "see what the agent is stuck on — doctor never answers for you"
+                    .to_string(),
+                argv: vec!["mecha".into(), "questions".into(), "list".into()],
+                needs_terminal: true,
+            }),
         });
     }
     out
@@ -1842,6 +1949,99 @@ mod tests {
         let remedy = outbox[0].remedy.as_ref().unwrap();
         assert_eq!(remedy.argv, vec!["mecha", "outbox", "review"]);
 
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    fn question(home: &Path, id: &str, asked_at: &str, status: &str) {
+        let dir = home.join("questions");
+        std::fs::create_dir_all(&dir).unwrap();
+        let q = crate::questions::Question {
+            id: id.into(),
+            status: status.into(),
+            question: "Which address should the letter go to?".into(),
+            options: vec![],
+            session_id: "sess-1".into(),
+            task_id: Some("task-9".into()),
+            workspace: None,
+            taint: Default::default(),
+            asked_at: asked_at.into(),
+            answered_at: None,
+            answer: None,
+        };
+        std::fs::write(
+            dir.join(format!("{id}.json")),
+            serde_json::to_string_pretty(&q).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Shorter patience than a stale draft's 48h, because the cost differs: a
+    /// pending draft is finished work sitting safely, while an unanswered
+    /// question is a run that stopped and a task parked in `waiting`.
+    #[test]
+    fn an_unanswered_question_is_stale_at_25_hours_and_not_at_23() {
+        let home = home("questions-stale");
+        question(
+            &home,
+            "20260813-100000-aaaaaaaa",
+            "2026-08-13T10:00:00Z",
+            "open",
+        );
+        let findings = examine(&home, utc(NOW));
+        let qs = of(&findings, "questions");
+        assert_eq!(qs.len(), 1, "{findings:#?}");
+        assert_eq!(qs[0].severity, Severity::Attention);
+        assert!(
+            qs[0].summary.contains("cannot continue"),
+            "{:?}",
+            qs[0].summary
+        );
+        assert_eq!(
+            qs[0].remedy.as_ref().unwrap().argv,
+            vec!["mecha", "questions", "list"],
+            "doctor lists what is stuck; it never answers for the owner"
+        );
+
+        let fresh = home;
+        let _ = std::fs::remove_dir_all(fresh.join("questions"));
+        question(
+            &fresh,
+            "20260813-130000-bbbbbbbb",
+            "2026-08-13T13:00:00Z",
+            "open",
+        );
+        assert!(of(&examine(&fresh, utc(NOW)), "questions").is_empty());
+        let _ = std::fs::remove_dir_all(&fresh);
+    }
+
+    /// An answered question is history, however old. Ageing the record rather
+    /// than the *waiting* would turn the permanent archive into a permanent
+    /// finding — the store never deletes, so this would only ever grow.
+    #[test]
+    fn an_answered_question_never_ages_into_a_finding() {
+        let home = home("questions-answered");
+        question(
+            &home,
+            "20260701-100000-cccccccc",
+            "2026-07-01T10:00:00Z",
+            "answered",
+        );
+        question(
+            &home,
+            "20260701-100000-dddddddd",
+            "2026-07-01T10:00:00Z",
+            "abandoned",
+        );
+        assert!(of(&examine(&home, utc(NOW)), "questions").is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Never having asked is not a problem and must not read as one — a
+    /// machine that has delegated no tasks has no question store at all.
+    #[test]
+    fn a_store_that_was_never_created_is_not_a_finding() {
+        let home = home("questions-absent");
+        assert!(of(&examine(&home, utc(NOW)), "questions").is_empty());
         let _ = std::fs::remove_dir_all(&home);
     }
 
