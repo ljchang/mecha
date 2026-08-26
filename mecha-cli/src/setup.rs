@@ -1004,6 +1004,33 @@ pub fn find_tool<'a>(
 /// holder is not the party the status is a judgement about. Returning the
 /// name too lets a caller report what it actually withheld rather than
 /// assuming the name it asked for was there.
+/// Subagent profiles that would hand a withheld tool back to the model.
+///
+/// **`withhold_tool` cannot reach a child registry, and that is structural.**
+/// `build_subagent` clones each allowed tool out of the pool into a separate
+/// registry while the agent is being prepared, so removing a tool from the
+/// parent afterwards leaves any child that allowlisted it holding a live
+/// handle. A run told "you have no tool that sets status" could then simply
+/// delegate — the same hole hooks and the outbox route close by inheritance
+/// (`subagents inherit the parent's hooks, or delegating is the way around a
+/// pre_tool policy`), arriving where inheritance cannot reach.
+///
+/// So the caller refuses instead. Named profiles rather than a silent strip,
+/// because a subagent quietly missing the tool its description promises is
+/// the crippled-child failure `build_subagent` already rejects a typo for.
+pub fn subagents_holding(config: &mecha_core::config::Config, bare: &str) -> Vec<String> {
+    config
+        .subagents
+        .iter()
+        .filter(|p| {
+            p.tools
+                .iter()
+                .any(|t| t == bare || t.ends_with(&format!("__{bare}")))
+        })
+        .map(|p| p.name.clone())
+        .collect()
+}
+
 pub fn withhold_tool(
     registry: &mut Registry,
     bare: &str,

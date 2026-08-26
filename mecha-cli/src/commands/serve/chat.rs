@@ -1393,10 +1393,11 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
     }
-    // D15 — the plan comes back with the conversation. The model re-reads it
-    // from the transcript echo regardless; without this the *page* would show
-    // no progress on a task it can see the agent halfway through, which is the
-    // derived-state rule failing on the side the harness controls.
+    // D15 — the plan comes back with the conversation. Nothing in `serve/`
+    // renders it *yet*, so the effect here today is narrower than on the TUI
+    // and worth stating rather than overclaiming: it makes `carried_state`
+    // correct, so a resumed session that compacts carries its real plan
+    // instead of nothing. The page reading it back is Phase 4's work.
     if let Some(todo) = &chat.todo {
         if let Some(n) = todo.rehydrate(&workspace, &conversation.messages) {
             tracing::debug!(items = n, "restored the resumed session's todo list");

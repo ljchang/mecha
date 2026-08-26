@@ -55,10 +55,10 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         }
         Cmd::Abandon { question } => {
             let q = store()?.abandon(&question)?;
-            println!(
-                "{} abandoned — the run was not resumed",
-                &q.id[..8.min(q.id.len())]
-            );
+            // `short`, not `&id[..8]` — the head of a `Session::new_id` is a
+            // date, so two questions abandoned on one day printed the same
+            // handle. The one call site that had its own copy of the bug.
+            println!("{} abandoned — the run was not resumed", short(&q.id));
             Ok(())
         }
     }
@@ -173,6 +173,27 @@ async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Resul
     }
     let mut prepared = setup::prepare(&opts, true).await?;
 
+    // The same refusal `tasks work` makes, for the same reason: this is that
+    // delegated run continuing, with the same tools and the same ability to
+    // send. Without the route a `mail_send` here delivers for real, and
+    // answering a question is exactly the moment nobody is re-reading config.
+    if prepared.agent.context().outbox.is_none() {
+        bail!(
+            "resuming needs the outbox: name your send tools in `[outbox] tools` so drafts \
+             are staged instead of delivered"
+        );
+    }
+    if q.task_id.is_some() {
+        let holders = setup::subagents_holding(&prepared.config, "kg_task_update");
+        if !holders.is_empty() {
+            bail!(
+                "subagent(s) {} allowlist `kg_task_update`, so the resumed run could close its \
+                 own task. Remove it from their `tools` in config first.",
+                holders.join(", ")
+            );
+        }
+    }
+
     let dir = Session::default_dir()?;
     let path = Session::find(&dir, &q.session_id)
         .with_context(|| format!("the session that asked ({}) is gone", q.session_id))?;
@@ -188,11 +209,6 @@ async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Resul
     }
 
     let session = Session { meta, path };
-    session.append(&Record::Config(mecha_core::session::RunConfig::of(
-        &prepared.agent,
-        &prepared.config,
-        &prepared.provider_name,
-    )))?;
 
     // The same surface the asking run had: it still may not close its own
     // task (D6), and it may still need to ask again — a task can take more
@@ -215,6 +231,17 @@ async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Resul
     if let Some(route) = &prepared.agent.context().outbox {
         route.set_session_id(&q.session_id);
     }
+
+    // After the withhold and the insert, never before: `RunConfig::of` reads
+    // the registry at call time, so an earlier append records a surface that
+    // never existed — one still holding `kg_task_update`, still missing
+    // `ask_user`. `mecha replay` rebuilds the run from this.
+    session.append(&Record::Config(mecha_core::session::RunConfig::of(
+        &prepared.agent,
+        &prepared.config,
+        &prepared.provider_name,
+    )))?;
+
     let staged_before = staged_ids(&q.session_id);
 
     // Recorded before the run, so a run that dies still leaves the question
@@ -223,13 +250,28 @@ async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Resul
     let recorded_q = questions.answer(&q.id, answer)?;
 
     let mut convo = prior;
-    let user = mecha_core::message::Message::user(format!(
+    let text = format!(
         "You asked: {}\n\nThe owner answers: {answer}",
         recorded_q.question.trim()
-    ));
-    convo.push(user.clone());
-    session.append(&Record::Message(user))?;
+    );
+    // **Folded, not pushed.** The asking run was stopped by a cancel, and a
+    // cancel keeps the partial turn — so depending on where it landed, the
+    // recorded transcript may end on the *user* message carrying the tool
+    // results of the turn the question was asked in. Pushing there makes two
+    // user messages in a row, which is invalid on the Anthropic backend and
+    // merely tolerated by llama-server: the shape that passes locally and
+    // 400s in production. `append_user_text` is the same fold steering uses,
+    // and it is a no-op difference when the transcript ends on an assistant
+    // turn, which is what the first live run happened to produce.
+    // Snapshotted **before** the fold, and nothing is appended by hand. A
+    // fold modifies the last message in place, so an explicit
+    // `Record::Message` would duplicate it and a snapshot taken afterwards
+    // would hide it — `record_run` compares the two states and writes an
+    // append or a `rewrite` as the change actually was. That is the same
+    // mechanism compaction relies on, used here for the same reason: the file
+    // must not be able to disagree with the conversation.
     let recorded = convo.messages.clone();
+    mecha_core::agent::append_user_text(&mut convo.messages, text);
 
     eprintln!("resuming {} with the answer", q.session_id);
     let outcome = crate::interrupt::run_interruptible(
