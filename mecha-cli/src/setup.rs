@@ -990,6 +990,76 @@ pub fn find_tool<'a>(
         .find(|t| t.name() == bare || t.name().ends_with(&format!("__{bare}")))
 }
 
+/// Take a tool off a run's surface by its bare name, prefix or not.
+///
+/// [`find_tool`]'s rule in the other direction, and it must stay that way:
+/// withholding `kg_task_update` while a deployment has `prefix_tools` on
+/// would otherwise silently withhold nothing, and a control that quietly
+/// stops applying is worse than one that was never claimed.
+///
+/// **The withdrawn tool is handed back, and that is the point.** The harness
+/// keeps a handle the model can no longer dispatch through, which is exactly
+/// what "status is moved by the harness, and the model is never given a tool
+/// that sets it" (D5) needs to be true of: one tool, one holder, and the
+/// holder is not the party the status is a judgement about. Returning the
+/// name too lets a caller report what it actually withheld rather than
+/// assuming the name it asked for was there.
+/// Subagent profiles that would hand a withheld tool back to the model.
+///
+/// **`withhold_tool` cannot reach a child registry, and that is structural.**
+/// `build_subagent` clones each allowed tool out of the pool into a separate
+/// registry while the agent is being prepared, so removing a tool from the
+/// parent afterwards leaves any child that allowlisted it holding a live
+/// handle. A run told "you have no tool that sets status" could then simply
+/// delegate — the same hole hooks and the outbox route close by inheritance
+/// (`subagents inherit the parent's hooks, or delegating is the way around a
+/// pre_tool policy`), arriving where inheritance cannot reach.
+///
+/// So the caller refuses instead. Named profiles rather than a silent strip,
+/// because a subagent quietly missing the tool its description promises is
+/// the crippled-child failure `build_subagent` already rejects a typo for.
+pub fn subagents_holding(config: &mecha_core::config::Config, bare: &str) -> Vec<String> {
+    config
+        .subagents
+        .iter()
+        .filter(|p| {
+            p.tools
+                .iter()
+                .any(|t| t == bare || t.ends_with(&format!("__{bare}")))
+        })
+        .map(|p| p.name.clone())
+        .collect()
+}
+
+pub fn withhold_tool(
+    registry: &mut Registry,
+    bare: &str,
+) -> Option<(String, Arc<dyn mecha_core::tool::Tool>)> {
+    let name = registry
+        .iter()
+        .map(|t| t.name().to_string())
+        .find(|n| n == bare || n.ends_with(&format!("__{bare}")))?;
+    registry.remove(&name).map(|tool| (name, tool))
+}
+
+/// The outbox items one session has staged so far.
+///
+/// Beside [`find_tool`] for the reason that one is here: more than one driver
+/// now runs a seeded agent and reports what it staged by diffing this across
+/// the run, and two copies is two places for the session-id join to drift.
+pub fn staged_ids(session_id: &str) -> std::collections::HashSet<String> {
+    mecha_core::outbox::OutboxStore::open_existing_default()
+        .and_then(|s| s.items().ok())
+        .map(|items| {
+            items
+                .iter()
+                .filter(|i| i.session_id.as_deref() == Some(session_id))
+                .map(|i| i.id.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The context a command-line driver calls a tool with: the run's workspace,
 /// the configured limits, and nothing else. Same shape every driver needs, so
 /// it is built once.

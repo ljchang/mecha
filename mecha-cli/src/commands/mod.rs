@@ -15,6 +15,7 @@ pub mod mail;
 pub mod msg;
 pub mod outbox;
 pub mod proposals;
+pub mod questions;
 pub mod reflect;
 pub mod replay;
 pub mod review;

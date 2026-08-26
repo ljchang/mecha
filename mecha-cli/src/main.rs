@@ -275,6 +275,10 @@ pub enum Command {
     /// — one store, reached through the tool surface from every side.
     Tasks(commands::tasks::Args),
 
+    /// What a delegated run got stuck on, and answering it — which resumes
+    /// the run that asked, with your answer as its next turn.
+    Questions(commands::questions::Args),
+
     /// The knowledge graph from the terminal: search it, read an entity,
     /// capture a note — through the same `kg_*` tool surface the model uses.
     Kg(commands::kg::Args),
@@ -380,6 +384,7 @@ async fn dispatch() -> Result<()> {
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
         Command::Mail(args) => commands::mail::run(&cli.global, args).await,
         Command::Tasks(args) => commands::tasks::run(&cli.global, args).await,
+        Command::Questions(args) => commands::questions::run(&cli.global, args).await,
         Command::Kg(args) => commands::kg::run(&cli.global, args).await,
         Command::Gossip(args) => commands::gossip::run(&cli.global, &args).await,
         Command::Corroborate(args) => commands::corroborate::run(&cli.global, &args).await,

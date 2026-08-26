@@ -160,7 +160,8 @@ pub trait Tool: Send + Sync {
     ///
     /// `None` — the default — means "nothing worth carrying", which is the
     /// honest answer for every stateless tool.
-    fn carried_state(&self) -> Option<CarriedState> {
+    fn carried_state(&self, ctx: &ToolCtx) -> Option<CarriedState> {
+        let _ = ctx;
         None
     }
 
@@ -582,6 +583,18 @@ impl Registry {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// Take a tool back off the surface, by its exact registered name.
+    ///
+    /// For a run that must not be *able* to do something, as distinct from one
+    /// asked not to. `tasks work` withholds `kg_task_update` this way: a run
+    /// that can close its own assignment is a lane promoting itself, which is
+    /// `ladder.rs`'s oldest rule and the same reason no `kg_accept` exists on
+    /// the tool surface at all. A prompt saying "do not mark it done" is not
+    /// the same control — it is advice to the party under test.
+    pub fn remove(&mut self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.remove(name)
+    }
+
     pub fn get(&self, name: &str) -> Option<&Arc<dyn Tool>> {
         self.tools.get(name)
     }
@@ -636,10 +649,16 @@ impl Registry {
     /// MCP server's — the loop does not learn which tools have state, only
     /// that some do, which is the same reason it never learns where a tool
     /// came from.
-    pub fn carried_state(&self) -> Vec<CarriedState> {
+    ///
+    /// The context is passed because one agent serves many conversations and a
+    /// tool's state may be per-run: the compaction happening is *this* run's,
+    /// so the state carried across it must be too. The loop still learns
+    /// nothing about which tools those are — it hands over the run it is
+    /// compacting and asks.
+    pub fn carried_state(&self, ctx: &ToolCtx) -> Vec<CarriedState> {
         self.tools
             .values()
-            .filter_map(|t| t.carried_state())
+            .filter_map(|t| t.carried_state(ctx))
             .collect()
     }
 

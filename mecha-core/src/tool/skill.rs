@@ -277,7 +277,7 @@ impl Tool for SkillTool {
     /// wrote the skill to prevent. `rebuild` places carried state after the
     /// summary, as the part of the rebuilt head known to be current rather
     /// than paraphrased.
-    fn carried_state(&self) -> Option<CarriedState> {
+    fn carried_state(&self, _ctx: &ToolCtx) -> Option<CarriedState> {
         let loaded = self.loaded.lock().unwrap();
         if loaded.is_empty() {
             return None;
@@ -430,9 +430,9 @@ mod tests {
     #[tokio::test]
     async fn nothing_is_carried_across_a_compaction_until_something_is_loaded() {
         let tool = SkillTool::new(vec![skill("audit", None)]);
-        assert!(tool.carried_state().is_none());
+        assert!(tool.carried_state(&ToolCtx::default()).is_none());
         load(&tool, "audit").await;
-        let carried = tool.carried_state().unwrap();
+        let carried = tool.carried_state(&ToolCtx::default()).unwrap();
         assert!(
             carried.body.contains("the audit procedure"),
             "{}",
@@ -541,7 +541,7 @@ mod tests {
         load(&tool, "older").await;
         load(&tool, "newer").await;
 
-        let carried = tool.carried_state().unwrap();
+        let carried = tool.carried_state(&ToolCtx::default()).unwrap();
         assert!(
             carried.body.len() < 2 * CARRIED_BUDGET,
             "bounded: {}",
@@ -567,7 +567,7 @@ mod tests {
         let tool = SkillTool::new(vec![huge]);
         load(&tool, "huge").await;
 
-        let carried = tool.carried_state().unwrap();
+        let carried = tool.carried_state(&ToolCtx::default()).unwrap();
         assert!(
             carried.body.contains("too long to carry: huge"),
             "{}",
@@ -586,7 +586,7 @@ mod tests {
         let tool = SkillTool::new(vec![skill("audit", Some(vec!["fs_read"]))]);
         load(&tool, "audit").await;
         assert!(tool.narrows_surface_to().is_some());
-        assert!(tool.carried_state().is_some());
+        assert!(tool.carried_state(&ToolCtx::default()).is_some());
 
         tool.forget_conversation_state();
         assert!(tool.loaded().is_empty());
@@ -595,7 +595,7 @@ mod tests {
             None,
             "the surface has to come back, or the next task starts constrained"
         );
-        assert!(tool.carried_state().is_none());
+        assert!(tool.carried_state(&ToolCtx::default()).is_none());
     }
 
     #[tokio::test]
