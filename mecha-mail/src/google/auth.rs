@@ -309,10 +309,28 @@ pub async fn wait_for_oauth_redirect(port: u16) -> Result<(String, String), Mail
 /// mailbox this is and proves the scopes work before anything is saved.
 /// Lives in the library so `mecha-google auth` and the unified
 /// `mecha-mail auth` are the same flow rather than two drifting copies.
+/// How the browser's answer gets back here.
+///
+/// The redirect target is a loopback address either way — Google is told
+/// `http://localhost:<port>/callback` in both modes, and in `Paste` nothing
+/// is listening on it, which is why the browser ends on a page that fails to
+/// load. That failure *is* the success: the address bar holds the code.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Capture {
+    /// Listen on the loopback port for the browser to arrive. Needs the
+    /// browser and this process on the same machine, or an SSH tunnel.
+    Listen,
+    /// Print the URL and read the address the browser landed on from stdin.
+    /// The path for a machine you are only ever ssh'd into: no tunnel, no
+    /// forwarded port, and no browser on the box holding the grant.
+    Paste,
+}
+
 pub async fn interactive_flow(
     client_id: String,
     client_secret: String,
     port: u16,
+    capture: Capture,
 ) -> anyhow::Result<crate::token::StoredCredentials> {
     use anyhow::Context;
 
@@ -323,10 +341,37 @@ pub async fn interactive_flow(
     let state = generate_pkce().code_verifier;
     let url = build_auth_url(&config, &pkce, &state);
 
-    eprintln!("Open this URL to authorize (listening on 127.0.0.1:{port}):\n\n{url}\n");
-    let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-
-    let (code, returned_state) = wait_for_oauth_redirect(port).await?;
+    let (code, returned_state) = match capture {
+        Capture::Listen => {
+            eprintln!("Open this URL to authorize (listening on 127.0.0.1:{port}):\n\n{url}\n");
+            eprintln!(
+                "Over SSH? Either forward the port:\n  \
+                 ssh -L {port}:127.0.0.1:{port} <this host>\n\
+                 or re-run with `--paste` and no tunnel is needed.\n"
+            );
+            // Only here: there is no browser to open on the headless path,
+            // and spawning one would be a stray process on somebody's server.
+            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+            wait_for_oauth_redirect(port).await?
+        }
+        Capture::Paste => {
+            eprintln!("\nOpen this in any browser, on any machine:\n\n{url}\n");
+            eprintln!(
+                "It will finish on a 127.0.0.1 address that fails to load — that is\n\
+                 expected, and the address bar is the answer. Copy the whole address\n\
+                 and paste it here:\n"
+            );
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .context("reading the pasted redirect URL")?;
+            // The picker's parser, reused rather than written twice: a plain
+            // consent redirect is the same query with no `picked` in it, and
+            // it already refuses text that is not a redirect URL at all.
+            let redirect = crate::google::docs::parse_redirect_url(line.trim())?;
+            (redirect.code, redirect.state)
+        }
+    };
     anyhow::ensure!(returned_state == state, "OAuth state mismatch — try again");
 
     let tokens = exchange_code(&config, &code, &pkce.code_verifier, &crate::http::client()).await?;
@@ -445,6 +490,26 @@ mod tests {
     /// The incident this guards: a revoked refresh token surfaced as a generic
     /// auth error, so a scheduled sweep retried it every two minutes for three
     /// days. `invalid_grant` is permanent and must be its own class.
+    #[test]
+    fn a_plain_consent_redirect_parses_for_the_paste_path() {
+        // `--paste` reuses the picker's parser rather than growing a second
+        // one, and a consent redirect is the same query with no `picked` in
+        // it. If the picker's parser ever starts *requiring* a pick, this is
+        // the test that says so before somebody's re-auth fails at 7am with
+        // a dead token and no browser.
+        let parsed = crate::google::docs::parse_redirect_url(
+            "http://localhost:8924/callback?state=abc123&code=4/0Adeu5",
+        )
+        .expect("a consent redirect is a redirect URL");
+        assert_eq!(parsed.code, "4/0Adeu5");
+        assert_eq!(parsed.state, "abc123");
+        assert!(parsed.picked.is_empty(), "consent picks nothing");
+
+        // And the failure a person will actually hit: pasting the URL they
+        // opened rather than the one they landed on.
+        assert!(crate::google::docs::parse_redirect_url("not a url").is_err());
+    }
+
     #[test]
     fn an_invalid_grant_refresh_is_classified_permanent() {
         let body = r#"{"error":"invalid_grant","error_description":"Token has been revoked."}"#;

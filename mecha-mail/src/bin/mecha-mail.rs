@@ -57,6 +57,13 @@ enum Command {
         /// Loopback port for the Google OAuth redirect.
         #[arg(long, default_value_t = google::auth::DEFAULT_REDIRECT_PORT)]
         port: u16,
+        /// Do not listen: print the URL, and read back the address the
+        /// browser landed on. The path for a machine you are only ssh'd
+        /// into — no tunnel, no forwarded port, and the browser can be on
+        /// any device. Google only; Outlook signs in with a device code,
+        /// which already works headless.
+        #[arg(long)]
+        paste: bool,
     },
     /// Download a span of mail for analysis — envelope and preview only.
     ///
@@ -177,7 +184,19 @@ async fn run(cli: Cli) -> Result<()> {
             client_secret,
             tenant,
             port,
-        }) => auth(name, provider, client_id, client_secret, tenant, port).await,
+            paste,
+        }) => {
+            auth(
+                name,
+                provider,
+                client_id,
+                client_secret,
+                tenant,
+                port,
+                paste,
+            )
+            .await
+        }
         Some(Command::Corpus { since, account }) => corpus(&since, account.as_deref()).await,
         Some(Command::Import { name, provider }) => import(name, provider),
         Some(Command::Accounts) => list_accounts(),
@@ -914,7 +933,17 @@ async fn auth(
     client_secret: Option<String>,
     tenant: Option<String>,
     port: u16,
+    paste: bool,
 ) -> Result<()> {
+    // Said rather than silently ignored: a person who passed `--paste` is
+    // telling us they have no browser here, and letting that pass unmentioned
+    // on a flow that never needed one invites them to think it did something.
+    if paste && provider == Provider::Outlook {
+        eprintln!(
+            "note: --paste is a Google flag. Outlook signs in with a device code, \
+             which already needs no browser on this machine."
+        );
+    }
     let mut file = load_or_empty()?;
     register(&mut file, &name, provider)?;
     let path = accounts::credentials_path(&name)?;
@@ -922,7 +951,13 @@ async fn auth(
 
     let creds = match provider {
         Provider::Google => {
-            google::auth::interactive_flow(client.client_id, client.client_secret, port).await?
+            let capture = if paste {
+                google::auth::Capture::Paste
+            } else {
+                google::auth::Capture::Listen
+            };
+            google::auth::interactive_flow(client.client_id, client.client_secret, port, capture)
+                .await?
         }
         Provider::Outlook => {
             // resolve_client guarantees a tenant for Outlook.
