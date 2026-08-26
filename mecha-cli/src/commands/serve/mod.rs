@@ -274,6 +274,7 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/tasks/plan", axum::routing::post(board::task_plan))
         .route("/api/tasks/source", axum::routing::post(board::task_source))
         .route("/api/tasks/add", axum::routing::post(board::task_add))
+        .route("/api/tasks/parse", axum::routing::post(board::task_parse))
         .route("/api/questions", get(questions::list))
         .route(
             "/api/questions/answer",
