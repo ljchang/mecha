@@ -196,12 +196,40 @@ impl Approver for WebApprover {
 
 /// Handles to one session's question plumbing, looked up at ask time.
 pub type SessionLookup = Arc<
-    dyn Fn(&str) -> Option<(Questions, tokio::sync::broadcast::Sender<WireEvent>)> + Send + Sync,
+    dyn Fn(
+            &str,
+        ) -> Option<(
+            Questions,
+            tokio::sync::broadcast::Sender<WireEvent>,
+            Option<Arc<mecha_core::questions::ParkingAsker>>,
+        )> + Send
+        + Sync,
 >;
 
 /// The shared `ask_user` back-end: one instance on the shared agent, routing
 /// each ask to the session that owns the calling run's jail.
 pub struct WebAsker {
+    /// Per-session plumbing, resolved at ask time: the card channel, the
+    /// event stream, and — for a delegation — where a question goes when
+    /// there is nobody there to read the card.
+    ///
+    /// **That fallback is why there is no mode switch.** "Interactive while
+    /// the page is open, autonomous when it is closed" is the right behaviour
+    /// and the wrong *implementation*: a backgrounded phone keeps its stream
+    /// open, so a switch keyed on being connected gets the one case that
+    /// matters wrong — page attached, nobody attending — and shows a card
+    /// that expires into a refusal.
+    ///
+    /// So the card is offered whenever anyone might see it, and both ways of
+    /// going unanswered end the same way: the question is stored and the run
+    /// **ends**, holding no slot and no cached prefix, until an answer
+    /// resumes the conversation. Waiting indefinitely costs nothing because
+    /// nothing is left waiting.
+    ///
+    /// Absent for an ordinary chat and for voice, where a turn has a person's
+    /// attention and a decline is the honest answer — and where the voice
+    /// facade sends turns without subscribing to this stream at all, so an
+    /// unwatched-means-park rule would park every spoken question.
     pub lookup: SessionLookup,
 }
 
@@ -216,7 +244,17 @@ impl Asker for WebAsker {
 
     async fn ask_in(&self, ctx: &ToolCtx, question: &str, options: &[String]) -> Option<String> {
         let key = ctx.workspace.file_name()?.to_str()?.to_string();
-        let (questions, events) = (self.lookup)(&key)?;
+        let (questions, events, park) = (self.lookup)(&key)?;
+
+        // Nobody is subscribed, so a card would be shown to an empty room for
+        // ten minutes and then resolve as a decline. Park it now instead: the
+        // owner gets the question where they will actually find it, and the
+        // run stops rather than carrying on having invented an answer.
+        if let Some(park) = &park {
+            if events.receiver_count() == 0 {
+                return park.ask_in(ctx, question, options).await;
+            }
+        }
 
         let (qid, rx) = questions.open();
         let card = WireEvent::Question {
@@ -243,7 +281,14 @@ impl Asker for WebAsker {
         };
         questions.close(qid);
         let _ = events.send(WireEvent::QuestionDone { qid });
-        answer
+        match (answer, &park) {
+            (Some(text), _) => Some(text),
+            // Shown, and nobody answered — the owner walked away mid-question,
+            // which is indistinguishable from never having been there. Same
+            // ending, so the run does not have to guess which happened.
+            (None, Some(park)) => park.ask_in(ctx, question, options).await,
+            (None, None) => None,
+        }
     }
 }
 

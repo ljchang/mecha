@@ -311,6 +311,11 @@ impl Tool for Subagent {
             // Steering is addressed to the parent. The child was given a
             // self-contained task and has no conversation to redirect.
             queued_input: None,
+            // **Inherited, like hooks and the outbox route**, and for exactly
+            // that reason: a tool the parent run may not dispatch must not
+            // become reachable by delegating. A subagent's own `tools`
+            // allowlist narrows further from here, so this only ever removes.
+            withheld: ctx.withheld.clone(),
             // Same rule as hooks: setup installs the parent's outbox route on
             // each child, or delegating becomes the way to send unstaged.
             outbox: self.agent.context().outbox.clone(),
