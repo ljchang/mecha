@@ -109,11 +109,14 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,447 tests**, no failures — measured 2026-08-26 on `main` at
-487b084, on a clean tree. That last clause is load-bearing: two sessions
+Expect **1,451 tests**, no failures — measured 2026-08-26 on `main` at
+b877e41. Note *clean tree* is doing less work than usual in that sentence
+today: a second lane's task-provenance arc sat uncommitted in the same
+checkout while this was measured, and the count is of `main` plus nothing
+else. That last clause is load-bearing: two sessions
 independently wrote down a count taken in the shared checkout while a third
 lane's uncommitted work sat in it, which is a count of something that exists
-on one disk and in no commit (Traps → Environment). Breakdown: 499 in
+on one disk and in no commit (Traps → Environment). Breakdown: 502 in
 `mecha-cli` with 1 ignored, 723 in `mecha-core`, 6 + 9 in its two integration
 suites, 133 in `mecha-mail` plus 1 in a mail binary, 75 in `mecha-slack`, and
 1 doctest, plus the 2 below. The **31 over 1,377** at 897bd13 attribute
