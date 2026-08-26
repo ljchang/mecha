@@ -77,6 +77,10 @@ pub enum Cmd {
         /// New context tag; `""` clears it.
         #[arg(long)]
         context: Option<String>,
+        /// Who has the ball — a name the graph knows, or `@owner` for
+        /// yourself; `""` clears it.
+        #[arg(long)]
+        waiting_on: Option<String>,
     },
     /// Hand a task to the agent: a seeded run in its own session.
     ///
@@ -114,7 +118,8 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             due,
             defer,
             context,
-        } => set(global, &task, status, due, defer, context).await,
+            waiting_on,
+        } => set(global, &task, status, due, defer, context, waiting_on).await,
         Cmd::Work { task, note, again } => {
             let note = (!note.is_empty()).then(|| note.join(" "));
             work(global, &task, note.as_deref(), again).await
@@ -225,36 +230,60 @@ async fn set(
     due: Option<String>,
     defer: Option<String>,
     context: Option<String>,
+    waiting_on: Option<String>,
 ) -> Result<()> {
     let mut args = json!({ "task": task });
+    // Every field `kg_task_update` takes, because the modal drives the CLI and
+    // a verb the terminal cannot reach is one the UI must not offer either.
     for (key, value) in [
         ("status", status),
         ("due", due),
         ("defer", defer),
         ("context", context),
+        ("waiting_on", waiting_on),
     ] {
         if let Some(v) = value {
             args[key] = json!(v);
         }
     }
     if args.as_object().is_some_and(|o| o.len() == 1) {
-        bail!("nothing to change — pass at least one of --status, --due, --defer, --context");
+        bail!(
+            "nothing to change — pass at least one of --status, --due, --defer, --context, \
+             --waiting-on"
+        );
     }
     let out = call(global, "kg_task_update", args).await?;
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
 
-/// Move a task's status through the withheld tool. The harness's hand, not
-/// the model's — see [`work`].
-async fn move_status(
+/// The agent, as the board names it. A node of kind `agent`, shipped with the
+/// graph's schema — deliberately not a person, because delegation is not
+/// assignment and responsibility does not transfer.
+pub(crate) const AGENT: &str = "mecha";
+
+/// Whoever this graph is about, resolved graph-side so mecha never has to
+/// carry the owner's name.
+pub(crate) const OWNER: &str = "@owner";
+
+/// Move a task's status and who holds it, through the withheld tool. The
+/// harness's hand, not the model's — see [`work`].
+///
+/// Both in one call because they are one fact about the task: "waiting" with
+/// nobody named is the ambiguity this whole phase exists to remove, and two
+/// calls could leave the board in exactly that state if the second failed.
+pub(crate) async fn move_task(
     update: &std::sync::Arc<dyn mecha_core::tool::Tool>,
     ctx: &mecha_core::tool::ToolCtx,
     task: &str,
     status: &str,
+    waiting_on: &str,
 ) -> Result<()> {
     let out = update
-        .call(json!({ "task": task, "status": status }), ctx)
+        .call(
+            json!({ "task": task, "status": status, "waiting_on": waiting_on }),
+            ctx,
+        )
         .await?;
     if out.is_error {
         bail!("kg_task_update: {}", out.content.trim());
@@ -337,6 +366,10 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
 
     let name = task["name"].as_str().unwrap_or("(unnamed)").to_string();
     let was = task["status"].as_str().unwrap_or("inbox").to_string();
+    // Captured so a failed run can put the board back exactly as it was.
+    // Restoring the status while leaving `waiting_on` pointing at the agent
+    // would say the run is still going, which is the more misleading half.
+    let was_waiting_on = task["waiting_on"].as_str().unwrap_or("").to_string();
 
     // A closed task is not work, and reopening it is the owner's decision.
     if matches!(was.as_str(), "done" | "dropped") {
@@ -426,8 +459,10 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
     let staged_before = staged_ids(&session.meta.id);
 
     // Moved before the model sees anything, so the board tells the truth for
-    // the whole time the run is in flight rather than only after it lands.
-    move_status(&update, &tctx, task_id, "waiting").await?;
+    // the whole time the run is in flight rather than only after it lands —
+    // and names the agent, so the Waiting view distinguishes a task the agent
+    // is working from one a person owes you.
+    move_task(&update, &tctx, task_id, "waiting", AGENT).await?;
 
     eprintln!(
         "working {task_id} with {} ({}) · session {}",
@@ -478,10 +513,18 @@ async fn work(global: &GlobalOpts, task_id: &str, note: Option<&str>, again: boo
         // parked in `waiting` by a run that died is the queue growing for a
         // reason nobody can see — which is the whole failure `/queues` exists
         // to catch, reproduced one store over.
-        if let Err(restore) = move_status(&update, &tctx, task_id, &was).await {
+        if let Err(restore) = move_task(&update, &tctx, task_id, &was, &was_waiting_on).await {
             eprintln!("warning: could not put {task_id} back to {was}: {restore:#}");
         }
         bail!("the run failed, nothing staged: {e:#}");
+    }
+
+    // The run is over, so the ball is yours — whether it staged drafts, parked
+    // a question, or simply reported. Leaving it on the agent would make every
+    // finished delegation look like one still running, which is the state the
+    // Waiting view now exists to tell apart.
+    if let Err(e) = move_task(&update, &tctx, task_id, "waiting", OWNER).await {
+        eprintln!("warning: the board still says {AGENT} has {task_id}: {e:#}");
     }
 
     let staged: Vec<String> = staged_ids(&session.meta.id)
