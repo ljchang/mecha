@@ -109,22 +109,24 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,500 tests**, no failures — measured 2026-08-26 evening on `main`
-at `efa04e2`, on a **clean tree**, after five branches merged by a second
-lane and one by a third. That clause is load-bearing and has been wrong
-twice: a count taken while any lane's work sits uncommitted in this shared
-checkout describes one disk and no commit. Breakdown: **515** in `mecha-cli`
-with 1 ignored, **760** in `mecha-core`, 6 + 9 in its two integration
-suites, **133** in `mecha-mail` plus 1 in a mail binary, **75** in
-`mecha-slack`, and 1 doctest.
+Expect **1,537 tests**, no failures — measured 2026-08-26 late evening on
+`main` at `be75b73`, on a **clean tree**, after the context-pressure arc
+(#66–#72) and a voice lane's pushes. That clause is load-bearing and has been
+wrong twice: a count taken while any lane's work sits uncommitted in this
+shared checkout describes one disk and no commit. Breakdown: **517** in
+`mecha-cli` with 1 ignored, **795** in `mecha-core`, 6 + 9 in its two
+integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75**
+in `mecha-slack`, and 1 doctest.
 
 Clippy and rustfmt are clean at that commit, **measured locally**. CI is a
-separate claim and a weaker one: `efa04e2` has **no successful run** — its
-push run and a dispatch were both `cancelled` — so the merge commit itself
-is *unverified*, and the first sentence of this paragraph is local evidence
-about the same code rather than CI evidence about that commit. The doc
-commit after it (`2b5e575`) has a dispatched run that **passed**, which is
-the newest sha anyone has actually verified.
+separate claim and a weaker one, and it must be made per **sha**. Every PR
+in the context-pressure arc (#66, #67, #69, #70, #71, #72) was checked with
+`gh api repos/ljchang/mecha/commits/<sha>/check-runs` against its own head
+commit before merging, all six jobs green — `gh pr view`'s rollup follows
+whatever head the PR currently has, which is correct and moves, where a
+sha-addressed query pins the evidence to a commit that cannot slide. The
+merge commits themselves and `be75b73` are *unverified*: CI runs on pushes to
+`main`, but nobody has confirmed the result on this sha.
 
 That distinction is not pedantry; it cost an hour and a wrong sentence in
 this file. Read Traps → Environment before writing "CI passed" anywhere:
@@ -1303,56 +1305,84 @@ the mechanism and every decision. What it left standing:
   live recognizer sees it — otherwise a bad nightly write takes `:8992` down
   and voice goes deaf with no error text anywhere.
 
-### The goal system — rungs 0–3 shipped 2026-08-26, rung 4 open
+### The goal system — rungs 0–5 shipped 2026-08-26, rung 6 next
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the authority and carries a status header
 saying which rungs shipped. The arc's premise, which is what makes the rest
 follow: **every evaluative signal mecha had was a cost or a correction**, so a
 run could be recorded as having gone badly and never as having gone well.
-Rungs 0–3 are in `main` (#61–#65) and are everything with no model, no charter
-and no adversary in it — that ordering is §14's, not a coincidence.
+
+Rungs 0–5 are in `main` (#61–#72). Everything with no model, no charter and no
+adversary in it is now built, which is §14's ordering and not a coincidence.
 
 **Open now:**
 
-- **Rung 4 is #66 and unverified.** Prioritised replay: the corpus is sampled
-  by recency today, and `Metric::headroom` prioritises by what an episode can
-  say about the metric — an episode already at zero can only tie or worsen,
-  and finding that out costs two model runs. The part §8.1 of the design
-  understated is the load-bearing bit: `is_holdout` partitions *one pool*, so
-  hashing a pool gathered by informativeness gives **two** biased slices and
-  the holdout stops being a check. The slices are drawn separately — holdout
-  uniformly and first. `judge_with` keeps hash-splitting for
-  `eval --ab-config`, where every case runs and the pool is already uniform.
-  1,506 tests locally; **no CI run has ever fired on its head commit**, which
-  needs a `workflow_dispatch` before it merges on evidence.
-- **Rung 5 is next**: predictive compaction and task sizing — the first
-  *disposition*, in the class §7 says has no adversary. It is also where
-  context pressure arrives, via the in-run tracker rung 3 deliberately left
-  out.
+- **Rung 5's model-facing half is unbuilt**, and it is the next thing. The
+  harness now predicts context pressure and acts on it — compacting early,
+  narrowing the tool-output budget — but the *model* still cannot see any of
+  it, so §7.1's second-order win is unclaimed: an anticipatory signal that can
+  act on the **plan** (pick a smaller task, delegate to a subagent with a
+  fresh `Conversation`) where a threshold can only fire after the plan is
+  committed. Three pieces, decided with the owner on 2026-08-26 and not to be
+  re-litigated: `ContextTracker::forecast()` returning headroom, observed mean
+  cost per recent turn and turns-remaining *as measurements*, so the model is
+  never asked to estimate its own token use; that reading on the **`todo` tool
+  result**, where it appears when the plan is being revised and costs nothing
+  on other turns — the turn tail was rejected because an append-only
+  transcript would accumulate a stale reading per turn, which is the
+  distractor shape the eviction pass exists to remove; and a **`compact`
+  tool**, unapproved and argument-free, because it is reversible through
+  `recall` and a confirmation on a routine reversible action is what trains
+  people to approve without reading. Monotonicity is structural rather than
+  asked for: the harness floor stays `reported || predicted`, so nothing the
+  model decides can make a run compact *later* than it does today.
+  `forecast()` needs the tracker to keep more than two observations, which is
+  a change to the type rather than a new method.
 
-**Three things named rather than done**, recorded so they are not
-rediscovered as oversights:
+- **Rung 6 after that**: boredom (§9.1 rungs 1–3) and the deterministic half
+  of step appraisal (§5.5). Both read signals that already exist, both are
+  free, and together they fill the gap between "proceeding" and the loop
+  guard's "dead".
 
-- **`/queues` still walks the stores itself.** `backlog.rs` is the shared
-  walk and the homeostat uses it, but rewiring `mecha review`'s
-  `collect_queues` onto it needs either a wider `Backlog` or the loss of its
-  per-item detail lines (*"3 drafted with the trifecta armed"*). That is a
-  design choice, not a mechanical port. Doctor is deliberately further out —
+**Two things named rather than done**, recorded so they are not rediscovered
+as oversights. (The third — context pressure absent from `Homeostat` — shipped:
+`peak_prompt_tokens` and `peak_context_pressure`, `homeostat.rs:76,84`.)
+
+- **`/queues` still walks the stores itself.** `backlog.rs` is the shared walk
+  and the homeostat uses it, but rewiring `mecha review`'s `collect_queues`
+  (`commands/review.rs:470`) onto it needs either a wider `Backlog` or the loss
+  of its per-item detail lines (*"3 drafted with the trifecta armed"*). That is
+  a design choice, not a mechanical port. Doctor is deliberately further out —
   its per-store error isolation is load-bearing.
-- **Context pressure is absent from `Homeostat`.** It wants the *last
-  request's* prompt size; `RunOutcome::usage` is the run's total, which
-  exceeds the window in any long conversation and would read as impossible
-  pressure. The figure lives in a loop local behind six exit points, and the
-  thing that needs it is rung 5's tracker, which keeps it in memory and
-  records nothing.
 - **`/slots` is not sampled.** It is the best load signal available —
   occupancy directly rather than by proxy, and a second witness to prompt-cache
   reuse that `cache_lens` cannot get — but nothing reads it yet, and a sensor
   with no consumer should not put an HTTP call in the path of every run's
-  start.
+  start. `homeostat.rs:35` says so at the point where it would go.
 
-**Not to be re-litigated** (all four are argued in the design): decomposition
-runs downward and appraisal upward; the affect label is derived, never
+**A session resumed from disk starts unanchored.** The pressure series now
+survives a run boundary, so chat and the TUI predict from the first turn — but
+a transcript records what runs cost *in total* and never what the last request
+weighed, so a resumed session predicts from its second turn on. Closing it
+means recording a last-prompt-size beside `peak_prompt_tokens`; cheap, and
+nothing depends on it yet.
+
+**The compaction threshold is still a default nobody chose, and only half of
+it is fixable by machine.** `AgentConfig::compact_at` derives two thirds of
+the window, so the live providers sit at 173,015 (262,144) and 21,626
+(32,768). Measured at `max_tokens = 8192`, the worst un-priced tail is 8,192
+reply tokens plus the output budget — 16,192 at 262k against 89,129 of margin
+(5.5× oversized), and 12,288 at 32k against 11,142 (**negative by ~1,100**).
+Predictive compaction fixes the 32k side, because that overflow happens
+between the check and the next request whoever decided. It may not fix the
+other: §7.3 forbids relief compacting late, so no disposition may argue for
+holding more context, and lowering the 262k threshold stays a person setting a
+number. Left unset deliberately — but a reader should know it is a default
+rather than a decision, and that the arithmetic above says the constant is
+wrong in *both* directions.
+
+**Not to be re-litigated** (all argued in the design): decomposition runs
+downward and appraisal upward; the affect label is derived, never
 self-reported; affect may only *narrow*, so a disposition is a monotone layer
 above a structural check and never a replacement for one; and affect is a
 priority function, never an objective.
@@ -1365,7 +1395,7 @@ priority function, never an objective.
   0/6. The cost is bounded in *compute* — the prefix cache absorbs it, measured
   at better than 95% reuse — but not in *context*: on the 08-10 run the model
   averaged ~930 output tokens a turn, most of it reasoning, so an 80-turn trial
-  carries roughly 75k extra tokens by the end. Against a 174,762 threshold that
+  carries roughly 75k extra tokens by the end. Against a 173,015 threshold that
   is survivable and it may bring compaction forward on long trials, trading a
   cheap failure (a wasted nudge turn) for an expensive one (a lossy summary).
   **The measurement that decides it is `expect.min_compactions` and the
@@ -1377,17 +1407,19 @@ priority function, never an objective.
   been fatal, so the window raise and this fix are coupled.
 
 - **Decide what the compaction threshold should be, now that it moved 8x on
-  its own.** `AgentConfig::compact_at` derives two thirds of the window when
-  `[agent] compact_at_tokens` is unset, so raising `-c` from 32768 to 262144
-  took the threshold from 21,845 to **174,762** as a side effect nobody chose.
-  Nothing is broken by it — prompt caching means a growing transcript is only
-  prefilled at the delta — but two things argue for setting it explicitly and
-  lower. A cache *miss* at that depth costs ~120s of prefill before the first
-  token, and a model's useful context is generally shorter than its trained
-  one, so a transcript allowed to reach 174k may be answered worse than one
-  compacted at 100k. Left unset deliberately: it is a judgement about how runs
-  should feel, not a fact that can be measured, and the reader who decides it
-  should know it is currently a default rather than a decision.
+  its own.** `AgentConfig::compact_at` derives `COMPACT_FRACTION` (0.66) of the
+  window when `[agent] compact_at_tokens` is unset, so raising `-c` from 32768
+  to 262144 took the threshold from 21,626 to **173,015** as a side effect
+  nobody chose. Nothing is broken by it — prompt caching means a growing
+  transcript is only prefilled at the delta — but a cache *miss* at that depth
+  costs ~120s of prefill before the first token, and a model's useful context
+  is generally shorter than its trained one, so a transcript allowed to reach
+  173k may be answered worse than one compacted at 100k. **The arithmetic that
+  should decide it is in the goal-system section above**, which measures the
+  margin at both live window sizes and finds the constant wrong in *both*
+  directions — and explains why only one of those is a disposition's to fix.
+  Stated once there rather than twice, because two statements of an open
+  question drift apart.
 
 - **Re-baseline `ambiguity` and `long-horizon` at k=5.** No scorecard in
   `results/` records `runs: 5` outside the compaction arc, and these are the two
