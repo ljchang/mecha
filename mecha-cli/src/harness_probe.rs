@@ -90,6 +90,34 @@ pub struct Draw {
 /// stays bounded, which is `runlog::Scan`'s constraint.
 const POOL_MULTIPLE: usize = 4;
 
+/// How to split what the pool can supply between holdout and selection.
+///
+/// Pure, and tested, on `compact.rs`'s reasoning: getting it wrong is silent.
+/// Nothing errors, nothing looks wrong in the log — the run just spends its
+/// real-model budget on the slice that cannot decide anything and reports
+/// thin evidence, which is indistinguishable from a corpus that was genuinely
+/// too small.
+///
+/// **Both counts come off `min(want, pool)`.** Clamping only the holdout while
+/// computing the selection from the unclamped `want` hands the holdout the
+/// entire pool the moment the corpus is smaller than asked for: at the
+/// defaults (`--sessions 16 --holdout-in 3`) over six eligible episodes that
+/// drew 5 held and 1 selected — five sixths of the budget on the confirming
+/// slice, and `MIN_SELECTION_PAIRS` tripped every time. The hash partition
+/// this replaced would have given 2/4 there and could accept.
+fn slice_sizes(want: usize, holdout_in: u64, pool: usize) -> (usize, usize) {
+    let drawable = want.min(pool);
+    // At least one held whenever there is anything to draw: a measurement with
+    // no holdout is the multiple-comparisons trap the split exists to close,
+    // and reporting it as confirmed would be worse than reporting thin
+    // evidence. At `drawable == 1` that leaves no selection, which `judge`
+    // correctly reads as nothing to decide from.
+    let holdout_n = (drawable / holdout_in.max(1) as usize)
+        .max(usize::from(drawable > 0))
+        .min(drawable);
+    (holdout_n, drawable - holdout_n)
+}
+
 /// Draw a selection and a holdout for one candidate.
 ///
 /// **The holdout comes off the pool first, uniformly.** Prioritised experience
@@ -131,11 +159,22 @@ pub fn draw_episodes(
         }
         match prepare_episode(&path, &meta.id)? {
             Ok(prep) => {
-                // Headroom off the recorded outcome. A session with no
-                // recorded outcome scores zero rather than being dropped: it
-                // is still drawable by the uniform half, which is the half
-                // that must not be filtered by informativeness.
-                let headroom = Session::last_outcome(&path)
+                // Headroom off *every* outcome the session recorded, folded.
+                // `last_outcome` describes how the session ended, and an
+                // episode here is the whole session — `extract` pulls every
+                // recorded user turn and `drive_episode` replays all of them,
+                // folding each run with `absorb`. Sizing the priority signal
+                // from one run while the arms it feeds are folded over all of
+                // them is a unit mismatch, and it inverts: a resumed chat with
+                // nine error-heavy runs and a clean tenth scores zero and
+                // sorts to the bottom, so the most discriminating episode in
+                // the corpus is the one prioritised sampling drops.
+                //
+                // A session with no recorded outcome scores zero rather than
+                // being dropped: it is still drawable by the uniform half,
+                // which is the half that must not be filtered by
+                // informativeness.
+                let headroom = Session::episode_stats(&path)
                     .ok()
                     .flatten()
                     .map(|s| metric.headroom(&s))
@@ -146,8 +185,7 @@ pub fn draw_episodes(
         }
     }
 
-    let holdout_n = (want / holdout_in.max(1) as usize).max(1).min(pool.len());
-    let selection_n = want.saturating_sub(holdout_n);
+    let (holdout_n, selection_n) = slice_sizes(want, holdout_in, pool.len());
 
     // Uniform first. Sorted by id before the shuffle, or the seed is a lie —
     // a deterministic shuffle of a nondeterministic order is nondeterministic.
@@ -262,5 +300,41 @@ pub async fn drive_episode(
             stats: report.stats,
         })),
         Err(e) => Ok(Err(format!("replay failed: {e:#}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn neither_slice_is_sized_from_a_pool_that_does_not_exist() {
+        // The regression: `holdout_n` was clamped to the pool and
+        // `selection_n` was `want - holdout_n` off the *unclamped* want, so a
+        // short pool went almost entirely to the holdout.
+        assert_eq!(slice_sizes(16, 3, 6), (2, 4), "was (5, 1)");
+        assert_eq!(
+            slice_sizes(16, 3, 12),
+            (4, 8),
+            "was (5, 7) — under the floor"
+        );
+        // A full pool is unaffected, which is what makes this a fix rather
+        // than a retuning.
+        assert_eq!(slice_sizes(16, 3, 64), (5, 11));
+        assert_eq!(slice_sizes(16, 3, 16), (5, 11));
+    }
+
+    #[test]
+    fn the_split_never_promises_more_episodes_than_the_pool_holds() {
+        for pool in 0..40usize {
+            for want in [1usize, 4, 16, 33] {
+                for holdout_in in [1u64, 2, 3, 7] {
+                    let (h, sel) = slice_sizes(want, holdout_in, pool);
+                    assert!(h + sel <= pool, "{want}/{holdout_in}/{pool} overdrew");
+                    assert!(h + sel <= want, "{want}/{holdout_in}/{pool} over want");
+                    assert_eq!(h == 0, pool == 0 || want == 0, "a draw must hold one back");
+                }
+            }
+        }
     }
 }
