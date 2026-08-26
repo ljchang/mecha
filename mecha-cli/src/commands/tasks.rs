@@ -913,56 +913,6 @@ async fn work(
     Ok(())
 }
 
-/// What the run is asked to do, built from the record and nothing else (D4).
-///
-/// The board's fields are named rather than pasted as prose, and the standing
-/// paragraph tells the model the three things about this run it cannot
-/// discover from its own tool list: that its sends stage, that the status is
-/// not its to move, and that nobody is watching to answer a question. The
-/// last is Phase 1's honest posture — D13 turns "stop and say what you need"
-/// into a stored question the owner answers later, and until it exists,
-/// stopping is better than guessing.
-///
-/// **Questions are front-loaded here rather than gated by a plan review, and
-/// that is a decision against D12 as it was written.** The design proposed
-/// stopping a delegated run after its first `todo` write to take the owner's
-/// edits, which conflates two things every other system keeps apart — a plan
-/// is a reviewable document and a todo list is the agent's own execution
-/// ledger (`todo.rs`: a list set by anything but the model's own write is a
-/// second author of state the tool owns). Three findings decided it:
-///
-/// - **`docs/VERIFICATION-RESEARCH.md` argues the other way on this
-///   hardware.** Plan-first is not established over interleaved ReAct
-///   (FORGE 2026, 48,000 scenarios), *small models collapse* under
-///   plan-and-execute — Llama 3.2 3B goes 0.23 straight-shot to 0.05 — and a
-///   bad plan measures worse than no plan. mecha's whole point is a local
-///   open-weight model.
-/// - **The gate's trigger rests on a behaviour measured absent.** This model
-///   called `todo` zero times in 20 eval case-runs from prompting
-///   (2026-08-04), and keeps a list reliably only when the *user turn* asks.
-///   A gate on "the first `todo` write" would fire when the model felt like
-///   letting it.
-/// - **D12's own evidence is about the seed, not the gate.** Copilot's
-///   38.1% → 69% came purely from tuning `copilot-instructions.md`, which is
-///   this function; the 86.2%/55.1% intervention split argues for a human in
-///   the loop, which the question store already is.
-///
-/// So the intervention is here, on the **user turn** — the one delivery
-/// channel the 2026-08-04 probe found this model obeys. What D12 was reaching
-/// for and this does not reach is misalignment the model does not notice: a
-/// confidently wrong plan asks nothing. That failure is now *countable* —
-/// delegations that ended `ready for review` and were then dropped or reworked
-/// rather than marked done — so the case for building the gate can be made
-/// from the corpus instead of from the design doc.
-///
-/// **One question, not several**, and the reason is mechanical rather than
-/// stylistic: the run ends on a question, so each one is a separate
-/// end-and-resume with its own MCP startup and its own morning of the
-/// owner's. It also sidesteps a real gap — several `ask_user` calls in one
-/// turn all park, but answering one resumes the run while the others stay
-/// open. The tool's own schema says "in one sentence", which is right for a
-/// present human answering interactively and is overridden here rather than
-/// widened for everyone: a general rule is not loosened to serve one caller.
 /// What this run can reach, resolved from its own tool surface (D4).
 ///
 /// **The seed points; it does not paste.** D4 proposed a context assembler —
@@ -1016,6 +966,56 @@ impl Reach {
     }
 }
 
+/// What the run is asked to do, built from the record and nothing else (D4).
+///
+/// The board's fields are named rather than pasted as prose, and the standing
+/// paragraph tells the model the three things about this run it cannot
+/// discover from its own tool list: that its sends stage, that the status is
+/// not its to move, and that nobody is watching to answer a question. The
+/// last is Phase 1's honest posture — D13 turns "stop and say what you need"
+/// into a stored question the owner answers later, and until it exists,
+/// stopping is better than guessing.
+///
+/// **Questions are front-loaded here rather than gated by a plan review, and
+/// that is a decision against D12 as it was written.** The design proposed
+/// stopping a delegated run after its first `todo` write to take the owner's
+/// edits, which conflates two things every other system keeps apart — a plan
+/// is a reviewable document and a todo list is the agent's own execution
+/// ledger (`todo.rs`: a list set by anything but the model's own write is a
+/// second author of state the tool owns). Three findings decided it:
+///
+/// - **`docs/VERIFICATION-RESEARCH.md` argues the other way on this
+///   hardware.** Plan-first is not established over interleaved ReAct
+///   (FORGE 2026, 48,000 scenarios), *small models collapse* under
+///   plan-and-execute — Llama 3.2 3B goes 0.23 straight-shot to 0.05 — and a
+///   bad plan measures worse than no plan. mecha's whole point is a local
+///   open-weight model.
+/// - **The gate's trigger rests on a behaviour measured absent.** This model
+///   called `todo` zero times in 20 eval case-runs from prompting
+///   (2026-08-04), and keeps a list reliably only when the *user turn* asks.
+///   A gate on "the first `todo` write" would fire when the model felt like
+///   letting it.
+/// - **D12's own evidence is about the seed, not the gate.** Copilot's
+///   38.1% → 69% came purely from tuning `copilot-instructions.md`, which is
+///   this function; the 86.2%/55.1% intervention split argues for a human in
+///   the loop, which the question store already is.
+///
+/// So the intervention is here, on the **user turn** — the one delivery
+/// channel the 2026-08-04 probe found this model obeys. What D12 was reaching
+/// for and this does not reach is misalignment the model does not notice: a
+/// confidently wrong plan asks nothing. That failure is now *countable* —
+/// delegations that ended `ready for review` and were then dropped or reworked
+/// rather than marked done — so the case for building the gate can be made
+/// from the corpus instead of from the design doc.
+///
+/// **One question, not several**, and the reason is mechanical rather than
+/// stylistic: the run ends on a question, so each one is a separate
+/// end-and-resume with its own MCP startup and its own morning of the
+/// owner's. It also sidesteps a real gap — several `ask_user` calls in one
+/// turn all park, but answering one resumes the run while the others stay
+/// open. The tool's own schema says "in one sentence", which is right for a
+/// present human answering interactively and is overridden here rather than
+/// widened for everyone: a general rule is not loosened to serve one caller.
 fn work_prompt(
     task: &Value,
     today: &str,
@@ -1116,8 +1116,16 @@ fn work_prompt(
     // would dispatch — a pointer to a reader that is not there is a call that
     // cannot succeed.
     if let Some(mail) = &reach.mail_thread {
-        if task["captured_from"]["kind"].as_str() == Some("mail") {
-            let at = |k: &str| task["captured_from"][k].as_str().unwrap_or_default();
+        let at = |k: &str| task["captured_from"][k].as_str().unwrap_or_default();
+        // **An id, not just a kind.** `tui/tasks.rs`'s reader already ruled
+        // on this shape in the other direction — a pointer missing its `kind`
+        // or `id` reads as no source at all, because an affordance that opens
+        // nothing is worse than the plain absence — and the two readers of one
+        // field must agree. Here the cost of disagreeing is sharper than a
+        // dead button: `unwrap_or_default()` would emit a call with
+        // `thread_id ""`, which is a named tool the run cannot succeed at, in
+        // the seed sentence telling it to go and read.
+        if at("kind") == "mail" && !at("id").is_empty() {
             let mut how = format!("`{mail}` with thread_id \"{}\"", at("id"));
             if !at("account").is_empty() {
                 // Thread ids are account-scoped, so the account is not an
@@ -1232,7 +1240,9 @@ mod tests {
             "Context:",
             "Waiting on:",
             "Due:",
+            "Deferred until:",
             "Today:",
+            "Captured from:",
             "The owner adds:",
         ] {
             assert!(
@@ -1385,6 +1395,32 @@ mod tests {
         assert!(
             !p.contains("mail_get_thread"),
             "wrong store, wrong id:\n{p}"
+        );
+    }
+
+    /// **A pointer with no id is not a pointer**, and the two readers of the
+    /// field agree about that. `tui/tasks.rs:809` treats a row missing `kind`
+    /// or `id` as having no source, on the argument that an affordance which
+    /// opens nothing is worse than the plain absence. Here it is sharper: an
+    /// id defaulted to the empty string would put `thread_id ""` inside the
+    /// sentence telling the run to go and read — a named call that cannot
+    /// succeed, which is the level-3 skill bug arriving by the other door.
+    #[test]
+    fn a_pointer_with_no_id_names_no_reader() {
+        let mut t = task();
+        t["captured_from"] = json!({"kind": "mail"});
+        let p = work_prompt(&t, "2026-08-26", None, false, &reach());
+        assert!(
+            !p.contains("mail_get_thread"),
+            "nothing to point at, so nothing is pointed at:\n{p}"
+        );
+        assert!(
+            !p.contains("thread_id \"\""),
+            "and above all not an empty id, which is a call that cannot succeed"
+        );
+        assert!(
+            p.contains("Captured from: mail"),
+            "the fact survives; the affordance does not"
         );
     }
 
