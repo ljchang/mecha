@@ -248,6 +248,16 @@ async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Resul
     let staged_before = staged_ids(&q.session_id);
     let tctx = std::sync::Arc::clone(&prepared.agent.context().tools);
 
+    // The resumed run is a run: it sets `waiting_on` to the agent, so every
+    // surface renders "mecha is on it" *and a stop button* — and without a
+    // marker that button found nothing to stop, printed "nothing is running",
+    // and left the card pulsing at a run that carried on. A run visible as
+    // running must be stoppable by the same token.
+    let run_markers = super::tasks::markers()?;
+    if let Some(task) = q.task_id.as_deref() {
+        run_markers.mark_running(task, None)?;
+    }
+
     // The ball comes back to the agent for as long as the run lasts. Without
     // this the board would say the task is waiting on *you* while a run is
     // actively working it — the same lie `tasks work` moves the status to
@@ -290,18 +300,40 @@ async fn answer_and_resume(global: &GlobalOpts, id: &str, answer: &str) -> Resul
     mecha_core::agent::append_user_text(&mut convo.messages, text);
 
     eprintln!("resuming {} with the answer", q.session_id);
-    let outcome = crate::interrupt::run_interruptible(
+    let outcome = crate::interrupt::run_interruptible_watching(
         &prepared.agent,
         prepared.agent.context(),
         &mut convo,
         None,
+        q.task_id.as_deref().map(|task| {
+            let m = super::tasks::markers().ok();
+            let id = task.to_string();
+            std::sync::Arc::new(move || m.as_ref().is_some_and(|m| m.cancel_requested(&id)))
+                as std::sync::Arc<dyn Fn() -> bool + Send + Sync>
+        }),
     )
     .await;
+    if let Some(task) = q.task_id.as_deref() {
+        run_markers.clear(task);
+    }
     session.record_run(&recorded, &convo)?;
     session.append(&Record::Taint(convo.taint))?;
     asker.stamp_taint(convo.taint);
 
     if let Err(e) = outcome {
+        // The same restore `tasks work` does, for the same reason: this run
+        // moved the board to say the agent had the task, and a task pinned to
+        // the agent with no process running is the queue growing for a reason
+        // nobody can see. It was missing here because the move back sat below
+        // the bail — the hazard is identical, the door is different.
+        if let (Some(update), Some(task)) = (&update, q.task_id.as_deref()) {
+            if let Err(restore) =
+                super::tasks::move_task(update, &tctx, task, "waiting", super::tasks::OWNER, None)
+                    .await
+            {
+                eprintln!("warning: the board still says the agent has {task}: {restore:#}");
+            }
+        }
         bail!("the resumed run failed: {e:#}");
     }
 

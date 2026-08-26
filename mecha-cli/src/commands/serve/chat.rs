@@ -1406,11 +1406,10 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
     }
-    // D15 — the plan comes back with the conversation. Nothing in `serve/`
-    // renders it *yet*, so the effect here today is narrower than on the TUI
-    // and worth stating rather than overclaiming: it makes `carried_state`
-    // correct, so a resumed session that compacts carries its real plan
-    // instead of nothing. The page reading it back is Phase 4's work.
+    // D15 — the plan comes back with the conversation, and two things then
+    // read it: the transcript response serves it to the page, and
+    // `carried_state` carries it across a compaction so a resumed session that
+    // summarises itself keeps its real plan rather than nothing.
     if let Some(todo) = &chat.todo {
         if let Some(n) = todo.rehydrate(&workspace, &conversation.messages) {
             tracing::debug!(items = n, "restored the resumed session's todo list");

@@ -65,6 +65,14 @@ impl RunMarkers {
     /// whether one is in flight.
     pub fn mark_running(&self, name: &str, slot: Option<DateTime<Utc>>) -> Result<()> {
         crate::create_private_dir(&self.dir)?;
+        // **A run starts uncancelled, whatever was left lying around.**
+        // `clear` removes both files, but a cancel written in the window
+        // between `request_cancel`'s liveness check and the previous run's
+        // `clear` survives it — as does one left by a SIGKILL or a reboot.
+        // `cancel_requested` is a bare existence check, so the next run would
+        // stop itself two seconds in and report a near-empty partial that
+        // looks exactly like a model giving up.
+        let _ = std::fs::remove_file(self.cancel_path(name));
         let marker = RunMarker {
             pid: std::process::id(),
             started_at: Utc::now(),
@@ -154,6 +162,25 @@ mod tests {
         assert!(
             !m.dir().join("a.running").exists(),
             "and the stale marker is swept on the way past"
+        );
+    }
+
+    /// A cancel that outlived the run it was meant for must not reach the
+    /// next one. Fails on the old `mark_running`, which wrote the marker and
+    /// left whatever cancel was already there.
+    #[test]
+    fn a_stale_cancel_does_not_reach_the_next_run() {
+        let m = RunMarkers::new(scratch("stalecancel"));
+        crate::create_private_dir(m.dir()).unwrap();
+        // The shape a kill or a lost race leaves behind: a cancel with no
+        // marker beside it.
+        std::fs::write(m.dir().join("a.cancel"), "whenever").unwrap();
+        assert!(m.cancel_requested("a"));
+
+        m.mark_running("a", None).unwrap();
+        assert!(
+            !m.cancel_requested("a"),
+            "the new run must not inherit the old run's stop"
         );
     }
 
