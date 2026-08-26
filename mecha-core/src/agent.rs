@@ -1024,8 +1024,11 @@ impl Agent {
         // snapshot below is: the loop returns from six places, and the count
         // lives in a local behind all of them.
         let mut context_overflows = 0u32;
+        // The size series lives here for the same reason: it is built inside
+        // the loop and read after it, and the loop has six ways out.
+        let mut pressure = crate::pressure::ContextTracker::new();
         let mut outcome = self
-            .run_loop(cx, convo, events, &mut context_overflows)
+            .run_loop(cx, convo, events, &mut context_overflows, &mut pressure)
             .await?;
         outcome.context_overflows = context_overflows;
         // One place, after every exit. The loop returns from six of them, and
@@ -1035,7 +1038,7 @@ impl Agent {
         outcome.homeostat = cx
             .homeostat
             .clone()
-            .map(crate::homeostat::Homeostat::finish);
+            .map(|h| h.finish(&pressure, self.context_window));
         Ok(outcome)
     }
 
@@ -1045,6 +1048,7 @@ impl Agent {
         convo: &mut Conversation,
         events: Option<UnboundedSender<AgentEvent>>,
         context_overflows: &mut u32,
+        pressure: &mut crate::pressure::ContextTracker,
     ) -> Result<RunOutcome> {
         // Run-scoped state a tool cannot otherwise see, stamped onto the
         // `ToolCtx` once here rather than at every call site that builds a
@@ -1195,7 +1199,24 @@ impl Agent {
             // `!loop_detected`: the run is about to stop; a summary spent on a
             // transcript that is about to be abandoned is pure waste.
             if let Some(limit) = self.compact_limit(cx) {
-                if prompt_tokens >= limit && !compaction_gave_up && !loop_detected {
+                // `reported || predicted`, which is what the tracker's `over`
+                // spells and why it spells it that way. The reported size is
+                // one turn out of date by the time this check runs: the
+                // assistant turn and its tool results are already in
+                // `messages` and nobody has priced them. Predicting from the
+                // last real measurement plus the bytes since closes that gap,
+                // and *only* adds reasons to compact — the reactive arm is
+                // still the first thing consulted, so no state of the tracker
+                // can make this fire later than it did before.
+                // Cheap guards first: a run that has given up on compaction
+                // or is about to stop has no use for a full transcript walk,
+                // and `message_bytes` renders every `ToolUse` input to
+                // measure it — a cost that grows with the transcript, paid on
+                // the turns least able to afford it.
+                if !compaction_gave_up
+                    && !loop_detected
+                    && pressure.over(limit, crate::pressure::message_bytes(messages))
+                {
                     // What is about to be rewritten, kept for the recording:
                     // the front-end records at run end, so without this the
                     // turns a rewrite replaces were never anyone's to write.
@@ -1240,50 +1261,69 @@ impl Agent {
                                 prompt_tokens,
                             },
                         );
-                        // Give it a turn to take effect before paying for a
-                        // summary: the next reported prompt size says whether
-                        // this was enough, and a summary is lossy where this is
-                        // merely lossy about the middle of a file.
-                        //
-                        // `collapsed` is recorded above but deliberately not
-                        // counted here: it removes repetition, not bulk, so
-                        // treating it as "freed enough" would spend a turn
-                        // arriving back at the same threshold.
-                        if evicted + thinned > 0 {
-                            continue;
-                        }
+                        // These passes rewrote the list the reported size was
+                        // a measurement *of*, so that number is no longer a
+                        // reading of anything. Retiring it is what lets the
+                        // question be asked again below against the transcript
+                        // as it now is.
+                        pressure.invalidate();
                     }
 
-                    match self.compact(cx, messages, &events).await {
-                        Ok(Some(spent)) => {
-                            // `Some` is compact's word that a summary was
-                            // installed — the rewrite happened. `take` because
-                            // an earlier pass in this same turn may already
-                            // have recorded the pre-pass state, and two copies
-                            // of it would write two identical rewrite records.
-                            if let Some(pre) = pre_rewrite.take() {
-                                convo.rewritten.push(pre);
+                    // Ask again before paying for a summary. This is the
+                    // deferral the `continue` here used to intend and never
+                    // achieved: it jumped to the top of the loop without
+                    // sending a request, `prompt_tokens` is assigned in one
+                    // place and only after a response, so the re-entered check
+                    // saw the identical stale value — and the three passes are
+                    // idempotent, with tests saying so, so they freed nothing
+                    // the second time and the summary was paid for anyway one
+                    // iteration later. Answering it needed a reading the
+                    // reactive check cannot produce without spending a
+                    // request, which is exactly what the prediction is.
+                    //
+                    // It also dissolves the special case above. `collapsed`
+                    // was excluded from "freed enough" because finding out
+                    // cost a whole turn, so a cosmetic saving was worse than
+                    // not trying; measuring the bytes costs nothing, so
+                    // whatever any pass genuinely freed now counts, and
+                    // whatever it did not still compacts.
+                    if !pressure.over(limit, crate::pressure::message_bytes(messages)) {
+                        tracing::debug!("the free passes freed enough; no summary this turn");
+                    } else {
+                        match self.compact(cx, messages, &events).await {
+                            Ok(Some(spent)) => {
+                                // `Some` is compact's word that a summary was
+                                // installed — the rewrite happened. `take` because
+                                // an earlier pass in this same turn may already
+                                // have recorded the pre-pass state, and two copies
+                                // of it would write two identical rewrite records.
+                                if let Some(pre) = pre_rewrite.take() {
+                                    convo.rewritten.push(pre);
+                                }
+                                usage.add(&spent);
+                                compactions += 1;
+                                loop_guard.arm();
+                                // A summary rewrites the list too, so the same
+                                // rule applies to it as to the free passes.
+                                pressure.invalidate();
                             }
-                            usage.add(&spent);
-                            compactions += 1;
-                            loop_guard.arm();
-                        }
-                        // Nothing legal to drop — a short conversation holding
-                        // one enormous tool result, usually. Cheap to
-                        // re-evaluate next turn, since it costs no request.
-                        Ok(None) => tracing::debug!(
-                            prompt_tokens,
-                            "over the compaction threshold with nothing safe to drop"
-                        ),
-                        // A failed summary is not a reason to abandon the run:
-                        // the oversized request might still succeed, and if it
-                        // does not, the provider's own error is clearer than
-                        // ours. But stop trying — each attempt is a request of
-                        // its own, and retrying a failure every turn would cost
-                        // more than the compaction was going to save.
-                        Err(e) => {
-                            tracing::warn!(error = %e, "compaction failed; continuing uncompacted");
-                            compaction_gave_up = true;
+                            // Nothing legal to drop — a short conversation holding
+                            // one enormous tool result, usually. Cheap to
+                            // re-evaluate next turn, since it costs no request.
+                            Ok(None) => tracing::debug!(
+                                prompt_tokens,
+                                "over the compaction threshold with nothing safe to drop"
+                            ),
+                            // A failed summary is not a reason to abandon the run:
+                            // the oversized request might still succeed, and if it
+                            // does not, the provider's own error is clearer than
+                            // ours. But stop trying — each attempt is a request of
+                            // its own, and retrying a failure every turn would cost
+                            // more than the compaction was going to save.
+                            Err(e) => {
+                                tracing::warn!(error = %e, "compaction failed; continuing uncompacted");
+                                compaction_gave_up = true;
+                            }
                         }
                     }
                 }
@@ -1363,6 +1403,11 @@ impl Agent {
             turns += 1;
             emit(&events, AgentEvent::TurnStart { turn: turns });
 
+            // The size of exactly what is about to go on the wire. Taken here
+            // rather than after the response, because the overflow arm below
+            // rewrites `messages` between the two and the pair must describe
+            // one request.
+            let mut sent_bytes = crate::pressure::message_bytes(messages);
             let mut request = CompletionRequest {
                 model: self.model.clone(),
                 system: self.system.clone(),
@@ -1444,6 +1489,12 @@ impl Agent {
                         convo.rewritten.push(pre_rewrite);
                     }
                     request.messages = messages.clone();
+                    // The retry carries a different list; the anchor has to
+                    // describe the one that was actually priced, or the next
+                    // prediction is measured from a transcript that was never
+                    // sent.
+                    pressure.invalidate();
+                    sent_bytes = crate::pressure::message_bytes(messages);
                     self.complete(cx, &request, &events).await?
                 }
                 other => other?,
@@ -1462,6 +1513,15 @@ impl Agent {
                     // What the cut turn had already cost, on top of the turns
                     // that completed.
                     usage.add(&spent);
+                    // And the size it was cut at. The input tokens arrive in
+                    // the first frame, so this is a real measurement even
+                    // though the output half never came — and the interrupted
+                    // run is exactly the one whose pressure is worth knowing,
+                    // since people stop runs that have got big. Without it
+                    // `peak_prompt_tokens` reports the previous, smaller turn.
+                    if spent.total_input() > 0 {
+                        pressure.observe(spent.total_input(), sent_bytes);
+                    }
                     let mut outcome = self.interrupted(
                         partial,
                         usage,
@@ -1478,6 +1538,9 @@ impl Agent {
             };
             usage.add(&response.usage);
             prompt_tokens = response.usage.total_input();
+            // One real measurement, and the only one there is: the provider
+            // reports what a prompt cost and never what is left.
+            pressure.observe(prompt_tokens, sent_bytes);
             malformed += response.malformed_tool_args;
             emit(&events, AgentEvent::TurnUsage(response.usage.clone()));
 
@@ -4143,6 +4206,311 @@ mod tests {
         assert_ne!(outcome.stop_cause, StopCause::NoOutput);
         assert!(!outcome.exhausted);
         assert_eq!(provider.seen.lock().unwrap().len(), 6);
+    }
+
+    /// A small call with a large result, which is the shape that breaks the
+    /// reactive threshold: `EchoTool` returns its own argument, so making its
+    /// result big makes the *call* big too, and the assistant turn then grows
+    /// in lockstep with the result — hiding the very asymmetry under test.
+    struct BulkTool;
+
+    #[async_trait]
+    impl Tool for BulkTool {
+        fn name(&self) -> &str {
+            "bulk"
+        }
+        fn description(&self) -> &str {
+            "Return n bytes."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            let n = input.get("n").and_then(Value::as_u64).unwrap_or(0) as usize;
+            Ok(ToolOutput::ok("z".repeat(n)))
+        }
+    }
+
+    /// Prices what it is sent instead of reporting a constant, and refuses a
+    /// request over its window — which is what a real backend does and what
+    /// no other test provider here can express. Without both, the gap
+    /// predictive compaction closes is not reachable in a test: the gap *is*
+    /// the difference between what the last request cost and what the next one
+    /// will, and a provider reporting 10 tokens for everything has no such
+    /// difference.
+    struct SizedProvider {
+        turns: Mutex<Vec<CompletionResponse>>,
+        /// Prompt size and whether the request was the summariser's, per call.
+        seen: Mutex<Vec<(u64, bool)>>,
+        window: Option<u64>,
+    }
+
+    impl SizedProvider {
+        fn new(window: Option<u64>, turns: Vec<CompletionResponse>) -> Arc<SizedProvider> {
+            Arc::new(SizedProvider {
+                turns: Mutex::new(turns),
+                seen: Mutex::new(Vec::new()),
+                window,
+            })
+        }
+        fn summaries(&self) -> usize {
+            self.seen.lock().unwrap().iter().filter(|(_, s)| *s).count()
+        }
+    }
+
+    #[async_trait]
+    impl Provider for SizedProvider {
+        fn id(&self) -> &str {
+            "sized"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-1"
+        }
+        async fn complete(
+            &self,
+            req: &CompletionRequest,
+            _sink: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            // The same rate the predictor floors at, so the arithmetic under
+            // test is the loop's and not this fixture's.
+            let tokens = (crate::pressure::message_bytes(&req.messages) as f64 / 3.0) as u64;
+            // The summariser is the one request with no tools on it.
+            self.seen
+                .lock()
+                .unwrap()
+                .push((tokens, req.tools.is_empty()));
+            if self.window.is_some_and(|w| tokens > w) {
+                anyhow::bail!(
+                    "request ({tokens} tokens) exceeds the available context size ({} tokens)",
+                    self.window.unwrap()
+                );
+            }
+            // Report what this prompt cost. Without it the loop anchors on
+            // `assistant`'s hardcoded ten tokens and every prediction is a
+            // measurement of the fixture — which is exactly what happened
+            // the first time this was written, and it looked like the
+            // predictor not working.
+            let priced = |mut r: CompletionResponse| {
+                r.usage = Usage {
+                    input_tokens: tokens,
+                    ..r.usage
+                };
+                r
+            };
+            if req.tools.is_empty() {
+                // A plausible summary, so the run continues past it.
+                return Ok(priced(assistant(
+                    vec![Block::text("Earlier: the assistant read some files.")],
+                    StopReason::EndTurn,
+                )));
+            }
+            let mut turns = self.turns.lock().unwrap();
+            anyhow::ensure!(!turns.is_empty(), "provider ran out of scripted turns");
+            Ok(priced(turns.remove(0)))
+        }
+    }
+
+    fn shared(p: &Arc<SizedProvider>) -> Box<dyn Provider> {
+        struct Shared(Arc<SizedProvider>);
+        #[async_trait]
+        impl Provider for Shared {
+            fn id(&self) -> &str {
+                self.0.id()
+            }
+            fn default_model(&self) -> &str {
+                self.0.default_model()
+            }
+            async fn complete(
+                &self,
+                req: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                self.0.complete(req, sink).await
+            }
+        }
+        Box::new(Shared(Arc::clone(p)))
+    }
+
+    fn sized_agent(provider: &Arc<SizedProvider>, cfg: AgentConfig) -> Agent {
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(BulkTool));
+        Agent::new(
+            shared(provider),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx {
+                workspace: std::env::temp_dir(),
+                shell_timeout: std::time::Duration::from_secs(1),
+                // Large enough that the fixture's results are not truncated
+                // before the sizes under test are reached.
+                output_budget_bytes: 400_000,
+                ..Default::default()
+            },
+            cfg,
+            None,
+        )
+        .unwrap()
+    }
+
+    /// The failure predictive compaction exists to prevent, driven end to end.
+    ///
+    /// The threshold is checked between turns against the *previous* prompt's
+    /// size, and a turn's tool results land after that check — so a transcript
+    /// comfortably under the threshold can produce a request well over the
+    /// window. The reactive check cannot see it coming. The prediction can,
+    /// because the bytes are already in `messages`; nothing is extrapolated.
+    ///
+    /// The arithmetic, at 3 bytes a token, a 60k window and a 40k threshold:
+    ///
+    /// | after | messages | next request | reactive sees | predicted |
+    /// |---|---|---|---|---|
+    /// | turn 1 | 100 KB | 33k — fits | 0 | 33k — under |
+    /// | turn 2 | 200 KB | **67k — over the window** | 33k — under | 67k — over |
+    ///
+    /// So the reactive check declines to act on the one turn where acting was
+    /// the whole game, and finds out by being refused. Graded on
+    /// `context_overflows`, which is what that counter is for.
+    #[tokio::test]
+    async fn a_turns_results_no_longer_take_the_next_request_over_the_window() {
+        let call = |id: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "bulk".into(),
+                    input: json!({"n": 100_000}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let cfg = AgentConfig {
+            compact_at_tokens: Some(40_000),
+            ..AgentConfig::default()
+        };
+        let provider = SizedProvider::new(
+            Some(60_000),
+            vec![
+                call("t1"),
+                call("t2"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+        );
+        let agent = sized_agent(&provider, cfg);
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.text, "done");
+        assert_eq!(
+            outcome.context_overflows, 0,
+            "the prediction saw results that were already in `messages`; the \
+             reactive check could only have found out by sending them"
+        );
+        let sizes: Vec<u64> = provider
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(t, _)| *t)
+            .collect();
+        assert!(
+            sizes.iter().all(|t| *t <= 60_000),
+            "no request may exceed the window: {sizes:?}"
+        );
+        // And it acted rather than got lucky: the transcript was rewritten.
+        assert!(!convo.rewritten.is_empty());
+    }
+
+    /// The deferral the loop has always meant to make.
+    ///
+    /// A resumed conversation arrives already over the threshold and carrying
+    /// a superseded result — the ordinary shape, since a session long enough
+    /// to need compacting has usually read the same thing twice. Eviction
+    /// removes it for free. Whether that was *enough* is a question the
+    /// reactive check cannot answer without spending a request, so the old
+    /// code asked it by jumping to the top of the loop — where the same stale
+    /// number was waiting and the three passes, being idempotent, had nothing
+    /// left to free. It paid for a summary it did not need, every time.
+    ///
+    /// The history is long enough for a summary to be *worth* taking. Without
+    /// that, `worth_compacting` declines, no request is issued, and the test
+    /// passes against the old code for a reason that has nothing to do with
+    /// the deferral — which is what the first draft of it did.
+    #[tokio::test]
+    async fn eviction_that_frees_enough_is_not_followed_by_a_summary() {
+        let big = "z".repeat(100_000);
+        let bulk = json!({"n": 100_000});
+        let mut history = vec![Message::user("go")];
+        // Enough turns behind the cut point for a summary to be worthwhile.
+        for i in 0..5 {
+            history.push(Message::assistant(vec![Block::ToolUse {
+                id: format!("s{i}"),
+                name: "bulk".into(),
+                input: json!({"n": i}),
+            }]));
+            history.push(Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: format!("s{i}"),
+                content: "z".repeat(i),
+                is_error: false,
+            }]));
+        }
+        // Two identical calls: the older result is superseded by the newer.
+        for id in ["a", "b"] {
+            history.push(Message::assistant(vec![Block::ToolUse {
+                id: id.into(),
+                name: "bulk".into(),
+                input: bulk.clone(),
+            }]));
+            history.push(Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: id.into(),
+                content: big.clone(),
+                is_error: false,
+            }]));
+        }
+
+        let cfg = AgentConfig {
+            // ~200 KB of history prices at ~67k, so the run starts over the
+            // threshold on the *reported* size. Both the old code and the new
+            // one enter the compaction block; only one leaves without paying.
+            compact_at_tokens: Some(60_000),
+            ..AgentConfig::default()
+        };
+        let provider = SizedProvider::new(
+            None,
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "c".into(),
+                        name: "bulk".into(),
+                        input: json!({"n": 10}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+        );
+        let agent = sized_agent(&provider, cfg);
+
+        let mut convo = Conversation::from(history);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.text, "done");
+        assert_eq!(
+            provider.summaries(),
+            0,
+            "evicting the superseded result freed enough; the summary was waste"
+        );
+        assert_eq!(outcome.compactions, 0);
+        // And the block really was entered — otherwise this passes for the
+        // wrong reason, by never having been in a position to compact.
+        assert!(
+            !convo.rewritten.is_empty(),
+            "the transcript was rewritten, so the block was entered"
+        );
     }
 
     /// Scripts errors as well as turns, which [`ScriptedProvider`] cannot:
