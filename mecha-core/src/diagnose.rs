@@ -491,6 +491,50 @@ rationale: taint minimization refuses calls that would have succeeded";
     }
 
     #[test]
+    fn every_security_setting_is_guarded_including_the_ones_not_yet_written() {
+        // `GUARDED_KEYS` is a hand-maintained list, so its decay path is a
+        // field added to `SecurityConfig` that nobody thinks to add here. It
+        // would simply stop being guarded — no error, no warning, and the
+        // proposal that names it routes on a label the model chose. That is
+        // the silently-degrading-sandbox shape, one layer up, and it is
+        // exactly what this whole check was written to refuse.
+        //
+        // There is no reflection in Rust, but the struct derives `Serialize`,
+        // so serialising the default *is* the field list as the compiler sees
+        // it. Adding a field now fails this test instead of passing quietly.
+        let v = serde_json::to_value(crate::config::SecurityConfig::default())
+            .expect("SecurityConfig serialises");
+        let fields = v.as_object().expect("as a map");
+        assert!(
+            !fields.is_empty(),
+            "no fields found — did the shape change?"
+        );
+        for name in fields.keys() {
+            assert!(
+                names_guarded_setting(&format!("{name}=whatever")).is_some(),
+                "`{name}` is a [security] setting and nothing guards it by name. \
+                 Add it to GUARDED_KEYS. A proposal naming it while asserting \
+                 `class: config` would route to the measurement arm."
+            );
+        }
+    }
+
+    #[test]
+    fn a_sandbox_or_outbox_setting_is_guarded_by_its_section_not_its_field() {
+        // Deliberately not the same treatment as `[security]`. Those field
+        // names are generic — `kind`, `tools`, `network` — and matching them
+        // bare would fire on ordinary prose, which is the failure mode
+        // `CARRY_OVER_WORDS` already records: a check that hits honest
+        // proposals gets turned off and then protects nothing. A proposer has
+        // to write the section for the same reason a reader would: bare
+        // `kind=none` does not say what it changes.
+        assert!(names_guarded_setting("sandbox.kind=none").is_some());
+        assert!(names_guarded_setting("[outbox] tools = []").is_some());
+        assert_eq!(names_guarded_setting("kind=none"), None);
+        assert_eq!(names_guarded_setting("tools=[]"), None);
+    }
+
+    #[test]
     fn the_closed_override_set_is_untouched_by_the_check() {
         // Every key a candidate may auto-accept on. If one of these ever
         // reclassified, the measurement arm would go silent and the loop would
