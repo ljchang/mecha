@@ -28,13 +28,19 @@
 //! real measurement and adding only the marginal cost of what changed since
 //! removes `a` from the arithmetic entirely, because it is in the anchor.
 //!
-//! `r` is measured between the last two observations and **floored at the
-//! plain-text rate**, never taken lower. A rate that measures low is a rate
-//! measured across something that is cheap per byte — an image, which tiles to
-//! a fixed token count however many bytes it carries — and carrying that
-//! forward would under-predict the next thousand bytes of ordinary prose. The
-//! floor makes the error land on the side of predicting *more*, which is the
-//! side that compacts early.
+//! `r` is measured between the last two observations and **clamped into the
+//! band a real tokenizer can occupy** — never below the plain-text rate, never
+//! above one token per byte, and not measured at all from a delta too small to
+//! be a sample. The floor covers content that is genuinely cheap per byte
+//! (repeated characters, whitespace-heavy tool output); the ceiling covers
+//! everything that puts tokens on the numerator with no bytes on the
+//! denominator, which is the larger hazard and the one that bites in both
+//! directions. See `MAX_TOKENS_PER_BYTE`.
+//!
+//! Note what the ceiling is *not* for: an arriving image. `message_bytes`
+//! excludes image payloads, so an image does not produce the cheap-per-byte
+//! shape at all — it produces the opposite one, a large token delta over
+//! almost no bytes, which is the ceiling's business rather than the floor's.
 //!
 //! ## Monotonicity, and the one place it looks violated
 //!
@@ -50,6 +56,23 @@
 //! honour it is not caution, it is arithmetic about a deleted object. So a
 //! rewrite marks it stale and the prediction becomes the only reading there
 //! is, until the provider prices the new list and supplies a real one.
+//!
+//! ## Known: the series does not cross a run boundary
+//!
+//! A tracker is created per `run_in`, so in `mecha chat` and the TUI — where
+//! one submission is one run — it starts empty on every user turn. On the
+//! first iteration of a run there is no anchor, so `over` is false whatever
+//! the transcript weighs, and a conversation that grew through user turns, or
+//! a resumed session already near the window, still discovers the overflow by
+//! being refused.
+//!
+//! Left as it is deliberately, and it is not a regression: `prompt_tokens`
+//! reset at exactly the same boundary before this existed. Closing it means
+//! bundling the series with `Conversation`, the way taint is bundled — keep
+//! the history and you keep what was learned about it — and that needs an
+//! answer for the `/model` switch first, because an anchor is a measurement
+//! under one tokenizer and one tool surface and means nothing under another.
+//! That is a design decision about where the state lives, not a fix.
 //!
 //! The loop already assumed exactly this: after eviction freed something it
 //! `continue`s, meaning to *"give it a turn to take effect before paying for a
@@ -69,6 +92,37 @@ use crate::message::{Block, Message};
 /// opposite ends, and a budget that thinks results cost 3 bytes a token beside
 /// a predictor that thinks they cost 4 is two answers to one question.
 pub const BYTES_PER_TOKEN: f64 = 3.0;
+
+/// Hard ceiling on the measured rate: **no tokenizer emits more than one token
+/// per byte**, because a token is at least one byte.
+///
+/// So an apparent rate above this is not a property of the text — it is the
+/// delta measuring something that is not in the message list at all. That
+/// happens: `a` is only *approximately* constant within a run. The tool specs
+/// move when a skill narrows the surface or the phase changes, cache
+/// accounting shifts between turns, and a failover answers with a different
+/// tokenizer. Any of those puts tokens on the numerator with no bytes on the
+/// denominator.
+///
+/// Without the ceiling that is unbounded, and it breaks in both directions.
+/// Measured on a probe: `observe(49_000, 149_960)` then `observe(50_000,
+/// 150_000)` is a 40-byte delta against 1,000 tokens — `r` of 25 — after which
+/// an ordinary 12 KB tool result predicts 350,000 tokens on a transcript
+/// really near 54k, buying a summary request and a lossy rewrite for nothing.
+/// The same inflated rate then *under*-predicts once the free passes shave 2 KB
+/// off: the predicted saving is 50,000 tokens, the prediction lands at zero,
+/// and a transcript the provider had just priced at 50,000 skips its summary
+/// and goes out oversized. The second direction is the dangerous one, and it
+/// is why this is a clamp rather than a warning.
+const MAX_TOKENS_PER_BYTE: f64 = 1.0;
+
+/// Below this, an inter-turn delta is noise rather than a sample.
+///
+/// A turn can move very few message bytes — a `todo` call and a one-line
+/// result — while the priced total moves for reasons above. Dividing by a tiny
+/// denominator turns that into an arbitrarily large rate, so a short delta
+/// does not get a vote and the floor stands in until a real one arrives.
+const MIN_SAMPLE_BYTES: f64 = 512.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Observation {
@@ -121,7 +175,13 @@ impl ContextTracker {
         self.peak_tokens
     }
 
-    /// Marginal tokens per byte, floored at the plain-text rate.
+    /// Marginal tokens per byte, from the last inter-turn delta, clamped into
+    /// the band any real tokenizer can occupy.
+    ///
+    /// Both bounds fail toward predicting *more*, which is the side that
+    /// compacts early — except the ceiling, which also bounds how large a
+    /// saving a rewrite may be credited with, and that is the direction a
+    /// missing bound skips a summary that was needed.
     fn tokens_per_byte(&self) -> f64 {
         let floor = 1.0 / BYTES_PER_TOKEN;
         let (Some(last), Some(prev)) = (self.last, self.prev) else {
@@ -129,10 +189,10 @@ impl ContextTracker {
         };
         let d_bytes = last.bytes as f64 - prev.bytes as f64;
         let d_tokens = last.tokens as f64 - prev.tokens as f64;
-        if d_bytes <= 0.0 || d_tokens <= 0.0 {
+        if d_bytes < MIN_SAMPLE_BYTES || d_tokens <= 0.0 {
             return floor;
         }
-        (d_tokens / d_bytes).max(floor)
+        (d_tokens / d_bytes).clamp(floor, MAX_TOKENS_PER_BYTE)
     }
 
     /// What a request carrying `bytes` of messages would cost.
@@ -233,20 +293,63 @@ mod tests {
     }
 
     #[test]
-    fn a_measured_rate_above_the_floor_is_used_and_one_below_it_is_not() {
+    fn a_measured_rate_inside_the_band_is_used_and_one_outside_it_is_not() {
         // Token-dense content: 900 bytes cost 450 tokens, twice the prose rate.
         let mut dense = ContextTracker::new();
         dense.observe(1_000, 1_000);
         dense.observe(1_450, 1_900);
         assert_eq!(dense.predict(2_900), Some(1_950), "0.5 tok/byte carried on");
 
-        // An image landed: bytes leapt, tokens barely moved. Carrying that
-        // rate forward would under-predict every later byte of prose, so the
-        // floor takes over.
+        // Genuinely cheap per byte — a result that is mostly repeated
+        // characters. Carrying that forward would under-predict the next
+        // thousand bytes of prose, so the floor takes over. Deliberately not
+        // an image: `message_bytes` excludes image payloads, so an image
+        // cannot produce this shape.
         let mut cheap = ContextTracker::new();
         cheap.observe(1_000, 1_000);
         cheap.observe(1_010, 9_000);
         assert_eq!(cheap.predict(12_000), Some(2_010), "floored at 1/3");
+    }
+
+    /// The rate is a ratio, and a ratio with a tiny denominator is not a
+    /// measurement. A turn can move almost no message bytes — a `todo` call
+    /// and a one-line result — while the priced total moves for reasons that
+    /// are not in the message list at all.
+    #[test]
+    fn a_delta_too_small_to_be_a_sample_does_not_set_the_rate() {
+        let mut t = ContextTracker::new();
+        t.observe(49_000, 149_960);
+        t.observe(50_000, 150_000); // 40 bytes, 1,000 tokens
+                                    // At the unguarded rate of 25 tok/byte this predicted 350,000.
+        assert_eq!(t.predict(162_000), Some(54_000), "the floor, not 25x");
+    }
+
+    /// The hole the ceiling closes, and it is the dangerous direction: an
+    /// inflated rate makes a small rewrite look like an enormous saving, and
+    /// the summary that was due is skipped.
+    #[test]
+    fn an_impossible_rate_cannot_credit_a_rewrite_with_a_saving_it_did_not_make() {
+        let mut t = ContextTracker::new();
+        // A sample large enough to be believed, but priced at a rate no
+        // tokenizer can produce — the shape a narrowed tool surface or a
+        // failover to a different tokenizer leaves behind.
+        t.observe(20_000, 100_000);
+        t.observe(50_000, 101_000); // 1,000 bytes, 30,000 tokens → r = 30
+        assert!(t.over(40_000, 101_000), "50,000 is over the limit");
+
+        // The free passes shave 2 KB. At r = 30 that is a 60,000-token saving
+        // and the prediction floors at zero, so the summary is skipped on a
+        // transcript the provider had just priced at 50,000.
+        t.invalidate();
+        assert_eq!(
+            t.predict(99_000),
+            Some(48_000),
+            "a 2 KB cut may be credited with at most 2,000 tokens"
+        );
+        assert!(
+            t.over(40_000, 99_000),
+            "so the summary is still taken, which is the point"
+        );
     }
 
     /// The guarantee §7.3 asks for, stated as a property rather than as a
@@ -268,6 +371,50 @@ mod tests {
                     !reactive || t.over(limit, now),
                     "reactive fired at limit {limit} and the tracker did not"
                 );
+            }
+        }
+    }
+
+    /// What bounds the *other* side, where the property above does not reach.
+    ///
+    /// Once `invalidate` retires the reported size the prediction is the only
+    /// reading, so nothing else stops it claiming a saving the rewrite did not
+    /// make. The bound is the ceiling: a prediction may differ from its anchor
+    /// by at most the byte change times one token per byte, in either
+    /// direction. Written as a sweep including hostile observation pairs,
+    /// because the version of this that only tested growth is the version that
+    /// shipped the hole.
+    #[test]
+    fn the_predicted_change_is_bounded_by_the_byte_change() {
+        let pairs = [
+            (1_000u64, 1_000usize, 2_000u64, 2_000usize),
+            (20_000, 100_000, 50_000, 101_000), // an impossible rate
+            (49_000, 149_960, 50_000, 150_000), // a delta too small to sample
+            (5_000, 50_000, 5_010, 90_000),     // very cheap per byte
+            (5_000, 50_000, 4_000, 40_000),     // the transcript shrank
+        ];
+        for (t0, b0, t1, b1) in pairs {
+            for now in [0usize, 1, 500, b1 / 2, b1, b1 + 10_000, 500_000] {
+                let mut t = ContextTracker::new();
+                t.observe(t0, b0);
+                t.observe(t1, b1);
+                for tracker in [&t, &{
+                    let mut c = t.clone();
+                    c.invalidate();
+                    c
+                }] {
+                    let predicted = tracker.predict(now).unwrap() as f64;
+                    let moved = (now as f64 - b1 as f64).abs() * MAX_TOKENS_PER_BYTE;
+                    let anchor = t1 as f64;
+                    assert!(
+                        predicted <= anchor + moved + 1.0,
+                        "{predicted} overshot {anchor} by more than {moved} bytes allow"
+                    );
+                    assert!(
+                        predicted + 1.0 >= (anchor - moved).max(0.0),
+                        "{predicted} undershot {anchor} by more than {moved} bytes allow"
+                    );
+                }
             }
         }
     }
