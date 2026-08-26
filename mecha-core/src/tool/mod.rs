@@ -583,6 +583,18 @@ impl Registry {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// Take a tool back off the surface, by its exact registered name.
+    ///
+    /// For a run that must not be *able* to do something, as distinct from one
+    /// asked not to. `tasks work` withholds `kg_task_update` this way: a run
+    /// that can close its own assignment is a lane promoting itself, which is
+    /// `ladder.rs`'s oldest rule and the same reason no `kg_accept` exists on
+    /// the tool surface at all. A prompt saying "do not mark it done" is not
+    /// the same control — it is advice to the party under test.
+    pub fn remove(&mut self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.remove(name)
+    }
+
     pub fn get(&self, name: &str) -> Option<&Arc<dyn Tool>> {
         self.tools.get(name)
     }
