@@ -4,6 +4,11 @@
 > real day on the phone app. `TASK-RESEARCH.md` is the evidence; this is the
 > argument. `REMOTE-SURFACE-DESIGN.md` §12 holds the rest of that day's
 > backlog — this is the item large enough to need its own document.
+>
+> **Extended 2026-08-26** with D12–D16 and Part 3, after a design pass on what
+> a task-scoped chat surface actually needs. The open plan-step question the
+> first draft left is resolved by D12; Part 3 records a refusal, because the
+> KV-offload idea below has now been proposed twice.
 
 Two asks, and they turn out to be one design:
 
@@ -265,6 +270,101 @@ being worked resumes the existing session rather than starting a rival —
 the rule the resume endpoint already enforces ("one conversation must never
 have two writers"). `waiting_on` is the flag that says a run exists.
 
+**D12 — The plan is a living list, and the gate is on its first version
+only.** The first draft left "does the first pass need a plan step?" open. It
+does — but the answer has to be stated carefully, because `todo.rs` already
+argues the other way in its own module doc:
+
+> *Planning as a tool rather than a mode. The alternative — a "plan phase"
+> that produces a plan and then hands off — goes stale the moment the first
+> step surprises the model.*
+
+That argument stands and is not overturned here. What it refutes is a
+**frozen** plan, and alignment does not need one. A delegated run pauses after
+its first `todo` write, shows the list, and takes the owner's edits; from then
+on the list is rewritten on successes, failures and new thinking exactly as it
+is in a chat run. The gate is on version one, not on the plan.
+
+The evidence for gating at all is the setup finding: Copilot's success moved
+from **38.1% to 69% purely on tuning `copilot-instructions.md`**, and the
+intervention numbers (86.2% with, 55.1% without) say a human joins the loop
+regardless. Questions asked at plan time are the cheapest in the run — before
+a tool has been called, before any taint is armed, while a correction still
+costs nothing.
+
+Two rules on the gate: it fires **only for delegated runs**, since a chat turn
+that happens to write a list is not a delegation and must not stop; and each
+open question **carries a proposed answer**. The measured `ask_user` finding is
+that telling a model to proceed with its best interpretation makes it invent —
+a visible default a person taps is the opposite arrangement, because the guess
+is on the screen and a human owns it.
+
+**D13 — A question ends the run; it never parks it.** `serve/present.rs` parks
+the run on `ask_user` for `ASK_TIMEOUT` (600s) and then declines. That is right
+for a *present* human — a page open in a hand — and wrong for a task, where the
+honest case is that the owner answers at breakfast.
+
+So a delegated run needing an answer **finishes**: the partial work is kept, the
+question is stored, and `waiting_on` moves from `mecha` to the owner. Answering
+resumes the session with the answer as the next user turn and moves `waiting_on`
+back.
+
+Three things fall out of the arrangement rather than being added to it. The
+ball-passing is **already modelled** — `waiting_on` alternating between owner
+and agent is the GTD semantics the board has natively, so the Waiting view
+becomes the queue of blocked delegations with no new noun (§1.2). **No slot is
+held**: a parked run occupies one of four (Part 3) and a cached prefix for ten
+minutes doing nothing. And **`/queues` gains its sixth row** — an unanswered
+question is precisely the kind of store that reaches 6,434 items without anybody
+deciding to let it.
+
+This is the outbox's argument in the other direction. The outbox exists because
+a run's *outbound* action had to survive the run's end — staged by one process,
+released by another, hours later. Nothing let a run's *question* do the same.
+It is not a second approval surface (§2.5): nothing is approved here.
+
+**D14 — The todo list is keyed per run, never per agent.** `TodoTool` holds
+`Mutex<Vec<TodoItem>>` "for the lifetime of the agent", which was correct while
+every front-end holding one had a single conversation. `mecha serve` is **one
+shared agent** across every session, so two delegated runs share one list and
+overwrite each other — and the card renders the wrong task's plan.
+
+The precedent is in the same building: `present.rs` faced one agent and many
+sessions' questions, and keys on the run's jail, whose file name *is* the
+session key (`Asker::ask_in`). The todo tool takes the same treatment. Required
+**before** parallel task runs exist rather than after — two concurrent tasks are
+the first thing to exercise it, and the symptom is a plausible-looking list
+belonging to something else.
+
+**D15 — The list rehydrates from the transcript, never from a second store.**
+The list lives in memory on the tool, which is fine for a run that ends when its
+conversation does. A task outlives its run by construction (D13), and on resume
+the model re-reads its plan from the last `todo` result in the transcript while
+`TodoTool::items()` — what the card renders — comes back empty. The model knows
+the plan and the UI shows no progress: D5's divergence, arriving from the other
+side.
+
+So the list is reconstructed from the last `todo` result on resume, and
+deliberately not persisted beside the session. A second copy is the thing that
+can disagree with the record — the objection that killed a mecha-side store of
+task runs (D8), and the reason the TUI reads a trigger's last answer from the
+transcript rather than a cached copy.
+
+**D16 — The card's state is derived, and no two states render alike.** D5 says
+status is moved by the harness and never self-reported; the card is where that
+becomes visible, so the state set is named here: `idle`, `planning`, `working`
+(with the current `[~]` item as the subtitle), `waiting on you`, `failed`,
+`ready for review`.
+
+Two carry the weight. **`waiting on you` must be loud** — it is the only state
+that stalls indefinitely and the only one whose remedy is a person. And
+**`failed` must never render as `idle`**: doctor's dash-never-zero rule, one
+surface over, because "nothing is happening" and "it broke" are opposite
+findings, and a card that renders them alike is how a delegation that died looks
+like one nobody started. `ready for review` is the agent proposing completion
+with its evidence attached — what it staged, what it read, its `RunStats`. It is
+not `done`; D6 stands.
+
 ### 2.5 What this deliberately does not include
 
 - **Recurring work on a task.** That is `[[trigger]]`, which exists and
@@ -279,49 +379,159 @@ have two writers"). `waiting_on` is the flag that says a run exists.
 
 ---
 
+## Part 3 — Resources: what is scarce, and what is deliberately not built
+
+### 3.1 The physical budget
+
+The local server runs `-np 4` against `CTX 1048576` — four slots of 262,144,
+which is the number `context_window` must equal and the arithmetic
+`scripts/start-moe-mtp.sh` exists to keep honest. So **four runs can be in
+flight at once**, shared across chat, voice, triggers and delegated tasks, and
+a fifth waits.
+
+KV costs **22 KiB per token** here: the model is hybrid attention, 11 of 41
+layers holding a cache and 30 carrying a constant-size recurrent state, which
+is why the figure is 22 and not the 82 a per-layer count predicts. A full
+262,144-token slot is therefore ~5.5 GB, matching what the server reports.
+
+`-cram 32768` is the prompt cache — 32 GB holding **evicted slot states, so a
+returning prefix is restored instead of re-prefilled**. Raised from the 8 GB
+default after 341 evictions in a day; none since. What it buys:
+
+| A parked session of | is | fits in 32 GB |
+|---|---|---|
+| 30,000 tokens (a typical task) | 0.63 GB | **~50** |
+| 60,000 tokens | 1.26 GB | ~25 |
+| 262,144 tokens (a full slot) | 5.5 GB | ~6 |
+
+Roughly fifty parked task conversations, today, with nothing new built.
+
+### 3.2 R1 — Admission control, not memory management
+
+The scarce resource is **a slot, not memory**. `-c` is divided across slots and
+allocated at startup, so all four slots' KV is committed whether or not anything
+occupies them; an idle conversation costs no extra VRAM. What contends is four
+scheduling seats.
+
+What to build in mecha is therefore a permit count, with one rule that should be
+decided now because the alternative is discovering it by having it happen: **an
+interactive turn preempts a background task run.** The owner typing must never
+queue behind three delegations. `batch.rs`'s bounded-concurrency fan-out is the
+shape to copy.
+
+Priority beyond that **derives from the board and is not a field anybody
+maintains**. `due_at` and `defer_until` are already there; a separate priority
+field is a second source of truth about urgency, which disagrees with the first
+the moment either is edited — D8's objection, one noun over.
+
+### 3.3 R2 — No KV offload manager. This is the second time it has been proposed.
+
+The idea is to evict an idle or blocked task's KV so another task can have the
+slot, then reinstate it when the owner answers. It should not be built, for
+three reasons in ascending order of force:
+
+- **The server already does it.** `-cram` *is* offload-and-reinstate, sized and
+  measured (§3.1).
+- **It composes out of D13 for free.** A question that ends the run releases the
+  slot at the turn boundary and leaves the prefix in the prompt cache on the way
+  out; the resume hours later restores it. The behaviour is emergent, not
+  engineered. Worst case the cache has evicted and the resume re-prefills — a
+  latency cost, not a correctness one.
+- **The hand-rolled version was tried and reverted**, and the flag carries a "do
+  not add it back" comment. `--cache-idle-slots`, added 2026-08-20 on exactly
+  this reasoning, saves an idle slot *and clears it* — so a live conversation's
+  prefix is wiped, LCP similarity finds nothing, and slot selection falls through
+  to LRU onto a cold slot. Measured over one TUI session: 3 of 25 turns
+  re-prefilled the whole transcript, the worst costing **20.5s for 29,570
+  tokens**. Removed, the same test gave 1 LRU selection in 44.
+
+The general lesson recorded beside that flag is what makes this a decision rather
+than a preference: **a throughput benchmark cannot see the regression.** It sends
+independent prompts, which is precisely the workload with no prefix to lose.
+Anything proposed here has to be measured by prefix reuse across turns, not
+tok/s.
+
+Written down as a refusal rather than left as an omission, because a dropped idea
+is free to come back tomorrow — the same reasoning that has the harness brief
+carry every prior candidate as "already tried".
+
+**And the comparison that motivates it does not hold.** Claude Desktop is cited
+as doing something like this; it is a cloud client with no local model, so there
+is no local KV to manage. What makes a returning conversation fast there is
+server-side prompt caching with a TTL that simply expires — a simpler mechanism
+than eviction, and not one there is anything here to copy.
+
+### 3.4 R3 — Measure with the cache lens before building anything
+
+`cache_lens.rs` is the per-run observer that caught the `--cache-idle-slots`
+regression by name ("prompt cache reuse dropped: re-paid 15733 input tokens").
+Pointed at resumed task sessions it answers the one question §3.3 leaves open:
+does a conversation parked overnight actually get its prefix back, or has a
+night of triggers and chat pushed it out of 32 GB?
+
+That is a measurement, not a build, and it is the thing to do first. If parked
+sessions miss, the answer is a larger `-cram` before it is anything cleverer.
+
+---
+
 ## Phases
 
 **Phase 1 — the CLI verb.** `mecha tasks work <id> [--note ...]`: seeded run,
-own session, outbox-bound, prints the session id and what it staged. Nothing
-on the phone yet. *Verify: the run appears in `mecha sessions`; a send it
-drafts appears in `mecha outbox`; the task's status moves; Ctrl-C stops it
-and keeps the partial answer.*
+own session, outbox-bound, prints the session id and what it staged. Carries
+D14 and D15 with it, because this verb is the first thing to put a second
+conversation on one agent and the first to resume one. Nothing on the phone yet.
+*Verify: the run appears in `mecha sessions`; a send it drafts appears in
+`mecha outbox`; the task's status moves; Ctrl-C stops it and keeps the partial
+answer; two concurrent runs keep separate todo lists; a resumed task renders its
+progress rather than an empty list.*
 
-**Phase 2 — the graph side.** `waiting_on` on `kg_task_update`, a `mecha`
-node, the `worked_on` fact (D8, D9). *Verify: the waiting view distinguishes
+**Phase 2 — the question store (D13).** A question ends the run and waits; an
+answer resumes the session. `/queues` gains the row. *Verify: a delegated run
+that asks a question leaves no process running and no slot held; answering it a
+day later resumes the same session with its history intact; `mecha review` counts
+the outstanding questions.*
+
+**Phase 3 — the graph side.** `waiting_on` on `kg_task_update`, a `mecha` node,
+the `worked_on` fact (D8, D9). *Verify: the waiting view distinguishes
 agent-held from person-held tasks.*
 
-**Phase 3 — the phone.** *Ask mecha* on the task row, *open the
-conversation*, *stop*, the drawer filter and chip (D10). Board decisions B1
-and B2 ride along, since they touch the same row. *Verify: tap → a session
-appears in the drawer → opening it shows the work → steering it works → stop
-works.*
+**Phase 4 — the phone.** *Ask mecha* on the task row, *open the conversation*,
+*stop*, the drawer filter and chip (D10), the plan gate (D12), the derived card
+states and the rendered todo list (D16). Board decisions B1 and B2 ride along,
+since they touch the same row. *Verify: tap → a session appears in the drawer →
+opening it shows the plan → editing the plan changes what runs → steering works →
+stop works → a failed run reads as failed and not as idle.*
 
-**Phase 4 — narrowing and context.** The tool-surface narrowing (D6) and the
-context assembler (D4), both of which the first three phases make
-measurable.
+**Phase 5 — narrowing and context.** The tool-surface narrowing (D6) and the
+context assembler (D4), both of which the earlier phases make measurable.
+
+**Phase 6 — admission control (R1).** Worth building once more than one
+delegation at a time is routine, and not before: with four slots and one owner,
+the contention it manages may simply not arise. R3's measurement is the input.
 
 ## Open at design time
 
-- **Does the first pass need a plan step?** *"Follow up with John"* is one
-  action; *"prepare the Psych 62 materials"* is a project. Devin produces an
-  "Interactive Planning" blueprint **with a confidence score** before
-  acting, and Asana decomposes into subtasks. Whether mecha should is
-  unanswered, and the honest way to find out is Phase 1 against real board
-  items.
-- **What does the owner see while it runs, on a sleeping phone?** The
-  session streams over SSE to an open page and catches up on reload; push
-  (remote-surface Phase 5) is the real answer and is not built.
-- **Cost.** Every *ask mecha* is a full agent run on the local model, and
-  there is no per-task accounting — `[agent] budget` is per run. Devin's
-  most-cited complaint is exactly this opacity: with async delegation "you
-  may not know the ACU tab until the invoice arrives." Local inference makes
-  the money question moot and the **time** question sharper: the model is
-  shared with chat, voice and triggers, so a task run is latency somebody
-  else pays for. Worth measuring before the gesture is cheap enough to tap
-  idly.
+- **Does the prompt cache hold overnight?** §3.4's measurement. Everything in
+  R2 rests on a parked session getting its prefix back after a night of
+  triggers and chat, and that has never been measured — only the absence of
+  evictions at 32 GB under today's traffic, which is not the same claim.
+- **Should the plan gate be skippable?** D12 stops every delegated run for
+  approval, which is right while delegation is rare and may be friction once it
+  is routine. The honest way to find out is Phase 4 against real board items;
+  the wrong way is a preference toggle added before anyone has felt the cost.
+- **What does the owner see while it runs, on a sleeping phone?** The session
+  streams over SSE to an open page and catches up on reload; push
+  (remote-surface Phase 5) is the real answer and is not built. D13 softens this
+  — a run that ends on a question needs no live channel to be useful — but it
+  does not close it.
+- **Cost.** Every *ask mecha* is a full agent run on the local model, and there
+  is no per-task accounting — `[agent] budget` is per run. Devin's most-cited
+  complaint is exactly this opacity: with async delegation "you may not know the
+  ACU tab until the invoice arrives." Local inference makes the money question
+  moot and the **time** question sharper: the model is shared with chat, voice
+  and triggers, so a task run is latency somebody else pays for. Worth measuring
+  before the gesture is cheap enough to tap idly.
 - **Task shape.** Copilot's success rate ran from 84.7% (cleanup) to 54.5%
   (performance work, which it cannot self-validate). The equivalent question
-  here — which kinds of board item are worth delegating — can only be
-  answered by running it, and `RunStats` already records enough to answer it
-  later.
+  here — which kinds of board item are worth delegating — can only be answered
+  by running it, and `RunStats` already records enough to answer it later.
