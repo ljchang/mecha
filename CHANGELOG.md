@@ -57,6 +57,19 @@ each simply told you something other than what was true.
 
 ### Changed
 
+- **Mail and calendar can default to different accounts.** One `default`
+  covered both creates, so "send from work" and "put it on my personal
+  calendar" were a single choice and setting either moved both.
+  `default_mail` and `default_calendar` override it per surface and fall back
+  to it when absent, so a config that never needed the distinction keeps
+  working and never learns it exists. `mecha-mail default <name> --mail` and
+  `--calendar` set them; with no flag the verb does what it always did, and
+  with no name it now prints what each surface actually resolves to rather
+  than the stored field, because with a fallback in play those differ. The
+  tool schema carries the *right* default per tool — a note telling the model
+  `mail_send` defaults to the calendar's account is worse than no note, since
+  it omits `account` believing it knows where the message goes.
+
 - **An approval card shows the call the way a person reads one.** A calendar
   call leads with its title and when it is — in reading order, not
   alphabetical, where an event reads end before start — and a letter leads
