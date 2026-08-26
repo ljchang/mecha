@@ -857,17 +857,46 @@ async fn work(
     // A parked question is the *reason* the run stopped, so it leads. The
     // owner's next move is answering it, not disposing of the task, and a
     // task blocked on them reads very differently from one merely finished.
-    if let Some(id) = asker.parked().first() {
-        if let Ok(q) = questions.get(id) {
-            println!("it needs an answer before it can go further:\n");
+    // **Every question it parked, not the first one.** The seed asks for one
+    // question covering everything, but nothing enforces that: several
+    // `ask_user` calls in one turn all park, and printing `first()` left the
+    // rest reachable only from `mecha questions list` — which nobody runs
+    // after a command that just told them what to do next. A question nothing
+    // renders is a delegation frozen with no visible reason.
+    let parked: Vec<_> = asker
+        .parked()
+        .iter()
+        .filter_map(|id| questions.get(id).ok())
+        .collect();
+    if let Some(first) = parked.first() {
+        let s = if parked.len() == 1 { "" } else { "s" };
+        println!("it needs an answer before it can go further:\n");
+        for q in &parked {
             println!("  {}", q.question.trim());
             for opt in &q.options {
                 println!("    - {opt}");
             }
-            let short = mecha_core::questions::QuestionStore::short(&q.id);
-            println!("\n  mecha questions answer {short} \"...\"   # resumes the run");
-            return Ok(());
+            if parked.len() > 1 {
+                println!(
+                    "    ({})",
+                    mecha_core::questions::QuestionStore::short(&q.id)
+                );
+            }
         }
+        let short = mecha_core::questions::QuestionStore::short(&first.id);
+        println!("\n  mecha questions answer {short} \"...\"   # resumes the run");
+        // Said plainly, because the arrangement is genuinely surprising:
+        // answering *any* of them resumes, so the others are left open and
+        // the resumed run never sees them. Better to say so than to let
+        // somebody discover it from a queue that quietly grew.
+        if parked.len() > 1 {
+            println!(
+                "\n  note: {} question{s} parked, and answering one resumes the run — \n\
+                 \x20 answer the others too, or abandon them, or they stay in the queue",
+                parked.len()
+            );
+        }
+        return Ok(());
     }
 
     println!("{task_id} is `waiting` — you decide what it becomes next:");
@@ -888,6 +917,47 @@ async fn work(
 /// last is Phase 1's honest posture — D13 turns "stop and say what you need"
 /// into a stored question the owner answers later, and until it exists,
 /// stopping is better than guessing.
+///
+/// **Questions are front-loaded here rather than gated by a plan review, and
+/// that is a decision against D12 as it was written.** The design proposed
+/// stopping a delegated run after its first `todo` write to take the owner's
+/// edits, which conflates two things every other system keeps apart — a plan
+/// is a reviewable document and a todo list is the agent's own execution
+/// ledger (`todo.rs`: a list set by anything but the model's own write is a
+/// second author of state the tool owns). Three findings decided it:
+///
+/// - **`docs/VERIFICATION-RESEARCH.md` argues the other way on this
+///   hardware.** Plan-first is not established over interleaved ReAct
+///   (FORGE 2026, 48,000 scenarios), *small models collapse* under
+///   plan-and-execute — Llama 3.2 3B goes 0.23 straight-shot to 0.05 — and a
+///   bad plan measures worse than no plan. mecha's whole point is a local
+///   open-weight model.
+/// - **The gate's trigger rests on a behaviour measured absent.** This model
+///   called `todo` zero times in 20 eval case-runs from prompting
+///   (2026-08-04), and keeps a list reliably only when the *user turn* asks.
+///   A gate on "the first `todo` write" would fire when the model felt like
+///   letting it.
+/// - **D12's own evidence is about the seed, not the gate.** Copilot's
+///   38.1% → 69% came purely from tuning `copilot-instructions.md`, which is
+///   this function; the 86.2%/55.1% intervention split argues for a human in
+///   the loop, which the question store already is.
+///
+/// So the intervention is here, on the **user turn** — the one delivery
+/// channel the 2026-08-04 probe found this model obeys. What D12 was reaching
+/// for and this does not reach is misalignment the model does not notice: a
+/// confidently wrong plan asks nothing. That failure is now *countable* —
+/// delegations that ended `ready for review` and were then dropped or reworked
+/// rather than marked done — so the case for building the gate can be made
+/// from the corpus instead of from the design doc.
+///
+/// **One question, not several**, and the reason is mechanical rather than
+/// stylistic: the run ends on a question, so each one is a separate
+/// end-and-resume with its own MCP startup and its own morning of the
+/// owner's. It also sidesteps a real gap — several `ask_user` calls in one
+/// turn all park, but answering one resumes the run while the others stay
+/// open. The tool's own schema says "in one sentence", which is right for a
+/// present human answering interactively and is overridden here rather than
+/// widened for everyone: a general rule is not loosened to serve one caller.
 fn work_prompt(task: &Value, today: &str, note: Option<&str>, unattended: bool) -> String {
     let field = |k: &str| task[k].as_str().filter(|v| !v.is_empty());
     let mut p =
@@ -935,11 +1005,19 @@ fn work_prompt(task: &Value, today: &str, note: Option<&str>, unattended: bool) 
          Draft it properly and say what you staged. Do not look for a way around the queue.\n\
          - You cannot change this task's status and have no tool that does. Whether it is \
          finished is the owner's call, not yours. Report what you did and what is left.\n\
-         - If a decision is genuinely the owner's to make, ask with `ask_user`. They are \
-         not sitting here, so the run will END on your question and resume later with their \
-         answer as the next turn — no time is spent waiting. Ask early rather than guessing. \
-         Say where you got to in your last words, because they are what you will be reading \
-         when you come back.\n\
+         - Before you start, work out what you actually need from the owner, and ask it \
+         FIRST — in one `ask_user` call covering everything. Not one sentence: list every \
+         unknown in the one question. The run ENDS on your question and resumes later with \
+         their answer as the next turn, so three questions asked one at a time are three \
+         separate mornings of theirs. Offer concrete `options` where you can; they are one \
+         tap on the owner's phone.\n\
+         - Do not ask what you can find out. A question about something in the task, in \
+         your workspace, or one tool call away is a turn spent asking instead of working. \
+         Ask about a decision that is genuinely the owner's — which of two readings, a \
+         value only they know, a choice you would otherwise guess at.\n\
+         - If something unexpected comes up later, ask then too; this is about not \
+         discovering halfway through that you assumed wrong. Say where you got to in your \
+         last words, because they are what you will be reading when you come back.\n\
          - If this takes more than a few steps, keep a `todo` list. The owner can watch it, \
          and it survives into the conversation if they pick this up later.\n",
     );
@@ -1019,8 +1097,47 @@ mod tests {
             "D13: asking is the move, and the run ends on it"
         );
         assert!(
-            p.contains("END on your question"),
+            p.contains("ENDS on your question"),
             "the model must know asking costs the run, so it asks early"
+        );
+    }
+
+    /// **Front-loading, and the guard on the other side of it.**
+    ///
+    /// The cheap half of what D12 was reaching for: questions at plan time
+    /// are the cheapest in the run — before a tool call, before taint is
+    /// armed — and the seed is the user turn, which is the one channel this
+    /// model was measured to obey (2026-08-04). Both halves are asserted,
+    /// because a prompt that only says "ask first" produces the opposite
+    /// failure: a run that asks about everything it could have looked up.
+    #[test]
+    fn the_run_is_told_to_ask_first_and_not_to_ask_for_what_it_can_find() {
+        let p = work_prompt(&task(), "2026-08-26", None, true);
+        assert!(
+            p.contains("Before you start"),
+            "the ask comes before the work, not halfway through it"
+        );
+        assert!(
+            p.contains("Do not ask what you can find out"),
+            "the opposite failure is a run that asks instead of working"
+        );
+        assert!(
+            p.contains("later"),
+            "front-loading is not a rule against asking again — unexpected              things arise, and D13 costs the same whenever it fires"
+        );
+    }
+
+    /// **One question, not several**, and mechanically rather than
+    /// stylistically: each one is a separate end-and-resume with its own MCP
+    /// startup, and several `ask_user` calls in one turn all park while
+    /// answering one resumes the run with the others left open.
+    #[test]
+    fn the_questions_are_asked_as_one() {
+        let p = work_prompt(&task(), "2026-08-26", None, true);
+        assert!(p.contains("one `ask_user` call covering everything"));
+        assert!(
+            p.contains("Not one sentence"),
+            "the tool's schema says one sentence, which is right for a present              human and is overridden here rather than widened for everyone"
         );
     }
 

@@ -36,7 +36,13 @@
   // answers, because "no questions" and "have not looked" are different
   // things and only one of them should quiet the card.
   let questions = $state(null);
-  const questionFor = (t) => (questions ?? []).find((q) => q.task === t.id);
+  // **All of them, not the first.** A run can park more than one — several
+  // `ask_user` calls in one turn all park — and rendering `find` left the
+  // rest reachable from nowhere, which is the shape a queue grows in. The
+  // seed asks for one question covering everything; nothing enforces it, so
+  // the card does not assume it.
+  const questionsFor = (t) => (questions ?? []).filter((q) => q.task === t.id);
+  const questionFor = (t) => questionsFor(t)[0];
   // Open questions whose task is not on this board at all — a run that asked
   // without a task, or one whose task was dropped underneath it. They would
   // otherwise be reachable from nowhere, which is how a queue reaches 6,434
@@ -449,7 +455,7 @@
      options are never exhaustive. Both are the measured `ask_user` finding
      from the other side: a visible default a person taps is the opposite
      arrangement to a model told to proceed with its best interpretation. -->
-{#snippet questionCard(q, taskName)}
+{#snippet questionCard(q, taskName, more = 0)}
   <div class="qcard">
     <div class="qhead">
       <span class="qlabel">waiting on you</span>
@@ -472,6 +478,12 @@
       </div>
     {/if}
     <div class="qtext">{q.question}</div>
+    {#if more && more > 1}
+      <!-- Surprising enough to say out loud: answering *any* of these resumes
+           the run, and the rest stay open with the resumed run never seeing
+           them. Better said here than discovered from a queue that grew. -->
+      <div class="qnote">{more} questions parked on this task — answering one resumes the run, so answer or abandon the others too.</div>
+    {/if}
     {#if q.options.length}
       <div class="qopts">
         {#each q.options as opt}
@@ -737,9 +749,9 @@
           {/if}
         {/if}
       </button>
-      {#if questionFor(t)}
-        {@render questionCard(questionFor(t), null)}
-      {/if}
+      {#each questionsFor(t) as q}
+        {@render questionCard(q, null, questionsFor(t).length)}
+      {/each}
       </div>
     {:else}
       {#if data}<div class="empty">Nothing here.</div>{/if}
@@ -828,6 +840,7 @@
   .qhandle { font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
   .qtask { font-size: 12px; color: var(--text-muted); }
   .qtext { font-size: 14px; line-height: 1.5; }
+  .qnote { font-size: 11.5px; color: var(--text-muted); line-height: 1.45; }
   .qwarn { display: flex; gap: 8px; font-size: 11.5px; color: var(--hazard); line-height: 1.45; }
   .qopts { display: flex; gap: 6px; flex-wrap: wrap; }
   .qopt { color: var(--accent-400); border-color: var(--accent-700); }

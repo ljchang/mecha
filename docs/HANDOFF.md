@@ -109,19 +109,20 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,459 tests**, no failures — measured 2026-08-26 on `main` at
-b495ef3 **plus the uncommitted return-path lane in the working tree**, which
-is the caveat the sentence below is about and is stated rather than omitted:
-1,451 is the number on `main` alone, at 0872baf, on a clean tree with both of
-that day's earlier lanes committed. That last
+Expect **1,461 tests**, no failures — measured 2026-08-26 on the
+`tasks-return-path` branch, whose two commits are not on `main`; 1,451 is the
+number on `main` alone, at 0872baf, on a clean tree with both of that day's
+earlier lanes committed. Stated rather than omitted, which is what the
+sentence below is about. That last
 clause is load-bearing: two sessions independently wrote down a count taken
 in the shared checkout while a third lane's uncommitted work sat in it,
 which is a count of something that exists on one disk and in no commit
 (Traps → Environment). The same shape nearly recurred today — a count taken
 while a peer's arc was mid-write is a count of neither commit. Breakdown:
-510 in
-`mecha-cli` with 1 ignored (502 on `main`, +8 uncommitted: 3 on the
-question card, 5 on the derived run state), 724 in `mecha-core`, 6 + 9 in its two integration
+512 in
+`mecha-cli` with 1 ignored (502 on `main`, +10 on the branch: 3 on the
+question card, 5 on the derived run state, 2 on the front-loaded seed),
+724 in `mecha-core`, 6 + 9 in its two integration
 suites, 133 in `mecha-mail` plus 1 in a mail binary, 75 in `mecha-slack`, and
 1 doctest, plus the 2 below. The **31 over 1,377** at 897bd13 attribute
 exactly, counted as added `#[test]` lines per range and agreed by two
@@ -1087,22 +1088,37 @@ the mechanism and every decision. What it left standing:
   - **B1, the row's action strip** — six equal-weight status chips where
     every surveyed app offers two. `✓ done` and `schedule` become the direct
     actions; everything else moves behind a `…` sheet.
-  - **D12, the plan gate** — the alignment checkpoint, and the largest of
-    the three. A delegated run pauses after its first `todo` write and takes
-    the owner's edits; the list keeps being rewritten afterwards, so this
-    gates version one rather than freezing the plan. Read D12 before
-    building it: `todo.rs`'s own module doc argues against a plan *phase*,
-    and the distinction between that and this is the whole design.
-    **Most of its machinery now exists and the design decision does not.**
-    `ParkingAsker` already ends a run and keeps the partial turn,
-    `TodoTool::rehydrate` already seeds a plan into a resumed run, and
-    `/api/questions` is a surface for something the owner must answer before
-    a run continues. What is undecided is whether the gate reuses the
-    question store or gets its own: `questions.rs`'s module doc says outright
-    *"deliberately not a second approval surface: nothing here is approved"*,
-    and a plan gate is an approval. Reusing it is cheap and inherits
-    `/queues` and doctor; a separate store keeps that sentence true. Decide
-    that before writing code, not during.
+  - **D12, the plan gate — decided against as written, on 2026-08-26, and
+    the cheap half shipped instead.** Do not build it from the design doc;
+    read `work_prompt`'s doc comment in `commands/tasks.rs` first, which
+    carries the reasoning. In short: D12 made the *todo list* the
+    human-editable object, which conflates the agent's execution ledger with
+    a reviewable plan — every other system keeps those apart, and `todo.rs`
+    already forbids a second author of its state. Three findings decided it:
+    `VERIFICATION-RESEARCH.md` argues against plan-first on this hardware in
+    particular (small models *collapse* under plan-and-execute; a bad plan
+    measures worse than no plan); the gate's trigger rested on a `todo` write
+    this model was measured not to make from prompting (HISTORY 2026-08-04,
+    zero calls in 20 runs); and D12's own cited evidence — Copilot's
+    38.1% → 69% — was about tuning the *seed*, which is `work_prompt`.
+    So the seed now front-loads questions, with a guard against the opposite
+    failure, delivered on the user turn because that is the one channel the
+    probe found this model obeys.
+
+    **What is still unbuilt is the part front-loading cannot reach**:
+    misalignment the model does not notice, where a confidently wrong plan
+    asks nothing. The decision to build a reviewable plan *document* —
+    separate from the todos, on superpowers'/Claude Code's split — is
+    deferred until the corpus argues for it, and the query is now available:
+    **delegations that ended `ready for review` and were then dropped or
+    reworked rather than marked done.** Board status transitions plus
+    `RunStats` plus the session answer it. If that number is small the gate
+    is friction; if it is large, the same query names the examples it would
+    have caught. The asymmetry that would force the question sooner: a
+    web-launched delegation is `--unattended` today, so it can only read and
+    stage, and the downside of letting a run go is bounded by construction.
+    That stops being true the moment a delegated run can get approval from a
+    present human.
   - **Phase 5** is the context assembler (D4) and **phase 6** admission
     control (R1) — R1 explicitly not worth building until more than one
     delegation at a time is routine.
