@@ -3175,19 +3175,36 @@ All found by pre-push review or by running it.
   honour.** Check `git status` after any whole-tree tool, however narrow the
   invocation looked.
 
-- **A green run history is not a run on your commit.** Push-triggered CI
-  produced **zero** workflow runs for two pushes on 2026-08-26 — Actions
-  enabled, all six workflows `active`, GitHub holding the new sha as `main`,
-  and `total_count: 0` for it. A GitHub Actions **major outage** from
-  15:11 UTC was dropping push events; `gh workflow run CI --ref main` got
-  through and passed. The trap is that nothing looks wrong: a repo whose
-  recent runs are green, plus a push that succeeded, reads exactly like a
-  tested commit. **`gh api "…/actions/runs?head_sha=$(git rev-parse main)"
-  --jq .total_count` is the only form of the question that means anything** —
-  and polling the *top of the run list* has the same defect one level down,
-  because a dispatch defaults to the branch tip and the tip moves. Both
-  sessions on this machine hit it, so `main`'s history for that afternoon
-  shows a gap with two dispatch runs standing in for it.
+- **A CI that did not run is indistinguishable from one that ran and
+  passed.** On 2026-08-26 that happened **four ways in one afternoon**,
+  across two sessions, and every one of them produced a green-looking repo:
+
+  1. **Push events dropped.** Two pushes produced *zero* runs — Actions
+     enabled, all six workflows `active`, GitHub holding the new sha as
+     `main`, `total_count: 0` for it. A GitHub Actions **major outage** from
+     15:11 UTC. Nothing errors; the push simply succeeds and nothing happens.
+  2. **Runs cancelled by their own successors.** `ci.yml` sets
+     `concurrency: cancel-in-progress` keyed on `github.ref`, and five PRs
+     merged inside four minutes, so each merge's run killed the one before
+     and the last was killed too. The merge commit `efa04e2` ended with
+     **no successful run at all** while the branch looked healthy.
+  3. **Two sessions cancelling each other.** `github.ref` is
+     `refs/heads/main` for *every* run on main — push or dispatch, whichever
+     sha — so two people dispatching CI serialise into mutual cancellation.
+     Same collision as (2), one level up.
+  4. **Every convenient query is addressed by position, not by sha.**
+     `gh run list --limit 1`, `gh pr checks`, the Actions tab — all move
+     under you. One session read the top row, reported `main` green, and had
+     in fact read *the other session's* run on a different sha; the trap was
+     named to them one message earlier and they did it on the next command.
+
+  **The only query that answers the question is
+  `gh api "…/actions/runs?head_sha=$(git rev-parse main)"`.** And the
+  reporting rule that falls out: *clean locally* and *CI passed* are
+  different claims about different objects, and a handoff that merges them
+  is asserting something nobody checked — which is exactly what happened,
+  in the one file whose job is to be reliable, because one session took a
+  peer's verification claim as fact and wrote it down.
 
 - **A cron job's binary is a running thing that answers to no `--version`.**
   The `update` skill said the graph repo's nightly "builds and runs from its
