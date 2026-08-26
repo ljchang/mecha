@@ -46,6 +46,7 @@
 //! ```
 
 pub mod agent;
+pub mod backlog;
 pub mod batch;
 pub mod cache_lens;
 pub mod candidate;
