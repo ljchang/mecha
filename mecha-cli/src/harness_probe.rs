@@ -39,16 +39,25 @@ pub struct EpisodePrep {
     pub id: String,
     trajectory: Trajectory,
     recorded: RunConfig,
+    /// Every outcome the session recorded, folded — what the episode's replay
+    /// will be compared against, and what `Metric::headroom` sorts on. Carried
+    /// on the prep because the read that produced the trajectory had it in
+    /// hand; asking for it separately is another walk of the same file.
+    episode: Option<mecha_core::session::RunStats>,
 }
 
 /// Load one session as a replayable episode. `Err(reason)` in the inner
 /// result is a skip — never evidence for either arm.
 pub fn prepare_episode(path: &Path, id: &str) -> Result<Result<EpisodePrep, String>> {
-    let (_, convo) = match Session::load(path) {
-        Ok(loaded) => loaded,
+    // One read. This runs over the whole pool — four times the wanted episode
+    // count — every nightly, and `load` + `run_configs` + `episode_stats` were
+    // three full reads and parses of the same file to answer questions one
+    // walk answers together.
+    let read = match Session::read(path) {
+        Ok(t) => t,
         Err(e) => return Ok(Err(format!("session unreadable: {e:#}"))),
     };
-    let trajectory = extract(&convo.messages);
+    let trajectory = extract(&read.convo.messages);
     if trajectory.turns.is_empty() {
         return Ok(Err("no user turns".into()));
     }
@@ -57,13 +66,14 @@ pub fn prepare_episode(path: &Path, id: &str) -> Result<Result<EpisodePrep, Stri
         // almost nothing to reach in it, and the budget is real model runs.
         return Ok(Err("no recorded tool calls".into()));
     }
-    let Some(recorded) = Session::run_configs(path)?.first().cloned() else {
+    let Some(recorded) = read.configs.first().cloned() else {
         return Ok(Err("no RunConfig recorded".into()));
     };
     Ok(Ok(EpisodePrep {
         id: id.to_string(),
         trajectory,
         recorded,
+        episode: read.episode,
     }))
 }
 
@@ -174,10 +184,10 @@ pub fn draw_episodes(
                 // being dropped: it is still drawable by the uniform half,
                 // which is the half that must not be filtered by
                 // informativeness.
-                let headroom = Session::episode_stats(&path)
-                    .ok()
-                    .flatten()
-                    .map(|s| metric.headroom(&s))
+                let headroom = prep
+                    .episode
+                    .as_ref()
+                    .map(|s| metric.headroom(s))
                     .unwrap_or(0.0);
                 pool.push((prep, headroom));
             }
