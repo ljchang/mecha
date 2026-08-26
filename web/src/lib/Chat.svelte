@@ -21,6 +21,11 @@
   // a paraphrase of a plan is a different plan, and this is the one part of a
   // long run that says how far it got rather than what is true.
   let todo = $state([]);
+  // The board task this conversation is about, and whether a hand-over is in
+  // flight. A task chat is the same chat with a subject.
+  let task = $state(null);
+  let handing = $state(false);
+  let handNote = $state(null);
   let todoOpen = $state(true);
   const MARK = { completed: '[x]', in_progress: '[~]', pending: '[ ]' };
   let taint = $state(null);
@@ -65,6 +70,34 @@
     }
   }
 
+  // **Let it carry on without you.** The conversation moves from this
+  // process — where a question is a card and the run dies with a restart —
+  // into a detached child, where a question ends the run and waits in the
+  // store until morning. Not more capable: differently absent, which is a
+  // fact about the owner rather than about the run.
+  async function handOver() {
+    if (handing || !task?.id) return;
+    handing = true;
+    handNote = null;
+    try {
+      const res = await fetch('/api/tasks/handover', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ task: task.id }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+      // The conversation is no longer this process's to append to, so the
+      // page must stop acting as though it were. The board is where it is
+      // watched from now.
+      handNote = 'handed over — it carries on from here';
+      location.hash = 'tasks';
+    } catch (e) {
+      handNote = String(e?.message ?? e);
+    } finally {
+      handing = false;
+    }
+  }
+
   async function load() {
     try {
       const res = await fetch(`/api/chat/${key}`);
@@ -74,6 +107,9 @@
         e.kind === 'tool' ? { ...e, pending: false } : e
       );
       running = data.running;
+      // What this conversation is about, when it is about a board task.
+      // Absent for an ordinary chat, which renders exactly as before.
+      task = data.task ?? null;
       todo = data.todo ?? [];
       taint = data.taint;
       model = data.model;
@@ -710,6 +746,34 @@
     </aside>
   {/if}
 
+  {#if task}
+    <!-- **The goal, above the conversation about it.** A task chat that
+         only stated its subject in the opening turn made the subject scroll
+         away — and "I can't see what the goal is" was a complaint about a
+         page that knew and did not say. Current state belongs above the
+         transcript, on the todo panel's own reasoning. -->
+    <div class="taskhead">
+      <div class="taskname">{task.name}</div>
+      <div class="taskmeta">
+        {#if task.project}<span class="tchip">{task.project}</span>{/if}
+        {#if task.context}<span class="tchip">{task.context}</span>{/if}
+        {#if task.due_at}<span class="tchip" class:tover={task.overdue}>due {task.due_at}</span>{/if}
+        {#if task.defer_until}<span class="tchip">deferred to {task.defer_until}</span>{/if}
+        {#if task.captured_from?.kind}
+          <!-- The pointer, never the prose: kind and where, and not the
+               subject line, which is somebody else's words. Reading it is
+               the board's affordance, one tap away there. -->
+          <span class="tchip">from {task.captured_from.kind}</span>
+        {/if}
+      </div>
+      <div class="taskacts">
+        <button class="handbtn" disabled={handing || running} onclick={handOver}>
+          {running ? 'working — hand over when it pauses' : 'let it carry on without me'}
+        </button>
+      </div>
+      {#if handNote}<div class="handnote">{handNote}</div>{/if}
+    </div>
+  {/if}
   {#if todo.length}
     <!-- Above the transcript rather than in it: the plan is current state,
          not something that was said at a moment. Scrolling back through a
@@ -1253,6 +1317,53 @@
   .railtaint {
     color: var(--hazard);
     font-size: 9px;
+  }
+  .taskhead {
+    padding: 0.6rem 0.8rem;
+    border-bottom: 1px solid var(--line, #2a2a38);
+    background: var(--bg2, #14141c);
+  }
+  .taskname {
+    font-weight: 600;
+    font-size: 0.95rem;
+    line-height: 1.3;
+  }
+  .taskmeta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.4rem;
+  }
+  .tchip {
+    font-size: 0.74rem;
+    padding: 0.1rem 0.4rem;
+    border: 1px solid var(--line, #2a2a38);
+    border-radius: 5px;
+    opacity: 0.85;
+  }
+  .tover {
+    color: var(--warn, #e0a458);
+    border-color: currentColor;
+  }
+  .taskacts {
+    margin-top: 0.5rem;
+  }
+  .handbtn {
+    font: inherit;
+    font-size: 0.8rem;
+    padding: 0.3rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid var(--line, #2a2a38);
+    background: transparent;
+    color: inherit;
+  }
+  .handbtn:disabled {
+    opacity: 0.5;
+  }
+  .handnote {
+    margin-top: 0.35rem;
+    font-size: 0.76rem;
+    opacity: 0.75;
   }
   .todo { border-bottom: 1px solid var(--accent-900); background: var(--surface); flex: 0 0 auto; }
   .todohead { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: none; padding: 8px 14px; cursor: pointer; text-align: left; }
