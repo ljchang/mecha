@@ -4894,6 +4894,78 @@ fn fail_queues(app: &mut App, e: impl std::fmt::Display) {
 /// review works in — one decision worth hundreds on instances. They drive
 /// `mecha review accept|reject`, which drives `mecha-graph`; no model-facing
 /// tool accepts a candidate, and that split is the point.
+/// The bind prompt's keys: text, Enter, Esc. Nothing else does anything —
+/// a stray arrow key must not move a selection the person cannot see moving.
+fn handle_bind_prompt_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let Some(modal) = &mut app.queues else {
+        return Ok(());
+    };
+    let Some(prompt) = &mut modal.bind_to else {
+        return Ok(());
+    };
+    match key.code {
+        KeyCode::Esc => {
+            modal.bind_to = None;
+            modal.status = Some("bind cancelled — nothing changed".into());
+        }
+        KeyCode::Backspace => {
+            prompt.buffer.pop();
+        }
+        KeyCode::Char(c) => prompt.buffer.push(c),
+        KeyCode::Enter => {
+            let (id, to) = (prompt.id, prompt.buffer.trim().to_string());
+            // An empty target is not "take the suggestion" — that is `b`,
+            // and the reason this prompt exists is that `b` had none. Send
+            // it and the graph refuses on a name that resolves to nothing,
+            // which is a worse account of what happened than saying so.
+            if to.is_empty() {
+                modal.status = Some("name an entity, or Esc — b is the suggestion".into());
+                return Ok(());
+            }
+            modal.bind_to = None;
+            bind_candidate(app, id, Some(&to));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Bind one candidate's subject, with or without an explicit target, and
+/// report the child's own line.
+///
+/// One function for the three call sites (`b` at two levels, the prompt's
+/// Enter) because they differ only in `--to`. A failed `b` **opens the
+/// prompt**: the graph's refusal there names naming a target as the remedy,
+/// and a surface that prints a remedy it cannot perform is where this whole
+/// gap was found in the first place — on a phone, holding an error with no
+/// answer to it.
+fn bind_candidate(app: &mut App, id: i64, to: Option<&str>) {
+    let id_s = id.to_string();
+    let mut argv: Vec<&str> = vec!["bind", &id_s];
+    if let Some(t) = to {
+        argv.extend(["--to", t]);
+    }
+    let result = review_cli(&argv);
+    let Some(m) = &mut app.queues else {
+        return;
+    };
+    match result {
+        // Pass the child's report through rather than re-wording it:
+        // `#id subject 'old' → New — accept to promote` is the whole
+        // answer, next keypress included.
+        Ok(report) => m.status = Some(report.trim().to_string()),
+        Err(e) => {
+            m.status = Some(format!("bind #{id_s} failed: {e:#}"));
+            if to.is_none() {
+                m.bind_to = Some(queues::BindPrompt {
+                    id,
+                    buffer: String::new(),
+                });
+            }
+        }
+    }
+}
+
 fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let Some(modal) = &mut app.queues else {
         return Ok(());
@@ -4902,6 +4974,14 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // Any key leaves help — the same as its siblings.
         modal.help = false;
         return Ok(());
+    }
+    // The bind prompt owns the keyboard while it is up, and it has to: below
+    // this point `a`, `r` and `d` are verdicts, so a target named "Dana"
+    // typed into a live list would file three of them. Handled before the
+    // level match rather than as arms inside it, so no key can be reached
+    // by accident from here — the same reason a modal takes the screen.
+    if modal.bind_to.is_some() {
+        return handle_bind_prompt_key(app, key);
     }
     match key.code {
         KeyCode::Char('?') => modal.help = true,
@@ -5214,20 +5294,29 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // more often than not (that is what made it a group), so fixing the
         // one spelling unblocks the whole cascade: the alias is learned, and
         // every member resolves through it on the next `a`.
-        KeyCode::Char('b') if modal.level == queues::Level::Groups => {
+        // `B` skips straight to naming the target, for the case where a
+        // suggestion was never possible.
+        KeyCode::Char('b') | KeyCode::Char('B') if modal.level == queues::Level::Groups => {
             let Some(g) = modal.selected_group() else {
                 return Ok(());
             };
-            let id_s = g.leader_id.to_string();
-            match review_cli(&["bind", &id_s]) {
-                Ok(report) => {
-                    if let Some(m) = &mut app.queues {
-                        m.status = Some(format!("{} — a cascades the group", report.trim()));
-                    }
-                }
-                Err(e) => {
-                    if let Some(m) = &mut app.queues {
-                        m.status = Some(format!("bind #{id_s} failed: {e:#}"));
+            let id = g.leader_id;
+            if key.code == KeyCode::Char('B') {
+                modal.bind_to = Some(queues::BindPrompt {
+                    id,
+                    buffer: String::new(),
+                });
+                return Ok(());
+            }
+            bind_candidate(app, id, None);
+            if let Some(m) = &mut app.queues {
+                if m.bind_to.is_none() {
+                    if let Some(st) = m.status.take() {
+                        m.status = Some(if st.contains("failed") {
+                            st
+                        } else {
+                            format!("{st} — a cascades the group")
+                        });
                     }
                 }
             }
@@ -5508,27 +5597,19 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // child's own line says what moved and that `a` is the promotion.
         // The old spelling becomes an alias on the graph side, so the fix
         // outlives this one item.
-        KeyCode::Char('b') if modal.level == queues::Level::Items => {
+        KeyCode::Char('b') | KeyCode::Char('B') if modal.level == queues::Level::Items => {
             let Some(it) = modal.selected_item() else {
                 return Ok(());
             };
             let id = it.id;
-            let id_s = id.to_string();
-            match review_cli(&["bind", &id_s]) {
-                // Pass the child's report through rather than re-wording it:
-                // `#id subject 'old' → New — accept to promote` is the whole
-                // answer, next keypress included.
-                Ok(report) => {
-                    if let Some(m) = &mut app.queues {
-                        m.status = Some(report.trim().to_string());
-                    }
-                }
-                Err(e) => {
-                    if let Some(m) = &mut app.queues {
-                        m.status = Some(format!("bind #{id} failed: {e:#}"));
-                    }
-                }
+            if key.code == KeyCode::Char('B') {
+                modal.bind_to = Some(queues::BindPrompt {
+                    id,
+                    buffer: String::new(),
+                });
+                return Ok(());
             }
+            bind_candidate(app, id, None);
         }
         // A fresh draw, explicitly asked for. Never automatic — see the
         // reload comment.

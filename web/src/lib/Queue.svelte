@@ -17,11 +17,32 @@
   // machine cascade the autonomy ladder never counts. A class group never
   // crosses a class; the front screen's "similar across everything" is the
   // invited crossing — stricter floor, every class named on the card.
+  // The face of a candidate, and the ONE place this page decides it. The
+  // chain is the Rust readers' — `statement`, then `what` for a
+  // commitment-shaped payload, then a named absence — the same two keys
+  // `tui::queues::items_from_json` looks under, with a test on exactly the
+  // commitment case.
+  //
+  // It used to be spelled inline as
+  //     payload.statement ?? `${subject} — ${predicate} — ${object}`
+  // which cannot fall through: a template literal is never nullish, so `??`
+  // stops at it. A commitment payload carries `{who, what, when, direction}`
+  // and no s/p/o at all, so every one of the 695 commitment cards read
+  // "undefined — undefined — undefined" and asked for a verdict on a belief
+  // nobody could see. That is the outbox's rule arriving in this store: a
+  // field the reviewer cannot read is a field they decided unread.
+  //
+  // Matched to the Rust chain rather than improved on. A third reader of a
+  // rule is where it drifts, and a card here that said more than the TUI's
+  // for the same candidate would be the drift, not a feature.
+  const faceOf = (payload) => payload?.statement ?? payload?.what ?? '(no statement)';
+
   let proposers = $state(null);
   let classes = $state(null); // { proposer, rows }
   let tierFilter = $state(null); // null = all
   let groups = $state(null); // { proposer, predicate, threshold, rows }
   let deck = $state(null); // { proposer, predicate, seed, items, judged }
+  let items = $state(null); // one group's members: { from, ids, rows, judged, total }
   let error = $state(null);
   let busy = $state(false);
 
@@ -122,21 +143,30 @@
     notes = rest;
   };
 
+  // The one place a verdict is sent. Three callers file them — the sample
+  // deck, a whole group, one member of a group — and the rule they share is
+  // the one that cost a real sitting its arithmetic: **the card leaves only
+  // once the server says the verdict landed.** It used to leave on any 2xx,
+  // and the graph reports a per-candidate failure on stdout while exiting
+  // zero, so a candidate that could not resolve vanished from the sample,
+  // stayed pending in the queue, and was counted as one of the twelve
+  // verdicts the sitting described. Three copies of that would be three
+  // places to lose it again.
+  async function sendVerdict(body) {
+    const res = await fetch('/api/queue/verdict', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error((await res.text()).trim());
+    return res.json();
+  }
+
   async function verdict(accept, create = false) {
     const item = deck.items[0];
     busy = true;
     try {
-      const res = await fetch('/api/queue/verdict', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: item.id, accept, create_subjects: create }),
-      });
-      if (!res.ok) throw new Error((await res.text()).trim());
-      // The card leaves only once the server says the verdict *landed*. It
-      // used to leave on any 2xx, and the graph reports a per-candidate
-      // failure on stdout while exiting zero — so a candidate that could not
-      // resolve disappeared from the sample, stayed pending in the queue, and
-      // was counted as one of the twelve verdicts this sitting describes.
+      await sendVerdict({ id: item.id, accept, create_subjects: create });
       deck.items.shift();
       deck.judged += 1;
       clearNote(item.id);
@@ -146,6 +176,80 @@
     } finally {
       busy = false;
     }
+  }
+
+  // Into a group without covering it.
+  //
+  // A group verdict is one keystroke over every member, which is right when
+  // they repeat and wrong when they merely *rhyme*: a real group of seven
+  // near-repeats named Sage, Joseph and Justin — a son and two daughters —
+  // and one Accept would have asserted all seven as facts. Similarity is the
+  // grouping key, not agreement, so the members have to be tellable apart by
+  // hand. The TUI has had this depth since the level existed (`Enter items`);
+  // the page had only the two whole-group keys, which is the one shape of
+  // this surface where the fast path is the unsafe one.
+  //
+  // **A named set, re-fetched by id — never a redraw.** The ids are the ones
+  // the group card showed, in the order it showed them, leader first: what a
+  // person saw is what they are judging. There is deliberately no resample
+  // here, for the same reason the deck has none mid-sitting.
+  async function openItems(g) {
+    const ids = [g.leader_id, ...g.members.map((m) => m[0])];
+    items = { from: g, ids, rows: null, judged: 0, total: ids.length };
+    try {
+      const q = new URLSearchParams({ ids: ids.join(',') });
+      const res = await fetch(`/api/queue/items?${q}`);
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const rows = await res.json();
+      // `total` is what CAME BACK, never what was asked for. The store
+      // returns pending candidates only, and a member verdicted since the
+      // grouping ran — by an earlier cascade, or in another session — is
+      // simply not among them. Counting the request would leave the progress
+      // bar short of full forever and end on "Every member judged — 9
+      // verdicts" under a total of 12, which reads as three verdicts lost:
+      // the surface accusing itself of the one failure it exists to prevent.
+      //
+      // The gap is reported rather than smoothed over, because it is real.
+      // (It used to be mostly `--top`'s silent cap of ten, which is fixed in
+      // `mecha review items` — a set the caller names is not a listing.)
+      items = { from: g, ids, rows, judged: 0, total: rows.length, asked: ids.length };
+      error = null;
+    } catch (e) {
+      error = String(e?.message ?? e);
+      items = null;
+    }
+  }
+
+  // One member, one verdict, and deliberately no cascade. Inside a group the
+  // members are the thing being told apart, so fanning out from one of them
+  // would undo the reason for opening it — and it would spend the owner's
+  // one human verdict on candidates they had just decided to read separately.
+  async function itemVerdict(item, accept, create = false) {
+    busy = true;
+    try {
+      await sendVerdict({ id: item.id, accept, create_subjects: create });
+      items.rows = items.rows.filter((r) => r.id !== item.id);
+      items.judged += 1;
+      clearNote(item.id);
+      error = null;
+    } catch (e) {
+      note(item.id, { error: String(e?.message ?? e), created: create });
+    } finally {
+      busy = false;
+    }
+  }
+
+  // Leaving the group. Anything judged in there is gone from the queue, so
+  // the group listing behind this screen is now describing members that no
+  // longer exist — re-run the same query rather than restore a stale list.
+  // Nothing judged means nothing moved, and a two-minute global regrouping
+  // must not be the price of a glance.
+  function closeItems() {
+    const judged = items?.judged ?? 0;
+    items = null;
+    if (judged === 0) return;
+    if (groups?.all) openGlobal(groups.threshold);
+    else if (groups) openGroups(groups.proposer, groups.predicate);
   }
 
   // One tap, one human verdict: the leader id is the owner's, the member
@@ -160,18 +264,13 @@
   async function groupVerdict(g, accept, create = false) {
     busy = true;
     try {
-      const res = await fetch('/api/queue/verdict', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          id: g.leader_id,
-          accept,
-          create_subjects: create,
-          cascade: g.members.map((m) => m[0]),
-          across: !!groups.all,
-        }),
+      await sendVerdict({
+        id: g.leader_id,
+        accept,
+        create_subjects: create,
+        cascade: g.members.map((m) => m[0]),
+        across: !!groups.all,
       });
-      if (!res.ok) throw new Error((await res.text()).trim());
       groups.rows = groups.rows.filter((r) => r !== g);
       clearNote(g.leader_id);
       error = null;
@@ -188,13 +287,16 @@
   // a candidate that can now be accepted, not one that has been, and the
   // graph's own line (`#id subject 'old' → New — accept to promote`) is
   // passed through rather than re-worded, next keypress included.
-  async function bindSubject(id) {
+  // What a person typed as an explicit bind target, keyed by candidate.
+  let targets = $state({}); // id → display name
+
+  async function bindSubject(id, to = null) {
     busy = true;
     try {
       const res = await fetch('/api/queue/bind', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id }),
+        body: JSON.stringify({ id, to: to?.trim() || null }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
@@ -202,7 +304,20 @@
     } catch (e) {
       // A bind that failed says nothing about --create-subjects, so whether
       // that hint is still on offer is carried over rather than decided here.
-      note(id, { error: String(e?.message ?? e), created: notes[id]?.created });
+      //
+      // `needsTarget` is set by THIS catch and nowhere else, which is what
+      // makes the field appear exactly when naming a target is the answer.
+      // A failed accept lands in the same note and must not offer it — the
+      // ways through an unresolvable subject are bind and create, not
+      // typing a name at the tool that never asked for one.
+      //
+      // Set on any bind failure rather than by matching the graph's wording:
+      // every refusal `bind_subject` can give but one ("already resolves")
+      // is answered by naming a target, and the child's own sentence is
+      // still on screen above the field. Reading the error text to decide
+      // would be this page keeping a second copy of the graph's vocabulary,
+      // which is how a surface starts disagreeing with the store it shows.
+      note(id, { error: String(e?.message ?? e), created: notes[id]?.created, needsTarget: true });
     } finally {
       busy = false;
     }
@@ -243,6 +358,26 @@
         <button class="ghost" disabled={busy} onclick={retryCreating}>Accept as new topic</button>
       {/if}
     </div>
+    <!-- The remedy the graph names — `name a target with --to`. The server
+         has always taken it (`BindBody.to`); this page never sent one, so
+         the card displayed an instruction it could not carry out. An exact
+         display name, because that is what `resolve_entity_all` matches:
+         anything ambiguous comes back saying how many it hit. -->
+    {#if notes[id].needsTarget}
+      <div class="bindrow">
+        <input
+          class="field"
+          placeholder="bind to this entity — exact display name"
+          bind:value={targets[id]}
+          onkeydown={(e) => e.key === 'Enter' && targets[id]?.trim() && bindSubject(id, targets[id])}
+        />
+        <button
+          class="minibtn"
+          disabled={busy || !targets[id]?.trim()}
+          onclick={() => bindSubject(id, targets[id])}>Bind</button
+        >
+      </div>
+    {/if}
   {:else if notes[id]?.said}
     <div class="cardsaid">{notes[id].said}</div>
   {/if}
@@ -277,9 +412,7 @@
       {@const item = deck.items[0]}
       <div class="card candidate">
         <div class="kicker">proposed belief</div>
-        <div class="statement">
-          {item.payload?.statement ?? `${item.payload?.subject} — ${item.payload?.predicate} — ${item.payload?.object}`}
-        </div>
+        <div class="statement">{faceOf(item.payload)}</div>
         <div class="meta">
           <span>confidence {item.confidence?.toFixed(2) ?? '—'}</span>
           <span>·</span>
@@ -298,6 +431,52 @@
         <button class="ghost" disabled={busy} onclick={() => draw(deck.proposer, deck.predicate)}>New draw</button>
       </div>
       <div class="footnote">These verdicts describe one sample — the seed is printed above.</div>
+    {/if}
+  {:else if items}
+    <div class="deckhead">
+      {@render backTo(closeItems, 'back to groups')}
+      <span class="pname">one group · {items.total} item{items.total === 1 ? '' : 's'}</span>
+      <span class="seed">
+        {#if items.asked > items.total}{items.asked - items.total} already judged · {/if}leader
+        #{items.from.leader_id}
+      </span>
+    </div>
+    {#if items.judged > 0}
+      <div class="progress">
+        <div class="bar"><div class="fill" style:width="{(items.judged / items.total) * 100}%"></div></div>
+        <span class="seed">{items.judged} / {items.total}</span>
+      </div>
+    {/if}
+    {#if items.rows === null}
+      <div class="empty">reading the group…</div>
+    {:else if items.rows.length === 0}
+      <div class="empty">
+        Every member judged — {items.judged} verdicts, one per fact.
+        <button class="btn" onclick={closeItems}>Back to groups</button>
+      </div>
+    {:else}
+      <div class="footnote">
+        These are near-repeats, not agreements — a group is built on similarity, so members can
+        contradict each other. Each verdict here is your own: one fact, no cascade.
+      </div>
+      {#each items.rows as item (item.id)}
+        <div class="card candidate">
+          <div class="kicker">#{item.id}{item.id === items.from.leader_id ? ' · leader' : ''}</div>
+          <div class="statement">{faceOf(item.payload)}</div>
+          <div class="meta">
+            <span>confidence {item.confidence?.toFixed(2) ?? '—'}</span>
+            <span>·</span>
+            <span>{item.proposed_by}</span>
+            <span>·</span>
+            <span>{(item.created_at ?? '').slice(0, 10)}</span>
+          </div>
+          <div class="btnrow">
+            <button class="btn" disabled={busy} onclick={() => itemVerdict(item, false)}>Reject</button>
+            <button class="btn primary" disabled={busy} onclick={() => itemVerdict(item, true)}>Accept</button>
+          </div>
+          {@render verdictNote(item.id, () => itemVerdict(item, true, true))}
+        </div>
+      {/each}
     {/if}
   {:else if groups}
     <div class="deckhead">
@@ -355,6 +534,14 @@
             <button class="btn" disabled={busy} onclick={() => groupVerdict(g, false)}>Reject all {g.members.length + 1}</button>
             <button class="btn primary" disabled={busy} onclick={() => groupVerdict(g, true)}>Accept all {g.members.length + 1}</button>
           </div>
+          <!-- The third way, and the only safe one when the members disagree:
+               read them one at a time. Under the two whole-group buttons
+               rather than beside them — it is the slower path, and a row of
+               three equal buttons would make the fan-out look like the
+               ordinary choice it is not. -->
+          <button class="ghost open" disabled={busy} onclick={() => openItems(g)}>
+            Review each of the {g.members.length + 1} →
+          </button>
           {@render verdictNote(g.leader_id, () => groupVerdict(g, true, true))}
         </div>
       {/each}
@@ -462,4 +649,8 @@
   .deckfoot { display: flex; justify-content: space-between; }
   .ghost { background: none; border: none; color: var(--text-muted); font-size: 13px; min-height: 44px; cursor: pointer; }
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; }
+  .open { align-self: center; font-size: 13px; color: var(--accent-400); }
+  .bindrow { display: flex; gap: 8px; }
+  .field { flex: 1; min-height: 42px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 13px; padding: 0 12px; }
+  .bindrow .minibtn { flex: 0 0 84px; }
 </style>
