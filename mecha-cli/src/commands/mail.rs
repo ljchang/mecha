@@ -1969,7 +1969,30 @@ async fn task(
         .context("no knowledge-graph server in this configuration — is `[[mcp]]` enabled?")?;
     let ctx = tool_ctx(&prepared);
 
-    let mut args = json!({ "name": name, "context": context });
+    // **The way back to the mail that asked.** The board's whole failure
+    // before this was that the thread id was in hand right here and went
+    // nowhere: a task read "Decide on SAS 2027 award nominations, due 09-11"
+    // and a person deciding it had no way to re-read the request without
+    // searching their own inbox for a subject line they half-remembered. The
+    // line printed at the bottom of this function said it once, to whoever
+    // happened to be at the terminal, and then it was gone.
+    //
+    // A pointer and not a copy — `kg_task_create` refuses anything else, so
+    // that is the store's rule rather than this caller's discipline. The
+    // subject rides as `label` because a person picks a task out of a list by
+    // recognising it, and it is **prose somebody else wrote**: shown to a
+    // human, never reasoned about, exactly as the triage record holds it.
+    let mut args = json!({
+        "name": name,
+        "context": context,
+        "captured_from": {
+            "kind": "mail",
+            "account": account,
+            "id": thread_id,
+            "label": rec.subject,
+            "at": rec.date,
+        },
+    });
     if let Some(d) = &due {
         args["due"] = json!(d);
     }
@@ -2000,6 +2023,8 @@ async fn task(
         None => println!("  no due date — the classifier found none and none was given"),
     }
     println!("  context {context}");
+    // Still printed, but no longer the only record of it: the task carries
+    // the pointer now, so every surface can offer the same re-read.
     println!(
         "  thread {thread_id} · `mecha mail show {thread_id} --account {account}` to re-read it"
     );

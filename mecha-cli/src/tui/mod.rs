@@ -177,6 +177,19 @@ enum Watch {
         handle: String,
         since: std::time::Instant,
     },
+    /// A `mecha tasks source …` read for the /tasks modal.
+    ///
+    /// [`Watch::MailRead`]'s shape one board over, and it takes the same
+    /// exception for the same reason — following a mail pointer starts an MCP
+    /// server and reaches the provider. Nothing durable records a read, so the
+    /// child's answer is the cue.
+    TaskSource {
+        rx: std::sync::mpsc::Receiver<Result<String>>,
+        /// The label a person recognises the source by, for the title and for
+        /// saying which read failed.
+        handle: String,
+        since: std::time::Instant,
+    },
     /// A `mecha mail archive|spam|task …` triage action for the /mail modal.
     ///
     /// The same exception `MailRead` takes, and it was overdue: these each
@@ -1637,6 +1650,44 @@ fn poll_watches(app: &mut App) {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     if let Some(modal) = &mut app.mail {
                         modal.loading = None;
+                        modal.status = Some(format!("the read of {handle} was lost"));
+                    }
+                }
+            },
+            Watch::TaskSource { rx, handle, since } => match rx.try_recv() {
+                Ok(Ok(text)) => match &mut app.tasks {
+                    Some(modal) => {
+                        modal.status = None;
+                        modal.reading = Some(mail::Reader::new(handle, &text));
+                    }
+                    // The modal was closed while it loaded. Printing a whole
+                    // thread into the transcript is not the favour it looks
+                    // like — say it is ready and let them ask again.
+                    None => app.transcript.push(Entry::Notice(format!(
+                        "{handle} finished loading after /tasks closed"
+                    ))),
+                },
+                Ok(Err(e)) => {
+                    // Named, never blank. A source that would not load and a
+                    // task that never had one are opposite findings, and a
+                    // reader showing nothing cannot tell them apart.
+                    let line = format!("could not read {handle}: {e:#}");
+                    match &mut app.tasks {
+                        Some(modal) => modal.status = Some(line),
+                        None => app.transcript.push(Entry::Error(line)),
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if since.elapsed() > doctor::EXAMINE_CAP {
+                        if let Some(modal) = &mut app.tasks {
+                            modal.status = Some(format!("{handle} never answered — o tries again"));
+                        }
+                    } else {
+                        app.watches.push(Watch::TaskSource { rx, handle, since });
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if let Some(modal) = &mut app.tasks {
                         modal.status = Some(format!("the read of {handle} was lost"));
                     }
                 }
@@ -5584,6 +5635,39 @@ fn handle_tasks_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // An open source read owns the keyboard, exactly as a form does: `d` in a
+    // thread is a letter somebody is scrolling past, not "done". Esc closes
+    // the read and returns to the detail it was opened from, one layer at a
+    // time — a key that unwound two would put a status keystroke on a board
+    // whose cursor the reader had been hiding.
+    if modal.reading.is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => modal.reading = None,
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(r) = &mut modal.reading {
+                    r.scroll_by(-1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(r) = &mut modal.reading {
+                    r.scroll_by(1);
+                }
+            }
+            KeyCode::PageUp => {
+                if let Some(r) = &mut modal.reading {
+                    r.scroll_by(-10);
+                }
+            }
+            KeyCode::PageDown => {
+                if let Some(r) = &mut modal.reading {
+                    r.scroll_by(10);
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     modal.status = None;
 
     match key.code {
@@ -5659,6 +5743,26 @@ fn run_task_action(app: &mut App, key: char) -> Result<()> {
                     "open tasks only".into()
                 }),
             );
+            return Ok(());
+        }
+        tasks::Action::Source => {
+            // A task nobody captured from anywhere has no original, and that
+            // is said rather than answered with an empty reader. "Captured
+            // here" and "the read failed" must never print the same.
+            let Some(row) = modal.selected_row() else {
+                return Ok(());
+            };
+            let Some(captured) = row.captured_from.clone() else {
+                modal.status = Some("captured on the board itself — no earlier original".into());
+                return Ok(());
+            };
+            let (id, word) = (row.id.clone(), captured.word().to_string());
+            let handle = captured
+                .label
+                .clone()
+                .unwrap_or_else(|| format!("{} {}", captured.kind, captured.id));
+            modal.status = Some(format!("reading the {word}…"));
+            spawn_task_source(app, &id, &handle);
             return Ok(());
         }
         tasks::Action::Refresh => None,
@@ -7689,6 +7793,31 @@ fn spawn_mail_read(app: &mut App, thread: &str, account: &str, handle: &str) {
         let _ = tx.send(self_cli(&borrowed));
     });
     app.watches.push(Watch::MailRead {
+        rx,
+        handle: handle.to_string(),
+        since: std::time::Instant::now(),
+    });
+}
+
+/// Follow a task's `captured_from` pointer on its own thread.
+///
+/// The same exception [`Watch::MailRead`] takes, and for the same reason:
+/// following a mail pointer starts an MCP server, may refresh an OAuth token
+/// and makes a network call, so doing it on the event loop freezes the
+/// interface at the exact moment somebody is waiting to read something.
+///
+/// Through `mecha tasks source` rather than reaching for the thread directly:
+/// there is one reader per kind and it belongs to the command line, so the
+/// modal cannot drift from what `mecha tasks source` prints — and a kind added
+/// later works here with no change at all.
+fn spawn_task_source(app: &mut App, task: &str, handle: &str) {
+    let args: Vec<String> = vec!["tasks".into(), "source".into(), task.into()];
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = tx.send(self_cli(&borrowed));
+    });
+    app.watches.push(Watch::TaskSource {
         rx,
         handle: handle.to_string(),
         since: std::time::Instant::now(),

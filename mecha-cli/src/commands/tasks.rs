@@ -82,6 +82,20 @@ pub enum Cmd {
         #[arg(long)]
         waiting_on: Option<String>,
     },
+    /// Read what the task was captured from — the mail that asked, the
+    /// stranger's request, the conversation it fell out of.
+    ///
+    /// **One verb over a closed set of kinds**, so every surface offering
+    /// "read the original" reaches the same reader. A task somebody typed
+    /// into the board has no original, and that is said plainly rather than
+    /// answered with an empty page.
+    Source {
+        /// The task's node id, from `tasks list`.
+        task: String,
+        /// Print the pointer itself instead of following it.
+        #[arg(long)]
+        json: bool,
+    },
     /// Ask the run working a task to stop.
     ///
     /// It stops at the next safe point and keeps what it has — the same path
@@ -134,6 +148,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             context,
             waiting_on,
         } => set(global, &task, status, due, defer, context, waiting_on).await,
+        Cmd::Source { task, json } => source(global, &task, json).await,
         Cmd::Stop { task } => {
             if markers()?.request_cancel(&task)? {
                 println!("asked the run on {task} to stop — it finishes the current step first");
@@ -232,6 +247,25 @@ async fn list(global: &GlobalOpts, closed: bool, as_json: bool) -> Result<()> {
         // tail entry because the value is an object, and because this is the
         // one piece of the row that is a *verb* — the rest describes the task,
         // this says what to type to see what asked for it.
+        if !t["captured_from"].is_null() {
+            let p = &t["captured_from"];
+            let at = |k: &str| p[k].as_str().unwrap_or_default();
+            let label = at("label");
+            println!(
+                "{:<10}  from {} {}{}  ·  `mecha tasks source {}`",
+                "",
+                at("kind"),
+                at("id"),
+                // A subject line, and somebody else's words. Clipped for the
+                // column, in full when the source is actually opened.
+                if label.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", clip(label, 44))
+                },
+                t["id"].as_str().unwrap_or(""),
+            );
+        }
     }
     println!("\n{} task(s) · today is {today}", items.len());
     Ok(())
@@ -345,6 +379,126 @@ pub(crate) async fn move_task(
         bail!("kg_task_update: {}", out.content.trim());
     }
     Ok(())
+}
+
+/// Follow a task's `captured_from` pointer to the thing that asked for it.
+///
+/// **The pointer is stored, never the original**, so this re-reads the source
+/// live. Two reasons, and the second is the one that decides it. Copying an
+/// email body into the graph would make the graph a store of other people's
+/// words — which everything reading it treats as belief — and the copy would
+/// drift from the thread it names, so "read the original" would show
+/// something the original no longer says.
+///
+/// The kinds are a **closed set with a reader each** (`gtd::CAPTURE_KINDS`
+/// graph-side). A kind this cannot follow is a card with a button that opens
+/// nothing, which is worse than the plain absence the whole field exists to
+/// fix — so the store refuses to hold one.
+///
+/// The readers are the existing verbs, called in-process rather than spawned:
+/// this *is* the CLI, and the `/triggers` rule is about a UI not reaching past
+/// the command line, not about the command line shelling out to itself.
+async fn source(global: &GlobalOpts, task_id: &str, as_json: bool) -> Result<()> {
+    // `include_closed`, because a task's provenance is most wanted after it is
+    // done — "why did I say yes to this" is a question about a closed task.
+    let board = call(global, "kg_task_list", json!({ "include_closed": true })).await?;
+    let task = board["items"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .find(|t| t["id"].as_str() == Some(task_id))
+        .with_context(|| format!("no task {task_id} on the board"))?;
+
+    let pointer = &task["captured_from"];
+    if pointer.is_null() {
+        // A named condition, not an empty answer. "Captured here" and "the
+        // link is broken" are opposite findings and must not print the same.
+        println!(
+            "{} was captured on the board itself — there is no earlier original to read.",
+            task["name"].as_str().unwrap_or(task_id)
+        );
+        return Ok(());
+    }
+    if as_json {
+        println!("{pointer}");
+        return Ok(());
+    }
+
+    let text = |key: &str| pointer[key].as_str().unwrap_or_default().to_string();
+    let (kind, id) = (text("kind"), text("id"));
+
+    // The heading names where the bytes came from, before any of them. It is
+    // third-party text — a subject line is written by whoever sent the mail —
+    // and the outbox's rule for a quoted source applies unchanged: printing it
+    // to a person in a terminal is the safe context, but it must never read as
+    // the harness's own words.
+    println!("{}", task["name"].as_str().unwrap_or(task_id));
+    let mut head = format!("captured from {kind} {id}");
+    if !text("account").is_empty() {
+        head.push_str(&format!(" · account {}", text("account")));
+    }
+    if !text("at").is_empty() {
+        head.push_str(&format!(" · {}", text("at")));
+    }
+    println!("{head}");
+    if !text("label").is_empty() {
+        println!("{}", text("label"));
+    }
+    println!("{}\n", "─".repeat(60));
+
+    match kind.as_str() {
+        "mail" => {
+            let account = text("account");
+            crate::commands::mail::run(
+                global,
+                crate::commands::mail::Args {
+                    cmd: Some(crate::commands::mail::Cmd::Show {
+                        thread_id: id,
+                        // Never `None`: thread ids are account-scoped, so
+                        // letting it resolve would read whichever mailbox
+                        // answered first — a different thread with the same id.
+                        account: Some(account),
+                    }),
+                },
+            )
+            .await
+        }
+        "frontdoor" => {
+            let seq: i64 = id
+                .parse()
+                .with_context(|| format!("frontdoor pointer '{id}' is not a request number"))?;
+            crate::commands::frontdoor::run(
+                global,
+                crate::commands::frontdoor::Args {
+                    cmd: Some(crate::commands::frontdoor::Cmd::Show { seq }),
+                },
+            )
+            .await
+        }
+        "session" => {
+            crate::commands::sessions::execute(
+                global,
+                crate::commands::sessions::Args::Show { id, json: false },
+            )
+            .await
+        }
+        // Unreachable through the store, which validates the kind on write.
+        // Said by name anyway: a pointer that got in another way must not
+        // print a blank page and let the reader think that is the original.
+        other => bail!("nothing here can read a '{other}' source — the pointer is {pointer}"),
+    }
+}
+
+/// Cut third-party prose to fit a column, marking where it was cut.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    // Visibly, never silently: the Slack builders' rule. A label that just
+    // stops reads as the whole subject, which is how a reviewer decides
+    // against half a sentence.
+    format!("{}…", text.chars().take(max - 1).collect::<String>())
 }
 
 /// Hand one task to the agent: a seeded run whose subject is the task.
