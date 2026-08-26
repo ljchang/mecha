@@ -71,6 +71,7 @@ pub mod onboarding;
 pub mod outbox;
 pub mod outbox_source;
 pub mod provider;
+pub mod quarantine;
 pub mod questions;
 pub mod replay;
 pub mod replay_run;

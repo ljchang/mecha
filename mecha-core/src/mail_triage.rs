@@ -2913,18 +2913,11 @@ pub async fn classify_with(
     let mut last_error = String::new();
 
     for round in 0..2 {
-        let request = crate::message::CompletionRequest {
-            model: model.to_string(),
-            system: None,
-            messages: vec![crate::message::Message::user(attempt.clone())],
-            tools: Vec::new(),
-            max_tokens: 4096,
-            effort: None,
-            thinking: false,
-            // Nothing to share a prefix with, and caching other people's mail
-            // across calls is a property nobody asked for.
-            cache_prompt: false,
-        };
+        // No tools and no history, structurally — see `quarantine`. Uncached
+        // by default, which is right here: there is nothing to share a prefix
+        // with, and caching other people's mail across calls is a property
+        // nobody asked for.
+        let request = crate::quarantine::QuarantinedPass::new(model, 4096).ask(attempt.clone());
         let response = provider.complete(&request, None).await?;
 
         if response.stop_reason == crate::message::StopReason::Refusal {
