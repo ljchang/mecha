@@ -13,9 +13,14 @@ use super::{CarriedState, Tool, ToolCtx, ToolOutput};
 use crate::compact::CARRIED_HEADER;
 use crate::goal::GoalRef;
 
-/// The word introducing the goal line in a rendered plan. One spelling, used
-/// by both [`TodoTool::render`] and the parser that reads it back.
-const SERVING: &str = "serving";
+/// The word introducing the goal line in a rendered plan.
+///
+/// Deliberately the *argument's* name and not better prose. The rendered block
+/// is what the model re-reads after a compaction, and it is the only place the
+/// plan survives; if the line said `serving` while the argument was `serves`,
+/// a post-compaction rewrite would have no way to learn what to call the field
+/// it must pass to keep the goal.
+const SERVES: &str = "serves";
 use crate::message::{Block, Message};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -212,11 +217,15 @@ impl TodoTool {
         let section: Vec<&str> = lines
             .take_while(|l| !l.trim_start().starts_with("## "))
             .collect();
-        let goal = section.iter().find_map(|l| {
-            l.trim()
-                .strip_prefix(SERVING)
-                .and_then(GoalRef::parse_lenient)
-        });
+        // Anchored to the first non-empty line, because `render` always writes
+        // it there. Scanning the whole section would let an item whose
+        // *content* contains a line beginning `serves task:…` supply the
+        // plan's goal — free text deciding what the run is for.
+        let goal = section
+            .iter()
+            .find(|l| !l.trim().is_empty())
+            .and_then(|l| l.trim().strip_prefix(SERVES))
+            .and_then(GoalRef::parse_lenient);
         let items = section
             .iter()
             .filter_map(|line| {
@@ -259,7 +268,14 @@ impl TodoTool {
 
     fn render(plan: &Plan) -> String {
         if plan.items.is_empty() {
-            return "(the list is empty)".to_string();
+            // Still say what it was for. Carrying it across a compaction needs
+            // items — `carried_state` treats an empty section as "the plan is
+            // finished" — but the echo is what the model reads *this* turn,
+            // and a goal it cannot see is one it cannot re-state.
+            return match &plan.goal {
+                Some(goal) => format!("{SERVES} {goal}\n(the list is empty)"),
+                None => "(the list is empty)".to_string(),
+            };
         }
         let done = plan
             .items
@@ -270,7 +286,7 @@ impl TodoTool {
         // half a summariser drops, and it has to be the first thing read back.
         let mut out = String::new();
         if let Some(goal) = &plan.goal {
-            out.push_str(&format!("{SERVING} {goal}\n"));
+            out.push_str(&format!("{SERVES} {goal}\n"));
         }
         out.push_str(&format!("{done}/{} done\n", plan.items.len()));
         for item in &plan.items {
@@ -292,7 +308,9 @@ impl Tool for TodoTool {
          updated as you work. Pass the COMPLETE list every time — it replaces what was \
          there, so include finished items with status `completed`. Exactly one item should \
          be `in_progress` at a time, and an item should be marked `completed` as soon as \
-         it is done rather than in a batch at the end. Skip this tool only for work of \
+         it is done rather than in a batch at the end. If the work serves a task on \
+         the board, pass `serves` — and pass it on every write, like `items`, \
+         because both replace what was there. Skip this tool only for work of \
          one or two steps."
     }
 
@@ -427,12 +445,31 @@ impl Tool for TodoTool {
         // Strict on the way in, unlike every reader of a record: the model can
         // fix this on the next call, and a silently dropped reference leaves a
         // plan claiming to serve something it does not.
-        let goal = match input.get("serves").and_then(Value::as_str) {
-            Some(raw) => match raw.parse::<GoalRef>() {
-                Ok(goal) => Some(goal),
-                Err(e) => return Ok(ToolOutput::err(format!("`serves`: {e}"))),
-            },
-            None => None,
+        let goal = match input.get("serves") {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                // Present but not a string is an error, not an absence. The
+                // object spelling — `{"kind": "task", "id": …}` — is the one a
+                // model reaches for, and dropping it silently would leave a
+                // plan claiming to serve nothing while the model believed it
+                // had said so.
+                let Some(raw) = value.as_str() else {
+                    return Ok(ToolOutput::err(
+                        "`serves` must be a string like `task:<id>`",
+                    ));
+                };
+                // An empty string is how a model spells an omitted optional
+                // field. Refusing it would throw away an otherwise-valid plan
+                // update over a field that was not being used.
+                if raw.trim().is_empty() {
+                    None
+                } else {
+                    match raw.parse::<GoalRef>() {
+                        Ok(goal) => Some(goal),
+                        Err(e) => return Ok(ToolOutput::err(format!("`serves`: {e}"))),
+                    }
+                }
+            }
         };
 
         let plan = Plan { goal, items };
@@ -513,7 +550,7 @@ mod tests {
         // Above the list, because the echo is what the model re-reads every
         // turn and what survives a compaction.
         assert!(
-            out.content.starts_with("serving task:01J8ZK\n"),
+            out.content.starts_with("serves task:01J8ZK\n"),
             "{}",
             out.content
         );
@@ -566,6 +603,68 @@ mod tests {
         assert!(!out.is_error);
         assert!(out.content.starts_with("0/1 done"), "{}", out.content);
         assert_eq!(tool.goal_in(&ctx.workspace), None);
+    }
+
+    /// Present but not a string is an error, not an absence. The object
+    /// spelling is the one a model reaches for, and dropping it silently would
+    /// leave a plan serving nothing while the model believed it had said so.
+    #[tokio::test]
+    async fn a_non_string_goal_is_reported_rather_than_silently_dropped() {
+        let tool = TodoTool::new();
+        let ctx = ToolCtx::default();
+        let out = tool
+            .call(
+                json!({
+                    "items": [{"content": "a", "status": "pending"}],
+                    "serves": {"kind": "task", "id": "01J8ZK"},
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("must be a string"), "{}", out.content);
+        assert!(tool.items_in(&ctx.workspace).is_empty());
+    }
+
+    /// An empty string is how a model spells an unused optional field.
+    /// Refusing it would discard an otherwise-valid plan update over a field
+    /// that was not being used.
+    #[tokio::test]
+    async fn an_empty_goal_means_omitted_and_does_not_cost_the_write() {
+        let tool = TodoTool::new();
+        let ctx = ToolCtx::default();
+        let out = tool
+            .call(
+                json!({
+                    "items": [{"content": "a", "status": "pending"}],
+                    "serves": "",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(tool.items_in(&ctx.workspace).len(), 1, "the plan was kept");
+        assert_eq!(tool.goal_in(&ctx.workspace), None);
+    }
+
+    /// The echo is what the model reads this turn. A goal it cannot see is one
+    /// it cannot re-state on the next write.
+    #[tokio::test]
+    async fn an_empty_list_still_says_what_it_was_for() {
+        let tool = TodoTool::new();
+        let ctx = ToolCtx::default();
+        let out = tool
+            .call(json!({"items": [], "serves": "task:01J8ZK"}), &ctx)
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert!(
+            out.content.contains("serves task:01J8ZK"),
+            "{}",
+            out.content
+        );
     }
 
     #[tokio::test]
@@ -771,7 +870,7 @@ mod tests {
         };
         let block = format!("{CARRIED_HEADER}\n\n## todo\n{}\n", TodoTool::render(&plan));
         assert!(
-            block.contains("serving task:01J8ZK"),
+            block.contains("serves task:01J8ZK"),
             "the goal is rendered above the list: {block}"
         );
 
@@ -785,12 +884,23 @@ mod tests {
         assert_eq!(TodoTool::parse_carried(&block), bare);
     }
 
+    /// Free text must not be able to say what the run is for. `render` always
+    /// writes the goal on the section's first line, so the parser anchors
+    /// there — an unanchored scan let an item whose *content* held a line
+    /// beginning `serves task:…` supply the plan's goal.
+    #[test]
+    fn an_item_whose_content_looks_like_a_goal_line_does_not_become_one() {
+        let block =
+            format!("{CARRIED_HEADER}\n\n## todo\n0/1 done\n[ ] paste this:\nserves task:99\n");
+        assert_eq!(TodoTool::parse_carried(&block).goal, None);
+    }
+
     /// A record written by a newer binary naming a kind this one has never
     /// heard of costs the reference and nothing else. The opposite policy from
     /// the model-facing direction, which errors — see `goal`.
     #[test]
     fn a_carried_goal_of_an_unknown_kind_does_not_cost_the_plan() {
-        let block = format!("{CARRIED_HEADER}\n\n## todo\nserving epic:7\n1/1 done\n[x] mine\n");
+        let block = format!("{CARRIED_HEADER}\n\n## todo\nserves epic:7\n1/1 done\n[x] mine\n");
         let back = TodoTool::parse_carried(&block);
         assert_eq!(back.goal, None);
         assert_eq!(back.items.len(), 1, "the plan survives its unreadable goal");
