@@ -1015,7 +1015,10 @@ async fn run_loop(
         // Polled per frame rather than event-driven: the list lives behind a
         // Mutex the tool writes to, and a lock-and-clone at frame rate is
         // cheaper than being clever.
-        let todo_items = live.todo.as_ref().map(|t| t.items());
+        let todo_items = live
+            .todo
+            .as_ref()
+            .map(|t| t.items_in(&live.agent.context().tools.workspace));
         // CSI 2026: the terminal buffers everything between the pair and
         // presents it as one repaint. Follow-mode streaming scrolls the whole
         // transcript region every token, and over SSH that write arrives in

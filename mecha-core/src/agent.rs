@@ -1677,7 +1677,7 @@ impl Agent {
 
         // Asked at install time, not before the summariser ran: a tool's state
         // is whatever it is *now*, and now is after the round trip.
-        let carried = self.registry.carried_state();
+        let carried = self.registry.carried_state(&cx.tools);
         let carried: Vec<(&str, &str)> = carried
             .iter()
             .map(|state| (state.label.as_str(), state.body.as_str()))
