@@ -44,8 +44,15 @@ class SpeechRequest(BaseModel):
     model: str = "chatterbox-turbo"  # accepted, ignored: one model per server
     voice: str = "default"
     response_format: str = "wav"  # wav, or pcm (raw s16le at 24 kHz) for streaming
-    # Chatterbox knobs, passed through when a client wants them.
-    exaggeration: float = 0.0
+    # Chatterbox knobs. These are the *library's* own defaults, and the
+    # distinction cost something: 0.0 looks like "no opinion" and is in
+    # fact the most monotone setting on a 0-1 scale, so a wrapper picking
+    # it as a neutral-looking placeholder ships a flat voice that nothing
+    # errors about. Zero is not neutral. Resemble's expressive recipe is
+    # a high exaggeration against a *low* cfg_weight - the two interact,
+    # and cranking exaggeration alone rushes the cadence.
+    exaggeration: float = 0.5
+    cfg_weight: float = 0.5
     temperature: float = 0.8
     # OpenAI's own speech API spells speed this way, so a generic client
     # gets it for free. Chatterbox itself has no speed parameter - see
@@ -114,6 +121,11 @@ def speech(req: SpeechRequest):
         raise HTTPException(400, "wav or pcm only")
     if not (MIN_SPEED <= req.speed <= MAX_SPEED):
         raise HTTPException(400, f"speed must be in [{MIN_SPEED}, {MAX_SPEED}]")
+    # Clamp-and-refuse, never clamp-and-accept: the caller's UI would
+    # otherwise show a value the voice is not using (worker.py set_speed).
+    for name, value in (("exaggeration", req.exaggeration), ("cfg_weight", req.cfg_weight)):
+        if not (0.0 <= value <= 1.0):
+            raise HTTPException(400, f"{name} must be in [0.0, 1.0]")
     prompt_path = None
     if req.voice not in ("default", ""):
         prompt_path = os.path.join(VOICES_DIR, f"{req.voice}.wav")
@@ -126,6 +138,7 @@ def speech(req: SpeechRequest):
             req.input,
             audio_prompt_path=prompt_path,
             exaggeration=req.exaggeration,
+            cfg_weight=req.cfg_weight,
             temperature=req.temperature,
         )
     samples = wav.squeeze().cpu().numpy()
