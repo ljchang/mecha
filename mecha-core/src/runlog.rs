@@ -268,6 +268,7 @@ mod tests {
 
     fn stats(calls: u32, errors: u32, ended_failed: bool, cause: StopCause) -> RunStats {
         RunStats {
+            homeostat: None,
             turns: 3,
             usage: Usage::default(),
             cost_usd: Some(0.25),
