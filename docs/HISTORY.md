@@ -2142,6 +2142,50 @@ as a **delta**, not a level: a run that stages nine drafts raises the outbox by
 nine, so a level at run end cannot separate a run's own output from what it
 inherited.
 
+**2026-08-26 (seventh pass) — a run in another process can be told
+something.** The report was *"I pressed ask mecha, the card said planning,
+and nothing happened"* — and the card was right: a run was in flight, and
+`planning` is exactly what `stateOf` derives when `waiting_on` names the
+agent and no `todo` has been written. What was missing was any way to say a
+word to it while it ran. `open the conversation` already existed and was
+hidden on purpose, because a delegated run is a **detached child** and its
+transcript has one writer.
+
+So steering travels the way stopping already does: a file the runner polls,
+drained into the run's own `queued_input` — the same queue a TUI's typed
+steering goes into. `agent.rs` is untouched;
+`run_interruptible_watching` gained a `pump`, deliberately named for nothing
+more specific than *something to do on every watch tick*, so the loop never
+learns that a steer can arrive as a file any more than it learns where a
+tool came from. Verified live rather than asserted: the instruction arrived
+as a text block appended to the user message carrying three `tool_result`s —
+the shape the API requires and the one the loop's own doc insists on — and
+the model obeyed it on its next turn, answering in one line as told.
+
+**And it closed a hazard that was already open.** Every surface that picks a
+session back up refuses to mint a twin of one *this* process holds, and none
+of them could see a detached child, so resuming a delegation mid-flight
+would have given one JSONL two writers. The run marker now names the
+transcript it is writing and `live_writer_of` asks that question of the
+other processes; `resume` answers 409 with the task named. The UI's
+`!working(t)` condition was never the guard — it was the only thing standing
+in for one.
+
+Three rules the marker store already knew, applied to the new file: a steer
+is **appended** (two sentences typed a second apart are two things the owner
+meant), **drained** (a file that survives its own delivery arrives again on
+every later turn), and a run starts **uninstructed** the way it starts
+uncancelled — which is the stale-cancel bug this module was extracted for,
+arriving in a second costume.
+
+The seed's bullet order moved in the same pass, and the reason did not
+survive its own measurement: pooled across the day it looked like the new
+bullets had suppressed `ask_user` (5 of 6 against 0 of 4), but the arms ran
+different tasks, and the one within-task series splits 1-of-2 / 0-of-2 /
+0-of-2 across the three seed orders. The order stands on reading order and
+is pinned by a test; the pooled number is confounded and is recorded here so
+it is not quoted later as a result.
+
 **2026-08-26 (sixth pass) — D4, and the assembler that points instead of
 pasting.** The last open item of the task-agent arc, and it needed less
 building than the design implied, because three things had become true that
