@@ -21,7 +21,7 @@ pub async fn run_interruptible(
     convo: &mut Conversation,
     events: Option<UnboundedSender<AgentEvent>>,
 ) -> anyhow::Result<RunOutcome> {
-    run_interruptible_watching(agent, cx, convo, events, None).await
+    run_interruptible_watching(agent, cx, convo, events, None, None).await
 }
 
 /// [`run_interruptible`], plus a second thing that can ask the run to stop.
@@ -42,6 +42,7 @@ pub async fn run_interruptible_watching(
     convo: &mut Conversation,
     events: Option<UnboundedSender<AgentEvent>>,
     stop: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
+    pump: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 ) -> anyhow::Result<RunOutcome> {
     let token = CancellationToken::new();
     let cx = cx.clone().with_cancel(token.clone());
@@ -87,6 +88,25 @@ pub async fn run_interruptible_watching(
         })
     });
 
+    // **Something to do on every watch tick**, and deliberately nothing more
+    // specific than that. Its one caller drains a file of queued instructions
+    // into this run's steering queue, so a detached run can be redirected
+    // from another process — but the loop never learns that a steer can come
+    // from a file, exactly as it never learns where a tool came from. Ends
+    // with the token, like the stop poller beside it, so a finished run
+    // leaves no poller behind.
+    let watcher3 = pump.map(|pump| {
+        let token = token.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => return,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => pump(),
+                }
+            }
+        })
+    });
+
     let result = agent.run_in(&cx, convo, events).await;
 
     // Ends the watcher whichever way the run went, and releases the signal
@@ -94,6 +114,9 @@ pub async fn run_interruptible_watching(
     token.cancel();
     let _ = watcher.await;
     if let Some(w) = watcher2 {
+        let _ = w.await;
+    }
+    if let Some(w) = watcher3 {
         let _ = w.await;
     }
 

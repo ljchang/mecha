@@ -105,6 +105,21 @@ pub enum Cmd {
         /// The task's node id, from `tasks list`.
         task: String,
     },
+    /// Redirect the run working a task, without stopping it.
+    ///
+    /// The text is folded into the message carrying the run's next tool
+    /// results, so the model sees the results and the new instruction as one
+    /// user turn and keeps going — the TUI's steering, reaching a run in
+    /// another process. Two messages in a row are invalid and there is no
+    /// legal slot between a `tool_use` and its result, which is why this is a
+    /// queue and not an append.
+    Steer {
+        /// The task's node id, from `tasks list`.
+        task: String,
+        /// What to tell it. Several words are joined, like `work --note`.
+        #[arg(trailing_var_arg = true, required = true)]
+        text: Vec<String>,
+    },
     /// Hand a task to the agent: a seeded run in its own session.
     ///
     /// The task becomes the thing the run is *about* — a fresh conversation,
@@ -162,6 +177,19 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
                 // the difference between a card that stops pulsing and one
                 // that lies about it.
                 bail!("nothing is running on {task}")
+            }
+        }
+        Cmd::Steer { task, text } => {
+            let text = text.join(" ");
+            // The same refusal `stop` makes, for the same reason: a caller
+            // that checks the status must not read "queued for a run that
+            // does not exist" as "queued". `queue_steer` writes nothing when
+            // nothing is running, so this is the whole of it.
+            if markers()?.queue_steer(&task, &text)? {
+                println!("queued for the run on {task} — it arrives with its next tool results");
+                Ok(())
+            } else {
+                bail!("nothing is running on {task} — `mecha tasks work {task}` starts a run")
             }
         }
         Cmd::Work {
@@ -338,6 +366,39 @@ async fn set(
 /// Its own directory rather than the work tree, because these are process
 /// facts with a lifetime of one run — `mecha work clean`'s retention is about
 /// artifacts, and sweeping a live run's marker would make it un-stoppable.
+/// The steering half of "a detached run is still reachable".
+///
+/// **A file the runner polls, never a signal** — `runmarker`'s own rule for
+/// cancel, and for the same reason one step further. Steering has to reach a
+/// run that lives in *another process*: the web launches `tasks work`
+/// detached, so the queue the loop drains is in memory this process does not
+/// share. The instruction therefore travels as a file, and the poller folds
+/// it into the run's own `queued_input` — which is where a TUI's typed
+/// steering already goes, so the loop sees exactly what it always saw: text
+/// arriving on the message that carries the tool results.
+///
+/// Returns the pump, not the queue: the caller has already attached the queue
+/// to the run's context, and handing back both would invite a second drain
+/// site. Errors are swallowed by construction — a poller on a two-second tick
+/// has nowhere to report to, and a marker directory that cannot be read is
+/// the same as no steer, which is the safe direction.
+pub(crate) fn steer_pump(
+    task_id: &str,
+    queue: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+) -> std::sync::Arc<dyn Fn() + Send + Sync> {
+    let id = task_id.to_string();
+    let markers = markers().ok();
+    std::sync::Arc::new(move || {
+        let Some(markers) = &markers else { return };
+        for text in markers.take_steer(&id) {
+            eprintln!("mecha: steering — {}", text.trim());
+            if let Ok(mut q) = queue.lock() {
+                q.push_back(text);
+            }
+        }
+    })
+}
+
 pub(crate) fn markers() -> Result<mecha_core::runmarker::RunMarkers> {
     Ok(mecha_core::runmarker::RunMarkers::new(
         mecha_core::work::mecha_home()?.join("taskruns"),
@@ -722,7 +783,11 @@ async fn work(
     // moment, and swept on every exit below — a marker outliving its run
     // makes the next `stop` claim to have stopped something.
     let run_markers = markers()?;
-    run_markers.mark_running(task_id, None)?;
+    // **Named with its transcript**, so another process can find out that a
+    // live run owns this session — the cross-process half of "one
+    // conversation, one writer", which every `resume` surface needs and none
+    // of them could see.
+    run_markers.mark_running_for(task_id, None, Some(&session.meta.id))?;
     // Belt and braces on `mark_running`'s own sweep: a cancel written in the
     // window between `tasks stop`'s liveness check and the previous run's
     // `clear` outlives it, and `cancel_requested` is a bare existence check.
@@ -766,9 +831,17 @@ async fn work(
     session.append(&mecha_core::session::Record::Message(user))?;
     let recorded = convo.messages.clone();
 
+    // Steering, for a run nobody is sitting in front of. The queue is the
+    // same one the TUI's typed input goes into; only the door differs.
+    let steering = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::VecDeque::<String>::new(),
+    ));
+    let cx = (**prepared.agent.context())
+        .clone()
+        .with_queued_input(std::sync::Arc::clone(&steering));
     let outcome = crate::interrupt::run_interruptible_watching(
         &prepared.agent,
-        prepared.agent.context(),
+        &cx,
         &mut convo,
         None,
         Some({
@@ -779,6 +852,7 @@ async fn work(
             let id = task_id.to_string();
             std::sync::Arc::new(move || m.cancel_requested(&id))
         }),
+        Some(steer_pump(task_id, steering)),
     )
     .await;
     run_markers.clear(task_id);
@@ -1099,17 +1173,7 @@ fn work_prompt(
          - Anything you send or publish is STAGED for the owner to review, not delivered. \
          Draft it properly and say what you staged. Do not look for a way around the queue.\n\
          - You cannot change this task's status and have no tool that does. Whether it is \
-         finished is the owner's call, not yours. Report what you did and what is left.\n\
-         - Before you start, work out what you actually need from the owner, and ask it \
-         FIRST — in one `ask_user` call covering everything. Not one sentence: list every \
-         unknown in the one question. The run ENDS on your question and resumes later with \
-         their answer as the next turn, so three questions asked one at a time are three \
-         separate mornings of theirs. Offer concrete `options` where you can; they are one \
-         tap on the owner's phone.\n\
-         - Do not ask what you can find out. A question about something in the task, in \
-         your workspace, or one tool call away is a turn spent asking instead of working. \
-         Ask about a decision that is genuinely the owner's — which of two readings, a \
-         value only they know, a choice you would otherwise guess at.\n",
+         finished is the owner's call, not yours. Report what you did and what is left.\n",
     );
     // **The other half of that bullet: where to find it out.** Named only
     // when this surface actually holds the tool, and by the name the run
@@ -1154,8 +1218,30 @@ fn work_prompt(
              before you guess at it and before you ask about it.\n"
         ));
     }
+    // **The asking block comes after the looking-up block, and the order is
+    // load-bearing rather than tidy.** It shipped the other way round for
+    // four runs: the two pointer bullets landed directly beneath *"do not ask
+    // what you can find out"*, so the section ended on two consecutive
+    // reasons not to ask, and `ask_user` went from 5 of 6 substantive runs
+    // under the previous seed to 0 of 4 under this one. Small numbers, and
+    // the mechanism is the one this project keeps measuring: the instruction
+    // a run obeys is the last one it read on the subject, which is the same
+    // finding that put the whole intervention on the user turn (2026-08-04).
+    // Reading order now matches the run's: here is what you can find out for
+    // yourself, and *then* ask about what is left.
     p.push_str(
-        "- If something unexpected comes up later, ask then too; this is about not \
+        "- Before you start, work out what you actually need from the owner, and ask it \
+         FIRST — in one `ask_user` call covering everything. Not one sentence: list every \
+         unknown in the one question. The run ENDS on your question and resumes later with \
+         their answer as the next turn, so three questions asked one at a time are three \
+         separate mornings of theirs. Offer concrete `options` where you can; they are one \
+         tap on the owner's phone.\n\
+         - Do not ask what you can find out — you have just been told where to look. A \
+         question about something in the task, in your workspace, or one tool call away is \
+         a turn spent asking instead of working. Ask about a decision that is genuinely \
+         the owner's — which of two readings, a value only they know, a choice you would \
+         otherwise guess at.\n\
+         - If something unexpected comes up later, ask then too; this is about not \
          discovering halfway through that you assumed wrong. Say where you got to in your \
          last words, because they are what you will be reading when you come back.\n\
          - If this takes more than a few steps, keep a `todo` list. The owner can watch it, \
@@ -1395,6 +1481,33 @@ mod tests {
         assert!(
             !p.contains("mail_get_thread"),
             "wrong store, wrong id:\n{p}"
+        );
+    }
+
+    /// **Where to look comes before what to ask, and the order is measured.**
+    ///
+    /// The pointer bullets first shipped directly beneath *"do not ask what
+    /// you can find out"*, which ended the section on two consecutive reasons
+    /// not to ask — and `ask_user` fell from 5 of 6 substantive runs under
+    /// the previous seed to 0 of 4 under that one. Four runs is not a result,
+    /// but the mechanism is this project's own repeated finding: the
+    /// instruction a run obeys is the last one it read on the subject, which
+    /// is why the intervention is on the user turn at all (2026-08-04). An
+    /// assertion on prose is usually a smell; here the *order* is the
+    /// behaviour, so it is the thing worth pinning.
+    #[test]
+    fn what_you_can_look_up_is_said_before_what_to_ask() {
+        let p = work_prompt(&from_mail(), "2026-08-26", None, false, &reach());
+        let mail = p.find("mail__mail_get_thread").expect("the mail pointer");
+        let graph = p.find("`graph__kg_search`").expect("the graph pointer");
+        let ask = p.find("ask it FIRST").expect("the asking instruction");
+        let dont = p
+            .find("Do not ask what you can find out")
+            .expect("its guard");
+        assert!(mail < ask && graph < ask, "resources first:\n{p}");
+        assert!(
+            ask < dont,
+            "and the guard stays beneath the instruction it guards, or the                  section ends on the wrong half again"
         );
     }
 

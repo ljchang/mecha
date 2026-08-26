@@ -1387,6 +1387,28 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
     {
         return Json(serde_json::json!({ "key": k })).into_response();
     }
+    // **And the same question asked of the other processes.** The check above
+    // is this process's own, and a delegated run is a *detached child*: its
+    // `Conversation` lives in memory nothing here shares, and the transcript
+    // has one writer. Resuming a run still in flight would give that JSONL
+    // two — the child appending its turns and this process appending the
+    // owner's — which is the failure the in-process check exists to prevent,
+    // arriving through the one door it cannot see. The marker names the
+    // session it is writing, and a marker whose process is gone is swept on
+    // the way past, so a crashed run does not lock its transcript out.
+    if let Some(task) = crate::commands::tasks::markers()
+        .ok()
+        .and_then(|m| m.live_writer_of(&body.id))
+    {
+        return (
+            StatusCode::CONFLICT,
+            format!(
+                "a run is working {task} in this transcript — stop it first \
+                 (`mecha tasks stop {task}`), or steer it where it is\n"
+            ),
+        )
+            .into_response();
+    }
     let path = match Session::find(&dir, &body.id) {
         Ok(p) => p,
         Err(e) => return (StatusCode::NOT_FOUND, format!("{e:#}\n")).into_response(),
