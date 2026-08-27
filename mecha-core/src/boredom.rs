@@ -84,6 +84,19 @@ const MAX_NOTICES: u32 = 3;
 /// defines "stuck" without the two numbers arguing with each other.
 const RECENCY_WINDOW: u32 = STUCK;
 
+/// How every notice opens.
+///
+/// **A constant, because the transcript is the only thing that can tell a
+/// reader who spoke.** A notice is folded into the message carrying the tool
+/// results — steering's slot — and `learning::extract_interventions` reads text
+/// riding beside tool results as *the user steering*, which is right for
+/// everything else that lands there. Without a stem the harness's own words
+/// would be mined as a correction from a person who never spoke, and rules
+/// learned from them would ride in every future prompt: the
+/// `"Blocked by a hook:"` mistake in a third costume. `agent::is_harness_voice`
+/// is the one place that recognition lives, and it matches on this.
+pub const NOTICE_STEM: &str = "Nothing is being learned here:";
+
 /// Which rung of §9.1's ladder the run has reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rung {
@@ -223,16 +236,16 @@ impl Rung {
     pub fn notice(self, tool: &str, escapes: &Escapes) -> String {
         match self {
             Rung::Change => format!(
-                "`{tool}` has now returned exactly the same thing {STUCK} times. \
-                 Nothing is being learned from repeating it. Do not start the task \
-                 over — keep what you have worked out, and either take a different \
-                 route to this one piece or revise the plan if the step itself is \
-                 the wrong shape."
+                "{NOTICE_STEM} `{tool}` has now returned exactly the same thing \
+                 {STUCK} times. Do not start the task over — keep what you have \
+                 worked out, and either take a different route to this one piece or \
+                 revise the plan if the step itself is the wrong shape."
             ),
             Rung::Delegate => {
                 let mut s = format!(
-                    "`{tool}` has returned the same thing {STILL_STUCK} times now, and \
-                     changing the approach inside this conversation has not moved it."
+                    "{NOTICE_STEM} `{tool}` has returned the same thing {STILL_STUCK} \
+                     times now, and changing the approach inside this conversation has \
+                     not moved it."
                 );
                 match &escapes.delegate {
                     Some(delegate) => s.push_str(&format!(
@@ -372,6 +385,10 @@ mod tests {
         let bare = Escapes::default();
         let change = Rung::Change.notice("build", &bare);
         assert!(change.contains("`build`") && change.contains("different route"));
+        assert!(
+            change.starts_with(NOTICE_STEM),
+            "every notice is recognisable"
+        );
         // Forbids the repeat rather than the task — the nudge that sends a
         // model back to the top burns the budget that was already the problem.
         assert!(change.contains("Do not start the task over"));
@@ -380,6 +397,7 @@ mod tests {
             delegate: Some("researcher".into()),
         };
         let delegate = Rung::Delegate.notice("build", &full);
+        assert!(delegate.starts_with(NOTICE_STEM));
         assert!(delegate.contains("`researcher`") && delegate.contains("no memory"));
 
         // With nothing to delegate to, the fallback says what is true rather
