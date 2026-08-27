@@ -353,6 +353,15 @@ impl RunStats {
             (Some(a), Some(b)) => Some(a + b),
             (a, b) => a.or(b),
         };
+        // Same shape, same reason: a live run always knows its own count, and
+        // omitting this arm left a session's later runs' notices silently
+        // discarded — `fold` seeds from the first row and this method never
+        // touched the field, so it kept whatever the first row carried
+        // forever regardless of how many more rows followed.
+        self.boredom_notices = match (self.boredom_notices, other.boredom_notices) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
         self.taint.merge(other.taint);
     }
 
@@ -1623,6 +1632,38 @@ mod tests {
         // Taint merges and never resets: a later clean run does not un-read
         // what an earlier one read.
         assert!(stats.taint.private);
+    }
+
+    /// `merge` had no arm for this field at all, so `fold`'s first-row seed
+    /// kept whatever the first run recorded and every later run's notices
+    /// were silently dropped — diluting the exact rate the sensor exists to
+    /// establish, in the direction `context_overflows`' own `Option` is
+    /// there to prevent.
+    #[test]
+    fn boredom_notices_sum_across_an_episodes_runs_like_context_overflows() {
+        let mut stats = RunStats {
+            boredom_notices: Some(2),
+            ..RunStats::default()
+        };
+        stats.merge(&RunStats {
+            boredom_notices: Some(3),
+            ..RunStats::default()
+        });
+        assert_eq!(stats.boredom_notices, Some(5));
+
+        // `None` behaves like `context_overflows`: a live run always knows
+        // its own count, so `None` only arises from a pre-sensor row, and
+        // `or` keeps whichever side had a sensor rather than treating the
+        // other's silence as zero.
+        let mut unsampled = RunStats {
+            boredom_notices: None,
+            ..RunStats::default()
+        };
+        unsampled.merge(&RunStats {
+            boredom_notices: Some(1),
+            ..RunStats::default()
+        });
+        assert_eq!(unsampled.boredom_notices, Some(1));
     }
 
     #[test]

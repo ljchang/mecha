@@ -46,6 +46,25 @@ pub enum Args {
         json: bool,
     },
 
+    /// How past runs went against what they were *for* — the signed record,
+    /// and the label derived from it.
+    ///
+    /// Observation only: nothing consumes these, and the number worth reading
+    /// is how many come back with no label at all.
+    Appraise {
+        /// Only sessions started in the last N days.
+        #[arg(long)]
+        days: Option<i64>,
+
+        /// Stop after this many sessions, newest first.
+        #[arg(long, short = 'n')]
+        limit: Option<usize>,
+
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Total token usage — and cost, where prices are configured — across
     /// saved sessions, grouped by provider and model.
     Stats {
@@ -64,6 +83,8 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
 
     match args {
         Args::Health { days, limit, json } => health(&dir, days, limit, json)?,
+
+        Args::Appraise { days, limit, json } => appraise(&dir, days, limit, json)?,
 
         Args::List { limit } => {
             let sessions = Session::list(&dir)?;
@@ -274,6 +295,196 @@ fn first_line(s: &str) -> String {
     } else {
         line.to_string()
     }
+}
+
+/// `mecha sessions appraise` — the readout rung 7 exists to produce.
+///
+/// **Observation only.** Nothing consumes an appraisal, and the number worth
+/// reading is the neutral share: §14's own test is that if the labels come back
+/// degenerate the channel is dead, and that is learned cheaply here rather than
+/// after something is built on it.
+///
+/// Derived on the spot from the transcripts, the outbox and each run's own
+/// record — see `appraisal::of_session` on why there is no store yet.
+fn appraise(
+    dir: &std::path::Path,
+    days: Option<i64>,
+    limit: Option<usize>,
+    json: bool,
+) -> Result<()> {
+    use mecha_core::appraisal;
+
+    let since = days.map(|d| chrono::Utc::now() - chrono::Duration::days(d));
+
+    // Best-effort, like every reader over these stores: a read failure costs
+    // the `Edit` channel and nothing else. `outbox_unreadable` is kept
+    // separate from an empty `drafts` deliberately — `open_existing_default`
+    // returns `None` for a store that simply has never been created (a fresh
+    // install, or one that has never staged a draft), which is the ordinary
+    // *empty* case and not a read failure. Conflating the two prints "the
+    // outbox could not be read" on a machine that has nothing to read, which
+    // is the dash-versus-zero inversion this whole surface exists to avoid.
+    let (drafts, outbox_unreadable): (Vec<mecha_core::outbox::OutboxItem>, bool) =
+        match mecha_core::outbox::OutboxStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.items() {
+                Ok(items) => (items, false),
+                Err(_) => (Vec::new(), true),
+            },
+        };
+
+    // Walked here rather than through `runlog::Corpus`, and the difference is
+    // the unit: that reader yields one row per **run**, which is right for
+    // counting what runs cost and wrong for this — an intervention carries a
+    // message index with nothing saying which run held it, and an outbox item
+    // records a session. `RunStats::fold` collapses a session's runs the way
+    // rung 4's episode stats do, through the same fold.
+    let mut appraisals = Vec::new();
+    let mut sessions_read = 0usize;
+    for (meta, path) in Session::list(dir)? {
+        if since.is_some_and(|t| meta.created_at < t) {
+            continue;
+        }
+        if limit.is_some_and(|n| sessions_read >= n) {
+            break;
+        }
+        sessions_read += 1;
+        // One `read`, every reading off the same transcript: the outcome
+        // (`episode_stats`'s own fold, done here in the same pass), the
+        // interventions, and the goal the model's own `serves` argument
+        // named. `Session::read`'s own doc names this exact pattern —
+        // `episode_stats` and `load` each open and walk the file separately —
+        // as the thing it exists to collapse; `Corpus::scan`-style reads with
+        // no `limit` make that a real cost, not a tidiness one.
+        //
+        // `read` fails on an unreadable file where `episode_stats` would
+        // answer `Ok(None)` for one merely lacking an outcome record, so the
+        // "no outcome yet" case still has to be its own `continue` rather
+        // than folding into the `Err` arm.
+        let Ok(transcript) = Session::read(&path) else {
+            continue;
+        };
+        let Some(stats) = transcript.episode else {
+            continue;
+        };
+        let messages = transcript.convo.messages;
+        let interventions = mecha_core::learning::extract_interventions(&messages);
+        // Without a goal, `of_session` never has one to attribute anything
+        // to — `Frustration` needs one on two negatives by construction, so
+        // a session with no goal cannot produce it however it went, and the
+        // neutral share this readout prints would be confusing "the channel
+        // is dead" with "nothing supplied it a goal", which is a different
+        // finding with a different remedy.
+        let goal =
+            mecha_core::tool::todo::TodoTool::plan_from_transcript(&messages).and_then(|p| p.goal);
+        let goals: Vec<_> = goal.into_iter().collect();
+        // The provenance gate's own rule, applied here: `stats.taint` cannot
+        // tell "recorded clean" apart from "recorded before the field
+        // existed", so origin is classified off the timeline's own coverage
+        // instead, which answers `None` rather than guessing clean.
+        let end_taint = Session::taint_timeline(&path)
+            .ok()
+            .and_then(|tl| tl.covering(messages.len().saturating_sub(1)));
+        let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts
+            .iter()
+            .filter(|i| i.session_id.as_deref() == Some(meta.id.as_str()))
+            .collect();
+        appraisals.push(appraisal::of_session(
+            &meta.id,
+            &stats,
+            &goals,
+            &interventions,
+            &mine,
+            end_taint,
+            meta.created_at.to_rfc3339(),
+        ));
+    }
+
+    let mut labels: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut channels: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut positive = 0usize;
+    for a in &appraisals {
+        *labels.entry(enum_key(a.label)).or_default() += 1;
+        for e in &a.errors {
+            *channels.entry(enum_key(e.channel)).or_default() += 1;
+            if e.sign > 0.0 {
+                positive += 1;
+            }
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "appraised": appraisals.len(),
+                "sessions_read": sessions_read,
+                "labels": labels,
+                "channels": channels,
+                "positive_errors": positive,
+                "outbox_read": !outbox_unreadable,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "{} session(s) appraised, of {} read\n",
+        appraisals.len(),
+        sessions_read
+    );
+    // Printed before the early return below: a store that could not be read
+    // is a fact about this run regardless of whether anything was left to
+    // appraise, and the early return used to skip it whenever `appraisals`
+    // came back empty — the one path where a reader most needs to know the
+    // edit channel is missing rather than genuinely empty.
+    if outbox_unreadable {
+        println!("  (the outbox could not be read, so the edit channel is missing — not empty)\n");
+    }
+    if appraisals.is_empty() {
+        return Ok(());
+    }
+
+    println!("  label");
+    for (label, n) in &labels {
+        let pct = *n as f64 / appraisals.len() as f64 * 100.0;
+        println!("    {label:<16} {n:>5}  ({pct:.0}%)");
+    }
+    // The one that decides whether this rung goes further. Said out loud
+    // rather than left to be read off the table, because it is the finding.
+    let neutral = labels.get("neutral").copied().unwrap_or(0);
+    println!(
+        "\n  {:.0}% carry no label — six of the ten `Affect` variants need a \
+         charter, a probe, a notion of harm, a cross-run view or a prediction",
+        neutral as f64 / appraisals.len() as f64 * 100.0
+    );
+
+    println!("\n  signed errors, by channel");
+    if channels.is_empty() {
+        println!("    none");
+    }
+    for (channel, n) in &channels {
+        println!("    {channel:<16} {n:>5}");
+    }
+    println!(
+        "    {:<16} {:>5}  — the only channel that can say a run went well",
+        "of which +ve", positive
+    );
+    Ok(())
+}
+
+/// A `Serialize` enum's own wire spelling, never `{:?}`. Debug and serde agree
+/// on every variant here today because each is one word, but `Agency::Own`
+/// already diverges (`"self"`, a hand-written rename) — so deriving a JSON key
+/// from Debug is a bug waiting on the first multi-word variant, silently
+/// mismatched the day it lands rather than caught here. `unwrap_or_else`'s
+/// fallback is unreachable for a unit-variant enum in practice; it exists so
+/// this stays a display helper rather than a second thing that can panic.
+fn enum_key<T: serde::Serialize>(v: T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
 }
 
 /// `sessions health` — the run-quality corpus, summarised.
