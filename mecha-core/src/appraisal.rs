@@ -172,9 +172,6 @@ pub enum Cite {
 pub struct Appraisal {
     pub id: String,
     pub session_id: String,
-    /// Which run within the session, 1-based — a resumed session has several,
-    /// and the transcript records no per-run stamp.
-    pub run: u32,
     /// What was live.
     #[serde(default, deserialize_with = "crate::goal::de_lenient_vec")]
     pub goals: Vec<GoalRef>,
@@ -334,6 +331,193 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
         .unwrap_or(Affect::Neutral)
 }
 
+/// Build one **session's** appraisal from records that already exist.
+///
+/// **Derived, not stored, and that is a correction to §10.** The design gives
+/// this an appraisal store under the learning root. Every channel here is a
+/// pure function of records the machine already keeps — the transcript, the
+/// run's own `RunStats`, the outbox — so a store would be `runlog`'s rejected
+/// ledger: faster, and a second source of truth that can disagree with the
+/// first. The store earns its place with the **first channel that costs
+/// something to compute**, which is the quarantined appraiser (§5.1), because
+/// a model run cannot be re-derived for free. Until then there is nothing to
+/// keep.
+///
+/// `interventions` and `drafts` are passed in rather than read here, on
+/// doctor's rule: this is a function, and the walking belongs to the caller
+/// that decided how much reading it could afford.
+/// **A session, not a run, and the unit is the whole correctness of it.** The
+/// design's own record carries a session id and no run index; adding one looked
+/// harmless and was not, because the two channels that make this record worth
+/// having are session-scoped and cannot be split. Interventions come out of the
+/// transcript with a message index and nothing marks which run was in flight,
+/// and an outbox item records the session that drafted it and never a run — so
+/// a per-run appraisal has to attribute every one of them to every run, which
+/// multiplies both channels by the number of times the session was resumed.
+/// Rung 4 paid for this exact mistake in the other direction, reading headroom
+/// off one run's outcome for a whole episode; `RunStats::fold` exists so the
+/// fold is written once, and `Session::episode_stats` is the caller's way to it.
+pub fn of_session(
+    session_id: &str,
+    stats: &crate::session::RunStats,
+    goals: &[GoalRef],
+    interventions: &[crate::learning::Intervention],
+    drafts: &[&crate::outbox::OutboxItem],
+    created_at: String,
+) -> Appraisal {
+    let goal = goals.first().cloned();
+    let mut errors = Vec::new();
+
+    // --- Counter: the run's own record ---
+    //
+    // Only counters whose **agency is determined**. A bare `tool_errors` is
+    // not one of those: a failed call may be a wrong argument (mine), an MCP
+    // server (another's) or a full disk (the world's), and guessing would put
+    // a fabricated attribution in the field the label is derived from. The
+    // ones below each say who.
+    //
+    // Three counters are deliberately absent because they are the harness
+    // *working*: `tool_denied` and `blocked_sends` are the approver and the
+    // interlock doing their jobs — the same rule that keeps a denial out of
+    // the failure count — and `context_overflows` is a recovery that
+    // succeeded. Counting any of them would make a well-defended run look like
+    // a bad one.
+    match stats.stop_cause {
+        Some(crate::agent::StopCause::Loop) => errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Counter,
+            sign: -1.0,
+            agency: Agency::Own,
+            visible: false,
+            controllable: None,
+            cite: Cite::Counter("stop_cause".into()),
+        }),
+        Some(crate::agent::StopCause::NoOutput) => errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Counter,
+            sign: -1.0,
+            agency: Agency::Own,
+            visible: false,
+            controllable: None,
+            cite: Cite::Counter("stop_cause".into()),
+        }),
+        // A ceiling is a number somebody set, and hitting one is not a thing
+        // this run could have done differently — `World`, the agency for what
+        // has no address here.
+        Some(
+            crate::agent::StopCause::MaxTurns
+            | crate::agent::StopCause::OutputTokenBudget
+            | crate::agent::StopCause::CostBudget,
+        ) => errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Counter,
+            sign: -0.5,
+            agency: Agency::World,
+            visible: false,
+            controllable: None,
+            cite: Cite::Counter("stop_cause".into()),
+        }),
+        // `Interrupted` is **not** an error, on doctor's rule for the same
+        // field: a person pressing Ctrl-C is the system working, and counting
+        // it would make an attentive owner look like a problem.
+        _ => {}
+    }
+
+    // The model stopped of its own accord with its last call failed and
+    // answered as though it had not — the silent failure the eval rig grades.
+    if stats.ended_on_failed_call {
+        errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Counter,
+            sign: -1.0,
+            agency: Agency::Own,
+            visible: false,
+            controllable: None,
+            cite: Cite::Counter("ended_on_failed_call".into()),
+        });
+    }
+
+    // An approach that stopped teaching the run anything (§9.1). Absent is not
+    // zero: a row from before the sensor says nothing, and reading it as a run
+    // that was never stuck is the dilution the field is `Option` to prevent.
+    if stats.boredom_notices.is_some_and(|n| n > 0) {
+        errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Counter,
+            sign: -0.5,
+            agency: Agency::Own,
+            visible: false,
+            controllable: None,
+            cite: Cite::Counter("boredom_notices".into()),
+        });
+    }
+
+    // --- Intervention: a person stepped in ---
+    //
+    // `Agency::Owner` on the design's own example — *the owner denied/edited*.
+    // Not `Own`: whether the work was wrong or the owner simply wanted
+    // something else is a judgement, and the record is not the place to make
+    // one.
+    for i in interventions {
+        errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Intervention,
+            sign: -1.0,
+            agency: Agency::Owner,
+            visible: false,
+            controllable: None,
+            cite: Cite::Turn(i.at),
+        });
+    }
+
+    // --- Edit: what the owner did with a draft written in their name ---
+    for item in drafts {
+        // A publish is excluded on `mineable_as_writing`'s reasoning: the
+        // difference between its arguments is a path, and reading bookkeeping
+        // as a judgement of the work is the mistake that rule exists to name.
+        if item.kind != crate::outbox::OutboxKind::Message {
+            continue;
+        }
+        let (sign, agency) = match (item.status.as_str(), item.edited()) {
+            // **The one signal in this system that says something went well.**
+            // Recorded since the outbox existed; positive, and it is the reason
+            // this record is signed at all.
+            ("sent", false) => (1.0, Agency::Own),
+            ("sent", true) => (-1.0, Agency::Owner),
+            ("rejected", _) => (-1.0, Agency::Owner),
+            // Still pending: the owner has not said anything yet, and reading
+            // silence as either answer is what a queue nobody has reached
+            // would turn into a verdict.
+            _ => continue,
+        };
+        errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Edit,
+            sign,
+            agency,
+            // It went out. Exposure is what separates embarrassment from a
+            // private mistake, and a sent draft is the clearest case there is.
+            visible: item.status == "sent",
+            controllable: None,
+            cite: Cite::Draft(item.id.clone()),
+        });
+    }
+
+    let mut a = Appraisal {
+        id: session_id.to_string(),
+        session_id: session_id.to_string(),
+        goals: goals.to_vec(),
+        state: stats.homeostat.clone(),
+        errors,
+        label: Affect::Neutral,
+        origin: crate::learning::classify_origin(Some(stats.taint)),
+        taint: stats.taint,
+        created_at,
+    };
+    a.label = affect_of(&a);
+    a
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,7 +538,6 @@ mod tests {
         Appraisal {
             id: "a1".into(),
             session_id: "s1".into(),
-            run: 1,
             goals: Vec::new(),
             state: None,
             errors,
@@ -508,6 +691,140 @@ mod tests {
             Affect::Excitement,
         ];
         assert_eq!(all.iter().filter(|a| a.reachable_today()).count(), 4);
+    }
+
+    // --- the assembler ---
+
+    fn stats() -> crate::session::RunStats {
+        crate::session::RunStats {
+            boredom_notices: Some(0),
+            ..Default::default()
+        }
+    }
+
+    fn draft(id: &str, status: &str, edited: bool) -> crate::outbox::OutboxItem {
+        let before = serde_json::json!({"body_markdown": "Dear Dirk,"});
+        crate::outbox::OutboxItem {
+            id: id.into(),
+            status: status.into(),
+            tool: "mail_send".into(),
+            kind: crate::outbox::OutboxKind::Message,
+            args: if edited {
+                serde_json::json!({"body_markdown": "Dear Dr Vermeulen,"})
+            } else {
+                before.clone()
+            },
+            args_before: before,
+            summary: "a reply".into(),
+            session_id: Some("s1".into()),
+            workspace: None,
+            taint: crate::agent::Taint::default(),
+            created_at: "2026-08-27T00:00:00Z".into(),
+            resolved_at: None,
+            reason: None,
+            error: None,
+        }
+    }
+
+    fn built(
+        stats: &crate::session::RunStats,
+        drafts: &[&crate::outbox::OutboxItem],
+        interventions: &[crate::learning::Intervention],
+    ) -> Appraisal {
+        of_session(
+            "s1",
+            stats,
+            &[],
+            interventions,
+            drafts,
+            "2026-08-27T00:00:00Z".into(),
+        )
+    }
+
+    /// The one channel that says something went well, and the reason the
+    /// record is signed at all.
+    #[test]
+    fn a_draft_sent_unchanged_is_a_positive_error() {
+        let d = draft("o1", "sent", false);
+        let a = built(&stats(), &[&d], &[]);
+        assert_eq!(a.errors.len(), 1);
+        assert!(a.errors[0].sign > 0.0);
+        assert_eq!(a.errors[0].channel, Channel::Edit);
+        assert!(a.errors[0].visible, "it went out");
+        // …and still has no word for it, which is the finding above.
+        assert_eq!(a.label, Affect::Neutral);
+    }
+
+    #[test]
+    fn a_draft_the_owner_rewrote_is_negative_and_exposed() {
+        let d = draft("o1", "sent", true);
+        let a = built(&stats(), &[&d], &[]);
+        assert_eq!(a.errors[0].sign, -1.0);
+        assert_eq!(a.label, Affect::Embarrassment);
+    }
+
+    /// A queue nobody has reached is not a verdict in either direction.
+    #[test]
+    fn a_pending_draft_says_nothing() {
+        let d = draft("o1", "pending", false);
+        assert!(built(&stats(), &[&d], &[]).errors.is_empty());
+    }
+
+    /// The three counters that mean the harness worked, and the one that means
+    /// the person did.
+    #[test]
+    fn a_run_that_was_defended_is_not_a_run_that_went_badly() {
+        let mut s = stats();
+        s.tool_denied = 4;
+        s.blocked_sends = 2;
+        s.context_overflows = Some(3);
+        s.stop_cause = Some(crate::agent::StopCause::Interrupted);
+        let a = built(&s, &[], &[]);
+        assert!(
+            a.errors.is_empty(),
+            "the approver, the interlock, a recovered overflow and a person \
+             pressing Ctrl-C are all the system working: {:?}",
+            a.errors
+        );
+        assert_eq!(a.label, Affect::Neutral);
+    }
+
+    #[test]
+    fn a_ceiling_is_nobody_here_s_fault_and_a_loop_is() {
+        let mut ceiling = stats();
+        ceiling.stop_cause = Some(crate::agent::StopCause::MaxTurns);
+        assert_eq!(built(&ceiling, &[], &[]).label, Affect::Anger);
+
+        let mut stuck = stats();
+        stuck.stop_cause = Some(crate::agent::StopCause::Loop);
+        let a = built(&stuck, &[], &[]);
+        assert_eq!(a.errors[0].agency, Agency::Own);
+    }
+
+    /// Absent is not zero: a row from before the sensor is not a run that was
+    /// never stuck.
+    #[test]
+    fn an_unrecorded_boredom_counter_contributes_nothing() {
+        let mut none = stats();
+        none.boredom_notices = None;
+        assert!(built(&none, &[], &[]).errors.is_empty());
+
+        let mut some = stats();
+        some.boredom_notices = Some(2);
+        assert_eq!(built(&some, &[], &[]).errors.len(), 1);
+    }
+
+    #[test]
+    fn a_taint_carried_by_the_run_decides_the_appraisal_s_provenance() {
+        let mut s = stats();
+        s.taint = crate::agent::Taint {
+            private: true,
+            untrusted: true,
+        };
+        assert_eq!(
+            built(&s, &[], &[]).origin,
+            crate::learning::Origin::Untrusted
+        );
     }
 
     #[test]
