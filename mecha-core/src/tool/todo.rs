@@ -185,19 +185,58 @@ impl Tracked {
     /// must record and what a span completing during it must subtract.
     ///
     /// Also brings `last_real` current. `next_own_position` says what
-    /// `work.calls` will read once this call's own entry lands; if the
-    /// reading handed to the *next* call doesn't match that, something else
-    /// landed in between (or this is the first call ever, or the run
-    /// restarted) and the fresh `work.last` is real work rather than our own
-    /// echo. If it does match, nothing but our own call happened and
-    /// `last_real` carries over unchanged.
+    /// `work.calls` will read once this call's own entry **and every
+    /// approved sibling in its batch** has landed — `work.in_flight` is
+    /// exactly that sibling count, since this same `Work` snapshot is
+    /// shared by every call in one turn and predates all of them landing.
+    /// Missing that term made the guard assume every one of this tool's own
+    /// calls was the only call in its batch: the model doing real work and
+    /// ticking the box in the same turn — the shape `in_flight` exists
+    /// for — advanced `work.calls` by the whole batch size at the next
+    /// check, the equality failed, and `last_real` was overwritten with
+    /// whatever landed last, which was this tool's own entry whenever
+    /// `todo` came last in the batch (the natural order: do the work, then
+    /// tick the box).
+    ///
+    /// The comparison side strips `work.denied`: a call denied in the
+    /// *same* turn as this one lands in `trace` ahead of this call (the
+    /// gate loop pushes a denial immediately, before dispatching what it
+    /// approved), so it is already counted in `work.calls` the instant this
+    /// call sees it — not something to predict for later. Counting it as
+    /// "something new happened" would let an unrelated sibling's refusal
+    /// overwrite `last_real` with `Refused`, which is exactly the
+    /// misattribution `span.denied` exists to suppress a different way;
+    /// this guard must not re-introduce it through `last_real` instead.
+    ///
+    /// If the (denial-stripped) reading handed to the *next* call doesn't
+    /// match the prediction, something else landed in between (or this is
+    /// the first call ever, or the run restarted) and the fresh `work.last`
+    /// is real work rather than our own echo. If it does match, nothing but
+    /// our own batch happened and `last_real` carries over unchanged.
+    ///
+    /// **Accepted residual, in the safe direction.** A match means "only
+    /// this batch's siblings landed," but a sibling's *outcome* is still
+    /// invisible to this tool: `Work` is deliberately a handful of integers
+    /// rather than a list, so nothing here can tell whether a failing
+    /// sibling landed before or after this tool's own entry within the
+    /// batch — that depends on the order the model happened to list the
+    /// calls in, which this tool cannot see and must not guess at. When the
+    /// sibling lands after, its failure is swallowed the same way an
+    /// unbatched one is, one layer removed. This is the false-negative
+    /// direction the module doc names as the one to prefer: a masked
+    /// failure costs a missed finding, where guessing at an unknowable order
+    /// risks the manufactured-failure false positive this fix exists to
+    /// close. `in_flight` already suppresses the finding for *this* span
+    /// while the batch is still forming; what survives past it is the
+    /// span's own last-known reading, not a reconstruction of the batch.
     fn observe(&mut self, work: Option<crate::step::Work>) -> u32 {
         let before = self.own_calls;
         if let Some(work) = work {
-            if self.next_own_position != Some(work.calls) {
+            let settled = work.calls.saturating_sub(work.denied);
+            if self.next_own_position != Some(settled) {
                 self.last_real = work.last;
             }
-            self.next_own_position = Some(work.calls + 1);
+            self.next_own_position = Some(work.calls + work.in_flight + 1);
         }
         self.own_calls += 1;
         before
@@ -266,10 +305,12 @@ impl Tracked {
                             lines.push(line);
                         }
                         // It landed, so the next thing to go wrong here is a
-                        // first time again. Not while siblings are in flight:
-                        // that reads as landed because nothing is known yet,
-                        // which is not the same as having gone well.
-                        None if span.in_flight == 0 => {
+                        // first time again. Not while siblings are in flight
+                        // or one was denied this turn: both read as landed
+                        // because nothing is known yet or nothing here is
+                        // attributable, neither of which is the same as
+                        // having gone well.
+                        None if span.in_flight == 0 && span.denied == 0 => {
                             self.flagged.remove(&item.content);
                         }
                         None => {}
@@ -1284,6 +1325,24 @@ mod tests {
         }
     }
 
+    /// Same, with `in_flight` siblings — the batched shape, where this same
+    /// `Work` snapshot is handed to every approved call in the turn before
+    /// any of them (this one included) has landed.
+    fn batched_work_ctx(run: u64, calls: u32, last: Option<Outcome>, in_flight: u32) -> ToolCtx {
+        ToolCtx {
+            work: Some(
+                Work {
+                    calls,
+                    last,
+                    in_flight,
+                    ..Work::default()
+                }
+                .in_run(run),
+            ),
+            ..ToolCtx::default()
+        }
+    }
+
     async fn write(tool: &TodoTool, ctx: &ToolCtx, items: Value) -> String {
         tool.call(json!({ "items": items }), ctx)
             .await
@@ -1505,6 +1564,39 @@ mod tests {
         assert!(
             !out.contains("no tool calls behind it"),
             "the real call succeeded, so the span is not empty either: {out}"
+        );
+    }
+
+    /// The same manufactured-failure shape, with the rejected write batched
+    /// beside a sibling instead of alone — the shape `in_flight` exists for,
+    /// and the one `own_calls`'s scalar count cannot tell apart from an
+    /// unrelated turn unless `next_own_position` accounts for the whole
+    /// batch landing, not just this tool's own entry.
+    #[tokio::test]
+    async fn a_rejected_write_batched_with_a_sibling_does_not_manufacture_a_failure() {
+        let tool = TodoTool::new();
+        let step = json!([{"content": "ship the release", "status": "in_progress"}]);
+        write(&tool, &work_ctx(1, 0, None), step).await;
+        // A batch of two: a real call that succeeds, and a malformed write
+        // this tool rejects. `in_flight = 1` (two approved calls this turn).
+        tool.call(
+            json!({"items": [{"content": "ship the release", "status": "not_a_status"}]}),
+            &batched_work_ctx(1, 1, Some(Outcome::Ok), 1),
+        )
+        .await
+        .unwrap();
+        // Both landed: the start (1), the real call (1), the rejected write
+        // (1) — calls = 3.
+        let out = write(
+            &tool,
+            &work_ctx(1, 3, Some(Outcome::Failed)),
+            json!([{"content": "ship the release", "status": "completed"}]),
+        )
+        .await;
+        assert!(
+            !out.contains("still failing"),
+            "a rejected bookkeeping write batched with a sibling is not the \
+             step's own failure: {out}"
         );
     }
 }
