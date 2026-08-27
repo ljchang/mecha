@@ -33,6 +33,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fires either constantly or never with no way to tell which. Prints a dash
   where no run recorded the counter, which is what it prints today.
 
+### Fixed
+
+- **mecha was mining its own words as the user's corrections.** `agent.rs`
+  prefixes a refusal it did not author with `"Denied by the user: "` precisely
+  so machine policy is never learned from as a human correction; this is that
+  mistake mirrored. The learning miner guarded one harness voice and not the
+  other, so every run the harness had to nudge for an empty turn contributed an
+  "intervention" whose text was mecha's own — and two reflections in a live
+  store were mined that way, one of them clean, unprocessed, and already inside
+  a pending rule proposal whose text paraphrases the nudge back. Fixed at both
+  ends: `agent::is_harness_voice` is the closed list of voices mecha speaks in
+  the user role, and `Reflexion::learnable` refuses one whatever its origin,
+  which reaches records already on disk.
+
+- **`Origin::Derived` classifies something at last, and it is a label rather
+  than an exclusion.** A self-observed failure is real evidence; what it lacks
+  is a way to be *graded*, because a counterfactual probe means something only
+  when the user steered it there. So a harness-authored intervention is
+  classified rather than dropped — kept, visible, and one gate away from being
+  usable the day something can grade it.
+
 ## [0.1.15] - 2026-08-26
 
 Five surfaces that described themselves wrongly, found by using them. A chip
