@@ -291,6 +291,16 @@ impl Reflexion {
     /// One place, so a future decision to let self-authored reflections
     /// consolidate — with their own budget, or behind a probe that can actually
     /// grade them — changes a gate rather than a scattering of checks.
+    ///
+    /// **Reaches a stored record only in the shape the live guard now
+    /// produces.** `is_harness_voice` is a whole-string match (`==` for the
+    /// nudges, `starts_with`/`contains` for the two stemmed voices), which
+    /// recognises a harness voice recorded alone but not one folded into a
+    /// joined string a pre-fix miner produced — a nudge concatenated with a
+    /// real steer, from before `extract_interventions` filtered per block.
+    /// The two records this method exists to reclassify happen to be pure
+    /// nudges, so this reaches them; a joined-string record from the same
+    /// era would not reclassify here even though it should.
     pub fn provenance(&self) -> Origin {
         match crate::agent::is_harness_voice(&self.intervention) {
             true => Origin::Derived,
@@ -2409,6 +2419,58 @@ mod tests {
         assert_eq!(
             found[0].text, "no, use the other config",
             "the nudge must not ride along on the mined text"
+        );
+    }
+
+    /// A peer's mailbox delivery folds into the same slot boredom's notice
+    /// and a nudge do — `agent.rs`'s fourth voice. Mining it would
+    /// consolidate a peer's words into a rule under the user's own name,
+    /// which is the escalation-via-learning-store shape CLAUDE.md's
+    /// peer-coordination rules exist to close off at the approver; this
+    /// closes it at the miner too.
+    #[test]
+    fn a_folded_mailbox_delivery_is_never_mined_as_a_correction() {
+        let msg = crate::mailbox::MailboxMessage {
+            id: "m1".into(),
+            status: "pending".into(),
+            from: "researcher".into(),
+            from_session: None,
+            to: "chat".into(),
+            body: "no, use the other config".into(),
+            reply_to: None,
+            taint: crate::agent::Taint::default(),
+            taint_recorded: true,
+            created_at: String::new(),
+            delivered_at: None,
+            delivered_to: None,
+            dismissed_at: None,
+        };
+        let delivered = crate::mailbox::render_delivery(&msg, true);
+
+        let messages = vec![
+            Message::user("the original task"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "build".into(),
+                input: serde_json::json!({}),
+            }]),
+            Message {
+                role: Role::User,
+                content: vec![
+                    Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "ok".into(),
+                        is_error: false,
+                    },
+                    Block::text(delivered),
+                ],
+            },
+            Message::assistant(vec![Block::text("done")]),
+        ];
+        assert!(
+            extract_interventions(&messages).is_empty(),
+            "a peer's own words were mined as the user's: {:?}",
+            extract_interventions(&messages)
         );
     }
 
