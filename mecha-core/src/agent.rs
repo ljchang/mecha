@@ -1075,6 +1075,37 @@ impl Agent {
         convo: &mut Conversation,
         events: Option<UnboundedSender<AgentEvent>>,
     ) -> Result<RunOutcome> {
+        // **The `compact` channel is minted per run, here, and not by whoever
+        // built the context.** Setup decides whether this run compacts at all
+        // — that is a config question, and `None` means the tool is not in the
+        // surface — but the flag's *identity* has to be this run's, because
+        // one `Agent` serves many concurrent runs and the loop consumes the
+        // flag with a destructive `swap`. Two runs sharing one `AtomicBool`
+        // means whichever reaches its between-turns check first takes the
+        // other's request: one transcript is summarised without asking and the
+        // other is told a summary happened that did not.
+        //
+        // Doing it here rather than on `RunContext` is what makes it true for
+        // every caller. The four sites that derive a per-run context disagree
+        // about how: Slack deep-clones `ToolCtx` per thread and `subagent`
+        // clones it per child, but `batch` shares the whole `RunContext` by
+        // `Arc::clone`, so a field on `RunContext` would leave batch items
+        // sharing one channel and a fresh-flag-on-`ToolCtx::clone` would never
+        // fire there at all. The loop is the one place that runs once per run
+        // no matter what the caller handed it. Same reason `context_overflows`
+        // and the pressure series are loop locals.
+        let run_scoped;
+        let cx = if cx.tools.compact_requested.is_some() {
+            let mut tools = (*cx.tools).clone();
+            tools.compact_requested = Some(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+            run_scoped = RunContext {
+                tools: Arc::new(tools),
+                ..cx.clone()
+            };
+            &run_scoped
+        } else {
+            cx
+        };
         // Counted here rather than by the builders, for the same reason the
         // snapshot below is: the loop returns from six places, and the count
         // lives in a local behind all of them.
@@ -1298,9 +1329,23 @@ impl Agent {
                 // and `message_bytes` renders every `ToolUse` input to
                 // measure it — a cost that grows with the transcript, paid on
                 // the turns least able to afford it.
+                // The model's own request, taken and cleared. `||`, so it can
+                // only ever *add* a compaction — §7.3's monotonicity, which is
+                // what makes handing this decision to the model safe in the
+                // first place: the harness floor below is untouched, and no
+                // reasoning the model does (or is steered into) can make a run
+                // compact later than it would have.
+                let asked = cx
+                    .tools
+                    .compact_requested
+                    .as_ref()
+                    .is_some_and(|f| f.swap(false, std::sync::atomic::Ordering::Relaxed));
+                if asked {
+                    tracing::info!("the model asked to compact");
+                }
                 if !compaction_gave_up
                     && !loop_detected
-                    && pressure.over(limit, crate::pressure::message_bytes(messages))
+                    && (asked || pressure.over(limit, crate::pressure::message_bytes(messages)))
                 {
                     // What is about to be rewritten, kept for the recording:
                     // the front-end records at run end, so without this the
@@ -1372,7 +1417,20 @@ impl Agent {
                     // not trying; measuring the bytes costs nothing, so
                     // whatever any pass genuinely freed now counts, and
                     // whatever it did not still compacts.
-                    if !pressure.over(limit, crate::pressure::message_bytes(messages)) {
+                    // `asked` skips the re-ask, and that is the whole feature
+                    // rather than a shortcut. The model is told to call
+                    // `compact` *before* starting the next step of its plan, so
+                    // an honoured request is by definition one made while the
+                    // transcript is still under the threshold — re-asking
+                    // `over` there answers false every time, and the run logs
+                    // "freed enough" having promised the model, in
+                    // `CompactTool::call`'s own words, that "the transcript
+                    // will be summarised before your next turn". A tool whose
+                    // affirmative answer describes something that did not
+                    // happen is worse than no tool: the model plans against it.
+                    // Monotonicity is unaffected — this can only ever *add* a
+                    // summary, never delay the harness's own.
+                    if !asked && !pressure.over(limit, crate::pressure::message_bytes(messages)) {
                         tracing::debug!("the free passes freed enough; no summary this turn");
                     } else {
                         match self.compact(cx, messages, &events).await {
@@ -1714,6 +1772,13 @@ impl Agent {
 
             match stop_reason {
                 StopReason::ToolUse => {
+                    // One walk for two consumers. `message_bytes` renders
+                    // every `ToolUse` input to measure it, so it costs more the
+                    // longer the transcript is — which is why the compaction
+                    // check above orders its cheap guards first. Measuring it
+                    // twice in one expression pays that twice on every
+                    // tool-calling turn.
+                    let transcript_bytes = crate::pressure::message_bytes(messages);
                     let results = self
                         .run_tools(
                             cx,
@@ -1722,7 +1787,9 @@ impl Agent {
                             &mut trace,
                             &mut taint,
                             &mut blocked_sends,
-                            self.output_budget(cx, pressure, messages),
+                            self.output_budget(cx, pressure, transcript_bytes),
+                            self.compact_limit(cx)
+                                .and_then(|limit| pressure.forecast(limit, transcript_bytes)),
                         )
                         .await;
 
@@ -2333,11 +2400,16 @@ impl Agent {
     /// - **It never returns zero.** `run_tools` floors each result at
     ///   `SPILL_FLOOR_BYTES` regardless, because a result truncated to nothing
     ///   is worse than an oversized one: it costs a turn and says nothing.
+    ///
+    /// `bytes` is `message_bytes(messages)`, measured by the caller — taken
+    /// rather than retaken: rendering every `ToolUse` input to measure it
+    /// costs more the longer the transcript is, and the caller needs the same
+    /// number in the same expression for the forecast.
     fn output_budget(
         &self,
         cx: &RunContext,
         pressure: &crate::pressure::ContextTracker,
-        messages: &[Message],
+        bytes: usize,
     ) -> usize {
         let configured = cx.tools.output_budget_bytes;
         if cx.tools.spill_dir.is_none() {
@@ -2346,9 +2418,7 @@ impl Agent {
         let Some(limit) = self.compact_limit(cx) else {
             return configured;
         };
-        let Some(afford) =
-            pressure.affordable_output_bytes(limit, crate::pressure::message_bytes(messages))
-        else {
+        let Some(afford) = pressure.affordable_output_bytes(limit, bytes) else {
             return configured;
         };
         if afford < configured {
@@ -2371,6 +2441,7 @@ impl Agent {
         taint: &mut Taint,
         blocked_sends: &mut u32,
         output_budget: usize,
+        context: Option<crate::pressure::Forecast>,
     ) -> Vec<Block> {
         let calls: Vec<(String, String, Value)> = assistant
             .tool_uses()
@@ -2823,15 +2894,17 @@ impl Agent {
                 // stamped too, so `message_send` labels its messages with
                 // what this conversation (and this turn's batch) has read —
                 // the harness's snapshot, never the model's claim.
-                let tool_ctx = if cx.tools.events.is_some() || cx.mailbox.is_some() {
-                    Arc::new(ToolCtx {
-                        call_id: Some(id.clone()),
-                        taint: Some(turn_taint),
-                        ..(*cx.tools).clone()
-                    })
-                } else {
-                    Arc::clone(&cx.tools)
-                };
+                // The reading changes every turn, so it cannot ride on the
+                // run's shared context — this per-call clone is where a
+                // per-turn value can live. The `else` arm is gone: `context`
+                // is `Some` on any run with a compaction threshold, which is
+                // every run against a provider that declares its window.
+                let tool_ctx = Arc::new(ToolCtx {
+                    call_id: Some(id.clone()),
+                    taint: Some(turn_taint),
+                    context,
+                    ..(*cx.tools).clone()
+                });
                 async move {
                     let out = match tool.call(input, &tool_ctx).await {
                         Ok(out) => out,
@@ -5745,6 +5818,126 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// An explicit `compact` call summarises even though the transcript is
+    /// nowhere near the threshold — which is the only case the tool exists for.
+    ///
+    /// The model is told to call it *before* starting the next step of its
+    /// plan, so every honoured request is made while `pressure.over` is false.
+    /// Re-asking that question before paying for the summary therefore answers
+    /// "no" every time, and the run logs "the free passes freed enough" having
+    /// already told the model, in `CompactTool::call`'s words, that the
+    /// transcript *will* be summarised before its next turn. Verified to fail
+    /// without the `!asked &&` guard: the summary is never installed.
+    #[tokio::test]
+    async fn an_explicit_request_compacts_below_the_threshold() {
+        let mut turns = three_calls();
+        turns.push(assistant(
+            vec![Block::ToolUse {
+                id: "c0".into(),
+                name: "compact".into(),
+                input: json!({}),
+            }],
+            StopReason::ToolUse,
+        ));
+        turns.push(assistant(
+            vec![Block::text("summary: the three echoes")],
+            StopReason::EndTurn,
+        ));
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (mut agent, _provider) = agent_with_tools(
+            turns,
+            vec![
+                Arc::new(EchoTool),
+                Arc::new(crate::tool::builtin::CompactTool),
+            ],
+            PermissionMode::Allow,
+        );
+        // A ceiling nothing in this run can reach: the only thing that can
+        // trigger a summary here is the model asking.
+        agent.cfg.compact_at_tokens = Some(u64::MAX);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.force_final_answer = false;
+        agent.cfg.compact_validate = false;
+        agent.ctx_mut().compact_requested =
+            Some(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+
+        let mut convo = Conversation::user("echo three things");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        // The counter, not the text: the scripted summariser's words also
+        // arrive as an ordinary assistant turn, so asserting on them passes
+        // whether or not a summary was ever installed. That is the first
+        // version of this test, and removing the guard did not fail it.
+        assert_eq!(
+            outcome.compactions, 1,
+            "the model asked to compact and `CompactTool` told it the transcript \
+             would be summarised before its next turn; the run summarised nothing"
+        );
+    }
+
+    /// A run never acts on a `compact` request it did not make.
+    ///
+    /// One `Agent` serves many concurrent runs — a `Conversation` per Slack
+    /// thread, a session per `serve` socket, an item per batch, a child per
+    /// `subagent` — and the loop consumes the request with a destructive
+    /// `swap`. While the flag was minted once in `prepare_tools` and carried on
+    /// the agent's `ToolCtx`, every one of those runs shared it: whichever
+    /// reached its between-turns check first took the other's request, so one
+    /// transcript was summarised without asking while the run that *did* ask
+    /// was told, by `CompactTool`, that a summary had happened.
+    ///
+    /// The armed flag here is the other run's — set and not yet consumed. This
+    /// conversation is nowhere near its threshold and never calls `compact`, so
+    /// nothing about it justifies a summary.
+    ///
+    /// Verified to fail while the channel was agent-scoped — on the *second*
+    /// assertion: this run swallowed the other's request. It did not itself
+    /// summarise, because a two-turn transcript gives the summariser nothing
+    /// to do, which is why the theft is asserted directly rather than inferred
+    /// from a compaction count. The damage is at the other end anyway: the run
+    /// that asked gets `CompactTool`'s "the transcript will be summarised
+    /// before your next turn" and no summary, with nothing anywhere recording
+    /// that its request was taken.
+    #[tokio::test]
+    async fn one_runs_compact_request_cannot_compact_another_run() {
+        let turns = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t0".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "v0"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("done")], StopReason::EndTurn),
+        ];
+        let (mut agent, _provider) =
+            agent_with_tools(turns, vec![Arc::new(EchoTool)], PermissionMode::Allow);
+        agent.cfg.compact_at_tokens = Some(u64::MAX);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.force_final_answer = false;
+        agent.cfg.compact_validate = false;
+
+        // Another run asked to compact and its request has not been consumed.
+        let other_runs_request = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        agent.ctx_mut().compact_requested = Some(Arc::clone(&other_runs_request));
+
+        let mut convo = Conversation::user("echo one thing");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(
+            outcome.compactions, 0,
+            "this run never asked to compact and is nowhere near its threshold; \
+             it summarised anyway, on another run's request"
+        );
+        assert!(
+            other_runs_request.load(std::sync::atomic::Ordering::Relaxed),
+            "this run consumed a request that was not its own — the run that \
+             made it will now be told a summary happened that never did"
+        );
     }
 
     fn compacting_agent(turns: Vec<CompletionResponse>) -> (Agent, Arc<ScriptedProvider>) {
