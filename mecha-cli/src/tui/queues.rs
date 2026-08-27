@@ -637,6 +637,9 @@ impl QueuesModal {
         }
         let strip_text = format!("  {}", self.key_strip());
         let strip = Line::styled(strip_text.clone(), Style::new().fg(Color::Cyan));
+        // Computed before the body, because a *document* has to be wrapped to
+        // the width it will be drawn at and a list must not be.
+        let width = 122u16.min(frame.area().width);
         let body = match self.level {
             Level::Queues => self.queue_lines(),
             Level::Proposers => self.proposer_lines(),
@@ -644,15 +647,26 @@ impl QueuesModal {
             Level::Groups => self.group_lines(),
             Level::Items => self.item_lines(),
             Level::Review => match &self.review_detail {
-                Some(text) => text
-                    .lines()
-                    .map(|l| Line::styled(format!("  {l}"), Style::new().fg(Color::White)))
-                    .collect(),
+                // **Wrapped, not clipped.** Every other level here is a list of
+                // rows that truncate on purpose — a row is a handle, and the
+                // detail behind it is one keypress away. This is the detail,
+                // and the thing it shows is the *rule text a person is about to
+                // put in front of every future run*. Clipping it at the box
+                // edge asked for an approval on a sentence whose end was
+                // unreadable, which is the failure the outbox's `DraftView`
+                // exists to prevent, arriving one queue over: a field the
+                // reviewer cannot see is a field they approved unread.
+                //
+                // Wrapped here rather than with `Paragraph::wrap`, so
+                // `body.len()` stays the number of lines actually drawn — the
+                // box height and the scroll offset are both computed from it,
+                // and a paragraph that wraps underneath them scrolls by
+                // logical lines while the reader counts visual ones.
+                Some(text) => wrapped(text, width.saturating_sub(4)),
                 None => self.review_lines(),
             },
         };
 
-        let width = 122u16.min(frame.area().width);
         let strip_lines = strip_height(&strip_text, width.saturating_sub(2));
         // Status occupies a line when present, so it is reserved with the
         // strip rather than allowed to push the list past the box. The bind
@@ -1147,6 +1161,77 @@ fn truncate(s: &str, n: usize) -> String {
         .collect()
 }
 
+/// Hard-wrap a document to `width`, keeping its blank lines and indentation.
+///
+/// Word-wrapped rather than cut mid-word, and a word longer than the whole
+/// width is broken rather than dropped — a base64 blob or a long path is
+/// exactly the case where losing the tail is worst.
+pub(super) fn wrapped(text: &str, width: u16) -> Vec<Line<'static>> {
+    let width = width.max(8) as usize;
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        // Continuations are indented past the original, so a wrapped rule
+        // reads as one item rather than as several.
+        let indent: String = raw.chars().take_while(|c| *c == ' ').collect();
+        let hang = format!("{indent}    ");
+        let mut line = String::new();
+        let mut prefix = indent.clone();
+        for word in raw.split_whitespace() {
+            let mut word = word;
+            loop {
+                let room = width.saturating_sub(prefix.chars().count() + line.chars().count());
+                let need = word.chars().count() + usize::from(!line.is_empty());
+                if need <= room {
+                    if !line.is_empty() {
+                        line.push(' ');
+                    }
+                    line.push_str(word);
+                    break;
+                }
+                if line.is_empty()
+                    && word.chars().count() > width.saturating_sub(prefix.chars().count())
+                {
+                    // A single word wider than the line: break it. `prefix`
+                    // can exceed `width` once it becomes `hang` on a narrow
+                    // terminal, where the unchecked subtraction above would
+                    // underflow in release mode rather than panic — and the
+                    // `take = 0` that follows leaves `prefix` unchanged and
+                    // `word` undiminished, which never converges and loops
+                    // forever pushing empty lines. At least one character,
+                    // or the split makes no progress.
+                    let take = width.saturating_sub(prefix.chars().count()).max(1);
+                    let (head, tail) = word.split_at(
+                        word.char_indices()
+                            .nth(take)
+                            .map(|(i, _)| i)
+                            .unwrap_or(word.len()),
+                    );
+                    out.push(Line::styled(
+                        format!("  {prefix}{head}"),
+                        Style::new().fg(Color::White),
+                    ));
+                    prefix = hang.clone();
+                    word = tail;
+                    continue;
+                }
+                out.push(Line::styled(
+                    format!("  {prefix}{line}"),
+                    Style::new().fg(Color::White),
+                ));
+                line.clear();
+                prefix = hang.clone();
+            }
+        }
+        // An empty source line is a paragraph break and is kept: it is most of
+        // what makes a proposal's sections tellable apart.
+        out.push(Line::styled(
+            format!("  {prefix}{line}"),
+            Style::new().fg(Color::White),
+        ));
+    }
+    out
+}
+
 fn strip_height(strip: &str, width: u16) -> u16 {
     let width = width.max(1) as usize;
     (strip.chars().count().div_ceil(width) as u16).max(1)
@@ -1291,6 +1376,44 @@ pub fn candidates_from_json(text: &str) -> anyhow::Result<Vec<CandidateRow>> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A rule proposal's whole reason for existing is that a person reads the
+    /// rule before it goes into every future prompt. Clipping it at the box
+    /// edge is the outbox's unread-field failure one queue over.
+    #[test]
+    fn a_detail_is_wrapped_rather_than_clipped() {
+        let long = "When the user redirects the workflow, specifies a different tool, or \
+                    introduces new constraints mid-task, immediately halt previous steps.";
+        let lines = wrapped(long, 40);
+        assert!(lines.len() > 1, "it wrapped");
+        for line in &lines {
+            let w: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+            assert!(w <= 44, "line is {w} wide: {line:?}");
+        }
+        // Nothing is lost — the last words survive, which is the whole point.
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(joined.contains("halt previous steps."));
+    }
+
+    #[test]
+    fn a_word_wider_than_the_line_is_broken_rather_than_lost() {
+        let lines = wrapped(&"x".repeat(100), 20);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert_eq!(joined.matches('x').count(), 100);
+    }
+
+    #[test]
+    fn blank_lines_survive_because_they_are_the_sections() {
+        let lines = wrapped("rules:\n\nevidence:", 40);
+        assert_eq!(lines.len(), 3);
+    }
     // ── the generic review level ──────────────────────────────────────────
 
     fn row(name: &str, depth: usize, opens: &str) -> QueueRow {
@@ -1655,6 +1778,31 @@ mod tests {
         );
         m.move_sel(1);
         assert_eq!(m.selected, 0, "and it cannot move past the filtered end");
+    }
+
+    /// `wrapped` on indented text at a narrow width, which `it_draws_at_tiny_
+    /// sizes` below misses by one property: its fixture text carries no
+    /// leading whitespace, so `prefix` never grows past `width` there. Once
+    /// a wrapped continuation's `hang` (`indent + 4`) reaches or exceeds
+    /// `width`, an unchecked `width - prefix.chars().count()` underflows in
+    /// release mode and loops forever rather than panicking — this must
+    /// terminate and never emit an empty pushed line from the split branch.
+    #[test]
+    fn wrapping_indented_text_at_a_narrow_width_terminates() {
+        for indent in 0..12 {
+            let text = format!(
+                "{}{}",
+                " ".repeat(indent),
+                "some indented evidence text here"
+            );
+            let lines = wrapped(&text, 8);
+            assert!(!lines.is_empty());
+            assert!(
+                lines.len() < 100,
+                "indent {indent} did not converge: {} lines",
+                lines.len()
+            );
+        }
     }
 
     /// The box must draw at sizes where the naive clamp panics.

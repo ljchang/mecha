@@ -1892,6 +1892,9 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
                         // not because the origin was laundered.
                         origin: mecha_core::learning::Origin::Untrusted,
                         evidence: mecha_core::learning::Evidence::Full,
+                        edited_at: None,
+                        dropped_at: None,
+                        dropped_reason: None,
                     };
                     learning.append_reflexion(&refl)?;
                     learning.mark_correction_mined(&key)?;

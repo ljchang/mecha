@@ -579,6 +579,9 @@ mod tests {
             created_at: "2026-08-19T00:00:00Z".into(),
             origin,
             evidence: mecha_core::learning::Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
         }
     }
 
