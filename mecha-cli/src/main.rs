@@ -219,6 +219,10 @@ pub enum Command {
     /// learned reflection.
     Reflect(commands::reflect::Args),
 
+    /// Read, edit and refuse the lessons `reflect` mined, before `learn`
+    /// consolidates them into rules.
+    Reflections(commands::reflections::Args),
+
     /// Absorb unprocessed reflections into the learned rule set.
     Learn(commands::learn::Args),
 
@@ -381,6 +385,7 @@ async fn dispatch() -> Result<()> {
         Command::Batch(args) => commands::batch::execute(&cli.global, args).await,
         Command::Eval(args) => commands::eval::execute(&cli.global, args).await,
         Command::Reflect(args) => commands::reflect::execute(&cli.global, args).await,
+        Command::Reflections(args) => commands::reflections::execute(args).await,
         Command::Learn(args) => commands::learn::execute(&cli.global, args).await,
         Command::Distill(args) => commands::distill::execute(&cli.global, args).await,
         Command::Validate(args) => commands::validate::execute(&cli.global, args).await,
