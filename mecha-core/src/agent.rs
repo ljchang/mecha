@@ -2553,6 +2553,13 @@ impl Agent {
 
         let mut approved = Vec::new();
         let mut results: Vec<Option<Block>> = vec![None; calls.len()];
+        // Denials in *this* turn's batch, folded into `Work::denied` below
+        // beside `in_flight`: a call denied here is already settled, but a
+        // batch that ticks one step and reaches for the next one's tool in
+        // the same turn cannot say which step a denial belongs to, so
+        // neither an approved sibling nor the finding it might otherwise
+        // support may be attributed to it.
+        let mut denied_this_turn: u32 = 0;
 
         // What this turn will arm, gated against *before* any of it runs.
         //
@@ -2604,6 +2611,7 @@ impl Agent {
                         unknown: false,
                         staged: false,
                     });
+                    denied_this_turn += 1;
                     emit(
                         events,
                         AgentEvent::ToolDenied {
@@ -2803,6 +2811,7 @@ impl Agent {
                             unknown: false,
                             staged: false,
                         });
+                        denied_this_turn += 1;
                         continue;
                     }
                     // Escalate to a human even for a tool that would normally
@@ -2846,6 +2855,7 @@ impl Agent {
                         unknown: false,
                         staged: false,
                     });
+                    denied_this_turn += 1;
                     continue;
                 }
             }
@@ -2979,6 +2989,7 @@ impl Agent {
                         unknown: false,
                         staged: false,
                     });
+                    denied_this_turn += 1;
                     continue;
                 }
             }
@@ -2988,12 +2999,17 @@ impl Agent {
 
         // What the run has done, as of now. Folded after the gate rather than
         // before it, so a call this turn's approver refused is already in the
-        // count — a step whose last attempt was refused reads as blocked
-        // instead of as never tried. Siblings are the other half: their
-        // results are not back, so they are carried as *in flight* and support
-        // no finding at all rather than reading as an empty span.
+        // count. Two kinds of sibling keep that from over-attributing a
+        // denial to whichever step happens to be completing in the same
+        // batch: one still running, carried as *in flight*, and one already
+        // denied this turn, carried as `denied` — `Work::of` folds the
+        // denial into the raw trace's tail regardless of which call in the
+        // batch it sat beside, so without this a step whose own work landed
+        // reads as blocked by a refusal that belonged to its neighbour.
+        // Neither supports a finding at all.
         let work = crate::step::Work::of(trace)
             .with_in_flight(approved.len().saturating_sub(1) as u32)
+            .with_denied(denied_this_turn)
             .in_run(cx.tools.work.map(|w| w.run).unwrap_or_default());
 
         let executed =
