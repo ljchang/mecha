@@ -27,6 +27,7 @@ use mecha_core::appraisal::{apply_probe, relabel, Appraisal, Cite, Probe};
 use mecha_core::config::ProviderConfig;
 use mecha_core::counterfactual::ProbeVerdict;
 use mecha_core::learning::Intervention;
+use mecha_core::replay_run::replay_surface_specs;
 use std::path::Path;
 
 /// Say why a probe produced nothing, on stderr, always.
@@ -66,7 +67,13 @@ fn finding(v: &ProbeVerdict) -> Probe {
 /// nothing about the intervention" case this rung exists to name rather than
 /// let read as a mystery. `Fidelity::of` needs no blob read — comparing
 /// hashes is the whole check for `Differs` and `Unknown` alike — so this
-/// costs nothing beyond a live registry read that already happened.
+/// costs nothing beyond building the narrowed registry the caller already
+/// has to build to know what `live` should even be (see the call site: it
+/// must be [`replay_surface_specs`]'s output, the surface a replay actually
+/// sends, never the bare CLI registry's own specs — no CLI process ever
+/// holds `ask_user`, so comparing against it would report `Differs` on
+/// nearly every inconclusive probe regardless of whether anything real had
+/// changed).
 fn annotate_with_fidelity(
     reason: &str,
     recorded_tools_hash: Option<&str>,
@@ -213,8 +220,24 @@ pub async fn probe_appraisal(
             }
         };
         if let ProbeVerdict::Inconclusive(reason) = &verdict {
-            let live = prepared.agent.registry().specs();
-            let why = annotate_with_fidelity(reason, prep.tools_hash(), &live);
+            // Fingerprints the surface `drive_arm` actually sent — the
+            // recorded names, narrowed from the live registry and filled
+            // from the surface-only stand-in — never the bare CLI registry,
+            // which can never hold `ask_user` and so would report `Differs`
+            // on nearly every inconclusive probe regardless of whether
+            // anything real had changed. A failure here would mean
+            // `drive_arm` failed to build this same registry moments ago,
+            // which is already handled above as `unavailable`; the only sane
+            // fallback for that unreachable case is the reason uncaveated,
+            // never a fabricated caveat from an empty surface.
+            let why = match replay_surface_specs(
+                prep.recorded_tools(),
+                prepared.agent.registry(),
+                Some(&crate::setup::surface_only_registry()),
+            ) {
+                Ok(live) => annotate_with_fidelity(reason, prep.tools_hash(), &live),
+                Err(_) => reason.clone(),
+            };
             skipped(&appraisal.session_id, i.at, &why);
         }
         let found = finding(&verdict);
