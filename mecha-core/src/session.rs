@@ -123,6 +123,19 @@ pub struct RunConfig {
     /// **`None` is a recording from before this existed, and must never read as
     /// a match** — [`crate::surface::Fidelity`] is the three-state answer, and
     /// its `Unknown` arm is the one every session on disk today lands in.
+    ///
+    /// **Scope: `registry().specs()`, unfiltered — not necessarily what this
+    /// turn's request actually sent.** The wire request goes through
+    /// `registry.specs_for(cx.phase)`, which also applies `Phase::Plan`'s
+    /// read-only filter and a loaded skill's `tools:` narrowing (matching this
+    /// struct's own `tools` field, so this is not a new gap, only a named
+    /// one). A run under `Plan`, or one that had a narrowing skill loaded,
+    /// sent fewer specs than this hash covers — and since the surface can
+    /// narrow *mid-run*, no single hash can describe every turn's request
+    /// exactly. `Fidelity::Matches` here means "the full registry is
+    /// unchanged since this was recorded", which is what makes a replay
+    /// worth attempting; it is not a claim that the request bytes were
+    /// identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools_hash: Option<String>,
 
