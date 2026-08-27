@@ -338,10 +338,20 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
 /// pure function of records the machine already keeps — the transcript, the
 /// run's own `RunStats`, the outbox — so a store would be `runlog`'s rejected
 /// ledger: faster, and a second source of truth that can disagree with the
-/// first. The store earns its place with the **first channel that costs
-/// something to compute**, which is the quarantined appraiser (§5.1), because
-/// a model run cannot be re-derived for free. Until then there is nothing to
-/// keep.
+/// first. Until then there is nothing to keep.
+///
+/// **What earns a store is the first thing here that costs a model run**, and
+/// which one arrives first is not settled: the quarantined appraiser (§5.1) is
+/// the design's answer, and the counterfactual probe behind [`apply_probe`] is
+/// a real model run per intervention and may well land sooner. Either way it
+/// is a *verdict* that needs keeping and not an appraisal — the assembled
+/// record stays derivable from the transcript, the outbox and `RunStats`, and
+/// only the paid-for part is irrecoverable. So the thing to reach for first is
+/// the ledger that already exists for exactly this: `validations.jsonl` keeps
+/// probe outcomes today, keyed to what was measured, and a second store beside
+/// it needs an argument that these verdicts are keyed differently — which they
+/// are, to an intervention rather than to a rule set. Worth deciding
+/// deliberately rather than by whichever lands first.
 ///
 /// `interventions` and `drafts` are passed in rather than read here, on
 /// doctor's rule: this is a function, and the walking belongs to the caller
@@ -455,9 +465,11 @@ pub fn of_session(
     // --- Intervention: a person stepped in ---
     //
     // `Agency::Owner` on the design's own example — *the owner denied/edited*.
-    // Not `Own`: whether the work was wrong or the owner simply wanted
-    // something else is a judgement, and the record is not the place to make
-    // one.
+    // Not `Own`, because whether the work was wrong or the owner simply wanted
+    // something else is a judgement, and **nothing here can make it**. That is
+    // a statement about this function, not about the world: it is a pure
+    // function of on-disk records, and the question needs a replay. See
+    // [`apply_probe`], which is what licenses moving it.
     for i in interventions {
         errors.push(GoalError {
             goal: goal.clone(),
@@ -516,6 +528,82 @@ pub fn of_session(
     };
     a.label = affect_of(&a);
     a
+}
+
+/// What a counterfactual probe found about one intervention.
+///
+/// The verdict is [`counterfactual::ProbeVerdict`]'s, restated in this
+/// module's terms so the label's semantics stay where the label is. Producing
+/// one costs a model run per intervention; deciding what it *means* costs
+/// nothing and belongs beside [`label_of`].
+///
+/// [`counterfactual::ProbeVerdict`]: crate::counterfactual::ProbeVerdict
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Probe {
+    /// Replayed without the intervention, the run went somewhere else. The
+    /// steer was load-bearing.
+    Mattered,
+    /// Replayed without it, the run tracked the recording anyway. The steer
+    /// changed nothing.
+    Redundant,
+    /// The replay departed before the probe point, so the question was never
+    /// posed. Not evidence in either direction.
+    Inconclusive,
+}
+
+/// Fold a probe's finding into the intervention error it was run for.
+///
+/// **This is the one thing allowed to move `agency`, and that is the whole
+/// point of paying for a probe.** [`of_session`] assembles an intervention as
+/// `Agency::Owner` because it cannot tell a correction of a wrong trajectory
+/// from a change of the owner's mind — and the split between them is exactly
+/// what a replay answers:
+///
+/// - **Mattered** — without the steer the run went elsewhere, so the
+///   trajectory *was* wrong and the steer names the alternative that existed.
+///   The agent could have done otherwise: `Own` + `controllable`, which is
+///   **regret**, and which is the case §8's prioritised replay wants — a run
+///   worth re-running because something in this machine could have gone
+///   differently.
+/// - **Redundant** — the run tracked the recording without the steer, so it
+///   was already going the right way. The owner still had to step in, which is
+///   a real cost and stays a negative error, but nothing the agent did caused
+///   it and nothing it could have done would have avoided it: `Owner` +
+///   `controllable: false`, which is **disappointment**, read literally as the
+///   literature defines it — a bad outcome with no alternative.
+/// - **Inconclusive** — nothing changes. `ProbeVerdict`'s own inconclusive arm
+///   exists because a replay that diverged early never posed the question, and
+///   an answer invented from a question nobody asked is worse than no answer.
+///
+/// **The magnitude is deliberately untouched.** A redundant steer is weaker
+/// evidence of a goal error than a load-bearing one, and there is an argument
+/// for shrinking its `sign` — but the multiplier would be a tuned constant
+/// nobody has measured, in the field the label is derived from. `Metric`'s
+/// docstring is the precedent for refusing that.
+///
+/// Applied to a built `Appraisal` rather than inside `of_session`, so that
+/// function stays pure over on-disk records and a run with no probe budget
+/// produces exactly what it produces today.
+pub fn apply_probe(e: &mut GoalError, probe: Probe) {
+    match probe {
+        Probe::Mattered => {
+            e.agency = Agency::Own;
+            e.controllable = Some(true);
+        }
+        Probe::Redundant => {
+            e.controllable = Some(false);
+        }
+        Probe::Inconclusive => {}
+    }
+}
+
+/// Re-derive the label after probes have spoken.
+///
+/// Separate from `apply_probe` because a label is a fact about the *whole*
+/// record — frustration is repeated error on one goal — so it cannot be
+/// recomputed one error at a time.
+pub fn relabel(a: &mut Appraisal) {
+    a.label = affect_of(a);
 }
 
 #[cfg(test)]
@@ -825,6 +913,73 @@ mod tests {
             built(&s, &[], &[]).origin,
             crate::learning::Origin::Untrusted
         );
+    }
+
+    // --- what a probe buys ---
+
+    fn intervention() -> GoalError {
+        GoalError {
+            goal: None,
+            channel: Channel::Intervention,
+            sign: -1.0,
+            agency: Agency::Owner,
+            visible: false,
+            controllable: None,
+            cite: Cite::Turn(4),
+        }
+    }
+
+    /// The case §8 wants and the one the corpus cannot currently label: the
+    /// owner had to steer, and without them the run would have gone elsewhere.
+    /// Something in this machine could have gone differently.
+    #[test]
+    fn a_steer_that_mattered_makes_the_error_the_agents_own() {
+        let mut e = intervention();
+        apply_probe(&mut e, Probe::Mattered);
+        assert_eq!(e.agency, Agency::Own);
+        assert_eq!(e.controllable, Some(true));
+
+        let mut a = appraisal(vec![e]);
+        relabel(&mut a);
+        assert_eq!(a.label, Affect::Regret);
+    }
+
+    /// The owner stepped in and the run was already going the right way. A
+    /// real cost, and nothing the agent could have done about it.
+    #[test]
+    fn a_steer_that_changed_nothing_stays_the_owners() {
+        let mut e = intervention();
+        apply_probe(&mut e, Probe::Redundant);
+        assert_eq!(e.agency, Agency::Owner, "the agent did not cause this");
+        assert_eq!(e.controllable, Some(false));
+
+        let mut a = appraisal(vec![e]);
+        relabel(&mut a);
+        assert_eq!(a.label, Affect::Disappointment);
+    }
+
+    /// A replay that departed before the probe point never posed the question,
+    /// and an answer to a question nobody asked is worse than none.
+    #[test]
+    fn an_inconclusive_probe_changes_nothing() {
+        let mut e = intervention();
+        apply_probe(&mut e, Probe::Inconclusive);
+        assert_eq!(e, intervention());
+
+        let mut a = appraisal(vec![e]);
+        relabel(&mut a);
+        assert_eq!(a.label, Affect::Neutral);
+    }
+
+    /// The magnitude is evidence the probe does not speak to, so it is left
+    /// alone in both directions.
+    #[test]
+    fn a_probe_never_moves_the_sign() {
+        for probe in [Probe::Mattered, Probe::Redundant, Probe::Inconclusive] {
+            let mut e = intervention();
+            apply_probe(&mut e, probe);
+            assert_eq!(e.sign, -1.0);
+        }
     }
 
     #[test]
