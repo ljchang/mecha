@@ -296,6 +296,28 @@ async fn list(global: &GlobalOpts, closed: bool, as_json: bool) -> Result<()> {
         ]
         .iter()
         .filter_map(|(key, label)| {
+            // **`waiting on mecha` is a claim, and the markers are the
+            // witness.** `work` restores the status on every exit path it
+            // controls, and a kill controls none of them, so a killed
+            // delegation leaves the board naming the agent forever. Marked
+            // rather than repaired: this verb reads the board and does not
+            // heal it — doctor's rule — and the repair is a status the owner
+            // chooses, since what happened to the work is a separate question
+            // from whether a process is alive.
+            //
+            // Doctor would be the natural home for the cross-store check and
+            // deliberately is not: it runs with no network and no model in
+            // one pass, and the board lives in the knowledge graph behind
+            // MCP. So the check goes where the board is already being read.
+            if *key == "waiting_on" && t[*key].as_str() == Some(AGENT) {
+                let alive = t["id"]
+                    .as_str()
+                    .and_then(|id| markers().ok().and_then(|m| m.running(id)))
+                    .is_some();
+                if !alive {
+                    return Some(format!("{label} {AGENT} — but no run is in flight"));
+                }
+            }
             t[*key]
                 .as_str()
                 .filter(|v| !v.is_empty())
