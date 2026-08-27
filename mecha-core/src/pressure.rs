@@ -796,10 +796,9 @@ mod tests {
         );
     }
 
-    #[test]
     /// A slow-growing run still reports a cost, and never "~0k each".
     ///
-    /// `(rate / 1000).max(1)` reads as the guard for this and is not one: the
+    /// `rate.max(1) / 1000` reads as the guard for this and is not one: the
     /// rate is already filtered to `> 0`, and every rate under 1000 still
     /// divides to zero. The line then says a turn costs nothing beside a
     /// finite count of turns left — the one internally inconsistent thing it
@@ -822,6 +821,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn the_line_the_model_reads_states_facts_and_asks_for_nothing() {
         let mut t = ContextTracker::new();
         t.observe(10_000, 30_000);
