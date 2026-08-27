@@ -52,6 +52,11 @@ pub enum Cmd {
     },
     /// Un-retire a rule by id (or unique prefix).
     Restore { id: String },
+    /// One rule in full: its text, domain, state and ledger tally. What the
+    /// TUI's `Enter` on the Rules pane runs — a rule is the one record here
+    /// that rides in every future prompt, so it is the one most worth
+    /// reading in full.
+    Show { id: String },
     /// Scan the ledger and stage retirement proposals for rules the
     /// bisection keeps convicting. Deterministic; review with `mecha
     /// proposals`.
@@ -69,6 +74,7 @@ pub async fn execute(args: Args) -> Result<()> {
         Cmd::List { json } => list(&store, json),
         Cmd::Retire { id, reason } => retire(&store, &id, reason),
         Cmd::Restore { id } => restore(&store, &id),
+        Cmd::Show { id } => show(&store, &id),
         Cmd::ProposeRetirements { min_attributed } => propose(&store, min_attributed),
     }
 }
@@ -167,6 +173,12 @@ fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
 /// Find one learned rule by id or unique prefix, returning its domain.
 /// Ambiguity is an error rather than a guess, same as proposal lookup.
 fn find_rule(store: &LearningStore, id: &str) -> Result<(String, Vec<Rule>, usize)> {
+    // `rid.starts_with("")` is true for every rule that has an id, so an
+    // empty needle — a TUI row whose `Rule::id` was `None`, serialised to
+    // `null` and read back as `""` — would match every learned rule in
+    // every domain instead of none. `mecha rules retire ""` is reachable
+    // from the command line too.
+    anyhow::ensure!(!id.is_empty(), "no rule id given");
     let mut hits: Vec<(String, Vec<Rule>, usize)> = Vec::new();
     for domain in store.domains() {
         let rules = store.learned_rules(&domain)?;
@@ -222,6 +234,13 @@ fn restore(store: &LearningStore, id: &str) -> Result<()> {
         rules[i].id.as_deref().unwrap_or(id)
     ));
     println!("restored to `{domain}`: {}", rules[i].text);
+    Ok(())
+}
+
+fn show(store: &LearningStore, id: &str) -> Result<()> {
+    let tallies = rule_tallies(&store.validations()?);
+    let (domain, rules, i) = find_rule(store, id)?;
+    println!("## {domain}\n{}", describe(&rules[i], &tallies));
     Ok(())
 }
 
@@ -472,6 +491,42 @@ mod tests {
         assert!(find_rule(&store, "r-1").is_err(), "prefix matches two");
         assert!(find_rule(&store, "r-9").is_err(), "matches none");
         assert!(find_rule(&store, "r-1a").is_ok());
+        std::fs::remove_dir_all(store.root()).ok();
+    }
+
+    /// `rid.starts_with("")` is true for every id, so an empty needle used to
+    /// resolve to whichever learned rule happened to be alone in its domain
+    /// — a TUI row with no id (a user rule, or a pre-identity learned one,
+    /// both of which serialise `"id": null` and read back as `""`) would
+    /// silently retire an unrelated rule instead of failing. This is the
+    /// case with exactly one learned rule on disk, where the old code found
+    /// exactly one hit and acted on it.
+    #[test]
+    fn an_empty_id_never_matches_a_rule_by_accident() {
+        let store = temp_store();
+        store
+            .write_learned_rules("behavior", &[rule("Only rule.", "r-only")])
+            .unwrap();
+        assert!(
+            find_rule(&store, "").is_err(),
+            "an empty needle matches nothing, not everything"
+        );
+        assert!(retire(&store, "", None).is_err());
+        // The rule is untouched.
+        let r = &store.learned_rules("behavior").unwrap()[0];
+        assert!(r.active());
+        std::fs::remove_dir_all(store.root()).ok();
+    }
+
+    #[test]
+    fn show_prints_the_rule_and_its_tally() {
+        let store = temp_store();
+        store
+            .write_learned_rules("behavior", &[rule("Ship the thing.", "r-show")])
+            .unwrap();
+        assert!(show(&store, "r-show").is_ok());
+        assert!(show(&store, "").is_err(), "no id given");
+        assert!(show(&store, "nope").is_err(), "no such rule");
         std::fs::remove_dir_all(store.root()).ok();
     }
 }

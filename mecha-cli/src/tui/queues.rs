@@ -1188,9 +1188,18 @@ pub(super) fn wrapped(text: &str, width: u16) -> Vec<Line<'static>> {
                     line.push_str(word);
                     break;
                 }
-                if line.is_empty() && word.chars().count() > width - prefix.chars().count() {
-                    // A single word wider than the line: break it.
-                    let take = width - prefix.chars().count();
+                if line.is_empty()
+                    && word.chars().count() > width.saturating_sub(prefix.chars().count())
+                {
+                    // A single word wider than the line: break it. `prefix`
+                    // can exceed `width` once it becomes `hang` on a narrow
+                    // terminal, where the unchecked subtraction above would
+                    // underflow in release mode rather than panic — and the
+                    // `take = 0` that follows leaves `prefix` unchanged and
+                    // `word` undiminished, which never converges and loops
+                    // forever pushing empty lines. At least one character,
+                    // or the split makes no progress.
+                    let take = width.saturating_sub(prefix.chars().count()).max(1);
                     let (head, tail) = word.split_at(
                         word.char_indices()
                             .nth(take)
@@ -1769,6 +1778,31 @@ mod tests {
         );
         m.move_sel(1);
         assert_eq!(m.selected, 0, "and it cannot move past the filtered end");
+    }
+
+    /// `wrapped` on indented text at a narrow width, which `it_draws_at_tiny_
+    /// sizes` below misses by one property: its fixture text carries no
+    /// leading whitespace, so `prefix` never grows past `width` there. Once
+    /// a wrapped continuation's `hang` (`indent + 4`) reaches or exceeds
+    /// `width`, an unchecked `width - prefix.chars().count()` underflows in
+    /// release mode and loops forever rather than panicking — this must
+    /// terminate and never emit an empty pushed line from the split branch.
+    #[test]
+    fn wrapping_indented_text_at_a_narrow_width_terminates() {
+        for indent in 0..12 {
+            let text = format!(
+                "{}{}",
+                " ".repeat(indent),
+                "some indented evidence text here"
+            );
+            let lines = wrapped(&text, 8);
+            assert!(!lines.is_empty());
+            assert!(
+                lines.len() < 100,
+                "indent {indent} did not converge: {} lines",
+                lines.len()
+            );
+        }
     }
 
     /// The box must draw at sizes where the naive clamp panics.

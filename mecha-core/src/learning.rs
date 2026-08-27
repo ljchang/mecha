@@ -1136,7 +1136,18 @@ impl LearningStore {
             for r in all.iter_mut().filter(|r| r.id == id) {
                 r.reflexion_text = lesson.to_string();
                 r.edited_at = Some(chrono::Utc::now().to_rfc3339());
-                if r.origin != Origin::Clean || r.evidence != Evidence::UserTurns {
+                // Only where the promotion needs it. A reflection already
+                // mined from a clean conversation has nothing in `context`
+                // to withhold, and destroying the evidence a rule is argued
+                // from is not free — the old condition also fired on
+                // `Origin::Clean` + `Evidence::Full` (the common, sound
+                // case) purely because `Full != UserTurns`, which withheld
+                // context on every ordinary edit for no reason. A record
+                // whose *stored* origin is `Clean` but whose intervention is
+                // mecha's own words (recorded before `is_harness_voice`
+                // existed) still needs it: `provenance()` reclassifies those
+                // as `Derived`, and this promotion has to agree with that.
+                if r.origin != Origin::Clean || crate::agent::is_harness_voice(&r.intervention) {
                     r.context = "(withheld — the lesson was rewritten by the owner)".to_string();
                     r.origin = Origin::Clean;
                     r.evidence = Evidence::UserTurns;
@@ -2484,6 +2495,28 @@ mod tests {
             .unwrap();
         assert_eq!(after.provenance(), Origin::Clean);
         assert!(after.learnable());
+    }
+
+    /// The common case, and the one the old condition got backwards: a
+    /// reflection already mined from a clean conversation
+    /// (`Origin::Clean` + `Evidence::Full`) has nothing in `context` that
+    /// needs withholding. The old check fired anyway — `Full != UserTurns`
+    /// — so an ordinary reword of an ordinary lesson destroyed evidence a
+    /// rule might one day be argued from, for no reason at all.
+    #[test]
+    fn editing_an_already_clean_reflection_does_not_withhold_its_context() {
+        let store = scratch_store();
+        let before = stored(&store, "r-clean", Origin::Clean);
+        assert_eq!(before.evidence, Evidence::Full);
+
+        let after = store
+            .edit_reflexion("r-clean", "Use the smaller config next time.")
+            .unwrap();
+        assert_eq!(
+            after.context, before.context,
+            "nothing here was ever third-party — there is nothing to withhold"
+        );
+        assert_eq!(after.evidence, Evidence::Full);
     }
 
     /// A drop is the owner saying no, and it outranks an edit — a lesson can

@@ -446,9 +446,14 @@ pub fn rows_from_json(pane: Pane, text: &str) -> anyhow::Result<Vec<Row>> {
                 Pane::Proposals => Row {
                     id: s("id"),
                     title: s("title"),
-                    tag: s("status"),
+                    // `proposals list --json` calls these `kind` and
+                    // `detail` — there is no `status` key at all, so reading
+                    // one made `tag` blank and `spent` true for every row:
+                    // `list` already filters to `status == "pending"`, so
+                    // nothing it can return is spent.
+                    tag: s("kind"),
                     note: r.get("detail").and_then(|v| v.as_str()).map(str::to_string),
-                    spent: s("status") != "pending",
+                    spent: false,
                     mine: false,
                 },
             }
@@ -575,16 +580,28 @@ mod tests {
         assert!(rows[2].mine && rows[2].note.as_deref().unwrap().contains("yours"));
     }
 
+    /// Against the shape `commands/proposals.rs::list` actually emits — `id`,
+    /// `kind`, `title`, `detail` — never a `status` key. A fixture that
+    /// hand-writes `status` is the scripted-provider trap this project's own
+    /// name for it: the guarantee asserted against a belief about the
+    /// producer rather than against what it produces, which is how the
+    /// previous version of this test passed while every real row rendered
+    /// dim and grey as though already decided.
     #[test]
-    fn a_resolved_proposal_reads_as_past() {
+    fn a_pending_proposal_is_never_spent_and_carries_its_domain() {
         let rows = rows_from_json(
             Pane::Proposals,
-            r#"[{"id":"p1","title":"5 rule(s) from 10 reflection(s)","status":"accepted"},
-                {"id":"p2","title":"3 rule(s)","status":"pending"}]"#,
+            r#"[{"id":"p1","kind":"behavior","title":"5 rule(s) from 10 reflection(s)","detail":"pending"},
+                {"id":"p2","kind":"writing","title":"3 rule(s)","detail":"pending"}]"#,
         )
         .unwrap();
-        assert!(rows[0].spent);
+        assert!(
+            !rows[0].spent,
+            "list --json only ever returns pending items"
+        );
         assert!(!rows[1].spent);
+        assert_eq!(rows[0].tag, "behavior");
+        assert_eq!(rows[0].note.as_deref(), Some("pending"));
     }
 
     #[test]
