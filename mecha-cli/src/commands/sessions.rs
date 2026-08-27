@@ -402,17 +402,32 @@ fn health(
     // rather than a zero on a corpus with no sensor, like the line above: a
     // detector that has never fired and one that was not there yet are opposite
     // findings, and this is the field that exists to tell them apart.
+    let sensed_boredom = corpus
+        .rows
+        .iter()
+        .filter(|r| r.stats.boredom_notices.is_some())
+        .count();
     let bored = corpus
         .rows
         .iter()
         .filter(|r| r.stats.boredom_notices.is_some_and(|n| n > 0))
         .count();
-    match corpus.boredom_rate() {
-        Some(_) => println!(
+    if sensed_boredom > 0 {
+        print!(
             "  went nowhere        {bored} run(s) told an approach had stopped moving ({})",
             pct(corpus.boredom_rate())
-        ),
-        None => println!("  went nowhere        — (no run in this corpus recorded the counter)"),
+        );
+        // Same caveat as overflows, for the same reason: worth saying only
+        // when the corpus is mixed, or it reads as noise beside a clean one.
+        if sensed_boredom < corpus.len() {
+            print!(
+                " — of {sensed_boredom} that recorded it; {} did not",
+                corpus.len() - sensed_boredom
+            );
+        }
+        println!();
+    } else {
+        println!("  went nowhere        — (no run in this corpus recorded the counter)");
     }
 
     let by_model = corpus.by_model();
