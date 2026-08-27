@@ -259,6 +259,12 @@
     failed:   { word: 'the run failed',    cls: 'broke' },
     ready:    { word: 'ready for review',  cls: 'ready' },
     unknown:  { word: 'outcome unknown',   cls: 'broke' },
+    // **Not `failed`, and not `idle`.** The run is gone and the board never
+    // heard; what happened to the work is a separate question the transcript
+    // may or may not answer. Hazard colour because the remedy is a person:
+    // the board is claiming something untrue and goes on claiming it until
+    // somebody moves the task.
+    stalled:  { word: 'the run is gone',  cls: 'broke' },
     idle:     { word: null,                cls: null },
   };
 
@@ -269,6 +275,11 @@
   function stateOf(t) {
     // In flight outranks everything: it is the only state that is about right
     // now rather than about what happened.
+    // Ahead of `working`, whose negation it half is — and ahead of the
+    // question check, because a question parked by a run that has since been
+    // killed is still answerable, and *answer needed* is the more actionable
+    // of the two things that are true.
+    if (stalled(t)) return questionFor(t) ? 'needs' : 'stalled';
     if (working(t)) {
       const plan = plans[t.id];
       // No list yet is not "no plan" while a run is starting — it is the
