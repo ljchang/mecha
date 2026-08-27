@@ -2452,6 +2452,46 @@ Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
 length bound: this is a record of what was measured, which is what this
 document is for.
 
+**2026-08-10/11, recovered 2026-08-27 — the turn ceiling was clipping a fifth
+of the benchmark, and nobody had re-derived it.** Salvaged out of PR #52 (a
+handoff refresh that went stale unmerged for sixteen days and was closed as
+superseded) because everything else in it died — v0.1.3, 710 tests, a
+benchmark run since finished — and this one finding had landed nowhere.
+
+The original report, from the `mecha-arm64-subset-2026-08-10__14-15-05` run
+on v0.1.2: raising the reasoning round trip made `max_turns` the binding
+constraint, **26% of trials ended at exactly 80 turns**, and those passed 30%
+of the time against 50–67% in every band below. Terminal-Bench's own default
+is **200**, so 80 was a ceiling this project chose, below the benchmark's,
+and nobody re-derived it after the constraints that justified it were removed.
+
+**Recounted independently before it was believed**, because it is a report
+from a session whose working notes are gone, and the archive is on disk:
+counting assistant turns in each trial's own `agent/sessions/*.jsonl` and
+taking the pass from `verifier/reward.txt`, over the 47 of 50 trials that
+kept transcripts —
+
+| turns | n | passed | rate |
+|---|---|---|---|
+| 0–19 | 20 | 8 | 40% |
+| 20–39 | 11 | 5 | 45% |
+| 40–59 | 4 | 3 | 75% |
+| 60–79 | 2 | 1 | 50% |
+| **80+ (the ceiling)** | **10** | **3** | **30%** |
+
+**21% pinned at the ceiling, passing 30% against 40–75% below.** The
+denominators differ from the original (47 trials against 75) and the shape
+and the conclusion do not.
+
+Two things make it worth the rescue. It is **local evidence for a decision
+taken from a convention**: `TASK_MAX_TURNS` was set to 200 on 2026-08-26
+citing Terminal-Bench's default, while a measurement of exactly that question
+sat unmerged. And the first attempt to recount it **read 100% of trials at 80
+turns**, because the regex matched the *configured* `max_turns=80` in every
+trial log rather than the turns used — the fixture rather than the thing, the
+same shape as the three green-for-the-wrong-reason tests recorded above, and
+the reason the count was taken from the transcripts instead.
+
 **2026-08-26 — slot contention, and the cost that is not prefix churn.** R3's
 question, pointed at concurrency rather than at overnight parking:
 `scripts/slot-contention.py` runs K conversations at once, each six turns over
