@@ -365,6 +365,13 @@ async fn appraise(
     // is off — `of_session` has already read what it needs out of them.
     let mut per_session_interventions: Vec<Vec<mecha_core::learning::Intervention>> = Vec::new();
     let mut sessions_read = 0usize;
+    // **Counted, never assumed.** This walk used to pass `&[]` for goals
+    // unconditionally, so it reported zero goals *by construction* and could
+    // never have reported anything else — absent and zero conflated inside the
+    // one command built to detect whether the labels were degenerate. The
+    // number is still zero today; the difference is that it is now a
+    // measurement rather than a property of this function.
+    let mut with_goals = 0usize;
     for (meta, path) in Session::list(dir)? {
         if since.is_some_and(|t| meta.created_at < t) {
             continue;
@@ -376,9 +383,22 @@ async fn appraise(
         let Ok(Some(stats)) = Session::episode_stats(&path) else {
             continue;
         };
-        let interventions = Session::load(&path)
-            .map(|(_, convo)| mecha_core::learning::extract_interventions(&convo.messages))
+        // One load, two readings. The plan comes off the same transcript the
+        // interventions do — it was already being loaded, so naming the goal
+        // costs nothing beyond reading a field that was there all along.
+        let (interventions, goal) = Session::load(&path)
+            .map(|(_, convo)| {
+                (
+                    mecha_core::learning::extract_interventions(&convo.messages),
+                    mecha_core::tool::todo::TodoTool::plan_from_transcript(&convo.messages)
+                        .and_then(|p| p.goal),
+                )
+            })
             .unwrap_or_default();
+        if goal.is_some() {
+            with_goals += 1;
+        }
+        let goals: Vec<_> = goal.into_iter().collect();
         let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts
             .iter()
             .flatten()
@@ -387,7 +407,7 @@ async fn appraise(
         appraisals.push(appraisal::of_session(
             &meta.id,
             &stats,
-            &[],
+            &goals,
             &interventions,
             &mine,
             meta.created_at.to_rfc3339(),
@@ -468,6 +488,7 @@ async fn appraise(
             serde_json::to_string_pretty(&serde_json::json!({
                 "appraised": appraisals.len(),
                 "sessions_read": sessions_read,
+                "named_a_goal": with_goals,
                 "labels": labels,
                 "channels": channels,
                 "positive_errors": positive,
@@ -492,9 +513,10 @@ async fn appraise(
     }
 
     println!(
-        "{} session(s) appraised, of {} read\n",
+        "{} session(s) appraised, of {} read · {} named a goal\n",
         appraisals.len(),
-        sessions_read
+        sessions_read,
+        with_goals
     );
     if appraisals.is_empty() {
         return Ok(());
