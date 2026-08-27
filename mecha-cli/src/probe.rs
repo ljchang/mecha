@@ -75,6 +75,13 @@ impl ProbePrep {
             Some(b) => format!("{}\n\n{b}", self.base_system),
         }
     }
+
+    /// The tool-surface hash the recording carried, if any — feeds
+    /// [`mecha_core::surface::Fidelity::of`] against a live registry. `None`
+    /// is a recording from before the field existed, not a match.
+    pub fn tools_hash(&self) -> Option<&str> {
+        self.recorded.tools_hash.as_deref()
+    }
 }
 
 /// Load the recording behind a steer/denial reflection. `Err(reason)` in the
