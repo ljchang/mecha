@@ -217,6 +217,19 @@ impl Reflexion {
     /// has tools, a network, or a way to send, this exemption is no longer
     /// sound and has to be argued again rather than inherited.**
     pub fn learnable(&self) -> bool {
+        // **mecha's own words are never a lesson**, whatever their origin.
+        // Checked here rather than only at extraction because this gate is the
+        // one thing every consolidation passes through, and because the store
+        // is append-only: two reflections mined from `EMPTY_TURN_NUDGE` before
+        // `is_harness_voice` existed are on disk right now, one of them
+        // classified `clean` and therefore a candidate. They stay as evidence,
+        // on the same rule that keeps untrusted ones — and they are never
+        // consolidated. One of the two paraphrases the nudge's own sentence
+        // back as a lesson, which is what makes this worth a check at both
+        // ends: the failure looks exactly like the loop working.
+        if crate::agent::is_harness_voice(&self.intervention) {
+            return false;
+        }
         if self.origin == Origin::Clean {
             return true;
         }
@@ -1251,11 +1264,16 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                 }
 
                 let steer_text = steer_text.trim().to_string();
-                // Two recorded "user" voices that are not the user correcting
-                // anything: the harness's own forced-answer nudge, and slash
-                // commands a front-end recorded (`/model`, `/exit`).
+                // Two kinds of recorded "user" voice that are not the user
+                // correcting anything, and they are separate for a reason.
+                // `is_harness_voice` is **mecha's own words** — a nudge, a
+                // boredom notice — and the list belongs to the party that adds
+                // one, which is why it lives in `agent.rs` rather than here; a
+                // rule mined from one would teach mecha something it said to
+                // itself. A slash command is genuinely the user, recorded by a
+                // front-end, and simply is not a correction.
                 let not_a_person =
-                    steer_text == crate::agent::FINAL_ANSWER_NUDGE || steer_text.starts_with('/');
+                    crate::agent::is_harness_voice(&steer_text) || steer_text.starts_with('/');
                 if has_results {
                     if !steer_text.is_empty() && !not_a_person {
                         found.push((
@@ -2152,6 +2170,99 @@ mod tests {
             Message::user(crate::agent::FINAL_ANSWER_NUDGE),
         ];
         assert!(extract_interventions(&messages).is_empty());
+    }
+
+    /// The two already on disk, which extraction cannot un-mine.
+    ///
+    /// The store is append-only, so the fix at the front door does nothing for
+    /// records written before it. One of the live pair is `origin: clean` and
+    /// was therefore a candidate for a rule in every future prompt — and its
+    /// lesson is the nudge's own sentence handed back ("do not restart or
+    /// re-derive"), which is the shape that makes this hard to notice: mecha
+    /// teaching itself something it was already obeying reads exactly like the
+    /// loop working.
+    #[test]
+    fn a_reflection_mined_from_the_harness_is_never_consolidated() {
+        let mut r = Reflexion {
+            id: "r1".into(),
+            domain: "behavior".into(),
+            session_id: "s1".into(),
+            trigger: Trigger::Steer.as_str().into(),
+            context: "working".into(),
+            intervention: crate::agent::EMPTY_TURN_NUDGE.into(),
+            reflexion_text: "Do not restart or re-derive steps already processed.".into(),
+            error_type: None,
+            confidence: Some(0.9),
+            is_processed: false,
+            leap_run_id: None,
+            created_at: "2026-08-08T21:11:45Z".into(),
+            origin: Origin::Clean,
+            evidence: Evidence::Full,
+        };
+        assert!(
+            !r.learnable(),
+            "clean provenance does not make mecha's own words a lesson"
+        );
+
+        // The same record with a person behind it is learnable, so the gate is
+        // not simply refusing everything.
+        r.intervention = "no, use the other config".into();
+        assert!(r.learnable());
+    }
+
+    /// The mirror of the `"Denied by the user: "` rule: text mecha wrote,
+    /// read back as text a person typed.
+    ///
+    /// Every voice the harness speaks in the user role, in the two slots it
+    /// can land in — a bare message after an empty turn, and beside tool
+    /// results, which is steering's slot and boredom's. Before
+    /// `is_harness_voice` the first of these mined as a `Followup` on every
+    /// run the harness ever had to nudge, and a rule learned from one rides in
+    /// every future prompt's cached prefix.
+    #[test]
+    fn the_harness_talking_to_itself_is_never_a_correction() {
+        let bored =
+            crate::boredom::Rung::Change.notice("build", &crate::boredom::Escapes::default());
+        let messages = vec![
+            Message::user("the original task"),
+            Message::assistant(vec![Block::text("working")]),
+            // The empty-turn nudge: a bare user message, which the miner reads
+            // as a followup.
+            Message::user(crate::agent::EMPTY_TURN_NUDGE),
+            Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "build".into(),
+                input: serde_json::json!({}),
+            }]),
+            // A boredom notice: text riding beside tool results, which the
+            // miner reads as a steer.
+            Message {
+                role: Role::User,
+                content: vec![
+                    Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "same as before".into(),
+                        is_error: false,
+                    },
+                    Block::text(bored),
+                ],
+            },
+            Message::assistant(vec![Block::text("done")]),
+        ];
+
+        assert!(
+            extract_interventions(&messages).is_empty(),
+            "the harness's own words were mined as the user's: {:?}",
+            extract_interventions(&messages)
+        );
+
+        // And the same slots still carry a real person: the guard recognises
+        // mecha's voices, not the slot they land in.
+        let mut real = messages.clone();
+        real[2] = Message::user("no, use the other config");
+        let found = extract_interventions(&real);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].trigger, Trigger::Followup);
     }
 
     #[test]

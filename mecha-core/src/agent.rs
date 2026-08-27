@@ -692,10 +692,39 @@ const EMPTY_TURN_RETRIES: u32 = 3;
 /// nudge invites the model to start the task over from the top, which burns the
 /// budget that was already the problem. So it names the cause, forbids the
 /// restart, and offers exactly two concrete continuations.
-const EMPTY_TURN_NUDGE: &str = "Your previous turn ended without producing anything — the token \
+pub(crate) const EMPTY_TURN_NUDGE: &str =
+    "Your previous turn ended without producing anything — the token \
 budget went entirely to reasoning before you began your answer. Do not start the task over and do \
 not re-derive what you already worked out. Either give your answer now, briefly, using what you \
 already know, or make the single next tool call. Keep your reasoning short this turn.";
+
+/// Every voice the harness speaks in the **user** role.
+///
+/// Three of them now, and the miner has to know all three: `agent.rs` prefixes
+/// a refusal it did not author with `"Denied by the user: "`, and the mirror of
+/// that mistake is text mecha wrote being read as text a person typed.
+/// `learning::extract_interventions` mines a transcript for corrections and has
+/// no other way to tell — a `Block::Text` in a user message is a
+/// `Block::Text` in a user message — so a rule learned from one of these would
+/// teach mecha something it said to itself, in every future prompt's cached
+/// prefix.
+///
+/// It had **been** happening: `FINAL_ANSWER_NUDGE` was recognised and
+/// `EMPTY_TURN_NUDGE` never was, so every run the harness had to nudge
+/// contributed a `Followup` "intervention" whose text was mecha's own. Found by
+/// adding a third voice — boredom's notice, which lands beside tool results and
+/// would have mined as a *steer* — and asking what already read it.
+///
+/// The list is closed and lives here rather than in the miner, because the
+/// party that knows a new voice exists is the one that adds it. Boredom's is
+/// matched by its stem, since its notices interpolate a tool name and a count;
+/// the two nudges are constants and are matched whole.
+pub(crate) fn is_harness_voice(text: &str) -> bool {
+    let text = text.trim();
+    text == FINAL_ANSWER_NUDGE
+        || text == EMPTY_TURN_NUDGE
+        || text.starts_with(crate::boredom::NOTICE_STEM)
+}
 
 /// Detects a run re-living the turns a compaction just summarised away.
 ///
