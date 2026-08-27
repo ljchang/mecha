@@ -780,10 +780,21 @@ impl Tool for CompactTool {
     // the model at an absent tool spends a turn on a call that can only fail.
     // The reading rides on `todo`'s own result when both are present, and needs
     // no announcement when they are not.
+    //
+    // **`recall` was named here and is not any more, on the same rule and for
+    // a heavier reason.** It is registered only by the session-recording
+    // front-ends — `chat`, the TUI, and `mecha run --resume` — so a trigger, a
+    // fresh `mecha run`, a Slack thread and `mecha serve` all get `compact`
+    // without it. Naming it there spends a turn on a call that cannot succeed,
+    // which is the `todo` argument; but it also asserted the thing that makes
+    // this tool safe to leave unapproved — that the summary is *recoverable* —
+    // to exactly the runs where it is not. A description is a promise about
+    // the surface, and this one could not keep it on most of them.
     fn description(&self) -> &str {
         "Summarise the earlier part of this conversation to free context, before starting \
-         the next step of your plan. Takes effect before your next turn; earlier tool \
-         results are replaced by a summary, and `recall` can still search what they said."
+         the next step of your plan. Takes effect before your next turn: earlier tool \
+         results are replaced by a summary, so do this at a boundary — after finishing a \
+         step, not in the middle of one."
     }
 
     fn input_schema(&self) -> Value {
