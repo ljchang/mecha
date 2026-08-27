@@ -109,12 +109,12 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,594 tests**, no failures — measured 2026-08-27 on
-`feat/step-appraisal` at **2006797**, the rung-6 arc, which is `main` at
+Expect **1,615 tests**, no failures — measured 2026-08-27 on
+`feat/step-appraisal` at **92cfd6c**, the rungs 6–7 arc, which is `main` at
 **aa92552** plus that arc and nothing else. The clause naming the tree is
 load-bearing and has been wrong twice: a count taken while any lane's work sits
 uncommitted in this shared checkout describes one disk and no commit, so say
-which tree. Breakdown: **524** in `mecha-cli` with 1 ignored, **845** in
+which tree. Breakdown: **524** in `mecha-cli` with 1 ignored, **866** in
 `mecha-core`, 6 + 9 in its two
 integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75**
 in `mecha-slack`, and 1 doctest.
@@ -1368,24 +1368,45 @@ the mechanism and every decision. What it left standing:
   live recognizer sees it — otherwise a bad nightly write takes `:8992` down
   and voice goes deaf with no error text anywhere.
 
-### The goal system — rungs 0–6 shipped, rung 7 next
+### The goal system — rungs 0–7's observation half shipped; the next step is a measurement's, not the plan's
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the authority and carries a status header
 saying which rungs shipped. The arc's premise, which is what makes the rest
 follow: **every evaluative signal mecha had was a cost or a correction**, so a
 run could be recorded as having gone badly and never as having gone well.
 
-Rungs 0–6 are in `main`. Everything with no model, no charter and no adversary
-in it is now built, which is §14's ordering and not a coincidence — and it is
-also the end of the free part: rung 7 is the first with a model in the path.
+Rungs 0–6 and rung 7's observation half are in `main`. Everything with no
+model, no charter and no adversary in it is now built, which is §14's ordering
+and not a coincidence — and it is also the end of the free part: the rest of
+rung 7 is the first thing here with a model in the path.
 
 **Open now:**
 
-- **Rung 7 is next**: the appraisal store and the pure `Affect` function (§5,
-  §6), plus the model half of step appraisal — the escalation, not the common
-  path. **Observation only.** Build the corpus and check the labels are not
-  degenerate before anything consumes them; if 95% come back neutral the
-  channel is dead, and that is learned cheaply.
+- **Rung 7's measurement came back, and it decides what to build next.**
+  `mecha sessions appraise` over the live store: 459 sessions read, **120
+  appraised, 119 signed goal errors recorded across two channels, and 100% of
+  the labels neutral** (2026-08-27). Eleven of the errors are positive — a
+  draft the owner read and sent unchanged — which is the one signal in this
+  system that says something went well and had never been counted anywhere.
+
+  Nothing is broken: every label that could have fired needs a dimension
+  nothing measures, and `appraisal.rs` names which rung buys which. What the
+  corpus adds to that table is a **build order**. A counterfactual verdict
+  would give all 102 intervention errors a label immediately (disappointment,
+  on owner agency with `controllable: false`), where the charter — §14's rung
+  10 — buys only the eleven positive ones. So if the readout is the goal, the
+  probe is the cheaper half and should come first. That is a change to §14's
+  order, argued from a measurement rather than from the design.
+
+  **Do not build rungs 8–10 on the label yet.** §8's prioritised replay and
+  §10's memory salience both key off affect, and today affect is a constant.
+
+- **The rest of rung 7 is open**: the quarantined appraiser (§5.1) — no tools,
+  no conversation, typed output — and the model half of step appraisal, which
+  is the escalation and not the common path. Both cost a model run, which is
+  also when the appraisal **store** starts earning its place; until then the
+  record is derived on the spot, which is `runlog`'s rule and a correction to
+  §10.
 
 - **Rung 6 shipped with two gaps that are stated reasons, not sequencing.**
   Both are named in `GOAL-SYSTEM-DESIGN.md` §14 rung 6 and in the modules

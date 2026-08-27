@@ -2526,6 +2526,65 @@ thing. Nothing else could have answered it — a delegate's name is whatever the
 user called it in config, and its capabilities are derived from its child's
 tools.
 
+Then rung 7's observation half, which is the first rung whose *result* is a
+number rather than a mechanism. `appraisal.rs` is the signed record §0 says
+mecha never had — five channels, an agency, an exposure flag, and a label that
+is a **pure function of the record**, because a model that reads a run and says
+"frustrated" is a self-report: unfalsifiable, drifting, and precisely what a
+fetched page saying *you have failed your owner* is aimed at.
+
+Working §6's derivation table answered most of the degeneracy question before
+any corpus did. Four of the eleven labels are unreachable from what mecha
+measures: `Pride` needs a charter line and a task well done is deliberately not
+one, `Guilt` needs a notion of harm that nothing computes (`visible` is
+exposure, a different claim), `Shame` is a cross-run pattern a per-event
+function cannot see, `Excitement` needs a predicted error — and `Regret` and
+`Disappointment` split on the counterfactual verdict, which costs a real model
+run per arm. `Affect::reachable_today` makes that testable rather than only
+written down.
+
+Then the corpus agreed, harder. Over the live store `mecha sessions appraise`
+reads 459 sessions, appraises the 120 that recorded an outcome, records **119
+signed goal errors** and derives **neutral for every one**. Eleven of those
+errors are positive — a draft written in mecha's name that the owner read and
+sent unchanged — which is the one channel in this system that can say something
+went well, recorded since the outbox existed and never counted anywhere until
+now.
+
+The useful part is what that implies about build order, which is not §14's. A
+counterfactual verdict would give all 102 intervention errors a label
+immediately, where the charter at rung 10 buys only the eleven positive ones. So
+the probe is the cheaper half of the readout, and rungs 8–10 must not be built
+on a label that is currently a constant.
+
+Two design corrections came out of building it, both about units. **It is per
+session, not per run** — the §5 record carries a session id and no run index,
+and that turns out to be load-bearing: both working channels are session-scoped,
+so a per-run appraisal multiplies them by the number of times a session was
+resumed, measured at 5.9× on the intervention channel before it was caught, the
+same mismatch rung 4 paid for in the other direction. And **there is no store**,
+against §10: every deterministic channel is a pure function of records the
+machine already keeps, so a store would be `runlog`'s rejected ledger — faster,
+and a second source of truth that can disagree with the first. It earns one with
+the first channel that costs something to compute.
+
+**And building it turned up something already wrong.** `agent.rs` prefixes a
+refusal it did not author with `"Denied by the user: "`, and the rule from that
+is in CLAUDE.md; this is its mirror. `learning::extract_interventions` guarded
+one harness voice, `FINAL_ANSWER_NUDGE`, and `EMPTY_TURN_NUDGE` was never in the
+list — so every run the harness had to nudge contributed an "intervention" whose
+text was mecha's own. Found by adding a third voice (boredom's notice, which
+uses steering's slot) and asking what already read that slot. **Two reflections
+in the live store were mined from it**, one of them `origin: clean`, unprocessed,
+and therefore a candidate for a rule in every future prompt — and its lesson is
+the nudge's own sentence handed back, *do not restart or re-derive steps already
+processed*, which is what makes the shape hard to see: mecha teaching itself
+something it was already obeying reads exactly like the loop working. Nothing had
+consolidated, so no rule carries it. Fixed at both ends, because they fail
+differently: `agent::is_harness_voice` is the closed list, owned by the party
+that adds a voice, and `Reflexion::learnable` refuses one whatever its origin,
+which is what reaches the records already on disk.
+
 Underneath both, `RunStats::boredom_notices`, on `context_overflows`' rules and
 for its reason: every threshold in `boredom.rs` was argued rather than
 measured, and a detector nobody can count fires either constantly or never with
