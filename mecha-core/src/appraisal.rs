@@ -373,6 +373,16 @@ pub fn of_session(
     goals: &[GoalRef],
     interventions: &[crate::learning::Intervention],
     drafts: &[&crate::outbox::OutboxItem],
+    // Coverage at the end of the session, from `Session::taint_timeline` —
+    // `None` when the caller could not establish it, which includes a
+    // transcript recorded before checkpoints existed. Deliberately not read
+    // off `stats.taint`: that field is `#[serde(default)]` over a
+    // both-false `Taint`, so a row written before the field existed
+    // deserialises as *clean* rather than as *unknown*, and passing it
+    // through `Some(..)` would make `classify_origin`'s fail-closed `None`
+    // arm unreachable from here — the same inversion the taint snapshot and
+    // `distill::corrections_for` both refuse elsewhere in this codebase.
+    end_taint: Option<crate::agent::Taint>,
     created_at: String,
 ) -> Appraisal {
     let goal = goals.first().cloned();
@@ -470,7 +480,22 @@ pub fn of_session(
     // a statement about this function, not about the world: it is a pure
     // function of on-disk records, and the question needs a replay. See
     // [`apply_probe`], which is what licenses moving it.
+    //
+    // `Followup` is excluded, on `counterfactual.rs`'s own precedent: it
+    // declines to grade a followup at all, because there is no counterfactual
+    // in a later turn — a second question in a chat is not a correction, and
+    // `extract_interventions` mines one for *any* later user turn following a
+    // non-empty answer. Measured at 86% of this corpus's interventions. A
+    // `-1.0` here has no such gate, so an ordinary multi-turn conversation
+    // read a run that went well as a run that went badly, once per turn — the
+    // channel this rung exists to measure would have dominated on a signal
+    // with no ground truth behind it. `Steer` and `Denial` keep their sign:
+    // both are the owner unambiguously stepping in mid-run, which is what
+    // `Agency::Owner` states.
     for i in interventions {
+        if i.trigger == crate::learning::Trigger::Followup {
+            continue;
+        }
         errors.push(GoalError {
             goal: goal.clone(),
             channel: Channel::Intervention,
@@ -522,7 +547,7 @@ pub fn of_session(
         state: stats.homeostat.clone(),
         errors,
         label: Affect::Neutral,
-        origin: crate::learning::classify_origin(Some(stats.taint)),
+        origin: crate::learning::classify_origin(end_taint),
         taint: stats.taint,
         created_at,
     };
@@ -825,6 +850,7 @@ mod tests {
             &[],
             interventions,
             drafts,
+            Some(stats.taint),
             "2026-08-27T00:00:00Z".into(),
         )
     }
@@ -913,6 +939,46 @@ mod tests {
             built(&s, &[], &[]).origin,
             crate::learning::Origin::Untrusted
         );
+    }
+
+    /// `classify_origin`'s fail-closed `None` arm has to stay reachable from
+    /// here: a caller that could not establish end-of-session coverage (a
+    /// torn transcript, one recorded before checkpoints existed) must not
+    /// read as provably clean just because nothing was passed.
+    #[test]
+    fn no_established_coverage_classifies_untrusted_rather_than_clean() {
+        let s = stats();
+        assert_eq!(
+            of_session("s1", &s, &[], &[], &[], None, "t".into()).origin,
+            crate::learning::Origin::Untrusted
+        );
+    }
+
+    /// A followup is a later user turn the miner cannot tell from an ordinary
+    /// question, and `counterfactual.rs` already declines to grade it for
+    /// exactly that reason — this channel must decline the same way, or an
+    /// unremarkable multi-turn chat reads as a run that went badly once per
+    /// turn. `Steer` and `Denial` are unambiguous and keep their sign.
+    #[test]
+    fn a_followup_contributes_no_signed_error() {
+        let followup = crate::learning::Intervention {
+            trigger: crate::learning::Trigger::Followup,
+            context: String::new(),
+            text: "and another thing".into(),
+            aftermath: String::new(),
+            at: 4,
+            tools_before: vec![],
+            tools_after: vec![],
+        };
+        assert!(built(&stats(), &[], std::slice::from_ref(&followup))
+            .errors
+            .is_empty());
+
+        let steer = crate::learning::Intervention {
+            trigger: crate::learning::Trigger::Steer,
+            ..followup
+        };
+        assert_eq!(built(&stats(), &[], &[steer]).errors.len(), 1);
     }
 
     // --- what a probe buys ---

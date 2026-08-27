@@ -297,12 +297,6 @@ fn first_line(s: &str) -> String {
     }
 }
 
-/// `sessions health` — the run-quality corpus, summarised.
-///
-/// Deliberately separate from `stats`, which answers what runs *cost*. This
-/// answers whether they *worked*, and the two have different audiences and
-/// different units. Every rate here prints `—` where its denominator is zero,
-/// because no evidence is not a clean record.
 /// `mecha sessions appraise` — the readout rung 7 exists to produce.
 ///
 /// **Observation only.** Nothing consumes an appraisal, and the number worth
@@ -311,7 +305,7 @@ fn first_line(s: &str) -> String {
 /// after something is built on it.
 ///
 /// Derived on the spot from the transcripts, the outbox and each run's own
-/// record — see `appraisal::of_run` on why there is no store yet.
+/// record — see `appraisal::of_session` on why there is no store yet.
 fn appraise(
     dir: &std::path::Path,
     days: Option<i64>,
@@ -348,9 +342,32 @@ fn appraise(
         let Ok(Some(stats)) = Session::episode_stats(&path) else {
             continue;
         };
-        let interventions = Session::load(&path)
-            .map(|(_, convo)| mecha_core::learning::extract_interventions(&convo.messages))
+        // One load, two readings off the same transcript: the interventions,
+        // and the goal the model's own `serves` argument named. Without the
+        // second, `of_session` never has a goal to attribute anything to —
+        // `Frustration` needs one on two negatives by construction, so a
+        // session with no goal cannot produce it however it went, and the
+        // neutral share this readout prints would be confusing "the channel
+        // is dead" with "nothing supplied it a goal", which is a different
+        // finding with a different remedy.
+        let messages = Session::load(&path).map(|(_, convo)| convo.messages).ok();
+        let interventions = messages
+            .as_deref()
+            .map(mecha_core::learning::extract_interventions)
             .unwrap_or_default();
+        let goal = messages.as_deref().and_then(|m| {
+            mecha_core::tool::todo::TodoTool::plan_from_transcript(m).and_then(|p| p.goal)
+        });
+        let goals: Vec<_> = goal.into_iter().collect();
+        // The provenance gate's own rule, applied here: `stats.taint` cannot
+        // tell "recorded clean" apart from "recorded before the field
+        // existed", so origin is classified off the timeline's own coverage
+        // instead, which answers `None` rather than guessing clean.
+        let end_taint = messages.as_ref().and_then(|m| {
+            Session::taint_timeline(&path)
+                .ok()
+                .and_then(|tl| tl.covering(m.len().saturating_sub(1)))
+        });
         let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts
             .iter()
             .flatten()
@@ -359,9 +376,10 @@ fn appraise(
         appraisals.push(appraisal::of_session(
             &meta.id,
             &stats,
-            &[],
+            &goals,
             &interventions,
             &mine,
+            end_taint,
             meta.created_at.to_rfc3339(),
         ));
     }
@@ -416,8 +434,8 @@ fn appraise(
     // rather than left to be read off the table, because it is the finding.
     let neutral = labels.get("neutral").copied().unwrap_or(0);
     println!(
-        "\n  {:.0}% carry no label — four of the eleven need a charter, a probe, \
-         a notion of harm or a cross-run view",
+        "\n  {:.0}% carry no label — six of the ten `Affect` variants need a \
+         charter, a probe, a notion of harm, a cross-run view or a prediction",
         neutral as f64 / appraisals.len() as f64 * 100.0
     );
 
@@ -441,6 +459,12 @@ fn appraise(
     Ok(())
 }
 
+/// `sessions health` — the run-quality corpus, summarised.
+///
+/// Deliberately separate from `stats`, which answers what runs *cost*. This
+/// answers whether they *worked*, and the two have different audiences and
+/// different units. Every rate here prints `—` where its denominator is zero,
+/// because no evidence is not a clean record.
 fn health(
     dir: &std::path::Path,
     days: Option<i64>,
