@@ -19,7 +19,7 @@
 //! the same rule one noun over: state is derived from the record, never
 //! self-reported.
 //!
-//! ## Four labels are unreachable today, and that is the finding
+//! ## Six labels are unreachable today, and that is the finding
 //!
 //! §14 puts this rung at *observation only* — build the corpus and check the
 //! labels are not degenerate before anything consumes them. Working the
@@ -301,16 +301,32 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
         return Affect::Neutral;
     }
 
-    // Repeated negative error on one goal. Whole-record by construction: one
-    // event cannot be a repetition, which is why this is a function of the
-    // appraisal and not of an error.
+    // Repeated negative error on one goal, self-agency (§6.1: "repeated, one
+    // goal, self-agency"). Whole-record by construction: one event cannot be
+    // a repetition, which is why this is a function of the appraisal and not
+    // of an error.
+    //
+    // **Self-agency, not any negative, is load-bearing.** `of_session` clones
+    // one `goals.first()` onto every error it builds, so "shares a goal" is
+    // not yet a discriminator at all — without the agency filter, `repeated`
+    // degenerates to "two or more negative errors" the moment a session
+    // names a goal. That would also fire *before* `label_of` and outrank
+    // agency and exposure both, which is the one ordering this module argues
+    // hardest for: a ceiling nobody here caused (`Agency::World`) plus a
+    // draft the owner rewrote (`Agency::Owner`, visible) would report
+    // `Frustration` and discard the fact that something went out wrong —
+    // exactly what `says_more`'s tie-break exists to prevent from being
+    // masked. Filtering to `Agency::Own` keeps this reachable only by the
+    // one case the label actually describes: the agent repeating its own
+    // mistake against the same goal, unaided.
     let repeated = negatives
         .iter()
+        .filter(|e| e.agency == Agency::Own)
         .filter_map(|e| e.goal.as_ref())
         .any(|goal| {
             negatives
                 .iter()
-                .filter(|e| e.goal.as_ref() == Some(goal))
+                .filter(|e| e.agency == Agency::Own && e.goal.as_ref() == Some(goal))
                 .count()
                 > 1
         });
@@ -509,19 +525,27 @@ pub fn of_session(
 
     // --- Edit: what the owner did with a draft written in their name ---
     for item in drafts {
-        // A publish is excluded on `mineable_as_writing`'s reasoning: the
-        // difference between its arguments is a path, and reading bookkeeping
-        // as a judgement of the work is the mistake that rule exists to name.
-        if item.kind != crate::outbox::OutboxKind::Message {
-            continue;
-        }
-        let (sign, agency) = match (item.status.as_str(), item.edited()) {
+        // `writing_outcome` already decides `sent` vs `sent-and-edited` vs
+        // "says nothing about drafting" — including a publish, on
+        // `mineable_as_writing`'s reasoning that its arguments are a path
+        // and reading bookkeeping as a judgement of the work is the mistake
+        // that rule exists to name. Reusing it rather than re-deriving the
+        // same split from `status`/`edited()` is what keeps a third status
+        // or a third `OutboxKind` from teaching only one of the two places
+        // that reason about it.
+        let (sign, agency) = match (item.writing_outcome(), item.status.as_str()) {
             // **The one signal in this system that says something went well.**
             // Recorded since the outbox existed; positive, and it is the reason
             // this record is signed at all.
-            ("sent", false) => (1.0, Agency::Own),
-            ("sent", true) => (-1.0, Agency::Owner),
-            ("rejected", _) => (-1.0, Agency::Owner),
+            (Some(crate::outbox::WritingOutcome::SentUnchanged), _) => (1.0, Agency::Own),
+            (Some(crate::outbox::WritingOutcome::SentEdited), _) => (-1.0, Agency::Owner),
+            // `writing_outcome` returns `None` for a rejected item too (it
+            // never went out), so the message-only guard is this arm's to
+            // keep — a rejected publish is still bookkeeping, not a
+            // judgement of prose.
+            (None, "rejected") if item.kind == crate::outbox::OutboxKind::Message => {
+                (-1.0, Agency::Owner)
+            }
             // Still pending: the owner has not said anything yet, and reading
             // silence as either answer is what a queue nobody has reached
             // would turn into a verdict.
@@ -746,6 +770,32 @@ mod tests {
             ..err(-0.5, Agency::Own)
         };
         assert_eq!(affect_of(&appraisal(vec![one, two])), Affect::Frustration);
+    }
+
+    /// Two *different* failures on one goal must not read as one repeated
+    /// one — a ceiling nobody here caused, plus a draft the owner rewrote,
+    /// share a goal only because `of_session` stamps the same reference on
+    /// every error it builds. Frustration's own definition is "repeated,
+    /// one goal, self-agency" (§6.1); a ceiling is `Agency::World`, so it
+    /// cannot be the repetition, and exposure — the fact `says_more` says a
+    /// person most needs out of this — must win instead.
+    #[test]
+    fn two_different_failures_sharing_a_goal_are_not_frustration() {
+        let goal = GoalRef::Task("01J8ZK".into());
+        let ceiling = GoalError {
+            goal: Some(goal.clone()),
+            ..err(-0.5, Agency::World)
+        };
+        let rewritten_draft = GoalError {
+            goal: Some(goal),
+            visible: true,
+            ..err(-1.0, Agency::Owner)
+        };
+        assert_eq!(
+            affect_of(&appraisal(vec![ceiling, rewritten_draft])),
+            Affect::Embarrassment,
+            "exposure must not be masked by a repetition that never happened"
+        );
     }
 
     /// An ungoaled run's errors are recorded and never repeat *into* anything:
@@ -1066,5 +1116,26 @@ mod tests {
         assert!(serde_json::to_string(&Agency::Own)
             .unwrap()
             .contains("self"));
+    }
+
+    /// `goal::de_lenient_vec`'s own claim — one unrecognised entry costs the
+    /// reference and nothing around it — exercised through `Appraisal`
+    /// itself rather than only through `parse_lenient` directly. There is no
+    /// store for this record yet, so today `serde` on `goals` is reachable
+    /// only from a test; without one, a future binary that discards a whole
+    /// appraisal over one bad reference would have nothing to catch it.
+    #[test]
+    fn an_unrecognised_goal_kind_costs_only_itself() {
+        let json = r#"{
+            "id": "s1",
+            "session_id": "s1",
+            "goals": ["task:a", "banana:b"],
+            "errors": [],
+            "label": "neutral",
+            "origin": "clean",
+            "created_at": "t"
+        }"#;
+        let a: Appraisal = serde_json::from_str(json).unwrap();
+        assert_eq!(a.goals, vec![GoalRef::Task("a".into())]);
     }
 }
