@@ -66,11 +66,23 @@ pub enum Origin {
     /// Third-party content was in context. Kept as readable evidence, never
     /// consolidated into rules — excluded structurally, not scored down.
     Untrusted,
-    /// Not an interactive session: a subagent, eval case or batch item. A
-    /// subagent's steer is mecha correcting itself, not the user correcting
-    /// mecha — learning from it is a feedback loop, not a lesson. (Those
-    /// conversations do not record sessions today, so nothing classifies to
-    /// this yet; the variant exists so the schema does not move when they do.)
+    /// Not the user correcting mecha. A subagent's steer, and — since
+    /// 2026-08-27 — **mecha's own words landing in the user role**: the
+    /// empty-turn and final-answer nudges, and boredom's notice.
+    ///
+    /// Learning from it is a feedback loop rather than a lesson, and the sharp
+    /// reason is mechanical rather than philosophical. A self-observed failure
+    /// is real evidence; what it lacks is a way to be *graded*.
+    /// `counterfactual.rs` validates an intervention by replaying the
+    /// transcript without it and asking whether the trajectory changed, and
+    /// that test means something only because the user steered it there — for
+    /// a self-authored one, what follows is the model recovering, and there is
+    /// no ground truth in it. `GOAL-SYSTEM-DESIGN.md` §5.3 states the same gap.
+    ///
+    /// So this is a **label, not an exclusion**: the reflection is kept, is
+    /// visible, and is one gate away from being usable the day something can
+    /// grade it. Subagent and batch conversations still do not record sessions,
+    /// so that half of the variant classifies nothing yet.
     Derived,
 }
 
@@ -136,6 +148,26 @@ pub fn evidence_for(
     covering: Option<crate::agent::Taint>,
     i: &Intervention,
 ) -> (Intervention, Origin, Evidence) {
+    // **mecha correcting itself is not the user correcting mecha**, which is
+    // what `Origin::Derived` was defined for and had never classified. Read
+    // before taint, because it is a fact about *who wrote the intervention*
+    // and no amount of clean provenance changes it: the two nudges and the
+    // boredom notices are mecha's own words landing in the user role.
+    //
+    // Classified rather than dropped, deliberately. A self-observed failure is
+    // real evidence — the boredom notice says *this call returned the same
+    // thing three times*, which is an observation about this run and not a
+    // canned string — and the reason it may not consolidate today is not that
+    // it is worthless. It is that `counterfactual.rs` grades an intervention by
+    // replaying the transcript without it and asking whether the trajectory
+    // changed, and that test means something only because *the user steered it
+    // there*: for a self-authored one, what follows is the model recovering,
+    // and there is no ground truth in it. `GOAL-SYSTEM-DESIGN.md` §5.3 states
+    // the same gap for the same reason. A label leaves that reviewable and
+    // leaves the door open; an exclusion would not.
+    if crate::agent::is_harness_voice(&i.text) {
+        return (i.clone(), Origin::Derived, Evidence::Full);
+    }
     match classify_origin(covering) {
         Origin::Clean => (i.clone(), Origin::Clean, Evidence::Full),
         _ => (i.user_evidence_only(), Origin::Clean, Evidence::UserTurns),
@@ -217,23 +249,38 @@ impl Reflexion {
     /// has tools, a network, or a way to send, this exemption is no longer
     /// sound and has to be argued again rather than inherited.**
     pub fn learnable(&self) -> bool {
-        // **mecha's own words are never a lesson**, whatever their origin.
-        // Checked here rather than only at extraction because this gate is the
-        // one thing every consolidation passes through, and because the store
-        // is append-only: two reflections mined from `EMPTY_TURN_NUDGE` before
-        // `is_harness_voice` existed are on disk right now, one of them
-        // classified `clean` and therefore a candidate. They stay as evidence,
-        // on the same rule that keeps untrusted ones — and they are never
-        // consolidated. One of the two paraphrases the nudge's own sentence
-        // back as a lesson, which is what makes this worth a check at both
-        // ends: the failure looks exactly like the loop working.
-        if crate::agent::is_harness_voice(&self.intervention) {
-            return false;
+        match self.provenance() {
+            Origin::Clean => true,
+            // **The triage exemption does not extend to this one.** It is an
+            // argument about third-party *content* never reaching a tool-less
+            // classifier pass, which says nothing about who authored the
+            // intervention. A self-authored correction in any domain is a
+            // feedback loop, which is what `Origin`'s own docs say.
+            Origin::Derived => false,
+            Origin::Untrusted => {
+                self.domain == TRIAGE_DOMAIN && !RUN_DOMAINS.contains(&TRIAGE_DOMAIN)
+            }
         }
-        if self.origin == Origin::Clean {
-            return true;
+    }
+
+    /// The origin this record *would* be classified as today.
+    ///
+    /// The stored field is what the miner decided at the time, and the store is
+    /// append-only — so records written before `is_harness_voice` existed carry
+    /// `clean` for interventions mecha wrote itself. Two are on disk now, and
+    /// one of them had already reached a pending rule proposal. Deriving the
+    /// effective value here rather than migrating the file keeps the record as
+    /// written (the evidence) and the judgement current, which is the same
+    /// split `Session::taint_timeline` makes about checkpoints.
+    ///
+    /// One place, so a future decision to let self-authored reflections
+    /// consolidate — with their own budget, or behind a probe that can actually
+    /// grade them — changes a gate rather than a scattering of checks.
+    pub fn provenance(&self) -> Origin {
+        match crate::agent::is_harness_voice(&self.intervention) {
+            true => Origin::Derived,
+            false => self.origin,
         }
-        self.domain == TRIAGE_DOMAIN && !RUN_DOMAINS.contains(&TRIAGE_DOMAIN)
     }
 }
 
@@ -2199,6 +2246,11 @@ mod tests {
             origin: Origin::Clean,
             evidence: Evidence::Full,
         };
+        assert_eq!(
+            r.provenance(),
+            Origin::Derived,
+            "stored `clean` is what the miner decided before the voice was known"
+        );
         assert!(
             !r.learnable(),
             "clean provenance does not make mecha's own words a lesson"
@@ -2207,6 +2259,7 @@ mod tests {
         // The same record with a person behind it is learnable, so the gate is
         // not simply refusing everything.
         r.intervention = "no, use the other config".into();
+        assert_eq!(r.provenance(), Origin::Clean);
         assert!(r.learnable());
     }
 
