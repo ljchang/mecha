@@ -109,19 +109,20 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,566 tests**, no failures — measured 2026-08-27 on `main` at
-**85b244c**, on the merge commit itself rather than on a branch. Neither side's
-own number survived that merge: main's count predated the arc and the arc's
-predated the context-pressure work it merged, so it was re-measured rather
-than picked. That clause is load-bearing and has been
-wrong twice: a count taken while any lane's work sits uncommitted in this
-shared checkout describes one disk and no commit, so say which tree.
-Breakdown: **526** in `mecha-cli` with 1 ignored, **815** in `mecha-core`,
-6 + 9 in its two
-integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75**
-in `mecha-slack`, and 1 doctest. Stale again the moment any of the
-2026-08-27 appraisal-arc PRs (#86–#91) lands — re-measure on whichever
-commit merges last rather than trusting this number forward.
+Expect **1,697 tests**, no failures — measured 2026-08-27 on `main` at
+**a0638c8**, the merge commit of PR #92, the last of the nine appraisal-arc
+PRs (#86, #87, #93, #88, #89, #90, #91, #94, #92) to land that day. Breakdown:
+**558** in `mecha-cli` with 1 ignored, **914** in `mecha-core`, 6 + 9 in its
+two integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75**
+in `mecha-slack`, and 1 doctest. The **131** added over the figure two merges
+back (1,566 at `85b244c`, before any of the nine landed) split `mecha-core`
++99 and `mecha-cli` +32, with every other suite unchanged — consistent with
+an arc that was almost entirely appraisal logic, learning-UI panes and the
+replay surface store, none of which touch mail, Slack or the integration
+fixtures. An intermediate count of 1,690 at `c630ff9` (after #86, #87, #93,
+#88, #89, #90 but before #91, #94, #92) was measured and superseded within
+the same session; it is not carried forward as a separate step in this
+chain because nothing was ever built or read against it.
 
 Clippy and rustfmt are clean at that commit, **measured locally**. CI is a
 separate claim and a weaker one, and it must be made per **sha**. Every PR
@@ -188,14 +189,14 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 815 |
-| `mecha-cli` unit | 526 (1 ignored) |
-| `mecha-mail` unit | 129 (+1 in the `mecha-mail` binary) |
+| `mecha-core` unit | 914 |
+| `mecha-cli` unit | 558 (1 ignored) |
+| `mecha-mail` unit | 133 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
 | doctest | 1 |
 
-Measured 2026-08-26 late evening, same tree as the prose above. The table
+Measured 2026-08-27 at `a0638c8`, same tree as the prose above. The table
 had drifted two counts behind that prose once already, which is the failure
 mode of stating one fact twice — read the prose if they ever disagree again,
 and fix the table.
@@ -1404,46 +1405,71 @@ model, no charter and no adversary in it is now built, which is §14's ordering
 and not a coincidence — and it is also the end of the free part: the rest of
 rung 7 is the first thing here with a model in the path.
 
-**PR-stack status, verified 2026-08-27T18:40Z — read this before trusting any
-PR number below.** The rest of this section names PRs #86–#92 as if the reader
-were watching the stack land; by the time it is read, more of it will have
-moved. As of the timestamp above:
+**PR-stack status, verified 2026-08-27T22:15Z against `main` at `a0638c8`.**
+The whole appraisal/learning-UI/validation/task-seed stack that was in flight
+when the paragraph below was first written is now merged, nine PRs in the
+order they landed: **#86** (`bcd7d4f`), **#87** (`c81d0fb`), **#93**
+(`4f28221` — carries forward #86's fourth-round fix, which had been pushed
+eight minutes after #86 merged on the round-3 tip and so never reached
+`main`; no open findings), **#88** (`18a6fcf4`), **#89** (`1e04c114`), **#90**
+(`c630ff94`), **#91** (`f0ca8ca`, mecha-80's probe work), **#94** (`2f432b3`,
+see below) and **#92** (`a0638c8`, mecha-4c's task-seed fix — its content is
+already folded into the rung-7 section below, in that PR's own words, so it
+is not repeated here). Every review finding this section once listed as open
+against #86, #88, #89, #90 and #93 is fixed on `main` today, verified by
+reading the merged source rather than trusting a review thread — see
+HISTORY's 2026-08-27 (third pass) for the file:line record of #86/#88/#90/#93,
+and the paragraph below for #89.
 
-- **#86 and #87 are merged** (`bcd7d4f`, `c81d0fb`).
-- **#86 has a gap `main` doesn't yet cover**: its fourth review round (a missing
-  `boredom_rate` test, a missing denominator clause in `sessions health`'s
-  boredom line, two doc-comment welds) was fixed and pushed at 18:05:36Z — *after*
-  #86 had already merged at 17:57:02Z using the round-3 tip. The fix never
-  reached `main`. **#93** carries it forward as a same-content cherry-pick onto
-  current `main`; it is open and unreviewed as of this timestamp. See the
-  matching trap in `HISTORY.md` — the general lesson is about merging under a
-  standing authorization without checking for fixes in flight elsewhere, not
-  about this PR specifically.
-- **#88** (`feat/rung-7-appraisal`) is retargeted onto `main` (its old base,
-  #87, is merged) and has **two open, unfixed review findings**: `affect_of`'s
-  `Agency::Own` filter returns before the `says_more` reduce, so two `Own`
-  counter errors sharing a goal report `Frustration` and mask a same-session
-  `Pride`/edited-draft positive underneath it (`appraisal.rs`); and a doc count
-  drifted ("four of eleven" vs. the true six-of-ten `Affect` variants,
-  `docs/HISTORY.md`).
-- **#89** (`feat/learning-ui`, stacked on #88) has **four open findings**, two
-  of them real bugs: the `learning` modal is missing from `App::a_modal_is_up`
-  so its mouse capture never releases and its text cannot be selected; and
-  `learning_act` blocks the TUI event loop on a `flock` that `reflect`/`learn`
-  hold across a model call. The other two are UX/confirmation policy calls
-  worth a second look, not clear bugs.
-- **#90** (`fix/replay-surface-front-end`, stacked on #88) has had two review
-  rounds fixed (the surface-store hasher and permissions, a `Fidelity::of`
-  wiring gap, an `OnDivergence` denylist-vs-exhaustive-match gate) and is
-  rebased/pushed against #88's tip *as of its own last push* — but #88 has
-  moved at least twice more since (rebase churn, not new #90-relevant content)
-  and will need re-rebasing before it is checked again.
-- **#91** (`feat/appraisal-probe`) and **#92** (`fix/task-seed-serves`, another
-  session's — mecha-4c) both stack on #90 and are blocked on it settling.
-- A background agent (this session's own fork) was actively fixing #87's
-  findings through 18:24Z and reported back holding, watching #87–#89's
-  checks; whether it is still running should be checked before assuming any
-  of the above is stale in the *good* direction.
+**CI on #89's own merge commit shows `cancelled`, not `success`** — checked
+per this file's own rule against `gh api repos/ljchang/mecha/commits/1e04c1143afee84e3bb57c023a75d80f772e9e3a/check-runs`,
+because #90 merged twelve seconds later and superseded it on the same ref
+before its run finished. `main`'s actual tip carries every PR's content and
+its own check-runs are all `success`, so nothing is unverified today — but a
+reader who checks out `1e04c114` in isolation, rather than `main`'s HEAD,
+would find a commit CI never finished grading.
+
+**#89 shipped with real findings nobody circled back to fix, and #94 is the
+fix.** Two of #89's own review rounds flagged problems in the new `/learning`
+modal that a later round did not re-raise, and a first pass at cleanup — this
+document's own earlier draft — found four of them still true on `main` after
+#89 merged. Re-reading *every* review comment on #89, not just the ones that
+first pass covered, turned up two more of the same shape. All six are fixed
+in **#94** (`2f432b3`), verified against the current tree rather than the
+PR's own account of itself:
+
+- `App::a_modal_is_up` now checks `self.learning.is_some()`
+  (`mecha-cli/src/tui/mod.rs:601`), so the modal's mouse capture releases
+  like every sibling's.
+- `reject` on a proposal now passes `--reason "rejected from /learning"`,
+  matching the exact fixed-string pattern `/queues` already used for the same
+  command rather than inventing a new one (`mecha-cli/src/tui/mod.rs:6274`).
+- `doctor`'s starved-learner counter now skips a row with `dropped_at` set
+  when counting `excluded` (`mecha-core/src/doctor.rs:1442`), and `mecha
+  learn` reports its own `dropped_by_owner` count alongside "excluded by
+  origin" instead of folding the two together
+  (`mecha-cli/src/commands/learn.rs:107-150`).
+- `learning_act` no longer calls `self_cli` synchronously from the key
+  handler; every verb now runs through the detached-and-watched shape
+  `/outbox` and `/triggers` already use, polled by a new `Watch::Learning`
+  (`mecha-cli/src/tui/mod.rs:6140-6161`), so a `/learning` mutation made while
+  `reflect`/`learn` holds the store's flock across a model call no longer
+  freezes the whole TUI.
+- `LearningStore::reflexion` carries the same empty-needle guard
+  `rules.rs::find_rule` got in #89's own first review pass, which had never
+  been applied to this sibling lookup (`mecha-core/src/learning.rs:1103-1110`).
+- `/queues`' `move_sel` now clears `review_detail`/`detail_scroll`
+  (`mecha-cli/src/tui/queues.rs:500-508`) — before this, `j`/`k` while a
+  proposal's fetched text was open could move the cursor onto the next
+  proposal while the stale text of the previous one stayed on screen, so an
+  `a`/`r` right after could accept or reject something never actually read.
+
+The general lesson from the first pass missing four of these stands
+regardless of how quickly the fix landed: **a later review round approving a
+PR is not evidence that an earlier round's findings were addressed** — a
+reviewer re-reads the current diff, not the accumulated list of everything
+anyone has said about it. See HISTORY's 2026-08-27 (third pass) for the
+fuller argument.
 
 **Open now:**
 
@@ -1557,8 +1583,8 @@ moved. As of the timestamp above:
   check `affect_of` before re-deriving it.
 
   **Two corrections to that, from the lane building the probe** (`mecha-80`,
-  2026-08-27, pending its own PR — the counts are theirs and are not
-  independently reproduced here):
+  2026-08-27; its probe-specific work is **#91**, merged (`f0ca8ca`) — the
+  counts below are theirs and are not independently reproduced here):
 
   - **The probe does not reach all 102.** Most interventions are `followup` —
     a later user turn rather than text riding with tool results — and there is
@@ -1686,11 +1712,15 @@ priority function, never an objective.
 
 **`mecha validate`'s steer and denial probes had never run on an interactive
 session, and `validations.jsonl` has been empty since it shipped while the
-nightly reported success every night.** Fixed 2026-08-27 across two lanes
-(PR #90, and the probe half stacked behind it). A skip counted faithfully, and
-nothing read it as *this entire class is unreachable* — the same shape as a rate
-over a zero denominator printed as zero, which this file names in four other
-places.
+nightly reported success every night.** Fixed 2026-08-27 across two merged
+PRs: `surface.rs` and the registry fix are **#90** (`c630ff94`); the
+probe-specific half — driving the replay and filling `controllable` from
+whether it arrives at the intervention anyway — is **#91** (`f0ca8ca`), which
+is also where the `Regret` label below (`Agency::Own` + `controllable:
+Some(true)`, `mecha-core/src/appraisal.rs:692`) actually gets produced. A skip
+counted faithfully, and nothing read it as *this entire class is
+unreachable* — the same shape as a rate over a zero denominator printed as
+zero, which this file names in four other places.
 
 `replay_registry` refuses to build when a recorded tool is missing from the live
 registry, which is right: the tool list is the front of the cached prefix, so a
