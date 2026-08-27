@@ -54,7 +54,7 @@ mistake would be rebuilding it beside itself.
 | Full run configuration | `RunConfig` (`session.rs`) | The resolved system prompt, ceilings, permission mode, sandbox, seed and temperature — written on every attach, not once per session. Its stated rule is the experimental one: *anything that shapes the request or constrains the run is a confound if it is not recorded.* |
 | Per-run outcome | `RunStats` (`session.rs`) | Stop cause, tool calls/errors/denials, compactions, blocked sends, taint. Written by every front-end. |
 | The corpus reader | `runlog.rs` | Bounded scans across the whole session store; a rate over a zero denominator is `None`, never zero. |
-| The gate | `candidate.rs` | Paired by episode, selection slice plus a holdout split by **hash of the episode id, never random**, a work guardrail that outranks the score, single-arm episodes dropped, counts rather than a significance test. Pure and unit-tested. |
+| The gate | `candidate.rs` | Paired by episode, a selection slice plus a holdout, a work guardrail that outranks the score, single-arm episodes dropped, counts rather than a significance test. Pure and unit-tested. **How the holdout is drawn depends on how the pool was gathered**: `judge_drawn` takes two slices the caller drew — holdout first and uniformly — because hashing a pool ordered by `Metric::headroom` yields two slices biased the same way and the holdout stops correcting the selection; `judge_with` still partitions on `is_holdout` for `eval --ab-config`, where every case runs and the pool is already uniform. An instrument that adds arms inherits this distinction rather than the hash. |
 | Paired replay | `harness_probe.rs`, `replay_run.rs` | Two arms driven over recorded sessions against recorded tool results, both arms replayed so neither measures replay artifacts. |
 | Divergence diffing | `replay.rs` | Structural versus argument-only divergence between a recording and a replay. |
 | A multi-actor orchestration | `gossip.rs` | Commit-then-reveal enforced by program structure; per-role capability narrowing welded into the tool schema; a recorded exchange that records its own stalls. |
@@ -531,7 +531,10 @@ we notice.*
    budget. Each addition is a widening of a set that two subsystems share.
 4. **How the gate handles more than two arms.** A designated control against
    N treatments is not the same statistical object as a pair, and the holdout
-   split has to mean the same thing across all of them.
+   has to mean the same thing across all of them — which, per §1, is a
+   question about *drawing* rather than about hashing: one draw shared by
+   every arm, or one per arm, and only the first keeps the arms paired on the
+   same episodes.
 5. **Whether branch labels belong on `Record::Branch` or beside it.** §5
    proposes on the record. The counter-argument is that the session format
    then carries a field only one consumer reads.
