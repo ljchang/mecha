@@ -5233,6 +5233,29 @@ touches and carry forward everything you are not deliberately changing**; the
 dangerous fields are the ones with a plausible default, because those fail
 silently rather than erroring.
 
+### A merge, made under a standing authorization, can race a fix in flight elsewhere
+
+**A background fork was given "merge PRs once they pass review" and merged
+#86 at 17:57:02Z using its round-3 tip.** A fourth review round had already
+posted findings against #86 by then, in the foreground session's own context
+— genuine ones (a missing test for `boredom_rate`'s None-not-zero contract, a
+missing denominator clause on a print line, two doc-comment welds) — and the
+foreground session had already started fixing them. The fix landed and was
+pushed at 18:05:36Z, eight minutes after the merge, to a branch whose PR was
+by then closed. `main` never got it; a follow-up PR (#93) had to cherry-pick
+the same commit back in.
+
+The fork was not wrong to check GitHub's state before merging — it did, and
+at the moment it checked, nothing it could read said a fourth round existed
+yet. The gap was that "has this PR passed review" was answered against
+GitHub alone, when the more current answer — "review found more, and it's
+being fixed right now" — existed only in a sibling conversation's working
+context, with no shared channel either side was checking. **A standing merge
+authorization is a green light for the git state, not a substitute for
+asking whether anyone nearby has unpushed work against the same PR** — a
+`SendMessage` before the merge ("about to merge #86, anyone got fixes in
+flight?") would have cost one round trip and avoided the whole repair.
+
 ## Design notes worth keeping
 
 The rest of the original design-notes section duplicated `CLAUDE.md` and was
