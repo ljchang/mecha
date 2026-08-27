@@ -6008,7 +6008,20 @@ fn submit_task_form(app: &mut App) -> Result<()> {
 /// that the command line cannot. Cheap enough to be the reload after every
 /// action — none of these commands calls a model or touches the network.
 fn load_learning(pane: learning::Pane) -> Result<Vec<learning::Row>> {
-    let text = self_cli(&[pane.verb(), "list", "--json"])?;
+    // `--all` on the Reflections pane only: `reflections list` hides
+    // dropped rows by default, which made `u restore` unreachable here —
+    // `d` succeeding removed the row from the very list the reload re-reads.
+    // `Row::spent` exists to render a drop as shown-and-past, which is the
+    // right default for a surface whose own argument is that a refusal
+    // must stay visible. Rules and Proposals need no such flag: a retired
+    // rule stays in `rules list`'s output, and a proposal is never dropped
+    // at all.
+    let mut args: Vec<&str> = vec![pane.verb(), "list"];
+    if pane == learning::Pane::Reflections {
+        args.push("--all");
+    }
+    args.push("--json");
+    let text = self_cli(&args)?;
     learning::rows_from_json(pane, &text)
 }
 
@@ -6138,10 +6151,24 @@ fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
             learning_act(app, "drop", &[])
         }
         KeyCode::Char('u') if modal.pane != learning::Pane::Proposals => {
-            learning_act(app, "restore", &[])
+            // A user rule (or a pre-identity learned one) has no id
+            // `find_rule` can resolve on its own — `""` prefix-matches every
+            // learned rule that has one, so acting on it would restore an
+            // unrelated rule rather than fail cleanly.
+            if modal.pane == learning::Pane::Rules
+                && modal.selected().is_some_and(|r| r.mine || r.id.is_empty())
+            {
+                modal.status = Some("not a learned rule — nothing to restore".into());
+            } else {
+                learning_act(app, "restore", &[])
+            }
         }
         KeyCode::Char('x') if modal.pane == learning::Pane::Rules => {
-            learning_act(app, "retire", &[])
+            if modal.selected().is_some_and(|r| r.mine || r.id.is_empty()) {
+                modal.status = Some("not a learned rule — nothing to retire".into());
+            } else {
+                learning_act(app, "retire", &[])
+            }
         }
         KeyCode::Char('a') if modal.pane == learning::Pane::Proposals => {
             learning_act(app, "accept", &[])

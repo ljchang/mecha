@@ -263,6 +263,10 @@ fn edit(store: &LearningStore, id: &str, text: Option<String>) -> Result<()> {
     let _lock = store.lock()?;
     let after = store.edit_reflexion(&before.id, &lesson)?;
     println!("{}\n  {}", after.id, after.reflexion_text);
+    // `provenance()` returns `Clean` unconditionally once `edited_at` is
+    // set, so this is exactly "did `before` need the promotion" — the same
+    // condition `edit_reflexion` withholds on, now that it no longer fires
+    // on an already-clean record just because `evidence` was `Full`.
     if before.provenance() != after.provenance() {
         println!(
             "\nprovenance {:?} → {:?}: the lesson is yours now, so it can become a rule.",
