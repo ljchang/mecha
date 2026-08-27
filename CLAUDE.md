@@ -142,6 +142,8 @@ pressure.rs  how big the *next* request will be, from what the last one cost
 cron.rs      five-field cron, resolved in an IANA zone (both DST directions)
 trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
 runmarker.rs "is a run in flight, and please stop it", as two files in a directory
+permit.rs    how many background runs may hold the model at once — seats on
+             llama-server, as files in a directory; a latency control, not memory
 frontdoor.rs inbound requests from strangers, and the quarantine over them
 goal.rs      what a run is for: charter, board task, or setpoint, by reference
 capture.rs   what a typed or spoken capture says about *when* — detected and
@@ -2144,9 +2146,8 @@ dependency.
 
 Most checks are self-evident: dead auth markers, releases that errored, drafts
 and requests waiting past a threshold, triggers whose slots stopped advancing,
-failed `mecha-*` units, graph nightlies that stopped writing their daily log,
-harness candidates staged past 72h. Four carry a threshold whose reasoning is
-not recoverable from the code:
+failed `mecha-*` units and harness candidates staged past 72h. Five carry reasoning that is not
+recoverable from the finding's own name:
 
 - **A trigger failing a large share of its tool calls.** An unattended run has
   nobody watching it fail — the briefing still arrives and the ledger still
@@ -2167,6 +2168,11 @@ not recoverable from the code:
   `learn --min` so the check and the gate cannot drift, and the finding
   proposes a *decision* rather than a command — its remedy shows
   classifications and nothing may loosen the gate.
+- **A graph nightly that stopped writing its daily log.** The one check whose
+  subject cannot report its own failure: a cron exec failure dies before the
+  script's own logging starts, and cron mails the error to an MTA that is not
+  there — 2026-08-17's missing execute bit cost a night of vet and gossip with
+  nothing anywhere saying so. The absent log is the only evidence there is.
 - **The population signals in the run-quality corpus** — a model finishing a
   fifth of its runs over a failed call, failing a quarter of its tool calls, or
   having a quarter of its runs cut short by a ceiling. Thresholds deliberately
