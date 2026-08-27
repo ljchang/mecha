@@ -1813,6 +1813,11 @@ impl Agent {
                             &mut taint,
                             &mut blocked_sends,
                             self.output_budget(cx, pressure, transcript_bytes),
+                            // Understates by this turn's results, which do
+                            // not exist yet and cannot: this number is an
+                            // argument to the call that produces them. See
+                            // `Forecast::used` for why it is left understated
+                            // rather than padded to an upper bound.
                             self.compact_limit(cx)
                                 .and_then(|limit| pressure.forecast(limit, transcript_bytes)),
                         )
