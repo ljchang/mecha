@@ -404,6 +404,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `boredom_notices` is the same shape as `context_overflows` — an
+    /// `Option` because a run written before the sensor existed must not
+    /// read as a run it definitely fired zero times in.
+    #[test]
+    fn a_row_without_the_boredom_sensor_is_unknown_and_never_a_zero() {
+        let dir = tmpdir();
+        let sensed = |n: u32| {
+            let mut st = stats(4, 0, false, StopCause::Completed);
+            st.boredom_notices = Some(n);
+            st
+        };
+        session_with(
+            &dir,
+            "20260801T000000-mixed",
+            "opus",
+            vec![
+                // Written before the field existed: knows nothing.
+                stats(4, 0, false, StopCause::Completed),
+                sensed(0),
+                sensed(1),
+            ],
+        );
+
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(corpus.len(), 3, "all three rows are in the corpus");
+        // One of the two sensed rows was told at least once. Reading the
+        // unsensed row as a quiet one would give 1/3 here, which is the
+        // same dilution `overflow_rate` exists to avoid.
+        assert_eq!(corpus.boredom_rate(), Some(0.5));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// "Nobody has the sensor" and "nobody ever got stuck" are opposite
+    /// findings, and a corpus predating the field must not report the
+    /// reassuring one.
+    #[test]
+    fn a_corpus_with_no_boredom_sensor_at_all_has_no_rate() {
+        let dir = tmpdir();
+        session_with(
+            &dir,
+            "20260801T000000-old",
+            "opus",
+            vec![stats(4, 0, false, StopCause::Completed)],
+        );
+
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(corpus.boredom_rate(), None, "not Some(0.0)");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_scan_collects_every_run_across_every_session() {
         let dir = tmpdir();
