@@ -488,6 +488,15 @@ impl QueuesModal {
         matches!(self.level, Level::Proposers | Level::Candidates)
     }
 
+    /// Move the cursor, and drop the review detail with it.
+    ///
+    /// `review_detail` is fetched text about *one* proposal — `<verb> show`'s
+    /// answer, cached here rather than re-derived at render time the way an
+    /// item's detail is. Moving without dropping it leaves that stale text on
+    /// screen while `selected` points somewhere else, so a scroll to read
+    /// more of one proposal can silently land on the next one — and the next
+    /// `a`/`r` reads `selected`, not what is displayed. `LearningModal::move_by`
+    /// carries the identical rule for its own cached detail.
     pub fn move_sel(&mut self, delta: i32) {
         let len = self.len();
         if len == 0 {
@@ -495,6 +504,8 @@ impl QueuesModal {
         }
         let cur = self.selected.min(len - 1) as i32;
         self.selected = (cur + delta).clamp(0, len as i32 - 1) as usize;
+        self.review_detail = None;
+        self.detail_scroll = 0;
     }
 
     pub fn selected_queue(&self) -> Option<&QueueRow> {
@@ -1606,6 +1617,41 @@ mod tests {
         assert_eq!(rows[0].machine_rejected, 16);
         assert_eq!(rows[1].evidence(), "solid");
         assert!((rows[1].rate().unwrap() - 0.5923).abs() < 0.001);
+    }
+
+    /// A review detail is fetched text about *one* proposal. Moving without
+    /// dropping it — the bug this guards — left stale text on screen while
+    /// `selected` pointed at the next row, so a scroll to read more of one
+    /// proposal could silently advance the cursor to another and the next
+    /// `a`/`r` would act on it unread. `LearningModal::move_by` carries the
+    /// identical rule for its own cached detail.
+    #[test]
+    fn moving_at_the_review_level_drops_the_detail_and_its_offset() {
+        let mut m = QueuesModal::new(vec![]);
+        m.level = Level::Review;
+        m.review = vec![
+            ReviewRow {
+                id: "p1".into(),
+                kind: "behavior".into(),
+                title: "one".into(),
+                detail: "pending".into(),
+            },
+            ReviewRow {
+                id: "p2".into(),
+                kind: "behavior".into(),
+                title: "two".into(),
+                detail: "pending".into(),
+            },
+        ];
+        m.review_detail = Some("the whole proposal".into());
+        m.detail_scroll = 12;
+        m.move_sel(1);
+        assert_eq!(m.selected, 1);
+        assert!(
+            m.review_detail.is_none(),
+            "the detail belonged to the row moved away from"
+        );
+        assert_eq!(m.detail_scroll, 0);
     }
 
     /// Moving the cursor never leaves the list, and never panics on an empty

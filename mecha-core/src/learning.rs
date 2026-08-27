@@ -1101,6 +1101,13 @@ impl LearningStore {
 
     /// One reflection by id or unique prefix.
     pub fn reflexion(&self, id: &str) -> Result<Reflexion> {
+        // `id.starts_with("")` is true for every reflection, so an empty
+        // needle — a TUI row whose id was somehow empty, or a bare
+        // `mecha reflections show ""` from the command line — would resolve
+        // to whichever reflection happens to be alone in the store instead
+        // of failing. The same guard `rules.rs::find_rule` carries for the
+        // identical bug one store over.
+        anyhow::ensure!(!id.is_empty(), "no reflection id given");
         let all = self.reflexions()?;
         let mut hits = all.into_iter().filter(|r| r.id.starts_with(id));
         let first = hits
@@ -2550,6 +2557,25 @@ mod tests {
         stored(&store, "20260827-bbbb", Origin::Clean);
         assert!(store.reflexion("20260827").is_err());
         assert!(store.reflexion("20260827-a").is_ok());
+    }
+
+    /// `id.starts_with("")` is true for every id, so an empty needle used to
+    /// resolve to whichever reflection happens to be alone in the store — the
+    /// same bug `rules.rs::find_rule` carries a guard for, never given to
+    /// this sibling lookup. With exactly one reflection on disk, the old code
+    /// found exactly one hit and acted on it instead of refusing.
+    #[test]
+    fn an_empty_id_never_matches_a_reflection_by_accident() {
+        let store = scratch_store();
+        stored(&store, "r-only", Origin::Clean);
+        assert!(
+            store.reflexion("").is_err(),
+            "an empty needle matches nothing, not everything"
+        );
+        assert!(store.drop_reflexion("", None).is_err());
+        assert!(store.edit_reflexion("", "something").is_err());
+        // The reflection is untouched.
+        assert!(store.reflexion("r-only").unwrap().dropped_at.is_none());
     }
 
     /// The two already on disk, which extraction cannot un-mine.
