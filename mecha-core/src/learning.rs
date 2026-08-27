@@ -166,8 +166,23 @@ pub fn evidence_for(
     // the same gap for the same reason. A label leaves that reviewable and
     // leaves the door open; an exclusion would not.
     if crate::agent::is_harness_voice(&i.text) {
-        return (i.clone(), Origin::Derived, Evidence::Full);
+        // Redaction still runs: this early return exists as belt-and-braces
+        // beside `extract_interventions` already dropping these — the second
+        // layer must not fail open on the redaction axis while it closes on
+        // the origin axis. A harness-voice intervention recorded inside an
+        // untrusted conversation still gets `user_evidence_only`; only the
+        // origin is overridden, because self-correction is not the user
+        // correcting mecha regardless of what covered it.
+        let (input, _, evidence) = evidence_for_taint(covering, i);
+        return (input, Origin::Derived, evidence);
     }
+    evidence_for_taint(covering, i)
+}
+
+fn evidence_for_taint(
+    covering: Option<crate::agent::Taint>,
+    i: &Intervention,
+) -> (Intervention, Origin, Evidence) {
     match classify_origin(covering) {
         Origin::Clean => (i.clone(), Origin::Clean, Evidence::Full),
         _ => (i.user_evidence_only(), Origin::Clean, Evidence::UserTurns),
@@ -1305,22 +1320,29 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                                 }
                             }
                         }
-                        Block::Text { text } => steer_text.push_str(text),
+                        // Filtered per block, not on the joined string: a
+                        // tool-results message routinely carries more than one
+                        // text block (a boredom notice appended beside the
+                        // results, a user's mid-turn steer folded in after,
+                        // `EMPTY_TURN_NUDGE` folded onto a followup) and
+                        // `is_harness_voice` is a whole-string match. Matching
+                        // the join would let a harness notice's stem swallow a
+                        // real correction that happened to follow it, or let a
+                        // real correction's own words launder a nudge appended
+                        // after — the bug this function exists to fix,
+                        // surviving in the shape it most commonly occurs in.
+                        Block::Text { text } if !crate::agent::is_harness_voice(text) => {
+                            steer_text.push_str(text)
+                        }
                         _ => {}
                     }
                 }
 
                 let steer_text = steer_text.trim().to_string();
-                // Two kinds of recorded "user" voice that are not the user
-                // correcting anything, and they are separate for a reason.
-                // `is_harness_voice` is **mecha's own words** — a nudge, a
-                // boredom notice — and the list belongs to the party that adds
-                // one, which is why it lives in `agent.rs` rather than here; a
-                // rule mined from one would teach mecha something it said to
-                // itself. A slash command is genuinely the user, recorded by a
+                // What's left of "not a person" once harness voice is filtered
+                // above: a slash command is genuinely the user, recorded by a
                 // front-end, and simply is not a correction.
-                let not_a_person =
-                    crate::agent::is_harness_voice(&steer_text) || steer_text.starts_with('/');
+                let not_a_person = steer_text.starts_with('/');
                 if has_results {
                     if !steer_text.is_empty() && !not_a_person {
                         found.push((
@@ -2316,6 +2338,78 @@ mod tests {
         let found = extract_interventions(&real);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].trigger, Trigger::Followup);
+    }
+
+    /// The folded form, not the standalone one: a boredom notice and a nudge
+    /// each land as their *own* text block beside a user's real words on the
+    /// same message — `agent.rs` appends a queued steer and a followup nudge
+    /// onto the message that already carries the tool results, rather than
+    /// opening a new one. A guard matching the whole concatenation either
+    /// discards the real correction (when the harness voice comes first) or
+    /// mines it with the harness's own words stitched onto it (when it comes
+    /// last) — the bug this module exists to fix, surviving in the shape it
+    /// most commonly occurs in.
+    #[test]
+    fn a_harness_voice_folded_beside_a_real_steer_does_not_swallow_or_taint_it() {
+        let bored =
+            crate::boredom::Rung::Change.notice("build", &crate::boredom::Escapes::default());
+
+        // Notice first, the person's words after: must still mine, verbatim.
+        let messages = vec![
+            Message::user("the original task"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "build".into(),
+                input: serde_json::json!({}),
+            }]),
+            Message {
+                role: Role::User,
+                content: vec![
+                    Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "same as before".into(),
+                        is_error: false,
+                    },
+                    Block::text(bored.clone()),
+                    Block::text("no, use the other config"),
+                ],
+            },
+            Message::assistant(vec![Block::text("done")]),
+        ];
+        let found = extract_interventions(&messages);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].trigger, Trigger::Steer);
+        assert_eq!(found[0].text, "no, use the other config");
+
+        // The person's words first, the nudge folded on after completing the
+        // turn empty: must mine without the nudge's text riding along.
+        let messages = vec![
+            Message::user("the original task"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "build".into(),
+                input: serde_json::json!({}),
+            }]),
+            Message {
+                role: Role::User,
+                content: vec![
+                    Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "ok".into(),
+                        is_error: false,
+                    },
+                    Block::text("no, use the other config"),
+                    Block::text(crate::agent::EMPTY_TURN_NUDGE),
+                ],
+            },
+            Message::assistant(vec![Block::text("done")]),
+        ];
+        let found = extract_interventions(&messages);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].text, "no, use the other config",
+            "the nudge must not ride along on the mined text"
+        );
     }
 
     #[test]
@@ -3325,6 +3419,46 @@ mod tests {
         };
         let (input, origin, evidence) = evidence_for(Some(clean), &i);
         assert_eq!((origin, evidence), (Origin::Clean, Evidence::Full));
+        assert_eq!(input.context, "tainted excerpt");
+    }
+
+    /// The harness-voice branch is a second layer beside
+    /// `extract_interventions` already dropping these, and a second layer
+    /// that fails open on the axis the first one wasn't guarding is not one.
+    /// This asserts the redaction axis independently of whether anything
+    /// upstream currently filters these out: under untrusted coverage the
+    /// reflector must still get `user_evidence_only`, with only the origin
+    /// overridden to `Derived`.
+    #[test]
+    fn a_harness_voice_intervention_is_still_redacted_under_untrusted_coverage() {
+        let i = Intervention {
+            trigger: Trigger::Followup,
+            context: "tainted excerpt".into(),
+            text: crate::agent::EMPTY_TURN_NUDGE.to_string(),
+            aftermath: "tainted".into(),
+            at: 2,
+            tools_before: vec![],
+            tools_after: vec![],
+        };
+        let untrusted = crate::agent::Taint {
+            private: true,
+            untrusted: true,
+        };
+        let (input, origin, evidence) = evidence_for(Some(untrusted), &i);
+        assert_eq!(origin, Origin::Derived, "self-correction, not the user's");
+        assert_eq!(evidence, Evidence::UserTurns);
+        assert!(
+            !input.context.contains("tainted excerpt"),
+            "harness voice must not exempt an untrusted conversation from redaction"
+        );
+
+        // Provably clean coverage keeps the full excerpts, same as ever.
+        let clean = crate::agent::Taint {
+            private: true,
+            untrusted: false,
+        };
+        let (input, origin, evidence) = evidence_for(Some(clean), &i);
+        assert_eq!((origin, evidence), (Origin::Derived, Evidence::Full));
         assert_eq!(input.context, "tainted excerpt");
     }
 
