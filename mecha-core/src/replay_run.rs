@@ -249,6 +249,40 @@ pub fn replay_registry(
     Ok(registry)
 }
 
+/// The specs of the surface a replay of `recorded_tools` would actually send.
+///
+/// A fidelity check exists to answer "does the replay send the bytes the
+/// recording sent", so it must fingerprint the registry a replay *builds* —
+/// the recorded names, narrowed from `live` and filled from `surface_only`
+/// for names `live` cannot construct (`ask_user`, `recall`, `show_file`,
+/// registered only by a front-end that owns a human, and present on the
+/// recorded surface of every interactive session that ever contains a
+/// steer). Comparing against the bare `live` registry's own specs instead —
+/// the earlier mistake — reports `Differs` on nearly every probe, because no
+/// CLI process can ever hold those names, recorded surface or not.
+///
+/// This calls [`replay_registry`] itself rather than re-deriving which tool
+/// wins between `live` and `surface_only`, so the specs it returns are
+/// provably the ones a replay would send and cannot drift from that policy.
+/// Nothing here executes a tool — no call is ever dispatched through the
+/// registry this builds — so an empty call list and a throwaway
+/// cancellation token are enough.
+pub fn replay_surface_specs(
+    recorded_tools: &[String],
+    live: &Registry,
+    surface_only: Option<&Registry>,
+) -> Result<Vec<crate::message::ToolSpec>> {
+    let registry = replay_registry(
+        recorded_tools,
+        live,
+        surface_only,
+        Vec::new(),
+        OnDivergence::Stop,
+        CancellationToken::new(),
+    )?;
+    Ok(registry.specs())
+}
+
 /// What a replay produced, ready to be judged.
 #[derive(Debug)]
 pub struct ReplayReport {
@@ -362,6 +396,70 @@ mod tests {
         }
     }
 
+    /// A tool that fails the test if it is ever executed. Stands in for
+    /// `ask_user`, whose execution would put a question in front of a human.
+    struct NeverRun;
+    #[async_trait]
+    impl Tool for NeverRun {
+        fn name(&self) -> &str {
+            "never_run"
+        }
+        fn description(&self) -> &str {
+            "Described, never called."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            panic!("a surface-only tool was executed by a replay");
+        }
+    }
+
+    /// A stand-in is **described and never run**, which is the whole safety
+    /// argument for letting one fill a gap at all.
+    ///
+    /// The tool this exists for is `ask_user`: putting it into an unattended
+    /// replay would be indefensible if the replay could call it, because the
+    /// call blocks on a person. It cannot — a recorded call is answered from
+    /// the recording, and `NeverRun` panics if that is ever untrue. Asserting
+    /// it here rather than reasoning about `Action::Live` being unreachable,
+    /// because the reasoning is what would rot if the dispatch changed.
+    #[tokio::test]
+    async fn a_surface_only_tool_is_described_and_never_executed() {
+        let mut fallback = Registry::new();
+        fallback.insert(Arc::new(NeverRun));
+        let registry = replay_registry(
+            &[NeverRun.name().to_string()],
+            &Registry::new(),
+            Some(&fallback),
+            vec![RecordedCall {
+                name: NeverRun.name().to_string(),
+                input: json!({}),
+                output: "the recorded answer".into(),
+                is_error: false,
+            }],
+            OnDivergence::Stop,
+            CancellationToken::new(),
+        )
+        .expect("the stand-in supplies the surface");
+
+        let tool = registry.get(NeverRun.name()).expect("registered");
+        // Described with the real tool's own words, so the model sees what the
+        // recording showed it rather than a paraphrase.
+        assert_eq!(tool.description(), NeverRun.description());
+        assert_eq!(tool.input_schema(), NeverRun.input_schema());
+
+        // And answered from the recording. `NeverRun::call` panics.
+        let out = tool
+            .call(json!({}), &ToolCtx::default())
+            .await
+            .expect("answered from the recording");
+        assert_eq!(out.content, "the recorded answer");
+    }
+
     /// A tool the live registry cannot build is served from `surface_only`
     /// **under `Stop` and nowhere else**.
     ///
@@ -422,6 +520,57 @@ mod tests {
             CancellationToken::new(),
         )
         .is_err());
+    }
+
+    /// The regression this module exists to prevent: fingerprinting the bare
+    /// `live` registry instead of the surface a replay actually builds.
+    ///
+    /// `other` here stands in for `ask_user` — a name no CLI registry can
+    /// ever construct, supplied only by `surface_only`, exactly as it is on
+    /// the recorded surface of every interactive session that ever contains
+    /// a steer. The recording was made by a process that *did* hold it (a
+    /// TUI, say), so its hash covers both tools; comparing that hash against
+    /// `live`'s own specs — the old, wrong comparand — can never match,
+    /// because `live` never has `other` at all. Comparing it against
+    /// [`replay_surface_specs`]'s output does, because that is the surface
+    /// the replay actually sends. No existing fingerprint test can catch
+    /// this: they all compare two values computed from the same registry, and
+    /// this bug only shows up when the recorded and live registries
+    /// genuinely differ in what they can construct.
+    #[test]
+    fn fidelity_compares_the_replay_surface_not_the_bare_live_registry() {
+        let mut live = Registry::new();
+        live.insert(Arc::new(EchoTool));
+
+        let mut surface_only = Registry::new();
+        surface_only.insert(Arc::new(OtherTool));
+
+        let recorded_tools = vec![EchoTool.name().to_string(), OtherTool.name().to_string()];
+
+        // What was recorded: a process holding both tools, so the hash covers
+        // the full surface the model actually saw.
+        let mut recorded_registry = Registry::new();
+        recorded_registry.insert(Arc::new(EchoTool));
+        recorded_registry.insert(Arc::new(OtherTool));
+        let recorded_hash = crate::surface::fingerprint(&recorded_registry.specs());
+
+        // The wrong comparand: `live` alone can never hold `other`, so this
+        // reports `Differs` regardless of whether anything really changed.
+        assert_eq!(
+            crate::surface::Fidelity::of(Some(&recorded_hash), &live.specs()),
+            crate::surface::Fidelity::Differs,
+            "live alone lacks `other` by construction — this is the bug being fixed"
+        );
+
+        // The fix: fingerprint the surface a replay actually builds, narrowed
+        // to the recorded names and filled from the surface-only stand-in.
+        let surface_specs =
+            replay_surface_specs(&recorded_tools, &live, Some(&surface_only)).unwrap();
+        assert_eq!(
+            crate::surface::Fidelity::of(Some(&recorded_hash), &surface_specs),
+            crate::surface::Fidelity::Matches,
+            "identical specs, narrowed the same way the recording was — this must match"
+        );
     }
 
     struct OtherTool;
