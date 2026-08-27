@@ -1772,6 +1772,13 @@ impl Agent {
 
             match stop_reason {
                 StopReason::ToolUse => {
+                    // One walk for two consumers. `message_bytes` renders
+                    // every `ToolUse` input to measure it, so it costs more the
+                    // longer the transcript is — which is why the compaction
+                    // check above orders its cheap guards first. Measuring it
+                    // twice in one expression pays that twice on every
+                    // tool-calling turn.
+                    let transcript_bytes = crate::pressure::message_bytes(messages);
                     let results = self
                         .run_tools(
                             cx,
@@ -1780,10 +1787,9 @@ impl Agent {
                             &mut trace,
                             &mut taint,
                             &mut blocked_sends,
-                            self.output_budget(cx, pressure, messages),
-                            self.compact_limit(cx).and_then(|limit| {
-                                pressure.forecast(limit, crate::pressure::message_bytes(messages))
-                            }),
+                            self.output_budget(cx, pressure, transcript_bytes),
+                            self.compact_limit(cx)
+                                .and_then(|limit| pressure.forecast(limit, transcript_bytes)),
                         )
                         .await;
 
@@ -2394,11 +2400,16 @@ impl Agent {
     /// - **It never returns zero.** `run_tools` floors each result at
     ///   `SPILL_FLOOR_BYTES` regardless, because a result truncated to nothing
     ///   is worse than an oversized one: it costs a turn and says nothing.
+    ///
+    /// `bytes` is `message_bytes(messages)`, measured by the caller — taken
+    /// rather than retaken: rendering every `ToolUse` input to measure it
+    /// costs more the longer the transcript is, and the caller needs the same
+    /// number in the same expression for the forecast.
     fn output_budget(
         &self,
         cx: &RunContext,
         pressure: &crate::pressure::ContextTracker,
-        messages: &[Message],
+        bytes: usize,
     ) -> usize {
         let configured = cx.tools.output_budget_bytes;
         if cx.tools.spill_dir.is_none() {
@@ -2407,9 +2418,7 @@ impl Agent {
         let Some(limit) = self.compact_limit(cx) else {
             return configured;
         };
-        let Some(afford) =
-            pressure.affordable_output_bytes(limit, crate::pressure::message_bytes(messages))
-        else {
+        let Some(afford) = pressure.affordable_output_bytes(limit, bytes) else {
             return configured;
         };
         if afford < configured {

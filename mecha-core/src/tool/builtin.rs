@@ -775,11 +775,15 @@ impl Tool for CompactTool {
         "compact"
     }
 
+    // `todo` is deliberately not named here: it is an ordinary builtin, so
+    // `[tools] disabled` or a `--tool` allowlist can leave it out, and pointing
+    // the model at an absent tool spends a turn on a call that can only fail.
+    // The reading rides on `todo`'s own result when both are present, and needs
+    // no announcement when they are not.
     fn description(&self) -> &str {
         "Summarise the earlier part of this conversation to free context, before starting \
-         the next step of your plan. The `todo` tool reports how much room is left and what \
-         recent turns have cost. Takes effect before your next turn; earlier tool results \
-         are replaced by a summary, and `recall` can still search what they said."
+         the next step of your plan. Takes effect before your next turn; earlier tool \
+         results are replaced by a summary, and `recall` can still search what they said."
     }
 
     fn input_schema(&self) -> Value {

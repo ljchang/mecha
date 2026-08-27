@@ -504,8 +504,18 @@ impl Tool for TodoTool {
         // — the distractor shape `evict_superseded_results` exists to remove —
         // and the system prompt sits inside the cached prefix, so a per-turn
         // value there re-pays the whole thing including the tool specs. Here
-        // it costs nothing on any turn that does not touch the plan, and an
-        // earlier `todo` result is superseded by this one anyway.
+        // it costs nothing on any turn that does not touch the plan, and the
+        // accumulation is bounded by plan revisions rather than by turns.
+        //
+        // Bounded, not absent: an earlier `todo` result is *not* generally
+        // superseded by this one. `compact::target_of` falls through to
+        // `{name}\0{input}` for a call with no `path`, so two `todo` calls are
+        // the same target only when their item lists are byte-identical — and a
+        // second `todo` call exists precisely to change the list. So a run that
+        // revises its plan ten times carries ten readings until a compaction
+        // thins them. That is the same distractor shape as the turn tail, at a
+        // far lower rate, which is the trade being made and not a case of
+        // avoiding it.
         //
         // Absent when the run has no compaction threshold or has not sent a
         // request yet — a missing line is right where there is no measurement,
