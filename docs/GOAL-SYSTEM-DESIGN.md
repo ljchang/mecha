@@ -1,7 +1,8 @@
 # The goal system — design
 
-Decided 2026-08-26. **Rungs 0–5 of §14 shipped the same day** (PRs #61–#72);
-rung 6 is next, and rung 5's model-facing half is the open piece within it.
+Decided 2026-08-26. **Rungs 0–5 of §14 shipped the same day** (PRs #61–#72),
+rung 5's model-facing half followed on 2026-08-27 (#78), and **rung 6 shipped
+the same day**. Rung 7 is next.
 The body below is the design as proposed and is
 deliberately not rewritten — `docs/HISTORY.md` records what was built, and the
 gap between the two is evidence about how the built thing came to be shaped
@@ -15,8 +16,9 @@ beside the original rather than replacing it (§2.1 and §4.4).
 | 2 | sign the existing channels (`sent && !edited()`) | shipped, #64 |
 | 3 | the homeostat, read-only | shipped, #65 |
 | 4 | prioritised replay + uniform holdout | shipped, #66 |
-| 5 | predictive compaction and task sizing | **harness half shipped**, #69/#71/#72; the model-facing half is open |
-| 6–11 | boredom and step appraisal onward | unbuilt |
+| 5 | predictive compaction and task sizing | shipped, #69/#71/#72 + #78 |
+| 6 | boredom, and the deterministic half of step appraisal | shipped, 2026-08-27 — with §5.5's three comparison signals and §9.1's rung 2 named rather than built |
+| 7–11 | the appraisal store and the `Affect` function onward | unbuilt |
 
 Everything shipped so far has no model, no charter and no adversary in it,
 which is §14's ordering rather than a coincidence.
@@ -1157,14 +1159,32 @@ Each rung is independently useful and independently measurable.
 4. **Prioritised replay + uniform holdout** (§8.1). Independently valuable,
    improves a shipped system, cheapest large win on the list.
 5. **Predictive compaction and task sizing** (§4.4, §7.1). The first
-   disposition, in the class with no adversary. *Built 2026-08-26 apart from
-   task sizing, which needs the model to see a reading and is the open piece —
-   the harness half is #67, #69, #71, #72.*
+   disposition, in the class with no adversary. *Built 2026-08-26 (#67, #69,
+   #71, #72); the model-facing half — `forecast()` on the `todo` result and an
+   unapproved argument-free `compact` tool — landed 2026-08-27 (#78).*
 6. **Boredom, rungs 1–3** (§9.1), and the **deterministic half of step
    appraisal** (§5.5). Both read signals that already exist, both are free,
    and together they are what makes the plan adaptive. No model, no spending,
    no adversary — and they fill in the gap between "proceeding" and the loop
-   guard's "dead".
+   guard's "dead". *Built 2026-08-27 (`step.rs`, `boredom.rs`), and building
+   it corrected the rung twice.*
+
+   **Step appraisal reads two of §5.5's five signals, not five.** The two are
+   facts about the span — nothing was attempted, and the last attempt did not
+   succeed. The other three are *comparisons*: a span far longer than its
+   siblings and a verify-shaped call that passed each need a threshold or a
+   guess about what a call meant, and the same-target reading turned out to be
+   boredom's rather than step appraisal's, which is where it now lives.
+
+   **And it is rungs 1 and 3, not 1–3.** Rung 2 — consult — has two halves and
+   neither could be built: a §7.4 marker does not exist, and while a skill
+   does, nothing in the `Tool` trait identifies the tool that loads one.
+   `narrows_surface_to` is the closest and answers `None` until a skill is
+   already loaded, so it recognises the state the notice exists to escape only
+   after the escape has been taken. Rung 3 needed the same kind of property and
+   got one — `Tool::runs_a_fresh_conversation`, fourth in the family with
+   `carried_state`, `fixed_workspace` and `narrows_surface_to` — which is the
+   shape closing rung 2 would take.
 7. **The appraisal store and the pure `Affect` function** (§5, §6), and the
    model half of step appraisal — the escalation, not the common path.
    Observation only — build the corpus and check the labels are not

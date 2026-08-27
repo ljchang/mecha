@@ -139,6 +139,9 @@ mailbox.rs   inter-agent messages between sessions; taint travels with them
 sandbox.rs   bwrap/docker confinement for shell and MCP servers
 compact.rs   the cut, the rebuild, and the state carried across one
 pressure.rs  how big the *next* request will be, from what the last one cost
+step.rs      what a finished plan step actually did, from the run's own trace
+boredom.rs   an approach that has stopped teaching the run anything, named
+             while there is still something to do about it
 cron.rs      five-field cron, resolved in an IANA zone (both DST directions)
 trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
 runmarker.rs "is a run in flight, and please stop it", as two files in a directory
@@ -2350,6 +2353,14 @@ The things that decide the design:
   send. Gradeable via `expect.stop_cause: "loop"`; no shipped case asserts
   it, because a case cannot reliably make a model loop, and a case that
   asserts an outcome it may never exercise is worse than no case.
+  **It is the last rung of a ladder now, not the only one** — `boredom.rs`
+  (`[agent] boredom`, `GOAL-SYSTEM-DESIGN.md` §9.1) names an approach that has
+  stopped teaching a run anything, three identical outcomes in, while there is
+  still something to do about it; the guard remains the backstop that ends the
+  run. Boredom only speaks, so it costs nothing and is ungated; and it is
+  bounded hard — once per rung, once per turn, three times per run — because a
+  model is measurably likelier to fail a step when its context holds its own
+  earlier errors, which makes nagging a stuck run a way of keeping it stuck.
 - **The record is searchable after the summary.** `tool/recall.rs` registers
   `recall` on the session-recording front-ends (chat, the TUI, resumed runs):
   it searches the union of everything the transcript ever recorded — including
