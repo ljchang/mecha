@@ -33,6 +33,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fires either constantly or never with no way to tell which. Prints a dash
   where no run recorded the counter, which is what it prints today.
 
+- **`mecha sessions appraise` — how runs went against what they were *for*.**
+  Every evaluative signal mecha had was a cost or a correction, so a run could
+  be recorded as having gone badly and never as having gone well. This is the
+  signed record, derived on the spot from the transcript, the outbox and each
+  run's own counters — no store, because every channel is a pure function of
+  records already on disk. Observation only: nothing consumes the label.
+
+  Over a live store it reads 459 sessions, appraises 120, records **119 signed
+  goal errors and 100% neutral labels** — eleven of the errors positive, which
+  is the first time the one channel that can say a run went well has been
+  counted anywhere. Nothing is broken; every label that could have fired needs
+  a dimension nothing measures, and `appraisal.rs` names which one buys which.
+
+- **`mecha reflections` and the `/learning` modal — the learning store, read
+  and edited.** `reflect` wrote reflections, `learn` consumed them and nothing
+  could show you one. `/learning` is the three stages a lesson passes through —
+  reflections, rules, proposals — with the verbs on each.
+
+  **Editing a lesson is a provenance promotion, not a text change.** A lesson
+  you typed is yours, so one the gate excluded becomes learnable; what was
+  happening is withheld on the way through, because that is the field that held
+  the third-party text. It is the highest-leverage correction available: a rule
+  is a consolidation of several lessons, so objecting at a proposal costs the
+  good ones. A drop is a flag, never a deletion.
+
+- **`mecha rules list --json`**, listing user rules alongside learned ones and
+  flagged, because they ride in the same prompt and a surface showing only the
+  learned half misdescribes what a run carries.
+
 ### Fixed
 
 - **mecha was mining its own words as the user's corrections.** `agent.rs`
@@ -54,20 +83,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   classified rather than dropped — kept, visible, and one gate away from being
   usable the day something can grade it.
 
-### Added
-
-- **`mecha sessions appraise` — how runs went against what they were *for*.**
-  Every evaluative signal mecha had was a cost or a correction, so a run could
-  be recorded as having gone badly and never as having gone well. This is the
-  signed record, derived on the spot from the transcript, the outbox and each
-  run's own counters — no store, because every channel is a pure function of
-  records already on disk. Observation only: nothing consumes the label.
-
-  Over a live store it reads 459 sessions, appraises 120, records **119 signed
-  goal errors and 100% neutral labels** — eleven of the errors positive, which
-  is the first time the one channel that can say a run went well has been
-  counted anywhere. Nothing is broken; every label that could have fired needs
-  a dimension nothing measures, and `appraisal.rs` names which one buys which.
+- **`/queues` clipped the text it exists to have you read.** The detail
+  rendered without wrapping, so a rule proposal showed the first line of each
+  rule and cut the rest at the box edge — an approval asked for on a sentence
+  whose end is unreadable, and the unread half goes into every future prompt.
 
 ## [0.1.15] - 2026-08-26
 

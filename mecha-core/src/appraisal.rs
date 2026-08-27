@@ -19,7 +19,7 @@
 //! the same rule one noun over: state is derived from the record, never
 //! self-reported.
 //!
-//! ## Four labels are unreachable today, and that is the finding
+//! ## Six labels are unreachable today, and that is the finding
 //!
 //! §14 puts this rung at *observation only* — build the corpus and check the
 //! labels are not degenerate before anything consumes them. Working the
@@ -275,13 +275,29 @@ fn label_of(e: &GoalError) -> Affect {
 /// so a consumer that wants a different summary re-derives it rather than
 /// finding the evidence gone. That is §16's discrete-or-dimensional question
 /// left answerable instead of decided by accident.
+///
+/// **Exhaustive on purpose, with no catch-all.** A `_ => 0` arm would put any
+/// future label — `Guilt`, `Shame`, `Pride`, `Excitement`, and `Frustration`
+/// itself — at the same rank as `Neutral`, silently contradicting the rule
+/// above that `Neutral` loses every tie: a variant added to [`label_of`] would
+/// compile fine and mask nothing, when the whole point of this function is
+/// that everything *but* `Neutral` should be able to win one. Listing every
+/// variant means the compiler catches that instead. `Guilt`/`Shame` join
+/// `Embarrassment`'s rank: all three are exposure-flavoured harm that a reader
+/// most needs surfaced. `Anger`/`Pride`/`Excitement` join the lowest non-zero
+/// rank — `label_of` never actually produces the latter two, so this is only
+/// ever exercised through `Anger`. `Frustration` never reaches this function
+/// today either (`affect_of` decides it separately, see below), but its rank
+/// still has to sit *below* the exposure tier so a repeated self-inflicted
+/// error can never be preferred over — or mistaken for beating — a visible
+/// mistake in the same record.
 fn says_more(a: Affect) -> u8 {
     match a {
-        Affect::Embarrassment => 4,
-        Affect::Regret => 3,
+        Affect::Embarrassment | Affect::Guilt | Affect::Shame => 4,
+        Affect::Frustration | Affect::Regret => 3,
         Affect::Disappointment => 2,
-        Affect::Anger => 1,
-        _ => 0,
+        Affect::Anger | Affect::Pride | Affect::Excitement => 1,
+        Affect::Neutral => 0,
     }
 }
 
@@ -301,24 +317,11 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
         return Affect::Neutral;
     }
 
-    // Repeated negative error on one goal. Whole-record by construction: one
-    // event cannot be a repetition, which is why this is a function of the
-    // appraisal and not of an error.
-    let repeated = negatives
-        .iter()
-        .filter_map(|e| e.goal.as_ref())
-        .any(|goal| {
-            negatives
-                .iter()
-                .filter(|e| e.goal.as_ref() == Some(goal))
-                .count()
-                > 1
-        });
-    if repeated {
-        return Affect::Frustration;
-    }
-
-    negatives
+    // The most negative error decides, exactly as when there is no
+    // repetition below — computed first so the repetition check can only
+    // ever upgrade this result, never bury it. See that check for why the
+    // order matters.
+    let reduced = negatives
         .iter()
         .map(|e| (e.sign, label_of(e)))
         .reduce(|a, b| match a.0.total_cmp(&b.0) {
@@ -328,7 +331,66 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
             std::cmp::Ordering::Equal => a,
         })
         .map(|(_, label)| label)
-        .unwrap_or(Affect::Neutral)
+        .unwrap_or(Affect::Neutral);
+
+    // Repeated negative error on one goal, self-agency, of the *same kind*
+    // (§6.1: "repeated, one goal, self-agency"). Whole-record by
+    // construction: one event cannot be a repetition, which is why this is a
+    // function of the appraisal and not of an error.
+    //
+    // **Self-agency, not any negative, is load-bearing.** `of_session` clones
+    // one `goals.first()` onto every error it builds, so "shares a goal" is
+    // not yet a discriminator at all — without the agency filter, `repeated`
+    // degenerates to "two or more negative errors" the moment a session
+    // names a goal. Filtering to `Agency::Own` keeps this reachable only by
+    // errors the agent itself caused.
+    //
+    // **And agency alone still is not enough.** `of_session` can emit up to
+    // three distinct `Agency::Own` counter errors from one run —
+    // `stop_cause: Loop|NoOutput`, `ended_on_failed_call`, and
+    // `boredom_notices > 0` — all sharing the goal, and none of those is a
+    // repetition of another: three different symptoms, not one mistake made
+    // twice. `error_kind` groups by `Channel` plus, for a `Cite::Counter`,
+    // the counter's own name — the only thing this record carries that names
+    // *which* signal fired — so two errors count as "the same kind" only
+    // when they really are one: two probed interventions on the same goal
+    // (`Channel::Intervention`, no counter name to divide further) are a
+    // repetition; `ended_on_failed_call` and `boredom_notices` are not.
+    //
+    // **And this may only ever upgrade `reduced`, never bury it.** The first
+    // cut returned `Frustration` the moment `repeated` was true, before
+    // `label_of`'s reduce ran at all — which outranked agency and exposure
+    // both, the one ordering this module argues hardest for: a ceiling
+    // nobody here caused (`Agency::World`) plus a draft the owner rewrote
+    // (`Agency::Owner`, visible) would report `Frustration` and discard the
+    // fact that something went out wrong, exactly what `says_more`'s
+    // tie-break exists to prevent from being masked. Comparing ranks instead
+    // means a repetition can promote a `Neutral`/`Anger`/`Disappointment`
+    // result to `Frustration`, but can never step in front of a
+    // higher-or-equal-ranked exposed error — `says_more(Frustration)` sits
+    // below the exposure tier for exactly that reason.
+    fn error_kind(e: &GoalError) -> (Channel, Option<&str>) {
+        match &e.cite {
+            Cite::Counter(name) => (e.channel, Some(name.as_str())),
+            _ => (e.channel, None),
+        }
+    }
+    let repeated = negatives
+        .iter()
+        .filter(|e| e.agency == Agency::Own && e.goal.is_some())
+        .any(|e| {
+            let kind = error_kind(e);
+            negatives
+                .iter()
+                .filter(|o| o.agency == Agency::Own && o.goal == e.goal && error_kind(o) == kind)
+                .count()
+                > 1
+        });
+    if repeated && says_more(Affect::Frustration) >= says_more(reduced) {
+        return Affect::Frustration;
+    }
+
+    reduced
 }
 
 /// Build one **session's** appraisal from records that already exist.
@@ -373,6 +435,16 @@ pub fn of_session(
     goals: &[GoalRef],
     interventions: &[crate::learning::Intervention],
     drafts: &[&crate::outbox::OutboxItem],
+    // Coverage at the end of the session, from `Session::taint_timeline` —
+    // `None` when the caller could not establish it, which includes a
+    // transcript recorded before checkpoints existed. Deliberately not read
+    // off `stats.taint`: that field is `#[serde(default)]` over a
+    // both-false `Taint`, so a row written before the field existed
+    // deserialises as *clean* rather than as *unknown*, and passing it
+    // through `Some(..)` would make `classify_origin`'s fail-closed `None`
+    // arm unreachable from here — the same inversion the taint snapshot and
+    // `distill::corrections_for` both refuse elsewhere in this codebase.
+    end_taint: Option<crate::agent::Taint>,
     created_at: String,
 ) -> Appraisal {
     let goal = goals.first().cloned();
@@ -470,7 +542,22 @@ pub fn of_session(
     // a statement about this function, not about the world: it is a pure
     // function of on-disk records, and the question needs a replay. See
     // [`apply_probe`], which is what licenses moving it.
+    //
+    // `Followup` is excluded, on `counterfactual.rs`'s own precedent: it
+    // declines to grade a followup at all, because there is no counterfactual
+    // in a later turn — a second question in a chat is not a correction, and
+    // `extract_interventions` mines one for *any* later user turn following a
+    // non-empty answer. Measured at 86% of this corpus's interventions. A
+    // `-1.0` here has no such gate, so an ordinary multi-turn conversation
+    // read a run that went well as a run that went badly, once per turn — the
+    // channel this rung exists to measure would have dominated on a signal
+    // with no ground truth behind it. `Steer` and `Denial` keep their sign:
+    // both are the owner unambiguously stepping in mid-run, which is what
+    // `Agency::Owner` states.
     for i in interventions {
+        if i.trigger == crate::learning::Trigger::Followup {
+            continue;
+        }
         errors.push(GoalError {
             goal: goal.clone(),
             channel: Channel::Intervention,
@@ -484,19 +571,27 @@ pub fn of_session(
 
     // --- Edit: what the owner did with a draft written in their name ---
     for item in drafts {
-        // A publish is excluded on `mineable_as_writing`'s reasoning: the
-        // difference between its arguments is a path, and reading bookkeeping
-        // as a judgement of the work is the mistake that rule exists to name.
-        if item.kind != crate::outbox::OutboxKind::Message {
-            continue;
-        }
-        let (sign, agency) = match (item.status.as_str(), item.edited()) {
+        // `writing_outcome` already decides `sent` vs `sent-and-edited` vs
+        // "says nothing about drafting" — including a publish, on
+        // `mineable_as_writing`'s reasoning that its arguments are a path
+        // and reading bookkeeping as a judgement of the work is the mistake
+        // that rule exists to name. Reusing it rather than re-deriving the
+        // same split from `status`/`edited()` is what keeps a third status
+        // or a third `OutboxKind` from teaching only one of the two places
+        // that reason about it.
+        let (sign, agency) = match (item.writing_outcome(), item.status.as_str()) {
             // **The one signal in this system that says something went well.**
             // Recorded since the outbox existed; positive, and it is the reason
             // this record is signed at all.
-            ("sent", false) => (1.0, Agency::Own),
-            ("sent", true) => (-1.0, Agency::Owner),
-            ("rejected", _) => (-1.0, Agency::Owner),
+            (Some(crate::outbox::WritingOutcome::SentUnchanged), _) => (1.0, Agency::Own),
+            (Some(crate::outbox::WritingOutcome::SentEdited), _) => (-1.0, Agency::Owner),
+            // `writing_outcome` returns `None` for a rejected item too (it
+            // never went out), so the message-only guard is this arm's to
+            // keep — a rejected publish is still bookkeeping, not a
+            // judgement of prose.
+            (None, "rejected") if item.kind == crate::outbox::OutboxKind::Message => {
+                (-1.0, Agency::Owner)
+            }
             // Still pending: the owner has not said anything yet, and reading
             // silence as either answer is what a queue nobody has reached
             // would turn into a verdict.
@@ -507,9 +602,15 @@ pub fn of_session(
             channel: Channel::Edit,
             sign,
             agency,
-            // It went out. Exposure is what separates embarrassment from a
-            // private mistake, and a sent draft is the clearest case there is.
-            visible: item.status == "sent",
+            // Exposure means *mecha's* mistake reached somebody, not merely
+            // that a message went out. `item.status == "sent"` is true for
+            // `SentEdited` too, which reported the owner's own catch as an
+            // exposure error — a draft they rewrote in `$EDITOR` sends their
+            // words, not mecha's, and the review that caught the difference
+            // is the mechanism working, not something that should itself read
+            // as `Embarrassment`. Only `SentUnchanged` is mecha's text
+            // actually reaching a third party.
+            visible: item.writing_outcome() == Some(crate::outbox::WritingOutcome::SentUnchanged),
             controllable: None,
             cite: Cite::Draft(item.id.clone()),
         });
@@ -522,7 +623,7 @@ pub fn of_session(
         state: stats.homeostat.clone(),
         errors,
         label: Affect::Neutral,
-        origin: crate::learning::classify_origin(Some(stats.taint)),
+        origin: crate::learning::classify_origin(end_taint),
         taint: stats.taint,
         created_at,
     };
@@ -723,6 +824,87 @@ mod tests {
         assert_eq!(affect_of(&appraisal(vec![one, two])), Affect::Frustration);
     }
 
+    /// Two *different* failures on one goal must not read as one repeated
+    /// one — a ceiling nobody here caused, plus a draft the owner rewrote,
+    /// share a goal only because `of_session` stamps the same reference on
+    /// every error it builds. Frustration's own definition is "repeated,
+    /// one goal, self-agency" (§6.1); a ceiling is `Agency::World`, so it
+    /// cannot be the repetition, and exposure — the fact `says_more` says a
+    /// person most needs out of this — must win instead.
+    #[test]
+    fn two_different_failures_sharing_a_goal_are_not_frustration() {
+        let goal = GoalRef::Task("01J8ZK".into());
+        let ceiling = GoalError {
+            goal: Some(goal.clone()),
+            ..err(-0.5, Agency::World)
+        };
+        let rewritten_draft = GoalError {
+            goal: Some(goal),
+            visible: true,
+            ..err(-1.0, Agency::Owner)
+        };
+        assert_eq!(
+            affect_of(&appraisal(vec![ceiling, rewritten_draft])),
+            Affect::Embarrassment,
+            "exposure must not be masked by a repetition that never happened"
+        );
+    }
+
+    /// Restricting `repeated` to `Agency::Own` is not enough on its own:
+    /// `of_session` can emit up to three distinct Own-agency counter errors
+    /// from one run (`stop_cause`, `ended_on_failed_call`, `boredom_notices`),
+    /// all sharing the goal it stamps on everything. Two different symptoms
+    /// are not one mistake made twice.
+    #[test]
+    fn two_different_kinds_of_own_agency_error_are_not_frustration() {
+        let goal = GoalRef::Task("01J8ZK".into());
+        let ended_on_failed_call = GoalError {
+            goal: Some(goal.clone()),
+            cite: Cite::Counter("ended_on_failed_call".into()),
+            ..err(-1.0, Agency::Own)
+        };
+        let boredom = GoalError {
+            goal: Some(goal),
+            cite: Cite::Counter("boredom_notices".into()),
+            ..err(-0.5, Agency::Own)
+        };
+        assert_ne!(
+            affect_of(&appraisal(vec![ended_on_failed_call, boredom])),
+            Affect::Frustration,
+            "two different self-caused symptoms are not one mistake repeated"
+        );
+    }
+
+    /// A genuine repetition — the *same* kind of self-caused error twice on
+    /// one goal — still reports `Frustration` when nothing outranks it, but
+    /// must still yield to a higher-ranked exposed error in the same record,
+    /// which is what `says_more(Frustration)` sitting below the exposure tier
+    /// is for.
+    #[test]
+    fn a_repeated_own_agency_error_does_not_mask_a_higher_ranked_exposure() {
+        let goal = GoalRef::Task("01J8ZK".into());
+        let first = GoalError {
+            goal: Some(goal.clone()),
+            cite: Cite::Counter("ended_on_failed_call".into()),
+            ..err(-1.0, Agency::Own)
+        };
+        let second = GoalError {
+            goal: Some(goal.clone()),
+            cite: Cite::Counter("ended_on_failed_call".into()),
+            ..err(-1.0, Agency::Own)
+        };
+        let exposed = GoalError {
+            goal: Some(goal),
+            visible: true,
+            ..err(-1.0, Agency::Owner)
+        };
+        assert_eq!(
+            affect_of(&appraisal(vec![first, second, exposed])),
+            Affect::Embarrassment,
+            "a genuine repetition must still yield to a visible mistake in the same record"
+        );
+    }
+
     /// An ungoaled run's errors are recorded and never repeat *into* anything:
     /// frustration is repeated error on **one** goal, and two errors that name
     /// no goal are not evidence they share one.
@@ -825,6 +1007,7 @@ mod tests {
             &[],
             interventions,
             drafts,
+            Some(stats.taint),
             "2026-08-27T00:00:00Z".into(),
         )
     }
@@ -843,12 +1026,21 @@ mod tests {
         assert_eq!(a.label, Affect::Neutral);
     }
 
+    /// The owner's rewrite is what reached the recipient, not mecha's
+    /// mistake — the catch is the mechanism working, and must not itself
+    /// read as an exposure error. `status == "sent"` is true for this item
+    /// exactly as it is for a `SentUnchanged` one, which is why `visible`
+    /// has to come from `writing_outcome()` rather than from `status` alone.
     #[test]
-    fn a_draft_the_owner_rewrote_is_negative_and_exposed() {
+    fn a_draft_the_owner_rewrote_is_negative_but_not_exposed() {
         let d = draft("o1", "sent", true);
         let a = built(&stats(), &[&d], &[]);
         assert_eq!(a.errors[0].sign, -1.0);
-        assert_eq!(a.label, Affect::Embarrassment);
+        assert!(
+            !a.errors[0].visible,
+            "the owner's words went out, not mecha's mistake"
+        );
+        assert_eq!(a.label, Affect::Neutral);
     }
 
     /// A queue nobody has reached is not a verdict in either direction.
@@ -889,6 +1081,34 @@ mod tests {
         assert_eq!(a.errors[0].agency, Agency::Own);
     }
 
+    /// The assembler's own version of the pure-function test above: a session
+    /// with a goal that ended on a failed call *and* went nowhere is two
+    /// different Own-agency counter errors on the same goal (`of_session`
+    /// stamps the same goal on both), and neither should read as the other
+    /// repeated.
+    #[test]
+    fn ended_on_failed_call_and_boredom_share_a_goal_but_are_not_frustration() {
+        let mut s = stats();
+        s.ended_on_failed_call = true;
+        s.boredom_notices = Some(2);
+        let goal = GoalRef::Task("01J8ZK".into());
+        let a = of_session(
+            "s1",
+            &s,
+            &[goal],
+            &[],
+            &[],
+            Some(s.taint),
+            "2026-08-27T00:00:00Z".into(),
+        );
+        assert_eq!(a.errors.len(), 2);
+        assert_ne!(
+            a.label,
+            Affect::Frustration,
+            "a failed call and a stuck approach are two different symptoms, not one repeated"
+        );
+    }
+
     /// Absent is not zero: a row from before the sensor is not a run that was
     /// never stuck.
     #[test]
@@ -913,6 +1133,46 @@ mod tests {
             built(&s, &[], &[]).origin,
             crate::learning::Origin::Untrusted
         );
+    }
+
+    /// `classify_origin`'s fail-closed `None` arm has to stay reachable from
+    /// here: a caller that could not establish end-of-session coverage (a
+    /// torn transcript, one recorded before checkpoints existed) must not
+    /// read as provably clean just because nothing was passed.
+    #[test]
+    fn no_established_coverage_classifies_untrusted_rather_than_clean() {
+        let s = stats();
+        assert_eq!(
+            of_session("s1", &s, &[], &[], &[], None, "t".into()).origin,
+            crate::learning::Origin::Untrusted
+        );
+    }
+
+    /// A followup is a later user turn the miner cannot tell from an ordinary
+    /// question, and `counterfactual.rs` already declines to grade it for
+    /// exactly that reason — this channel must decline the same way, or an
+    /// unremarkable multi-turn chat reads as a run that went badly once per
+    /// turn. `Steer` and `Denial` are unambiguous and keep their sign.
+    #[test]
+    fn a_followup_contributes_no_signed_error() {
+        let followup = crate::learning::Intervention {
+            trigger: crate::learning::Trigger::Followup,
+            context: String::new(),
+            text: "and another thing".into(),
+            aftermath: String::new(),
+            at: 4,
+            tools_before: vec![],
+            tools_after: vec![],
+        };
+        assert!(built(&stats(), &[], std::slice::from_ref(&followup))
+            .errors
+            .is_empty());
+
+        let steer = crate::learning::Intervention {
+            trigger: crate::learning::Trigger::Steer,
+            ..followup
+        };
+        assert_eq!(built(&stats(), &[], &[steer]).errors.len(), 1);
     }
 
     // --- what a probe buys ---
@@ -1000,5 +1260,26 @@ mod tests {
         assert!(serde_json::to_string(&Agency::Own)
             .unwrap()
             .contains("self"));
+    }
+
+    /// `goal::de_lenient_vec`'s own claim — one unrecognised entry costs the
+    /// reference and nothing around it — exercised through `Appraisal`
+    /// itself rather than only through `parse_lenient` directly. There is no
+    /// store for this record yet, so today `serde` on `goals` is reachable
+    /// only from a test; without one, a future binary that discards a whole
+    /// appraisal over one bad reference would have nothing to catch it.
+    #[test]
+    fn an_unrecognised_goal_kind_costs_only_itself() {
+        let json = r#"{
+            "id": "s1",
+            "session_id": "s1",
+            "goals": ["task:a", "banana:b"],
+            "errors": [],
+            "label": "neutral",
+            "origin": "clean",
+            "created_at": "t"
+        }"#;
+        let a: Appraisal = serde_json::from_str(json).unwrap();
+        assert_eq!(a.goals, vec![GoalRef::Task("a".into())]);
     }
 }

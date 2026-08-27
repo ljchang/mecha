@@ -123,6 +123,19 @@ pub struct RunConfig {
     /// **`None` is a recording from before this existed, and must never read as
     /// a match** — [`crate::surface::Fidelity`] is the three-state answer, and
     /// its `Unknown` arm is the one every session on disk today lands in.
+    ///
+    /// **Scope: `registry().specs()`, unfiltered — not necessarily what this
+    /// turn's request actually sent.** The wire request goes through
+    /// `registry.specs_for(cx.phase)`, which also applies `Phase::Plan`'s
+    /// read-only filter and a loaded skill's `tools:` narrowing (matching this
+    /// struct's own `tools` field, so this is not a new gap, only a named
+    /// one). A run under `Plan`, or one that had a narrowing skill loaded,
+    /// sent fewer specs than this hash covers — and since the surface can
+    /// narrow *mid-run*, no single hash can describe every turn's request
+    /// exactly. `Fidelity::Matches` here means "the full registry is
+    /// unchanged since this was recorded", which is what makes a replay
+    /// worth attempting; it is not a claim that the request bytes were
+    /// identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools_hash: Option<String>,
 
@@ -378,6 +391,15 @@ impl RunStats {
         // On `merge` rather than in `of_run` alone, so that `episode_stats` —
         // which rebuilds an episode from recorded rows — folds it too.
         self.context_overflows = match (self.context_overflows, other.context_overflows) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+        // Same shape, same reason: a live run always knows its own count, and
+        // omitting this arm left a session's later runs' notices silently
+        // discarded — `fold` seeds from the first row and this method never
+        // touched the field, so it kept whatever the first row carried
+        // forever regardless of how many more rows followed.
+        self.boredom_notices = match (self.boredom_notices, other.boredom_notices) {
             (Some(a), Some(b)) => Some(a + b),
             (a, b) => a.or(b),
         };
@@ -1651,6 +1673,38 @@ mod tests {
         // Taint merges and never resets: a later clean run does not un-read
         // what an earlier one read.
         assert!(stats.taint.private);
+    }
+
+    /// `merge` had no arm for this field at all, so `fold`'s first-row seed
+    /// kept whatever the first run recorded and every later run's notices
+    /// were silently dropped — diluting the exact rate the sensor exists to
+    /// establish, in the direction `context_overflows`' own `Option` is
+    /// there to prevent.
+    #[test]
+    fn boredom_notices_sum_across_an_episodes_runs_like_context_overflows() {
+        let mut stats = RunStats {
+            boredom_notices: Some(2),
+            ..RunStats::default()
+        };
+        stats.merge(&RunStats {
+            boredom_notices: Some(3),
+            ..RunStats::default()
+        });
+        assert_eq!(stats.boredom_notices, Some(5));
+
+        // `None` behaves like `context_overflows`: a live run always knows
+        // its own count, so `None` only arises from a pre-sensor row, and
+        // `or` keeps whichever side had a sensor rather than treating the
+        // other's silence as zero.
+        let mut unsampled = RunStats {
+            boredom_notices: None,
+            ..RunStats::default()
+        };
+        unsampled.merge(&RunStats {
+            boredom_notices: Some(1),
+            ..RunStats::default()
+        });
+        assert_eq!(unsampled.boredom_notices, Some(1));
     }
 
     #[test]

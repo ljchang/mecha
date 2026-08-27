@@ -115,20 +115,30 @@ impl Fidelity {
 /// registry's, which is `BTreeMap` order and therefore stable, and is itself
 /// part of what the model saw: the tool list is the front of the cached prefix.
 ///
-/// A 64-bit hash rendered as hex. Nothing adversarial is being resisted — this
-/// answers "is this the same surface", and a collision would need two real
-/// registries to hash alike.
+/// **`learning::rules_hash`'s hasher, not `DefaultHasher`.** This value is
+/// both a comparison key and a filename, so the caveat that function's own
+/// doc comment states — *"the std hasher is deliberately unstable across
+/// Rust releases, and a ledger key that drifts with the toolchain would
+/// silently split every tally"* — bites harder here: a toolchain bump would
+/// make [`Fidelity::of`] read every session recorded on the old one as
+/// `Differs`, permanently and indistinguishably from real re-describe drift,
+/// and orphan every blob already written in the store this module's own note
+/// says is never pruned. A canonical rendering fed through the same hash
+/// this codebase already trusts for a persisted key, rather than a second
+/// hand-rolled FNV-1a, so there is one definition to keep stable.
 pub fn fingerprint(specs: &[ToolSpec]) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut rendered = String::new();
     for spec in specs {
-        spec.name.hash(&mut h);
-        spec.description.hash(&mut h);
+        rendered.push_str(&spec.name);
+        rendered.push('\0');
+        rendered.push_str(&spec.description);
+        rendered.push('\0');
         // `serde_json::Map` is a `BTreeMap`, so this rendering is canonical
         // whatever order a schema was built in.
-        spec.input_schema.to_string().hash(&mut h);
+        rendered.push_str(&spec.input_schema.to_string());
+        rendered.push('\0');
     }
-    format!("{:016x}", h.finish())
+    crate::learning::rules_hash(&rendered)
 }
 
 /// Where surface blobs live. One file per distinct surface, named by its hash.
@@ -143,7 +153,12 @@ impl SurfaceStore {
 
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
+        // Owner-only, like every other store root under `~/.mecha` — the
+        // front door's own rule for the same reason: these blobs are not
+        // nothing. A `ToolSpec` carries the mail account short names baked
+        // into every tool schema as an enum at startup, plus whatever an MCP
+        // server put in its own descriptions.
+        crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
         Ok(SurfaceStore { root })
     }
 
@@ -214,6 +229,21 @@ mod tests {
         SurfaceStore::open(dir).unwrap()
     }
 
+    /// Owner-only, on the front door's rule for every store root under
+    /// `~/.mecha`: a `ToolSpec` carries the mail account short names baked
+    /// into every tool schema, plus whatever an MCP server put in its own
+    /// descriptions, so this is not nothing to protect.
+    #[test]
+    fn the_surface_store_directory_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("mecha-surface-perms-{}", uuid::Uuid::new_v4()));
+        SurfaceStore::open(&dir).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The failure this module exists for: a name list cannot see it.
     #[test]
     fn a_re_described_tool_is_a_different_surface() {
@@ -247,6 +277,21 @@ mod tests {
         // Order is part of the surface: it is the front of the cached prefix.
         let flipped = [spec("b", "y"), spec("a", "x")];
         assert_ne!(fingerprint(&s), fingerprint(&flipped));
+    }
+
+    /// The other three tests here compare two values computed in the same
+    /// process, so none of them can fail if this hashed with the *wrong*
+    /// hasher — the mistake this asserts against directly, on
+    /// `the_rules_hash_is_stable_forever`'s precedent one module over. Pinned
+    /// to `learning::rules_hash` over the exact canonical rendering rather
+    /// than a second hex literal, so a change to either the rendering or the
+    /// choice of hasher shows up here rather than only in a toolchain bump
+    /// nobody connects back to this file.
+    #[test]
+    fn fingerprint_uses_the_stable_hasher_not_the_std_one() {
+        let one = spec("build", "Build it.");
+        let expected = crate::learning::rules_hash("build\0Build it.\0{\"type\":\"object\"}\0");
+        assert_eq!(fingerprint(&[one]), expected);
     }
 
     /// **The rule the whole design turns on.** Every session on disk the day

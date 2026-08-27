@@ -95,6 +95,22 @@ pub struct Work {
     /// report as the null step, which is the false positive that would teach
     /// people to ignore the reading.
     pub in_flight: u32,
+    /// Calls settled *this turn* without becoming approved work, whose
+    /// target step is unknown to the harness. Named for the commonest case
+    /// (the approver, a hook, the interlock) but not only that: an unknown
+    /// or withheld tool name and a failed staging attempt settle the same
+    /// way, without ever being denied by anyone.
+    ///
+    /// Any of these is settled the instant it happens — unlike `in_flight`
+    /// it is already in the trace — but the batch it happened in is exactly
+    /// the shape `in_flight` exists for: a model ticking a step and
+    /// reaching for the next one's tool in the same turn. `trace.push` for
+    /// one of these runs ahead of the calls it approved, so `Work::of` folds
+    /// it in as the raw trace's last entry regardless of which call it sat
+    /// beside — blaming *this* step for an outcome that belongs to the
+    /// next one. Carried alongside `in_flight` for the same reason: a batch
+    /// holding either supports no finding at all.
+    pub denied: u32,
     /// Which run these counters belong to.
     ///
     /// **The trace is per run and a conversation is many runs.** In chat and
@@ -144,6 +160,11 @@ impl Work {
         self
     }
 
+    pub fn with_denied(mut self, n: u32) -> Self {
+        self.denied = n;
+        self
+    }
+
     pub fn in_run(mut self, run: u64) -> Self {
         self.run = run;
         self
@@ -161,11 +182,22 @@ impl Work {
     /// tool reads it, so "the plan tool is not work" is a judgement only the
     /// plan tool can make, and this is where the arithmetic it needs lives.
     ///
+    /// **`last` is the caller's to supply, and `self.last` is the wrong
+    /// answer.** `self.last` is the raw trace's most recent entry, which is
+    /// this same bookkeeping tool's own call whenever one lands last — a
+    /// successful revision masks an earlier failure (`EndedOnFailure` never
+    /// fires), and a *rejected* one, which never reaches this method's caller
+    /// at all, reads as the step's own failure (`EndedOnFailure` fires on
+    /// work that landed). `bookkeeping` is a count and cannot say which
+    /// position it occupied, so only a caller tracking its own calls as they
+    /// happen — [`crate::tool::todo::Tracked`] does, incrementally — can name
+    /// the outcome that actually belongs to the span.
+    ///
     /// `None` when `start` was taken in another run — see [`Work::run`]. An
     /// unmeasurable span supports no finding, which is doctor's dash one
     /// mechanism over: could-not-look and nothing-happened are opposite
     /// answers.
-    pub fn since(&self, start: Work, bookkeeping: u32) -> Option<Span> {
+    pub fn since(&self, start: Work, bookkeeping: u32, last: Option<Outcome>) -> Option<Span> {
         if start.run != self.run {
             return None;
         }
@@ -176,8 +208,9 @@ impl Work {
                 .saturating_sub(bookkeeping),
             failed: self.failed.saturating_sub(start.failed),
             refused: self.refused.saturating_sub(start.refused),
-            last: self.last,
+            last,
             in_flight: self.in_flight,
+            denied: self.denied,
         })
     }
 }
@@ -196,6 +229,10 @@ pub struct Span {
     /// Siblings still running. Any of them may be the work, or the recovery,
     /// so a span holding one supports no finding at all.
     pub in_flight: u32,
+    /// Siblings denied this turn. See [`Work::denied`] — the denial cannot be
+    /// attributed to this step over any other in the same batch, so a span
+    /// holding one supports no finding either.
+    pub denied: u32,
 }
 
 /// What the span says about the step.
@@ -222,7 +259,9 @@ pub fn appraise(span: Span) -> Finding {
     // that ended it — so the honest answer is no finding rather than the
     // finding the visible half would support. This is the same direction the
     // taint snapshot takes on uncovered runs: an absence is not evidence.
-    if span.in_flight > 0 {
+    // A sibling denied this turn gets the same treatment: the refusal is
+    // settled, but which step it belongs to is not.
+    if span.in_flight > 0 || span.denied > 0 {
         return Finding::Landed;
     }
     if span.calls == 0 {
@@ -342,11 +381,11 @@ mod tests {
         // And the two produce different findings, which is the whole reason
         // the split exists: one says fix your work, the other says you were
         // blocked.
-        let refused = appraise(work.since(Work::default(), 0).unwrap());
+        let refused = appraise(work.since(Work::default(), 0, work.last).unwrap());
         assert_eq!(refused, Finding::EndedOnRefusal);
         let broke = appraise(
             Work::of(&[ok(), failed()])
-                .since(Work::default(), 0)
+                .since(Work::default(), 0, Some(Outcome::Failed))
                 .unwrap(),
         );
         assert_eq!(broke, Finding::EndedOnFailure);
@@ -364,7 +403,10 @@ mod tests {
         let start = Work::of(&[ok(), ok()]);
         // Two turns later, and not one call in between.
         let now = start;
-        assert_eq!(appraise(now.since(start, 0).unwrap()), Finding::Null);
+        assert_eq!(
+            appraise(now.since(start, 0, now.last).unwrap()),
+            Finding::Null
+        );
     }
 
     #[test]
@@ -374,19 +416,77 @@ mod tests {
         // rewriting the list. Nothing was done.
         let now = Work::of(&[ok(), ok(), ok()]);
         assert_eq!(
-            appraise(now.since(start, 3).unwrap()),
+            appraise(now.since(start, 3, now.last).unwrap()),
             Finding::Null,
             "a step whose whole span is plan revision did nothing"
         );
         // One real call among them and it is no longer null.
-        assert_eq!(appraise(now.since(start, 2).unwrap()), Finding::Landed);
+        assert_eq!(
+            appraise(now.since(start, 2, now.last).unwrap()),
+            Finding::Landed
+        );
+    }
+
+    #[test]
+    fn a_bookkeeping_call_landing_last_does_not_mask_a_real_failure() {
+        // build fails, then the plan tool revises the list (successfully) —
+        // `now.last` is the revision's `Ok`, but the caller (`Tracked`) knows
+        // the failure is the outcome that actually belongs to the span.
+        let start = Work::default();
+        let now = Work::of(&[failed(), ok()]);
+        let span = now.since(start, 1, Some(Outcome::Failed)).unwrap();
+        assert_eq!(span.calls, 1, "the bookkeeping call is excluded from work");
+        assert_eq!(
+            appraise(span),
+            Finding::EndedOnFailure,
+            "the caller's `last` overrides the raw trace tail"
+        );
+    }
+
+    #[test]
+    fn a_bookkeeping_call_landing_last_does_not_manufacture_a_failure() {
+        // A rejected plan write is itself a failed call, but it is still the
+        // plan tool touching its own state rather than work on the step —
+        // the caller excludes it from both the count and `last`.
+        let start = Work::default();
+        let now = Work::of(&[ok(), failed()]);
+        let span = now.since(start, 1, Some(Outcome::Ok)).unwrap();
+        assert_eq!(span.calls, 1);
+        assert_eq!(
+            appraise(span),
+            Finding::Landed,
+            "a rejected bookkeeping call must not read as the step's own failure"
+        );
+    }
+
+    #[test]
+    fn a_denied_sibling_supports_no_finding_either() {
+        // The batched shape `in_flight` exists for, except the sibling is
+        // denied rather than still running: settled, but not attributable to
+        // this step.
+        let span = Work::of(&[ok()])
+            .with_denied(1)
+            .since(Work::default(), 0, Some(Outcome::Ok))
+            .unwrap();
+        assert_eq!(appraise(span), Finding::Landed);
+
+        // Same when the visible half would otherwise report a refusal.
+        let span = Work::of(&[ok(), denied()])
+            .with_denied(1)
+            .since(Work::default(), 0, Some(Outcome::Refused))
+            .unwrap();
+        assert_eq!(
+            appraise(span),
+            Finding::Landed,
+            "the denial in the same batch is not necessarily this step's"
+        );
     }
 
     #[test]
     fn a_failure_recovered_from_is_the_model_working() {
         let start = Work::default();
         let now = Work::of(&[failed(), ok()]);
-        let span = now.since(start, 0).unwrap();
+        let span = now.since(start, 0, now.last).unwrap();
         assert_eq!(span.failed, 1, "the failure is still counted");
         assert_eq!(
             appraise(span),
@@ -401,14 +501,14 @@ mod tests {
         // yet, so the visible half says null and the honest answer is nothing.
         let empty = Work::default().with_in_flight(1);
         assert_eq!(
-            appraise(empty.since(Work::default(), 0).unwrap()),
+            appraise(empty.since(Work::default(), 0, empty.last).unwrap()),
             Finding::Landed
         );
 
         // Same for a failure a sibling may still be recovering from.
         let failing = Work::of(&[failed()]).with_in_flight(1);
         assert_eq!(
-            appraise(failing.since(Work::default(), 0).unwrap()),
+            appraise(failing.since(Work::default(), 0, failing.last).unwrap()),
             Finding::Landed
         );
     }
@@ -417,7 +517,7 @@ mod tests {
     fn a_failure_before_the_step_started_is_not_this_step_s() {
         let start = Work::of(&[failed()]);
         let now = Work::of(&[failed(), ok(), ok()]);
-        let span = now.since(start, 0).unwrap();
+        let span = now.since(start, 0, now.last).unwrap();
         assert_eq!(span.failed, 0);
         assert_eq!(appraise(span), Finding::Landed);
     }
@@ -430,12 +530,12 @@ mod tests {
     fn a_mark_from_another_run_is_unmeasurable_rather_than_empty() {
         let first = Work::of(&[ok(), ok(), ok()]).in_run(1);
         let second = Work::of(&[ok()]).in_run(2);
-        assert_eq!(second.since(first, 0), None);
+        assert_eq!(second.since(first, 0, second.last), None);
 
         // And within one run it measures as usual.
         assert!(Work::of(&[ok(), ok(), ok(), ok()])
             .in_run(1)
-            .since(first, 0)
+            .since(first, 0, Some(Outcome::Ok))
             .is_some());
     }
 

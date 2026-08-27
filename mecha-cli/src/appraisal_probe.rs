@@ -28,7 +28,6 @@ use mecha_core::config::ProviderConfig;
 use mecha_core::counterfactual::ProbeVerdict;
 use mecha_core::learning::Intervention;
 use mecha_core::replay_run::replay_surface_specs;
-use mecha_core::surface::Fidelity;
 use std::path::Path;
 
 /// Say why a probe produced nothing, on stderr, always.
@@ -38,7 +37,9 @@ use std::path::Path;
 /// indistinguishable from a label nobody could compute; a probe that reports
 /// `skipped` without saying whether the session was unreadable, the point
 /// unlocatable or the replay refused reproduces exactly that. `validate`
-/// prints its skips for the same reason and it is the precedent.
+/// prints its skips for the same reason and it is the precedent. An
+/// `Inconclusive` verdict is the same case one step later — driven, and
+/// still no directional finding — so it is reported through here too.
 fn skipped(session_id: &str, at: usize, why: &str) {
     eprintln!("· {session_id} turn {at}: {why}");
 }
@@ -58,6 +59,29 @@ fn finding(v: &ProbeVerdict) -> Probe {
         ProbeVerdict::Fail => Probe::Mattered,
         ProbeVerdict::Pass => Probe::Redundant,
         ProbeVerdict::Inconclusive(_) => Probe::Inconclusive,
+    }
+}
+
+/// Legibility, wired in rather than left to the module doc's claim: a
+/// fidelity mismatch is exactly the kind of "diverged for a reason that says
+/// nothing about the intervention" case this rung exists to name rather than
+/// let read as a mystery. `Fidelity::of` needs no blob read — comparing
+/// hashes is the whole check for `Differs` and `Unknown` alike — so this
+/// costs nothing beyond building the narrowed registry the caller already
+/// has to build to know what `live` should even be (see the call site: it
+/// must be [`replay_surface_specs`]'s output, the surface a replay actually
+/// sends, never the bare CLI registry's own specs — no CLI process ever
+/// holds `ask_user`, so comparing against it would report `Differs` on
+/// nearly every inconclusive probe regardless of whether anything real had
+/// changed).
+fn annotate_with_fidelity(
+    reason: &str,
+    recorded_tools_hash: Option<&str>,
+    live: &[mecha_core::message::ToolSpec],
+) -> String {
+    match mecha_core::surface::Fidelity::of(recorded_tools_hash, live).caveat() {
+        Some(caveat) => format!("{reason} ({caveat})"),
+        None => reason.to_string(),
     }
 }
 
@@ -92,26 +116,6 @@ pub struct Tally {
     /// Never looked at, because the budget ran out first. Says nothing about
     /// the intervention at all.
     pub over_budget: usize,
-
-    /// How faithfully each driven probe reproduced the recorded request, split
-    /// three ways because the middle state is the one that was missing.
-    ///
-    /// A replay rebuilds the system prompt from the recording and the **tool
-    /// specs from today's registry**, and render order puts tools first — so a
-    /// description edited since the recording changes the bytes ahead of
-    /// everything else. Measured before this existed: the replay tracked the
-    /// recording for a median of **one** tool call, deterministically, with
-    /// one session's six probes all giving up at the same index. A per-session
-    /// constant, which is what a surface is.
-    ///
-    /// `differs` and `unknown` are kept apart deliberately. Drift that is
-    /// *provable* and drift that is merely *unmeasured* call for opposite
-    /// responses — one invalidates the probe, the other says nothing — and
-    /// folding them together is the same conflation that made twelve
-    /// inconclusive probes look like one unexplained number.
-    pub matches: usize,
-    pub differs: usize,
-    pub unknown: usize,
 }
 
 impl Tally {
@@ -131,9 +135,6 @@ impl Tally {
         self.unprobeable += other.unprobeable;
         self.unavailable += other.unavailable;
         self.over_budget += other.over_budget;
-        self.matches += other.matches;
-        self.differs += other.differs;
-        self.unknown += other.unknown;
     }
 }
 
@@ -146,7 +147,7 @@ impl Tally {
 ///
 /// Asked *before* the session is loaded, so the commonest skip costs no I/O
 /// and no budget.
-fn replayable(t: mecha_core::learning::Trigger) -> bool {
+pub(crate) fn replayable(t: mecha_core::learning::Trigger) -> bool {
     use mecha_core::learning::Trigger;
     matches!(t, Trigger::Steer | Trigger::Denial)
 }
@@ -201,36 +202,6 @@ pub async fn probe_appraisal(
                 continue;
             }
         };
-        // How faithfully this probe can reproduce the recorded request, read
-        // *before* it is driven — a verdict is only worth what the request
-        // behind it was. Fingerprints the surface `drive_arm` will actually
-        // send — the recorded names, narrowed from the live registry and
-        // filled from the surface-only stand-in — never the bare CLI
-        // registry, which can never hold `ask_user` and so would report
-        // `Differs` on nearly every probe regardless of whether anything
-        // actually changed.
-        let surface_specs = match replay_surface_specs(
-            prep.recorded_tools(),
-            prepared.agent.registry(),
-            Some(&crate::setup::surface_only_registry()),
-        ) {
-            Ok(specs) => specs,
-            // The same failure `drive_arm` would hit below, on the identical
-            // inputs — surfaced here instead of spending a model call to
-            // rediscover it.
-            Err(why) => {
-                skipped(&appraisal.session_id, i.at, &format!("{why:#}"));
-                tally.unavailable += 1;
-                continue;
-            }
-        };
-        let fidelity = Fidelity::of(prep.recorded_tools_hash(), &surface_specs);
-        match fidelity {
-            Fidelity::Matches => tally.matches += 1,
-            Fidelity::Differs => tally.differs += 1,
-            Fidelity::Unknown => tally.unknown += 1,
-        }
-
         // The run exactly as it was, rules block and all — see
         // `ProbePrep::system_as_recorded` for why a rules-free arm would bias
         // every verdict toward `Mattered`.
@@ -248,33 +219,28 @@ pub async fn probe_appraisal(
                 continue;
             }
         };
-        let found = finding(&verdict);
-        // Per probe, not just per run. A tally answers "how many" and cannot
-        // answer "the same ones?" — which is the question that separates a
-        // defect from sampling noise, and the only cheap way to ask it is to
-        // diff two runs. `steer_verdict`'s own inconclusive arm carries the
-        // call index it gave up at, so print the reason it wrote rather than
-        // a label of our own.
-        // The caveat rides on the line rather than being summarised away: a
-        // reader looking at one inconclusive probe needs to know whether the
-        // request behind it was the recorded one, and the tally cannot say
-        // which of its rows this line belongs to.
-        let caveat = fidelity
-            .caveat()
-            .map(|c| format!(" [{c}]"))
-            .unwrap_or_default();
-        match &verdict {
-            ProbeVerdict::Inconclusive(why) => {
-                eprintln!(
-                    "· {} turn {}: inconclusive — {why}{caveat}",
-                    appraisal.session_id, i.at
-                )
-            }
-            v => eprintln!(
-                "· {} turn {}: {v:?} → {found:?}{caveat}",
-                appraisal.session_id, i.at
-            ),
+        if let ProbeVerdict::Inconclusive(reason) = &verdict {
+            // Fingerprints the surface `drive_arm` actually sent — the
+            // recorded names, narrowed from the live registry and filled
+            // from the surface-only stand-in — never the bare CLI registry,
+            // which can never hold `ask_user` and so would report `Differs`
+            // on nearly every inconclusive probe regardless of whether
+            // anything real had changed. A failure here would mean
+            // `drive_arm` failed to build this same registry moments ago,
+            // which is already handled above as `unavailable`; the only sane
+            // fallback for that unreachable case is the reason uncaveated,
+            // never a fabricated caveat from an empty surface.
+            let why = match replay_surface_specs(
+                prep.recorded_tools(),
+                prepared.agent.registry(),
+                Some(&crate::setup::surface_only_registry()),
+            ) {
+                Ok(live) => annotate_with_fidelity(reason, prep.tools_hash(), &live),
+                Err(_) => reason.clone(),
+            };
+            skipped(&appraisal.session_id, i.at, &why);
         }
+        let found = finding(&verdict);
         tally.record(found);
         for e in appraisal
             .errors
@@ -293,6 +259,51 @@ pub async fn probe_appraisal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spec(name: &str, description: &str) -> mecha_core::message::ToolSpec {
+        mecha_core::message::ToolSpec {
+            name: name.into(),
+            description: description.into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    /// The case that motivates this at all: a probe diverged, and the
+    /// surface it replayed against is provably not the one the recording
+    /// saw. The reason must say so rather than leaving the mismatch mute.
+    #[test]
+    fn an_inconclusive_reason_names_a_surface_that_has_since_changed() {
+        let recorded_hash = mecha_core::surface::fingerprint(&[spec("build", "Build it.")]);
+        let live = [spec("build", "Build it, now with retries.")];
+        let why = annotate_with_fidelity("diverged early", Some(&recorded_hash), &live);
+        assert!(
+            why.contains("diverged early") && why.contains("changed since this was recorded"),
+            "{why}"
+        );
+    }
+
+    /// A recording from before the field existed is `Unknown`, not a match —
+    /// and the reason says that too, not silence.
+    #[test]
+    fn an_inconclusive_reason_names_a_recording_with_no_surface_hash_at_all() {
+        let live = [spec("build", "Build it.")];
+        let why = annotate_with_fidelity("diverged early", None, &live);
+        assert!(
+            why.contains("diverged early") && why.contains("before the tool surface was kept"),
+            "{why}"
+        );
+    }
+
+    /// The common case: the surface is unchanged, so the reason stays
+    /// exactly what the probe said — no manufactured caveat on a faithful
+    /// replay.
+    #[test]
+    fn an_inconclusive_reason_is_untouched_when_the_surface_still_matches() {
+        let recorded_hash = mecha_core::surface::fingerprint(&[spec("build", "Build it.")]);
+        let live = [spec("build", "Build it.")];
+        let why = annotate_with_fidelity("diverged early", Some(&recorded_hash), &live);
+        assert_eq!(why, "diverged early");
+    }
 
     /// The polarity, pinned. This is the assertion that fails if anyone
     /// "fixes" the mapping to read `Pass` as the good outcome.

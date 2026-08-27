@@ -109,15 +109,19 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,615 tests**, no failures — measured 2026-08-27 on
-`feat/step-appraisal` at **92cfd6c**, the rungs 6–7 arc, which is `main` at
-**aa92552** plus that arc and nothing else. The clause naming the tree is
-load-bearing and has been wrong twice: a count taken while any lane's work sits
-uncommitted in this shared checkout describes one disk and no commit, so say
-which tree. Breakdown: **524** in `mecha-cli` with 1 ignored, **866** in
-`mecha-core`, 6 + 9 in its two
+Expect **1,566 tests**, no failures — measured 2026-08-27 on `main` at
+**85b244c**, on the merge commit itself rather than on a branch. Neither side's
+own number survived that merge: main's count predated the arc and the arc's
+predated the context-pressure work it merged, so it was re-measured rather
+than picked. That clause is load-bearing and has been
+wrong twice: a count taken while any lane's work sits uncommitted in this
+shared checkout describes one disk and no commit, so say which tree.
+Breakdown: **526** in `mecha-cli` with 1 ignored, **815** in `mecha-core`,
+6 + 9 in its two
 integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75**
-in `mecha-slack`, and 1 doctest.
+in `mecha-slack`, and 1 doctest. Stale again the moment any of the
+2026-08-27 appraisal-arc PRs (#86–#91) lands — re-measure on whichever
+commit merges last rather than trusting this number forward.
 
 Clippy and rustfmt are clean at that commit, **measured locally**. CI is a
 separate claim and a weaker one, and it must be made per **sha**. Every PR
@@ -184,8 +188,8 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 802 |
-| `mecha-cli` unit | 524 (1 ignored) |
+| `mecha-core` unit | 815 |
+| `mecha-cli` unit | 526 (1 ignored) |
 | `mecha-mail` unit | 129 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
@@ -1088,16 +1092,36 @@ the mechanism and every decision. What it left standing:
   not move, and *let it carry on without me* hands the same transcript to a
   detached child. HISTORY has the narrative and `CLAUDE.md` the invariants.
   What that leaves open:
-  - **Admission control (R1 / phase 6) shipped 2026-08-26**, after R3 was run:
-    `permit.rs`, three background seats against the server's four, interactive
-    work uncounted. What is left of it is the half that was never the point —
-    **there is still no queue.** A refused delegation is told to try again;
-    nothing remembers it and nothing starts it when a seat frees. That is
-    deliberate for now (a queue that starts work unattended is a scheduler,
-    and the trigger daemon is already the place for scheduled runs), but it is
-    the gap between what shipped and what the owner asked for — *"when the
-    question is answered it should resume in the queue"*. Worth building only
-    if refusals actually happen; the permit files make that countable.
+  - **Admission control (R1 / phase 6) shipped 2026-08-26**
+    (`mecha-core/src/permit.rs:50`), after R3 was run: three background seats
+    against the server's four, interactive work uncounted. What is left of it
+    is the half that was never the point — **there is still no queue.** A
+    refused delegation is told to try again; nothing remembers it and nothing
+    starts it when a seat frees. That is deliberate for now (a queue that
+    starts work unattended is a scheduler, and the trigger daemon is already
+    the place for scheduled runs), but it is the gap between what shipped and
+    what the owner asked for — *"when the question is answered it should
+    resume in the queue"*. Worth building only if refusals actually happen;
+    the permit files make that countable.
+  - **PR #84 is open and unmerged**, with the last three findings from the
+    #78 review: the pressure line stating a cost and a turn count derived from
+    different numbers (a 400-token pace read as *"~1k each, so about 224
+    more"* against a 100k limit), an unreachable match arm beside it, and
+    `replay.rs` / `harness_probe.rs` building `ToolCtx::default()` so a
+    recorded compaction answers *"compaction is not enabled for this run"* —
+    false of the run being replayed, a divergence under
+    `--on-divergence=live`, and in a harness probe a `compact_at_tokens`
+    candidate measured on runs that never compacted. 1,566 tests and clean
+    lint locally; **CI unverified** — it had not reported when the session
+    ended. Check it before merging rather than trusting this line.
+  - **The overnight half of R3 is still unmeasured.** The contention half was
+    run (see the measurement record) and answered the question R1 rested on.
+    What §3.4 also asks — *does a conversation parked overnight get its prefix
+    back, or has a night of triggers and chat pushed it out?* — has not been.
+    The contention result makes it more likely to be fine than the design
+    assumed, which is a reason to expect a cheap answer, not a reason to skip
+    it. `scripts/slot-contention.py` is the shape; the missing arm is time,
+    not concurrency.
   - **`mecha serve` still has no graceful shutdown**, and it now costs more
     than it did: a restart kills a conversation-owned run mid-flight, where a
     handed-over one survives. The conversation itself survives either way
@@ -1380,6 +1404,47 @@ model, no charter and no adversary in it is now built, which is §14's ordering
 and not a coincidence — and it is also the end of the free part: the rest of
 rung 7 is the first thing here with a model in the path.
 
+**PR-stack status, verified 2026-08-27T18:40Z — read this before trusting any
+PR number below.** The rest of this section names PRs #86–#92 as if the reader
+were watching the stack land; by the time it is read, more of it will have
+moved. As of the timestamp above:
+
+- **#86 and #87 are merged** (`bcd7d4f`, `c81d0fb`).
+- **#86 has a gap `main` doesn't yet cover**: its fourth review round (a missing
+  `boredom_rate` test, a missing denominator clause in `sessions health`'s
+  boredom line, two doc-comment welds) was fixed and pushed at 18:05:36Z — *after*
+  #86 had already merged at 17:57:02Z using the round-3 tip. The fix never
+  reached `main`. **#93** carries it forward as a same-content cherry-pick onto
+  current `main`; it is open and unreviewed as of this timestamp. See the
+  matching trap in `HISTORY.md` — the general lesson is about merging under a
+  standing authorization without checking for fixes in flight elsewhere, not
+  about this PR specifically.
+- **#88** (`feat/rung-7-appraisal`) is retargeted onto `main` (its old base,
+  #87, is merged) and has **two open, unfixed review findings**: `affect_of`'s
+  `Agency::Own` filter returns before the `says_more` reduce, so two `Own`
+  counter errors sharing a goal report `Frustration` and mask a same-session
+  `Pride`/edited-draft positive underneath it (`appraisal.rs`); and a doc count
+  drifted ("four of eleven" vs. the true six-of-ten `Affect` variants,
+  `docs/HISTORY.md`).
+- **#89** (`feat/learning-ui`, stacked on #88) has **four open findings**, two
+  of them real bugs: the `learning` modal is missing from `App::a_modal_is_up`
+  so its mouse capture never releases and its text cannot be selected; and
+  `learning_act` blocks the TUI event loop on a `flock` that `reflect`/`learn`
+  hold across a model call. The other two are UX/confirmation policy calls
+  worth a second look, not clear bugs.
+- **#90** (`fix/replay-surface-front-end`, stacked on #88) has had two review
+  rounds fixed (the surface-store hasher and permissions, a `Fidelity::of`
+  wiring gap, an `OnDivergence` denylist-vs-exhaustive-match gate) and is
+  rebased/pushed against #88's tip *as of its own last push* — but #88 has
+  moved at least twice more since (rebase churn, not new #90-relevant content)
+  and will need re-rebasing before it is checked again.
+- **#91** (`feat/appraisal-probe`) and **#92** (`fix/task-seed-serves`, another
+  session's — mecha-4c) both stack on #90 and are blocked on it settling.
+- A background agent (this session's own fork) was actively fixing #87's
+  findings through 18:24Z and reported back holding, watching #87–#89's
+  checks; whether it is still running should be checked before assuming any
+  of the above is stale in the *good* direction.
+
 **Open now:**
 
 - **Rung 7's measurement came back, and it decides what to build next.**
@@ -1393,10 +1458,51 @@ rung 7 is the first thing here with a model in the path.
   nothing measures, and `appraisal.rs` names which rung buys which. What the
   corpus adds to that table is a **build order**. A counterfactual verdict is
   what gives an intervention error a label at all, and interventions are 102 of
-  the 119; the charter — §14's rung 10 — buys only the eleven positive ones. So
+  the 119 (**but see reach, below — the operative figure is 13**); the charter
+  — §14's rung 10 — buys only the eleven positive ones. So
   if the readout is the goal, the probe is the cheaper half and should come
   first. That is a change to §14's order, argued from a measurement rather than
   from the design.
+
+  **Three things narrow that, found on 2026-08-27 by building the probe. Read
+  them before acting on the paragraph above.** They are separate quantities and
+  were fused in the original claim:
+
+  1. **Reach.** A probe can only address a `steer` or a `denial` — a
+     `followup` is a later user turn, and removing it does not leave a run that
+     would have got there anyway, which is why `validate` reaches followups
+     with a judge instead. Most interventions are followups, so the probe
+     addresses **13 of the 102**, not all of them. A structural ceiling, not a
+     budget.
+  2. **Yield.** Of those 13, **12 come back inconclusive** — the replay
+     departs before reaching the intervention. See the validation section
+     below; the cause is found and the fix is in, but it recovers nothing
+     already recorded.
+  3. **Neither branch of the comparison was ever measured.** The charter's
+     eleven positive errors do not become `Pride` just because a charter
+     exists — `Pride` is *against a charter line*, and **no session in the
+     store names a goal at all**. `GoalError.goal` is always `None`, so
+     frustration is structurally unreachable too. The reordering may still be
+     right; it was argued from one number that was never checked and one that
+     was wrong.
+
+- **`serves:` has never carried a value in production, including in the runs it
+  was built for.** 112 of 120 appraised sessions wrote a plan; **0 named what
+  it serves** — and 15 of them are delegated task runs (`task-d063fe34` ×11 and
+  two others), which is the case §2's *one list, one task* argument is about.
+  The field is in the `todo` schema marked "Optional", and nothing in a
+  delegated run's seed tells the model the task uid or asks for one. The seed
+  already builds its prompt from the board record, so this is a sentence in
+  `tasks.rs` rather than a design question — and until it lands, two of the
+  eleven affect labels are unreachable for a reason that is neither the probe
+  nor the charter.
+
+  **And `sessions appraise` reported that zero by construction**, which is the
+  sharper half: it passed `&[]` for goals unconditionally, so the command built
+  to measure whether the labels were degenerate could never have reported
+  anything but zero goals. Absent and zero conflated inside the instrument.
+  Fixed 2026-08-27 — it reads the plan off the transcript it was already
+  loading, and the output line now says `· 0 named a goal` as a measurement.
 
   **Two corrections to that, from the lane building the probe** (`mecha-80`,
   2026-08-27, pending its own PR — the counts are theirs and are not
@@ -1523,6 +1629,87 @@ downward and appraisal upward; the affect label is derived, never
 self-reported; affect may only *narrow*, so a disposition is a monotone layer
 above a structural check and never a replacement for one; and affect is a
 priority function, never an objective.
+
+### Validation — the probes could never run, and now they can
+
+**`mecha validate`'s steer and denial probes had never run on an interactive
+session, and `validations.jsonl` has been empty since it shipped while the
+nightly reported success every night.** Fixed 2026-08-27 across two lanes
+(PR #90, and the probe half stacked behind it). A skip counted faithfully, and
+nothing read it as *this entire class is unreachable* — the same shape as a rate
+over a zero denominator printed as zero, which this file names in four other
+places.
+
+`replay_registry` refuses to build when a recorded tool is missing from the live
+registry, which is right: the tool list is the front of the cached prefix, so a
+smaller toolbox is a different agent. What nobody had noticed is that three
+tools are registered **only by a front-end** and so no CLI process has ever held
+one — `ask_user` (246 of 408 sessions), `recall` (122), `show_file` (55). The
+coupling closes on itself: a probe needs an intervention, interventions happen
+interactively, interactive sessions carry `ask_user`. **319 of 407 sessions, and
+it is the 78% that contains every intervention.** A `surface_only` registry
+supplies them, consulted only where nothing executes; the store goes from **22%
+replayable to 76%**.
+
+The residual 97 name a `pkg__*` or a `google__*` and stay refused, which is the
+bail working. `google__*` was renamed to `mail__*`, so **those 23 recordings are
+permanently unreplayable**.
+
+**With the probes finally running, 12 of 13 come back inconclusive**, and the
+cause is found. On a pinned seed and a verified-quiet box the result is
+byte-identical across two runs — 11 of 13 exactly, 2 differing by ±1 — with
+divergence indices `#0:2 #1:6 #2:2 #3:1 #5:1`, **median 1**, against steer
+points at 3 through 33. One session contributes six probes with steer points
+from 10 to 33 and **all six diverge at the same call**: a trajectory-dependent
+cause cannot do that, and a per-session constant can.
+
+That constant is the tool surface. `RunConfig` kept the system prompt in full —
+*"the text lets a replay rebuild the request"* — and kept tools as **names**,
+with a comment naming three risks: added, removed, renamed. Those almost never
+happen; **re-describe happens constantly**, and a name list cannot see it. Tools
+render *before* the system prompt, so the replay rebuilt the back half of the
+prefix byte-exactly and the front half from today's registry.
+
+`surface.rs` records the specs once per distinct surface, content-addressed,
+cited by `RunConfig.tools_hash` — costed rather than preferred, since 69 KB of
+specs against a 25 KB average session would have quadrupled the store. Three
+states, and `Unknown` is the load-bearing one: a recording from before the field
+can never read as *matching*, and `Differs` needs no blob at all, so legibility
+lands the day it ships and rebuildability accumulates after.
+
+**Open:**
+
+- **Nothing rebuilds a surface *from* a blob yet.** That is the rebuildability
+  half; it is worthless until blobs exist and should be designed against a real
+  `Differs` case rather than a hypothetical one.
+- **The fix recovers nothing already recorded, and nothing can.** Those
+  recordings never held the specs. **The appraisal corpus and the validation
+  ledger start from zero the day this ships** — read that before budgeting on
+  the 120 sessions on disk.
+- **The prediction is untested and cannot be tested on the current corpus.**
+  If the surface is the cause, restoring it should push the divergence index up
+  and yield should follow the fraction of steers inside the new window. The 13
+  existing probes have no hash and stay `Unknown` forever, so the earliest
+  honest measurement needs sessions recorded *after* this lands. Re-running the
+  13 and reading anything into the number would be false, and the temptation is
+  real.
+- **Whether `inconclusive` should stay one counter.** It now splits by fidelity
+  (`matches` / `differs` / `unknown`), which is what keeps *drift* apart from
+  *no evidence*.
+
+**Attribution.** The reach and yield numbers, the determinism runs, the
+divergence distribution and the fidelity split are the probe lane's
+(`mecha-80`, 2026-08-27) and are **not independently reproduced here**. The
+78%/22%→76% store measurement, the 69 KB-vs-25 KB costing, `surface.rs` and the
+`tools_hash` field are this lane's. The one number both lanes measured
+separately is the pinned seed — 387 and 388 of ~394 sessions at `seed: 42`, a
+boundary apart and not a disagreement.
+
+**One result to note.** With the probes running, the first non-neutral label
+this system has ever produced appeared: `labels: {neutral: 119, regret: 1}` —
+one session where the replay went elsewhere without the steer, carried the whole
+way from probe through `apply_probe` to `affect_of`. One of 120 is not a result;
+it is the seam working end to end.
 
 ### Cheap, and worth doing first
 

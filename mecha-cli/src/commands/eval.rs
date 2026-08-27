@@ -253,41 +253,10 @@ async fn run_arm(
         yes: false,
         ..global.clone()
     };
-    // Ambient MCP servers would make the tool list depend on local config,
-    // so they are opt-in here even though they are on everywhere else.
-    if !args.mcp {
-        opts.no_mcp = true;
-    }
-    // Same reproducibility rule for learned rules: a scorecard that depends on
-    // what this machine learned last night is not comparable to yesterday's,
-    // or anyone else's. When the learning system itself is the thing being
-    // measured, that wants a deliberate opt-in flag, not an ambient default —
-    // `--ab-rules` is that flag, and its treatment arm is the one place this
-    // is ever false.
-    opts.no_learned_rules = !with_rules;
-    // And for hooks: a user's local policy scripts firing inside eval cases
-    // would grade this machine's config, not the model.
-    opts.no_hooks = true;
-    // And for the outbox: whether a tool executes or stages must not depend
-    // on this machine's routing config, and an eval must not fill the user's
-    // real outbox with drafts nobody will ever release.
-    opts.no_outbox = true;
-    // And for provider fallback: a scorecard grades the model it names, and a
-    // case silently answered by a fallback model would be a measurement of
-    // nothing — worse, an incomparable one mixed invisibly into the set.
-    opts.no_fallback = true;
-    // And for messaging: a case must not read this machine's real mailbox —
-    // or worse, have a stray message from last night's trigger folded into
-    // its conversation mid-case.
-    opts.no_messages = true;
-    // And for skills: a skill is a procedure the user wrote, so a case run on
-    // a machine holding one is measuring that procedure as much as the model.
-    // Same rule as learned rules, one step further out — a rule is at least
-    // machine-derived from measured interventions, where a skill is whatever
-    // its author typed. There is deliberately no `--with-skills` yet: nothing
-    // asks the question, and a flag whose arm nobody runs is a claim about
-    // comparability that no scorecard has tested.
-    opts.no_skills = true;
+    // Everything a scorecard must not depend on, in one call — see
+    // `force_reproducible` for why the list is a function rather than forty
+    // lines of prose, and which entry that shape lost.
+    force_reproducible(&mut opts, args.mcp);
     // The candidate arm's whole difference from the baseline, applied here so
     // both arms are built by one code path. Empty for every other caller.
     for spec in overrides {
@@ -1189,9 +1158,72 @@ async fn ab_config(
     Ok(())
 }
 
+/// Everything a scorecard must not depend on, asserted in one place.
+///
+/// **The list is the point.** Each of these was added for the same reason —
+/// a scorecard that varies with this machine is not comparable to yesterday's
+/// or anyone else's — and each was added on its own, in prose, at the point
+/// it occurred to somebody. `compact` was the one that got missed: it is
+/// registered from whether local config gives the run a compaction threshold,
+/// and it sits at the front of the cached prefix, so two boxes graded
+/// different prefixes and neither scorecard recorded which.
+///
+/// Named as a function so the answer to *what does eval force off* is one
+/// thing a test can read, rather than a list nobody could see all of.
+fn force_reproducible(opts: &mut GlobalOpts, allow_mcp: bool) {
+    if !allow_mcp {
+        opts.no_mcp = true;
+    }
+    opts.no_learned_rules = true;
+    opts.no_hooks = true;
+    opts.no_outbox = true;
+    opts.no_fallback = true;
+    opts.no_messages = true;
+    opts.no_skills = true;
+    opts.no_compact_tool = true;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A scorecard must not vary with the machine that produced it**, and
+    /// the way that breaks is one entry quietly missing from a list written in
+    /// prose across forty lines. `compact` was missing: registered from local
+    /// `context_window` / `compact_at_tokens`, and at the front of the cached
+    /// prefix, so two differently-configured boxes graded different prefixes.
+    ///
+    /// Asserted as a set rather than one flag, so the next thing added to the
+    /// surface has to be decided about here.
+    #[test]
+    fn eval_forces_off_everything_a_scorecard_must_not_depend_on() {
+        let mut opts = GlobalOpts::default();
+        force_reproducible(&mut opts, false);
+        for (name, on) in [
+            ("mcp", opts.no_mcp),
+            ("learned rules", opts.no_learned_rules),
+            ("hooks", opts.no_hooks),
+            ("outbox", opts.no_outbox),
+            ("fallback", opts.no_fallback),
+            ("messages", opts.no_messages),
+            ("skills", opts.no_skills),
+            // The one that was missed. It changes the *tool list*, which is
+            // the front of the cached prefix, not merely what a run may do.
+            ("the compact tool", opts.no_compact_tool),
+        ] {
+            assert!(
+                on,
+                "eval must force {name} off, or a scorecard measures this machine"
+            );
+        }
+
+        // `--mcp` is the one deliberate opt-in: the graph case set needs
+        // servers in the surface, and says so.
+        let mut with_mcp = GlobalOpts::default();
+        force_reproducible(&mut with_mcp, true);
+        assert!(!with_mcp.no_mcp, "--mcp is opt-in, not overridden");
+        assert!(with_mcp.no_compact_tool, "and it opts into nothing else");
+    }
 
     /// A scratch directory that cleans up after itself, so a failing test
     /// does not leave litter that changes what the next run's `is_file`

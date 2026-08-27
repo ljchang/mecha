@@ -700,7 +700,7 @@ already know, or make the single next tool call. Keep your reasoning short this 
 
 /// Every voice the harness speaks in the **user** role.
 ///
-/// Three of them now, and the miner has to know all three: `agent.rs` prefixes
+/// Four of them now, and the miner has to know all four: `agent.rs` prefixes
 /// a refusal it did not author with `"Denied by the user: "`, and the mirror of
 /// that mistake is text mecha wrote being read as text a person typed.
 /// `learning::extract_interventions` mines a transcript for corrections and has
@@ -713,17 +713,26 @@ already know, or make the single next tool call. Keep your reasoning short this 
 /// `EMPTY_TURN_NUDGE` never was, so every run the harness had to nudge
 /// contributed a `Followup` "intervention" whose text was mecha's own. Found by
 /// adding a third voice — boredom's notice, which lands beside tool results and
-/// would have mined as a *steer* — and asking what already read it.
+/// would have mined as a *steer* — and asking what already read it. The fourth
+/// — `mailbox::render_delivery`, folded into the same slot when a peer's
+/// message is delivered mid-run — is not mecha's own words at all, but the
+/// reasoning is the same one tier over: `Origin::Derived`'s own docs name a
+/// peer's steer as "mecha correcting itself, not the user correcting mecha",
+/// and CLAUDE.md's rule that a peer cannot grant escalation is defeated
+/// through the learning store instead of the approver if the peer's words
+/// consolidate into a rule under the user's own name.
 ///
 /// The list is closed and lives here rather than in the miner, because the
-/// party that knows a new voice exists is the one that adds it. Boredom's is
-/// matched by its stem, since its notices interpolate a tool name and a count;
-/// the two nudges are constants and are matched whole.
+/// party that knows a new voice exists is the one that adds it. Boredom's and
+/// the delivery header's are matched by a stem, since both interpolate
+/// something (a tool name and a count; a message id and a sender); the two
+/// nudges are constants and are matched whole.
 pub(crate) fn is_harness_voice(text: &str) -> bool {
     let text = text.trim();
     text == FINAL_ANSWER_NUDGE
         || text == EMPTY_TURN_NUDGE
         || text.starts_with(crate::boredom::NOTICE_STEM)
+        || text.contains(crate::mailbox::DELIVERY_STEM)
 }
 
 /// Detects a run re-living the turns a compaction just summarised away.
@@ -1182,13 +1191,6 @@ impl Agent {
         Ok(outcome)
     }
 
-    /// What this run's requests look like apart from their messages.
-    ///
-    /// Read once per run rather than per turn: the surface *can* move mid-run
-    /// — loading a skill narrows the tool list — but the anchor is re-measured
-    /// every turn anyway, so a mid-run change costs one slightly-off
-    /// prediction and corrects itself. The case worth catching is the one that
-    /// happens *between* runs, where nothing else would notice.
     /// What a run that has stopped making progress can actually reach.
     ///
     /// Read off the *available* surface rather than the registry, so a run
@@ -1197,18 +1199,33 @@ impl Agent {
     /// call that could only fail. Deterministic because the registry is a
     /// `BTreeMap`: naming a different delegate from one run to the next would
     /// be arbitrary where it looks like a decision.
-    fn escapes(&self) -> crate::boredom::Escapes {
+    ///
+    /// `available_names()` covers a skill's restriction but not
+    /// `RunContext::withheld` — the *other* way a name can be registered and
+    /// still undispatchable (`agent.rs`'s own dispatch is
+    /// `available(name).filter(|_| !cx.is_withheld(name))`), so this filters
+    /// on the same denylist to keep the two spellings of "reachable" in
+    /// agreement.
+    fn escapes(&self, cx: &RunContext) -> crate::boredom::Escapes {
         crate::boredom::Escapes {
             delegate: self
                 .registry
                 .available_names()
                 .into_iter()
+                .filter(|name| !cx.is_withheld(name))
                 .filter_map(|name| self.registry.get(name))
                 .find(|tool| tool.runs_a_fresh_conversation())
                 .map(|tool| tool.name().to_string()),
         }
     }
 
+    /// What this run's requests look like apart from their messages.
+    ///
+    /// Read once per run rather than per turn: the surface *can* move mid-run
+    /// — loading a skill narrows the tool list — but the anchor is re-measured
+    /// every turn anyway, so a mid-run change costs one slightly-off
+    /// prediction and corrects itself. The case worth catching is the one that
+    /// happens *between* runs, where nothing else would notice.
     fn request_surface(&self, cx: &RunContext) -> u64 {
         let specs = self.registry.specs_for(cx.phase);
         crate::pressure::surface_fingerprint(
@@ -1404,11 +1421,30 @@ impl Agent {
                 // first place: the harness floor below is untouched, and no
                 // reasoning the model does (or is steered into) can make a run
                 // compact later than it would have.
+                //
+                // **Read without clearing, and cleared only where it is
+                // acted on. Deliberately untested, which is worth saying.**
+                //
+                // The two conditions that reach this line without acting —
+                // `compaction_gave_up` and `loop_detected` — are loop-local
+                // and cannot be set from outside, so a test can reach the
+                // swap or reach the skip but not both. The first attempt at
+                // one passed on the old ordering *and* the new, which makes
+                // it worse than nothing: this file already records three
+                // green-for-the-wrong-reason tests, and a fourth asserting an
+                // outcome it never exercises would read as coverage of
+                // exactly the case it misses. Taking it here consumed the request on the one
+                // path that cannot honour it: after a failed summariser call
+                // `compaction_gave_up` is set, and a model that then asked
+                // was told the transcript would be summarised while the flag
+                // was thrown away — told yes, nothing done, nothing recorded.
+                // A request that cannot be served must survive the turn that
+                // could not serve it, so the next one can.
                 let asked = cx
                     .tools
                     .compact_requested
                     .as_ref()
-                    .is_some_and(|f| f.swap(false, std::sync::atomic::Ordering::Relaxed));
+                    .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed));
                 if asked {
                     tracing::info!("the model asked to compact");
                 }
@@ -1416,6 +1452,12 @@ impl Agent {
                     && !loop_detected
                     && (asked || pressure.over(limit, crate::pressure::message_bytes(messages)))
                 {
+                    // Taken now that it is being acted on. Inside the
+                    // guard, so a request the run could not serve is still
+                    // pending for the turn that can.
+                    if let Some(flag) = cx.tools.compact_requested.as_ref() {
+                        flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                    }
                     // What is about to be rewritten, kept for the recording:
                     // the front-end records at run end, so without this the
                     // turns a rewrite replaces were never anyone's to write.
@@ -1858,6 +1900,11 @@ impl Agent {
                             &mut taint,
                             &mut blocked_sends,
                             self.output_budget(cx, pressure, transcript_bytes),
+                            // Understates by this turn's results, which do
+                            // not exist yet and cannot: this number is an
+                            // argument to the call that produces them. See
+                            // `Forecast::used` for why it is left understated
+                            // rather than padded to an upper bound.
                             self.compact_limit(cx)
                                 .and_then(|limit| pressure.forecast(limit, transcript_bytes)),
                         )
@@ -1946,7 +1993,7 @@ impl Agent {
                     // legal slot between a `tool_use` and its result.
                     if let Some((rung, tool)) = bored {
                         tracing::debug!(%tool, ?rung, "an approach has stopped moving");
-                        append_user_text(messages, rung.notice(&tool, &self.escapes()));
+                        append_user_text(messages, rung.notice(&tool, &self.escapes(cx)));
                     }
                 }
                 // A server-side tool loop paused mid-turn. Resending the
@@ -2552,6 +2599,18 @@ impl Agent {
 
         let mut approved = Vec::new();
         let mut results: Vec<Option<Block>> = vec![None; calls.len()];
+        // Every gate in this loop that settles a call this turn *without*
+        // adding it to `approved` — the approver's `Deny`/`Blocked`, the
+        // planning-phase gate, the trifecta interlock, a withheld or unknown
+        // tool name, and a staging failure — folded into `Work::denied`
+        // below beside `in_flight`. The name undersells it slightly (an
+        // unknown tool is the model's own mistake, not a refusal), but the
+        // shape is one and the same: the call is already settled, so a
+        // batch that ticks one step and reaches for the next one's tool in
+        // the same turn cannot say which step this outcome belongs to, and
+        // neither an approved sibling nor the finding it might otherwise
+        // support may be attributed to it.
+        let mut denied_this_turn: u32 = 0;
 
         // What this turn will arm, gated against *before* any of it runs.
         //
@@ -2603,6 +2662,7 @@ impl Agent {
                         unknown: false,
                         staged: false,
                     });
+                    denied_this_turn += 1;
                     emit(
                         events,
                         AgentEvent::ToolDenied {
@@ -2688,6 +2748,7 @@ impl Agent {
                     unknown: !withheld,
                     staged: false,
                 });
+                denied_this_turn += 1;
                 continue;
             };
 
@@ -2802,6 +2863,7 @@ impl Agent {
                             unknown: false,
                             staged: false,
                         });
+                        denied_this_turn += 1;
                         continue;
                     }
                     // Escalate to a human even for a tool that would normally
@@ -2845,6 +2907,7 @@ impl Agent {
                         unknown: false,
                         staged: false,
                     });
+                    denied_this_turn += 1;
                     continue;
                 }
             }
@@ -2938,6 +3001,7 @@ impl Agent {
                             unknown: false,
                             staged: false,
                         });
+                        denied_this_turn += 1;
                     }
                 }
                 continue;
@@ -2978,6 +3042,7 @@ impl Agent {
                         unknown: false,
                         staged: false,
                     });
+                    denied_this_turn += 1;
                     continue;
                 }
             }
@@ -2987,12 +3052,17 @@ impl Agent {
 
         // What the run has done, as of now. Folded after the gate rather than
         // before it, so a call this turn's approver refused is already in the
-        // count — a step whose last attempt was refused reads as blocked
-        // instead of as never tried. Siblings are the other half: their
-        // results are not back, so they are carried as *in flight* and support
-        // no finding at all rather than reading as an empty span.
+        // count. Two kinds of sibling keep that from over-attributing a
+        // denial to whichever step happens to be completing in the same
+        // batch: one still running, carried as *in flight*, and one already
+        // denied this turn, carried as `denied` — `Work::of` folds the
+        // denial into the raw trace's tail regardless of which call in the
+        // batch it sat beside, so without this a step whose own work landed
+        // reads as blocked by a refusal that belonged to its neighbour.
+        // Neither supports a finding at all.
         let work = crate::step::Work::of(trace)
             .with_in_flight(approved.len().saturating_sub(1) as u32)
+            .with_denied(denied_this_turn)
             .in_run(cx.tools.work.map(|w| w.run).unwrap_or_default());
 
         let executed =
@@ -5790,6 +5860,160 @@ mod tests {
             })
             .unwrap();
         assert!(!opening.contains("still failing"), "{opening}");
+    }
+
+    /// The batched shape `in_flight` was added for, with the sibling denied
+    /// instead of still running: a step's own work landed, and in the same
+    /// turn the model reaches for a tool that does not exist to start the
+    /// next one. The unknown-tool call settles *ahead of* the approved
+    /// `todo` write in the gate loop, so `Work::of`'s raw tail is its
+    /// failure — and without `denied_this_turn` folded in, that failure
+    /// would be blamed on the step the `todo` call just completed.
+    #[tokio::test]
+    async fn a_step_ticked_beside_an_invented_tool_name_is_not_blamed_for_it() {
+        struct OkTool;
+        #[async_trait]
+        impl Tool for OkTool {
+            fn name(&self) -> &str {
+                "build"
+            }
+            fn description(&self) -> &str {
+                "Build it."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("built"))
+            }
+        }
+
+        let (agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "p0".into(),
+                        name: "todo".into(),
+                        input: json!({"items": [
+                            {"content": "ship it", "status": "in_progress"}
+                        ]}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "b1".into(),
+                        name: "build".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                // The batch: this step's own completion, and a name the
+                // model invented for the *next* step, in one turn.
+                assistant(
+                    vec![
+                        Block::ToolUse {
+                            id: "p1".into(),
+                            name: "todo".into(),
+                            input: json!({"items": [
+                                {"content": "ship it", "status": "completed"}
+                            ]}),
+                        },
+                        Block::ToolUse {
+                            id: "x1".into(),
+                            name: "nosuchtool".into(),
+                            input: json!({}),
+                        },
+                    ],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![
+                Arc::new(OkTool),
+                Arc::new(crate::tool::todo::TodoTool::new()),
+            ],
+            PermissionMode::Allow,
+        );
+
+        let mut convo = Conversation::user("ship it");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let closing = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == "p1" => Some(content.clone()),
+                _ => None,
+            })
+            .expect("the closing plan write has a result");
+
+        assert!(
+            !closing.contains("still failing") && !closing.contains("refused"),
+            "a name the model invented for the next step must not read as \
+             this step's own failure or refusal: {closing}"
+        );
+    }
+
+    /// `escapes()` reads `available_names()`, which excludes a tool a loaded
+    /// skill narrowed away but not one `RunContext::withheld` denylists —
+    /// the *other* way a registered tool can be undispatchable. A boredom
+    /// notice naming a withheld delegate would spend a turn on a call that
+    /// can only fail: the reachable-surface bug this method's own doc names,
+    /// arriving through the interlock instead of a skill.
+    #[tokio::test]
+    async fn a_notice_never_names_a_withheld_delegate() {
+        struct FakeDelegate;
+        #[async_trait]
+        impl Tool for FakeDelegate {
+            fn name(&self) -> &str {
+                "researcher"
+            }
+            fn description(&self) -> &str {
+                "Delegates to a fresh conversation."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn runs_a_fresh_conversation(&self) -> bool {
+                true
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("delegated"))
+            }
+        }
+
+        let (agent, _) =
+            agent_with_tools(vec![], vec![Arc::new(FakeDelegate)], PermissionMode::Allow);
+        let cx = || {
+            RunContext::new(
+                ToolCtx::default().with_workspace(std::env::temp_dir()),
+                Arc::new(ModeApprover {
+                    mode: PermissionMode::Allow,
+                }),
+            )
+        };
+
+        let reachable = agent.escapes(&cx());
+        assert_eq!(reachable.delegate, Some("researcher".to_string()));
+
+        let withheld = cx().withholding(["researcher".to_string()]);
+        let unreachable = agent.escapes(&withheld);
+        assert_eq!(
+            unreachable.delegate, None,
+            "a withheld delegate must not be offered as an escape"
+        );
     }
 
     // --- compaction ---
