@@ -503,13 +503,9 @@ async fn appraise(
     let mut channels: std::collections::BTreeMap<String, usize> = Default::default();
     let mut positive = 0usize;
     for a in &appraisals {
-        *labels
-            .entry(format!("{:?}", a.label).to_lowercase())
-            .or_default() += 1;
+        *labels.entry(enum_key(a.label)).or_default() += 1;
         for e in &a.errors {
-            *channels
-                .entry(format!("{:?}", e.channel).to_lowercase())
-                .or_default() += 1;
+            *channels.entry(enum_key(e.channel)).or_default() += 1;
             if e.sign > 0.0 {
                 positive += 1;
             }
@@ -550,6 +546,14 @@ async fn appraise(
         appraisals.len(),
         sessions_read
     );
+    // Printed before the early return below: a store that could not be read
+    // is a fact about this run regardless of whether anything was left to
+    // appraise, and the early return used to skip it whenever `appraisals`
+    // came back empty — the one path where a reader most needs to know the
+    // edit channel is missing rather than genuinely empty.
+    if outbox_unreadable {
+        println!("  (the outbox could not be read, so the edit channel is missing — not empty)\n");
+    }
     if appraisals.is_empty() {
         return Ok(());
     }
@@ -579,12 +583,6 @@ async fn appraise(
         "    {:<16} {:>5}  — the only channel that can say a run went well",
         "of which +ve", positive
     );
-    if outbox_unreadable {
-        println!(
-            "\n  (the outbox could not be read, so the edit channel is missing — \
-                  not empty)"
-        );
-    }
 
     if probe {
         println!(
@@ -621,6 +619,20 @@ async fn appraise(
         );
     }
     Ok(())
+}
+
+/// A `Serialize` enum's own wire spelling, never `{:?}`. Debug and serde agree
+/// on every variant here today because each is one word, but `Agency::Own`
+/// already diverges (`"self"`, a hand-written rename) — so deriving a JSON key
+/// from Debug is a bug waiting on the first multi-word variant, silently
+/// mismatched the day it lands rather than caught here. `unwrap_or_else`'s
+/// fallback is unreachable for a unit-variant enum in practice; it exists so
+/// this stays a display helper rather than a second thing that can panic.
+fn enum_key<T: serde::Serialize>(v: T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
 }
 
 /// `sessions health` — the run-quality corpus, summarised.
@@ -749,17 +761,32 @@ fn health(
     // rather than a zero on a corpus with no sensor, like the line above: a
     // detector that has never fired and one that was not there yet are opposite
     // findings, and this is the field that exists to tell them apart.
+    let sensed_boredom = corpus
+        .rows
+        .iter()
+        .filter(|r| r.stats.boredom_notices.is_some())
+        .count();
     let bored = corpus
         .rows
         .iter()
         .filter(|r| r.stats.boredom_notices.is_some_and(|n| n > 0))
         .count();
-    match corpus.boredom_rate() {
-        Some(_) => println!(
+    if sensed_boredom > 0 {
+        print!(
             "  went nowhere        {bored} run(s) told an approach had stopped moving ({})",
             pct(corpus.boredom_rate())
-        ),
-        None => println!("  went nowhere        — (no run in this corpus recorded the counter)"),
+        );
+        // Same caveat as overflows, for the same reason: worth saying only
+        // when the corpus is mixed, or it reads as noise beside a clean one.
+        if sensed_boredom < corpus.len() {
+            print!(
+                " — of {sensed_boredom} that recorded it; {} did not",
+                corpus.len() - sensed_boredom
+            );
+        }
+        println!();
+    } else {
+        println!("  went nowhere        — (no run in this corpus recorded the counter)");
     }
 
     let by_model = corpus.by_model();

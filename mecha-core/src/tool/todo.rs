@@ -345,6 +345,7 @@ impl TodoTool {
     /// list set by anything other than the model's own `todo` write, or a
     /// faithful restoration of one, is a second author of state the tool is
     /// supposed to own.
+    ///
     /// A fresh record, not a plan swapped into the old one: the spans this
     /// tool measures are counted from a run's trace, and a plan restored from
     /// a transcript was written by a process whose counters are gone. Keeping
