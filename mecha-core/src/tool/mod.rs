@@ -240,6 +240,32 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// Does this tool do its work in a conversation of its own?
+    ///
+    /// The fourth method in the family with
+    /// [`carried_state`](Tool::carried_state),
+    /// [`fixed_workspace`](Tool::fixed_workspace) and
+    /// [`narrows_surface_to`](Tool::narrows_surface_to), and it exists for the
+    /// same reason: the loop learns that *some* tool starts clean, never that
+    /// subagents are a thing.
+    ///
+    /// One caller — boredom (`docs/GOAL-SYSTEM-DESIGN.md` §9.1 rung 3), where
+    /// a fresh `Conversation` is the strongest available escape from a context
+    /// that has talked itself into a corner. Nothing else could answer it: a
+    /// delegate's *name* is whatever the user called it in config, and its
+    /// capabilities are derived from its child's tools, so neither the
+    /// registry nor the capability signature distinguishes it from an ordinary
+    /// tool that happens to read the web. Naming one from the loop by string
+    /// is the alternative, and is what this family exists to avoid.
+    ///
+    /// Not a security property and must never become one. It says where the
+    /// work happens, not that anything is safer for happening there — the
+    /// child's own taint, jail and approver decide that, and they are the
+    /// parent's rules inherited rather than relaxed.
+    fn runs_a_fresh_conversation(&self) -> bool {
+        false
+    }
+
     /// Drop state that belonged to the conversation that just ended.
     ///
     /// Most tools are stateless and the default no-op is honest for them. A

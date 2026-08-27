@@ -237,6 +237,13 @@ impl Tool for Subagent {
         &self.profile.description
     }
 
+    /// The property boredom's rung 3 is looking for: a context that has talked
+    /// itself into a corner cannot reason its way out of one, and this is the
+    /// only tool that hands a piece of work to a conversation with none of it.
+    fn runs_a_fresh_conversation(&self) -> bool {
+        true
+    }
+
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",

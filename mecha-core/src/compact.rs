@@ -574,7 +574,7 @@ pub fn collapse_repeated_failures(messages: &mut [Message]) -> usize {
 }
 
 /// What a call is *about*, for supersession.
-fn target_of(name: &str, input: &serde_json::Value) -> String {
+pub(crate) fn target_of(name: &str, input: &serde_json::Value) -> String {
     match input.get("path").and_then(serde_json::Value::as_str) {
         // Deliberately not prefixed with the tool name: the newest operation
         // on a path speaks for the path, whichever tool performed it. But a
