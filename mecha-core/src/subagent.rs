@@ -164,6 +164,14 @@ pub struct Subagent {
 }
 
 impl Subagent {
+    /// The child itself, for a caller that has to check what it was built
+    /// with rather than what it was asked for. A child inherits some of its
+    /// settings from its profile and some from the parent's provider, and the
+    /// ones that arrive by the second route have no other witness.
+    pub fn agent(&self) -> &Agent {
+        &self.agent
+    }
+
     pub fn new(profile: SubagentProfile, agent: Arc<Agent>) -> Result<Self> {
         // A vouch nothing enforces is a hole, not a policy. `trusted_output`
         // without a declared shape was exactly that — one config line that
