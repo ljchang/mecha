@@ -124,6 +124,17 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_skills: bool,
 
+    /// Don't offer the `compact` tool — the run still compacts at its
+    /// threshold, the model just cannot ask for it early.
+    ///
+    /// Exists for `mecha eval`, which forces it: the tool is registered from
+    /// whether *this machine's* config gives the run a compaction threshold,
+    /// so leaving it on would make the tool list — the front of the cached
+    /// prefix — depend on local settings, and two scorecards stop being
+    /// comparable for a reason neither of them records.
+    #[arg(long, global = true)]
+    pub no_compact_tool: bool,
+
     /// Don't run configured [[hook]] commands.
     #[arg(long, global = true)]
     pub no_hooks: bool,
@@ -208,6 +219,10 @@ pub enum Command {
     /// Mine recorded sessions for user interventions and turn each into a
     /// learned reflection.
     Reflect(commands::reflect::Args),
+
+    /// Read, edit and refuse the lessons `reflect` mined, before `learn`
+    /// consolidates them into rules.
+    Reflections(commands::reflections::Args),
 
     /// Absorb unprocessed reflections into the learned rule set.
     Learn(commands::learn::Args),
@@ -371,6 +386,7 @@ async fn dispatch() -> Result<()> {
         Command::Batch(args) => commands::batch::execute(&cli.global, args).await,
         Command::Eval(args) => commands::eval::execute(&cli.global, args).await,
         Command::Reflect(args) => commands::reflect::execute(&cli.global, args).await,
+        Command::Reflections(args) => commands::reflections::execute(args).await,
         Command::Learn(args) => commands::learn::execute(&cli.global, args).await,
         Command::Distill(args) => commands::distill::execute(&cli.global, args).await,
         Command::Validate(args) => commands::validate::execute(&cli.global, args).await,

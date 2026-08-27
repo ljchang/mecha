@@ -317,12 +317,6 @@ fn first_line(s: &str) -> String {
     }
 }
 
-/// `sessions health` — the run-quality corpus, summarised.
-///
-/// Deliberately separate from `stats`, which answers what runs *cost*. This
-/// answers whether they *worked*, and the two have different audiences and
-/// different units. Every rate here prints `—` where its denominator is zero,
-/// because no evidence is not a clean record.
 /// `mecha sessions appraise` — the readout rung 7 exists to produce.
 ///
 /// **Observation only.** Nothing consumes an appraisal, and the number worth
@@ -331,7 +325,7 @@ fn first_line(s: &str) -> String {
 /// after something is built on it.
 ///
 /// Derived on the spot from the transcripts, the outbox and each run's own
-/// record — see `appraisal::of_run` on why there is no store yet.
+/// record — see `appraisal::of_session` on why there is no store yet.
 #[allow(clippy::too_many_arguments)]
 async fn appraise(
     global: &GlobalOpts,
@@ -346,12 +340,22 @@ async fn appraise(
 
     let since = days.map(|d| chrono::Utc::now() - chrono::Duration::days(d));
 
-    // Best-effort, like every reader over these stores: an outbox that cannot
-    // be opened costs the `Edit` channel and nothing else. Reported below
-    // rather than swallowed, because "no drafts" and "could not look" are the
-    // opposite findings this whole surface is about.
-    let drafts =
-        mecha_core::outbox::OutboxStore::open_existing_default().and_then(|o| o.items().ok());
+    // Best-effort, like every reader over these stores: a read failure costs
+    // the `Edit` channel and nothing else. `outbox_unreadable` is kept
+    // separate from an empty `drafts` deliberately — `open_existing_default`
+    // returns `None` for a store that simply has never been created (a fresh
+    // install, or one that has never staged a draft), which is the ordinary
+    // *empty* case and not a read failure. Conflating the two prints "the
+    // outbox could not be read" on a machine that has nothing to read, which
+    // is the dash-versus-zero inversion this whole surface exists to avoid.
+    let (drafts, outbox_unreadable): (Vec<mecha_core::outbox::OutboxItem>, bool) =
+        match mecha_core::outbox::OutboxStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.items() {
+                Ok(items) => (items, false),
+                Err(_) => (Vec::new(), true),
+            },
+        };
 
     // Walked here rather than through `runlog::Corpus`, and the difference is
     // the unit: that reader yields one row per **run**, which is right for
@@ -365,13 +369,6 @@ async fn appraise(
     // is off — `of_session` has already read what it needs out of them.
     let mut per_session_interventions: Vec<Vec<mecha_core::learning::Intervention>> = Vec::new();
     let mut sessions_read = 0usize;
-    // **Counted, never assumed.** This walk used to pass `&[]` for goals
-    // unconditionally, so it reported zero goals *by construction* and could
-    // never have reported anything else — absent and zero conflated inside the
-    // one command built to detect whether the labels were degenerate. The
-    // number is still zero today; the difference is that it is now a
-    // measurement rather than a property of this function.
-    let mut with_goals = 0usize;
     for (meta, path) in Session::list(dir)? {
         if since.is_some_and(|t| meta.created_at < t) {
             continue;
@@ -380,28 +377,44 @@ async fn appraise(
             break;
         }
         sessions_read += 1;
-        let Ok(Some(stats)) = Session::episode_stats(&path) else {
+        // One `read`, every reading off the same transcript: the outcome
+        // (`episode_stats`'s own fold, done here in the same pass), the
+        // interventions, and the goal the model's own `serves` argument
+        // named. `Session::read`'s own doc names this exact pattern —
+        // `episode_stats` and `load` each open and walk the file separately —
+        // as the thing it exists to collapse; `Corpus::scan`-style reads with
+        // no `limit` make that a real cost, not a tidiness one.
+        //
+        // `read` fails on an unreadable file where `episode_stats` would
+        // answer `Ok(None)` for one merely lacking an outcome record, so the
+        // "no outcome yet" case still has to be its own `continue` rather
+        // than folding into the `Err` arm.
+        let Ok(transcript) = Session::read(&path) else {
             continue;
         };
-        // One load, two readings. The plan comes off the same transcript the
-        // interventions do — it was already being loaded, so naming the goal
-        // costs nothing beyond reading a field that was there all along.
-        let (interventions, goal) = Session::load(&path)
-            .map(|(_, convo)| {
-                (
-                    mecha_core::learning::extract_interventions(&convo.messages),
-                    mecha_core::tool::todo::TodoTool::plan_from_transcript(&convo.messages)
-                        .and_then(|p| p.goal),
-                )
-            })
-            .unwrap_or_default();
-        if goal.is_some() {
-            with_goals += 1;
-        }
+        let Some(stats) = transcript.episode else {
+            continue;
+        };
+        let messages = transcript.convo.messages;
+        let interventions = mecha_core::learning::extract_interventions(&messages);
+        // Without a goal, `of_session` never has one to attribute anything
+        // to — `Frustration` needs one on two negatives by construction, so
+        // a session with no goal cannot produce it however it went, and the
+        // neutral share this readout prints would be confusing "the channel
+        // is dead" with "nothing supplied it a goal", which is a different
+        // finding with a different remedy.
+        let goal =
+            mecha_core::tool::todo::TodoTool::plan_from_transcript(&messages).and_then(|p| p.goal);
         let goals: Vec<_> = goal.into_iter().collect();
+        // The provenance gate's own rule, applied here: `stats.taint` cannot
+        // tell "recorded clean" apart from "recorded before the field
+        // existed", so origin is classified off the timeline's own coverage
+        // instead, which answers `None` rather than guessing clean.
+        let end_taint = Session::taint_timeline(&path)
+            .ok()
+            .and_then(|tl| tl.covering(messages.len().saturating_sub(1)));
         let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts
             .iter()
-            .flatten()
             .filter(|i| i.session_id.as_deref() == Some(meta.id.as_str()))
             .collect();
         appraisals.push(appraisal::of_session(
@@ -410,6 +423,7 @@ async fn appraise(
             &goals,
             &interventions,
             &mine,
+            end_taint,
             meta.created_at.to_rfc3339(),
         ));
         per_session_interventions.push(if probe { interventions } else { Vec::new() });
@@ -437,9 +451,20 @@ async fn appraise(
         // discarded and only its registry is borrowed.
         let prepared = crate::setup::prepare(global, false).await?;
         let wanted: usize = per_session_interventions.iter().map(Vec::len).sum();
+        // The honest ceiling, not `wanted`: `probe_appraisal` checks
+        // `replayable(trigger)` before spending budget, so a `followup` or an
+        // `edit` — most of an ordinary corpus — costs nothing and was never
+        // going to be probed regardless of `max_probes`. Reporting `wanted`
+        // here reads as a cap that will bind when it almost never does.
+        let replayable: usize = per_session_interventions
+            .iter()
+            .flatten()
+            .filter(|i| crate::appraisal_probe::replayable(i.trigger))
+            .count();
         eprintln!(
-            "probing up to {} of {wanted} intervention(s) with {model} ({provider_name})",
-            max_probes.min(wanted)
+            "probing up to {} of {replayable} replayable intervention(s) ({wanted} total) \
+             with {model} ({provider_name})",
+            max_probes.min(replayable)
         );
         for (a, interventions) in appraisals.iter_mut().zip(&per_session_interventions) {
             let t = crate::appraisal_probe::probe_appraisal(
@@ -457,10 +482,19 @@ async fn appraise(
         // **No silent caps.** The walk spends its budget newest-session-first,
         // so a truncated run describes recent work and not the corpus — which
         // is a defensible order and an indefensible thing to leave unsaid.
-        if wanted > max_probes {
+        // Asked of what the budget actually refused, never of the
+        // intervention count: `probe_appraisal` checks `replayable(trigger)`
+        // *before* spending budget, so a `followup` or an `edit` costs
+        // nothing — which is the whole point of `Tally::unprobeable`
+        // existing apart from `over_budget`. `wanted > max_probes` fires on a
+        // corpus that is mostly followups (the common shape) even when
+        // nothing was actually capped.
+        if tally.over_budget > 0 {
             eprintln!(
-                "budget stopped at {max_probes} of {wanted}; the labels below \
-                 describe the newest sessions, not the whole store"
+                "budget stopped at {max_probes}; {} replayable intervention(s) went \
+                 unprobed, so the labels below describe the newest sessions, not the \
+                 whole store",
+                tally.over_budget
             );
         }
     }
@@ -469,13 +503,9 @@ async fn appraise(
     let mut channels: std::collections::BTreeMap<String, usize> = Default::default();
     let mut positive = 0usize;
     for a in &appraisals {
-        *labels
-            .entry(format!("{:?}", a.label).to_lowercase())
-            .or_default() += 1;
+        *labels.entry(enum_key(a.label)).or_default() += 1;
         for e in &a.errors {
-            *channels
-                .entry(format!("{:?}", e.channel).to_lowercase())
-                .or_default() += 1;
+            *channels.entry(enum_key(e.channel)).or_default() += 1;
             if e.sign > 0.0 {
                 positive += 1;
             }
@@ -488,11 +518,10 @@ async fn appraise(
             serde_json::to_string_pretty(&serde_json::json!({
                 "appraised": appraisals.len(),
                 "sessions_read": sessions_read,
-                "named_a_goal": with_goals,
                 "labels": labels,
                 "channels": channels,
                 "positive_errors": positive,
-                "outbox_read": drafts.is_some(),
+                "outbox_read": !outbox_unreadable,
                 // Absent, not zero, when no probe ran: "nothing was probed"
                 // and "probed and found nothing" are opposite findings, and a
                 // reader that cannot tell them apart is the bug this whole
@@ -505,11 +534,6 @@ async fn appraise(
                     "unprobeable": tally.unprobeable,
                     "unavailable": tally.unavailable,
                     "over_budget": tally.over_budget,
-                    "fidelity": {
-                        "matches": tally.matches,
-                        "differs": tally.differs,
-                        "unknown": tally.unknown,
-                    },
                     "budget_left": budget,
                 })),
             }))?
@@ -518,11 +542,18 @@ async fn appraise(
     }
 
     println!(
-        "{} session(s) appraised, of {} read · {} named a goal\n",
+        "{} session(s) appraised, of {} read\n",
         appraisals.len(),
-        sessions_read,
-        with_goals
+        sessions_read
     );
+    // Printed before the early return below: a store that could not be read
+    // is a fact about this run regardless of whether anything was left to
+    // appraise, and the early return used to skip it whenever `appraisals`
+    // came back empty — the one path where a reader most needs to know the
+    // edit channel is missing rather than genuinely empty.
+    if outbox_unreadable {
+        println!("  (the outbox could not be read, so the edit channel is missing — not empty)\n");
+    }
     if appraisals.is_empty() {
         return Ok(());
     }
@@ -536,8 +567,8 @@ async fn appraise(
     // rather than left to be read off the table, because it is the finding.
     let neutral = labels.get("neutral").copied().unwrap_or(0);
     println!(
-        "\n  {:.0}% carry no label — four of the eleven need a charter, a probe, \
-         a notion of harm or a cross-run view",
+        "\n  {:.0}% carry no label — six of the ten `Affect` variants need a \
+         charter, a probe, a notion of harm, a cross-run view or a prediction",
         neutral as f64 / appraisals.len() as f64 * 100.0
     );
 
@@ -552,12 +583,6 @@ async fn appraise(
         "    {:<16} {:>5}  — the only channel that can say a run went well",
         "of which +ve", positive
     );
-    if drafts.is_none() {
-        println!(
-            "\n  (the outbox could not be read, so the edit channel is missing — \
-                  not empty)"
-        );
-    }
 
     if probe {
         println!(
@@ -592,26 +617,30 @@ async fn appraise(
             "    {:<16} {:>5}  — budget ran out first",
             "not reached", tally.over_budget
         );
-        // What the verdicts above are worth. A probe whose request differed
-        // from the recording answered a question nobody asked, and one that
-        // cannot say is not evidence that it matched.
-        println!("\n  request fidelity, of the {} driven", tally.driven);
-        println!(
-            "    {:<16} {:>5}  — the replay sent what the recording sent",
-            "matches", tally.matches
-        );
-        println!(
-            "    {:<16} {:>5}  — tool surface provably changed since",
-            "differs", tally.differs
-        );
-        println!(
-            "    {:<16} {:>5}  — recorded before the surface was kept",
-            "unknown", tally.unknown
-        );
     }
     Ok(())
 }
 
+/// A `Serialize` enum's own wire spelling, never `{:?}`. Debug and serde agree
+/// on every variant here today because each is one word, but `Agency::Own`
+/// already diverges (`"self"`, a hand-written rename) — so deriving a JSON key
+/// from Debug is a bug waiting on the first multi-word variant, silently
+/// mismatched the day it lands rather than caught here. `unwrap_or_else`'s
+/// fallback is unreachable for a unit-variant enum in practice; it exists so
+/// this stays a display helper rather than a second thing that can panic.
+fn enum_key<T: serde::Serialize>(v: T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+/// `sessions health` — the run-quality corpus, summarised.
+///
+/// Deliberately separate from `stats`, which answers what runs *cost*. This
+/// answers whether they *worked*, and the two have different audiences and
+/// different units. Every rate here prints `—` where its denominator is zero,
+/// because no evidence is not a clean record.
 fn health(
     dir: &std::path::Path,
     days: Option<i64>,
@@ -732,17 +761,32 @@ fn health(
     // rather than a zero on a corpus with no sensor, like the line above: a
     // detector that has never fired and one that was not there yet are opposite
     // findings, and this is the field that exists to tell them apart.
+    let sensed_boredom = corpus
+        .rows
+        .iter()
+        .filter(|r| r.stats.boredom_notices.is_some())
+        .count();
     let bored = corpus
         .rows
         .iter()
         .filter(|r| r.stats.boredom_notices.is_some_and(|n| n > 0))
         .count();
-    match corpus.boredom_rate() {
-        Some(_) => println!(
+    if sensed_boredom > 0 {
+        print!(
             "  went nowhere        {bored} run(s) told an approach had stopped moving ({})",
             pct(corpus.boredom_rate())
-        ),
-        None => println!("  went nowhere        — (no run in this corpus recorded the counter)"),
+        );
+        // Same caveat as overflows, for the same reason: worth saying only
+        // when the corpus is mixed, or it reads as noise beside a clean one.
+        if sensed_boredom < corpus.len() {
+            print!(
+                " — of {sensed_boredom} that recorded it; {} did not",
+                corpus.len() - sensed_boredom
+            );
+        }
+        println!();
+    } else {
+        println!("  went nowhere        — (no run in this corpus recorded the counter)");
     }
 
     let by_model = corpus.by_model();

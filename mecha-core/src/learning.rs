@@ -166,8 +166,23 @@ pub fn evidence_for(
     // the same gap for the same reason. A label leaves that reviewable and
     // leaves the door open; an exclusion would not.
     if crate::agent::is_harness_voice(&i.text) {
-        return (i.clone(), Origin::Derived, Evidence::Full);
+        // Redaction still runs: this early return exists as belt-and-braces
+        // beside `extract_interventions` already dropping these — the second
+        // layer must not fail open on the redaction axis while it closes on
+        // the origin axis. A harness-voice intervention recorded inside an
+        // untrusted conversation still gets `user_evidence_only`; only the
+        // origin is overridden, because self-correction is not the user
+        // correcting mecha regardless of what covered it.
+        let (input, _, evidence) = evidence_for_taint(covering, i);
+        return (input, Origin::Derived, evidence);
     }
+    evidence_for_taint(covering, i)
+}
+
+fn evidence_for_taint(
+    covering: Option<crate::agent::Taint>,
+    i: &Intervention,
+) -> (Intervention, Origin, Evidence) {
     match classify_origin(covering) {
         Origin::Clean => (i.clone(), Origin::Clean, Evidence::Full),
         _ => (i.user_evidence_only(), Origin::Clean, Evidence::UserTurns),
@@ -207,6 +222,29 @@ pub struct Reflexion {
     /// reflection was, and their origin already says what to make of it.
     #[serde(default = "evidence_full")]
     pub evidence: Evidence,
+    /// When the owner rewrote the lesson in their own words.
+    ///
+    /// **An edited lesson is the owner's, and that is a provenance promotion
+    /// rather than a cosmetic flag.** The argument is `evidence_for`'s, one
+    /// step stronger: when a conversation held third-party content the
+    /// reflector is shown only the user's typed words and the reflection
+    /// classifies clean, because third-party bytes never reached the model
+    /// that wrote it. A lesson the owner *typed* skips the model entirely, so
+    /// there is nothing left to launder. `context` is withheld on the way
+    /// through, since that is the field the untrusted bytes were in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<String>,
+    /// When the owner dropped it, and why.
+    ///
+    /// **A flag, never a deletion**, on the rule `retired_at` and the outbox's
+    /// resolved items already follow: the record is the evidence that this was
+    /// considered and refused, and a store that forgets its refusals lets the
+    /// same lesson come back next pass with nothing to say it was already
+    /// judged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped_reason: Option<String>,
 }
 
 impl Reflexion {
@@ -249,6 +287,12 @@ impl Reflexion {
     /// has tools, a network, or a way to send, this exemption is no longer
     /// sound and has to be argued again rather than inherited.**
     pub fn learnable(&self) -> bool {
+        // Dropped is the owner saying no, which outranks every provenance
+        // argument below it — including an edit, since a lesson can be
+        // reworded and then thought better of.
+        if self.dropped_at.is_some() {
+            return false;
+        }
         match self.provenance() {
             Origin::Clean => true,
             // **The triage exemption does not extend to this one.** It is an
@@ -276,7 +320,24 @@ impl Reflexion {
     /// One place, so a future decision to let self-authored reflections
     /// consolidate — with their own budget, or behind a probe that can actually
     /// grade them — changes a gate rather than a scattering of checks.
+    ///
+    /// **Reaches a stored record only in the shape the live guard now
+    /// produces.** `is_harness_voice` is a whole-string match (`==` for the
+    /// nudges, `starts_with`/`contains` for the two stemmed voices), which
+    /// recognises a harness voice recorded alone but not one folded into a
+    /// joined string a pre-fix miner produced — a nudge concatenated with a
+    /// real steer, from before `extract_interventions` filtered per block.
+    /// The two records this method exists to reclassify happen to be pure
+    /// nudges, so this reaches them; a joined-string record from the same
+    /// era would not reclassify here even though it should.
     pub fn provenance(&self) -> Origin {
+        // Read first, and it outranks even the harness-voice check: whatever
+        // prompted the reflection, the *lesson* is now the owner's own words.
+        // That is the whole affordance — editing is how a reflection excluded
+        // for provenance is rescued, rather than being argued about.
+        if self.edited_at.is_some() {
+            return Origin::Clean;
+        }
         match crate::agent::is_harness_voice(&self.intervention) {
             true => Origin::Derived,
             false => self.origin,
@@ -996,15 +1057,36 @@ impl LearningStore {
     /// sibling and rename, so a crash mid-write loses the marking, never the
     /// reflections.
     pub fn mark_reflexions_processed(&self, ids: &[String], run_id: &str) -> Result<usize> {
-        let mut all = self.reflexions()?;
         let mut marked = 0usize;
-        for r in &mut all {
-            if ids.contains(&r.id) && !r.is_processed {
-                r.is_processed = true;
-                r.leap_run_id = Some(run_id.to_string());
-                marked += 1;
+        self.rewrite_reflexions(|all| {
+            for r in all.iter_mut() {
+                if ids.contains(&r.id) && !r.is_processed {
+                    r.is_processed = true;
+                    r.leap_run_id = Some(run_id.to_string());
+                    marked += 1;
+                }
             }
-        }
+            Ok(())
+        })?;
+        Ok(marked)
+    }
+
+    /// Read every reflection, let the caller change some, write them all back.
+    ///
+    /// The file is a **log that is edited**, not an append-only one — this
+    /// dance already existed for `is_processed` and is now shared rather than
+    /// spelled a second time. Temp-and-rename, on the store's convention, so a
+    /// crash mid-write leaves the old file rather than half of a new one.
+    ///
+    /// Every writer here holds the store lock at the CLI boundary. Two
+    /// concurrent rewrites would otherwise be a lost update, and this file is
+    /// the one that carries what nobody can reconstruct.
+    fn rewrite_reflexions(
+        &self,
+        change: impl FnOnce(&mut Vec<Reflexion>) -> Result<()>,
+    ) -> Result<()> {
+        let mut all = self.reflexions()?;
+        change(&mut all)?;
         let mut out = String::new();
         for r in &all {
             out.push_str(&serde_json::to_string(r)?);
@@ -1014,7 +1096,99 @@ impl LearningStore {
         let tmp = self.root.join("reflections.jsonl.tmp");
         std::fs::write(&tmp, out)?;
         std::fs::rename(&tmp, &path)?;
-        Ok(marked)
+        Ok(())
+    }
+
+    /// One reflection by id or unique prefix.
+    pub fn reflexion(&self, id: &str) -> Result<Reflexion> {
+        let all = self.reflexions()?;
+        let mut hits = all.into_iter().filter(|r| r.id.starts_with(id));
+        let first = hits
+            .next()
+            .with_context(|| format!("no reflection matching `{id}`"))?;
+        anyhow::ensure!(
+            hits.next().is_none(),
+            "`{id}` matches more than one reflection"
+        );
+        Ok(first)
+    }
+
+    /// Replace a lesson with the owner's own words.
+    ///
+    /// **The edit is a provenance promotion**, and the withholding is what
+    /// makes it sound rather than convenient. `context` is the field that held
+    /// third-party bytes, and the learner is shown it — so a rewritten lesson
+    /// on an untrusted reflection would leave the attacker's text in the
+    /// input while the record claimed clean. Withholding it takes the same
+    /// path `Intervention::user_evidence_only` already takes for exactly this,
+    /// and it is why the promotion is `Evidence::UserTurns` and not
+    /// `Evidence::Full`: what remains is the owner's typed words and the tool
+    /// names, which is the closed set the miner was already allowed.
+    ///
+    /// One-way, and stated plainly: the withheld context cannot be recovered
+    /// from this file afterwards. The transcript still has it.
+    pub fn edit_reflexion(&self, id: &str, lesson: &str) -> Result<Reflexion> {
+        let lesson = lesson.trim();
+        anyhow::ensure!(!lesson.is_empty(), "a lesson cannot be empty");
+        let id = self.reflexion(id)?.id;
+        let mut edited = None;
+        self.rewrite_reflexions(|all| {
+            for r in all.iter_mut().filter(|r| r.id == id) {
+                r.reflexion_text = lesson.to_string();
+                r.edited_at = Some(chrono::Utc::now().to_rfc3339());
+                // Only where the promotion needs it. A reflection already
+                // mined from a clean conversation has nothing in `context`
+                // to withhold, and destroying the evidence a rule is argued
+                // from is not free — the old condition also fired on
+                // `Origin::Clean` + `Evidence::Full` (the common, sound
+                // case) purely because `Full != UserTurns`, which withheld
+                // context on every ordinary edit for no reason. A record
+                // whose *stored* origin is `Clean` but whose intervention is
+                // mecha's own words (recorded before `is_harness_voice`
+                // existed) still needs it: `provenance()` reclassifies those
+                // as `Derived`, and this promotion has to agree with that.
+                if r.origin != Origin::Clean || crate::agent::is_harness_voice(&r.intervention) {
+                    r.context = "(withheld — the lesson was rewritten by the owner)".to_string();
+                    r.origin = Origin::Clean;
+                    r.evidence = Evidence::UserTurns;
+                }
+                edited = Some(r.clone());
+            }
+            Ok(())
+        })?;
+        edited.context("the reflection vanished between read and write")
+    }
+
+    /// Refuse a reflection. Kept as evidence; never a candidate again.
+    pub fn drop_reflexion(&self, id: &str, reason: Option<String>) -> Result<Reflexion> {
+        self.set_dropped(id, Some(reason))
+    }
+
+    /// Undo a drop.
+    pub fn restore_reflexion(&self, id: &str) -> Result<Reflexion> {
+        self.set_dropped(id, None)
+    }
+
+    fn set_dropped(&self, id: &str, reason: Option<Option<String>>) -> Result<Reflexion> {
+        let id = self.reflexion(id)?.id;
+        let mut out = None;
+        self.rewrite_reflexions(|all| {
+            for r in all.iter_mut().filter(|r| r.id == id) {
+                match &reason {
+                    Some(why) => {
+                        r.dropped_at = Some(chrono::Utc::now().to_rfc3339());
+                        r.dropped_reason = why.clone();
+                    }
+                    None => {
+                        r.dropped_at = None;
+                        r.dropped_reason = None;
+                    }
+                }
+                out = Some(r.clone());
+            }
+            Ok(())
+        })?;
+        out.context("the reflection vanished between read and write")
     }
 }
 
@@ -1305,22 +1479,29 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                                 }
                             }
                         }
-                        Block::Text { text } => steer_text.push_str(text),
+                        // Filtered per block, not on the joined string: a
+                        // tool-results message routinely carries more than one
+                        // text block (a boredom notice appended beside the
+                        // results, a user's mid-turn steer folded in after,
+                        // `EMPTY_TURN_NUDGE` folded onto a followup) and
+                        // `is_harness_voice` is a whole-string match. Matching
+                        // the join would let a harness notice's stem swallow a
+                        // real correction that happened to follow it, or let a
+                        // real correction's own words launder a nudge appended
+                        // after — the bug this function exists to fix,
+                        // surviving in the shape it most commonly occurs in.
+                        Block::Text { text } if !crate::agent::is_harness_voice(text) => {
+                            steer_text.push_str(text)
+                        }
                         _ => {}
                     }
                 }
 
                 let steer_text = steer_text.trim().to_string();
-                // Two kinds of recorded "user" voice that are not the user
-                // correcting anything, and they are separate for a reason.
-                // `is_harness_voice` is **mecha's own words** — a nudge, a
-                // boredom notice — and the list belongs to the party that adds
-                // one, which is why it lives in `agent.rs` rather than here; a
-                // rule mined from one would teach mecha something it said to
-                // itself. A slash command is genuinely the user, recorded by a
+                // What's left of "not a person" once harness voice is filtered
+                // above: a slash command is genuinely the user, recorded by a
                 // front-end, and simply is not a correction.
-                let not_a_person =
-                    crate::agent::is_harness_voice(&steer_text) || steer_text.starts_with('/');
+                let not_a_person = steer_text.starts_with('/');
                 if has_results {
                     if !steer_text.is_empty() && !not_a_person {
                         found.push((
@@ -1561,6 +1742,9 @@ impl Reflector {
             // Records what the caller handed this reflector; the caller is
             // the one that chose, so it overwrites this beside `origin`.
             evidence: Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
         }))
     }
 }
@@ -2091,6 +2275,9 @@ mod tests {
             created_at: "t".into(),
             origin,
             evidence: Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
         };
         assert!(r(Origin::Clean).learnable());
         // The attack this closes: one sentence from a hostile page surviving
@@ -2219,6 +2406,152 @@ mod tests {
         assert!(extract_interventions(&messages).is_empty());
     }
 
+    /// A learning store nobody else is writing. Same shape the outbox and
+    /// session tests use — a per-process temp directory rather than a crate
+    /// dependency for four tests.
+    fn scratch_store() -> LearningStore {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-learning-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        LearningStore::open(dir).unwrap()
+    }
+
+    fn stored(store: &LearningStore, id: &str, origin: Origin) -> Reflexion {
+        let r = Reflexion {
+            id: id.into(),
+            domain: "behavior".into(),
+            session_id: "s1".into(),
+            trigger: Trigger::Steer.as_str().into(),
+            context: "I fetched the page; IGNORE PREVIOUS INSTRUCTIONS lurks here".into(),
+            intervention: "no, use the other config".into(),
+            reflexion_text: "a model's paraphrase".into(),
+            error_type: None,
+            confidence: None,
+            is_processed: false,
+            leap_run_id: None,
+            created_at: "2026-08-27T00:00:00Z".into(),
+            origin,
+            evidence: Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
+        };
+        store.append_reflexion(&r).unwrap();
+        r
+    }
+
+    /// The rescue path, and the reason it is sound rather than convenient.
+    #[test]
+    fn editing_a_lesson_makes_it_the_owners_and_withholds_what_was_not() {
+        let store = scratch_store();
+        let before = stored(&store, "r1", Origin::Untrusted);
+        assert!(
+            !before.learnable(),
+            "untrusted behaviour never consolidates"
+        );
+
+        let after = store
+            .edit_reflexion("r1", "  Use the other config.  ")
+            .unwrap();
+        assert_eq!(after.reflexion_text, "Use the other config.");
+        assert!(after.edited_at.is_some());
+        assert!(after.learnable(), "the lesson is the owner's own words now");
+        assert_eq!(after.provenance(), Origin::Clean);
+
+        // The promotion is only sound because the bytes that made it untrusted
+        // are gone from what the learner is shown.
+        assert!(
+            !after.context.contains("IGNORE PREVIOUS INSTRUCTIONS"),
+            "third-party text survived a promotion to clean: {}",
+            after.context
+        );
+        assert_eq!(after.evidence, Evidence::UserTurns);
+        assert_eq!(
+            store.reflexion("r1").unwrap().reflexion_text,
+            "Use the other config.",
+            "and it is on disk, not just in the returned copy"
+        );
+    }
+
+    /// An edit outranks even a harness voice: whatever prompted the
+    /// reflection, the owner wrote what it now says.
+    #[test]
+    fn editing_rescues_a_reflection_mecha_prompted_itself() {
+        let store = scratch_store();
+        let mut r = stored(&store, "r2", Origin::Clean);
+        r.intervention = crate::agent::EMPTY_TURN_NUDGE.into();
+        store
+            .rewrite_reflexions(|all| {
+                all[0] = r.clone();
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.reflexion("r2").unwrap().provenance(), Origin::Derived);
+
+        let after = store
+            .edit_reflexion("r2", "Answer immediately once analysis is done.")
+            .unwrap();
+        assert_eq!(after.provenance(), Origin::Clean);
+        assert!(after.learnable());
+    }
+
+    /// The common case, and the one the old condition got backwards: a
+    /// reflection already mined from a clean conversation
+    /// (`Origin::Clean` + `Evidence::Full`) has nothing in `context` that
+    /// needs withholding. The old check fired anyway — `Full != UserTurns`
+    /// — so an ordinary reword of an ordinary lesson destroyed evidence a
+    /// rule might one day be argued from, for no reason at all.
+    #[test]
+    fn editing_an_already_clean_reflection_does_not_withhold_its_context() {
+        let store = scratch_store();
+        let before = stored(&store, "r-clean", Origin::Clean);
+        assert_eq!(before.evidence, Evidence::Full);
+
+        let after = store
+            .edit_reflexion("r-clean", "Use the smaller config next time.")
+            .unwrap();
+        assert_eq!(
+            after.context, before.context,
+            "nothing here was ever third-party — there is nothing to withhold"
+        );
+        assert_eq!(after.evidence, Evidence::Full);
+    }
+
+    /// A drop is the owner saying no, and it outranks an edit — a lesson can
+    /// be reworded and then thought better of.
+    #[test]
+    fn a_dropped_reflection_is_kept_and_never_a_candidate() {
+        let store = scratch_store();
+        stored(&store, "r3", Origin::Clean);
+        store.edit_reflexion("r3", "something I typed").unwrap();
+
+        let dropped = store
+            .drop_reflexion("r3", Some("too specific to one thread".into()))
+            .unwrap();
+        assert!(!dropped.learnable());
+        assert_eq!(
+            dropped.dropped_reason.as_deref(),
+            Some("too specific to one thread")
+        );
+        assert_eq!(
+            store.reflexions().unwrap().len(),
+            1,
+            "kept as evidence, never removed"
+        );
+        assert!(store.restore_reflexion("r3").unwrap().learnable());
+    }
+
+    #[test]
+    fn a_prefix_that_matches_two_reflections_is_refused() {
+        let store = scratch_store();
+        stored(&store, "20260827-aaaa", Origin::Clean);
+        stored(&store, "20260827-bbbb", Origin::Clean);
+        assert!(store.reflexion("20260827").is_err());
+        assert!(store.reflexion("20260827-a").is_ok());
+    }
+
     /// The two already on disk, which extraction cannot un-mine.
     ///
     /// The store is append-only, so the fix at the front door does nothing for
@@ -2245,6 +2578,9 @@ mod tests {
             created_at: "2026-08-08T21:11:45Z".into(),
             origin: Origin::Clean,
             evidence: Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
         };
         assert_eq!(
             r.provenance(),
@@ -2316,6 +2652,130 @@ mod tests {
         let found = extract_interventions(&real);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].trigger, Trigger::Followup);
+    }
+
+    /// The folded form, not the standalone one: a boredom notice and a nudge
+    /// each land as their *own* text block beside a user's real words on the
+    /// same message — `agent.rs` appends a queued steer and a followup nudge
+    /// onto the message that already carries the tool results, rather than
+    /// opening a new one. A guard matching the whole concatenation either
+    /// discards the real correction (when the harness voice comes first) or
+    /// mines it with the harness's own words stitched onto it (when it comes
+    /// last) — the bug this module exists to fix, surviving in the shape it
+    /// most commonly occurs in.
+    #[test]
+    fn a_harness_voice_folded_beside_a_real_steer_does_not_swallow_or_taint_it() {
+        let bored =
+            crate::boredom::Rung::Change.notice("build", &crate::boredom::Escapes::default());
+
+        // Notice first, the person's words after: must still mine, verbatim.
+        let messages = vec![
+            Message::user("the original task"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "build".into(),
+                input: serde_json::json!({}),
+            }]),
+            Message {
+                role: Role::User,
+                content: vec![
+                    Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "same as before".into(),
+                        is_error: false,
+                    },
+                    Block::text(bored.clone()),
+                    Block::text("no, use the other config"),
+                ],
+            },
+            Message::assistant(vec![Block::text("done")]),
+        ];
+        let found = extract_interventions(&messages);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].trigger, Trigger::Steer);
+        assert_eq!(found[0].text, "no, use the other config");
+
+        // The person's words first, the nudge folded on after completing the
+        // turn empty: must mine without the nudge's text riding along.
+        let messages = vec![
+            Message::user("the original task"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "build".into(),
+                input: serde_json::json!({}),
+            }]),
+            Message {
+                role: Role::User,
+                content: vec![
+                    Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "ok".into(),
+                        is_error: false,
+                    },
+                    Block::text("no, use the other config"),
+                    Block::text(crate::agent::EMPTY_TURN_NUDGE),
+                ],
+            },
+            Message::assistant(vec![Block::text("done")]),
+        ];
+        let found = extract_interventions(&messages);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].text, "no, use the other config",
+            "the nudge must not ride along on the mined text"
+        );
+    }
+
+    /// A peer's mailbox delivery folds into the same slot boredom's notice
+    /// and a nudge do — `agent.rs`'s fourth voice. Mining it would
+    /// consolidate a peer's words into a rule under the user's own name,
+    /// which is the escalation-via-learning-store shape CLAUDE.md's
+    /// peer-coordination rules exist to close off at the approver; this
+    /// closes it at the miner too.
+    #[test]
+    fn a_folded_mailbox_delivery_is_never_mined_as_a_correction() {
+        let msg = crate::mailbox::MailboxMessage {
+            id: "m1".into(),
+            status: "pending".into(),
+            from: "researcher".into(),
+            from_session: None,
+            to: "chat".into(),
+            body: "no, use the other config".into(),
+            reply_to: None,
+            taint: crate::agent::Taint::default(),
+            taint_recorded: true,
+            created_at: String::new(),
+            delivered_at: None,
+            delivered_to: None,
+            dismissed_at: None,
+        };
+        let delivered = crate::mailbox::render_delivery(&msg, true);
+
+        let messages = vec![
+            Message::user("the original task"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "build".into(),
+                input: serde_json::json!({}),
+            }]),
+            Message {
+                role: Role::User,
+                content: vec![
+                    Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "ok".into(),
+                        is_error: false,
+                    },
+                    Block::text(delivered),
+                ],
+            },
+            Message::assistant(vec![Block::text("done")]),
+        ];
+        assert!(
+            extract_interventions(&messages).is_empty(),
+            "a peer's own words were mined as the user's: {:?}",
+            extract_interventions(&messages)
+        );
     }
 
     #[test]
@@ -2518,6 +2978,9 @@ mod tests {
             created_at: "2026-08-04T00:00:00Z".into(),
             origin: Origin::Clean,
             evidence: Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
         };
         store.append_reflexion(&r).unwrap();
         let back = store.reflexions().unwrap();
@@ -2738,6 +3201,9 @@ mod tests {
                     created_at: "t".into(),
                     origin: Origin::Clean,
                     evidence: Evidence::Full,
+                    edited_at: None,
+                    dropped_at: None,
+                    dropped_reason: None,
                 })
                 .unwrap();
         }
@@ -2941,6 +3407,9 @@ mod tests {
             created_at: "2026-08-19T00:00:00Z".into(),
             origin,
             evidence: Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
         }
     }
 
@@ -3315,6 +3784,9 @@ mod tests {
                 created_at: "t".into(),
                 origin,
                 evidence,
+                edited_at: None,
+                dropped_at: None,
+                dropped_reason: None,
             };
             assert!(r.learnable());
         }
@@ -3325,6 +3797,46 @@ mod tests {
         };
         let (input, origin, evidence) = evidence_for(Some(clean), &i);
         assert_eq!((origin, evidence), (Origin::Clean, Evidence::Full));
+        assert_eq!(input.context, "tainted excerpt");
+    }
+
+    /// The harness-voice branch is a second layer beside
+    /// `extract_interventions` already dropping these, and a second layer
+    /// that fails open on the axis the first one wasn't guarding is not one.
+    /// This asserts the redaction axis independently of whether anything
+    /// upstream currently filters these out: under untrusted coverage the
+    /// reflector must still get `user_evidence_only`, with only the origin
+    /// overridden to `Derived`.
+    #[test]
+    fn a_harness_voice_intervention_is_still_redacted_under_untrusted_coverage() {
+        let i = Intervention {
+            trigger: Trigger::Followup,
+            context: "tainted excerpt".into(),
+            text: crate::agent::EMPTY_TURN_NUDGE.to_string(),
+            aftermath: "tainted".into(),
+            at: 2,
+            tools_before: vec![],
+            tools_after: vec![],
+        };
+        let untrusted = crate::agent::Taint {
+            private: true,
+            untrusted: true,
+        };
+        let (input, origin, evidence) = evidence_for(Some(untrusted), &i);
+        assert_eq!(origin, Origin::Derived, "self-correction, not the user's");
+        assert_eq!(evidence, Evidence::UserTurns);
+        assert!(
+            !input.context.contains("tainted excerpt"),
+            "harness voice must not exempt an untrusted conversation from redaction"
+        );
+
+        // Provably clean coverage keeps the full excerpts, same as ever.
+        let clean = crate::agent::Taint {
+            private: true,
+            untrusted: false,
+        };
+        let (input, origin, evidence) = evidence_for(Some(clean), &i);
+        assert_eq!((origin, evidence), (Origin::Derived, Evidence::Full));
         assert_eq!(input.context, "tainted excerpt");
     }
 

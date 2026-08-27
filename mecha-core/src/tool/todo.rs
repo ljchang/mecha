@@ -145,12 +145,28 @@ struct Tracked {
     /// Steps already reported on, so a second identical reading escalates
     /// instead of asking for the same revision again (§5.5's bound).
     flagged: std::collections::HashSet<String>,
-    /// How many times this tool has been called for this plan.
+    /// How many times this tool has been called for this plan — every call,
+    /// including one whose input this tool rejects. A rejected write still
+    /// touches nothing but this tool's own state, so it is bookkeeping too;
+    /// see [`Tracked::observe`].
     ///
     /// Subtracted from every span: rewriting the list is bookkeeping, and a
     /// model that revises its plan three times mid-step would otherwise show
     /// three calls of "work" for a step where nothing happened.
     own_calls: u32,
+    /// The outcome of the most recent call that was *not* this tool touching
+    /// its own state, as of the last time [`Tracked::observe`] ran.
+    ///
+    /// `Work::last` cannot answer this: it is the raw trace's most recent
+    /// entry, which is this tool's own call whenever one lands last. Tracked
+    /// incrementally because a scalar count of "how many calls were ours"
+    /// cannot say *which* position in the sequence they occupied.
+    last_real: Option<crate::step::Outcome>,
+    /// What `work.calls` will read once *this* call's own trace entry lands —
+    /// set at the end of every [`Tracked::observe`]. The next call compares
+    /// its own `work.calls` against this to tell whether anything landed in
+    /// between besides our own entry.
+    next_own_position: Option<u32>,
 }
 
 /// Where one step's span starts, in the two units it has to be measured in.
@@ -161,15 +177,87 @@ struct Mark {
 }
 
 impl Tracked {
+    /// Register one call to this tool, before anything about its input is
+    /// known — a call this tool goes on to reject is still this tool
+    /// touching its own state and nothing else, so it counts as bookkeeping
+    /// exactly like a successful write. Returns `own_calls` as it stood
+    /// *before* this call, which is what a mark taken during this same call
+    /// must record and what a span completing during it must subtract.
+    ///
+    /// Also brings `last_real` current. `next_own_position` says what
+    /// `work.calls` will read once this call's own entry **and every
+    /// approved sibling in its batch** has landed — `work.in_flight` is
+    /// exactly that sibling count, since this same `Work` snapshot is
+    /// shared by every call in one turn and predates all of them landing.
+    /// Missing that term made the guard assume every one of this tool's own
+    /// calls was the only call in its batch: the model doing real work and
+    /// ticking the box in the same turn — the shape `in_flight` exists
+    /// for — advanced `work.calls` by the whole batch size at the next
+    /// check, the equality failed, and `last_real` was overwritten with
+    /// whatever landed last, which was this tool's own entry whenever
+    /// `todo` came last in the batch (the natural order: do the work, then
+    /// tick the box).
+    ///
+    /// The comparison side strips `work.denied`: a call denied in the
+    /// *same* turn as this one lands in `trace` ahead of this call (the
+    /// gate loop pushes a denial immediately, before dispatching what it
+    /// approved), so it is already counted in `work.calls` the instant this
+    /// call sees it — not something to predict for later. Counting it as
+    /// "something new happened" would let an unrelated sibling's refusal
+    /// overwrite `last_real` with `Refused`, which is exactly the
+    /// misattribution `span.denied` exists to suppress a different way;
+    /// this guard must not re-introduce it through `last_real` instead.
+    ///
+    /// If the (denial-stripped) reading handed to the *next* call doesn't
+    /// match the prediction, something else landed in between (or this is
+    /// the first call ever, or the run restarted) and the fresh `work.last`
+    /// is real work rather than our own echo. If it does match, nothing but
+    /// our own batch happened and `last_real` carries over unchanged.
+    ///
+    /// **Accepted residual, in the safe direction.** A match means "only
+    /// this batch's siblings landed," but a sibling's *outcome* is still
+    /// invisible to this tool: `Work` is deliberately a handful of integers
+    /// rather than a list, so nothing here can tell whether a failing
+    /// sibling landed before or after this tool's own entry within the
+    /// batch — that depends on the order the model happened to list the
+    /// calls in, which this tool cannot see and must not guess at. When the
+    /// sibling lands after, its failure is swallowed the same way an
+    /// unbatched one is, one layer removed. This is the false-negative
+    /// direction the module doc names as the one to prefer: a masked
+    /// failure costs a missed finding, where guessing at an unknowable order
+    /// risks the manufactured-failure false positive this fix exists to
+    /// close. `in_flight` already suppresses the finding for *this* span
+    /// while the batch is still forming; what survives past it is the
+    /// span's own last-known reading, not a reconstruction of the batch.
+    fn observe(&mut self, work: Option<crate::step::Work>) -> u32 {
+        let before = self.own_calls;
+        if let Some(work) = work {
+            let settled = work.calls.saturating_sub(work.denied);
+            if self.next_own_position != Some(settled) {
+                self.last_real = work.last;
+            }
+            self.next_own_position = Some(work.calls + work.in_flight + 1);
+        }
+        self.own_calls += 1;
+        before
+    }
+
     /// Fold one plan write in, and say what the steps that just finished
     /// actually did.
     ///
     /// `work` is the run's counters as of *before* this turn's batch — which
-    /// is also before this call itself reaches the trace, so it and
-    /// `own_calls` are measured at the same instant and their difference is a
+    /// is also before this call itself reaches the trace. `own_calls_before`
+    /// and `last_real` are [`Tracked::observe`]'s account of this same call,
+    /// taken at the same instant, so their difference against a mark is a
     /// span. Anything unknown produces no line at all: a step never seen in
     /// progress, a run whose counters restarted, a context nobody stamped.
-    fn advance(&mut self, next: Plan, work: Option<crate::step::Work>) -> Vec<String> {
+    fn advance(
+        &mut self,
+        next: Plan,
+        work: Option<crate::step::Work>,
+        own_calls_before: u32,
+        last_real: Option<crate::step::Outcome>,
+    ) -> Vec<String> {
         let before: HashMap<&str, Status> = self
             .plan
             .items
@@ -191,7 +279,7 @@ impl Tracked {
                             item.content.clone(),
                             Mark {
                                 work,
-                                own_calls: self.own_calls,
+                                own_calls: own_calls_before,
                             },
                         );
                     }
@@ -201,7 +289,11 @@ impl Tracked {
                         continue;
                     };
                     let Some(span) = work.and_then(|w| {
-                        w.since(mark.work, self.own_calls.saturating_sub(mark.own_calls))
+                        w.since(
+                            mark.work,
+                            own_calls_before.saturating_sub(mark.own_calls),
+                            last_real,
+                        )
                     }) else {
                         continue;
                     };
@@ -213,10 +305,12 @@ impl Tracked {
                             lines.push(line);
                         }
                         // It landed, so the next thing to go wrong here is a
-                        // first time again. Not while siblings are in flight:
-                        // that reads as landed because nothing is known yet,
-                        // which is not the same as having gone well.
-                        None if span.in_flight == 0 => {
+                        // first time again. Not while siblings are in flight
+                        // or one was denied this turn: both read as landed
+                        // because nothing is known yet or nothing here is
+                        // attributable, neither of which is the same as
+                        // having gone well.
+                        None if span.in_flight == 0 && span.denied == 0 => {
                             self.flagged.remove(&item.content);
                         }
                         None => {}
@@ -236,7 +330,6 @@ impl Tracked {
         drop(live);
 
         self.plan = next;
-        self.own_calls += 1;
         lines
     }
 }
@@ -252,6 +345,7 @@ impl TodoTool {
     /// list set by anything other than the model's own `todo` write, or a
     /// faithful restoration of one, is a second author of state the tool is
     /// supposed to own.
+    ///
     /// A fresh record, not a plan swapped into the old one: the spans this
     /// tool measures are counted from a run's trace, and a plan restored from
     /// a transcript was written by a process whose counters are gone. Keeping
@@ -559,6 +653,17 @@ impl Tool for TodoTool {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+        // Registered before validation, and unconditionally: a write this
+        // tool goes on to reject below is still this tool touching its own
+        // state and nothing else, so it must count as bookkeeping exactly
+        // like a successful one — never as work that failed.
+        let (own_calls_before, last_real) = {
+            let mut lists = self.lists.lock().unwrap();
+            let tracked = lists.entry(ctx.workspace.clone()).or_default();
+            let own_calls_before = tracked.observe(ctx.work);
+            (own_calls_before, tracked.last_real)
+        };
+
         let Some(raw) = input.get("items").and_then(Value::as_array) else {
             return Ok(ToolOutput::err(
                 "`items` must be an array of {content, status}",
@@ -642,7 +747,7 @@ impl Tool for TodoTool {
             .unwrap()
             .entry(ctx.workspace.clone())
             .or_default()
-            .advance(plan, ctx.work);
+            .advance(plan, ctx.work, own_calls_before, last_real);
         let findings = match findings.is_empty() {
             true => String::new(),
             false => format!("\n\n{}", findings.join("\n")),
@@ -1221,6 +1326,24 @@ mod tests {
         }
     }
 
+    /// Same, with `in_flight` siblings — the batched shape, where this same
+    /// `Work` snapshot is handed to every approved call in the turn before
+    /// any of them (this one included) has landed.
+    fn batched_work_ctx(run: u64, calls: u32, last: Option<Outcome>, in_flight: u32) -> ToolCtx {
+        ToolCtx {
+            work: Some(
+                Work {
+                    calls,
+                    last,
+                    in_flight,
+                    ..Work::default()
+                }
+                .in_run(run),
+            ),
+            ..ToolCtx::default()
+        }
+    }
+
     async fn write(tool: &TodoTool, ctx: &ToolCtx, items: Value) -> String {
         tool.call(json!({ "items": items }), ctx)
             .await
@@ -1381,6 +1504,100 @@ mod tests {
         assert!(
             !out.contains("still failing"),
             "the approver doing its job is not the step going wrong: {out}"
+        );
+    }
+
+    /// A successful revision landing last must not mask an earlier failure:
+    /// start, a real call fails, the plan is revised (this tool's own write,
+    /// `Ok`), then completed. The raw trace's tail is the revision, not the
+    /// failure — only `Tracked::observe`'s own account gets it right.
+    #[tokio::test]
+    async fn a_bookkeeping_revision_does_not_mask_an_earlier_failure() {
+        let tool = TodoTool::new();
+        let step = json!([{"content": "ship the release", "status": "in_progress"}]);
+        write(&tool, &work_ctx(1, 0, None), step.clone()).await;
+        // The real call fails (calls: start's own entry, plus this one).
+        // The plan tool revises next — a no-op rewrite of the same status —
+        // and its own write lands as calls=3, `Ok`.
+        write(&tool, &work_ctx(1, 2, Some(Outcome::Failed)), step).await;
+        let out = write(
+            &tool,
+            &work_ctx(1, 3, Some(Outcome::Ok)),
+            json!([{"content": "ship the release", "status": "completed"}]),
+        )
+        .await;
+        assert!(
+            out.contains("still failing"),
+            "the revision's own `Ok` must not bury the real failure: {out}"
+        );
+    }
+
+    /// A rejected plan write is still this tool touching its own state, not
+    /// work on the step — it must not read as the step's own failure just
+    /// because it is the most recent trace entry when the step completes.
+    #[tokio::test]
+    async fn a_rejected_write_does_not_manufacture_a_step_failure() {
+        let tool = TodoTool::new();
+        let step = json!([{"content": "ship the release", "status": "in_progress"}]);
+        write(&tool, &work_ctx(1, 0, None), step).await;
+        // A real, non-todo call succeeds in between (start's own entry, plus
+        // this one — no write of ours for it, so `calls` jumps to 2 without
+        // another call through this tool).
+        //
+        // A malformed write this tool rejects comes next — it still lands in
+        // the trace as a failed call, becoming calls=3 once it returns.
+        tool.call(
+            json!({"items": [{"content": "ship the release", "status": "not_a_status"}]}),
+            &work_ctx(1, 2, Some(Outcome::Ok)),
+        )
+        .await
+        .unwrap();
+        let out = write(
+            &tool,
+            &work_ctx(1, 3, Some(Outcome::Failed)),
+            json!([{"content": "ship the release", "status": "completed"}]),
+        )
+        .await;
+        assert!(
+            !out.contains("still failing"),
+            "a rejected bookkeeping write is not the step's own failure: {out}"
+        );
+        assert!(
+            !out.contains("no tool calls behind it"),
+            "the real call succeeded, so the span is not empty either: {out}"
+        );
+    }
+
+    /// The same manufactured-failure shape, with the rejected write batched
+    /// beside a sibling instead of alone — the shape `in_flight` exists for,
+    /// and the one `own_calls`'s scalar count cannot tell apart from an
+    /// unrelated turn unless `next_own_position` accounts for the whole
+    /// batch landing, not just this tool's own entry.
+    #[tokio::test]
+    async fn a_rejected_write_batched_with_a_sibling_does_not_manufacture_a_failure() {
+        let tool = TodoTool::new();
+        let step = json!([{"content": "ship the release", "status": "in_progress"}]);
+        write(&tool, &work_ctx(1, 0, None), step).await;
+        // A batch of two: a real call that succeeds, and a malformed write
+        // this tool rejects. `in_flight = 1` (two approved calls this turn).
+        tool.call(
+            json!({"items": [{"content": "ship the release", "status": "not_a_status"}]}),
+            &batched_work_ctx(1, 1, Some(Outcome::Ok), 1),
+        )
+        .await
+        .unwrap();
+        // Both landed: the start (1), the real call (1), the rejected write
+        // (1) — calls = 3.
+        let out = write(
+            &tool,
+            &work_ctx(1, 3, Some(Outcome::Failed)),
+            json!([{"content": "ship the release", "status": "completed"}]),
+        )
+        .await;
+        assert!(
+            !out.contains("still failing"),
+            "a rejected bookkeeping write batched with a sibling is not the \
+             step's own failure: {out}"
         );
     }
 }

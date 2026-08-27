@@ -2174,6 +2174,48 @@ as a **delta**, not a level: a run that stages nine drafts raises the outbox by
 nine, so a level at run end cannot separate a run's own output from what it
 inherited.
 
+**2026-08-27 — admission control, and five findings out of the arc that
+prompted it.** R1 shipped on the number R3 measured rather than the one it
+was proposed with (`permit.rs`): three background seats against the server's
+four, held as files on `runmarker`'s rules because a delegation is now either
+a chat session inside `mecha serve` or a detached child, sharing nothing but
+the filesystem — so `batch.rs`'s in-process bound, which the design called
+for, would bound each process separately and none together. **Interactive
+work takes no permit at all**: the reserve is an absence rather than a
+control, because a pool that could refuse the person at the keyboard is a
+mechanism failing closed against the only user it exists for.
+
+**And a review of the context-pressure arc (#78) found eight things, of which
+five were fixed the same day.** Two were the same failure in different
+places: a subagent got the `compact` tool and its channel but not the
+threshold — the channel rides on `ToolCtx`, which the child clones wholesale,
+while the threshold rides on the `Agent`, which the child rebuilds field by
+field, so only one made the trip — and the loop took the request with a
+destructive `swap` *before* the guard that decides whether it can be served,
+so the one path that cannot honour a request was the one consuming it. Both
+told the model a summary would happen and produced none.
+
+The third is the one with the longest reach: **`mecha eval`'s tool surface
+had come to depend on local config.** `compact` is registered from whether
+this machine's settings give the run a compaction threshold, and the tool
+list is the front of the cached prefix — so two differently-configured boxes
+graded different prefixes and neither scorecard recorded which. The list of
+things eval forces off had been written in prose across forty lines, each
+entry added when it occurred to somebody, and one was missed; it is now
+`force_reproducible`, one function with a test over the whole set, so the
+next addition to the tool surface has to be decided about rather than
+remembered.
+
+Also: `compact`'s description promised `recall`, which only the
+session-recording front-ends register, so on a trigger or a Slack thread it
+both wasted a turn and asserted the reversibility that justifies the tool
+being unapproved to exactly the runs where it is false; and `Forecast::used`
+documented a total it does not compute — it excludes the results of the turn
+being executed and cannot include them, being an argument to the call that
+produces them. Left understated rather than padded to an upper bound, since
+trading a small understood undercount for a large invented one is the wrong
+direction on a number the model plans against.
+
 **2026-08-26 (eighth pass) — delegation became a conversation, which is what
 D2 said it was.** The owner tapped *ask mecha*, the card moved to `waiting`
 and vanished out of the view it was tapped in, and nothing happened that
@@ -2534,7 +2576,7 @@ is a **pure function of the record**, because a model that reads a run and says
 fetched page saying *you have failed your owner* is aimed at.
 
 Working §6's derivation table answered most of the degeneracy question before
-any corpus did. Four of the eleven labels are unreachable from what mecha
+any corpus did. Six of the ten labels are unreachable from what mecha
 measures: `Pride` needs a charter line and a task well done is deliberately not
 one, `Guilt` needs a notion of harm that nothing computes (`visible` is
 exposure, a different claim), `Shame` is a cross-run pattern a per-event
@@ -2593,6 +2635,94 @@ as runs that were never bored. Recorded *after* the thing it grades, which is
 the wrong order and is worth saying so — rung 5's own `context_overflows`
 landed in its own change first, because a baseline established alongside what
 it measures is not one.
+
+**2026-08-27 (second pass) — the loop that had never once run, and the comment
+that named three risks and missed the fourth.**
+
+Two lanes worked the counterfactual probe from opposite ends and found the same
+thing from different sides: `mecha validate`'s steer and denial probes had
+**never been able to run on an interactive session**, and `validations.jsonl`
+was empty not because nobody ran the nightly but because every probe skipped.
+The counter reported it faithfully. Nothing read it as *this entire class is
+unreachable*, which is a rate over a zero denominator printed as zero, in the
+one store whose whole job is to be the evidence a gate is replaced by.
+
+`replay_registry` refuses to build when a recorded tool is missing, and that is
+right — the tool list is the front of the cached prefix, so a smaller toolbox is
+a different agent and its divergences say nothing about the question. The tools
+it caught were the ones registered **only by a front-end**: `ask_user` in 246 of
+408 sessions, `recall` in 122, `show_file` in 55. The coupling closes on itself
+— a probe needs an intervention, interventions happen interactively, interactive
+sessions carry `ask_user` — so the bail fired on exactly the population the
+probes exist to read. **319 of 407 sessions.** A `surface_only` registry
+supplies them where nothing executes, and the store goes from 22% replayable to
+76%.
+
+The gate is on what a mode *does*, never on its name: `Stop` **and** `Error`,
+because they run identically and differ only in the policy a caller applies to
+the report. Not `Live`, where the replay continues as a genuine fresh run and a
+fresh run holding a permanently-erroring tool is not one — its divergence would
+read as a finding about the model when it is a finding about the harness. That
+is measurement validity rather than fail-fast, and it took two wrong answers to
+get to: gating on `Stop` alone leaves a non-executing mode still bailing, and
+gating on nothing at all was the correction that overshot.
+
+**Then the probes ran, and 12 of 13 came back inconclusive.** Three hypotheses
+died in order, each killed by the lane that had not proposed it. Sampling
+nondeterminism: the store records `seed: 42` on 388 of ~394 sessions, so the
+sampler was pinned three ways over. Contention: `/slots` polled throughout every
+run, maximum one slot busy, which was the probe itself. Recency of the one
+success: it is *older* than the sessions that fail. What replaced them is
+better than any of them — **yield is a race between the probe point and the
+divergence point**, and the one success has its intervention at turn 2, the
+earliest in the set.
+
+The signature that settled the cause is worth keeping. Divergence indices
+`#0:2 #1:6 #2:2 #3:1 #5:1`, median **one call**, against steer points from 3 to
+33 — and one session contributing six probes with steer points at 10, 17, 20,
+21, 28 and 33, **all six diverging at the same call**. A trajectory-dependent
+cause cannot produce that. A per-session constant can.
+
+**The constant is the tool surface, and the comment that should have caught it
+was one word short.** `RunConfig` keeps the system prompt in full and says why —
+*"the text lets a replay rebuild the request"* — and keeps the tools as names,
+under a comment naming the risk it saw: *"a tool added, removed or renamed
+between recording and replay changes what the model could have done."* Add,
+remove and rename are the three that almost never happen. **Re-describe happens
+constantly** — 49 commits touched tool definitions in three weeks of this store
+— and a list of names cannot see it. Tools render *before* the system prompt, so
+the replay was rebuilding the back half of the prefix byte-exactly and the front
+half from whatever the registry said today.
+
+`surface.rs` is the fix and it was decided by a measurement rather than a
+preference: the specs are 69 KB against a 25 KB average session, so inlining
+them would have quadrupled the session store, and a hash alone gives up the
+rebuild that is the point of recording it. So they are written once per distinct
+surface and cited by hash, on `ValidationRecord`'s `rules_hash` precedent.
+`Option`, so a recording from before the field lands in **Unknown** and can
+never read as matching — and `Differs` needs no blob at all, so legibility
+arrives the day the field ships while rebuildability accumulates after.
+
+**It recovers nothing already recorded, and the honest form of that is a
+sentence nobody wanted to write**: the appraisal corpus and the validation
+ledger start from zero the day it ships. The prediction it makes — restoring the
+surface should push the divergence index up — is therefore **untestable on the
+current corpus**, and both lanes agreed to say so rather than re-run the 13 and
+read something into the number.
+
+One thing did come out end to end. The first non-neutral affect label this
+system has produced: `{neutral: 119, regret: 1}` — one session where the replay
+went elsewhere without the steer, carried from the probe through `apply_probe`'s
+`Agency::Own` to `affect_of`. One of 120 is not a result. It is the seam
+working.
+
+And two smaller findings, both of the same shape as the big one. `serves:` has
+**never carried a value in production** — 112 of 120 sessions wrote a plan, none
+named what it serves, including 15 delegated task runs, which is the case the
+field exists for. And `sessions appraise` reported that zero **by construction**:
+it passed `&[]` for goals unconditionally, so the command built to measure
+whether the labels were degenerate could never have reported anything else.
+Absent and zero conflated inside the instrument.
 
 ## The measurement record
 
@@ -3212,6 +3342,48 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**Three tests written in one session passed on both arms, and the third was
+caught only because the second had been.** One asserted a queued instruction
+survived a turn that could not serve it, on a scenario that never reached the
+line under test. One pinned the printed half of a rendered number while the
+contradiction lived in the arithmetic beside it. One asserted a flag was
+still set after a code path that, in that scenario, never ran. Each looked
+like coverage of exactly the defect it missed.
+
+The habit that catches them is cheap and mechanical: **revert the fix and
+watch the test fail before believing it** — and, twice here, *check the
+revert actually applied*, because a scripted edit that silently matched
+nothing produces a green run that reads identically to a passing test. The
+harder judgement is the other half: when a defect's trigger is genuinely
+unreachable from outside — a flag set only by loop-internal state — the right
+answer is to ship the fix with the reasoning beside it and **no** test,
+rather than a test that cannot fail. A false green is worse than a gap,
+because a gap is visible.
+
+**A stale mtime is a stale build, and it reports success** (2026-08-27, the
+probe lane's). After a cherry-pick, `cargo build` reused an old binary because
+git had restored a source mtime older than the last artifact — and printed
+`Finished`. Two full probe runs measured code that was not in the binary.
+CLAUDE.md's rule is *"a fresh mtime is not a fresh build"*; this is the inverse
+and fails identically, so the rule generalises: **the mtime says nothing in
+either direction, and only the artifact can answer what it can do.**
+
+**…and the obvious way to ask the artifact is easy to get wrong** (same lane,
+same hour, and the better half of the lesson). The check was `strings
+target/debug/mecha | grep -c "turn "` → 42, read as confirmation. **`"return "`
+contains `"turn "`.** The probe string collided with ordinary compiled text and
+would have passed against any binary ever built. **A verification that can pass
+for the wrong reason is worse than none:** pick a literal that cannot collide,
+and confirm it is *absent before* the change as well as present after — a
+one-sided check cannot tell a fixed build from a lucky substring.
+
+**`cd X && ( … ) &` backgrounds the whole list, including the `cd`** (same
+lane). Three probe runs executed `./target/debug/mecha` from the main checkout
+rather than the worktree — a different branch's binary — and produced plausible
+output throughout. **In any backgrounded shell, address binaries and outputs
+absolutely**: a relative path resolves silently against whatever working
+directory survived, and the failure looks exactly like a result.
 
 **A deliberate break, made to prove a test is not vacuous, was left in the
 tree** (2026-08-27). The check itself is the project's own rule — verify a fix
@@ -5060,6 +5232,29 @@ asserted about. **When re-upserting to update, enumerate what the write
 touches and carry forward everything you are not deliberately changing**; the
 dangerous fields are the ones with a plausible default, because those fail
 silently rather than erroring.
+
+### A merge, made under a standing authorization, can race a fix in flight elsewhere
+
+**A background fork was given "merge PRs once they pass review" and merged
+#86 at 17:57:02Z using its round-3 tip.** A fourth review round had already
+posted findings against #86 by then, in the foreground session's own context
+— genuine ones (a missing test for `boredom_rate`'s None-not-zero contract, a
+missing denominator clause on a print line, two doc-comment welds) — and the
+foreground session had already started fixing them. The fix landed and was
+pushed at 18:05:36Z, eight minutes after the merge, to a branch whose PR was
+by then closed. `main` never got it; a follow-up PR (#93) had to cherry-pick
+the same commit back in.
+
+The fork was not wrong to check GitHub's state before merging — it did, and
+at the moment it checked, nothing it could read said a fourth round existed
+yet. The gap was that "has this PR passed review" was answered against
+GitHub alone, when the more current answer — "review found more, and it's
+being fixed right now" — existed only in a sibling conversation's working
+context, with no shared channel either side was checking. **A standing merge
+authorization is a green light for the git state, not a substitute for
+asking whether anyone nearby has unpushed work against the same PR** — a
+`SendMessage` before the merge ("about to merge #86, anyone got fixes in
+flight?") would have cost one round trip and avoided the whole repair.
 
 ## Design notes worth keeping
 

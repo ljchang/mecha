@@ -50,15 +50,6 @@ pub struct ProbePrep {
 }
 
 impl ProbePrep {
-    /// The tool-surface fingerprint the recording carries, if it carries one.
-    ///
-    /// `None` is a recording made before the field existed, and the caller must
-    /// read it as *unknown* rather than as a match — which is why this hands
-    /// back the `Option` rather than a `bool` or a resolved verdict.
-    pub fn recorded_tools_hash(&self) -> Option<&str> {
-        self.recorded.tools_hash.as_deref()
-    }
-
     /// The tool names the recording carried — what a fidelity check must
     /// narrow a live registry down to before fingerprinting it, never the
     /// live registry's own full name list.
@@ -90,6 +81,13 @@ impl ProbePrep {
             Some(b) if self.base_system.is_empty() => b.to_string(),
             Some(b) => format!("{}\n\n{b}", self.base_system),
         }
+    }
+
+    /// The tool-surface hash the recording carried, if any — feeds
+    /// [`mecha_core::surface::Fidelity::of`] against a live registry. `None`
+    /// is a recording from before the field existed, not a match.
+    pub fn tools_hash(&self) -> Option<&str> {
+        self.recorded.tools_hash.as_deref()
     }
 }
 
