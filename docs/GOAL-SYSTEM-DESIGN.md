@@ -1,8 +1,9 @@
 # The goal system — design
 
 Decided 2026-08-26. **Rungs 0–5 of §14 shipped the same day** (PRs #61–#72),
-rung 5's model-facing half followed on 2026-08-27 (#78), and **rung 6 shipped
-the same day**. Rung 7 is next.
+rung 5's model-facing half followed on 2026-08-27 (#78), and **rungs 6 and 7's
+observation half shipped the same day** — the latter with a measurement that
+argues against the build order below. Rung 8 waits on it.
 The body below is the design as proposed and is
 deliberately not rewritten — `docs/HISTORY.md` records what was built, and the
 gap between the two is evidence about how the built thing came to be shaped
@@ -18,7 +19,8 @@ beside the original rather than replacing it (§2.1 and §4.4).
 | 4 | prioritised replay + uniform holdout | shipped, #66 |
 | 5 | predictive compaction and task sizing | shipped, #69/#71/#72 + #78 |
 | 6 | boredom, and the deterministic half of step appraisal | shipped, 2026-08-27 — with §5.5's three comparison signals and §9.1's rung 2 named rather than built |
-| 7–11 | the appraisal store and the `Affect` function onward | unbuilt |
+| 7 | the appraisal record and the pure `Affect` function | **observation half shipped**, 2026-08-27; the quarantined appraiser (§5.1) and the model half of step appraisal are open |
+| 8–11 | consumers of the label, the charter, curiosity | unbuilt, and §14's note below argues the order should change |
 
 Everything shipped so far has no model, no charter and no adversary in it,
 which is §14's ordering rather than a coincidence.
@@ -1190,6 +1192,38 @@ Each rung is independently useful and independently measurable.
    Observation only — build the corpus and check the labels are not
    degenerate before anything consumes them. If 95% come back neutral the
    channel is dead, learned cheaply.
+
+   *Built 2026-08-27 (`appraisal.rs`, `mecha sessions appraise`), and the
+   measurement came back at the pessimistic end: **119 signed goal errors
+   across 120 appraised sessions, and 100% of the labels neutral.** Nothing is
+   broken — every label that could have fired needs a dimension nothing
+   measures. Three corrections follow from building it.*
+
+   **The store is not built, and should not be yet.** Every deterministic
+   channel is a pure function of records the machine already keeps, so a store
+   here is `runlog`'s rejected ledger: faster, and a second source of truth
+   that can disagree with the first. §10 gives this rung a store; it earns one
+   with the first channel that *costs* something to compute, which is the
+   quarantined appraiser, because a model run cannot be re-derived for free.
+
+   **It is per session, not per run.** The record in §5 carries a session id
+   and no run index, and that is load-bearing rather than incidental: both
+   working channels are session-scoped — an intervention carries a message
+   index with nothing recording which run held it, and an outbox item records
+   the session that drafted it — so a per-run appraisal multiplies both by the
+   number of times a session was resumed. Measured at 5.9× on the intervention
+   channel before it was caught.
+
+   **And the build order below is wrong for what the labels need.** §14 puts
+   the charter at rung 10 and the probe machinery nowhere in particular. The
+   corpus says a counterfactual verdict is what gives an intervention error a
+   label at all, and interventions are 102 of the 119, where a charter buys
+   only the 11 positive ones. Whatever is built next for the *readout's* sake,
+   the probe is the cheaper half — with two corrections from the lane that
+   built it, recorded in HANDOFF: the probe reaches only the steer and denial
+   interventions rather than every one, and today it reaches none of them,
+   because `replay_registry` cannot build a surface containing `ask_user` and
+   every interactive session has one.
 8. **Goal-closure appraisal and the readout surfaces** (§5.4, §6.2).
 9. **Episode tagging, review-queue salience, gossip seeding** (§10).
 10. **The charter** (§11), anticipated guilt (§7.4), and the homeostat into
