@@ -463,6 +463,17 @@ pub struct AgentConfig {
     /// user should get that protection. Identical arguments with a *changing*
     /// result is polling and never trips it.
     pub loop_guard: bool,
+    /// Tell a run when an approach has stopped teaching it anything
+    /// (`docs/GOAL-SYSTEM-DESIGN.md` §9.1).
+    ///
+    /// On by default, beside `loop_guard`, and the pair is the point: the
+    /// guard *ends* a run that is re-living what a compaction dropped, and
+    /// this speaks to one that is going nowhere while there is still something
+    /// to do about it. It spends nothing — the run was going to happen — so
+    /// there is no cost to weigh against the no-config user getting it. Off is
+    /// for pinning a scorecard, where any harness-authored text is part of
+    /// what a case measures.
+    pub boredom: bool,
     /// Check each summary against the transcript it replaces before
     /// installing it, and regenerate once with the omissions named.
     ///
@@ -497,6 +508,7 @@ impl Default for AgentConfig {
             timezone: None,
             compact_keep_recent: 6,
             loop_guard: true,
+            boredom: true,
             compact_validate: true,
         }
     }
@@ -1142,6 +1154,7 @@ struct AgentLayer {
     compact_keep_recent: Option<usize>,
     compact_validate: Option<bool>,
     loop_guard: Option<bool>,
+    boredom: Option<bool>,
     timezone: Option<String>,
 }
 
@@ -1230,6 +1243,9 @@ impl ConfigLayer {
             }
             if let Some(v) = a.compact_validate {
                 t.compact_validate = v;
+            }
+            if let Some(v) = a.boredom {
+                t.boredom = v;
             }
             if let Some(v) = a.loop_guard {
                 t.loop_guard = v;
