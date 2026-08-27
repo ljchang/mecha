@@ -1148,6 +1148,26 @@ impl Agent {
     /// every turn anyway, so a mid-run change costs one slightly-off
     /// prediction and corrects itself. The case worth catching is the one that
     /// happens *between* runs, where nothing else would notice.
+    /// What a run that has stopped making progress can actually reach.
+    ///
+    /// Read off the *available* surface rather than the registry, so a run
+    /// narrowed by a loaded skill is never pointed at a tool it cannot
+    /// dispatch — the level-3 skill bug, which was a name in a prompt for a
+    /// call that could only fail. Deterministic because the registry is a
+    /// `BTreeMap`: naming a different delegate from one run to the next would
+    /// be arbitrary where it looks like a decision.
+    fn escapes(&self) -> crate::boredom::Escapes {
+        crate::boredom::Escapes {
+            delegate: self
+                .registry
+                .available_names()
+                .into_iter()
+                .filter_map(|name| self.registry.get(name))
+                .find(|tool| tool.runs_a_fresh_conversation())
+                .map(|tool| tool.name().to_string()),
+        }
+    }
+
     fn request_surface(&self, cx: &RunContext) -> u64 {
         let specs = self.registry.specs_for(cx.phase);
         crate::pressure::surface_fingerprint(
@@ -1218,6 +1238,7 @@ impl Agent {
         // is `RunConfig`'s to record.
         let mut cache_lens = crate::cache_lens::CacheLens::new();
         let mut loop_guard = LoopGuard::new(self.cfg.loop_guard);
+        let mut boredom = crate::boredom::Boredom::new(self.cfg.boredom);
         let mut loop_detected = false;
         // Consecutive empty turns, reset by any turn that produces something.
         // This used to count across the whole run on the theory that a model
@@ -1864,7 +1885,15 @@ impl Agent {
                         .into_iter()
                         .map(|(id, name, input)| (id, (name, input)))
                         .collect();
-                    let turn_digests: Vec<u64> = results
+                    //
+                    // One walk, two consumers, for the reason the byte
+                    // measurement above is taken once: pairing every result
+                    // with its call renders each input, and both readers need
+                    // the same three values. They key differently on purpose —
+                    // the guard on the exact call, boredom on the *target*, so
+                    // two tools that read one file and get the same bytes count
+                    // as the same thing learned twice.
+                    let outcomes: Vec<(&str, &Value, &str)> = results
                         .iter()
                         .filter_map(|block| {
                             let Block::ToolResult {
@@ -1876,16 +1905,37 @@ impl Agent {
                                 return None;
                             };
                             let &(name, input) = inputs.get(tool_use_id.as_str())?;
-                            Some(LoopGuard::digest(name, input, content))
+                            Some((name, input, content.as_str()))
                         })
                         .collect();
-                    if loop_guard.observe_turn(turn_digests) {
+
+                    if loop_guard.observe_turn(
+                        outcomes
+                            .iter()
+                            .map(|(name, input, content)| LoopGuard::digest(name, input, content)),
+                    ) {
                         tracing::warn!(
                             "identical call and result repeated after a compaction; stopping"
                         );
                         loop_detected = true;
                     }
+                    // Between "proceeding" and the guard's "dead": an approach
+                    // that has stopped teaching the run anything, named while
+                    // there is still something to do about it.
+                    let bored =
+                        boredom.observe_turn(outcomes.iter().map(|(name, input, content)| {
+                            (*name, crate::boredom::Boredom::key(name, input, content))
+                        }));
+
                     messages.push(Message::tool_results(results));
+                    // Folded into the message carrying the results, which is
+                    // the same slot steering uses and for the same reason:
+                    // two user messages in a row are invalid, and there is no
+                    // legal slot between a `tool_use` and its result.
+                    if let Some((rung, tool)) = bored {
+                        tracing::debug!(%tool, ?rung, "an approach has stopped moving");
+                        append_user_text(messages, rung.notice(&tool, &self.escapes()));
+                    }
                 }
                 // A server-side tool loop paused mid-turn. Resending the
                 // conversation as-is resumes it; no extra user message.
@@ -5457,6 +5507,168 @@ mod tests {
             result_len < 1_000,
             "the result was not thinned: {result_len} bytes"
         );
+    }
+
+    // --- boredom ---
+
+    /// Between "proceeding" and the loop guard's "dead". The guard is dormant
+    /// until a compaction and its response is to end the run; this speaks
+    /// while there is still something to do about it.
+    #[tokio::test]
+    async fn an_approach_that_stops_teaching_the_run_anything_is_named_once() {
+        let same = || {
+            assistant(
+                vec![Block::ToolUse {
+                    id: "e".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "the same answer"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, _) = agent_with_tools(
+            vec![
+                same(),
+                same(),
+                same(),
+                same(),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(EchoTool)],
+            PermissionMode::Allow,
+        );
+
+        let mut convo = Conversation::user("go");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let notices: Vec<&Message> = convo
+            .messages
+            .iter()
+            .filter(|m| m.text().contains("returned exactly the same thing"))
+            .collect();
+        assert_eq!(
+            notices.len(),
+            1,
+            "a rung is crossed once — a notice every turn is the shape eviction exists to remove"
+        );
+
+        // Folded into the message carrying the tool results, not appended as a
+        // message of its own: two user messages in a row are invalid, and
+        // there is no legal slot between a `tool_use` and its result.
+        assert_eq!(notices[0].role, Role::User);
+        assert!(
+            notices[0]
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult { .. })),
+            "the notice rode on the results message"
+        );
+
+        // The second turn's results message is clean: two identical outcomes
+        // is a retry, which is how work gets done.
+        let second_results = convo
+            .messages
+            .iter()
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult { .. }))
+            })
+            .nth(1)
+            .unwrap();
+        assert!(!second_results.text().contains("same thing"));
+    }
+
+    /// The identical call, over and over, with the answer changing under it —
+    /// which is what watching something looks like and must never grade as
+    /// stuck. Written with a tool whose result moves rather than with six
+    /// different arguments: six arguments are six targets, so that version
+    /// would pass against a key that ignored the result entirely.
+    #[tokio::test]
+    async fn a_changing_result_is_polling_and_is_never_called_stuck() {
+        struct PollTool(std::sync::atomic::AtomicU32);
+        #[async_trait]
+        impl Tool for PollTool {
+            fn name(&self) -> &str {
+                "status"
+            }
+            fn description(&self) -> &str {
+                "How far along is it?"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                let n = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(ToolOutput::ok(format!("{n}% done")))
+            }
+        }
+
+        let mut turns: Vec<CompletionResponse> = (0..6)
+            .map(|i| {
+                assistant(
+                    vec![Block::ToolUse {
+                        id: format!("s{i}"),
+                        name: "status".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                )
+            })
+            .collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![Arc::new(PollTool(std::sync::atomic::AtomicU32::new(0)))],
+            PermissionMode::Allow,
+        );
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("watch it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(
+            convo
+                .messages
+                .iter()
+                .all(|m| !m.text().contains("same thing")),
+            "six identical calls with six different answers is watching, not repeating"
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_boredom_off_leaves_the_transcript_alone() {
+        let same = || {
+            assistant(
+                vec![Block::ToolUse {
+                    id: "e".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "x"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (mut agent, _) = agent_with_tools(
+            vec![
+                same(),
+                same(),
+                same(),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(EchoTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.boredom = false;
+
+        let mut convo = Conversation::user("go");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo
+            .messages
+            .iter()
+            .all(|m| !m.text().contains("same thing")));
     }
 
     // --- step appraisal ---
