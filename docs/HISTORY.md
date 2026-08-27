@@ -915,6 +915,38 @@ itself as a bulleted list, so its instruction opens with `- `, clap read it as
 a flag, and the run exited 2 before starting — which Harbor scores 0.0,
 indistinguishable from a model that tried and failed.
 
+**2026-08-11 — the fix is measured, and it moves the constraint rather than
+removing one.** The v0.1.2 relaunch ran 46 of 75 before being stopped, and on
+the 28 tasks both runs reached: passes **13 → 15**, wall clock **10.5h → 6.0h**,
+timeouts **5 → 2**, crashes **1 → 0**, empty-turn nudges **41 → 0**. The speed
+is the mechanistic part — per-turn cost collapsed toward a floor, and
+`break-filter-js-from-html`, already at that floor at 14s/turn, did not move
+while trials at 35–100s/turn fell to 6–39s. The score is the modest part, and
+its shape is one story: three of four flips to a pass were trials the old run
+stopped *too early* (3 turns, 12 turns, one that never finished), and the one
+flip away was the same persistence overrunning a wall clock. The model did not
+get smarter; the harness stopped hiding what it could already do.
+
+Two open questions closed with numbers rather than argument. **Unbounded
+reasoning replay does not drive compaction** — 1 trial in 28 before, 2 in 46
+after, and the trials hit the turn cap long before the 174,762-token
+threshold, so the "bound it to the last N turns" design would have solved
+nothing. And **`max_turns` is now the binding constraint**: 26% of trials
+ended at exactly 80, passing 30% against 50–67% in every band below. 80 was a
+ceiling this project chose while the real constraints were empty-turn waste
+and the clock; removing those moved the binding one and nobody re-derived the
+number. Terminal-Bench's own default is 200, so the third run uses that.
+
+One correction worth recording because it nearly became a change: the session
+proposed adding tool-output offloading, and `ToolCtx::spill_dir` had done
+exactly that since 2026-08-05 — 12 of 46 trials spilled, with the marker
+naming its own `fs_read` recovery. The follow-on proposal, to lower the
+budget so spilling fires more often, was refuted by this repo's own
+`CONTEXT-RESEARCH.md`: one arm cut tool-output tokens 38.4% and cost **6.8%
+more**, r = 0.154, because trajectory length dominates and re-reading spilled
+output costs turns. Reasoning from context *occupancy* without checking the
+*cost* evidence already collected here is what produced both errors.
+
 **2026-08-10 (night) — an artifact gets the URL a person can open, and the
 review bot turns out never to have run.** Two arcs, one on each side of the
 repo boundary.
@@ -3335,6 +3367,17 @@ regression hides.**
   hand-listed negation phrasings. The negation phrasing space has no bottom —
   that case is judge-only now. Reach for `expect.judge` when you catch yourself
   enumerating synonyms.
+- **Check what the project already measured before proposing the fix.** A
+  session profiling context growth found tool output filling ~8k tokens a turn
+  and proposed two changes: add offloading, then lower the budget so it fires
+  more. Offloading had existed since 2026-08-05 (`ToolCtx::spill_dir`), and
+  `CONTEXT-RESEARCH.md` had already measured the second — cutting tool-output
+  tokens 38.4% cost **6.8% more**, r = 0.154, because trajectory length
+  dominates and re-reading spilled content costs turns. Both errors came from
+  optimising *context occupancy* without checking the *cost and outcome*
+  evidence in this repo. A `docs/*-RESEARCH.md` with an "ordered implications"
+  section is a checklist to read before proposing, not a document to write
+  after deciding.
 - **Quoting a string is not the same as protecting it.** The benchmark adapter
   `shlex.quote`d each task instruction, which is the correct reflex for
   untrusted text on a command line and did nothing here: quoting guarantees the
