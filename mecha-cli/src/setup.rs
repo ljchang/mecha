@@ -668,7 +668,8 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     let compact_allowed = opts.tools.is_empty() || opts.tools.iter().any(|t| t == "compact");
     let compact_disabled = cfg.tools.disabled.iter().any(|t| t == "compact")
         || (!cfg.tools.enabled.is_empty() && !cfg.tools.enabled.iter().any(|t| t == "compact"));
-    let compact_requested = compact_requested.filter(|_| compact_allowed && !compact_disabled);
+    let compact_requested =
+        compact_requested.filter(|_| compact_allowed && !compact_disabled && !opts.no_compact_tool);
     if compact_requested.is_some() {
         registry.insert(Arc::new(mecha_core::tool::builtin::CompactTool));
     }
