@@ -1335,11 +1335,30 @@ impl Agent {
                 // first place: the harness floor below is untouched, and no
                 // reasoning the model does (or is steered into) can make a run
                 // compact later than it would have.
+                //
+                // **Read without clearing, and cleared only where it is
+                // acted on. Deliberately untested, which is worth saying.**
+                //
+                // The two conditions that reach this line without acting —
+                // `compaction_gave_up` and `loop_detected` — are loop-local
+                // and cannot be set from outside, so a test can reach the
+                // swap or reach the skip but not both. The first attempt at
+                // one passed on the old ordering *and* the new, which makes
+                // it worse than nothing: this file already records three
+                // green-for-the-wrong-reason tests, and a fourth asserting an
+                // outcome it never exercises would read as coverage of
+                // exactly the case it misses. Taking it here consumed the request on the one
+                // path that cannot honour it: after a failed summariser call
+                // `compaction_gave_up` is set, and a model that then asked
+                // was told the transcript would be summarised while the flag
+                // was thrown away — told yes, nothing done, nothing recorded.
+                // A request that cannot be served must survive the turn that
+                // could not serve it, so the next one can.
                 let asked = cx
                     .tools
                     .compact_requested
                     .as_ref()
-                    .is_some_and(|f| f.swap(false, std::sync::atomic::Ordering::Relaxed));
+                    .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed));
                 if asked {
                     tracing::info!("the model asked to compact");
                 }
@@ -1347,6 +1366,12 @@ impl Agent {
                     && !loop_detected
                     && (asked || pressure.over(limit, crate::pressure::message_bytes(messages)))
                 {
+                    // Taken now that it is being acted on. Inside the
+                    // guard, so a request the run could not serve is still
+                    // pending for the turn that can.
+                    if let Some(flag) = cx.tools.compact_requested.as_ref() {
+                        flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                    }
                     // What is about to be rewritten, kept for the recording:
                     // the front-end records at run end, so without this the
                     // turns a rewrite replaces were never anyone's to write.
