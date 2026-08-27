@@ -121,7 +121,7 @@ impl Tally {
 ///
 /// Asked *before* the session is loaded, so the commonest skip costs no I/O
 /// and no budget.
-fn replayable(t: mecha_core::learning::Trigger) -> bool {
+pub(crate) fn replayable(t: mecha_core::learning::Trigger) -> bool {
     use mecha_core::learning::Trigger;
     matches!(t, Trigger::Steer | Trigger::Denial)
 }

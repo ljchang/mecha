@@ -451,9 +451,20 @@ async fn appraise(
         // discarded and only its registry is borrowed.
         let prepared = crate::setup::prepare(global, false).await?;
         let wanted: usize = per_session_interventions.iter().map(Vec::len).sum();
+        // The honest ceiling, not `wanted`: `probe_appraisal` checks
+        // `replayable(trigger)` before spending budget, so a `followup` or an
+        // `edit` — most of an ordinary corpus — costs nothing and was never
+        // going to be probed regardless of `max_probes`. Reporting `wanted`
+        // here reads as a cap that will bind when it almost never does.
+        let replayable: usize = per_session_interventions
+            .iter()
+            .flatten()
+            .filter(|i| crate::appraisal_probe::replayable(i.trigger))
+            .count();
         eprintln!(
-            "probing up to {} of {wanted} intervention(s) with {model} ({provider_name})",
-            max_probes.min(wanted)
+            "probing up to {} of {replayable} replayable intervention(s) ({wanted} total) \
+             with {model} ({provider_name})",
+            max_probes.min(replayable)
         );
         for (a, interventions) in appraisals.iter_mut().zip(&per_session_interventions) {
             let t = crate::appraisal_probe::probe_appraisal(
@@ -471,10 +482,19 @@ async fn appraise(
         // **No silent caps.** The walk spends its budget newest-session-first,
         // so a truncated run describes recent work and not the corpus — which
         // is a defensible order and an indefensible thing to leave unsaid.
-        if wanted > max_probes {
+        // Asked of what the budget actually refused, never of the
+        // intervention count: `probe_appraisal` checks `replayable(trigger)`
+        // *before* spending budget, so a `followup` or an `edit` costs
+        // nothing — which is the whole point of `Tally::unprobeable`
+        // existing apart from `over_budget`. `wanted > max_probes` fires on a
+        // corpus that is mostly followups (the common shape) even when
+        // nothing was actually capped.
+        if tally.over_budget > 0 {
             eprintln!(
-                "budget stopped at {max_probes} of {wanted}; the labels below \
-                 describe the newest sessions, not the whole store"
+                "budget stopped at {max_probes}; {} replayable intervention(s) went \
+                 unprobed, so the labels below describe the newest sessions, not the \
+                 whole store",
+                tally.over_budget
             );
         }
     }
