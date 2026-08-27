@@ -199,9 +199,9 @@ impl std::fmt::Display for Forecast {
             (Some(rate), Some(turns)) => write!(
                 f,
                 "; recent turns cost ~{}k each, so about {turns} more at this pace",
-                rate.max(1) / 1000
+                (rate / 1000).max(1)
             ),
-            (Some(rate), None) => write!(f, "; recent turns cost ~{}k each", rate.max(1) / 1000),
+            (Some(rate), None) => write!(f, "; recent turns cost ~{}k each", (rate / 1000).max(1)),
             _ => Ok(()),
         }
     }
@@ -797,6 +797,31 @@ mod tests {
     }
 
     #[test]
+    /// A slow-growing run still reports a cost, and never "~0k each".
+    ///
+    /// `(rate / 1000).max(1)` reads as the guard for this and is not one: the
+    /// rate is already filtered to `> 0`, and every rate under 1000 still
+    /// divides to zero. The line then says a turn costs nothing beside a
+    /// finite count of turns left — the one internally inconsistent thing it
+    /// can say, and the shape a reader would take as "no pressure here".
+    #[test]
+    fn a_sub_1k_growth_rate_still_reads_as_a_cost() {
+        let mut t = ContextTracker::new();
+        t.observe(10_000, 30_000);
+        t.observe(10_400, 31_000);
+        let f = t.forecast(100_000, 31_000).unwrap();
+        assert_eq!(f.per_turn, Some(400), "the rate under test is sub-1k");
+        let line = f.to_string();
+        assert!(
+            line.contains("~1k each"),
+            "a 400-token-a-turn run must not report a free turn: {line}"
+        );
+        assert!(
+            !line.contains("~0k"),
+            "rounded a real cost to nothing: {line}"
+        );
+    }
+
     fn the_line_the_model_reads_states_facts_and_asks_for_nothing() {
         let mut t = ContextTracker::new();
         t.observe(10_000, 30_000);
