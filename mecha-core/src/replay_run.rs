@@ -354,6 +354,70 @@ mod tests {
         }
     }
 
+    /// A tool that fails the test if it is ever executed. Stands in for
+    /// `ask_user`, whose execution would put a question in front of a human.
+    struct NeverRun;
+    #[async_trait]
+    impl Tool for NeverRun {
+        fn name(&self) -> &str {
+            "never_run"
+        }
+        fn description(&self) -> &str {
+            "Described, never called."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            panic!("a surface-only tool was executed by a replay");
+        }
+    }
+
+    /// A stand-in is **described and never run**, which is the whole safety
+    /// argument for letting one fill a gap at all.
+    ///
+    /// The tool this exists for is `ask_user`: putting it into an unattended
+    /// replay would be indefensible if the replay could call it, because the
+    /// call blocks on a person. It cannot — a recorded call is answered from
+    /// the recording, and `NeverRun` panics if that is ever untrue. Asserting
+    /// it here rather than reasoning about `Action::Live` being unreachable,
+    /// because the reasoning is what would rot if the dispatch changed.
+    #[tokio::test]
+    async fn a_surface_only_tool_is_described_and_never_executed() {
+        let mut fallback = Registry::new();
+        fallback.insert(Arc::new(NeverRun));
+        let registry = replay_registry(
+            &[NeverRun.name().to_string()],
+            &Registry::new(),
+            Some(&fallback),
+            vec![RecordedCall {
+                name: NeverRun.name().to_string(),
+                input: json!({}),
+                output: "the recorded answer".into(),
+                is_error: false,
+            }],
+            OnDivergence::Stop,
+            CancellationToken::new(),
+        )
+        .expect("the stand-in supplies the surface");
+
+        let tool = registry.get(NeverRun.name()).expect("registered");
+        // Described with the real tool's own words, so the model sees what the
+        // recording showed it rather than a paraphrase.
+        assert_eq!(tool.description(), NeverRun.description());
+        assert_eq!(tool.input_schema(), NeverRun.input_schema());
+
+        // And answered from the recording. `NeverRun::call` panics.
+        let out = tool
+            .call(json!({}), &ToolCtx::default())
+            .await
+            .expect("answered from the recording");
+        assert_eq!(out.content, "the recorded answer");
+    }
+
     /// A tool the live registry cannot build is served from `surface_only`
     /// **under `Stop` and nowhere else**.
     ///
