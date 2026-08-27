@@ -130,6 +130,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let registry = replay_registry(
         &recorded.tools,
         prepared.agent.registry(),
+        // Ignored under `Live`, where a missing tool must stay fatal; consulted
+        // under both non-executing modes, `Stop` and `Error` alike — see
+        // `replay_registry`.
+        Some(&crate::setup::surface_only_registry()),
         trajectory.calls.clone(),
         mode,
         cancel.clone(),

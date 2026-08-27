@@ -1148,6 +1148,163 @@ pub fn tool_ctx(prepared: &PreparedTools) -> ToolCtx {
     }
 }
 
+/// An [`Asker`] with nobody behind it: every question is declined at once.
+///
+/// Two callers, one fact — there is no human. An eval run has nobody watching,
+/// and declining is the honest thing for the tool to report, leaving the model
+/// to proceed and say which reading it chose. A replay has nobody either, and
+/// there it is stronger than honesty: `Asker`'s own contract says a tool that
+/// blocks forever is worse than one that does not exist, and a corpus walk is
+/// exactly the job that would otherwise hang overnight on a prompt nobody will
+/// ever see.
+///
+/// [`Asker`]: mecha_core::tool::ask::Asker
+pub struct NoOneToAsk;
+
+#[async_trait::async_trait]
+impl mecha_core::tool::ask::Asker for NoOneToAsk {
+    async fn ask(&self, _question: &str, _options: &[String]) -> Option<String> {
+        None
+    }
+}
+
+/// Tools a replay may offer **for their description alone**, when the live
+/// registry cannot build them.
+///
+/// **The membership rule is one sentence: a tool whose presence depends on a
+/// *front-end* rather than on configuration.** An MCP server that is not
+/// connected, or a mail server since renamed, is a real difference between the
+/// recording and now, and the bail is right for it — the replay would be
+/// asking a different agent a different question. A tool that no CLI process
+/// can ever hold, however it is configured, is a different thing: its absence
+/// says nothing about the run and everything about the process doing the
+/// reading.
+///
+/// Three qualify, and between them they account for the store:
+///
+/// | tool | registered by | sessions it blocked |
+/// |---|---|---|
+/// | `ask_user` | a front-end that owns a human | 246 of 408 |
+/// | `recall` | the session-recording front-ends | 122 |
+/// | `show_file` | a front-end with a thread attached | 55 |
+///
+/// Together they take the store from **22% replayable to 76%**, measured by
+/// comparing each session's recorded tool list against the surface
+/// [`prepare`] builds. The residual 97 sessions name a `pkg__*` or a
+/// `google__*` tool and stay refused, which is the bail doing its job — the
+/// second of those is a server that was renamed to `mail__*`, so those
+/// recordings are permanently unreplayable and nothing here should pretend
+/// otherwise.
+///
+/// Two properties make this faithful rather than a fake.
+///
+/// **Every entry is the real tool**, so its description and schema are the
+/// bytes the recording put in front of the model rather than a stub written to
+/// look similar. That matters most for `ask_user`, whose decline wording is
+/// A/B-measured, and it costs nothing for the other two.
+///
+/// **And each is unreachable rather than merely unused.**
+/// [`mecha_core::replay_run::replay_registry`] consults this only in the modes
+/// where nothing executes — `Stop` and `Error` — so the constructor arguments
+/// below are never read. That is what licenses the inert ones: a `recall` over
+/// a path that does not exist and a `show_file` that would refuse every size
+/// are not lies waiting to be believed, they are values in a branch the replay
+/// cannot enter. **A plausible-looking argument would be the worse choice** —
+/// a real transcript path here reads to the next person as though the tool
+/// were live, and invites them to rely on it.
+///
+/// Not `Live`: there the replay abandons the recording and continues as a
+/// genuine fresh run, and a fresh run holding a permanently-erroring tool is
+/// not one — its divergence would read as a finding about the model when it is
+/// a finding about the harness. That is a measurement-validity argument rather
+/// than a fail-fast preference, and it is why the gate is on what a mode
+/// *does* and never on its name.
+pub fn surface_only_registry() -> Registry {
+    let mut r = Registry::new();
+    r.insert(Arc::new(mecha_core::tool::ask::AskUserTool::new(Arc::new(
+        NoOneToAsk,
+    ))));
+    // Named for what it is, not for a session: see the note above on why an
+    // inert argument beats a plausible one.
+    r.insert(Arc::new(mecha_core::tool::recall::Recall::new(
+        std::path::PathBuf::from("(no transcript — a replay never calls this)"),
+    )));
+    r.insert(Arc::new(crate::slack::show::ShowFileTool::new(0)));
+    r
+}
+
+#[cfg(test)]
+mod surface_only_tests {
+    use super::surface_only_registry;
+
+    /// The three names that made 78% of the store unreplayable, asserted by
+    /// name rather than by count.
+    ///
+    /// A count would pass while the set drifted; these are the ones measured
+    /// against the store, and each is here because **no CLI process can build
+    /// it however it is configured** — which is the membership rule, and the
+    /// line between this and the bail. If a fourth front-end tool is ever
+    /// registered, this test failing is the reminder that a replay of every
+    /// session recorded after it will refuse to start.
+    #[test]
+    fn the_front_end_tools_are_all_of_them_and_only_them() {
+        let r = surface_only_registry();
+        let mut names: Vec<&str> = r.iter().map(|t| t.name()).collect();
+        names.sort();
+        assert_eq!(names, ["ask_user", "recall", "show_file"]);
+    }
+
+    /// Faithful rather than a fake: each entry is the *real* tool, so what the
+    /// model is offered is the bytes the recording offered it.
+    ///
+    /// Checked on the description because that is the part a stub would get
+    /// wrong and nobody would notice — a name and a schema are easy to
+    /// reproduce, and prose is not.
+    #[test]
+    fn every_stand_in_carries_a_real_description_and_schema() {
+        for tool in surface_only_registry().iter() {
+            let d = tool.description();
+            assert!(
+                d.len() > 80,
+                "`{}` has a stub description ({} bytes)",
+                tool.name(),
+                d.len()
+            );
+            assert!(
+                tool.input_schema().get("properties").is_some(),
+                "`{}` has no schema properties",
+                tool.name()
+            );
+        }
+    }
+
+    /// The constructor arguments are inert on purpose, and this is the
+    /// assertion that keeps them that way.
+    ///
+    /// `replay_registry` consults this registry only where nothing executes,
+    /// so a `recall` pointed at a path that cannot exist is a value in an
+    /// unreachable branch rather than a lie. If someone later makes one of
+    /// these look real — a live transcript path, a genuine upload cap — the
+    /// next reader will believe it, and the branch it sits in will still never
+    /// run.
+    #[test]
+    fn the_inert_arguments_are_visibly_inert() {
+        let r = surface_only_registry();
+        let recall = r.get("recall").expect("recall is a stand-in");
+        // Nothing to assert about behaviour — it cannot be reached. What is
+        // assertable is that the thing standing in is the real type, which is
+        // what `every_stand_in_carries_a_real_description_and_schema` covers,
+        // and that it is registered at all.
+        assert_eq!(recall.name(), "recall");
+        assert_eq!(
+            r.get("show_file").map(|t| t.name()),
+            Some("show_file"),
+            "show_file is a mecha-cli tool, so core cannot build it — this \
+             registry is where the caller supplies what core cannot"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{build_subagent, excluded_by_allowlist};

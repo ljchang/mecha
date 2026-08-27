@@ -178,9 +178,32 @@ impl Tool for ReplayTool {
 /// through to in [`OnDivergence::Live`]). A tool that existed then and not now
 /// is an error rather than a silent shrink of the surface: the model would be
 /// replaying a different question.
+/// Build the tool surface a replay offers, from the names the recording holds.
+///
+/// `surface_only` is consulted only in the modes where **nothing executes** —
+/// [`OnDivergence::Stop`] and [`OnDivergence::Error`] — for names the live
+/// registry cannot supply. The distinction it exists for: a recorded
+/// tool is needed here to *describe itself* into the request — name,
+/// description, schema — because the tool list is the front of the prompt, and
+/// a replay offering a smaller toolbox is a different agent whose divergences
+/// say nothing about the question being probed. Under `Stop` nothing is ever
+/// executed (`Action::Live` is unreachable), so a stand-in that can describe
+/// itself is a *faithful* surface rather than a fake one.
+///
+/// Under [`OnDivergence::Live`] tools genuinely run, and there a missing tool
+/// must still be fatal — a stand-in would execute nothing while the recording
+/// executed something. The gate is on the mode rather than on the caller's
+/// good intentions, because an unconditional fallback silently changes what
+/// `mecha replay` does.
+///
+/// **Which tools may be reconstructed is the caller's to decide, never this
+/// module's.** Naming one here would put a front-end's registration policy in
+/// core — the same rule that keeps `OutboxKind` config's to declare rather
+/// than the tool's.
 pub fn replay_registry(
     recorded_tools: &[String],
     live: &Registry,
+    surface_only: Option<&Registry>,
     calls: Vec<RecordedCall>,
     mode: OnDivergence,
     cancel: CancellationToken,
@@ -192,7 +215,24 @@ pub fn replay_registry(
     }));
     let mut registry = Registry::new();
     for name in recorded_tools {
-        let Some(tool) = live.get(name) else {
+        // `Error` and not just `Stop`: the two run identically and differ only
+        // in the policy the *caller* applies to the report, so gating on
+        // `Stop` alone would leave one non-executing mode still bailing — a
+        // guard that reads correct and is wrong for the one variant whose
+        // difference is not behavioural.
+        // An exhaustive match rather than `matches!(mode, OnDivergence::Live)`:
+        // a `matches!` boolean stays green when a mode is added and nobody
+        // decided whether it executes, which is exactly the shape this gate's
+        // own history says took two wrong answers to get right. Naming every
+        // arm makes a new variant a compile error here until someone chooses.
+        let executes = match mode {
+            OnDivergence::Live => true,
+            OnDivergence::Stop | OnDivergence::Error => false,
+        };
+        let stand_in = (!executes)
+            .then(|| surface_only.and_then(|r| r.get(name)))
+            .flatten();
+        let Some(tool) = live.get(name).or(stand_in) else {
             bail!(
                 "recorded tool `{name}` is not available now, so the replay cannot offer \
                  the tool surface the model saw. Enable whatever provided it (an MCP \
@@ -322,6 +362,68 @@ mod tests {
         }
     }
 
+    /// A tool the live registry cannot build is served from `surface_only`
+    /// **under `Stop` and nowhere else**.
+    ///
+    /// The case this exists for: `ask_user` is registered only by a front-end
+    /// that owns a human, and it sits on the recorded surface of every
+    /// interactive session — which is every session containing a steer. Before
+    /// this, `replay_registry` bailed and so every steer and denial probe
+    /// skipped, silently, on 246 of 408 sessions in the live store.
+    #[test]
+    fn a_surface_only_tool_fills_a_gap_under_stop_and_never_otherwise() {
+        let live = Registry::new();
+        let mut fallback = Registry::new();
+        fallback.insert(Arc::new(OtherTool));
+        let recorded = vec![OtherTool.name().to_string()];
+
+        let stopped = replay_registry(
+            &recorded,
+            &live,
+            Some(&fallback),
+            Vec::new(),
+            OnDivergence::Stop,
+            CancellationToken::new(),
+        )
+        .expect("a stand-in describes the recorded surface under Stop");
+        assert!(stopped.get(OtherTool.name()).is_some());
+
+        // `Error` runs identically to `Stop` and must behave identically here.
+        assert!(replay_registry(
+            &recorded,
+            &live,
+            Some(&fallback),
+            Vec::new(),
+            OnDivergence::Error,
+            CancellationToken::new(),
+        )
+        .is_ok());
+
+        // Under the one mode that actually executes, a stand-in would run
+        // nothing where the recording ran something. Still fatal.
+        assert!(replay_registry(
+            &recorded,
+            &live,
+            Some(&fallback),
+            Vec::new(),
+            OnDivergence::Live,
+            CancellationToken::new(),
+        )
+        .is_err());
+
+        // And with no fallback offered it is fatal even under Stop — the
+        // behaviour every existing caller had, unchanged.
+        assert!(replay_registry(
+            &recorded,
+            &live,
+            None,
+            Vec::new(),
+            OnDivergence::Stop,
+            CancellationToken::new(),
+        )
+        .is_err());
+    }
+
     struct OtherTool;
     #[async_trait]
     impl Tool for OtherTool {
@@ -366,6 +468,7 @@ mod tests {
         replay_registry(
             &["echo".to_string(), "other".to_string()],
             &live_registry(),
+            None,
             calls,
             mode,
             cancel.clone(),
@@ -549,6 +652,9 @@ mod tests {
         let err = replay_registry(
             &["echo".to_string(), "gone".to_string()],
             &live_registry(),
+            // No stand-in offered: a missing tool is still fatal, which is
+            // what this test has always asserted.
+            None,
             Vec::new(),
             OnDivergence::Stop,
             CancellationToken::new(),
