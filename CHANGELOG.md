@@ -54,6 +54,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   classified rather than dropped — kept, visible, and one gate away from being
   usable the day something can grade it.
 
+### Added
+
+- **`mecha sessions appraise` — how runs went against what they were *for*.**
+  Every evaluative signal mecha had was a cost or a correction, so a run could
+  be recorded as having gone badly and never as having gone well. This is the
+  signed record, derived on the spot from the transcript, the outbox and each
+  run's own counters — no store, because every channel is a pure function of
+  records already on disk. Observation only: nothing consumes the label.
+
+  Over a live store it reads 459 sessions, appraises 120, records **119 signed
+  goal errors and 100% neutral labels** — eleven of the errors positive, which
+  is the first time the one channel that can say a run went well has been
+  counted anywhere. Nothing is broken; every label that could have fired needs
+  a dimension nothing measures, and `appraisal.rs` names which one buys which.
+
 ## [0.1.15] - 2026-08-26
 
 Five surfaces that described themselves wrongly, found by using them. A chip
