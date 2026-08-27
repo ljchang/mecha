@@ -2576,7 +2576,7 @@ is a **pure function of the record**, because a model that reads a run and says
 fetched page saying *you have failed your owner* is aimed at.
 
 Working §6's derivation table answered most of the degeneracy question before
-any corpus did. Four of the eleven labels are unreachable from what mecha
+any corpus did. Six of the ten labels are unreachable from what mecha
 measures: `Pride` needs a charter line and a task well done is deliberately not
 one, `Guilt` needs a notion of harm that nothing computes (`visible` is
 exposure, a different claim), `Shame` is a cross-run pattern a per-event
