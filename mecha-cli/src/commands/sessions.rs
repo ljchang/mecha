@@ -1,7 +1,7 @@
 //! `mecha sessions` — look at what past runs actually did.
 
 use crate::GlobalOpts;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use mecha_core::message::{Block, Role};
 use mecha_core::session::Session;
 
@@ -63,6 +63,20 @@ pub enum Args {
         /// Emit JSON instead of a table.
         #[arg(long)]
         json: bool,
+
+        /// Resolve each intervention's agency by counterfactual replay.
+        ///
+        /// **This is the paid pass.** Without it `appraise` reads records
+        /// already on disk and costs nothing; with it every intervention
+        /// drives one replay of the recorded run *without* the steering text,
+        /// which is a model run apiece. That is what fills `controllable` —
+        /// the field 100% of the corpus's labels were stuck on.
+        #[arg(long)]
+        probe: bool,
+
+        /// Ceiling on replays, across the whole walk. Newest sessions first.
+        #[arg(long, default_value_t = 25, requires = "probe")]
+        max_probes: usize,
     },
 
     /// Total token usage — and cost, where prices are configured — across
@@ -78,13 +92,19 @@ pub enum Args {
     },
 }
 
-pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
+pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let dir = Session::default_dir()?;
 
     match args {
         Args::Health { days, limit, json } => health(&dir, days, limit, json)?,
 
-        Args::Appraise { days, limit, json } => appraise(&dir, days, limit, json)?,
+        Args::Appraise {
+            days,
+            limit,
+            json,
+            probe,
+            max_probes,
+        } => appraise(global, &dir, days, limit, json, probe, max_probes).await?,
 
         Args::List { limit } => {
             let sessions = Session::list(&dir)?;
@@ -306,11 +326,15 @@ fn first_line(s: &str) -> String {
 ///
 /// Derived on the spot from the transcripts, the outbox and each run's own
 /// record — see `appraisal::of_session` on why there is no store yet.
-fn appraise(
+#[allow(clippy::too_many_arguments)]
+async fn appraise(
+    global: &GlobalOpts,
     dir: &std::path::Path,
     days: Option<i64>,
     limit: Option<usize>,
     json: bool,
+    probe: bool,
+    max_probes: usize,
 ) -> Result<()> {
     use mecha_core::appraisal;
 
@@ -340,6 +364,10 @@ fn appraise(
     // records a session. `RunStats::fold` collapses a session's runs the way
     // rung 4's episode stats do, through the same fold.
     let mut appraisals = Vec::new();
+    // Kept beside each appraisal only for the probe pass. The free readout
+    // never looks at them again, so this allocates nothing extra when `--probe`
+    // is off — `of_session` has already read what it needs out of them.
+    let mut per_session_interventions: Vec<Vec<mecha_core::learning::Intervention>> = Vec::new();
     let mut sessions_read = 0usize;
     for (meta, path) in Session::list(dir)? {
         if since.is_some_and(|t| meta.created_at < t) {
@@ -398,6 +426,77 @@ fn appraise(
             end_taint,
             meta.created_at.to_rfc3339(),
         ));
+        per_session_interventions.push(if probe { interventions } else { Vec::new() });
+    }
+
+    // --- The paid pass ---
+    //
+    // Off by default, and the free readout above is byte-for-byte what it was:
+    // `appraise` with no flag still costs zero tokens and no model, which is
+    // the property that lets it be run over the whole store.
+    let mut tally = crate::appraisal_probe::Tally::default();
+    let mut budget = if probe { max_probes } else { 0 };
+    if probe && !appraisals.is_empty() {
+        let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+        let cfg = mecha_core::config::Config::load(&cwd)?;
+        let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
+        let built = mecha_core::provider::build(provider_cfg)?;
+        let model = global
+            .model
+            .clone()
+            .or_else(|| provider_cfg.model.clone())
+            .unwrap_or_else(|| built.default_model().to_string());
+        // A replay needs the live registry for tool specs, exactly as
+        // `mecha validate` and `mecha replay` do; the agent it builds is
+        // discarded and only its registry is borrowed.
+        let prepared = crate::setup::prepare(global, false).await?;
+        let wanted: usize = per_session_interventions.iter().map(Vec::len).sum();
+        // The honest ceiling, not `wanted`: `probe_appraisal` checks
+        // `replayable(trigger)` before spending budget, so a `followup` or an
+        // `edit` — most of an ordinary corpus — costs nothing and was never
+        // going to be probed regardless of `max_probes`. Reporting `wanted`
+        // here reads as a cap that will bind when it almost never does.
+        let replayable: usize = per_session_interventions
+            .iter()
+            .flatten()
+            .filter(|i| crate::appraisal_probe::replayable(i.trigger))
+            .count();
+        eprintln!(
+            "probing up to {} of {replayable} replayable intervention(s) ({wanted} total) \
+             with {model} ({provider_name})",
+            max_probes.min(replayable)
+        );
+        for (a, interventions) in appraisals.iter_mut().zip(&per_session_interventions) {
+            let t = crate::appraisal_probe::probe_appraisal(
+                &prepared,
+                provider_cfg,
+                &model,
+                dir,
+                interventions,
+                a,
+                &mut budget,
+            )
+            .await?;
+            tally.add(t);
+        }
+        // **No silent caps.** The walk spends its budget newest-session-first,
+        // so a truncated run describes recent work and not the corpus — which
+        // is a defensible order and an indefensible thing to leave unsaid.
+        // Asked of what the budget actually refused, never of the
+        // intervention count: `probe_appraisal` checks `replayable(trigger)`
+        // *before* spending budget, so a `followup` or an `edit` costs
+        // nothing — which is the whole point of `Tally::unprobeable`
+        // existing apart from `over_budget`. `wanted > max_probes` fires on a
+        // corpus that is mostly followups (the common shape) even when
+        // nothing was actually capped.
+        if tally.over_budget > 0 {
+            eprintln!(
+                "budget stopped at {max_probes}; {} replayable intervention(s) went \
+                 unprobed, so the labels below describe the newest sessions, not the \
+                 whole store",
+                tally.over_budget
+            );
+        }
     }
 
     let mut labels: std::collections::BTreeMap<String, usize> = Default::default();
@@ -423,6 +522,20 @@ fn appraise(
                 "channels": channels,
                 "positive_errors": positive,
                 "outbox_read": !outbox_unreadable,
+                // Absent, not zero, when no probe ran: "nothing was probed"
+                // and "probed and found nothing" are opposite findings, and a
+                // reader that cannot tell them apart is the bug this whole
+                // rung exists to avoid.
+                "probe": probe.then(|| serde_json::json!({
+                    "driven": tally.driven,
+                    "mattered": tally.mattered,
+                    "redundant": tally.redundant,
+                    "inconclusive": tally.inconclusive,
+                    "unprobeable": tally.unprobeable,
+                    "unavailable": tally.unavailable,
+                    "over_budget": tally.over_budget,
+                    "budget_left": budget,
+                })),
             }))?
         );
         return Ok(());
@@ -470,6 +583,41 @@ fn appraise(
         "    {:<16} {:>5}  — the only channel that can say a run went well",
         "of which +ve", positive
     );
+
+    if probe {
+        println!(
+            "\n  counterfactual probe ({} replay(s) driven)",
+            tally.driven
+        );
+        println!(
+            "    {:<16} {:>5}  — the steer was load-bearing: regret",
+            "mattered", tally.mattered
+        );
+        println!(
+            "    {:<16} {:>5}  — the run got there anyway: disappointment",
+            "redundant", tally.redundant
+        );
+        // Kept apart on purpose. An inconclusive probe cost a model run and
+        // posed no question; a skip cost nothing and had none to pose.
+        println!(
+            "    {:<16} {:>5}  — diverged before the probe point",
+            "inconclusive", tally.inconclusive
+        );
+        // Three ways to have no finding, and they call for three different
+        // responses: extend the mechanism, fix the registry, raise the budget.
+        println!(
+            "    {:<16} {:>5}  — followup/edit: no counterfactual to drive",
+            "unprobeable", tally.unprobeable
+        );
+        println!(
+            "    {:<16} {:>5}  — session or tool surface unavailable",
+            "unavailable", tally.unavailable
+        );
+        println!(
+            "    {:<16} {:>5}  — budget ran out first",
+            "not reached", tally.over_budget
+        );
+    }
     Ok(())
 }
 
