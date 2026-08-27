@@ -2174,6 +2174,48 @@ as a **delta**, not a level: a run that stages nine drafts raises the outbox by
 nine, so a level at run end cannot separate a run's own output from what it
 inherited.
 
+**2026-08-27 — admission control, and five findings out of the arc that
+prompted it.** R1 shipped on the number R3 measured rather than the one it
+was proposed with (`permit.rs`): three background seats against the server's
+four, held as files on `runmarker`'s rules because a delegation is now either
+a chat session inside `mecha serve` or a detached child, sharing nothing but
+the filesystem — so `batch.rs`'s in-process bound, which the design called
+for, would bound each process separately and none together. **Interactive
+work takes no permit at all**: the reserve is an absence rather than a
+control, because a pool that could refuse the person at the keyboard is a
+mechanism failing closed against the only user it exists for.
+
+**And a review of the context-pressure arc (#78) found eight things, of which
+five were fixed the same day.** Two were the same failure in different
+places: a subagent got the `compact` tool and its channel but not the
+threshold — the channel rides on `ToolCtx`, which the child clones wholesale,
+while the threshold rides on the `Agent`, which the child rebuilds field by
+field, so only one made the trip — and the loop took the request with a
+destructive `swap` *before* the guard that decides whether it can be served,
+so the one path that cannot honour a request was the one consuming it. Both
+told the model a summary would happen and produced none.
+
+The third is the one with the longest reach: **`mecha eval`'s tool surface
+had come to depend on local config.** `compact` is registered from whether
+this machine's settings give the run a compaction threshold, and the tool
+list is the front of the cached prefix — so two differently-configured boxes
+graded different prefixes and neither scorecard recorded which. The list of
+things eval forces off had been written in prose across forty lines, each
+entry added when it occurred to somebody, and one was missed; it is now
+`force_reproducible`, one function with a test over the whole set, so the
+next addition to the tool surface has to be decided about rather than
+remembered.
+
+Also: `compact`'s description promised `recall`, which only the
+session-recording front-ends register, so on a trigger or a Slack thread it
+both wasted a turn and asserted the reversibility that justifies the tool
+being unapproved to exactly the runs where it is false; and `Forecast::used`
+documented a total it does not compute — it excludes the results of the turn
+being executed and cannot include them, being an argument to the call that
+produces them. Left understated rather than padded to an upper bound, since
+trading a small understood undercount for a large invented one is the wrong
+direction on a number the model plans against.
+
 **2026-08-26 (eighth pass) — delegation became a conversation, which is what
 D2 said it was.** The owner tapped *ask mecha*, the card moved to `waiting`
 and vanished out of the view it was tapped in, and nothing happened that
@@ -3064,6 +3106,24 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**Three tests written in one session passed on both arms, and the third was
+caught only because the second had been.** One asserted a queued instruction
+survived a turn that could not serve it, on a scenario that never reached the
+line under test. One pinned the printed half of a rendered number while the
+contradiction lived in the arithmetic beside it. One asserted a flag was
+still set after a code path that, in that scenario, never ran. Each looked
+like coverage of exactly the defect it missed.
+
+The habit that catches them is cheap and mechanical: **revert the fix and
+watch the test fail before believing it** — and, twice here, *check the
+revert actually applied*, because a scripted edit that silently matched
+nothing produces a green run that reads identically to a passing test. The
+harder judgement is the other half: when a defect's trigger is genuinely
+unreachable from outside — a flag set only by loop-internal state — the right
+answer is to ship the fix with the reasoning beside it and **no** test,
+rather than a test that cannot fail. A false green is worse than a gap,
+because a gap is visible.
 
 **Everything observable said the hand-over worked, and it had thrown the
 conversation away.** `--resume` was parsed by clap, printed in the child's
