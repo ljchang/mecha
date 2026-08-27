@@ -1216,9 +1216,14 @@ Each rung is independently useful and independently measurable.
 
    **And the build order below is wrong for what the labels need.** §14 puts
    the charter at rung 10 and the probe machinery nowhere in particular. The
-   corpus says a counterfactual verdict would give 102 intervention errors a
-   label immediately, where a charter buys only the 11 positive ones. Whatever
-   is built next for the *readout's* sake, the probe is the cheaper half.
+   corpus says a counterfactual verdict is what gives an intervention error a
+   label at all, and interventions are 102 of the 119, where a charter buys
+   only the 11 positive ones. Whatever is built next for the *readout's* sake,
+   the probe is the cheaper half — with two corrections from the lane that
+   built it, recorded in HANDOFF: the probe reaches only the steer and denial
+   interventions rather than every one, and today it reaches none of them,
+   because `replay_registry` cannot build a surface containing `ask_user` and
+   every interactive session has one.
 8. **Goal-closure appraisal and the readout surfaces** (§5.4, §6.2).
 9. **Episode tagging, review-queue salience, gossip seeding** (§10).
 10. **The charter** (§11), anticipated guilt (§7.4), and the homeostat into
