@@ -2553,10 +2553,15 @@ impl Agent {
 
         let mut approved = Vec::new();
         let mut results: Vec<Option<Block>> = vec![None; calls.len()];
-        // Denials in *this* turn's batch, folded into `Work::denied` below
-        // beside `in_flight`: a call denied here is already settled, but a
+        // Every gate in this loop that settles a call this turn *without*
+        // adding it to `approved` — the approver's `Deny`/`Blocked`, the
+        // planning-phase gate, the trifecta interlock, a withheld or unknown
+        // tool name, and a staging failure — folded into `Work::denied`
+        // below beside `in_flight`. The name undersells it slightly (an
+        // unknown tool is the model's own mistake, not a refusal), but the
+        // shape is one and the same: the call is already settled, so a
         // batch that ticks one step and reaches for the next one's tool in
-        // the same turn cannot say which step a denial belongs to, so
+        // the same turn cannot say which step this outcome belongs to, and
         // neither an approved sibling nor the finding it might otherwise
         // support may be attributed to it.
         let mut denied_this_turn: u32 = 0;
@@ -2697,6 +2702,7 @@ impl Agent {
                     unknown: !withheld,
                     staged: false,
                 });
+                denied_this_turn += 1;
                 continue;
             };
 
@@ -2949,6 +2955,7 @@ impl Agent {
                             unknown: false,
                             staged: false,
                         });
+                        denied_this_turn += 1;
                     }
                 }
                 continue;
@@ -5807,6 +5814,107 @@ mod tests {
             })
             .unwrap();
         assert!(!opening.contains("still failing"), "{opening}");
+    }
+
+    /// The batched shape `in_flight` was added for, with the sibling denied
+    /// instead of still running: a step's own work landed, and in the same
+    /// turn the model reaches for a tool that does not exist to start the
+    /// next one. The unknown-tool call settles *ahead of* the approved
+    /// `todo` write in the gate loop, so `Work::of`'s raw tail is its
+    /// failure — and without `denied_this_turn` folded in, that failure
+    /// would be blamed on the step the `todo` call just completed.
+    #[tokio::test]
+    async fn a_step_ticked_beside_an_invented_tool_name_is_not_blamed_for_it() {
+        struct OkTool;
+        #[async_trait]
+        impl Tool for OkTool {
+            fn name(&self) -> &str {
+                "build"
+            }
+            fn description(&self) -> &str {
+                "Build it."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("built"))
+            }
+        }
+
+        let (agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "p0".into(),
+                        name: "todo".into(),
+                        input: json!({"items": [
+                            {"content": "ship it", "status": "in_progress"}
+                        ]}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "b1".into(),
+                        name: "build".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                // The batch: this step's own completion, and a name the
+                // model invented for the *next* step, in one turn.
+                assistant(
+                    vec![
+                        Block::ToolUse {
+                            id: "p1".into(),
+                            name: "todo".into(),
+                            input: json!({"items": [
+                                {"content": "ship it", "status": "completed"}
+                            ]}),
+                        },
+                        Block::ToolUse {
+                            id: "x1".into(),
+                            name: "nosuchtool".into(),
+                            input: json!({}),
+                        },
+                    ],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![
+                Arc::new(OkTool),
+                Arc::new(crate::tool::todo::TodoTool::new()),
+            ],
+            PermissionMode::Allow,
+        );
+
+        let mut convo = Conversation::user("ship it");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let closing = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == "p1" => Some(content.clone()),
+                _ => None,
+            })
+            .expect("the closing plan write has a result");
+
+        assert!(
+            !closing.contains("still failing") && !closing.contains("refused"),
+            "a name the model invented for the next step must not read as \
+             this step's own failure or refusal: {closing}"
+        );
     }
 
     // --- compaction ---
