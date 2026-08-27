@@ -149,6 +149,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     let mut tool_ctx = mecha_core::tool::ToolCtx {
         workspace: recorded.workspace.clone(),
+        // **The `compact` channel, or a replayed compaction reads as divergence.**
+        // The run gets a threshold from `with_compact_at` below, and a recorded
+        // session whose tool list named `compact` gets the tool back through the
+        // rebuilt registry — so without this the tool answers "compaction is not
+        // enabled for this run", which is false of the run it is replaying. Under
+        // `--on-divergence=live` that is an executed call returning the wrong
+        // answer and counting as a divergence; in a harness probe it is worse,
+        // because both arms then replay a trajectory missing the compactions the
+        // recording had, and a `compact_at_tokens` candidate is measured on runs
+        // that never compacted.
+        //
+        // Wired unconditionally: the flag costs nothing when no tool reads it,
+        // and making it conditional would be a second place that has to agree
+        // with `setup`'s about whether this run compacts at all — which is the
+        // split `PreparedTools::compact_requested` exists to prevent.
+        compact_requested: Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            false,
+        ))),
         ..Default::default()
     };
     if !recorded.workspace.exists() {
