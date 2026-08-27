@@ -13,12 +13,13 @@
 //! shared fixture is still never mutated, so the two kinds of case can run in
 //! the same pass at the same concurrency.
 
+use crate::setup::NoOneToAsk;
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::agent::{Budget, RunContext};
 use mecha_core::config::PermissionMode;
 use mecha_core::eval::{grade, stage_workspace, EvalCase, GradedCase, Judge, Scorecard};
-use mecha_core::tool::ask::{AskUserTool, Asker};
+use mecha_core::tool::ask::AskUserTool;
 use mecha_core::tool::ModeApprover;
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -597,18 +598,6 @@ async fn ab_rules(
         eprintln!("\nwrote {}", path.display());
     }
     Ok(())
-}
-
-/// Nobody is watching an eval run, so every question goes unanswered — which is
-/// the honest thing for the tool to report, and leaves the model to proceed and
-/// say which reading it chose.
-struct NoOneToAsk;
-
-#[async_trait::async_trait]
-impl Asker for NoOneToAsk {
-    async fn ask(&self, _question: &str, _options: &[String]) -> Option<String> {
-        None
-    }
 }
 
 /// Build the per-item contexts: a private staged workspace for sandboxed cases,
