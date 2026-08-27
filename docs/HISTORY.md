@@ -3255,6 +3255,24 @@ matters is the general shape.
 
 ### Measuring
 
+**Three tests written in one session passed on both arms, and the third was
+caught only because the second had been.** One asserted a queued instruction
+survived a turn that could not serve it, on a scenario that never reached the
+line under test. One pinned the printed half of a rendered number while the
+contradiction lived in the arithmetic beside it. One asserted a flag was
+still set after a code path that, in that scenario, never ran. Each looked
+like coverage of exactly the defect it missed.
+
+The habit that catches them is cheap and mechanical: **revert the fix and
+watch the test fail before believing it** — and, twice here, *check the
+revert actually applied*, because a scripted edit that silently matched
+nothing produces a green run that reads identically to a passing test. The
+harder judgement is the other half: when a defect's trigger is genuinely
+unreachable from outside — a flag set only by loop-internal state — the right
+answer is to ship the fix with the reasoning beside it and **no** test,
+rather than a test that cannot fail. A false green is worse than a gap,
+because a gap is visible.
+
 **A deliberate break, made to prove a test is not vacuous, was left in the
 tree** (2026-08-27). The check itself is the project's own rule — verify a fix
 by making it fail on the old behaviour — and it worked twice: removing the
