@@ -2446,6 +2446,95 @@ and retried, and nothing said it had. It is the one counter on `RunStats` typed
 it and a plain `u32` would read every older row as a run that overflowed zero
 times — quietly diluting the rate it exists to establish.
 
+**2026-08-27 — the harness stopped taking the model's word for it.**
+Rung 5's model-facing half, then the whole of rung 6, which is the last rung of
+the goal system with no model in it.
+
+Rung 5 finished where §7.1 said the second-order win was: the harness had been
+predicting context pressure and acting on it — compacting early, narrowing the
+tool-output budget — while the *model* could not see any of it, so an
+anticipatory signal that could act on the **plan** was going unclaimed.
+`ContextTracker::forecast` returns headroom, observed cost per recent turn and
+turns remaining **as measurements**, so nothing asks the model to estimate its
+own token use; the reading rides on the **`todo` result**, where it appears
+when the plan is being revised and costs nothing on other turns; and a
+`compact` tool, unapproved and argument-free, hands the *when* to the one party
+that knows how much of its own plan is left. Monotonicity is structural rather
+than promised — the floor stays `reported || predicted`, so nothing the model
+decides can make a run compact later than it does today.
+
+Rung 6 is `step.rs` and `boredom.rs`, and both exist because of the same
+asymmetry read one tier apart.
+
+**A step is closed by the model and nothing checked it.** A board task is
+closed by the owner (D6), so a person is the check; a todo step has no person,
+so the check has to be structural — D5's *derived from the record, never
+self-reported*, reaching one tier below where it was written. The loop folds
+its own trace into counters and stamps them on `ToolCtx` without learning which
+tool cares (the `taint`/`context` precedent), and the plan tool — the only
+party that knows where a step began — differences two of them into a span.
+Two readings, both facts rather than thresholds: nothing was attempted, and the
+last attempt did not succeed.
+
+Four of its five decisions are about *not* firing, which is the half that
+decides whether a check survives contact. A refusal is not a failure
+(`unknown || (is_error && !denied)`, the eval rig's rule one tier down), so a
+blocked step is told it was blocked. Only the last attempt decides, so a
+recovered failure is the model working. A sibling still in flight supports no
+finding, because mecha runs a turn's calls concurrently and doing the work and
+ticking the box in one batch would otherwise read as the null step. And plan
+revision is subtracted from every span — three `todo` writes mid-step are three
+trace entries, which is precisely how a step where nothing happened reads as
+busy.
+
+The fifth was found by asking where the counters come from. **The trace is per
+run and a conversation is many runs**, so in chat a step started before the
+user last spoke differences against a larger number, saturates to zero, and
+announces the null step on the commonest shape there is — the loudest reading
+firing on ordinary work, which is how a check gets switched off. A mark from
+another run is therefore unmeasurable rather than empty, which needed a run
+identity minted at the loop's existing per-run stamping seam: a `RunContext` is
+shared across every chat turn, so an id on the context would have been one
+value for the life of the conversation and invisible to the reset it exists to
+catch.
+
+**And a run going nowhere had exactly two states, proceeding and dead.** The
+loop guard is §9.1's rung 5 and was the only rung: dormant until a compaction,
+and its response is to end the run. `boredom.rs` is the graded version, keyed
+on the call *and* its result on the guard's own rule, and on
+`compact::target_of` rather than the raw arguments — so two tools that reach
+one file and get the same bytes count as one thing learned twice, while
+identical arguments with a *changing* result stay polling. It spends nothing,
+which is what makes it ungated where curiosity is not.
+
+Its bounds all come from one piece of evidence, the same one behind
+`collapse_repeated_failures`: a model is measurably likelier to fail a step
+when its context holds its own earlier errors. So a rung is crossed once
+(`==`, never `>=`), one notice per turn, three per run — nagging a stuck run is
+a way of keeping it stuck.
+
+**It shipped as rungs 1 and 3, and the missing one is a stated reason rather
+than a to-do.** Rung 2 — consult — has two halves and neither is reachable: a
+§7.4 marker does not exist, and while a skill does, nothing in the `Tool` trait
+identifies the tool that loads one. `narrows_surface_to` is the closest and
+answers `None` until a skill is already loaded, so it recognises the state the
+notice exists to escape only after the escape has been taken. Rung 3 needed the
+same kind of property and got one: `Tool::runs_a_fresh_conversation`, fourth in
+the family with `carried_state`, `fixed_workspace` and `narrows_surface_to`, so
+the loop learns that *some* tool starts clean and never that subagents are a
+thing. Nothing else could have answered it — a delegate's name is whatever the
+user called it in config, and its capabilities are derived from its child's
+tools.
+
+Underneath both, `RunStats::boredom_notices`, on `context_overflows`' rules and
+for its reason: every threshold in `boredom.rs` was argued rather than
+measured, and a detector nobody can count fires either constantly or never with
+no way to tell which. `Option`, so rows written before the sensor do not read
+as runs that were never bored. Recorded *after* the thing it grades, which is
+the wrong order and is worth saying so — rung 5's own `context_overflows`
+landed in its own change first, because a baseline established alongside what
+it measures is not one.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -3064,6 +3153,20 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**A deliberate break, made to prove a test is not vacuous, was left in the
+tree** (2026-08-27). The check itself is the project's own rule — verify a fix
+by making it fail on the old behaviour — and it worked twice: removing the
+result from boredom's key made the polling test fail, and unstamping the work
+counters made the step-appraisal test fail. Undoing the first with `git
+checkout <file>` silently did nothing, because the file was a **new module and
+therefore untracked**, and `git checkout` on an untracked path is not an error.
+The break survived into the next test run, which still passed, so nothing said
+so. **An undo has to be an operation that applies to the file you broke** —
+for an untracked one that means editing it back or `git stash` after adding it,
+never a checkout — and the general shape is the one this file keeps recording:
+a command that no-ops on the case you are in reads exactly like a command that
+worked.
 
 **Everything observable said the hand-over worked, and it had thrown the
 conversation away.** `--resume` was parsed by clap, printed in the child's
