@@ -1168,12 +1168,20 @@ impl Agent {
     /// call that could only fail. Deterministic because the registry is a
     /// `BTreeMap`: naming a different delegate from one run to the next would
     /// be arbitrary where it looks like a decision.
-    fn escapes(&self) -> crate::boredom::Escapes {
+    ///
+    /// `available_names()` covers a skill's restriction but not
+    /// `RunContext::withheld` — the *other* way a name can be registered and
+    /// still undispatchable (`agent.rs`'s own dispatch is
+    /// `available(name).filter(|_| !cx.is_withheld(name))`), so this filters
+    /// on the same denylist to keep the two spellings of "reachable" in
+    /// agreement.
+    fn escapes(&self, cx: &RunContext) -> crate::boredom::Escapes {
         crate::boredom::Escapes {
             delegate: self
                 .registry
                 .available_names()
                 .into_iter()
+                .filter(|name| !cx.is_withheld(name))
                 .filter_map(|name| self.registry.get(name))
                 .find(|tool| tool.runs_a_fresh_conversation())
                 .map(|tool| tool.name().to_string()),
@@ -1947,7 +1955,7 @@ impl Agent {
                     // legal slot between a `tool_use` and its result.
                     if let Some((rung, tool)) = bored {
                         tracing::debug!(%tool, ?rung, "an approach has stopped moving");
-                        append_user_text(messages, rung.notice(&tool, &self.escapes()));
+                        append_user_text(messages, rung.notice(&tool, &self.escapes(cx)));
                     }
                 }
                 // A server-side tool loop paused mid-turn. Resending the
@@ -5914,6 +5922,59 @@ mod tests {
             !closing.contains("still failing") && !closing.contains("refused"),
             "a name the model invented for the next step must not read as \
              this step's own failure or refusal: {closing}"
+        );
+    }
+
+    /// `escapes()` reads `available_names()`, which excludes a tool a loaded
+    /// skill narrowed away but not one `RunContext::withheld` denylists —
+    /// the *other* way a registered tool can be undispatchable. A boredom
+    /// notice naming a withheld delegate would spend a turn on a call that
+    /// can only fail: the reachable-surface bug this method's own doc names,
+    /// arriving through the interlock instead of a skill.
+    #[tokio::test]
+    async fn a_notice_never_names_a_withheld_delegate() {
+        struct FakeDelegate;
+        #[async_trait]
+        impl Tool for FakeDelegate {
+            fn name(&self) -> &str {
+                "researcher"
+            }
+            fn description(&self) -> &str {
+                "Delegates to a fresh conversation."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn runs_a_fresh_conversation(&self) -> bool {
+                true
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("delegated"))
+            }
+        }
+
+        let (agent, _) =
+            agent_with_tools(vec![], vec![Arc::new(FakeDelegate)], PermissionMode::Allow);
+        let cx = || {
+            RunContext::new(
+                ToolCtx::default().with_workspace(std::env::temp_dir()),
+                Arc::new(ModeApprover {
+                    mode: PermissionMode::Allow,
+                }),
+            )
+        };
+
+        let reachable = agent.escapes(&cx());
+        assert_eq!(reachable.delegate, Some("researcher".to_string()));
+
+        let withheld = cx().withholding(["researcher".to_string()]);
+        let unreachable = agent.escapes(&withheld);
+        assert_eq!(
+            unreachable.delegate, None,
+            "a withheld delegate must not be offered as an escape"
         );
     }
 

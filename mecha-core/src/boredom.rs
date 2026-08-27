@@ -70,6 +70,20 @@ const STILL_STUCK: u32 = 6;
 /// talking about the harness.
 const MAX_NOTICES: u32 = 3;
 
+/// How many turns may pass between two occurrences of the same target before
+/// they stop counting as one streak.
+///
+/// Without this, `seen` accumulates for the life of the run, so "three
+/// identical outcomes" meant three *anywhere*, not three in a row — the same
+/// `shell: git status` at three natural checkpoints an hour apart would trip
+/// it exactly as a genuinely stuck run would, on a detector whose only job is
+/// telling those two apart. The loop guard this is modelled on is explicitly
+/// windowed for the same reason; this one was not. `STUCK` itself is the
+/// natural size: the window has to admit at least the ordinary work between
+/// two repeats of a stuck call, and cannot be wider than the count that
+/// defines "stuck" without the two numbers arguing with each other.
+const RECENCY_WINDOW: u32 = STUCK;
+
 /// Which rung of §9.1's ladder the run has reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rung {
@@ -97,11 +111,17 @@ pub struct Escapes {
 #[derive(Debug, Default)]
 pub struct Boredom {
     enabled: bool,
-    /// Per key: how many turns have produced this outcome, and the tool that
-    /// produced it. The name is kept and the arguments are not — the notice
-    /// needs something concrete to point at, and a rendered argument list can
-    /// be most of a turn and can hold the user's data.
-    seen: HashMap<u64, (u32, String)>,
+    /// Per key: how many turns have produced this outcome, the tool that
+    /// produced it, and the turn number of the most recent one — the third
+    /// is what lets a gap past `RECENCY_WINDOW` reset the streak instead of
+    /// letting it accumulate for the life of the run. The name is kept and
+    /// the arguments are not — the notice needs something concrete to point
+    /// at, and a rendered argument list can be most of a turn and can hold
+    /// the user's data.
+    seen: HashMap<u64, (u32, String, u32)>,
+    /// Turns observed so far. Monotonic within one `Boredom`, meaningless
+    /// outside it — the same shape as `step::next_run`.
+    turn: u32,
     notices: u32,
 }
 
@@ -153,17 +173,23 @@ impl Boredom {
         if !self.enabled || self.notices >= MAX_NOTICES {
             return None;
         }
+        self.turn += 1;
+        let now = self.turn;
         let mut crossed: Option<(Rung, String)> = None;
         let mut this_turn = std::collections::HashSet::new();
         for (name, key) in turn {
             if !this_turn.insert(key) {
                 continue;
             }
-            let entry = self
-                .seen
-                .entry(key)
-                .or_insert_with(|| (0, name.to_string()));
+            let entry = self.seen.entry(key).or_insert((0, name.to_string(), now));
+            // A gap past the window is a fresh streak, not a continuation —
+            // the same target read again after enough ordinary work in
+            // between is not the same finding as three in a row.
+            if now.saturating_sub(entry.2) > RECENCY_WINDOW {
+                entry.0 = 0;
+            }
             entry.0 += 1;
+            entry.2 = now;
             // `==`, not `>=`: a rung is crossed once. A run that keeps
             // repeating past the last rung is left to the loop guard and the
             // turn ceiling, which is the honest end of this ladder — rungs 4
@@ -256,6 +282,52 @@ mod tests {
         assert!(
             turn(&mut b, 1).is_none(),
             "and then the loop guard's problem"
+        );
+    }
+
+    /// The bug this guards: `seen` used to accumulate for the life of the
+    /// run with no recency window, so three occurrences of the same target
+    /// *anywhere* — a `shell: git status` at three natural checkpoints an
+    /// hour apart — read as three in a row.
+    #[test]
+    fn a_repeat_far_apart_does_not_accumulate_toward_the_rung() {
+        let mut b = Boredom::new(true);
+        assert!(turn(&mut b, 1).is_none());
+        // More turns of unrelated work than the recency window allows.
+        for k in 100..100 + RECENCY_WINDOW + 1 {
+            assert!(turn(&mut b, k as u64).is_none());
+        }
+        // Two more repeats, close together — a streak of two since the gap
+        // reset it, not three, so still no rung.
+        assert!(
+            turn(&mut b, 1).is_none(),
+            "the gap past the window should have reset the streak"
+        );
+        assert!(
+            turn(&mut b, 1).is_none(),
+            "three occurrences spread across a long run are not three in a row"
+        );
+    }
+
+    /// The window has to be wide enough to admit ordinary interleaved work —
+    /// a gap *inside* it must not reset the streak, or the detector would
+    /// never fire on the commonest stuck shape (a failing call retried with
+    /// something else attempted in between).
+    #[test]
+    fn a_gap_inside_the_window_still_counts_toward_the_rung() {
+        let mut b = Boredom::new(true);
+        assert!(turn(&mut b, 1).is_none());
+        // Turns-since-last-occurrence must stay at or under the window,
+        // counting the repeat's own turn: `RECENCY_WINDOW - 1` calls of
+        // unrelated work leaves exactly `RECENCY_WINDOW` turns of gap.
+        for k in 100..100 + RECENCY_WINDOW - 1 {
+            assert!(turn(&mut b, k as u64).is_none());
+        }
+        assert!(turn(&mut b, 1).is_none());
+        assert_eq!(
+            turn(&mut b, 1).unwrap().0,
+            Rung::Change,
+            "a gap within the window is still one streak"
         );
     }
 
