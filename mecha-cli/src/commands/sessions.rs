@@ -515,7 +515,9 @@ async fn appraise(
                     "mattered": tally.mattered,
                     "redundant": tally.redundant,
                     "inconclusive": tally.inconclusive,
-                    "skipped": tally.skipped,
+                    "unprobeable": tally.unprobeable,
+                    "unavailable": tally.unavailable,
+                    "over_budget": tally.over_budget,
                     "budget_left": budget,
                 })),
             }))?
@@ -583,9 +585,19 @@ async fn appraise(
             "    {:<16} {:>5}  — diverged before the probe point",
             "inconclusive", tally.inconclusive
         );
+        // Three ways to have no finding, and they call for three different
+        // responses: extend the mechanism, fix the registry, raise the budget.
         println!(
-            "    {:<16} {:>5}  — no replayable point, or out of budget",
-            "not probed", tally.skipped
+            "    {:<16} {:>5}  — followup/edit: no counterfactual to drive",
+            "unprobeable", tally.unprobeable
+        );
+        println!(
+            "    {:<16} {:>5}  — session or tool surface unavailable",
+            "unavailable", tally.unavailable
+        );
+        println!(
+            "    {:<16} {:>5}  — budget ran out first",
+            "not reached", tally.over_budget
         );
     }
     Ok(())
