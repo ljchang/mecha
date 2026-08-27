@@ -77,6 +77,22 @@ pub enum Args {
         /// Ceiling on replays, across the whole walk. Newest sessions first.
         #[arg(long, default_value_t = 25, requires = "probe")]
         max_probes: usize,
+
+        /// Run the quarantined appraiser (§5.1) over each session's evidence.
+        ///
+        /// **A second paid pass, independent of `--probe`.** One quarantined
+        /// model call per session — no tools, no conversation, and the input
+        /// is numbers only (see `AppraiserEvidence`), never the transcript.
+        /// It looks for one additional signed error beyond what `of_session`
+        /// already computed, or reports that the numbers support nothing
+        /// further, which is the ordinary and correct answer.
+        #[arg(long)]
+        appraise: bool,
+
+        /// Ceiling on appraiser calls, across the whole walk. Newest sessions
+        /// first, independent of `--max-probes`.
+        #[arg(long, default_value_t = 25, requires = "appraise")]
+        max_appraisals: usize,
     },
 
     /// Total token usage — and cost, where prices are configured — across
@@ -104,7 +120,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             json,
             probe,
             max_probes,
-        } => appraise(global, &dir, days, limit, json, probe, max_probes).await?,
+            appraise: run_appraiser,
+            max_appraisals,
+        } => {
+            appraise(
+                global,
+                &dir,
+                days,
+                limit,
+                json,
+                probe,
+                max_probes,
+                run_appraiser,
+                max_appraisals,
+            )
+            .await?
+        }
 
         Args::List { limit } => {
             let sessions = Session::list(&dir)?;
@@ -335,6 +366,8 @@ async fn appraise(
     json: bool,
     probe: bool,
     max_probes: usize,
+    run_appraiser: bool,
+    max_appraisals: usize,
 ) -> Result<()> {
     use mecha_core::appraisal;
 
@@ -429,14 +462,18 @@ async fn appraise(
         per_session_interventions.push(if probe { interventions } else { Vec::new() });
     }
 
-    // --- The paid pass ---
+    // --- The paid passes ---
     //
     // Off by default, and the free readout above is byte-for-byte what it was:
     // `appraise` with no flag still costs zero tokens and no model, which is
-    // the property that lets it be run over the whole store.
+    // the property that lets it be run over the whole store. `--probe` and
+    // `--appraise` are independent — either, neither, or both — so the
+    // provider is built once for whichever is set rather than twice.
     let mut tally = crate::appraisal_probe::Tally::default();
+    let mut appraiser_tally = crate::appraiser_pass::Tally::default();
     let mut budget = if probe { max_probes } else { 0 };
-    if probe && !appraisals.is_empty() {
+    let mut appraiser_budget = if run_appraiser { max_appraisals } else { 0 };
+    if (probe || run_appraiser) && !appraisals.is_empty() {
         let cwd = std::env::current_dir().context("cannot determine the working directory")?;
         let cfg = mecha_core::config::Config::load(&cwd)?;
         let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
@@ -446,56 +483,91 @@ async fn appraise(
             .clone()
             .or_else(|| provider_cfg.model.clone())
             .unwrap_or_else(|| built.default_model().to_string());
-        // A replay needs the live registry for tool specs, exactly as
-        // `mecha validate` and `mecha replay` do; the agent it builds is
-        // discarded and only its registry is borrowed.
-        let prepared = crate::setup::prepare(global, false).await?;
-        let wanted: usize = per_session_interventions.iter().map(Vec::len).sum();
-        // The honest ceiling, not `wanted`: `probe_appraisal` checks
-        // `replayable(trigger)` before spending budget, so a `followup` or an
-        // `edit` — most of an ordinary corpus — costs nothing and was never
-        // going to be probed regardless of `max_probes`. Reporting `wanted`
-        // here reads as a cap that will bind when it almost never does.
-        let replayable: usize = per_session_interventions
-            .iter()
-            .flatten()
-            .filter(|i| crate::appraisal_probe::replayable(i.trigger))
-            .count();
-        eprintln!(
-            "probing up to {} of {replayable} replayable intervention(s) ({wanted} total) \
-             with {model} ({provider_name})",
-            max_probes.min(replayable)
-        );
-        for (a, interventions) in appraisals.iter_mut().zip(&per_session_interventions) {
-            let t = crate::appraisal_probe::probe_appraisal(
-                &prepared,
-                provider_cfg,
-                &model,
-                dir,
-                interventions,
-                a,
-                &mut budget,
-            )
-            .await?;
-            tally.add(t);
-        }
-        // **No silent caps.** The walk spends its budget newest-session-first,
-        // so a truncated run describes recent work and not the corpus — which
-        // is a defensible order and an indefensible thing to leave unsaid.
-        // Asked of what the budget actually refused, never of the
-        // intervention count: `probe_appraisal` checks `replayable(trigger)`
-        // *before* spending budget, so a `followup` or an `edit` costs
-        // nothing — which is the whole point of `Tally::unprobeable`
-        // existing apart from `over_budget`. `wanted > max_probes` fires on a
-        // corpus that is mostly followups (the common shape) even when
-        // nothing was actually capped.
-        if tally.over_budget > 0 {
+
+        if probe {
+            // A replay needs the live registry for tool specs, exactly as
+            // `mecha validate` and `mecha replay` do; the agent it builds is
+            // discarded and only its registry is borrowed.
+            let prepared = crate::setup::prepare(global, false).await?;
+            let wanted: usize = per_session_interventions.iter().map(Vec::len).sum();
+            // The honest ceiling, not `wanted`: `probe_appraisal` checks
+            // `replayable(trigger)` before spending budget, so a `followup` or
+            // an `edit` — most of an ordinary corpus — costs nothing and was
+            // never going to be probed regardless of `max_probes`. Reporting
+            // `wanted` here reads as a cap that will bind when it almost never
+            // does.
+            let replayable: usize = per_session_interventions
+                .iter()
+                .flatten()
+                .filter(|i| crate::appraisal_probe::replayable(i.trigger))
+                .count();
             eprintln!(
-                "budget stopped at {max_probes}; {} replayable intervention(s) went \
-                 unprobed, so the labels below describe the newest sessions, not the \
-                 whole store",
-                tally.over_budget
+                "probing up to {} of {replayable} replayable intervention(s) ({wanted} total) \
+                 with {model} ({provider_name})",
+                max_probes.min(replayable)
             );
+            for (a, interventions) in appraisals.iter_mut().zip(&per_session_interventions) {
+                let t = crate::appraisal_probe::probe_appraisal(
+                    &prepared,
+                    provider_cfg,
+                    &model,
+                    dir,
+                    interventions,
+                    a,
+                    &mut budget,
+                )
+                .await?;
+                tally.add(t);
+            }
+            // **No silent caps.** The walk spends its budget newest-session-first,
+            // so a truncated run describes recent work and not the corpus — which
+            // is a defensible order and an indefensible thing to leave unsaid.
+            // Asked of what the budget actually refused, never of the
+            // intervention count: `probe_appraisal` checks `replayable(trigger)`
+            // *before* spending budget, so a `followup` or an `edit` costs
+            // nothing — which is the whole point of `Tally::unprobeable`
+            // existing apart from `over_budget`. `wanted > max_probes` fires on a
+            // corpus that is mostly followups (the common shape) even when
+            // nothing was actually capped.
+            if tally.over_budget > 0 {
+                eprintln!(
+                    "budget stopped at {max_probes}; {} replayable intervention(s) went \
+                     unprobed, so the labels below describe the newest sessions, not the \
+                     whole store",
+                    tally.over_budget
+                );
+            }
+        }
+
+        if run_appraiser {
+            // Run after the probe, against its own provider handle — no
+            // registry needed, since the quarantined pass carries no tools.
+            // Runs against the *post-probe* state: a probed intervention's
+            // resolved `controllable`/`agency` is more informative evidence
+            // than the pre-probe guess, so ordering the appraiser second
+            // hands it the better of the two.
+            eprintln!(
+                "appraising up to {} of {} session(s) with {model} ({provider_name})",
+                max_appraisals.min(appraisals.len()),
+                appraisals.len()
+            );
+            for a in appraisals.iter_mut() {
+                let t = crate::appraiser_pass::appraise_one(
+                    built.as_ref(),
+                    &model,
+                    a,
+                    &mut appraiser_budget,
+                )
+                .await?;
+                appraiser_tally.add(t);
+            }
+            if appraiser_tally.over_budget > 0 {
+                eprintln!(
+                    "budget stopped at {max_appraisals}; {} session(s) went unappraised, so \
+                     the labels below describe the newest sessions, not the whole store",
+                    appraiser_tally.over_budget
+                );
+            }
         }
     }
 
@@ -535,6 +607,17 @@ async fn appraise(
                     "unavailable": tally.unavailable,
                     "over_budget": tally.over_budget,
                     "budget_left": budget,
+                })),
+                // Same "absent, not zero" rule as `probe`: whether the flag
+                // ran at all is a different fact from what it found.
+                "appraiser": run_appraiser.then(|| serde_json::json!({
+                    "driven": appraiser_tally.driven,
+                    "found_negative": appraiser_tally.found_negative,
+                    "found_positive": appraiser_tally.found_positive,
+                    "found_nothing": appraiser_tally.found_nothing,
+                    "failed": appraiser_tally.failed,
+                    "over_budget": appraiser_tally.over_budget,
+                    "budget_left": appraiser_budget,
                 })),
             }))?
         );
@@ -616,6 +699,33 @@ async fn appraise(
         println!(
             "    {:<16} {:>5}  — budget ran out first",
             "not reached", tally.over_budget
+        );
+    }
+
+    if run_appraiser {
+        println!(
+            "\n  quarantined appraiser ({} call(s) driven)",
+            appraiser_tally.driven
+        );
+        println!(
+            "    {:<16} {:>5}  — one additional negative error added",
+            "found negative", appraiser_tally.found_negative
+        );
+        println!(
+            "    {:<16} {:>5}  — one additional positive error added",
+            "found positive", appraiser_tally.found_positive
+        );
+        println!(
+            "    {:<16} {:>5}  — the ordinary answer: nothing further",
+            "found nothing", appraiser_tally.found_nothing
+        );
+        println!(
+            "    {:<16} {:>5}  — refused, or unparseable after one retry",
+            "failed", appraiser_tally.failed
+        );
+        println!(
+            "    {:<16} {:>5}  — budget ran out first",
+            "not reached", appraiser_tally.over_budget
         );
     }
     Ok(())
