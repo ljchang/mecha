@@ -2724,6 +2724,169 @@ it passed `&[]` for goals unconditionally, so the command built to measure
 whether the labels were degenerate could never have reported anything else.
 Absent and zero conflated inside the instrument.
 
+**2026-08-27 (third pass) — the stack this section describes landed, and one
+finding named twice did not travel with it.**
+
+Six PRs merged the day these two sections were first written: #86 (`bcd7d4f`),
+#87 (`c81d0fb`), #93 (`4f28221`, carrying forward #86's fourth-round fix that
+missed the merge by eight minutes — see the trap below), #88 (`18a6fcf4`), #89
+(`1e04c114`) and #90 (`c630ff94`). Every review finding attached to #88, #89
+and #90 was checked against the merged source rather than against the review
+thread, on this skill's own rule.
+
+**#88's two open findings both hold up as fixed.** `affect_of` now computes
+`label_of`'s most-negative reduction *before* checking repetition, and only
+lets the repeated-error branch return `Frustration` when
+`says_more(Frustration) >= says_more(reduced)` — so a repeated self-inflicted
+error can promote a `Neutral`/`Anger`/`Disappointment` verdict but can never
+step in front of an exposed one, closing the case where a ceiling nobody
+caused plus a visible mistake used to report as mere repetition
+(`mecha-core/src/appraisal.rs:378-391`). `says_more` is exhaustive with no
+`_ => 0` arm, so a future `Affect` variant fails to compile rather than
+silently tying with `Neutral` (`appraisal.rs:294-302`). The doc-count drift is
+fixed too: the printed line now reads "six of the ten `Affect` variants"
+(`mecha-cli/src/commands/sessions.rs:570`), matching `reachable_today`'s true
+count of four reachable against ten total (`appraisal.rs:233-238,963`).
+Underneath both, three more fixes from the same review pass: `of_session`
+takes `end_taint: Option<crate::agent::Taint>` rather than a bare `Taint`, so
+a caller with no coverage passes `None` and the fail-closed `Untrusted` arm in
+`classify_origin` stays reachable instead of being permanently shadowed by an
+always-`Some` wrapper (`appraisal.rs:432-447`); `visible` for a drafted
+message now reads `item.writing_outcome() == Some(WritingOutcome::SentUnchanged)`
+rather than the item's raw `status`, so an edited-then-sent draft — the
+owner's own catch — no longer reports as an exposure error
+(`appraisal.rs:606-613`); and `RunStats::merge` folds `boredom_notices`
+through the same `Option`-sum as `context_overflows` instead of leaving it
+fixed at whatever the first row carried (`mecha-core/src/session.rs:397-405`).
+And `sessions appraise` collapsed three separate reads of the same transcript
+— outcome, interventions, goal — into the one `Session::read` the module's
+own doc says exists to replace exactly that pattern
+(`mecha-cli/src/commands/sessions.rs:372-398`).
+
+**#90's three findings hold up too.** The surface store hashes with
+`learning::rules_hash` — the same FNV-1a function `ValidationRecord` already
+uses — rather than a fresh `DefaultHasher`, which this repository has banned
+twice before for the same reason: a `DefaultHasher`'s algorithm is a `std`
+implementation detail with no stability guarantee across a toolchain bump, and
+a persisted key built from one silently stops matching itself
+(`mecha-core/src/surface.rs:118,141`). The store root is created through
+`create_private_dir`, matching every sibling `~/.mecha` store instead of
+leaving it world-readable by omission (`surface.rs:161`). And the
+probe-budget warning now gates on `tally.over_budget > 0` rather than on
+`wanted` — which counted every intervention including the unprobeable
+`followup`/`edit` ones — so a corpus that is mostly followups no longer
+prints "budget stopped" when nothing was actually capped
+(`mecha-cli/src/commands/sessions.rs:453-499`). The `OnDivergence` gate for
+the surface-only registry is an exhaustive match (`Stop | Error` explicitly,
+not `Live`) rather than a `matches!` denylist, and `Fidelity::of` is wired
+into `appraisal_probe::annotate_with_fidelity` rather than sitting unused
+(`mecha-core/src/replay_run.rs:223-230`, `mecha-cli/src/appraisal_probe.rs:75`).
+
+**#93 is exactly what it says: a same-content carry-forward, no open
+findings.** `runlog::boredom_rate` and the denominator-aware "went nowhere"
+line both exist as `sessions health` prints them
+(`mecha-core/src/runlog.rs:227`, `mecha-cli/src/commands/sessions.rs:776,789`).
+
+**#89 is the exception, and it is worth stating precisely because the shape
+is a trap rather than a one-off.** Five real findings from its review rounds
+are fixed and verified against `main`: the proposals pane reads `kind`/
+`detail`, the keys `proposals list --json` actually emits, instead of a
+`status` key the command never produces
+(`mecha-cli/src/tui/learning.rs:454-455`); `mecha rules show` exists
+(`mecha-cli/src/commands/rules.rs:36,77,240`); `find_rule` refuses an empty
+needle instead of prefix-matching every identified rule
+(`commands/rules.rs:175-186`); the Reflections pane loads with `--all` so a
+dropped row stays visible for `u restore` to reach
+(`mecha-cli/src/tui/mod.rs:6010-6025`); and `wrapped()`'s word-break branch
+uses `saturating_sub` instead of an unchecked subtraction that panics in
+debug and loops forever in release on a narrow, deeply-indented terminal
+(`mecha-cli/src/tui/queues.rs:1182`).
+
+But at the time this section was first written, three findings that were
+named — one of them twice, in two separate review rounds — were still true
+of the code on `main`: `App::a_modal_is_up` did not check `self.learning`,
+so the modal's mouse capture never released; `learning_act` called
+`self_cli` synchronously from the key handler, and every verb it ran took
+the learning store's flock that `reflect`/`learn` hold across a model call;
+and `reject`/`drop` passed no `--reason`, contradicting the modal's own help
+text — with `doctor`'s starved-learner finding compounding the last one by
+counting every owner-dropped reflection as "excluded by origin" alongside
+the ones the provenance gate actually excluded.
+
+The general lesson stood before the fix and still does: **a later review
+round approving a PR is not evidence that an earlier round's findings were
+addressed** — a reviewer re-reads the current diff, not the accumulated
+list of everything anyone has said about it, so a finding raised on round 2
+and never mentioned again on round 3 through 6 can merge exactly as it was
+found. The fix is the one this skill already prescribes for a different
+failure — verify against source, not against the review thread — applied
+one layer up: a merged PR's own review comments are commit-message-shaped
+evidence too.
+
+**2026-08-27 (fourth pass) — the rest of the stack landed the same evening:
+#91, #94 and #92, in that order.**
+
+**#91** (`f0ca8ca`, mecha-80's) is the probe half neither the second- nor
+third-pass entries above had landed yet. It fills `GoalError::controllable`
+from a real counterfactual: rebuild the recorded run up to a `steer`/`denial`, replay it
+**without** the steering text, and read whether the run arrives at the same
+place anyway (`Some(true)` if not — the agent could have done otherwise —
+`Some(false)` if so; wired at `mecha-core/src/appraisal.rs:692,695`). It is
+also where the reach and yield numbers already recorded in this section's
+"(second pass)" entry (13 of 102, 12 of 13 inconclusive) were actually
+produced, and where the one genuinely new label came from: `Agency::Own` +
+`controllable: Some(true)` reaching `affect_of` as `Regret` — the first
+non-neutral label this system has ever emitted from a real run rather than
+a unit test, `{neutral: 119, regret: 1}` over the 120-session corpus.
+
+**#92** (`a0638c8`, mecha-4c's) fixed the `serves:` seed gap this document
+had attributed to "nobody was ever told" — the truer diagnosis, caught in
+#92's own review, is that `TodoTool::description` already told the model to
+pass `serves`, but nothing bound that generic reminder to *this run's*
+specific task id, so all 15 delegated runs in the corpus carried the
+instruction and their own id on the seed and still wrote nothing. Both
+delegated postures in `tasks.rs` now bind the id explicitly. #92's own
+commit is the record of what changed in the code; this entry does not
+re-derive it, on the same rule that keeps this file from re-deriving #86's
+fix once #93 already carried it.
+
+**#94** (`2f432b3`) is a second cleanup pass on #89, filed the same evening
+this section's "third pass" entry was written — before that entry's own
+four still-open findings could be called old news, a re-read of *every*
+review comment on #89 (not just the ones the first cleanup pass covered)
+turned up two more of the same shape, and all six shipped together. Verified
+against the current tree: `App::a_modal_is_up` now checks
+`self.learning.is_some()` (`mecha-cli/src/tui/mod.rs:601`); `reject` on a
+proposal now passes `--reason "rejected from /learning"`, the exact
+fixed-string pattern `/queues` already used for the same command
+(`tui/mod.rs:6274`); `doctor`'s `excluded` counter now skips a row with
+`dropped_at` set (`mecha-core/src/doctor.rs:1442`), and `mecha learn` reports
+its own `dropped_by_owner` count instead of folding it into "excluded by
+origin" (`mecha-cli/src/commands/learn.rs:107-150`); `learning_act` now runs
+every verb through the detached-and-watched shape `/outbox` and `/triggers`
+already use, polled by a new `Watch::Learning`, instead of blocking the key
+handler on `self_cli` (`tui/mod.rs:6140-6161`); `LearningStore::reflexion`
+carries the same empty-needle guard `rules.rs::find_rule` got in #89's first
+review pass, never carried to this sibling lookup until now
+(`mecha-core/src/learning.rs:1103-1110`); and `/queues`' `move_sel` now
+clears `review_detail`/`detail_scroll` on every move, including the
+`g`/`G`/Home/End jumps that bypass the delta path
+(`mecha-cli/src/tui/queues.rs:500-508`) — before this, scrolling past a long
+proposal's fetched text with `j`/`k` could leave the previous proposal's
+text on screen while the cursor sat on the next one, so an `a`/`r` right
+after could act on something never actually read.
+
+Two traps in one PR sequence, same shape, six hours apart: #86's fourth
+review round missed the merge window by eight minutes and needed #93 to
+carry it forward; #89's second and sixth review rounds named findings a
+different pass's cleanup did not re-check and needed #94. Both are the same
+lesson — a standing "merge once reviewed" authorization, or a cleanup pass
+scoped to "the findings I already know about," answers a narrower question
+than the one that matters, which is *has everything anyone has said about
+this diff been addressed*. Neither failure was expensive to fix once
+noticed; both were invisible from the outside for as long as nobody looked
+past the PR's own final "looks good."
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
