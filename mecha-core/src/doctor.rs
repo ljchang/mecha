@@ -1444,7 +1444,16 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             if !r.is_processed {
                 *waiting.entry(r.domain.clone()).or_default() += 1;
             }
-        } else {
+        } else if r.dropped_at.is_none() {
+            // `learnable()` checks the drop before it checks provenance, so
+            // `!r.learnable()` alone cannot tell "the gate excluded this" from
+            // "the owner refused this" — and `/learning`'s whole point is
+            // letting the owner do the latter. Counting a drop as a provenance
+            // exclusion would make dropping ten lessons the owner disagrees
+            // with (the intended use of that key) both trip this finding and
+            // report the refusal as the gate's doing, with a remedy
+            // (`mecha reflect --dry-run`) that answers a question nobody
+            // asked. Only what provenance itself blocked counts here.
             excluded += 1;
             if let Ok(t) = DateTime::parse_from_rfc3339(&r.created_at) {
                 let t = t.with_timezone(&Utc);
@@ -2136,6 +2145,27 @@ mod tests {
         .to_string()
     }
 
+    /// A reflection the owner refused with `/learning`'s `d` key — the
+    /// counterpart provenance exclusion is blind to: `learnable()` checks
+    /// the drop before it checks origin, so a naive `!learnable()` count
+    /// cannot tell "the gate excluded this" from "the owner refused this".
+    fn reflection_line_dropped(id: &str, origin: &str, created_at: &str) -> String {
+        serde_json::json!({
+            "id": id,
+            "domain": "behavior",
+            "session_id": "s",
+            "trigger": "steer",
+            "context": "",
+            "intervention": "",
+            "reflexion_text": "test",
+            "is_processed": false,
+            "created_at": created_at,
+            "origin": origin,
+            "dropped_at": created_at,
+        })
+        .to_string()
+    }
+
     fn write_reflections(home: &Path, lines: &[String]) {
         let dir = home.join("learning");
         std::fs::create_dir_all(&dir).unwrap();
@@ -2193,6 +2223,56 @@ mod tests {
         write_reflections(&home, &lines);
         let findings = examine(&home, utc(NOW));
         assert!(of(&findings, "learning").is_empty(), "{findings:#?}");
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Dropping ten lessons is `/learning`'s intended use, and must not read
+    /// as the provenance gate failing: "refused by the owner" and "held back
+    /// by the gate" are opposite findings with opposite remedies, and
+    /// conflating them would report a person's own decisions back to them as
+    /// a starved learner.
+    #[test]
+    fn an_owners_drop_is_not_a_provenance_exclusion() {
+        let home = home("learning-dropped");
+        // Twelve reflections the owner refused by hand — enough to trip the
+        // old, unsplit count, and recent enough to read as alive if it did.
+        let lines: Vec<String> = (0..12)
+            .map(|i| reflection_line_dropped(&format!("d{i}"), "untrusted", "2026-08-13T12:00:00Z"))
+            .collect();
+        write_reflections(&home, &lines);
+        assert!(
+            of(&examine(&home, utc(NOW)), "learning").is_empty(),
+            "a dozen owner refusals must not read as a starved learner"
+        );
+
+        // Mixed with genuine provenance exclusions below the finding's own
+        // floor: still quiet, because the drops must not pad the count that
+        // decides whether the gate — not the owner — is the story.
+        let mut lines = lines;
+        lines.extend((0..5).map(|i| {
+            reflection_line(&format!("u{i}"), "untrusted", false, "2026-08-13T12:00:00Z")
+        }));
+        write_reflections(&home, &lines);
+        assert!(
+            of(&examine(&home, utc(NOW)), "learning").is_empty(),
+            "5 genuine exclusions is below the floor even with 12 drops beside them"
+        );
+
+        // Past the floor on genuine exclusions alone, the finding fires and
+        // its own count excludes every drop.
+        lines.extend((5..10).map(|i| {
+            reflection_line(&format!("u{i}"), "untrusted", false, "2026-08-13T12:00:00Z")
+        }));
+        write_reflections(&home, &lines);
+        let findings = examine(&home, utc(NOW));
+        let learning = of(&findings, "learning");
+        assert_eq!(learning.len(), 1, "{findings:#?}");
+        assert!(
+            learning[0].summary.contains("10 of"),
+            "the 12 drops must not be counted as excluded: {}",
+            learning[0].summary
+        );
 
         let _ = std::fs::remove_dir_all(&home);
     }
