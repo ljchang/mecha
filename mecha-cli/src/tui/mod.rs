@@ -19,6 +19,7 @@ mod doctor;
 mod entity;
 mod find;
 mod frontdoor;
+mod learning;
 mod mail;
 mod outbox;
 mod polls;
@@ -415,6 +416,7 @@ struct App {
     tools: Option<tools::ToolsModal>,
     /// The /skills modal, when open. Takes every key while it is up.
     skills: Option<skills::SkillsModal>,
+    learning: Option<learning::LearningModal>,
     /// Where the skill store lives, resolved from `[skills] dir` once at
     /// startup — the same resolution the agent's own set came from, so the
     /// modal cannot end up describing a different directory than the run
@@ -519,6 +521,10 @@ struct App {
     /// like `pending_switch`, because suspending the TUI needs the terminal,
     /// which a key handler does not hold.
     pending_editor: bool,
+    /// `/learning`'s `e`: open $EDITOR on one reflection's lesson. Same
+    /// deferral and for the same reason as `pending_outbox_edit` — suspending
+    /// the TUI needs the terminal, which a key handler does not hold.
+    pending_lesson_edit: Option<String>,
     /// Every provider entry in config, as (name, model). Fixed for the session.
     providers: Vec<(String, String)>,
     /// Whether the terminal speaks the kitty keyboard protocol, which is what
@@ -801,6 +807,8 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         help_scroll: 0,
         tools: None,
         skills: None,
+        learning: None,
+        pending_lesson_edit: None,
         skills_dir: prepared
             .config
             .skills
@@ -1084,6 +1092,12 @@ async fn run_loop(
         // Editing an outbox draft's arguments, same again.
         if let Some(id) = app.pending_outbox_edit.take() {
             suspend_and_edit_outbox(terminal, app, &id)?;
+            continue;
+        }
+
+        // Editing a reflection's lesson, same again.
+        if let Some(id) = app.pending_lesson_edit.take() {
+            suspend_and_edit_lesson(terminal, app, &id)?;
             continue;
         }
 
@@ -2081,6 +2095,7 @@ fn open_scoped_review(app: &mut App, ids: Vec<String>) {
         || app.entities.is_some()
         || app.tasks.is_some()
         || app.queues.is_some()
+        || app.learning.is_some()
         || app.poll_monitor.is_some()
         || app.health.is_some()
         || app.help;
@@ -2487,6 +2502,9 @@ fn on_key(
     }
     if app.queues.is_some() {
         return handle_queues_key(app, key);
+    }
+    if app.learning.is_some() {
+        return handle_learning_key(app, key);
     }
     if app.tasks.is_some() {
         return handle_tasks_key(app, key);
@@ -2918,6 +2936,18 @@ fn run_command(
                 sandbox_line: app.sandbox_line.clone(),
             });
         }
+
+        Command::Learning => match load_learning(learning::Pane::Reflections) {
+            Ok(rows) => {
+                app.learning = Some(learning::LearningModal::new(
+                    learning::Pane::Reflections,
+                    rows,
+                ))
+            }
+            Err(e) => app
+                .transcript
+                .push(Entry::Error(format!("learning: {e:#}"))),
+        },
 
         Command::Skills => {
             // Two reads, because neither source can answer alone. The agent
@@ -5971,6 +6001,189 @@ fn submit_task_form(app: &mut App) -> Result<()> {
 /// installed binary. Every modal mutation goes through here: one
 /// implementation of each verb, and no way for the TUI to do something the
 /// command line cannot.
+/// One pane's rows, from its own `list --json`.
+///
+/// A child process rather than a store read, on `/triggers`' rule and for the
+/// same payoff: one implementation per verb, and nothing the modal can show
+/// that the command line cannot. Cheap enough to be the reload after every
+/// action — none of these commands calls a model or touches the network.
+fn load_learning(pane: learning::Pane) -> Result<Vec<learning::Row>> {
+    let text = self_cli(&[pane.verb(), "list", "--json"])?;
+    learning::rows_from_json(pane, &text)
+}
+
+/// Reload the current pane and put the cursor back on the same record.
+fn reload_learning(app: &mut App) {
+    let Some(m) = &app.learning else { return };
+    let pane = m.pane;
+    match load_learning(pane) {
+        Ok(rows) => {
+            if let Some(m) = &mut app.learning {
+                m.reload(rows);
+            }
+        }
+        Err(e) => {
+            if let Some(m) = &mut app.learning {
+                m.status = Some(format!("could not reload: {e:#}"));
+            }
+        }
+    }
+}
+
+/// Run one `mecha …` verb against the selected record, report it, and reload.
+///
+/// Synchronous, unlike `/queues`' releases: every verb here is a local file
+/// rewrite that returns in milliseconds. Spawning it detached would buy
+/// nothing and cost the thing that matters most on a surface whose whole job
+/// is deciding — knowing whether the decision landed.
+fn learning_act(app: &mut App, verb: &str, extra: &[&str]) {
+    let Some(m) = &mut app.learning else { return };
+    let Some(row) = m.selected().cloned() else {
+        m.status = Some("nothing selected".into());
+        return;
+    };
+    if m.busy {
+        return;
+    }
+    m.busy = true;
+    let pane = m.pane;
+    let mut args: Vec<&str> = vec![pane.verb(), verb, &row.id];
+    args.extend_from_slice(extra);
+    let result = self_cli(&args);
+    if let Some(m) = &mut app.learning {
+        m.busy = false;
+        m.status = Some(match &result {
+            Ok(_) => format!("{verb} {}", learning_short(&row.id)),
+            Err(e) => format!("{verb} failed: {e:#}"),
+        });
+    }
+    reload_learning(app);
+}
+
+fn learning_short(id: &str) -> String {
+    id.chars().take(20).collect()
+}
+
+/// `/learning`'s keys.
+///
+/// Every mutation goes through a `mecha …` child and then reloads, so what the
+/// list shows after a keypress is what the store says rather than what the
+/// modal assumed — which is the same reason `/tasks` re-reads instead of
+/// patching its rows in place.
+fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let Some(modal) = &mut app.learning else {
+        return Ok(());
+    };
+    if modal.help {
+        modal.help = false;
+        return Ok(());
+    }
+    match key.code {
+        KeyCode::Char('?') => modal.help = true,
+        KeyCode::Esc => {
+            // The detail first, then the modal: Esc closes the innermost
+            // thing, so reading a record and then leaving is two presses and
+            // never one that closes both.
+            if modal.detail.is_some() {
+                modal.detail = None;
+                modal.detail_scroll = 0;
+            } else {
+                app.learning = None;
+            }
+        }
+        KeyCode::Char('j') | KeyCode::Down => match modal.detail.is_some() {
+            true => modal.detail_scroll = modal.detail_scroll.saturating_add(1),
+            false => modal.move_by(1),
+        },
+        KeyCode::Char('k') | KeyCode::Up => match modal.detail.is_some() {
+            true => modal.detail_scroll = modal.detail_scroll.saturating_sub(1),
+            false => modal.move_by(-1),
+        },
+        KeyCode::Tab | KeyCode::BackTab => {
+            let next = match key.code {
+                KeyCode::BackTab => modal.pane.prev(),
+                _ => modal.pane.next(),
+            };
+            match load_learning(next) {
+                Ok(rows) => modal.set_pane(next, rows),
+                Err(e) => modal.status = Some(format!("{}: {e:#}", next.label())),
+            }
+        }
+        KeyCode::Enter => {
+            if modal.detail.is_some() {
+                modal.detail = None;
+                modal.detail_scroll = 0;
+            } else if let Some(row) = modal.selected().cloned() {
+                let verb = modal.pane.verb();
+                match self_cli(&[verb, "show", &row.id]) {
+                    Ok(text) => {
+                        if let Some(m) = &mut app.learning {
+                            m.detail = Some(text);
+                            m.detail_scroll = 0;
+                        }
+                    }
+                    Err(e) => modal.status = Some(format!("could not read it: {e:#}")),
+                }
+            }
+        }
+        // The verbs, per pane. A key that does nothing in the pane you are
+        // looking at is worse than no key, so each is matched with its pane
+        // rather than dispatched from one table.
+        KeyCode::Char('e') if modal.pane == learning::Pane::Reflections => {
+            if let Some(row) = modal.selected() {
+                app.pending_lesson_edit = Some(row.id.clone());
+            }
+        }
+        KeyCode::Char('d') if modal.pane == learning::Pane::Reflections => {
+            learning_act(app, "drop", &[])
+        }
+        KeyCode::Char('u') if modal.pane != learning::Pane::Proposals => {
+            learning_act(app, "restore", &[])
+        }
+        KeyCode::Char('x') if modal.pane == learning::Pane::Rules => {
+            learning_act(app, "retire", &[])
+        }
+        KeyCode::Char('a') if modal.pane == learning::Pane::Proposals => {
+            learning_act(app, "accept", &[])
+        }
+        KeyCode::Char('r') if modal.pane == learning::Pane::Proposals => {
+            learning_act(app, "reject", &[])
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// `e` on a reflection: hand the terminal to `$EDITOR`, take it back, reload.
+///
+/// Through `mecha reflections edit`, so the promotion the CLI does — the
+/// lesson becomes the owner's, the context is withheld, the provenance moves
+/// — happens once and in one place, and the TUI cannot do something the
+/// command line cannot.
+fn suspend_and_edit_lesson(
+    terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>,
+    app: &mut App,
+    id: &str,
+) -> Result<()> {
+    let result = with_terminal_suspended(terminal, || {
+        self_cli_interactive(&["reflections", "edit", id])
+    })?;
+    if let Some(modal) = &mut app.learning {
+        modal.status = Some(match &result {
+            Ok(_) => format!("edited {} — the lesson is yours now", learning_short(id)),
+            Err(e) => format!("{} unchanged: {e}", learning_short(id)),
+        });
+    }
+    // Loud as well as in the modal, like a rejected outbox edit: a failed
+    // edit must not surface only when the lesson turns up in a rule.
+    if let Err(e) = &result {
+        app.transcript
+            .push(Entry::Error(format!("reflections edit: {e:#}")));
+    }
+    reload_learning(app);
+    Ok(())
+}
+
 fn self_cli(args: &[&str]) -> Result<String> {
     let exe = crate::exe::self_exe();
     let out = std::process::Command::new(exe)
@@ -6903,6 +7116,9 @@ fn draw(
         modal.draw(frame);
     }
     if let Some(modal) = &app.skills {
+        modal.draw(frame);
+    }
+    if let Some(modal) = &app.learning {
         modal.draw(frame);
     }
     if let Some(modal) = &app.scheduled {
@@ -9058,6 +9274,8 @@ mod tests {
             help_scroll: 0,
             tools: None,
             skills: None,
+            learning: None,
+            pending_lesson_edit: None,
             skills_dir: std::path::PathBuf::from("/nonexistent-skills"),
             sandbox_line: "sandbox: none — commands run as you, with your credentials".into(),
             workspace: std::env::temp_dir(),
