@@ -88,7 +88,48 @@ fn attach_runs(board: &mut serde_json::Value, dir: &std::path::Path) {
     let Some(items) = board["items"].as_array_mut() else {
         return;
     };
+    // **Is the run the board describes actually alive?** Asked of the run
+    // markers, because the board cannot answer it: `tasks work` restores the
+    // status on every exit path it controls, and a `SIGKILL` controls none of
+    // them — so a killed delegation leaves `waiting_on` naming the agent
+    // forever, and every surface that reads only the board renders it as
+    // *mecha is on it*, pulsing at a run that died. The marker knows within
+    // seconds (it is pid-checked and sweeps itself), and nothing was asking.
+    //
+    // One directory read for the whole board rather than one per row: the
+    // sweep inside `live` rewrites the directory, so calling it per task
+    // would have each row re-scan what the last one just cleaned.
+    let alive: std::collections::HashSet<String> = crate::commands::tasks::markers()
+        .map(|m| {
+            m.dir()
+                .read_dir()
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter_map(|e| {
+                            let name = e.file_name();
+                            let name = name.to_str()?.strip_suffix(".running")?.to_string();
+                            m.running(&name).map(|_| name)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
     for task in items.iter_mut() {
+        // **A board that says the agent has it, with no run behind it.** Not
+        // rewritten here — this reads stores and never heals them, doctor's
+        // rule — but named, so the card can render *the run is gone* instead
+        // of a run in flight. The field is absent in the ordinary case, so a
+        // page that does not know about it behaves exactly as it did.
+        if task["waiting_on"].as_str() == Some(crate::commands::tasks::AGENT) {
+            if let Some(id) = task["id"].as_str() {
+                if !alive.contains(id) {
+                    task["stalled"] = serde_json::Value::Bool(true);
+                }
+            }
+        }
         let Some(id) = task["session"].as_str().map(str::to_string) else {
             continue;
         };

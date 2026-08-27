@@ -368,6 +368,42 @@ mod tests {
         );
     }
 
+    /// **The board can outlive its run, and this is the witness.** `tasks
+    /// work` restores a task's status on every exit path it controls; a
+    /// `SIGKILL` controls none of them, so the graph goes on saying the agent
+    /// holds the task forever and every surface reading only the board
+    /// renders a dead run as one in flight. The marker answers it locally and
+    /// within seconds, which is the whole reason a surface should ask.
+    #[test]
+    fn a_task_the_board_says_is_held_can_have_no_run_behind_it() {
+        let m = RunMarkers::new(scratch("stalled"));
+        m.mark_running_for("task-1", None, Some("s-1")).unwrap();
+        assert!(
+            m.running("task-1").is_some(),
+            "while the run lives, the board's claim is corroborated"
+        );
+
+        // What a kill leaves: the marker's process is gone and nothing
+        // restored the board. Written as a dead pid rather than by killing
+        // something, for the same reason the test above is.
+        crate::create_private_dir(m.dir()).unwrap();
+        std::fs::write(
+            m.dir().join("task-1.running"),
+            serde_json::json!({"pid": 0, "started_at": Utc::now().to_rfc3339(), "session": "s-1"})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(
+            m.running("task-1").is_none(),
+            "the claim is now uncorroborated, and a reader can say so"
+        );
+        assert!(
+            m.live_writer_of("s-1").is_none(),
+            "and the transcript it was writing is free — a killed run must not \
+             lock its own conversation out of being resumed"
+        );
+    }
+
     /// A cancel that outlived the run it was meant for must not reach the
     /// next one. Fails on the old `mark_running`, which wrote the marker and
     /// left whatever cancel was already there.
