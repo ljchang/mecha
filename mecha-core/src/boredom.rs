@@ -113,6 +113,12 @@ impl Boredom {
         }
     }
 
+    /// How many times this run has been told it is going nowhere — the
+    /// counter that makes the thresholds above falsifiable.
+    pub fn notices(&self) -> u32 {
+        self.notices
+    }
+
     /// One outcome, as this counts them.
     ///
     /// The **target** rather than the raw arguments, so two different tools

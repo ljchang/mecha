@@ -398,6 +398,23 @@ fn health(
         println!("  context overflows   — (no run in this corpus recorded the counter)");
     }
 
+    // The number every threshold in `boredom.rs` is answerable against. A dash
+    // rather than a zero on a corpus with no sensor, like the line above: a
+    // detector that has never fired and one that was not there yet are opposite
+    // findings, and this is the field that exists to tell them apart.
+    let bored = corpus
+        .rows
+        .iter()
+        .filter(|r| r.stats.boredom_notices.is_some_and(|n| n > 0))
+        .count();
+    match corpus.boredom_rate() {
+        Some(_) => println!(
+            "  went nowhere        {bored} run(s) told an approach had stopped moving ({})",
+            pct(corpus.boredom_rate())
+        ),
+        None => println!("  went nowhere        — (no run in this corpus recorded the counter)"),
+    }
+
     let by_model = corpus.by_model();
     if by_model.len() > 1 {
         // A blended rate across models is true and useless: neither model
@@ -445,6 +462,7 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
         "context_overflows": overflows,
         "runs_with_overflow_sensor": sensed,
         "overflow_rate": corpus.overflow_rate(),
+        "boredom_rate": corpus.boredom_rate(),
         "cost_usd": cost,
         "runs_priced": priced,
         "by_model": corpus
