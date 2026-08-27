@@ -212,6 +212,28 @@ impl Corpus {
             .then(|| sensed.iter().filter(|n| **n > 0).count() as f64 / sensed.len() as f64)
     }
 
+    /// Share of runs the harness told at least once that an approach had
+    /// stopped teaching them anything, over the rows that could have reported
+    /// it (`GOAL-SYSTEM-DESIGN.md` §9.1).
+    ///
+    /// The number every threshold in `boredom.rs` is answerable against, and
+    /// it is a rate rather than a total on purpose: what the constants get
+    /// wrong is *how often* a run is spoken to, and a total over a corpus of
+    /// unknown size answers that only if you already know the size.
+    ///
+    /// `None` over no sensed rows, like every rate here — a corpus written
+    /// before the detector existed and one where nothing ever got stuck are
+    /// opposite findings.
+    pub fn boredom_rate(&self) -> Option<f64> {
+        let sensed: Vec<u32> = self
+            .rows
+            .iter()
+            .filter_map(|r| r.stats.boredom_notices)
+            .collect();
+        (!sensed.is_empty())
+            .then(|| sensed.iter().filter(|n| **n > 0).count() as f64 / sensed.len() as f64)
+    }
+
     /// Total cost, and how many rows knew theirs. Reported as a pair because
     /// a total over partial data is a lower bound, and one that does not say
     /// so is a wrong number.
@@ -303,6 +325,7 @@ mod tests {
         RunStats {
             homeostat: None,
             context_overflows: None,
+            boredom_notices: None,
             turns: 3,
             usage: Usage::default(),
             cost_usd: Some(0.25),

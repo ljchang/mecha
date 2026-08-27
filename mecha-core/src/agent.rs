@@ -845,6 +845,18 @@ pub struct RunOutcome {
     /// no outcome to be recorded on — the count on a row that exists is always
     /// of overflows the run survived.
     pub context_overflows: u32,
+    /// Times this run was told an approach had stopped teaching it anything
+    /// (`docs/GOAL-SYSTEM-DESIGN.md` §9.1).
+    ///
+    /// Here so the mechanism is falsifiable. Every threshold in `boredom.rs`
+    /// is a number chosen from argument rather than from measurement, and a
+    /// detector nobody can count fires either constantly or never with no way
+    /// to tell which — the silent failure this project keeps naming. The
+    /// notice is in the transcript verbatim, so this could in principle be
+    /// recovered by matching prose; that is what `is_context_overflow` has to
+    /// do because no backend gives it a code, and it is not something to
+    /// choose when the count is right here.
+    pub boredom_notices: u32,
     /// False when `usage` is a *lower bound* rather than a measurement.
     ///
     /// A run cancelled mid-stream keeps the input tokens, which arrive in the
@@ -1148,6 +1160,34 @@ impl Agent {
     /// every turn anyway, so a mid-run change costs one slightly-off
     /// prediction and corrects itself. The case worth catching is the one that
     /// happens *between* runs, where nothing else would notice.
+    /// What a run that has stopped making progress can actually reach.
+    ///
+    /// Read off the *available* surface rather than the registry, so a run
+    /// narrowed by a loaded skill is never pointed at a tool it cannot
+    /// dispatch — the level-3 skill bug, which was a name in a prompt for a
+    /// call that could only fail. Deterministic because the registry is a
+    /// `BTreeMap`: naming a different delegate from one run to the next would
+    /// be arbitrary where it looks like a decision.
+    ///
+    /// `available_names()` covers a skill's restriction but not
+    /// `RunContext::withheld` — the *other* way a name can be registered and
+    /// still undispatchable (`agent.rs`'s own dispatch is
+    /// `available(name).filter(|_| !cx.is_withheld(name))`), so this filters
+    /// on the same denylist to keep the two spellings of "reachable" in
+    /// agreement.
+    fn escapes(&self, cx: &RunContext) -> crate::boredom::Escapes {
+        crate::boredom::Escapes {
+            delegate: self
+                .registry
+                .available_names()
+                .into_iter()
+                .filter(|name| !cx.is_withheld(name))
+                .filter_map(|name| self.registry.get(name))
+                .find(|tool| tool.runs_a_fresh_conversation())
+                .map(|tool| tool.name().to_string()),
+        }
+    }
+
     fn request_surface(&self, cx: &RunContext) -> u64 {
         let specs = self.registry.specs_for(cx.phase);
         crate::pressure::surface_fingerprint(
@@ -1178,6 +1218,13 @@ impl Agent {
                 cancel: cx.cancel.clone(),
                 phase: cx.phase,
                 withheld: cx.withheld.clone(),
+                // Identity only — the counters are folded per turn in
+                // `run_tools`, which is the one place the trace is in scope.
+                // It has to be minted *here*: the trace is per run and a
+                // `RunContext` is not, so an id on the context would be one
+                // value across every chat turn and the reset it exists to
+                // catch would be invisible.
+                work: Some(crate::step::Work::default().in_run(crate::step::next_run())),
                 ..(*cx.tools).clone()
             }),
             ..cx.clone()
@@ -1211,6 +1258,7 @@ impl Agent {
         // is `RunConfig`'s to record.
         let mut cache_lens = crate::cache_lens::CacheLens::new();
         let mut loop_guard = LoopGuard::new(self.cfg.loop_guard);
+        let mut boredom = crate::boredom::Boredom::new(self.cfg.boredom);
         let mut loop_detected = false;
         // Consecutive empty turns, reset by any turn that produces something.
         // This used to count across the whole run on the theory that a model
@@ -1255,7 +1303,7 @@ impl Agent {
                     taint,
                     compactions,
                 );
-                emit_done(&events, &mut outcome, *context_overflows);
+                emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
                 return Ok(outcome);
             }
 
@@ -1546,6 +1594,7 @@ impl Agent {
                 let mut outcome = RunOutcome {
                     homeostat: None,
                     context_overflows: 0,
+                    boredom_notices: 0,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -1565,7 +1614,7 @@ impl Agent {
                     compactions,
                     usage_complete: true,
                 };
-                emit_done(&events, &mut outcome, *context_overflows);
+                emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
                 return Ok(outcome);
             }
             turns += 1;
@@ -1700,7 +1749,7 @@ impl Agent {
                         taint,
                         compactions,
                     );
-                    emit_done(&events, &mut outcome, *context_overflows);
+                    emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
                     return Ok(outcome);
                 }
             };
@@ -1843,7 +1892,7 @@ impl Agent {
                             taint,
                             compactions,
                         );
-                        emit_done(&events, &mut outcome, *context_overflows);
+                        emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
                         return Ok(outcome);
                     }
 
@@ -1857,7 +1906,15 @@ impl Agent {
                         .into_iter()
                         .map(|(id, name, input)| (id, (name, input)))
                         .collect();
-                    let turn_digests: Vec<u64> = results
+                    //
+                    // One walk, two consumers, for the reason the byte
+                    // measurement above is taken once: pairing every result
+                    // with its call renders each input, and both readers need
+                    // the same three values. They key differently on purpose —
+                    // the guard on the exact call, boredom on the *target*, so
+                    // two tools that read one file and get the same bytes count
+                    // as the same thing learned twice.
+                    let outcomes: Vec<(&str, &Value, &str)> = results
                         .iter()
                         .filter_map(|block| {
                             let Block::ToolResult {
@@ -1869,16 +1926,37 @@ impl Agent {
                                 return None;
                             };
                             let &(name, input) = inputs.get(tool_use_id.as_str())?;
-                            Some(LoopGuard::digest(name, input, content))
+                            Some((name, input, content.as_str()))
                         })
                         .collect();
-                    if loop_guard.observe_turn(turn_digests) {
+
+                    if loop_guard.observe_turn(
+                        outcomes
+                            .iter()
+                            .map(|(name, input, content)| LoopGuard::digest(name, input, content)),
+                    ) {
                         tracing::warn!(
                             "identical call and result repeated after a compaction; stopping"
                         );
                         loop_detected = true;
                     }
+                    // Between "proceeding" and the guard's "dead": an approach
+                    // that has stopped teaching the run anything, named while
+                    // there is still something to do about it.
+                    let bored =
+                        boredom.observe_turn(outcomes.iter().map(|(name, input, content)| {
+                            (*name, crate::boredom::Boredom::key(name, input, content))
+                        }));
+
                     messages.push(Message::tool_results(results));
+                    // Folded into the message carrying the results, which is
+                    // the same slot steering uses and for the same reason:
+                    // two user messages in a row are invalid, and there is no
+                    // legal slot between a `tool_use` and its result.
+                    if let Some((rung, tool)) = bored {
+                        tracing::debug!(%tool, ?rung, "an approach has stopped moving");
+                        append_user_text(messages, rung.notice(&tool, &self.escapes(cx)));
+                    }
                 }
                 // A server-side tool loop paused mid-turn. Resending the
                 // conversation as-is resumes it; no extra user message.
@@ -1903,7 +1981,7 @@ impl Agent {
                         outcome.stop_cause = StopCause::NoOutput;
                         outcome.exhausted = true;
                     }
-                    emit_done(&events, &mut outcome, *context_overflows);
+                    emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
                     return Ok(outcome);
                 }
             }
@@ -2256,6 +2334,7 @@ impl Agent {
             // swapped pair of arguments compiles.
             homeostat: None,
             context_overflows: 0,
+            boredom_notices: 0,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -2393,6 +2472,7 @@ impl Agent {
             taint,
             homeostat: None,
             context_overflows: 0,
+            boredom_notices: 0,
             stop_cause: StopCause::Interrupted,
             compactions,
             cost_usd: self.cost(&usage),
@@ -2481,6 +2561,18 @@ impl Agent {
 
         let mut approved = Vec::new();
         let mut results: Vec<Option<Block>> = vec![None; calls.len()];
+        // Every gate in this loop that settles a call this turn *without*
+        // adding it to `approved` — the approver's `Deny`/`Blocked`, the
+        // planning-phase gate, the trifecta interlock, a withheld or unknown
+        // tool name, and a staging failure — folded into `Work::denied`
+        // below beside `in_flight`. The name undersells it slightly (an
+        // unknown tool is the model's own mistake, not a refusal), but the
+        // shape is one and the same: the call is already settled, so a
+        // batch that ticks one step and reaches for the next one's tool in
+        // the same turn cannot say which step this outcome belongs to, and
+        // neither an approved sibling nor the finding it might otherwise
+        // support may be attributed to it.
+        let mut denied_this_turn: u32 = 0;
 
         // What this turn will arm, gated against *before* any of it runs.
         //
@@ -2532,6 +2624,7 @@ impl Agent {
                         unknown: false,
                         staged: false,
                     });
+                    denied_this_turn += 1;
                     emit(
                         events,
                         AgentEvent::ToolDenied {
@@ -2617,6 +2710,7 @@ impl Agent {
                     unknown: !withheld,
                     staged: false,
                 });
+                denied_this_turn += 1;
                 continue;
             };
 
@@ -2731,6 +2825,7 @@ impl Agent {
                             unknown: false,
                             staged: false,
                         });
+                        denied_this_turn += 1;
                         continue;
                     }
                     // Escalate to a human even for a tool that would normally
@@ -2774,6 +2869,7 @@ impl Agent {
                         unknown: false,
                         staged: false,
                     });
+                    denied_this_turn += 1;
                     continue;
                 }
             }
@@ -2867,6 +2963,7 @@ impl Agent {
                             unknown: false,
                             staged: false,
                         });
+                        denied_this_turn += 1;
                     }
                 }
                 continue;
@@ -2907,12 +3004,28 @@ impl Agent {
                         unknown: false,
                         staged: false,
                     });
+                    denied_this_turn += 1;
                     continue;
                 }
             }
 
             approved.push((i, Arc::clone(tool), id.clone(), name.clone(), input.clone()));
         }
+
+        // What the run has done, as of now. Folded after the gate rather than
+        // before it, so a call this turn's approver refused is already in the
+        // count. Two kinds of sibling keep that from over-attributing a
+        // denial to whichever step happens to be completing in the same
+        // batch: one still running, carried as *in flight*, and one already
+        // denied this turn, carried as `denied` — `Work::of` folds the
+        // denial into the raw trace's tail regardless of which call in the
+        // batch it sat beside, so without this a step whose own work landed
+        // reads as blocked by a refusal that belonged to its neighbour.
+        // Neither supports a finding at all.
+        let work = crate::step::Work::of(trace)
+            .with_in_flight(approved.len().saturating_sub(1) as u32)
+            .with_denied(denied_this_turn)
+            .in_run(cx.tools.work.map(|w| w.run).unwrap_or_default());
 
         let executed =
             futures::future::join_all(approved.into_iter().map(|(i, tool, id, name, input)| {
@@ -2933,6 +3046,7 @@ impl Agent {
                     call_id: Some(id.clone()),
                     taint: Some(turn_taint),
                     context,
+                    work: Some(work),
                     ..(*cx.tools).clone()
                 });
                 async move {
@@ -3040,8 +3154,10 @@ fn emit_done(
     events: &Option<UnboundedSender<AgentEvent>>,
     outcome: &mut RunOutcome,
     context_overflows: u32,
+    boredom_notices: u32,
 ) {
     outcome.context_overflows = context_overflows;
+    outcome.boredom_notices = boredom_notices;
     emit(events, AgentEvent::Done(Box::new(outcome.clone())));
 }
 
@@ -5263,6 +5379,7 @@ mod tests {
         // here and saw nothing" — which is a different claim from `None`.
         let clean = crate::session::RunStats::from(&RunOutcome {
             context_overflows: 0,
+            boredom_notices: 0,
             ..outcome.clone()
         });
         assert_eq!(clean.context_overflows, Some(0));
@@ -5438,6 +5555,426 @@ mod tests {
         assert!(
             result_len < 1_000,
             "the result was not thinned: {result_len} bytes"
+        );
+    }
+
+    // --- boredom ---
+
+    /// Between "proceeding" and the loop guard's "dead". The guard is dormant
+    /// until a compaction and its response is to end the run; this speaks
+    /// while there is still something to do about it.
+    #[tokio::test]
+    async fn an_approach_that_stops_teaching_the_run_anything_is_named_once() {
+        let same = || {
+            assistant(
+                vec![Block::ToolUse {
+                    id: "e".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "the same answer"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, _) = agent_with_tools(
+            vec![
+                same(),
+                same(),
+                same(),
+                same(),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(EchoTool)],
+            PermissionMode::Allow,
+        );
+
+        let mut convo = Conversation::user("go");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let notices: Vec<&Message> = convo
+            .messages
+            .iter()
+            .filter(|m| m.text().contains("returned exactly the same thing"))
+            .collect();
+        assert_eq!(
+            notices.len(),
+            1,
+            "a rung is crossed once — a notice every turn is the shape eviction exists to remove"
+        );
+
+        // Folded into the message carrying the tool results, not appended as a
+        // message of its own: two user messages in a row are invalid, and
+        // there is no legal slot between a `tool_use` and its result.
+        assert_eq!(notices[0].role, Role::User);
+        assert!(
+            notices[0]
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult { .. })),
+            "the notice rode on the results message"
+        );
+
+        // The second turn's results message is clean: two identical outcomes
+        // is a retry, which is how work gets done.
+        let second_results = convo
+            .messages
+            .iter()
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult { .. }))
+            })
+            .nth(1)
+            .unwrap();
+        assert!(!second_results.text().contains("same thing"));
+    }
+
+    /// The identical call, over and over, with the answer changing under it —
+    /// which is what watching something looks like and must never grade as
+    /// stuck. Written with a tool whose result moves rather than with six
+    /// different arguments: six arguments are six targets, so that version
+    /// would pass against a key that ignored the result entirely.
+    #[tokio::test]
+    async fn a_changing_result_is_polling_and_is_never_called_stuck() {
+        struct PollTool(std::sync::atomic::AtomicU32);
+        #[async_trait]
+        impl Tool for PollTool {
+            fn name(&self) -> &str {
+                "status"
+            }
+            fn description(&self) -> &str {
+                "How far along is it?"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                let n = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(ToolOutput::ok(format!("{n}% done")))
+            }
+        }
+
+        let mut turns: Vec<CompletionResponse> = (0..6)
+            .map(|i| {
+                assistant(
+                    vec![Block::ToolUse {
+                        id: format!("s{i}"),
+                        name: "status".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                )
+            })
+            .collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![Arc::new(PollTool(std::sync::atomic::AtomicU32::new(0)))],
+            PermissionMode::Allow,
+        );
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("watch it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(
+            convo
+                .messages
+                .iter()
+                .all(|m| !m.text().contains("same thing")),
+            "six identical calls with six different answers is watching, not repeating"
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_boredom_off_leaves_the_transcript_alone() {
+        let same = || {
+            assistant(
+                vec![Block::ToolUse {
+                    id: "e".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "x"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (mut agent, _) = agent_with_tools(
+            vec![
+                same(),
+                same(),
+                same(),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(EchoTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.boredom = false;
+
+        let mut convo = Conversation::user("go");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo
+            .messages
+            .iter()
+            .all(|m| !m.text().contains("same thing")));
+    }
+
+    // --- step appraisal ---
+
+    /// The wiring, which the pure tests in `step.rs` and the ctx-faking ones in
+    /// `todo.rs` cannot reach: does the loop's own trace actually arrive at the
+    /// tool, and is the reading against the *right* span?
+    ///
+    /// Worth a scripted run rather than an assertion about the code, on this
+    /// project's own rule — the level-3 skill bug and the `todo`-after-a-
+    /// compaction bug were both found by running the thing, not by reading it.
+    #[tokio::test]
+    async fn a_step_ticked_over_a_failed_call_is_reported_on_the_plan() {
+        struct BreakTool;
+        #[async_trait]
+        impl Tool for BreakTool {
+            fn name(&self) -> &str {
+                "build"
+            }
+            fn description(&self) -> &str {
+                "Build it."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::err("linker error"))
+            }
+        }
+
+        let plan = |status: &str, id: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "todo".into(),
+                    input: json!({"items": [{"content": "fix the port", "status": status}]}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+
+        let (agent, _) = agent_with_tools(
+            vec![
+                plan("in_progress", "p1"),
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "b1".into(),
+                        name: "build".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                plan("completed", "p2"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![
+                Arc::new(BreakTool),
+                Arc::new(crate::tool::todo::TodoTool::new()),
+            ],
+            PermissionMode::Allow,
+        );
+
+        let mut convo = Conversation::user("fix the port");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let closing = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == "p2" => Some(content.clone()),
+                _ => None,
+            })
+            .expect("the closing plan write has a result");
+
+        assert!(
+            closing.contains("fix the port") && closing.contains("still failing"),
+            "the harness said nothing about a step ticked over a failed call: {closing}"
+        );
+
+        // And the opening write is silent: the step had not finished, so there
+        // was nothing to appraise. A reading on every plan write would be bulk
+        // carried for the rest of the run.
+        let opening = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == "p1" => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(!opening.contains("still failing"), "{opening}");
+    }
+
+    /// The batched shape `in_flight` was added for, with the sibling denied
+    /// instead of still running: a step's own work landed, and in the same
+    /// turn the model reaches for a tool that does not exist to start the
+    /// next one. The unknown-tool call settles *ahead of* the approved
+    /// `todo` write in the gate loop, so `Work::of`'s raw tail is its
+    /// failure — and without `denied_this_turn` folded in, that failure
+    /// would be blamed on the step the `todo` call just completed.
+    #[tokio::test]
+    async fn a_step_ticked_beside_an_invented_tool_name_is_not_blamed_for_it() {
+        struct OkTool;
+        #[async_trait]
+        impl Tool for OkTool {
+            fn name(&self) -> &str {
+                "build"
+            }
+            fn description(&self) -> &str {
+                "Build it."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("built"))
+            }
+        }
+
+        let (agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "p0".into(),
+                        name: "todo".into(),
+                        input: json!({"items": [
+                            {"content": "ship it", "status": "in_progress"}
+                        ]}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "b1".into(),
+                        name: "build".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                // The batch: this step's own completion, and a name the
+                // model invented for the *next* step, in one turn.
+                assistant(
+                    vec![
+                        Block::ToolUse {
+                            id: "p1".into(),
+                            name: "todo".into(),
+                            input: json!({"items": [
+                                {"content": "ship it", "status": "completed"}
+                            ]}),
+                        },
+                        Block::ToolUse {
+                            id: "x1".into(),
+                            name: "nosuchtool".into(),
+                            input: json!({}),
+                        },
+                    ],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![
+                Arc::new(OkTool),
+                Arc::new(crate::tool::todo::TodoTool::new()),
+            ],
+            PermissionMode::Allow,
+        );
+
+        let mut convo = Conversation::user("ship it");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let closing = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == "p1" => Some(content.clone()),
+                _ => None,
+            })
+            .expect("the closing plan write has a result");
+
+        assert!(
+            !closing.contains("still failing") && !closing.contains("refused"),
+            "a name the model invented for the next step must not read as \
+             this step's own failure or refusal: {closing}"
+        );
+    }
+
+    /// `escapes()` reads `available_names()`, which excludes a tool a loaded
+    /// skill narrowed away but not one `RunContext::withheld` denylists —
+    /// the *other* way a registered tool can be undispatchable. A boredom
+    /// notice naming a withheld delegate would spend a turn on a call that
+    /// can only fail: the reachable-surface bug this method's own doc names,
+    /// arriving through the interlock instead of a skill.
+    #[tokio::test]
+    async fn a_notice_never_names_a_withheld_delegate() {
+        struct FakeDelegate;
+        #[async_trait]
+        impl Tool for FakeDelegate {
+            fn name(&self) -> &str {
+                "researcher"
+            }
+            fn description(&self) -> &str {
+                "Delegates to a fresh conversation."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn runs_a_fresh_conversation(&self) -> bool {
+                true
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("delegated"))
+            }
+        }
+
+        let (agent, _) =
+            agent_with_tools(vec![], vec![Arc::new(FakeDelegate)], PermissionMode::Allow);
+        let cx = || {
+            RunContext::new(
+                ToolCtx::default().with_workspace(std::env::temp_dir()),
+                Arc::new(ModeApprover {
+                    mode: PermissionMode::Allow,
+                }),
+            )
+        };
+
+        let reachable = agent.escapes(&cx());
+        assert_eq!(reachable.delegate, Some("researcher".to_string()));
+
+        let withheld = cx().withholding(["researcher".to_string()]);
+        let unreachable = agent.escapes(&withheld);
+        assert_eq!(
+            unreachable.delegate, None,
+            "a withheld delegate must not be offered as an escape"
         );
     }
 
