@@ -1393,17 +1393,19 @@ the mechanism and every decision. What it left standing:
   live recognizer sees it — otherwise a bad nightly write takes `:8992` down
   and voice goes deaf with no error text anywhere.
 
-### The goal system — rungs 0–7's observation half shipped; the next step is a measurement's, not the plan's
+### The goal system — rungs 0–7's observation half and the quarantined appraiser shipped; the model half of step appraisal is what's left
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the authority and carries a status header
 saying which rungs shipped. The arc's premise, which is what makes the rest
 follow: **every evaluative signal mecha had was a cost or a correction**, so a
 run could be recorded as having gone badly and never as having gone well.
 
-Rungs 0–6 and rung 7's observation half are in `main`. Everything with no
-model, no charter and no adversary in it is now built, which is §14's ordering
-and not a coincidence — and it is also the end of the free part: the rest of
-rung 7 is the first thing here with a model in the path.
+Rungs 0–6, rung 7's observation half, and rung 7's quarantined appraiser
+(`--appraise`, below) are in `main`. Everything with no model, no charter and
+no adversary in it is now built, which is §14's ordering and not a
+coincidence — and the appraiser is the first thing here that actually spends
+a model call, on the observation-first shape every other rung took: offline,
+budgeted, and left without a store until a real corpus says it earns one.
 
 **PR-stack status, verified 2026-08-27T22:15Z against `main` at `a0638c8`.**
 The whole appraisal/learning-UI/validation/task-seed stack that was in flight
@@ -1612,19 +1614,43 @@ fuller argument.
   executes in that mode, so the registry exists to reproduce the surface the
   model *saw*, and a stub that errors if actually called restores that without
   changing any executed behaviour. It must stay conditional on the mode —
-  under the others tools really do run, and there the bail is correct. Not
-  done, because it changes what `validate` measures from *nothing* to
-  *something*, which is worth deciding deliberately rather than sideways.
+  under the others tools really do run, and there the bail is correct.
+
+  **This paragraph is stale — the stub is built and both callers already use
+  it, verified 2026-08-27 by reading `probe.rs` on `main` rather than trusting
+  this note.** `probe::drive_arm` — the one function both `mecha validate`
+  (via `prepare_probe`) and `mecha sessions appraise --probe` (via
+  `prepare_probe_at`) call to actually run an arm — builds its registry with
+  `Some(&crate::setup::surface_only_registry())` as the `ask_user`-shaped
+  fallback, under `OnDivergence::Stop`, exactly as described above. Landed as
+  part of #90/#91. What is still unmeasured is not whether the fix exists but
+  whether it *changes the numbers* — nobody has re-run `mecha validate` since
+  it landed to confirm `validations.jsonl` now gets written for a steer/denial
+  probe that used to silently skip.
 
   **Do not build rungs 8–10 on the label yet.** §8's prioritised replay and
   §10's memory salience both key off affect, and today affect is a constant.
 
-- **The rest of rung 7 is open**: the quarantined appraiser (§5.1) — no tools,
-  no conversation, typed output — and the model half of step appraisal, which
-  is the escalation and not the common path. Both cost a model run, which is
-  also when the appraisal **store** starts earning its place; until then the
-  record is derived on the spot, which is `runlog`'s rule and a correction to
-  §10.
+- **The quarantined appraiser (§5.1) shipped 2026-08-27** — no tools, no
+  conversation, typed output, offline via `mecha sessions appraise --appraise`
+  (`mecha-core/src/appraisal.rs`'s `AppraiserEvidence`/`appraise_with_model`/
+  `apply_appraiser`, `mecha-cli/src/appraiser_pass.rs` for the budget and
+  tally, same shape as `--probe`). It reads one already-built `Appraisal`'s
+  numbers only — never the transcript, an intervention's text, or a draft's
+  body — and returns one more signed `GoalError` (`Channel::Appraisal`,
+  `Cite::Appraiser`) or "nothing further", which is the ordinary, correct
+  answer and is tallied apart from a budget running out. Smoke tested live
+  against 3 real sessions (all came back "nothing further" — too small a
+  sample to be the corpus measurement rung 7's observation half already took
+  at 120 sessions); running `--appraise` at that scale is the natural next
+  step, and it is what decides whether the appraisal **store** now earns its
+  place, per this rung's own build note in `GOAL-SYSTEM-DESIGN.md`.
+
+  **What's left of rung 7 is the model half of step appraisal** — the
+  escalation, not the common path (see the next item). It costs a model run
+  too, same as the appraiser; until either lands with a store behind it the
+  record stays derived on the spot, which is `runlog`'s rule and a correction
+  to §10.
 
 - **Rung 6 shipped with two gaps that are stated reasons, not sequencing.**
   Both are named in `GOAL-SYSTEM-DESIGN.md` §14 rung 6 and in the modules
