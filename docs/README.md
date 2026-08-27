@@ -18,12 +18,70 @@ belonged in three other places.
 | `MAIL-CORPUS-RESEARCH.md` | What a year of the user's own mail measured. **Gitignored** for the same reason as `OPERATIONS.md`: no correspondence, but aggregates of one mailbox are still its owner's. The decisions it produced are in `MAIL-UX-DESIGN.md` without the figures | past | once |
 | [`HANDOFF.md`](HANDOFF.md) | Current state and **only the open work** | present | **only with open work — completed items leave** |
 | [`HISTORY.md`](HISTORY.md) | What shipped and when; what was learned the hard way | past | append-only |
+| [`TRIFECTA.md`](TRIFECTA.md) | The four ways a session assembles the lethal trifecta, which mechanism owns each, and every opt-in switch with its cost. Read before loosening anything | present | rarely |
+| [`LLAMA-SERVER.md`](LLAMA-SERVER.md) | The local model server: slot geometry, the KV arithmetic, the measured `-np` table, and what each flag cost to learn | present | with the server |
 | `*-RESEARCH.md` | One question, researched once, with evidence and a date | past | one per question |
 | `*-DESIGN.md` | One thing, designed before it is built — the decisions, and what is deliberately not in scope | present, then past | one per thing |
 | [`LEARNING-AUTONOMY-DESIGN.md`](LEARNING-AUTONOMY-DESIGN.md) | Why learning is ungated in every domain, what replaces the gate, and the cost of that in `behavior`. Read §3 before loosening anything further | present | once |
 | [`GOAL-SYSTEM-DESIGN.md`](GOAL-SYSTEM-DESIGN.md) | The goal representation, the signed error signal it produces, and its three consumers. Read §7 before letting any disposition stand in for a structural check | present | once |
 | [`CHANGELOG.md`](../CHANGELOG.md) | User-visible changes per release | past | append-only |
 | [`website/docs/`](../website/docs) | User-facing documentation for the published site | present | with features |
+
+## The index
+
+Every research and design document, and the one question each answers. The
+pattern rows above say what *kind* of thing these are; this says which one to
+open. **Status is deliberately not repeated here** — each document carries its
+own, and a second copy is how two documents start disagreeing about whether
+something shipped.
+
+### `*-RESEARCH.md` — one question, researched once
+
+| Document | The question it went and answered |
+|---|---|
+| [`BENCHMARK-RESEARCH.md`](BENCHMARK-RESEARCH.md) | How to measure this harness against public agent benchmarks, and what separates harness from model |
+| [`CANVAS-RESEARCH.md`](CANVAS-RESEARCH.md) | Can mecha reach Canvas LMS — and what Dartmouth's token policy makes impossible |
+| [`CLOUD-HOSTING-RESEARCH.md`](CLOUD-HOSTING-RESEARCH.md) | What it would cost to run the model somewhere other than this box |
+| [`CONTEXT-RESEARCH.md`](CONTEXT-RESEARCH.md) | What is actually established about context management, compaction and distractors |
+| [`DOCS-RESEARCH.md`](DOCS-RESEARCH.md) | Which Google scope buys document access, and what each one costs in review |
+| [`HARNESS-RESEARCH.md`](HARNESS-RESEARCH.md) | Where agent performance actually comes from — planning, the loop, or the tools |
+| `MAIL-CORPUS-RESEARCH.md` | What a year of this mailbox actually contains. **Gitignored** |
+| [`MAIL-UX-RESEARCH.md`](MAIL-UX-RESEARCH.md) | What the field has converged on for agent-driven email |
+| [`MEMORY-RESEARCH.md`](MEMORY-RESEARCH.md) | Whether agent memory should accumulate or be curated, and what the evidence says |
+| [`MESSAGING-RESEARCH.md`](MESSAGING-RESEARCH.md) | How separate mecha sessions should message each other, and what travels with a message |
+| [`POLL-RESEARCH.md`](POLL-RESEARCH.md) | What polling products ship, and which parts are worth copying |
+| [`PRIOR-ART-RESEARCH.md`](PRIOR-ART-RESEARCH.md) | What openclaw, codex and the other harnesses do that this one does not |
+| [`PUBLIC-SURFACE-RESEARCH.md`](PUBLIC-SURFACE-RESEARCH.md) | How an agent should meet the world: artifacts, reports, a booking page |
+| [`REMOTE-SURFACE-RESEARCH.md`](REMOTE-SURFACE-RESEARCH.md) | Once voice is a browser page, is Slack still the right remote surface |
+| [`SANDBOX-RESEARCH.md`](SANDBOX-RESEARCH.md) | Which confinement backend to use, and what each one cannot close |
+| [`SELF-IMPROVEMENT-RESEARCH.md`](SELF-IMPROVEMENT-RESEARCH.md) | Whether a harness can measure and improve itself, and where that goes wrong |
+| [`SKILLS-RESEARCH.md`](SKILLS-RESEARCH.md) | What the Agent Skills standard is, and what published skills measured as carrying |
+| [`SLACK-RESEARCH.md`](SLACK-RESEARCH.md) | How mecha should be driven from Slack, and which trust tiers that needs |
+| [`SLIDES-RESEARCH.md`](SLIDES-RESEARCH.md) | What a presentation integration would have to reach, per platform |
+| [`TASK-RESEARCH.md`](TASK-RESEARCH.md) | What a day of real use said about delegation and the task tier |
+| [`TUI-RESEARCH.md`](TUI-RESEARCH.md) | What the good agent TUIs do that this one does not |
+| [`VERIFICATION-RESEARCH.md`](VERIFICATION-RESEARCH.md) | What verification loops other agents run, and what mecha has instead |
+| [`VOICE-RESEARCH.md`](VOICE-RESEARCH.md) | How the owner talks to mecha out loud, and from where |
+
+### `*-DESIGN.md` — one thing, decided before it was built
+
+| Document | What it decides |
+|---|---|
+| [`BRANCHING-DESIGN.md`](BRANCHING-DESIGN.md) | Branching a conversation, and why the TUI batch deliberately left it out |
+| [`EXPERIMENT-DESIGN.md`](EXPERIMENT-DESIGN.md) | The instrument that states, from artifacts alone, what differed between two runs and what it cost. §5 depends on `BRANCHING-DESIGN.md`; issue #60 holds the communication policy question |
+| [`FACTORY-DOCS-DESIGN.md`](FACTORY-DOCS-DESIGN.md) | The published documentation site and what belongs on it |
+| [`GOAL-SYSTEM-DESIGN.md`](GOAL-SYSTEM-DESIGN.md) | What a run is *for*, the signed error signal that follows, and its three consumers. Read §7 before letting a disposition stand in for a structural check |
+| [`LEARNING-AUTONOMY-DESIGN.md`](LEARNING-AUTONOMY-DESIGN.md) | Why learning is ungated per domain, what replaces the gate, and the cost in `behavior`. Read §3 before loosening anything |
+| [`MAIL-UX-DESIGN.md`](MAIL-UX-DESIGN.md) | Mail as a surface you work: the phases, and what each settled |
+| [`POLL-DESIGN.md`](POLL-DESIGN.md) | Polls as a general-purpose instrument — the six kinds and the lecture mode |
+| [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) | The public surface: what mecha may publish, and under what review |
+| [`REMOTE-CONTROL-DESIGN.md`](REMOTE-CONTROL-DESIGN.md) | One live TUI session and a named Slack thread as the same conversation |
+| [`REMOTE-SURFACE-DESIGN.md`](REMOTE-SURFACE-DESIGN.md) | How the tailnet web surface gets built, and what it replaces |
+| [`SCHEDULING-DESIGN.md`](SCHEDULING-DESIGN.md) | The scheduling instrument: booking, the admin door, the frontend |
+| [`SLACK-ACTIONS-DESIGN.md`](SLACK-ACTIONS-DESIGN.md) | Executable actions from a phone: the closed `Action` enum and the tainted two-step |
+| [`SLACK-DESIGN.md`](SLACK-DESIGN.md) | How mecha is driven from Slack: the transport, the allowlist, the thread state machine |
+| [`SWITCHBOARD-DESIGN.md`](SWITCHBOARD-DESIGN.md) | The switchboard over the public surface |
+| [`TASK-AGENT-DESIGN.md`](TASK-AGENT-DESIGN.md) | The medium tier: delegated tasks, the resource model, and who holds the ball |
 
 ## Where does this go?
 
@@ -170,5 +228,8 @@ that already exists. A new document is justified when it answers a question
 that is genuinely its own, and when you can say in one sentence what belongs
 in it and what does not.
 
-Add it to the table above in the same commit. A document nobody can find from
-here will be rewritten by the next person who needs it.
+Add it to **the index** in the same commit — the map's `*-RESEARCH.md` and
+`*-DESIGN.md` rows say what kind of thing it is, and only the index says which
+one to open. A document nobody can find from here will be rewritten by the next
+person who needs it, and 32 of them were unreachable from `CLAUDE.md` on
+2026-08-26 for exactly that reason.

@@ -14,17 +14,19 @@ beside the original rather than replacing it (§2.1 and §4.4).
 | 1 | `GoalRef`, the goal on the plan | shipped, #63 |
 | 2 | sign the existing channels (`sent && !edited()`) | shipped, #64 |
 | 3 | the homeostat, read-only | shipped, #65 |
-| 4 | prioritised replay + uniform holdout | open, #66 |
-| 5–11 | predictive compaction onward | unbuilt |
+| 4 | prioritised replay + uniform holdout | shipped, #66 |
+| 5 | predictive compaction and task sizing | **harness half shipped**, #69/#71/#72; the model-facing half is open |
+| 6–11 | boredom and step appraisal onward | unbuilt |
 
 Everything shipped so far has no model, no charter and no adversary in it,
 which is §14's ordering rather than a coincidence.
 
-Three things were deliberately named rather than done, so they are not
+Two things were deliberately named rather than done, so they are not
 rediscovered as oversights: rewiring `/queues` onto `backlog.rs` (§13.3 — it
-needs either a wider `Backlog` or the loss of its per-item detail lines),
-context pressure on the `Homeostat` (§4, it wants rung 5's in-run tracker
-rather than a field nothing sets), and `/slots` (§4.2, no consumer yet).
+needs either a wider `Backlog` or the loss of its per-item detail lines) and
+`/slots` (§4.2, no consumer yet). The third — context pressure on the
+`Homeostat` — shipped with rung 5: `peak_prompt_tokens` and
+`peak_context_pressure`, set from the in-run tracker in `Homeostat::finish`.
 
 This is the shape to build, written so someone can start.
 
