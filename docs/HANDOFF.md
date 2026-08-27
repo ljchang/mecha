@@ -1422,6 +1422,46 @@ rung 7 is the first thing here with a model in the path.
   first. That is a change to §14's order, argued from a measurement rather than
   from the design.
 
+  **Three things narrow that, found on 2026-08-27 by building the probe. Read
+  them before acting on the paragraph above.** They are separate quantities and
+  were fused in the original claim:
+
+  1. **Reach.** A probe can only address a `steer` or a `denial` — a
+     `followup` is a later user turn, and removing it does not leave a run that
+     would have got there anyway, which is why `validate` reaches followups
+     with a judge instead. Most interventions are followups, so the probe
+     addresses **13 of the 102**, not all of them. A structural ceiling, not a
+     budget.
+  2. **Yield.** Of those 13, **12 come back inconclusive** — the replay
+     departs before reaching the intervention. See the validation section
+     below; the cause is found and the fix is in, but it recovers nothing
+     already recorded.
+  3. **Neither branch of the comparison was ever measured.** The charter's
+     eleven positive errors do not become `Pride` just because a charter
+     exists — `Pride` is *against a charter line*, and **no session in the
+     store names a goal at all**. `GoalError.goal` is always `None`, so
+     frustration is structurally unreachable too. The reordering may still be
+     right; it was argued from one number that was never checked and one that
+     was wrong.
+
+- **`serves:` has never carried a value in production, including in the runs it
+  was built for.** 112 of 120 appraised sessions wrote a plan; **0 named what
+  it serves** — and 15 of them are delegated task runs (`task-d063fe34` ×11 and
+  two others), which is the case §2's *one list, one task* argument is about.
+  The field is in the `todo` schema marked "Optional", and nothing in a
+  delegated run's seed tells the model the task uid or asks for one. The seed
+  already builds its prompt from the board record, so this is a sentence in
+  `tasks.rs` rather than a design question — and until it lands, two of the
+  eleven affect labels are unreachable for a reason that is neither the probe
+  nor the charter.
+
+  **And `sessions appraise` reported that zero by construction**, which is the
+  sharper half: it passed `&[]` for goals unconditionally, so the command built
+  to measure whether the labels were degenerate could never have reported
+  anything but zero goals. Absent and zero conflated inside the instrument.
+  Fixed 2026-08-27 — it reads the plan off the transcript it was already
+  loading, and the output line now says `· 0 named a goal` as a measurement.
+
   **Two corrections to that, from the lane building the probe** (`mecha-80`,
   2026-08-27, pending its own PR — the counts are theirs and are not
   independently reproduced here):
@@ -1547,6 +1587,87 @@ downward and appraisal upward; the affect label is derived, never
 self-reported; affect may only *narrow*, so a disposition is a monotone layer
 above a structural check and never a replacement for one; and affect is a
 priority function, never an objective.
+
+### Validation — the probes could never run, and now they can
+
+**`mecha validate`'s steer and denial probes had never run on an interactive
+session, and `validations.jsonl` has been empty since it shipped while the
+nightly reported success every night.** Fixed 2026-08-27 across two lanes
+(PR #90, and the probe half stacked behind it). A skip counted faithfully, and
+nothing read it as *this entire class is unreachable* — the same shape as a rate
+over a zero denominator printed as zero, which this file names in four other
+places.
+
+`replay_registry` refuses to build when a recorded tool is missing from the live
+registry, which is right: the tool list is the front of the cached prefix, so a
+smaller toolbox is a different agent. What nobody had noticed is that three
+tools are registered **only by a front-end** and so no CLI process has ever held
+one — `ask_user` (246 of 408 sessions), `recall` (122), `show_file` (55). The
+coupling closes on itself: a probe needs an intervention, interventions happen
+interactively, interactive sessions carry `ask_user`. **319 of 407 sessions, and
+it is the 78% that contains every intervention.** A `surface_only` registry
+supplies them, consulted only where nothing executes; the store goes from **22%
+replayable to 76%**.
+
+The residual 97 name a `pkg__*` or a `google__*` and stay refused, which is the
+bail working. `google__*` was renamed to `mail__*`, so **those 23 recordings are
+permanently unreplayable**.
+
+**With the probes finally running, 12 of 13 come back inconclusive**, and the
+cause is found. On a pinned seed and a verified-quiet box the result is
+byte-identical across two runs — 11 of 13 exactly, 2 differing by ±1 — with
+divergence indices `#0:2 #1:6 #2:2 #3:1 #5:1`, **median 1**, against steer
+points at 3 through 33. One session contributes six probes with steer points
+from 10 to 33 and **all six diverge at the same call**: a trajectory-dependent
+cause cannot do that, and a per-session constant can.
+
+That constant is the tool surface. `RunConfig` kept the system prompt in full —
+*"the text lets a replay rebuild the request"* — and kept tools as **names**,
+with a comment naming three risks: added, removed, renamed. Those almost never
+happen; **re-describe happens constantly**, and a name list cannot see it. Tools
+render *before* the system prompt, so the replay rebuilt the back half of the
+prefix byte-exactly and the front half from today's registry.
+
+`surface.rs` records the specs once per distinct surface, content-addressed,
+cited by `RunConfig.tools_hash` — costed rather than preferred, since 69 KB of
+specs against a 25 KB average session would have quadrupled the store. Three
+states, and `Unknown` is the load-bearing one: a recording from before the field
+can never read as *matching*, and `Differs` needs no blob at all, so legibility
+lands the day it ships and rebuildability accumulates after.
+
+**Open:**
+
+- **Nothing rebuilds a surface *from* a blob yet.** That is the rebuildability
+  half; it is worthless until blobs exist and should be designed against a real
+  `Differs` case rather than a hypothetical one.
+- **The fix recovers nothing already recorded, and nothing can.** Those
+  recordings never held the specs. **The appraisal corpus and the validation
+  ledger start from zero the day this ships** — read that before budgeting on
+  the 120 sessions on disk.
+- **The prediction is untested and cannot be tested on the current corpus.**
+  If the surface is the cause, restoring it should push the divergence index up
+  and yield should follow the fraction of steers inside the new window. The 13
+  existing probes have no hash and stay `Unknown` forever, so the earliest
+  honest measurement needs sessions recorded *after* this lands. Re-running the
+  13 and reading anything into the number would be false, and the temptation is
+  real.
+- **Whether `inconclusive` should stay one counter.** It now splits by fidelity
+  (`matches` / `differs` / `unknown`), which is what keeps *drift* apart from
+  *no evidence*.
+
+**Attribution.** The reach and yield numbers, the determinism runs, the
+divergence distribution and the fidelity split are the probe lane's
+(`mecha-80`, 2026-08-27) and are **not independently reproduced here**. The
+78%/22%→76% store measurement, the 69 KB-vs-25 KB costing, `surface.rs` and the
+`tools_hash` field are this lane's. The one number both lanes measured
+separately is the pinned seed — 387 and 388 of ~394 sessions at `seed: 42`, a
+boundary apart and not a disagreement.
+
+**One result to note.** With the probes running, the first non-neutral label
+this system has ever produced appeared: `labels: {neutral: 119, regret: 1}` —
+one session where the replay went elsewhere without the steer, carried the whole
+way from probe through `apply_probe` to `affect_of`. One of 120 is not a result;
+it is the seam working end to end.
 
 ### Cheap, and worth doing first
 
