@@ -36,7 +36,9 @@ use std::path::Path;
 /// indistinguishable from a label nobody could compute; a probe that reports
 /// `skipped` without saying whether the session was unreadable, the point
 /// unlocatable or the replay refused reproduces exactly that. `validate`
-/// prints its skips for the same reason and it is the precedent.
+/// prints its skips for the same reason and it is the precedent. An
+/// `Inconclusive` verdict is the same case one step later — driven, and
+/// still no directional finding — so it is reported through here too.
 fn skipped(session_id: &str, at: usize, why: &str) {
     eprintln!("· {session_id} turn {at}: {why}");
 }
@@ -56,6 +58,23 @@ fn finding(v: &ProbeVerdict) -> Probe {
         ProbeVerdict::Fail => Probe::Mattered,
         ProbeVerdict::Pass => Probe::Redundant,
         ProbeVerdict::Inconclusive(_) => Probe::Inconclusive,
+    }
+}
+
+/// Legibility, wired in rather than left to the module doc's claim: a
+/// fidelity mismatch is exactly the kind of "diverged for a reason that says
+/// nothing about the intervention" case this rung exists to name rather than
+/// let read as a mystery. `Fidelity::of` needs no blob read — comparing
+/// hashes is the whole check for `Differs` and `Unknown` alike — so this
+/// costs nothing beyond a live registry read that already happened.
+fn annotate_with_fidelity(
+    reason: &str,
+    recorded_tools_hash: Option<&str>,
+    live: &[mecha_core::message::ToolSpec],
+) -> String {
+    match mecha_core::surface::Fidelity::of(recorded_tools_hash, live).caveat() {
+        Some(caveat) => format!("{reason} ({caveat})"),
+        None => reason.to_string(),
     }
 }
 
@@ -193,6 +212,11 @@ pub async fn probe_appraisal(
                 continue;
             }
         };
+        if let ProbeVerdict::Inconclusive(reason) = &verdict {
+            let live = prepared.agent.registry().specs();
+            let why = annotate_with_fidelity(reason, prep.tools_hash(), &live);
+            skipped(&appraisal.session_id, i.at, &why);
+        }
         let found = finding(&verdict);
         tally.record(found);
         for e in appraisal
@@ -212,6 +236,51 @@ pub async fn probe_appraisal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spec(name: &str, description: &str) -> mecha_core::message::ToolSpec {
+        mecha_core::message::ToolSpec {
+            name: name.into(),
+            description: description.into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    /// The case that motivates this at all: a probe diverged, and the
+    /// surface it replayed against is provably not the one the recording
+    /// saw. The reason must say so rather than leaving the mismatch mute.
+    #[test]
+    fn an_inconclusive_reason_names_a_surface_that_has_since_changed() {
+        let recorded_hash = mecha_core::surface::fingerprint(&[spec("build", "Build it.")]);
+        let live = [spec("build", "Build it, now with retries.")];
+        let why = annotate_with_fidelity("diverged early", Some(&recorded_hash), &live);
+        assert!(
+            why.contains("diverged early") && why.contains("changed since this was recorded"),
+            "{why}"
+        );
+    }
+
+    /// A recording from before the field existed is `Unknown`, not a match —
+    /// and the reason says that too, not silence.
+    #[test]
+    fn an_inconclusive_reason_names_a_recording_with_no_surface_hash_at_all() {
+        let live = [spec("build", "Build it.")];
+        let why = annotate_with_fidelity("diverged early", None, &live);
+        assert!(
+            why.contains("diverged early") && why.contains("before the tool surface was kept"),
+            "{why}"
+        );
+    }
+
+    /// The common case: the surface is unchanged, so the reason stays
+    /// exactly what the probe said — no manufactured caveat on a faithful
+    /// replay.
+    #[test]
+    fn an_inconclusive_reason_is_untouched_when_the_surface_still_matches() {
+        let recorded_hash = mecha_core::surface::fingerprint(&[spec("build", "Build it.")]);
+        let live = [spec("build", "Build it.")];
+        let why = annotate_with_fidelity("diverged early", Some(&recorded_hash), &live);
+        assert_eq!(why, "diverged early");
+    }
 
     /// The polarity, pinned. This is the assertion that fails if anyone
     /// "fixes" the mapping to read `Pass` as the good outcome.

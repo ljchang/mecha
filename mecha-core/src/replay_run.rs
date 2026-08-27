@@ -220,7 +220,15 @@ pub fn replay_registry(
         // `Stop` alone would leave one non-executing mode still bailing — a
         // guard that reads correct and is wrong for the one variant whose
         // difference is not behavioural.
-        let executes = matches!(mode, OnDivergence::Live);
+        // An exhaustive match rather than `matches!(mode, OnDivergence::Live)`:
+        // a `matches!` boolean stays green when a mode is added and nobody
+        // decided whether it executes, which is exactly the shape this gate's
+        // own history says took two wrong answers to get right. Naming every
+        // arm makes a new variant a compile error here until someone chooses.
+        let executes = match mode {
+            OnDivergence::Live => true,
+            OnDivergence::Stop | OnDivergence::Error => false,
+        };
         let stand_in = (!executes)
             .then(|| surface_only.and_then(|r| r.get(name)))
             .flatten();
