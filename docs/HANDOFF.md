@@ -1417,7 +1417,8 @@ rung 7 is the first thing here with a model in the path.
   nothing measures, and `appraisal.rs` names which rung buys which. What the
   corpus adds to that table is a **build order**. A counterfactual verdict is
   what gives an intervention error a label at all, and interventions are 102 of
-  the 119; the charter — §14's rung 10 — buys only the eleven positive ones. So
+  the 119 (**but see reach, below — the operative figure is 13**); the charter
+  — §14's rung 10 — buys only the eleven positive ones. So
   if the readout is the goal, the probe is the cheaper half and should come
   first. That is a change to §14's order, argued from a measurement rather than
   from the design.
