@@ -265,6 +265,16 @@ pub struct RunStats {
     /// [`crate::homeostat`] and [`crate::backlog`] both state at length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_overflows: Option<u32>,
+    /// Times the harness told this run an approach had stopped teaching it
+    /// anything (`GOAL-SYSTEM-DESIGN.md` §9.1).
+    ///
+    /// `Option` for `context_overflows`' reason, one field up: every threshold
+    /// behind it was argued rather than measured, and this is the field that
+    /// makes them answerable. A row from before the detector existed knows
+    /// nothing, and reading it as a run that was never bored would dilute the
+    /// rate it was added to establish.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boredom_notices: Option<u32>,
     /// The conditions this run happened under, when the front-end asked for
     /// them. Recorded here rather than derived later because a run
     /// reconstructed against *today's* machine state is measuring the
@@ -391,6 +401,7 @@ impl RunStats {
             // `Some`, never `None`: a live run always knows its own count, and
             // the `None` case exists only for rows written before the sensor.
             context_overflows: Some(o.context_overflows),
+            boredom_notices: Some(o.boredom_notices),
             homeostat: o.homeostat.clone(),
             taint: o.taint,
         }
@@ -933,6 +944,7 @@ mod homeostat_record_tests {
     fn the_conditions_a_run_happened_under_reach_its_record() {
         let bare = || crate::agent::RunOutcome {
             context_overflows: 0,
+            boredom_notices: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),
@@ -1487,6 +1499,7 @@ mod tests {
         let outcome = RunOutcome {
             homeostat: None,
             context_overflows: 0,
+            boredom_notices: 0,
             text: "done".into(),
             stop_reason: StopReason::EndTurn,
             usage: Usage {
@@ -1551,6 +1564,7 @@ mod tests {
             |turns: u32, calls: usize, errored: bool, ended_failed: bool, cause| RunOutcome {
                 homeostat: None,
                 context_overflows: 0,
+                boredom_notices: 0,
                 text: String::new(),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage {
@@ -1619,6 +1633,7 @@ mod tests {
         let mut incomplete = RunOutcome {
             homeostat: None,
             context_overflows: 0,
+            boredom_notices: 0,
             text: String::new(),
             stop_reason: StopReason::Other,
             usage: Usage::default(),

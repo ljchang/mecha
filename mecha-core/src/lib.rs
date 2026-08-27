@@ -48,6 +48,7 @@
 pub mod agent;
 pub mod backlog;
 pub mod batch;
+pub mod boredom;
 pub mod cache_lens;
 pub mod candidate;
 pub mod capture;
@@ -88,6 +89,7 @@ pub mod sandbox;
 pub mod search;
 pub mod session;
 pub mod skill;
+pub mod step;
 pub mod subagent;
 pub mod tool;
 pub mod trigger;
