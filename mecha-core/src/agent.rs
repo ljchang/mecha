@@ -1153,13 +1153,6 @@ impl Agent {
         Ok(outcome)
     }
 
-    /// What this run's requests look like apart from their messages.
-    ///
-    /// Read once per run rather than per turn: the surface *can* move mid-run
-    /// — loading a skill narrows the tool list — but the anchor is re-measured
-    /// every turn anyway, so a mid-run change costs one slightly-off
-    /// prediction and corrects itself. The case worth catching is the one that
-    /// happens *between* runs, where nothing else would notice.
     /// What a run that has stopped making progress can actually reach.
     ///
     /// Read off the *available* surface rather than the registry, so a run
@@ -1188,6 +1181,13 @@ impl Agent {
         }
     }
 
+    /// What this run's requests look like apart from their messages.
+    ///
+    /// Read once per run rather than per turn: the surface *can* move mid-run
+    /// — loading a skill narrows the tool list — but the anchor is re-measured
+    /// every turn anyway, so a mid-run change costs one slightly-off
+    /// prediction and corrects itself. The case worth catching is the one that
+    /// happens *between* runs, where nothing else would notice.
     fn request_surface(&self, cx: &RunContext) -> u64 {
         let specs = self.registry.specs_for(cx.phase);
         crate::pressure::surface_fingerprint(
