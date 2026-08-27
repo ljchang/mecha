@@ -1415,12 +1415,46 @@ rung 7 is the first thing here with a model in the path.
 
   Nothing is broken: every label that could have fired needs a dimension
   nothing measures, and `appraisal.rs` names which rung buys which. What the
-  corpus adds to that table is a **build order**. A counterfactual verdict
-  would give all 102 intervention errors a label immediately (disappointment,
-  on owner agency with `controllable: false`), where the charter — §14's rung
-  10 — buys only the eleven positive ones. So if the readout is the goal, the
-  probe is the cheaper half and should come first. That is a change to §14's
-  order, argued from a measurement rather than from the design.
+  corpus adds to that table is a **build order**. A counterfactual verdict is
+  what gives an intervention error a label at all, and interventions are 102 of
+  the 119; the charter — §14's rung 10 — buys only the eleven positive ones. So
+  if the readout is the goal, the probe is the cheaper half and should come
+  first. That is a change to §14's order, argued from a measurement rather than
+  from the design.
+
+  **Two corrections to that, from the lane building the probe** (`mecha-80`,
+  2026-08-27, pending its own PR — the counts are theirs and are not
+  independently reproduced here):
+
+  - **The probe does not reach all 102.** Most interventions are `followup` —
+    a later user turn rather than text riding with tool results — and there is
+    no counterfactual to drive, because removing a later turn does not leave a
+    run that would have got there anyway. That is why `validate` reaches
+    followups with a judge instead. A structural ceiling, not a budget, and it
+    shrinks the probe's share of the readout accordingly.
+  - **And today the reachable ones cannot run either** — see the next item,
+    which is the larger finding.
+
+- **`mecha validate`'s steer and denial probes have never been able to run on
+  an interactive session**, and that is why `validations.jsonl` does not exist.
+  `replay_run::replay_registry` bails on any recorded tool name the live
+  registry lacks, and `ask_user` is registered *only* by a front-end that owns
+  a human — `setup::prepare`'s `interactive` flag picks the approver and does
+  not register it (`setup.rs`, the `TerminalApprover` branch). The coupling
+  closes: a probe needs an intervention, interventions happen in interactive
+  sessions, interactive sessions carry `ask_user`, and the replay refuses to
+  build. **Verified against the store: 246 of 408 sessions with a recorded
+  tool list carry `ask_user`.** The nightly has been running `validate` and
+  every steer/denial probe has skipped, which its `skipped` counter reports and
+  nothing reads as *this whole class is unreachable*.
+
+  The contained fix is a **spec-only stub under `OnDivergence::Stop`**: nothing
+  executes in that mode, so the registry exists to reproduce the surface the
+  model *saw*, and a stub that errors if actually called restores that without
+  changing any executed behaviour. It must stay conditional on the mode —
+  under the others tools really do run, and there the bail is correct. Not
+  done, because it changes what `validate` measures from *nothing* to
+  *something*, which is worth deciding deliberately rather than sideways.
 
   **Do not build rungs 8–10 on the label yet.** §8's prioritised replay and
   §10's memory salience both key off affect, and today affect is a constant.
