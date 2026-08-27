@@ -1386,7 +1386,20 @@ impl Agent {
                     // not trying; measuring the bytes costs nothing, so
                     // whatever any pass genuinely freed now counts, and
                     // whatever it did not still compacts.
-                    if !pressure.over(limit, crate::pressure::message_bytes(messages)) {
+                    // `asked` skips the re-ask, and that is the whole feature
+                    // rather than a shortcut. The model is told to call
+                    // `compact` *before* starting the next step of its plan, so
+                    // an honoured request is by definition one made while the
+                    // transcript is still under the threshold — re-asking
+                    // `over` there answers false every time, and the run logs
+                    // "freed enough" having promised the model, in
+                    // `CompactTool::call`'s own words, that "the transcript
+                    // will be summarised before your next turn". A tool whose
+                    // affirmative answer describes something that did not
+                    // happen is worse than no tool: the model plans against it.
+                    // Monotonicity is unaffected — this can only ever *add* a
+                    // summary, never delay the harness's own.
+                    if !asked && !pressure.over(limit, crate::pressure::message_bytes(messages)) {
                         tracing::debug!("the free passes freed enough; no summary this turn");
                     } else {
                         match self.compact(cx, messages, &events).await {
@@ -5765,6 +5778,64 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// An explicit `compact` call summarises even though the transcript is
+    /// nowhere near the threshold — which is the only case the tool exists for.
+    ///
+    /// The model is told to call it *before* starting the next step of its
+    /// plan, so every honoured request is made while `pressure.over` is false.
+    /// Re-asking that question before paying for the summary therefore answers
+    /// "no" every time, and the run logs "the free passes freed enough" having
+    /// already told the model, in `CompactTool::call`'s words, that the
+    /// transcript *will* be summarised before its next turn. Verified to fail
+    /// without the `!asked &&` guard: the summary is never installed.
+    #[tokio::test]
+    async fn an_explicit_request_compacts_below_the_threshold() {
+        let mut turns = three_calls();
+        turns.push(assistant(
+            vec![Block::ToolUse {
+                id: "c0".into(),
+                name: "compact".into(),
+                input: json!({}),
+            }],
+            StopReason::ToolUse,
+        ));
+        turns.push(assistant(
+            vec![Block::text("summary: the three echoes")],
+            StopReason::EndTurn,
+        ));
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+
+        let (mut agent, _provider) = agent_with_tools(
+            turns,
+            vec![
+                Arc::new(EchoTool),
+                Arc::new(crate::tool::builtin::CompactTool),
+            ],
+            PermissionMode::Allow,
+        );
+        // A ceiling nothing in this run can reach: the only thing that can
+        // trigger a summary here is the model asking.
+        agent.cfg.compact_at_tokens = Some(u64::MAX);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.force_final_answer = false;
+        agent.cfg.compact_validate = false;
+        agent.ctx_mut().compact_requested =
+            Some(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+
+        let mut convo = Conversation::user("echo three things");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        // The counter, not the text: the scripted summariser's words also
+        // arrive as an ordinary assistant turn, so asserting on them passes
+        // whether or not a summary was ever installed. That is the first
+        // version of this test, and removing the guard did not fail it.
+        assert_eq!(
+            outcome.compactions, 1,
+            "the model asked to compact and `CompactTool` told it the transcript \
+             would be summarised before its next turn; the run summarised nothing"
+        );
     }
 
     fn compacting_agent(turns: Vec<CompletionResponse>) -> (Agent, Arc<ScriptedProvider>) {

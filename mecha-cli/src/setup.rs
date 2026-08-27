@@ -642,9 +642,21 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     // and it would cost a slot in every prompt to say so. Resolved here and
     // carried on `PreparedTools`, so `build` fits `ToolCtx` with this same
     // channel rather than deciding the question a second time.
+    // `.ok()` and not `?`: this function deliberately stops short of building
+    // a provider, and `mecha tools`, `mecha kg`, `mecha mail …` and `mecha
+    // outbox send` all call it without ever reaching `build`. CLAUDE.md states
+    // that `mecha tools` runs with no provider configured — it is the MCP
+    // smoke test — and a release path running hours later in another process
+    // must not start failing because `default_provider` names an entry defined
+    // on a different machine. No window resolves to no threshold, hence no
+    // tool, which is the same answer this run would have got anyway.
+    let window = cfg
+        .provider(opts.provider.as_deref())
+        .ok()
+        .and_then(|(_, p)| p.context_window);
     let compact_requested = cfg
         .agent
-        .compact_at(cfg.provider(opts.provider.as_deref())?.1.context_window)
+        .compact_at(window)
         .map(|_| Arc::new(std::sync::atomic::AtomicBool::new(false)));
     // `web_search`'s rule is the whole precedent, and it has two halves: the
     // tool exists only where its mechanism does, *and* an explicit allowlist
