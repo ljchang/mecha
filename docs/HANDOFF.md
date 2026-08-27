@@ -109,14 +109,14 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,551 tests**, no failures — measured 2026-08-26 late evening on
-`main` at **4d111d8**, the merge of the task-conversation arc. Neither side's
+Expect **1,566 tests**, no failures — measured 2026-08-27 on `main` at
+**85b244c**, on the merge commit itself rather than on a branch. Neither side's
 own number survived that merge: main's count predated the arc and the arc's
 predated the context-pressure work it merged, so it was re-measured rather
 than picked. That clause is load-bearing and has been
 wrong twice: a count taken while any lane's work sits uncommitted in this
 shared checkout describes one disk and no commit, so say which tree.
-Breakdown: **524** in `mecha-cli` with 1 ignored, **802** in `mecha-core`,
+Breakdown: **526** in `mecha-cli` with 1 ignored, **815** in `mecha-core`,
 6 + 9 in its two
 integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75**
 in `mecha-slack`, and 1 doctest.
@@ -186,8 +186,8 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 802 |
-| `mecha-cli` unit | 524 (1 ignored) |
+| `mecha-core` unit | 815 |
+| `mecha-cli` unit | 526 (1 ignored) |
 | `mecha-mail` unit | 129 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
@@ -1090,16 +1090,36 @@ the mechanism and every decision. What it left standing:
   not move, and *let it carry on without me* hands the same transcript to a
   detached child. HISTORY has the narrative and `CLAUDE.md` the invariants.
   What that leaves open:
-  - **Admission control (R1 / phase 6) shipped 2026-08-26**, after R3 was run:
-    `permit.rs`, three background seats against the server's four, interactive
-    work uncounted. What is left of it is the half that was never the point —
-    **there is still no queue.** A refused delegation is told to try again;
-    nothing remembers it and nothing starts it when a seat frees. That is
-    deliberate for now (a queue that starts work unattended is a scheduler,
-    and the trigger daemon is already the place for scheduled runs), but it is
-    the gap between what shipped and what the owner asked for — *"when the
-    question is answered it should resume in the queue"*. Worth building only
-    if refusals actually happen; the permit files make that countable.
+  - **Admission control (R1 / phase 6) shipped 2026-08-26**
+    (`mecha-core/src/permit.rs:50`), after R3 was run: three background seats
+    against the server's four, interactive work uncounted. What is left of it
+    is the half that was never the point — **there is still no queue.** A
+    refused delegation is told to try again; nothing remembers it and nothing
+    starts it when a seat frees. That is deliberate for now (a queue that
+    starts work unattended is a scheduler, and the trigger daemon is already
+    the place for scheduled runs), but it is the gap between what shipped and
+    what the owner asked for — *"when the question is answered it should
+    resume in the queue"*. Worth building only if refusals actually happen;
+    the permit files make that countable.
+  - **PR #84 is open and unmerged**, with the last three findings from the
+    #78 review: the pressure line stating a cost and a turn count derived from
+    different numbers (a 400-token pace read as *"~1k each, so about 224
+    more"* against a 100k limit), an unreachable match arm beside it, and
+    `replay.rs` / `harness_probe.rs` building `ToolCtx::default()` so a
+    recorded compaction answers *"compaction is not enabled for this run"* —
+    false of the run being replayed, a divergence under
+    `--on-divergence=live`, and in a harness probe a `compact_at_tokens`
+    candidate measured on runs that never compacted. 1,566 tests and clean
+    lint locally; **CI unverified** — it had not reported when the session
+    ended. Check it before merging rather than trusting this line.
+  - **The overnight half of R3 is still unmeasured.** The contention half was
+    run (see the measurement record) and answered the question R1 rested on.
+    What §3.4 also asks — *does a conversation parked overnight get its prefix
+    back, or has a night of triggers and chat pushed it out?* — has not been.
+    The contention result makes it more likely to be fine than the design
+    assumed, which is a reason to expect a cheap answer, not a reason to skip
+    it. `scripts/slot-contention.py` is the shape; the missing arm is time,
+    not concurrency.
   - **`mecha serve` still has no graceful shutdown**, and it now costs more
     than it did: a restart kills a conversation-owned run mid-flight, where a
     handed-over one survives. The conversation itself survives either way
