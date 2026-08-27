@@ -316,12 +316,22 @@ fn appraise(
 
     let since = days.map(|d| chrono::Utc::now() - chrono::Duration::days(d));
 
-    // Best-effort, like every reader over these stores: an outbox that cannot
-    // be opened costs the `Edit` channel and nothing else. Reported below
-    // rather than swallowed, because "no drafts" and "could not look" are the
-    // opposite findings this whole surface is about.
-    let drafts =
-        mecha_core::outbox::OutboxStore::open_existing_default().and_then(|o| o.items().ok());
+    // Best-effort, like every reader over these stores: a read failure costs
+    // the `Edit` channel and nothing else. `outbox_unreadable` is kept
+    // separate from an empty `drafts` deliberately — `open_existing_default`
+    // returns `None` for a store that simply has never been created (a fresh
+    // install, or one that has never staged a draft), which is the ordinary
+    // *empty* case and not a read failure. Conflating the two prints "the
+    // outbox could not be read" on a machine that has nothing to read, which
+    // is the dash-versus-zero inversion this whole surface exists to avoid.
+    let (drafts, outbox_unreadable): (Vec<mecha_core::outbox::OutboxItem>, bool) =
+        match mecha_core::outbox::OutboxStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.items() {
+                Ok(items) => (items, false),
+                Err(_) => (Vec::new(), true),
+            },
+        };
 
     // Walked here rather than through `runlog::Corpus`, and the difference is
     // the unit: that reader yields one row per **run**, which is right for
@@ -339,38 +349,44 @@ fn appraise(
             break;
         }
         sessions_read += 1;
-        let Ok(Some(stats)) = Session::episode_stats(&path) else {
+        // One `read`, every reading off the same transcript: the outcome
+        // (`episode_stats`'s own fold, done here in the same pass), the
+        // interventions, and the goal the model's own `serves` argument
+        // named. `Session::read`'s own doc names this exact pattern —
+        // `episode_stats` and `load` each open and walk the file separately —
+        // as the thing it exists to collapse; `Corpus::scan`-style reads with
+        // no `limit` make that a real cost, not a tidiness one.
+        //
+        // `read` fails on an unreadable file where `episode_stats` would
+        // answer `Ok(None)` for one merely lacking an outcome record, so the
+        // "no outcome yet" case still has to be its own `continue` rather
+        // than folding into the `Err` arm.
+        let Ok(transcript) = Session::read(&path) else {
             continue;
         };
-        // One load, two readings off the same transcript: the interventions,
-        // and the goal the model's own `serves` argument named. Without the
-        // second, `of_session` never has a goal to attribute anything to —
-        // `Frustration` needs one on two negatives by construction, so a
-        // session with no goal cannot produce it however it went, and the
+        let Some(stats) = transcript.episode else {
+            continue;
+        };
+        let messages = transcript.convo.messages;
+        let interventions = mecha_core::learning::extract_interventions(&messages);
+        // Without a goal, `of_session` never has one to attribute anything
+        // to — `Frustration` needs one on two negatives by construction, so
+        // a session with no goal cannot produce it however it went, and the
         // neutral share this readout prints would be confusing "the channel
         // is dead" with "nothing supplied it a goal", which is a different
         // finding with a different remedy.
-        let messages = Session::load(&path).map(|(_, convo)| convo.messages).ok();
-        let interventions = messages
-            .as_deref()
-            .map(mecha_core::learning::extract_interventions)
-            .unwrap_or_default();
-        let goal = messages.as_deref().and_then(|m| {
-            mecha_core::tool::todo::TodoTool::plan_from_transcript(m).and_then(|p| p.goal)
-        });
+        let goal =
+            mecha_core::tool::todo::TodoTool::plan_from_transcript(&messages).and_then(|p| p.goal);
         let goals: Vec<_> = goal.into_iter().collect();
         // The provenance gate's own rule, applied here: `stats.taint` cannot
         // tell "recorded clean" apart from "recorded before the field
         // existed", so origin is classified off the timeline's own coverage
         // instead, which answers `None` rather than guessing clean.
-        let end_taint = messages.as_ref().and_then(|m| {
-            Session::taint_timeline(&path)
-                .ok()
-                .and_then(|tl| tl.covering(m.len().saturating_sub(1)))
-        });
+        let end_taint = Session::taint_timeline(&path)
+            .ok()
+            .and_then(|tl| tl.covering(messages.len().saturating_sub(1)));
         let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts
             .iter()
-            .flatten()
             .filter(|i| i.session_id.as_deref() == Some(meta.id.as_str()))
             .collect();
         appraisals.push(appraisal::of_session(
@@ -410,7 +426,7 @@ fn appraise(
                 "labels": labels,
                 "channels": channels,
                 "positive_errors": positive,
-                "outbox_read": drafts.is_some(),
+                "outbox_read": !outbox_unreadable,
             }))?
         );
         return Ok(());
@@ -450,7 +466,7 @@ fn appraise(
         "    {:<16} {:>5}  — the only channel that can say a run went well",
         "of which +ve", positive
     );
-    if drafts.is_none() {
+    if outbox_unreadable {
         println!(
             "\n  (the outbox could not be read, so the edit channel is missing — \
                   not empty)"
