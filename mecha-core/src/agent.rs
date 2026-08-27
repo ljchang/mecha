@@ -700,7 +700,7 @@ already know, or make the single next tool call. Keep your reasoning short this 
 
 /// Every voice the harness speaks in the **user** role.
 ///
-/// Three of them now, and the miner has to know all three: `agent.rs` prefixes
+/// Four of them now, and the miner has to know all four: `agent.rs` prefixes
 /// a refusal it did not author with `"Denied by the user: "`, and the mirror of
 /// that mistake is text mecha wrote being read as text a person typed.
 /// `learning::extract_interventions` mines a transcript for corrections and has
@@ -713,17 +713,26 @@ already know, or make the single next tool call. Keep your reasoning short this 
 /// `EMPTY_TURN_NUDGE` never was, so every run the harness had to nudge
 /// contributed a `Followup` "intervention" whose text was mecha's own. Found by
 /// adding a third voice — boredom's notice, which lands beside tool results and
-/// would have mined as a *steer* — and asking what already read it.
+/// would have mined as a *steer* — and asking what already read it. The fourth
+/// — `mailbox::render_delivery`, folded into the same slot when a peer's
+/// message is delivered mid-run — is not mecha's own words at all, but the
+/// reasoning is the same one tier over: `Origin::Derived`'s own docs name a
+/// peer's steer as "mecha correcting itself, not the user correcting mecha",
+/// and CLAUDE.md's rule that a peer cannot grant escalation is defeated
+/// through the learning store instead of the approver if the peer's words
+/// consolidate into a rule under the user's own name.
 ///
 /// The list is closed and lives here rather than in the miner, because the
-/// party that knows a new voice exists is the one that adds it. Boredom's is
-/// matched by its stem, since its notices interpolate a tool name and a count;
-/// the two nudges are constants and are matched whole.
+/// party that knows a new voice exists is the one that adds it. Boredom's and
+/// the delivery header's are matched by a stem, since both interpolate
+/// something (a tool name and a count; a message id and a sender); the two
+/// nudges are constants and are matched whole.
 pub(crate) fn is_harness_voice(text: &str) -> bool {
     let text = text.trim();
     text == FINAL_ANSWER_NUDGE
         || text == EMPTY_TURN_NUDGE
         || text.starts_with(crate::boredom::NOTICE_STEM)
+        || text.contains(crate::mailbox::DELIVERY_STEM)
 }
 
 /// Detects a run re-living the turns a compaction just summarised away.
