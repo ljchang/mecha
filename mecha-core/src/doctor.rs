@@ -1431,7 +1431,16 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             continue;
         };
         total += 1;
-        if r.origin == crate::learning::Origin::Clean {
+        // `r.origin` is the miner's decision at write time, and the store is
+        // append-only — `r.learnable()` is what `learn.rs` actually admits
+        // today, re-derived rather than stored, on the same split
+        // `Session::taint_timeline` makes about checkpoints. Reading
+        // `r.origin` directly here disagreed with the gate on exactly the
+        // records a harness-voice fix reclassifies: they would sit in
+        // `waiting` forever (never marked processed, since `learn` skips
+        // them), silently suppressing this very finding with the records
+        // that caused the starvation.
+        if r.learnable() {
             if !r.is_processed {
                 *waiting.entry(r.domain.clone()).or_default() += 1;
             }
@@ -1482,9 +1491,11 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         detail: format!(
             "reflect keeps mining and the provenance gate keeps excluding — the gate working \
              as designed, every night, with nothing downstream to show for it. Clean pool: \
-             {pool}. The excluded evidence stays readable in {}; the decision this proposes \
-             is yours, not a command's: accept the rate, or change what evidence the loop \
-             may consolidate.",
+             {pool}. The excluded records stay readable in {} — some are third-party evidence \
+             the gate held back, some may be mecha's own words correctly kept out of a \
+             feedback loop; the decision this proposes is yours, not a command's: read what \
+             got excluded, and change what evidence the loop may consolidate if the mix \
+             looks wrong.",
             path.display()
         ),
         remedy: Some(Remedy {
@@ -2096,13 +2107,27 @@ mod tests {
     }
 
     fn reflection_line(id: &str, origin: &str, processed: bool, created_at: &str) -> String {
+        reflection_line_with_intervention(id, origin, processed, created_at, "")
+    }
+
+    /// Same record, with the `intervention` text a caller wants to control —
+    /// for a reflection stored `clean` before `is_harness_voice` existed,
+    /// whose *effective* provenance (`Reflexion::provenance`) is `Derived`
+    /// once the text is mecha's own.
+    fn reflection_line_with_intervention(
+        id: &str,
+        origin: &str,
+        processed: bool,
+        created_at: &str,
+        intervention: &str,
+    ) -> String {
         serde_json::json!({
             "id": id,
             "domain": "behavior",
             "session_id": "s",
             "trigger": "steer",
             "context": "",
-            "intervention": "",
+            "intervention": intervention,
             "reflexion_text": "test",
             "is_processed": processed,
             "created_at": created_at,
@@ -2168,6 +2193,56 @@ mod tests {
         write_reflections(&home, &lines);
         let findings = examine(&home, utc(NOW));
         assert!(of(&findings, "learning").is_empty(), "{findings:#?}");
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Two reflections stored `clean` before `is_harness_voice` existed —
+    /// mecha's own nudge, mined as though a person had typed it — must not
+    /// count toward the waiting pool just because the *stored* field says
+    /// clean. `learn` skips them via `learnable()` and never marks them
+    /// processed, so counting them here would let them sit in `waiting`
+    /// forever and permanently suppress the very starvation they caused.
+    #[test]
+    fn a_reflection_stored_clean_before_harness_voice_existed_does_not_count_as_waiting() {
+        let home = home("learning-harness-voice");
+        let mut lines: Vec<String> = (0..10)
+            .map(|i| reflection_line(&format!("u{i}"), "untrusted", false, "2026-08-13T12:00:00Z"))
+            .collect();
+        // Two self-authored nudges, recorded `clean` at the time.
+        lines.push(reflection_line_with_intervention(
+            "h1",
+            "clean",
+            false,
+            "2026-08-05T00:00:00Z",
+            crate::agent::FINAL_ANSWER_NUDGE,
+        ));
+        lines.push(reflection_line_with_intervention(
+            "h2",
+            "clean",
+            false,
+            "2026-08-06T00:00:00Z",
+            crate::agent::FINAL_ANSWER_NUDGE,
+        ));
+        // One genuine clean reflection: the floor is 3, so under the old
+        // origin-only count this domain would read 3/3 (not starved) —
+        // under `learnable()` it reads 1/3, and the finding still fires.
+        lines.push(reflection_line(
+            "c1",
+            "clean",
+            false,
+            "2026-08-07T00:00:00Z",
+        ));
+        write_reflections(&home, &lines);
+
+        let findings = examine(&home, utc(NOW));
+        let learning = of(&findings, "learning");
+        assert_eq!(learning.len(), 1, "{findings:#?}");
+        assert!(
+            learning[0].summary.contains("starved"),
+            "the two harness-voice records must not read as met-floor evidence: {}",
+            learning[0].summary
+        );
 
         let _ = std::fs::remove_dir_all(&home);
     }
