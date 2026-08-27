@@ -95,17 +95,21 @@ pub struct Work {
     /// report as the null step, which is the false positive that would teach
     /// people to ignore the reading.
     pub in_flight: u32,
-    /// Calls denied *this turn* whose target step is unknown to the harness.
+    /// Calls settled *this turn* without becoming approved work, whose
+    /// target step is unknown to the harness. Named for the commonest case
+    /// (the approver, a hook, the interlock) but not only that: an unknown
+    /// or withheld tool name and a failed staging attempt settle the same
+    /// way, without ever being denied by anyone.
     ///
-    /// A denial is settled the instant it happens — unlike `in_flight` it is
-    /// already in the trace — but the batch it happened in is exactly the
-    /// shape `in_flight` exists for: a model ticking a step and reaching for
-    /// the next one's tool in the same turn. `trace.push` for a denial runs
-    /// ahead of the calls it approved, so `Work::of` folds it in as the raw
-    /// trace's last entry regardless of which call it sat beside — blaming
-    /// *this* step for a denial that belongs to the next one. Carried
-    /// alongside `in_flight` for the same reason: a batch holding either
-    /// supports no finding at all.
+    /// Any of these is settled the instant it happens — unlike `in_flight`
+    /// it is already in the trace — but the batch it happened in is exactly
+    /// the shape `in_flight` exists for: a model ticking a step and
+    /// reaching for the next one's tool in the same turn. `trace.push` for
+    /// one of these runs ahead of the calls it approved, so `Work::of` folds
+    /// it in as the raw trace's last entry regardless of which call it sat
+    /// beside — blaming *this* step for an outcome that belongs to the
+    /// next one. Carried alongside `in_flight` for the same reason: a batch
+    /// holding either supports no finding at all.
     pub denied: u32,
     /// Which run these counters belong to.
     ///
