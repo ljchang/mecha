@@ -27,6 +27,7 @@ use mecha_core::appraisal::{apply_probe, relabel, Appraisal, Cite, Probe};
 use mecha_core::config::ProviderConfig;
 use mecha_core::counterfactual::ProbeVerdict;
 use mecha_core::learning::Intervention;
+use mecha_core::replay_run::replay_surface_specs;
 use mecha_core::surface::Fidelity;
 use std::path::Path;
 
@@ -202,11 +203,28 @@ pub async fn probe_appraisal(
         };
         // How faithfully this probe can reproduce the recorded request, read
         // *before* it is driven — a verdict is only worth what the request
-        // behind it was.
-        let fidelity = Fidelity::of(
-            prep.recorded_tools_hash(),
-            &prepared.agent.registry().specs(),
-        );
+        // behind it was. Fingerprints the surface `drive_arm` will actually
+        // send — the recorded names, narrowed from the live registry and
+        // filled from the surface-only stand-in — never the bare CLI
+        // registry, which can never hold `ask_user` and so would report
+        // `Differs` on nearly every probe regardless of whether anything
+        // actually changed.
+        let surface_specs = match replay_surface_specs(
+            prep.recorded_tools(),
+            prepared.agent.registry(),
+            Some(&crate::setup::surface_only_registry()),
+        ) {
+            Ok(specs) => specs,
+            // The same failure `drive_arm` would hit below, on the identical
+            // inputs — surfaced here instead of spending a model call to
+            // rediscover it.
+            Err(why) => {
+                skipped(&appraisal.session_id, i.at, &format!("{why:#}"));
+                tally.unavailable += 1;
+                continue;
+            }
+        };
+        let fidelity = Fidelity::of(prep.recorded_tools_hash(), &surface_specs);
         match fidelity {
             Fidelity::Matches => tally.matches += 1,
             Fidelity::Differs => tally.differs += 1,

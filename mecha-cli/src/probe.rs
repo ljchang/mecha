@@ -59,6 +59,13 @@ impl ProbePrep {
         self.recorded.tools_hash.as_deref()
     }
 
+    /// The tool names the recording carried — what a fidelity check must
+    /// narrow a live registry down to before fingerprinting it, never the
+    /// live registry's own full name list.
+    pub fn recorded_tools(&self) -> &[String] {
+        &self.recorded.tools
+    }
+
     /// The recorded system prompt **verbatim**, rules block and all.
     ///
     /// The arm an appraisal probe wants, and the difference is not cosmetic.
