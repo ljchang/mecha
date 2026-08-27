@@ -194,6 +194,24 @@ pub async fn probe_appraisal(
             }
         };
         let found = finding(&verdict);
+        // Per probe, not just per run. A tally answers "how many" and cannot
+        // answer "the same ones?" — which is the question that separates a
+        // defect from sampling noise, and the only cheap way to ask it is to
+        // diff two runs. `steer_verdict`'s own inconclusive arm carries the
+        // call index it gave up at, so print the reason it wrote rather than
+        // a label of our own.
+        match &verdict {
+            ProbeVerdict::Inconclusive(why) => {
+                eprintln!(
+                    "· {} turn {}: inconclusive — {why}",
+                    appraisal.session_id, i.at
+                )
+            }
+            v => eprintln!(
+                "· {} turn {}: {v:?} → {found:?}",
+                appraisal.session_id, i.at
+            ),
+        }
         tally.record(found);
         for e in appraisal
             .errors
