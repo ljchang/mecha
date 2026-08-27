@@ -275,13 +275,29 @@ fn label_of(e: &GoalError) -> Affect {
 /// so a consumer that wants a different summary re-derives it rather than
 /// finding the evidence gone. That is §16's discrete-or-dimensional question
 /// left answerable instead of decided by accident.
+///
+/// **Exhaustive on purpose, with no catch-all.** A `_ => 0` arm would put any
+/// future label — `Guilt`, `Shame`, `Pride`, `Excitement`, and `Frustration`
+/// itself — at the same rank as `Neutral`, silently contradicting the rule
+/// above that `Neutral` loses every tie: a variant added to [`label_of`] would
+/// compile fine and mask nothing, when the whole point of this function is
+/// that everything *but* `Neutral` should be able to win one. Listing every
+/// variant means the compiler catches that instead. `Guilt`/`Shame` join
+/// `Embarrassment`'s rank: all three are exposure-flavoured harm that a reader
+/// most needs surfaced. `Anger`/`Pride`/`Excitement` join the lowest non-zero
+/// rank — `label_of` never actually produces the latter two, so this is only
+/// ever exercised through `Anger`. `Frustration` never reaches this function
+/// today either (`affect_of` decides it separately, see below), but its rank
+/// still has to sit *below* the exposure tier so a repeated self-inflicted
+/// error can never be preferred over — or mistaken for beating — a visible
+/// mistake in the same record.
 fn says_more(a: Affect) -> u8 {
     match a {
-        Affect::Embarrassment => 4,
-        Affect::Regret => 3,
+        Affect::Embarrassment | Affect::Guilt | Affect::Shame => 4,
+        Affect::Frustration | Affect::Regret => 3,
         Affect::Disappointment => 2,
-        Affect::Anger => 1,
-        _ => 0,
+        Affect::Anger | Affect::Pride | Affect::Excitement => 1,
+        Affect::Neutral => 0,
     }
 }
 
@@ -301,40 +317,11 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
         return Affect::Neutral;
     }
 
-    // Repeated negative error on one goal, self-agency (§6.1: "repeated, one
-    // goal, self-agency"). Whole-record by construction: one event cannot be
-    // a repetition, which is why this is a function of the appraisal and not
-    // of an error.
-    //
-    // **Self-agency, not any negative, is load-bearing.** `of_session` clones
-    // one `goals.first()` onto every error it builds, so "shares a goal" is
-    // not yet a discriminator at all — without the agency filter, `repeated`
-    // degenerates to "two or more negative errors" the moment a session
-    // names a goal. That would also fire *before* `label_of` and outrank
-    // agency and exposure both, which is the one ordering this module argues
-    // hardest for: a ceiling nobody here caused (`Agency::World`) plus a
-    // draft the owner rewrote (`Agency::Owner`, visible) would report
-    // `Frustration` and discard the fact that something went out wrong —
-    // exactly what `says_more`'s tie-break exists to prevent from being
-    // masked. Filtering to `Agency::Own` keeps this reachable only by the
-    // one case the label actually describes: the agent repeating its own
-    // mistake against the same goal, unaided.
-    let repeated = negatives
-        .iter()
-        .filter(|e| e.agency == Agency::Own)
-        .filter_map(|e| e.goal.as_ref())
-        .any(|goal| {
-            negatives
-                .iter()
-                .filter(|e| e.agency == Agency::Own && e.goal.as_ref() == Some(goal))
-                .count()
-                > 1
-        });
-    if repeated {
-        return Affect::Frustration;
-    }
-
-    negatives
+    // The most negative error decides, exactly as when there is no
+    // repetition below — computed first so the repetition check can only
+    // ever upgrade this result, never bury it. See that check for why the
+    // order matters.
+    let reduced = negatives
         .iter()
         .map(|e| (e.sign, label_of(e)))
         .reduce(|a, b| match a.0.total_cmp(&b.0) {
@@ -344,7 +331,66 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
             std::cmp::Ordering::Equal => a,
         })
         .map(|(_, label)| label)
-        .unwrap_or(Affect::Neutral)
+        .unwrap_or(Affect::Neutral);
+
+    // Repeated negative error on one goal, self-agency, of the *same kind*
+    // (§6.1: "repeated, one goal, self-agency"). Whole-record by
+    // construction: one event cannot be a repetition, which is why this is a
+    // function of the appraisal and not of an error.
+    //
+    // **Self-agency, not any negative, is load-bearing.** `of_session` clones
+    // one `goals.first()` onto every error it builds, so "shares a goal" is
+    // not yet a discriminator at all — without the agency filter, `repeated`
+    // degenerates to "two or more negative errors" the moment a session
+    // names a goal. Filtering to `Agency::Own` keeps this reachable only by
+    // errors the agent itself caused.
+    //
+    // **And agency alone still is not enough.** `of_session` can emit up to
+    // three distinct `Agency::Own` counter errors from one run —
+    // `stop_cause: Loop|NoOutput`, `ended_on_failed_call`, and
+    // `boredom_notices > 0` — all sharing the goal, and none of those is a
+    // repetition of another: three different symptoms, not one mistake made
+    // twice. `error_kind` groups by `Channel` plus, for a `Cite::Counter`,
+    // the counter's own name — the only thing this record carries that names
+    // *which* signal fired — so two errors count as "the same kind" only
+    // when they really are one: two probed interventions on the same goal
+    // (`Channel::Intervention`, no counter name to divide further) are a
+    // repetition; `ended_on_failed_call` and `boredom_notices` are not.
+    //
+    // **And this may only ever upgrade `reduced`, never bury it.** The first
+    // cut returned `Frustration` the moment `repeated` was true, before
+    // `label_of`'s reduce ran at all — which outranked agency and exposure
+    // both, the one ordering this module argues hardest for: a ceiling
+    // nobody here caused (`Agency::World`) plus a draft the owner rewrote
+    // (`Agency::Owner`, visible) would report `Frustration` and discard the
+    // fact that something went out wrong, exactly what `says_more`'s
+    // tie-break exists to prevent from being masked. Comparing ranks instead
+    // means a repetition can promote a `Neutral`/`Anger`/`Disappointment`
+    // result to `Frustration`, but can never step in front of a
+    // higher-or-equal-ranked exposed error — `says_more(Frustration)` sits
+    // below the exposure tier for exactly that reason.
+    fn error_kind(e: &GoalError) -> (Channel, Option<&str>) {
+        match &e.cite {
+            Cite::Counter(name) => (e.channel, Some(name.as_str())),
+            _ => (e.channel, None),
+        }
+    }
+    let repeated = negatives
+        .iter()
+        .filter(|e| e.agency == Agency::Own && e.goal.is_some())
+        .any(|e| {
+            let kind = error_kind(e);
+            negatives
+                .iter()
+                .filter(|o| o.agency == Agency::Own && o.goal == e.goal && error_kind(o) == kind)
+                .count()
+                > 1
+        });
+    if repeated && says_more(Affect::Frustration) >= says_more(reduced) {
+        return Affect::Frustration;
+    }
+
+    reduced
 }
 
 /// Build one **session's** appraisal from records that already exist.
@@ -556,9 +602,15 @@ pub fn of_session(
             channel: Channel::Edit,
             sign,
             agency,
-            // It went out. Exposure is what separates embarrassment from a
-            // private mistake, and a sent draft is the clearest case there is.
-            visible: item.status == "sent",
+            // Exposure means *mecha's* mistake reached somebody, not merely
+            // that a message went out. `item.status == "sent"` is true for
+            // `SentEdited` too, which reported the owner's own catch as an
+            // exposure error — a draft they rewrote in `$EDITOR` sends their
+            // words, not mecha's, and the review that caught the difference
+            // is the mechanism working, not something that should itself read
+            // as `Embarrassment`. Only `SentUnchanged` is mecha's text
+            // actually reaching a third party.
+            visible: item.writing_outcome() == Some(crate::outbox::WritingOutcome::SentUnchanged),
             controllable: None,
             cite: Cite::Draft(item.id.clone()),
         });
@@ -798,6 +850,61 @@ mod tests {
         );
     }
 
+    /// Restricting `repeated` to `Agency::Own` is not enough on its own:
+    /// `of_session` can emit up to three distinct Own-agency counter errors
+    /// from one run (`stop_cause`, `ended_on_failed_call`, `boredom_notices`),
+    /// all sharing the goal it stamps on everything. Two different symptoms
+    /// are not one mistake made twice.
+    #[test]
+    fn two_different_kinds_of_own_agency_error_are_not_frustration() {
+        let goal = GoalRef::Task("01J8ZK".into());
+        let ended_on_failed_call = GoalError {
+            goal: Some(goal.clone()),
+            cite: Cite::Counter("ended_on_failed_call".into()),
+            ..err(-1.0, Agency::Own)
+        };
+        let boredom = GoalError {
+            goal: Some(goal),
+            cite: Cite::Counter("boredom_notices".into()),
+            ..err(-0.5, Agency::Own)
+        };
+        assert_ne!(
+            affect_of(&appraisal(vec![ended_on_failed_call, boredom])),
+            Affect::Frustration,
+            "two different self-caused symptoms are not one mistake repeated"
+        );
+    }
+
+    /// A genuine repetition — the *same* kind of self-caused error twice on
+    /// one goal — still reports `Frustration` when nothing outranks it, but
+    /// must still yield to a higher-ranked exposed error in the same record,
+    /// which is what `says_more(Frustration)` sitting below the exposure tier
+    /// is for.
+    #[test]
+    fn a_repeated_own_agency_error_does_not_mask_a_higher_ranked_exposure() {
+        let goal = GoalRef::Task("01J8ZK".into());
+        let first = GoalError {
+            goal: Some(goal.clone()),
+            cite: Cite::Counter("ended_on_failed_call".into()),
+            ..err(-1.0, Agency::Own)
+        };
+        let second = GoalError {
+            goal: Some(goal.clone()),
+            cite: Cite::Counter("ended_on_failed_call".into()),
+            ..err(-1.0, Agency::Own)
+        };
+        let exposed = GoalError {
+            goal: Some(goal),
+            visible: true,
+            ..err(-1.0, Agency::Owner)
+        };
+        assert_eq!(
+            affect_of(&appraisal(vec![first, second, exposed])),
+            Affect::Embarrassment,
+            "a genuine repetition must still yield to a visible mistake in the same record"
+        );
+    }
+
     /// An ungoaled run's errors are recorded and never repeat *into* anything:
     /// frustration is repeated error on **one** goal, and two errors that name
     /// no goal are not evidence they share one.
@@ -919,12 +1026,21 @@ mod tests {
         assert_eq!(a.label, Affect::Neutral);
     }
 
+    /// The owner's rewrite is what reached the recipient, not mecha's
+    /// mistake — the catch is the mechanism working, and must not itself
+    /// read as an exposure error. `status == "sent"` is true for this item
+    /// exactly as it is for a `SentUnchanged` one, which is why `visible`
+    /// has to come from `writing_outcome()` rather than from `status` alone.
     #[test]
-    fn a_draft_the_owner_rewrote_is_negative_and_exposed() {
+    fn a_draft_the_owner_rewrote_is_negative_but_not_exposed() {
         let d = draft("o1", "sent", true);
         let a = built(&stats(), &[&d], &[]);
         assert_eq!(a.errors[0].sign, -1.0);
-        assert_eq!(a.label, Affect::Embarrassment);
+        assert!(
+            !a.errors[0].visible,
+            "the owner's words went out, not mecha's mistake"
+        );
+        assert_eq!(a.label, Affect::Neutral);
     }
 
     /// A queue nobody has reached is not a verdict in either direction.
@@ -963,6 +1079,34 @@ mod tests {
         stuck.stop_cause = Some(crate::agent::StopCause::Loop);
         let a = built(&stuck, &[], &[]);
         assert_eq!(a.errors[0].agency, Agency::Own);
+    }
+
+    /// The assembler's own version of the pure-function test above: a session
+    /// with a goal that ended on a failed call *and* went nowhere is two
+    /// different Own-agency counter errors on the same goal (`of_session`
+    /// stamps the same goal on both), and neither should read as the other
+    /// repeated.
+    #[test]
+    fn ended_on_failed_call_and_boredom_share_a_goal_but_are_not_frustration() {
+        let mut s = stats();
+        s.ended_on_failed_call = true;
+        s.boredom_notices = Some(2);
+        let goal = GoalRef::Task("01J8ZK".into());
+        let a = of_session(
+            "s1",
+            &s,
+            &[goal],
+            &[],
+            &[],
+            Some(s.taint),
+            "2026-08-27T00:00:00Z".into(),
+        );
+        assert_eq!(a.errors.len(), 2);
+        assert_ne!(
+            a.label,
+            Affect::Frustration,
+            "a failed call and a stuck approach are two different symptoms, not one repeated"
+        );
     }
 
     /// Absent is not zero: a row from before the sensor is not a run that was

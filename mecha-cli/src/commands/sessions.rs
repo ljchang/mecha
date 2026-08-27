@@ -404,13 +404,9 @@ fn appraise(
     let mut channels: std::collections::BTreeMap<String, usize> = Default::default();
     let mut positive = 0usize;
     for a in &appraisals {
-        *labels
-            .entry(format!("{:?}", a.label).to_lowercase())
-            .or_default() += 1;
+        *labels.entry(enum_key(a.label)).or_default() += 1;
         for e in &a.errors {
-            *channels
-                .entry(format!("{:?}", e.channel).to_lowercase())
-                .or_default() += 1;
+            *channels.entry(enum_key(e.channel)).or_default() += 1;
             if e.sign > 0.0 {
                 positive += 1;
             }
@@ -437,6 +433,14 @@ fn appraise(
         appraisals.len(),
         sessions_read
     );
+    // Printed before the early return below: a store that could not be read
+    // is a fact about this run regardless of whether anything was left to
+    // appraise, and the early return used to skip it whenever `appraisals`
+    // came back empty — the one path where a reader most needs to know the
+    // edit channel is missing rather than genuinely empty.
+    if outbox_unreadable {
+        println!("  (the outbox could not be read, so the edit channel is missing — not empty)\n");
+    }
     if appraisals.is_empty() {
         return Ok(());
     }
@@ -466,13 +470,21 @@ fn appraise(
         "    {:<16} {:>5}  — the only channel that can say a run went well",
         "of which +ve", positive
     );
-    if outbox_unreadable {
-        println!(
-            "\n  (the outbox could not be read, so the edit channel is missing — \
-                  not empty)"
-        );
-    }
     Ok(())
+}
+
+/// A `Serialize` enum's own wire spelling, never `{:?}`. Debug and serde agree
+/// on every variant here today because each is one word, but `Agency::Own`
+/// already diverges (`"self"`, a hand-written rename) — so deriving a JSON key
+/// from Debug is a bug waiting on the first multi-word variant, silently
+/// mismatched the day it lands rather than caught here. `unwrap_or_else`'s
+/// fallback is unreachable for a unit-variant enum in practice; it exists so
+/// this stays a display helper rather than a second thing that can panic.
+fn enum_key<T: serde::Serialize>(v: T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
 }
 
 /// `sessions health` — the run-quality corpus, summarised.
