@@ -46,6 +46,7 @@
 //! ```
 
 pub mod agent;
+pub mod appraisal;
 pub mod backlog;
 pub mod batch;
 pub mod boredom;
