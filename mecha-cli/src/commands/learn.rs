@@ -104,12 +104,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let mut by_domain: BTreeMap<String, Vec<_>> = BTreeMap::new();
     let mut awaiting_review = 0usize;
     let mut excluded_by_origin = 0usize;
+    let mut dropped_by_owner = 0usize;
     for r in store.reflexions()? {
         if r.is_processed {
             continue;
         }
         if claimed.contains(&r.id) {
             awaiting_review += 1;
+            continue;
+        }
+        // The owner's own refusal outranks a provenance argument the same
+        // way `learnable()` orders them — checked first and counted
+        // separately, or a person dropping lessons they disagree with would
+        // read back as "excluded by origin", which is the gate's doing
+        // reported as though it were theirs.
+        if r.dropped_at.is_some() {
+            dropped_by_owner += 1;
             continue;
         }
         // Structural, before any prompt is built: a lesson drawn while
@@ -133,6 +143,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         println!(
             "{excluded_by_origin} reflection(s) excluded by origin — evidence from \
              untrusted or non-interactive sessions stays in the archive, never in rules"
+        );
+    }
+    if dropped_by_owner > 0 {
+        println!(
+            "{dropped_by_owner} reflection(s) dropped by you — kept as evidence, never a \
+             candidate again"
         );
     }
 

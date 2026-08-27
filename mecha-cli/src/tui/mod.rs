@@ -258,6 +258,22 @@ enum Watch {
         unit: String,
         since: std::time::Instant,
     },
+    /// A `mecha reflections|rules|proposals …` verb for the /learning modal.
+    ///
+    /// The same exception `MailAction` takes, and for a sharper reason: this
+    /// child takes `LearningStore::lock()` — a *blocking* flock — and
+    /// `reflect`/`learn` hold that same lock across a model call while they
+    /// run. Waiting for it inline would freeze the whole event loop for
+    /// however long that call takes, in the one modal whose job is reading a
+    /// rule or lesson carefully before it enters every future prompt's
+    /// cached prefix. On its own thread; the child's stdout is the outcome,
+    /// same as `MailAction`.
+    Learning {
+        rx: std::sync::mpsc::Receiver<Result<String>>,
+        verb: String,
+        id: String,
+        since: std::time::Instant,
+    },
 }
 
 /// Which `mecha-docs` call a `Watch::Docs` is waiting on. The answer is JSON
@@ -582,6 +598,7 @@ impl App {
             || self.queues.is_some()
             || self.poll_monitor.is_some()
             || self.health.is_some()
+            || self.learning.is_some()
     }
 
     fn status(&self, model: &str, provider: &str, tools: usize) -> Line<'static> {
@@ -2062,6 +2079,48 @@ fn poll_watches(app: &mut App) {
                         modal.status = Some(line);
                     } else {
                         app.transcript.push(Entry::Error(format!("doctor: {line}")));
+                    }
+                }
+            },
+            Watch::Learning {
+                rx,
+                verb,
+                id,
+                since,
+            } => match rx.try_recv() {
+                Ok(out) => {
+                    let line = match &out {
+                        Ok(_) => format!("{verb} {}", learning_short(&id)),
+                        Err(e) => format!("{verb} failed: {e:#}"),
+                    };
+                    if let Some(m) = &mut app.learning {
+                        m.busy = false;
+                        m.status = Some(line);
+                    }
+                    reload_learning(app);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if since.elapsed() > doctor::EXAMINE_CAP {
+                        if let Some(m) = &mut app.learning {
+                            m.busy = false;
+                            m.status = Some(format!(
+                                "{verb} {} never answered — check /doctor",
+                                learning_short(&id)
+                            ));
+                        }
+                    } else {
+                        app.watches.push(Watch::Learning {
+                            rx,
+                            verb,
+                            id,
+                            since,
+                        });
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if let Some(m) = &mut app.learning {
+                        m.busy = false;
+                        m.status = Some(format!("{verb} {} was lost", learning_short(&id)));
                     }
                 }
             },
@@ -5025,13 +5084,26 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 None => format!("{n}, all tiers"),
             });
         }
+        // At the review level with a detail open, j/k scroll the fetched
+        // text rather than moving the cursor underneath it — the
+        // `LearningModal` pattern one modal over: a cached detail is a
+        // document about one record, and moving without dropping it leaves
+        // stale text on screen while `selected` (and the next `a`/`r`)
+        // points somewhere else. `move_sel` itself drops `review_detail`
+        // for every other case that does move.
         KeyCode::Char('j') | KeyCode::Down => {
-            modal.move_sel(1);
-            modal.detail_scroll = 0;
+            if modal.level == queues::Level::Review && modal.review_detail.is_some() {
+                modal.detail_scroll = modal.detail_scroll.saturating_add(1);
+            } else {
+                modal.move_sel(1);
+            }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            modal.move_sel(-1);
-            modal.detail_scroll = 0;
+            if modal.level == queues::Level::Review && modal.review_detail.is_some() {
+                modal.detail_scroll = modal.detail_scroll.saturating_sub(1);
+            } else {
+                modal.move_sel(-1);
+            }
         }
         KeyCode::PageDown if modal.level == queues::Level::Items && modal.item_detail => {
             modal.detail_scroll = modal.detail_scroll.saturating_add(5);
@@ -5039,13 +5111,25 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::PageUp if modal.level == queues::Level::Items && modal.item_detail => {
             modal.detail_scroll = modal.detail_scroll.saturating_sub(5);
         }
-        KeyCode::Char('g') | KeyCode::Home => modal.selected = 0,
-        KeyCode::Char('G') | KeyCode::End => modal.selected = modal.len().saturating_sub(1),
+        // Jumps bypass `move_sel`'s clamped delta, so they clear the same
+        // pair by hand — a jump to the top or bottom is still a move, and
+        // the cached review detail belongs to whatever `selected` was.
+        KeyCode::Char('g') | KeyCode::Home => {
+            modal.selected = 0;
+            modal.review_detail = None;
+            modal.detail_scroll = 0;
+        }
+        KeyCode::Char('G') | KeyCode::End => {
+            modal.selected = modal.len().saturating_sub(1);
+            modal.review_detail = None;
+            modal.detail_scroll = 0;
+        }
         KeyCode::Esc | KeyCode::Char('q') => match modal.level {
             // Esc peels one layer at a time here too: the detail closes
             // before the level does.
             queues::Level::Review if modal.review_detail.is_some() => {
                 modal.review_detail = None;
+                modal.detail_scroll = 0;
             }
             queues::Level::Review => {
                 modal.level = queues::Level::Queues;
@@ -6043,12 +6127,18 @@ fn reload_learning(app: &mut App) {
     }
 }
 
-/// Run one `mecha …` verb against the selected record, report it, and reload.
+/// Run one `mecha …` verb against the selected record, off the event loop.
 ///
-/// Synchronous, unlike `/queues`' releases: every verb here is a local file
-/// rewrite that returns in milliseconds. Spawning it detached would buy
-/// nothing and cost the thing that matters most on a surface whose whole job
-/// is deciding — knowing whether the decision landed.
+/// **Not synchronous**, despite every verb here being a local file rewrite
+/// that returns in milliseconds on its own: `reflections`/`rules`/`proposals`
+/// all take `LearningStore::lock()` — a *blocking* flock — and `reflect` and
+/// `learn` hold that same lock across a model call while they run. Waiting
+/// for it inline would freeze the whole event loop for however long that
+/// call takes, in the one modal whose whole job is reading a rule or a
+/// lesson carefully before it enters every future prompt's cached prefix.
+/// Spawned detached and watched instead, the `/outbox`/`/triggers` shape: a
+/// poll against the child's own stdout (`Watch::Learning`), never the event
+/// loop blocking on it, and the modal reloaded once it answers.
 fn learning_act(app: &mut App, verb: &str, extra: &[&str]) {
     let Some(m) = &mut app.learning else { return };
     let Some(row) = m.selected().cloned() else {
@@ -6060,17 +6150,20 @@ fn learning_act(app: &mut App, verb: &str, extra: &[&str]) {
     }
     m.busy = true;
     let pane = m.pane;
-    let mut args: Vec<&str> = vec![pane.verb(), verb, &row.id];
-    args.extend_from_slice(extra);
-    let result = self_cli(&args);
-    if let Some(m) = &mut app.learning {
-        m.busy = false;
-        m.status = Some(match &result {
-            Ok(_) => format!("{verb} {}", learning_short(&row.id)),
-            Err(e) => format!("{verb} failed: {e:#}"),
-        });
-    }
-    reload_learning(app);
+    let mut args: Vec<String> = vec![pane.verb().to_string(), verb.to_string(), row.id.clone()];
+    args.extend(extra.iter().map(|s| s.to_string()));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = tx.send(self_cli(&borrowed));
+    });
+    m.status = Some(format!("{verb} {}…", learning_short(&row.id)));
+    app.watches.push(Watch::Learning {
+        rx,
+        verb: verb.to_string(),
+        id: row.id,
+        since: std::time::Instant::now(),
+    });
 }
 
 fn learning_short(id: &str) -> String {
@@ -6174,7 +6267,11 @@ fn handle_learning_key(app: &mut App, key: KeyEvent) -> Result<()> {
             learning_act(app, "accept", &[])
         }
         KeyCode::Char('r') if modal.pane == learning::Pane::Proposals => {
-            learning_act(app, "reject", &[])
+            // `mecha proposals reject` wants a reason and the help text here
+            // promises one is recorded — `/queues`' own rule for the same
+            // command: a reason nobody typed is worse than none, so say
+            // where it came from rather than inventing a justification.
+            learning_act(app, "reject", &["--reason", "rejected from /learning"])
         }
         _ => {}
     }
