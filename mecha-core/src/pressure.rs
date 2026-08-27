@@ -213,13 +213,29 @@ impl std::fmt::Display for Forecast {
             self.used / 1000,
             self.limit / 1000
         )?;
+        // **Both halves from the same number, or the line argues with
+        // itself.** The cost was rounded to whole thousands and floored at
+        // one, while the turn count came from the true rate — so at a pace of
+        // 400 with 89.6k of headroom the model read "~1k each, so about 224
+        // more" against a stated 100k limit, where 224 × 1k is more than twice
+        // the whole budget. A reading the model is asked to plan against has
+        // to survive being multiplied out, so a sub-1k pace is printed in
+        // tokens rather than rounded up to a thousand it is not.
+        //
+        // `(Some(rate), None)` is deliberately absent: `turns_left` is
+        // `per_turn.map(...)`, so it is `Some` whenever the rate is, and an
+        // arm for a state that cannot occur reads as a handled case and would
+        // quietly go stale if that derivation ever changed.
         match (self.per_turn, self.turns_left) {
-            (Some(rate), Some(turns)) => write!(
+            (Some(rate), Some(turns)) if rate >= 1000 => write!(
                 f,
                 "; recent turns cost ~{}k each, so about {turns} more at this pace",
-                (rate / 1000).max(1)
+                rate / 1000
             ),
-            (Some(rate), None) => write!(f, "; recent turns cost ~{}k each", (rate / 1000).max(1)),
+            (Some(rate), Some(turns)) => write!(
+                f,
+                "; recent turns cost ~{rate} tokens each, so about {turns} more at this pace"
+            ),
             _ => Ok(()),
         }
     }
@@ -814,15 +830,21 @@ mod tests {
         );
     }
 
-    /// A slow-growing run still reports a cost, and never "~0k each".
+    /// **A slow-growing run reports a cost, and the two halves of the line
+    /// agree with each other.**
     ///
-    /// `rate.max(1) / 1000` reads as the guard for this and is not one: the
-    /// rate is already filtered to `> 0`, and every rate under 1000 still
-    /// divides to zero. The line then says a turn costs nothing beside a
-    /// finite count of turns left — the one internally inconsistent thing it
-    /// can say, and the shape a reader would take as "no pressure here".
+    /// `rate.max(1) / 1000` reads as the guard against "~0k each" and is not
+    /// one: the rate is already filtered to `> 0`, and every rate under 1000
+    /// divides to zero. Flooring the *printed* cost at "~1k" fixed the free
+    /// turn and bought a worse defect — the turn count kept coming from the
+    /// true rate, so the line said "~1k each, so about 224 more" against a
+    /// stated 100k limit, and 224 × 1k is more than twice the whole budget.
+    ///
+    /// The first version of this test pinned only the "~1k" half and would
+    /// have gone on passing. A number the model is asked to plan against has
+    /// to survive being multiplied out, so that is what is asserted.
     #[test]
-    fn a_sub_1k_growth_rate_still_reads_as_a_cost() {
+    fn a_sub_1k_growth_rate_reads_as_a_cost_the_turn_count_agrees_with() {
         let mut t = ContextTracker::new();
         t.observe(10_000, 30_000);
         t.observe(10_400, 31_000);
@@ -830,12 +852,23 @@ mod tests {
         assert_eq!(f.per_turn, Some(400), "the rate under test is sub-1k");
         let line = f.to_string();
         assert!(
-            line.contains("~1k each"),
-            "a 400-token-a-turn run must not report a free turn: {line}"
+            line.contains("~400 tokens each"),
+            "a sub-1k pace is printed as itself, not rounded to a thousand it is \
+             not: {line}"
         );
+        assert!(!line.contains("~0k"), "and never as free: {line}");
+
+        // The consistency the rounding broke: whatever cost the line states,
+        // times the turns it promises, must not exceed the headroom it also
+        // states. Fails on `(rate / 1000).max(1)`, where 224 × 1000 = 224k
+        // against 89.6k of headroom.
+        let turns = f.turns_left.expect("a known pace gives a turn count");
         assert!(
-            !line.contains("~0k"),
-            "rounded a real cost to nothing: {line}"
+            f.per_turn.unwrap() * turns <= f.headroom,
+            "the line promises {turns} turns at {} each, which is more than the \
+             {} of headroom it states in the same breath",
+            f.per_turn.unwrap(),
+            f.headroom
         );
     }
 
