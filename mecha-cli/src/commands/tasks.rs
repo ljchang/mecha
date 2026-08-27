@@ -1433,6 +1433,12 @@ pub(crate) fn discuss_prompt(task: &Value, today: &str, reach: &Reach) -> String
          the task is finished is their call, not yours — you have no tool that changes its \
          status. Keep a `todo` list once there are steps to keep; they can watch it.\n",
     );
+    if let Some(id) = task["id"].as_str().filter(|v| !v.is_empty()) {
+        p.push_str(&format!(
+            "When you do, pass `serves: \"task:{id}\"` — this task's own id — every time \
+             you write the list, so the plan names what it is for.\n"
+        ));
+    }
     p
 }
 
@@ -1593,6 +1599,22 @@ fn work_prompt(
          - If this takes more than a few steps, keep a `todo` list. The owner can watch it, \
          and it survives into the conversation if they pick this up later.\n",
     );
+    // **`TodoTool::description` already says to pass `serves` when work
+    // serves a task; the gap is narrower than "nobody was told."** The 15
+    // delegated runs in the appraisal corpus that wrote 0 goals each had that
+    // instruction *and* this task's own id on the seed's `Id:` line, and
+    // still wrote nothing — so the schema's generic reminder was not, on its
+    // own, enough to bind the instruction to *this run's* task. This sentence
+    // does that binding explicitly, using the id already above it. Whether it
+    // moves the number is unmeasured until sessions recorded after this lands
+    // are read back — see HANDOFF.
+    if let Some(id) = field("id") {
+        p.push_str(&format!(
+            "- Keep the `todo` list's `serves` field pointing at this task: pass \
+             `serves: \"task:{id}\"` every time you write it, so the board record and the \
+             plan agree about what it is for.\n"
+        ));
+    }
     p
 }
 
@@ -1929,5 +1951,56 @@ mod tests {
         let note = "ask for the *signed* copy, not the scan";
         let p = work_prompt(&task(), "2026-08-26", Some(note), false, &reach());
         assert!(p.contains(note));
+    }
+
+    /// **`todo`'s own schema already tells the model to pass `serves`; this
+    /// sentence binds that instruction to *this run's* task id.** All 15
+    /// delegated runs in the appraisal corpus that wrote 0 goals had both the
+    /// schema's reminder and this task's id on the seed's `Id:` line, so the
+    /// generic instruction was not, by itself, enough. Whether naming the id
+    /// explicitly changes the outcome is unmeasured until sessions recorded
+    /// after this lands are read back.
+    #[test]
+    fn the_seed_tells_the_model_to_serve_this_task_on_its_todo_list() {
+        let p = work_prompt(&task(), "2026-08-26", None, false, &reach());
+        assert!(
+            p.contains("serves: \"task:task-1a2b3c4d\""),
+            "the task's own id, not a paraphrase of it:\n{p}"
+        );
+        // **Caught on review of #92**: only `discuss_prompt`'s test asserted
+        // the repeat clause, though `work_prompt`'s sentence has always
+        // carried it. `plan_from_transcript` reads only the *last* `todo`
+        // write, so a final write that drops `serves` reproduces exactly the
+        // zero this PR fixes — and `work_prompt`'s posture is unwatched,
+        // unlike `discuss_prompt`'s, so an unattended run that stops
+        // repeating the field is the likelier miss, not the rarer one.
+        assert!(
+            p.contains("every time you write it"),
+            "a repeat clause, or the goal is gone on the plan's second write:\n{p}"
+        );
+    }
+
+    /// **`discuss_prompt` gets the same instruction**, because a task opened
+    /// as a conversation is exactly as reachable a `Frustration` candidate as
+    /// a detached one (`Pride` needs a charter line, not a task — unbuilt
+    /// regardless of `serves:`) — the postures differ in what happens when
+    /// nobody answers, not in whether the plan should name its task.
+    #[test]
+    fn discuss_prompt_also_tells_the_model_to_serve_the_task() {
+        let p = discuss_prompt(&task(), "2026-08-26", &reach());
+        assert!(
+            p.contains("serves: \"task:task-1a2b3c4d\""),
+            "the discuss posture must not be the one that leaves `serves` unset:\n{p}"
+        );
+        // **`serves` is replaced, not merged** — `TodoTool::call` rebuilds
+        // `Plan { goal, items }` from each call's own input, so a write that
+        // omits `serves` silently unsets a goal an earlier write set. The
+        // discuss posture is the one whose plan is likeliest to be rewritten
+        // many times, with the owner steering it live, so a one-shot
+        // instruction here is the worse half to get wrong.
+        assert!(
+            p.contains("every time you write the list"),
+            "a repeat clause, or the goal is gone on the plan's second write:\n{p}"
+        );
     }
 }

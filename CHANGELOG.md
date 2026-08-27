@@ -88,6 +88,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rule and cut the rest at the box edge — an approval asked for on a sentence
   whose end is unreadable, and the unread half goes into every future prompt.
 
+- **A delegated task run's plan never named what it served, including in the
+  runs `serves:` was built for.** Measured against the live store: 112 of 120
+  appraised sessions wrote a plan, 0 named a goal — 15 of them delegated runs
+  that carried both `todo`'s own schema instruction to pass `serves` *and*
+  this task's own id, printed on the seed's `Id:` line, and still wrote
+  nothing. The generic reminder was not, by itself, enough; both delegated
+  postures (`work_prompt`, `discuss_prompt`) now bind it explicitly to the
+  running task's id, which is what lets `Frustration` resolve a board task at
+  all if it works (`Pride` needs a charter line, not a task, and stays
+  unreachable regardless). Forward-looking only, and unmeasured — it does not
+  relabel the 120 sessions already on disk, and whether naming the id
+  explicitly moves the number needs sessions recorded after this lands.
+
 ## [0.1.15] - 2026-08-26
 
 Five surfaces that described themselves wrongly, found by using them. A chip
