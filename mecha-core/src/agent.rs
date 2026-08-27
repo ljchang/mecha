@@ -845,6 +845,18 @@ pub struct RunOutcome {
     /// no outcome to be recorded on — the count on a row that exists is always
     /// of overflows the run survived.
     pub context_overflows: u32,
+    /// Times this run was told an approach had stopped teaching it anything
+    /// (`docs/GOAL-SYSTEM-DESIGN.md` §9.1).
+    ///
+    /// Here so the mechanism is falsifiable. Every threshold in `boredom.rs`
+    /// is a number chosen from argument rather than from measurement, and a
+    /// detector nobody can count fires either constantly or never with no way
+    /// to tell which — the silent failure this project keeps naming. The
+    /// notice is in the transcript verbatim, so this could in principle be
+    /// recovered by matching prose; that is what `is_context_overflow` has to
+    /// do because no backend gives it a code, and it is not something to
+    /// choose when the count is right here.
+    pub boredom_notices: u32,
     /// False when `usage` is a *lower bound* rather than a measurement.
     ///
     /// A run cancelled mid-stream keeps the input tokens, which arrive in the
@@ -1283,7 +1295,7 @@ impl Agent {
                     taint,
                     compactions,
                 );
-                emit_done(&events, &mut outcome, *context_overflows);
+                emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
                 return Ok(outcome);
             }
 
@@ -1549,6 +1561,7 @@ impl Agent {
                 let mut outcome = RunOutcome {
                     homeostat: None,
                     context_overflows: 0,
+                    boredom_notices: 0,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -1568,7 +1581,7 @@ impl Agent {
                     compactions,
                     usage_complete: true,
                 };
-                emit_done(&events, &mut outcome, *context_overflows);
+                emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
                 return Ok(outcome);
             }
             turns += 1;
@@ -1703,7 +1716,7 @@ impl Agent {
                         taint,
                         compactions,
                     );
-                    emit_done(&events, &mut outcome, *context_overflows);
+                    emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
                     return Ok(outcome);
                 }
             };
@@ -1841,7 +1854,7 @@ impl Agent {
                             taint,
                             compactions,
                         );
-                        emit_done(&events, &mut outcome, *context_overflows);
+                        emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
                         return Ok(outcome);
                     }
 
@@ -1930,7 +1943,7 @@ impl Agent {
                         outcome.stop_cause = StopCause::NoOutput;
                         outcome.exhausted = true;
                     }
-                    emit_done(&events, &mut outcome, *context_overflows);
+                    emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
                     return Ok(outcome);
                 }
             }
@@ -2283,6 +2296,7 @@ impl Agent {
             // swapped pair of arguments compiles.
             homeostat: None,
             context_overflows: 0,
+            boredom_notices: 0,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -2420,6 +2434,7 @@ impl Agent {
             taint,
             homeostat: None,
             context_overflows: 0,
+            boredom_notices: 0,
             stop_cause: StopCause::Interrupted,
             compactions,
             cost_usd: self.cost(&usage),
@@ -3078,8 +3093,10 @@ fn emit_done(
     events: &Option<UnboundedSender<AgentEvent>>,
     outcome: &mut RunOutcome,
     context_overflows: u32,
+    boredom_notices: u32,
 ) {
     outcome.context_overflows = context_overflows;
+    outcome.boredom_notices = boredom_notices;
     emit(events, AgentEvent::Done(Box::new(outcome.clone())));
 }
 
@@ -5301,6 +5318,7 @@ mod tests {
         // here and saw nothing" — which is a different claim from `None`.
         let clean = crate::session::RunStats::from(&RunOutcome {
             context_overflows: 0,
+            boredom_notices: 0,
             ..outcome.clone()
         });
         assert_eq!(clean.context_overflows, Some(0));
