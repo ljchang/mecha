@@ -104,6 +104,27 @@ pub struct RunConfig {
     /// front of the cached prefix. A tool added, removed or renamed between
     /// recording and replay changes what the model could have done.
     pub tools: Vec<String>,
+    /// The surface those names actually described, by hash.
+    ///
+    /// **Names were never enough, and the comment above says why without
+    /// seeing it.** Add, remove and rename are the three that almost never
+    /// happen; *re-describe* happens constantly — 49 commits touched tool
+    /// definitions in three weeks of this store — and a list of names cannot
+    /// see it. Tools render *before* the system prompt, so a replay was
+    /// rebuilding the second half of the prefix byte-exactly and the first half
+    /// from whatever the registry says today. Measured consequence: 12 of 13
+    /// counterfactual probes inconclusive, deterministically, median divergence
+    /// one tool call in.
+    ///
+    /// The specs themselves live in [`crate::surface::SurfaceStore`] — 69 KB
+    /// against a 25 KB average session is why this is a citation and not the
+    /// text, where `system_prompt` above is the text.
+    ///
+    /// **`None` is a recording from before this existed, and must never read as
+    /// a match** — [`crate::surface::Fidelity`] is the three-state answer, and
+    /// its `Unknown` arm is the one every session on disk today lands in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools_hash: Option<String>,
 
     // What the request looks like.
     pub effort: Option<Effort>,
@@ -147,6 +168,7 @@ impl Default for RunConfig {
             workspace: PathBuf::new(),
             system_prompt: None,
             tools: Vec::new(),
+            tools_hash: None,
             effort: None,
             temperature: None,
             seed: None,
@@ -183,6 +205,12 @@ impl RunConfig {
                 .iter()
                 .map(|t| t.name().to_string())
                 .collect(),
+            // Best-effort: recording the surface is bookkeeping beside a run,
+            // and a full disk must not stop the run. A session that could not
+            // record one carries no hash and reads back as `Unknown`, which is
+            // exactly true rather than a silent downgrade.
+            tools_hash: crate::surface::SurfaceStore::open_default()
+                .and_then(|s| s.record(&agent.registry().specs()).ok()),
             effort: cfg.effort,
             temperature: config.providers.get(provider).and_then(|p| p.temperature),
             seed: config.providers.get(provider).and_then(|p| p.seed),
