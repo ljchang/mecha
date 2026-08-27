@@ -162,7 +162,25 @@ const RECENT: usize = 5;
 /// genuinely better at: how much of its own plan remains.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Forecast {
-    /// What the next request is predicted to cost.
+    /// What the next request is predicted to cost — **excluding the results
+    /// of the turn now being executed**.
+    ///
+    /// The prediction closes one lag and cannot close the other. Reported
+    /// usage is a turn out of date, because the provider prices a request
+    /// after it is sent; adding the transcript bytes since that measurement
+    /// fixes that, which is what this type is for. But the number is handed
+    /// *into* `run_tools` so the `todo` result can carry it to the model, so
+    /// it is consumed by the very call that produces the results it would
+    /// need to include. A reading that waited for them would arrive a turn
+    /// later, which is the same lag moved rather than removed.
+    ///
+    /// Left understated rather than padded with the turn's output budget: the
+    /// budget is an upper bound a turn rarely reaches, and inflating every
+    /// reading by it would trade a small, well-understood undercount for a
+    /// large invented one on the number the model plans against. So the
+    /// contract is *at least this much has been used*, and the caller that
+    /// renders it says "recent turns cost about X" rather than promising a
+    /// total.
     pub used: u64,
     /// The ceiling being measured against — the compaction threshold when
     /// there is one, else the context window.
