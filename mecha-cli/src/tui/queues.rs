@@ -1166,7 +1166,7 @@ fn truncate(s: &str, n: usize) -> String {
 /// Word-wrapped rather than cut mid-word, and a word longer than the whole
 /// width is broken rather than dropped — a base64 blob or a long path is
 /// exactly the case where losing the tail is worst.
-fn wrapped(text: &str, width: u16) -> Vec<Line<'static>> {
+pub(super) fn wrapped(text: &str, width: u16) -> Vec<Line<'static>> {
     let width = width.max(8) as usize;
     let mut out = Vec::new();
     for raw in text.lines() {

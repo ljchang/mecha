@@ -21,6 +21,7 @@ pub enum Command {
     /// is named for the stores rather than for the act so the two cannot be
     /// confused by anyone typing quickly.
     Queues,
+    Learning,
     /// User-authored procedures: what the run carries, what it has loaded,
     /// and what the store holds that this run did not get.
     Skills,
@@ -136,6 +137,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "triggers" | "trigger" => Command::Triggers,
         "outbox" => Command::Outbox,
         "queues" => Command::Queues,
+        "learning" | "learn" => Command::Learning,
         // Both spellings for the same reason as triggers: the command is
         // `mecha mail`, the thing you want to see is the queue.
         "mail" | "inbox" => Command::Mail,
@@ -311,13 +313,14 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 25] = [
+pub const NAMES: [&str; 26] = [
     "help",
     "tools",
     "skills",
     "triggers",
     "outbox",
     "queues",
+    "learning",
     "frontdoor",
     "tasks",
     "note",
@@ -397,6 +400,7 @@ pub const HELP: &str = "\
   /skills                procedures this agent can load, and which are loaded
   /triggers              scheduled prompts: see, edit, run, cancel
   /queues                every store waiting on you, incl. the graph merge queue
+  /learning              reflections, rules and proposals — read, edit, refuse
   /outbox                staged outbound drafts: read, edit, send, reject
   /frontdoor             inbound requests: read, extract, triage, close
   /tasks                 the graph's task board: see, capture, edit, move on

@@ -36,7 +36,11 @@ pub struct Args {
 #[derive(clap::Subcommand, Debug)]
 pub enum Cmd {
     /// Every rule with its ledger tallies and staleness (default).
-    List,
+    List {
+        /// Machine-readable, for `/learning`.
+        #[arg(long)]
+        json: bool,
+    },
     /// Retire a rule by id (or unique prefix): kept in the file as evidence,
     /// never rendered into a prompt again.
     Retire {
@@ -61,16 +65,47 @@ pub enum Cmd {
 
 pub async fn execute(args: Args) -> Result<()> {
     let store = LearningStore::open(LearningStore::default_root()?)?;
-    match args.cmd.unwrap_or(Cmd::List) {
-        Cmd::List => list(&store),
+    match args.cmd.unwrap_or(Cmd::List { json: false }) {
+        Cmd::List { json } => list(&store, json),
         Cmd::Retire { id, reason } => retire(&store, &id, reason),
         Cmd::Restore { id } => restore(&store, &id),
         Cmd::ProposeRetirements { min_attributed } => propose(&store, min_attributed),
     }
 }
 
-fn list(store: &LearningStore) -> Result<()> {
+fn list(store: &LearningStore, as_json: bool) -> Result<()> {
     let tallies = rule_tallies(&store.validations()?);
+    if as_json {
+        let mut out = Vec::new();
+        for domain in store.domains() {
+            // User rules ride in the same prompt and are **not on trial** —
+            // they are the owner's and are never tallied or retired. Listed
+            // anyway, and flagged, because a surface that shows only the
+            // learned half misdescribes what a run actually carries.
+            for (r, mine) in store
+                .user_rules(&domain)?
+                .iter()
+                .map(|r| (r, true))
+                .chain(store.learned_rules(&domain)?.iter().map(|r| (r, false)))
+            {
+                let tally = r.id.as_deref().and_then(|id| tallies.get(id));
+                out.push(serde_json::json!({
+                    "id": r.id,
+                    "domain": domain,
+                    "title": r.text,
+                    "user": mine,
+                    "active": r.active(),
+                    "retired": r.retired_at.is_some(),
+                    "retired_reason": r.retired_reason,
+                    "observations": tally.map(|t| t.observations),
+                    "attributed_regressions": tally.map(|t| t.attributed_regressions),
+                    "created_at": r.created_at,
+                }));
+            }
+        }
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
     let mut any = false;
     for domain in store.domains() {
         let user = store.user_rules(&domain)?;
