@@ -979,7 +979,22 @@ fn build_subagent(
         child_cfg,
         // Profile model wins; otherwise the child uses its provider's default.
         profile.model.clone().or_else(|| provider_cfg.model.clone()),
-    )?;
+    )?
+    // **The child's own window, or its compaction threshold is not merely
+    // different — it does not exist.** `AgentConfig::compact_at` *derives* the
+    // threshold from the window when `compact_at_tokens` is unset, which is
+    // the default, so a child built without one has `compact_limit() == None`
+    // and never compacts at any length.
+    //
+    // That was survivable while nothing said otherwise, and stopped being so
+    // when the model got a button for it: a profile listing `compact` gets the
+    // tool (it is in the pool before children are built) and gets the channel
+    // (`subagent.rs` clones the parent's `ToolCtx` wholesale), so the child was
+    // told *"the transcript will be summarised before your next turn"* by a
+    // loop that would never read the flag. The two halves are inherited by
+    // different mechanisms — the channel rides on the context, the threshold
+    // on the agent — and only one of them made the trip.
+    .with_context_window(provider_cfg.context_window);
     // The parent's hooks apply to the child too, or delegating would be the
     // way around a pre_tool policy.
     if let Some(hooks) = hooks {
@@ -1134,7 +1149,56 @@ pub fn tool_ctx(prepared: &PreparedTools) -> ToolCtx {
 
 #[cfg(test)]
 mod tests {
-    use super::excluded_by_allowlist;
+    use super::{build_subagent, excluded_by_allowlist};
+
+    /// **A child that cannot compact must not be handed the button for it.**
+    ///
+    /// `AgentConfig::compact_at` *derives* the threshold from the context
+    /// window when `compact_at_tokens` is unset — which is the default — so a
+    /// child built without a window has `compact_limit() == None` and never
+    /// compacts at any length. That was survivable while nothing said
+    /// otherwise, and stopped being so when `compact` shipped: the child gets
+    /// the tool (it is in the pool before children are built) and the channel
+    /// (`subagent.rs` clones the parent's `ToolCtx` wholesale), so it was told
+    /// *"the transcript will be summarised before your next turn"* by a loop
+    /// that would never read the flag.
+    ///
+    /// The two halves are inherited by different mechanisms — the channel on
+    /// the context, the threshold on the agent — and only one made the trip.
+    /// Fails on the old `build_subagent`, which never called
+    /// `with_context_window`.
+    #[test]
+    fn a_subagent_inherits_the_window_its_compaction_threshold_derives_from() {
+        let cfg = mecha_core::config::Config::default();
+        let mut provider_cfg = cfg.providers.values().next().cloned().unwrap_or_default();
+        provider_cfg.context_window = Some(100_000);
+        let profile = mecha_core::subagent::SubagentProfile {
+            name: "child".into(),
+            description: "a child".into(),
+            ..Default::default()
+        };
+        let child = build_subagent(
+            &profile,
+            &mecha_core::tool::Registry::new(),
+            &cfg,
+            &provider_cfg,
+            &mecha_core::tool::ToolCtx::default(),
+            None,
+            None,
+        );
+        let child = match child {
+            Ok(c) => c,
+            // A provider this machine cannot build is not what this test is
+            // about; skipping beats asserting on the error text.
+            Err(_) => return,
+        };
+        assert_eq!(
+            child.agent().context_window(),
+            Some(100_000),
+            "without the window the child's compaction threshold is None, and \
+             `compact` becomes a tool that reports success and does nothing"
+        );
+    }
 
     /// The bug this pins: `--tool fs_read` used to abort the whole run because
     /// the configured `research` subagent wants `web_search`. Narrowing the
