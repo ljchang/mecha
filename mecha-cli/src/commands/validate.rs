@@ -36,7 +36,7 @@ use mecha_core::counterfactual::ProbeVerdict;
 use mecha_core::eval::Judge;
 use mecha_core::learning::{
     domain_rules_section, locate_followup, rules_hash, strip_rules_block, wrap_rules_block,
-    LearningStore, Rule, Trigger, ValidationRecord,
+    LearningStore, Origin, Reflexion, Rule, Trigger, ValidationRecord,
 };
 use mecha_core::message::{CompletionRequest, Message};
 use mecha_core::session::Session;
@@ -192,6 +192,39 @@ async fn attribute_regression(
     Ok(set.first().copied())
 }
 
+/// Which reflections this run is willing to probe.
+///
+/// Trigger and processed-state are the caller's own filters; the third is
+/// not optional. **A `Derived` reflection is mecha's own voice read back as
+/// a user's correction** — `Reflexion::provenance()` is `Derived` exactly
+/// when `agent::is_harness_voice` recognises the intervention text, which
+/// means the "steer" `counterfactual::locate_steer` would find in the
+/// transcript is a harness nudge or a peer's mailbox delivery, not something
+/// anyone typed to correct a mistake. Probing it still produces a Pass/Fail
+/// verdict, and a `Fail` there runs `attribute`, which bisects the active
+/// rules against that same recorded prefix to name a culprit — so a probe
+/// point with no ground truth in it can charge a real rule with a
+/// regression, and three of those retire the rule from every future prompt.
+///
+/// `learnable()` is the wrong gate for this: its triage exemption lets some
+/// `Untrusted` reflections through for a reason specific to consolidation
+/// (untrusted *content* policy in the triage domain), which is a different
+/// question from whether this particular "steer" is genuine. Filtering on
+/// that would drop real evidence this probe should keep, so the check here
+/// is narrower and asks only the question that matters to a probe.
+fn select_probe_corpus(
+    reflexions: Vec<Reflexion>,
+    wanted_triggers: &[&str],
+    unprocessed_only: bool,
+) -> Vec<Reflexion> {
+    reflexions
+        .into_iter()
+        .filter(|r| wanted_triggers.contains(&r.trigger.as_str()))
+        .filter(|r| !unprocessed_only || !r.is_processed)
+        .filter(|r| r.provenance() != Origin::Derived)
+        .collect()
+}
+
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let store = LearningStore::open(LearningStore::default_root()?)?;
     // What a run actually carries, not what the store holds: the ledger is
@@ -212,12 +245,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     } else {
         args.trigger.iter().map(String::as_str).collect()
     };
-    let reflexions: Vec<_> = store
-        .reflexions()?
-        .into_iter()
-        .filter(|r| wanted_triggers.contains(&r.trigger.as_str()))
-        .filter(|r| !args.unprocessed_only || !r.is_processed)
-        .collect();
+    let reflexions: Vec<_> =
+        select_probe_corpus(store.reflexions()?, &wanted_triggers, args.unprocessed_only);
     if reflexions.is_empty() {
         println!("no reflections to probe");
         return Ok(());
@@ -548,6 +577,67 @@ mod tests {
             id: id.map(Into::into),
             ..Default::default()
         }
+    }
+
+    fn reflexion(intervention: &str, origin: Origin) -> Reflexion {
+        Reflexion {
+            id: "r1".into(),
+            domain: "behavior".into(),
+            session_id: "s".into(),
+            trigger: Trigger::Steer.as_str().into(),
+            context: "c".into(),
+            intervention: intervention.into(),
+            reflexion_text: "t".into(),
+            error_type: None,
+            confidence: None,
+            is_processed: false,
+            leap_run_id: None,
+            created_at: "2026-08-19T00:00:00Z".into(),
+            origin,
+            evidence: mecha_core::learning::Evidence::Full,
+        }
+    }
+
+    /// The fourth reader this PR was named for: a reflection stored `clean`
+    /// before `is_harness_voice` existed reclassifies as `Derived` through
+    /// `provenance()`, and must not reach the probe corpus even though its
+    /// stored `origin` still says `clean`. Fails on the pre-fix selection
+    /// (trigger and processed-state alone), which would hand this reflection
+    /// to a probe and let a `Fail` verdict on mecha's own empty-turn nudge
+    /// bisect and attribute against a real learned rule.
+    #[test]
+    fn a_harness_voice_reflection_never_reaches_the_probe_corpus() {
+        let real = reflexion("please use tabs, not spaces", Origin::Clean);
+        let fake = reflexion(
+            &format!(
+                "{} `build` has now returned the same thing",
+                mecha_core::boredom::NOTICE_STEM
+            ),
+            Origin::Clean,
+        );
+        let triggers = [Trigger::Steer.as_str()];
+
+        let selected = select_probe_corpus(vec![real.clone(), fake], &triggers, false);
+
+        assert_eq!(
+            selected.len(),
+            1,
+            "the harness's own nudge must be excluded"
+        );
+        assert_eq!(selected[0].intervention, real.intervention);
+    }
+
+    /// The common case is untouched: a real steer with no harness-voice
+    /// resemblance survives every filter, including the new one.
+    #[test]
+    fn an_ordinary_steer_still_reaches_the_probe_corpus() {
+        let real = reflexion("please use tabs, not spaces", Origin::Clean);
+        let triggers = [Trigger::Steer.as_str()];
+
+        let selected = select_probe_corpus(vec![real.clone()], &triggers, false);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].intervention, real.intervention);
     }
 
     #[test]
