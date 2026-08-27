@@ -1075,6 +1075,37 @@ impl Agent {
         convo: &mut Conversation,
         events: Option<UnboundedSender<AgentEvent>>,
     ) -> Result<RunOutcome> {
+        // **The `compact` channel is minted per run, here, and not by whoever
+        // built the context.** Setup decides whether this run compacts at all
+        // — that is a config question, and `None` means the tool is not in the
+        // surface — but the flag's *identity* has to be this run's, because
+        // one `Agent` serves many concurrent runs and the loop consumes the
+        // flag with a destructive `swap`. Two runs sharing one `AtomicBool`
+        // means whichever reaches its between-turns check first takes the
+        // other's request: one transcript is summarised without asking and the
+        // other is told a summary happened that did not.
+        //
+        // Doing it here rather than on `RunContext` is what makes it true for
+        // every caller. The four sites that derive a per-run context disagree
+        // about how: Slack deep-clones `ToolCtx` per thread and `subagent`
+        // clones it per child, but `batch` shares the whole `RunContext` by
+        // `Arc::clone`, so a field on `RunContext` would leave batch items
+        // sharing one channel and a fresh-flag-on-`ToolCtx::clone` would never
+        // fire there at all. The loop is the one place that runs once per run
+        // no matter what the caller handed it. Same reason `context_overflows`
+        // and the pressure series are loop locals.
+        let run_scoped;
+        let cx = if cx.tools.compact_requested.is_some() {
+            let mut tools = (*cx.tools).clone();
+            tools.compact_requested = Some(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+            run_scoped = RunContext {
+                tools: Arc::new(tools),
+                ..cx.clone()
+            };
+            &run_scoped
+        } else {
+            cx
+        };
         // Counted here rather than by the builders, for the same reason the
         // snapshot below is: the loop returns from six places, and the count
         // lives in a local behind all of them.
@@ -5835,6 +5866,68 @@ mod tests {
             outcome.compactions, 1,
             "the model asked to compact and `CompactTool` told it the transcript \
              would be summarised before its next turn; the run summarised nothing"
+        );
+    }
+
+    /// A run never acts on a `compact` request it did not make.
+    ///
+    /// One `Agent` serves many concurrent runs — a `Conversation` per Slack
+    /// thread, a session per `serve` socket, an item per batch, a child per
+    /// `subagent` — and the loop consumes the request with a destructive
+    /// `swap`. While the flag was minted once in `prepare_tools` and carried on
+    /// the agent's `ToolCtx`, every one of those runs shared it: whichever
+    /// reached its between-turns check first took the other's request, so one
+    /// transcript was summarised without asking while the run that *did* ask
+    /// was told, by `CompactTool`, that a summary had happened.
+    ///
+    /// The armed flag here is the other run's — set and not yet consumed. This
+    /// conversation is nowhere near its threshold and never calls `compact`, so
+    /// nothing about it justifies a summary.
+    ///
+    /// Verified to fail while the channel was agent-scoped — on the *second*
+    /// assertion: this run swallowed the other's request. It did not itself
+    /// summarise, because a two-turn transcript gives the summariser nothing
+    /// to do, which is why the theft is asserted directly rather than inferred
+    /// from a compaction count. The damage is at the other end anyway: the run
+    /// that asked gets `CompactTool`'s "the transcript will be summarised
+    /// before your next turn" and no summary, with nothing anywhere recording
+    /// that its request was taken.
+    #[tokio::test]
+    async fn one_runs_compact_request_cannot_compact_another_run() {
+        let turns = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t0".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "v0"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("done")], StopReason::EndTurn),
+        ];
+        let (mut agent, _provider) =
+            agent_with_tools(turns, vec![Arc::new(EchoTool)], PermissionMode::Allow);
+        agent.cfg.compact_at_tokens = Some(u64::MAX);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.force_final_answer = false;
+        agent.cfg.compact_validate = false;
+
+        // Another run asked to compact and its request has not been consumed.
+        let other_runs_request = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        agent.ctx_mut().compact_requested = Some(Arc::clone(&other_runs_request));
+
+        let mut convo = Conversation::user("echo one thing");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(
+            outcome.compactions, 0,
+            "this run never asked to compact and is nowhere near its threshold; \
+             it summarised anyway, on another run's request"
+        );
+        assert!(
+            other_runs_request.load(std::sync::atomic::Ordering::Relaxed),
+            "this run consumed a request that was not its own — the run that \
+             made it will now be told a summary happened that never did"
         );
     }
 
