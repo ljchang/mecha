@@ -46,6 +46,25 @@ pub enum Args {
         json: bool,
     },
 
+    /// How past runs went against what they were *for* — the signed record,
+    /// and the label derived from it.
+    ///
+    /// Observation only: nothing consumes these, and the number worth reading
+    /// is how many come back with no label at all.
+    Appraise {
+        /// Only sessions started in the last N days.
+        #[arg(long)]
+        days: Option<i64>,
+
+        /// Stop after this many sessions, newest first.
+        #[arg(long, short = 'n')]
+        limit: Option<usize>,
+
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Total token usage — and cost, where prices are configured — across
     /// saved sessions, grouped by provider and model.
     Stats {
@@ -64,6 +83,8 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
 
     match args {
         Args::Health { days, limit, json } => health(&dir, days, limit, json)?,
+
+        Args::Appraise { days, limit, json } => appraise(&dir, days, limit, json)?,
 
         Args::List { limit } => {
             let sessions = Session::list(&dir)?;
@@ -282,6 +303,144 @@ fn first_line(s: &str) -> String {
 /// answers whether they *worked*, and the two have different audiences and
 /// different units. Every rate here prints `—` where its denominator is zero,
 /// because no evidence is not a clean record.
+/// `mecha sessions appraise` — the readout rung 7 exists to produce.
+///
+/// **Observation only.** Nothing consumes an appraisal, and the number worth
+/// reading is the neutral share: §14's own test is that if the labels come back
+/// degenerate the channel is dead, and that is learned cheaply here rather than
+/// after something is built on it.
+///
+/// Derived on the spot from the transcripts, the outbox and each run's own
+/// record — see `appraisal::of_run` on why there is no store yet.
+fn appraise(
+    dir: &std::path::Path,
+    days: Option<i64>,
+    limit: Option<usize>,
+    json: bool,
+) -> Result<()> {
+    use mecha_core::appraisal;
+
+    let since = days.map(|d| chrono::Utc::now() - chrono::Duration::days(d));
+
+    // Best-effort, like every reader over these stores: an outbox that cannot
+    // be opened costs the `Edit` channel and nothing else. Reported below
+    // rather than swallowed, because "no drafts" and "could not look" are the
+    // opposite findings this whole surface is about.
+    let drafts =
+        mecha_core::outbox::OutboxStore::open_existing_default().and_then(|o| o.items().ok());
+
+    // Walked here rather than through `runlog::Corpus`, and the difference is
+    // the unit: that reader yields one row per **run**, which is right for
+    // counting what runs cost and wrong for this — an intervention carries a
+    // message index with nothing saying which run held it, and an outbox item
+    // records a session. `RunStats::fold` collapses a session's runs the way
+    // rung 4's episode stats do, through the same fold.
+    let mut appraisals = Vec::new();
+    let mut sessions_read = 0usize;
+    for (meta, path) in Session::list(dir)? {
+        if since.is_some_and(|t| meta.created_at < t) {
+            continue;
+        }
+        if limit.is_some_and(|n| sessions_read >= n) {
+            break;
+        }
+        sessions_read += 1;
+        let Ok(Some(stats)) = Session::episode_stats(&path) else {
+            continue;
+        };
+        let interventions = Session::load(&path)
+            .map(|(_, convo)| mecha_core::learning::extract_interventions(&convo.messages))
+            .unwrap_or_default();
+        let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts
+            .iter()
+            .flatten()
+            .filter(|i| i.session_id.as_deref() == Some(meta.id.as_str()))
+            .collect();
+        appraisals.push(appraisal::of_session(
+            &meta.id,
+            &stats,
+            &[],
+            &interventions,
+            &mine,
+            meta.created_at.to_rfc3339(),
+        ));
+    }
+
+    let mut labels: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut channels: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut positive = 0usize;
+    for a in &appraisals {
+        *labels
+            .entry(format!("{:?}", a.label).to_lowercase())
+            .or_default() += 1;
+        for e in &a.errors {
+            *channels
+                .entry(format!("{:?}", e.channel).to_lowercase())
+                .or_default() += 1;
+            if e.sign > 0.0 {
+                positive += 1;
+            }
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "appraised": appraisals.len(),
+                "sessions_read": sessions_read,
+                "labels": labels,
+                "channels": channels,
+                "positive_errors": positive,
+                "outbox_read": drafts.is_some(),
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "{} session(s) appraised, of {} read\n",
+        appraisals.len(),
+        sessions_read
+    );
+    if appraisals.is_empty() {
+        return Ok(());
+    }
+
+    println!("  label");
+    for (label, n) in &labels {
+        let pct = *n as f64 / appraisals.len() as f64 * 100.0;
+        println!("    {label:<16} {n:>5}  ({pct:.0}%)");
+    }
+    // The one that decides whether this rung goes further. Said out loud
+    // rather than left to be read off the table, because it is the finding.
+    let neutral = labels.get("neutral").copied().unwrap_or(0);
+    println!(
+        "\n  {:.0}% carry no label — four of the eleven need a charter, a probe, \
+         a notion of harm or a cross-run view",
+        neutral as f64 / appraisals.len() as f64 * 100.0
+    );
+
+    println!("\n  signed errors, by channel");
+    if channels.is_empty() {
+        println!("    none");
+    }
+    for (channel, n) in &channels {
+        println!("    {channel:<16} {n:>5}");
+    }
+    println!(
+        "    {:<16} {:>5}  — the only channel that can say a run went well",
+        "of which +ve", positive
+    );
+    if drafts.is_none() {
+        println!(
+            "\n  (the outbox could not be read, so the edit channel is missing — \
+                  not empty)"
+        );
+    }
+    Ok(())
+}
+
 fn health(
     dir: &std::path::Path,
     days: Option<i64>,
