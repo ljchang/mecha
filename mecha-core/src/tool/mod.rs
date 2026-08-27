@@ -349,6 +349,20 @@ pub struct ToolCtx {
     /// there would re-pay the entire prefix, tools included, on every request.
     /// A tool result is where a changing reading is affordable.
     pub context: Option<crate::pressure::Forecast>,
+    /// What this run has actually done, as of this call — the substrate step
+    /// appraisal differences (`docs/GOAL-SYSTEM-DESIGN.md` §5.5).
+    ///
+    /// Stamped like `context` directly above and read by the same one tool,
+    /// for a reason that generalises past `todo`: the loop owns the trace and
+    /// a tool cannot see it, but only the tool holding a plan knows *which
+    /// span* a number belongs to. So the loop supplies the counters and the
+    /// tool supplies the boundaries.
+    ///
+    /// `None` means nobody stamped it — a subagent's context, a tool called
+    /// outside the loop, a test — and a consumer must make no claim rather
+    /// than read it as a run that did nothing. Zero work and no measurement
+    /// are the opposite findings doctor's dash exists to keep apart.
+    pub work: Option<crate::step::Work>,
     /// Set by the `compact` tool; read and cleared by the loop between turns.
     ///
     /// Shared rather than returned, on `cancel`'s precedent one field up: a
@@ -373,6 +387,7 @@ impl Default for ToolCtx {
             call_id: None,
             taint: None,
             context: None,
+            work: None,
             compact_requested: None,
         }
     }

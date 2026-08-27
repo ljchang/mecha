@@ -113,7 +113,132 @@ pub struct Plan {
 /// [`Asker::ask_in`]: super::ask::Asker::ask_in
 #[derive(Default)]
 pub struct TodoTool {
-    lists: Mutex<HashMap<PathBuf, Plan>>,
+    lists: Mutex<HashMap<PathBuf, Tracked>>,
+}
+
+/// One conversation's plan, and what the harness knows about how its steps
+/// went.
+///
+/// The record beside the plan exists because **a step is closed by the model
+/// and nothing checked it** (`docs/GOAL-SYSTEM-DESIGN.md` §5.5). Checking
+/// needs two boundaries — where a step started and where it was called done —
+/// and only this tool sees both: the loop owns the run's trace and stamps the
+/// counters, but a *span* is a fact about a plan, which is the one thing the
+/// loop must never learn about.
+///
+/// It is deliberately not a store. Nothing here survives the process, nothing
+/// is written down, and a mark that goes missing costs one silent completion —
+/// which is the right price, because the alternative is a second source of
+/// truth about a plan whose record is already the transcript (D15).
+#[derive(Default)]
+struct Tracked {
+    plan: Plan,
+    /// Where each started step's span began, keyed by the item's content.
+    ///
+    /// Content is the only handle a plan write offers — items carry no id, and
+    /// giving them one would cost a field the model must repeat correctly on
+    /// every write of the tool whose whole job is being cheap to keep updated.
+    /// So a step whose *wording* is rewritten loses its mark and is appraised
+    /// as nothing, which is the safe direction: silence, never a finding about
+    /// a span that is not the one measured.
+    started: HashMap<String, Mark>,
+    /// Steps already reported on, so a second identical reading escalates
+    /// instead of asking for the same revision again (§5.5's bound).
+    flagged: std::collections::HashSet<String>,
+    /// How many times this tool has been called for this plan.
+    ///
+    /// Subtracted from every span: rewriting the list is bookkeeping, and a
+    /// model that revises its plan three times mid-step would otherwise show
+    /// three calls of "work" for a step where nothing happened.
+    own_calls: u32,
+}
+
+/// Where one step's span starts, in the two units it has to be measured in.
+#[derive(Clone, Copy)]
+struct Mark {
+    work: crate::step::Work,
+    own_calls: u32,
+}
+
+impl Tracked {
+    /// Fold one plan write in, and say what the steps that just finished
+    /// actually did.
+    ///
+    /// `work` is the run's counters as of *before* this turn's batch — which
+    /// is also before this call itself reaches the trace, so it and
+    /// `own_calls` are measured at the same instant and their difference is a
+    /// span. Anything unknown produces no line at all: a step never seen in
+    /// progress, a run whose counters restarted, a context nobody stamped.
+    fn advance(&mut self, next: Plan, work: Option<crate::step::Work>) -> Vec<String> {
+        let before: HashMap<&str, Status> = self
+            .plan
+            .items
+            .iter()
+            .map(|i| (i.content.as_str(), i.status))
+            .collect();
+
+        let mut lines = Vec::new();
+        for item in &next.items {
+            let was = before.get(item.content.as_str()).copied();
+            match item.status {
+                // Started, or restarted after a revision — either way the span
+                // begins now. A revised step measured from its *first* start
+                // would carry the failed attempt's work into the retry's
+                // verdict.
+                Status::InProgress if was != Some(Status::InProgress) => {
+                    if let Some(work) = work {
+                        self.started.insert(
+                            item.content.clone(),
+                            Mark {
+                                work,
+                                own_calls: self.own_calls,
+                            },
+                        );
+                    }
+                }
+                Status::Completed if was != Some(Status::Completed) => {
+                    let Some(mark) = self.started.remove(&item.content) else {
+                        continue;
+                    };
+                    let Some(span) = work.and_then(|w| {
+                        w.since(mark.work, self.own_calls.saturating_sub(mark.own_calls))
+                    }) else {
+                        continue;
+                    };
+                    match crate::step::appraise(span)
+                        .line(&item.content, self.flagged.contains(&item.content))
+                    {
+                        Some(line) => {
+                            self.flagged.insert(item.content.clone());
+                            lines.push(line);
+                        }
+                        // It landed, so the next thing to go wrong here is a
+                        // first time again. Not while siblings are in flight:
+                        // that reads as landed because nothing is known yet,
+                        // which is not the same as having gone well.
+                        None if span.in_flight == 0 => {
+                            self.flagged.remove(&item.content);
+                        }
+                        None => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // A mark on an item the plan no longer holds describes work nobody is
+        // doing, and would otherwise sit in the map for the life of the
+        // conversation waiting for a step of the same wording to be re-added.
+        let live: std::collections::HashSet<&str> =
+            next.items.iter().map(|i| i.content.as_str()).collect();
+        self.started.retain(|k, _| live.contains(k.as_str()));
+        self.flagged.retain(|k| live.contains(k.as_str()));
+        drop(live);
+
+        self.plan = next;
+        self.own_calls += 1;
+        lines
+    }
 }
 
 impl TodoTool {
@@ -127,8 +252,20 @@ impl TodoTool {
     /// list set by anything other than the model's own `todo` write, or a
     /// faithful restoration of one, is a second author of state the tool is
     /// supposed to own.
+    /// A fresh record, not a plan swapped into the old one: the spans this
+    /// tool measures are counted from a run's trace, and a plan restored from
+    /// a transcript was written by a process whose counters are gone. Keeping
+    /// the marks would measure the resumed run's work against the killed
+    /// one's — the exact wrong-units mistake rung 4 made reading headroom off
+    /// one run's outcome for a whole episode.
     pub fn set_plan_in(&self, workspace: &Path, plan: Plan) {
-        self.lists.lock().unwrap().insert(workspace.into(), plan);
+        self.lists.lock().unwrap().insert(
+            workspace.into(),
+            Tracked {
+                plan,
+                ..Tracked::default()
+            },
+        );
     }
 
     /// Restore a resumed conversation's plan from its own transcript.
@@ -277,13 +414,13 @@ impl TodoTool {
             .lock()
             .unwrap()
             .get(workspace)
-            .map(|p| p.items.clone())
+            .map(|t| t.plan.items.clone())
             .unwrap_or_default()
     }
 
     /// What this run's plan serves, if it said.
     pub fn goal_in(&self, workspace: &Path) -> Option<GoalRef> {
-        self.lists.lock().unwrap().get(workspace)?.goal.clone()
+        self.lists.lock().unwrap().get(workspace)?.plan.goal.clone()
     }
 
     fn render(plan: &Plan) -> String {
@@ -387,7 +524,7 @@ impl Tool for TodoTool {
     /// copy of it.
     fn carried_state(&self, ctx: &ToolCtx) -> Option<CarriedState> {
         let lists = self.lists.lock().unwrap();
-        let plan = lists.get(&ctx.workspace)?;
+        let plan = &lists.get(&ctx.workspace)?.plan;
         // An empty list is genuinely nothing to carry, and an empty section in
         // the prompt reads as "the plan is finished" rather than "there was
         // never a plan".
@@ -494,10 +631,22 @@ impl Tool for TodoTool {
 
         let plan = Plan { goal, items };
         let rendered = Self::render(&plan);
-        self.lists
+        // What the steps that just finished actually did, against the run's
+        // own record of what it has done. The harness computes the fact; the
+        // plan action it argues for — accept, revise the step, revise the
+        // plan, escalate — is the model's next call, because the plan is the
+        // model's. §5.5.
+        let findings = self
+            .lists
             .lock()
             .unwrap()
-            .insert(ctx.workspace.clone(), plan);
+            .entry(ctx.workspace.clone())
+            .or_default()
+            .advance(plan, ctx.work);
+        let findings = match findings.is_empty() {
+            true => String::new(),
+            false => format!("\n\n{}", findings.join("\n")),
+        };
         // The headroom reading, on the one result where it changes a
         // decision. Not the turn tail and not the system prompt: the tail
         // would leave one stale reading per turn in an append-only transcript
@@ -525,7 +674,9 @@ impl Tool for TodoTool {
             Some(f) => format!("\n\n{f}"),
             None => String::new(),
         };
-        Ok(ToolOutput::ok(format!("{rendered}{note}{context}")))
+        Ok(ToolOutput::ok(format!(
+            "{rendered}{note}{findings}{context}"
+        )))
     }
 }
 
@@ -1044,5 +1195,192 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "the write still lands");
         assert!(out.content.contains("finish one before starting another"));
+    }
+
+    // --- step appraisal (`docs/GOAL-SYSTEM-DESIGN.md` §5.5) ---
+    //
+    // The pure arithmetic is tested in `step.rs`; what these cover is the
+    // wiring, which is where the false positives live — a reading that fires
+    // on ordinary work is a line the model learns to skip.
+
+    use crate::step::{Outcome, Work};
+
+    /// The counters as the loop would stamp them: `calls` is everything in the
+    /// run's trace, this tool's own writes included.
+    fn work_ctx(run: u64, calls: u32, last: Option<Outcome>) -> ToolCtx {
+        ToolCtx {
+            work: Some(
+                Work {
+                    calls,
+                    last,
+                    ..Work::default()
+                }
+                .in_run(run),
+            ),
+            ..ToolCtx::default()
+        }
+    }
+
+    async fn write(tool: &TodoTool, ctx: &ToolCtx, items: Value) -> String {
+        tool.call(json!({ "items": items }), ctx)
+            .await
+            .unwrap()
+            .content
+    }
+
+    #[tokio::test]
+    async fn a_step_with_work_behind_it_is_appraised_silently() {
+        let tool = TodoTool::new();
+        write(
+            &tool,
+            &work_ctx(1, 0, None),
+            json!([{"content": "fix the port", "status": "in_progress"}]),
+        )
+        .await;
+        // Two calls of real work, plus the write above, now in the trace.
+        let out = write(
+            &tool,
+            &work_ctx(1, 3, Some(Outcome::Ok)),
+            json!([{"content": "fix the port", "status": "completed"}]),
+        )
+        .await;
+        assert!(
+            !out.contains("fix the port\""),
+            "the common path says nothing: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_step_marked_done_with_nothing_behind_it_says_so() {
+        let tool = TodoTool::new();
+        write(
+            &tool,
+            &work_ctx(1, 0, None),
+            json!([{"content": "fix the port", "status": "in_progress"}]),
+        )
+        .await;
+        // The only call since is the write above.
+        let out = write(
+            &tool,
+            &work_ctx(1, 1, Some(Outcome::Ok)),
+            json!([{"content": "fix the port", "status": "completed"}]),
+        )
+        .await;
+        assert!(out.contains("no tool calls behind it"), "{out}");
+        // The list itself is still the first thing the model reads.
+        assert!(out.starts_with("1/1 done"));
+    }
+
+    /// The null step masked by the bookkeeping that announced it: three plan
+    /// writes are three trace entries, and counting them as work is how a step
+    /// where nothing happened reads as busy.
+    #[tokio::test]
+    async fn revising_the_plan_is_not_work() {
+        let tool = TodoTool::new();
+        let started = json!([{"content": "fix the port", "status": "in_progress"}]);
+        write(&tool, &work_ctx(1, 0, None), started.clone()).await;
+        write(&tool, &work_ctx(1, 1, Some(Outcome::Ok)), started).await;
+        let out = write(
+            &tool,
+            &work_ctx(1, 2, Some(Outcome::Ok)),
+            json!([{"content": "fix the port", "status": "completed"}]),
+        )
+        .await;
+        assert!(out.contains("no tool calls behind it"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_step_never_seen_in_progress_is_not_appraised() {
+        let tool = TodoTool::new();
+        // Straight to done in one write: there is no span, and inventing a
+        // start would measure the whole run against one item.
+        let out = write(
+            &tool,
+            &work_ctx(1, 4, Some(Outcome::Ok)),
+            json!([{"content": "fix the port", "status": "completed"}]),
+        )
+        .await;
+        assert!(!out.contains("no tool calls"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn an_unstamped_context_makes_no_claim() {
+        let tool = TodoTool::new();
+        let bare = ToolCtx::default();
+        write(
+            &tool,
+            &bare,
+            json!([{"content": "fix the port", "status": "in_progress"}]),
+        )
+        .await;
+        let out = write(
+            &tool,
+            &bare,
+            json!([{"content": "fix the port", "status": "completed"}]),
+        )
+        .await;
+        assert!(
+            !out.contains("no tool calls"),
+            "nobody measured, so nothing is claimed: {out}"
+        );
+    }
+
+    /// The chat shape. A step started before the user last spoke has a mark in
+    /// the previous run's units, and differencing across that would announce
+    /// the null step on ordinary work.
+    #[tokio::test]
+    async fn a_step_spanning_two_runs_is_unmeasurable_rather_than_empty() {
+        let tool = TodoTool::new();
+        write(
+            &tool,
+            &work_ctx(1, 6, Some(Outcome::Ok)),
+            json!([{"content": "fix the port", "status": "in_progress"}]),
+        )
+        .await;
+        let out = write(
+            &tool,
+            &work_ctx(2, 1, Some(Outcome::Ok)),
+            json!([{"content": "fix the port", "status": "completed"}]),
+        )
+        .await;
+        assert!(!out.contains("no tool calls"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_second_bad_reading_on_one_step_stops_asking_for_a_revision() {
+        let tool = TodoTool::new();
+        let started = json!([{"content": "fix the port", "status": "in_progress"}]);
+        let done = json!([{"content": "fix the port", "status": "completed"}]);
+
+        write(&tool, &work_ctx(1, 0, None), started.clone()).await;
+        let first = write(&tool, &work_ctx(1, 1, Some(Outcome::Ok)), done.clone()).await;
+        assert!(first.contains("no tool calls behind it") && !first.contains("second time"));
+
+        // Put back and ticked again with nothing behind it either time.
+        write(&tool, &work_ctx(1, 2, Some(Outcome::Ok)), started).await;
+        let second = write(&tool, &work_ctx(1, 3, Some(Outcome::Ok)), done).await;
+        assert!(second.contains("second time"), "{second}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_step_is_reported_as_blocked_and_not_as_broken() {
+        let tool = TodoTool::new();
+        write(
+            &tool,
+            &work_ctx(1, 0, None),
+            json!([{"content": "publish the site", "status": "in_progress"}]),
+        )
+        .await;
+        let out = write(
+            &tool,
+            &work_ctx(1, 3, Some(Outcome::Refused)),
+            json!([{"content": "publish the site", "status": "completed"}]),
+        )
+        .await;
+        assert!(out.contains("refused"), "{out}");
+        assert!(
+            !out.contains("still failing"),
+            "the approver doing its job is not the step going wrong: {out}"
+        );
     }
 }
