@@ -130,6 +130,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let registry = replay_registry(
         &recorded.tools,
         prepared.agent.registry(),
+        // Ignored unless `mode` is `Stop`; see `replay_registry`.
+        Some(&crate::setup::surface_only_registry()),
         trajectory.calls.clone(),
         mode,
         cancel.clone(),

@@ -251,6 +251,7 @@ pub async fn drive_episode(
     let registry = match replay_registry(
         &recorded.tools,
         prepared.agent.registry(),
+        Some(&crate::setup::surface_only_registry()),
         prep.trajectory.calls.clone(),
         OnDivergence::Stop,
         cancel.clone(),

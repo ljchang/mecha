@@ -163,6 +163,11 @@ pub async fn drive_arm(
     let registry = match replay_registry(
         &recorded.tools,
         prepared.agent.registry(),
+        // `ask_user` is registered only by a front-end that owns a human, so
+        // no CLI registry has ever held it — and it is on the recorded surface
+        // of every interactive session, which is every session that contains a
+        // steer. Without this, every steer and denial probe skips.
+        Some(&crate::setup::surface_only_registry()),
         prep.trajectory.calls.clone(),
         OnDivergence::Stop,
         cancel.clone(),

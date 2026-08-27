@@ -1148,6 +1148,50 @@ pub fn tool_ctx(prepared: &PreparedTools) -> ToolCtx {
     }
 }
 
+/// An [`Asker`] with nobody behind it: every question is declined at once.
+///
+/// Two callers, one fact — there is no human. An eval run has nobody watching,
+/// and declining is the honest thing for the tool to report, leaving the model
+/// to proceed and say which reading it chose. A replay has nobody either, and
+/// there it is stronger than honesty: `Asker`'s own contract says a tool that
+/// blocks forever is worse than one that does not exist, and a corpus walk is
+/// exactly the job that would otherwise hang overnight on a prompt nobody will
+/// ever see.
+///
+/// [`Asker`]: mecha_core::tool::ask::Asker
+pub struct NoOneToAsk;
+
+#[async_trait::async_trait]
+impl mecha_core::tool::ask::Asker for NoOneToAsk {
+    async fn ask(&self, _question: &str, _options: &[String]) -> Option<String> {
+        None
+    }
+}
+
+/// Tools a replay may offer **for their description alone**, when the live
+/// registry cannot build them.
+///
+/// One entry today: `ask_user`, which is registered only by a front-end that
+/// owns a human, so no CLI registry has ever held it. That made **246 of 408**
+/// sessions in the store structurally unreplayable — the 60% that contains
+/// every intervention, which is why `validations.jsonl` was empty while the
+/// nightly ran successfully every night. A skip reported faithfully, and
+/// nothing reading it as *this whole class is unreachable*.
+///
+/// Two properties make this faithful rather than a fake. The tool is the
+/// **real** `AskUserTool`, so its description and schema are the bytes the
+/// recording put in front of the model — not a stub someone wrote to look
+/// similar. And [`mecha_core::replay_run::replay_registry`] consults this only
+/// under `OnDivergence::Stop`, where nothing executes, so the asker behind it
+/// is unreachable rather than merely unused.
+pub fn surface_only_registry() -> Registry {
+    let mut r = Registry::new();
+    r.insert(Arc::new(mecha_core::tool::ask::AskUserTool::new(Arc::new(
+        NoOneToAsk,
+    ))));
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::{build_subagent, excluded_by_allowlist};
