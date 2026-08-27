@@ -646,6 +646,17 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         .agent
         .compact_at(cfg.provider(opts.provider.as_deref())?.1.context_window)
         .map(|_| Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    // `web_search`'s rule is the whole precedent, and it has two halves: the
+    // tool exists only where its mechanism does, *and* an explicit allowlist
+    // still excludes it. `CompactTool` is not in `builtin::all`, so
+    // `[tools] enabled`/`disabled` never sees it and only this check can —
+    // without which `mecha run --tool fs_read` and a trigger narrowed to
+    // `mail__*` both get `compact` in the surface anyway, which makes "what
+    // does this run actually do" unanswerable from the trigger file.
+    let compact_allowed = opts.tools.is_empty() || opts.tools.iter().any(|t| t == "compact");
+    let compact_disabled = cfg.tools.disabled.iter().any(|t| t == "compact")
+        || (!cfg.tools.enabled.is_empty() && !cfg.tools.enabled.iter().any(|t| t == "compact"));
+    let compact_requested = compact_requested.filter(|_| compact_allowed && !compact_disabled);
     if compact_requested.is_some() {
         registry.insert(Arc::new(mecha_core::tool::builtin::CompactTool));
     }
