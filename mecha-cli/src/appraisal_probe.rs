@@ -27,6 +27,7 @@ use mecha_core::appraisal::{apply_probe, relabel, Appraisal, Cite, Probe};
 use mecha_core::config::ProviderConfig;
 use mecha_core::counterfactual::ProbeVerdict;
 use mecha_core::learning::Intervention;
+use mecha_core::surface::Fidelity;
 use std::path::Path;
 
 /// Say why a probe produced nothing, on stderr, always.
@@ -90,6 +91,26 @@ pub struct Tally {
     /// Never looked at, because the budget ran out first. Says nothing about
     /// the intervention at all.
     pub over_budget: usize,
+
+    /// How faithfully each driven probe reproduced the recorded request, split
+    /// three ways because the middle state is the one that was missing.
+    ///
+    /// A replay rebuilds the system prompt from the recording and the **tool
+    /// specs from today's registry**, and render order puts tools first — so a
+    /// description edited since the recording changes the bytes ahead of
+    /// everything else. Measured before this existed: the replay tracked the
+    /// recording for a median of **one** tool call, deterministically, with
+    /// one session's six probes all giving up at the same index. A per-session
+    /// constant, which is what a surface is.
+    ///
+    /// `differs` and `unknown` are kept apart deliberately. Drift that is
+    /// *provable* and drift that is merely *unmeasured* call for opposite
+    /// responses — one invalidates the probe, the other says nothing — and
+    /// folding them together is the same conflation that made twelve
+    /// inconclusive probes look like one unexplained number.
+    pub matches: usize,
+    pub differs: usize,
+    pub unknown: usize,
 }
 
 impl Tally {
@@ -109,6 +130,9 @@ impl Tally {
         self.unprobeable += other.unprobeable;
         self.unavailable += other.unavailable;
         self.over_budget += other.over_budget;
+        self.matches += other.matches;
+        self.differs += other.differs;
+        self.unknown += other.unknown;
     }
 }
 
@@ -176,6 +200,19 @@ pub async fn probe_appraisal(
                 continue;
             }
         };
+        // How faithfully this probe can reproduce the recorded request, read
+        // *before* it is driven — a verdict is only worth what the request
+        // behind it was.
+        let fidelity = Fidelity::of(
+            prep.recorded_tools_hash(),
+            &prepared.agent.registry().specs(),
+        );
+        match fidelity {
+            Fidelity::Matches => tally.matches += 1,
+            Fidelity::Differs => tally.differs += 1,
+            Fidelity::Unknown => tally.unknown += 1,
+        }
+
         // The run exactly as it was, rules block and all — see
         // `ProbePrep::system_as_recorded` for why a rules-free arm would bias
         // every verdict toward `Mattered`.
@@ -200,15 +237,23 @@ pub async fn probe_appraisal(
         // diff two runs. `steer_verdict`'s own inconclusive arm carries the
         // call index it gave up at, so print the reason it wrote rather than
         // a label of our own.
+        // The caveat rides on the line rather than being summarised away: a
+        // reader looking at one inconclusive probe needs to know whether the
+        // request behind it was the recorded one, and the tally cannot say
+        // which of its rows this line belongs to.
+        let caveat = fidelity
+            .caveat()
+            .map(|c| format!(" [{c}]"))
+            .unwrap_or_default();
         match &verdict {
             ProbeVerdict::Inconclusive(why) => {
                 eprintln!(
-                    "· {} turn {}: inconclusive — {why}",
+                    "· {} turn {}: inconclusive — {why}{caveat}",
                     appraisal.session_id, i.at
                 )
             }
             v => eprintln!(
-                "· {} turn {}: {v:?} → {found:?}",
+                "· {} turn {}: {v:?} → {found:?}{caveat}",
                 appraisal.session_id, i.at
             ),
         }

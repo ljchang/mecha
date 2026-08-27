@@ -505,6 +505,11 @@ async fn appraise(
                     "unprobeable": tally.unprobeable,
                     "unavailable": tally.unavailable,
                     "over_budget": tally.over_budget,
+                    "fidelity": {
+                        "matches": tally.matches,
+                        "differs": tally.differs,
+                        "unknown": tally.unknown,
+                    },
                     "budget_left": budget,
                 })),
             }))?
@@ -586,6 +591,22 @@ async fn appraise(
         println!(
             "    {:<16} {:>5}  — budget ran out first",
             "not reached", tally.over_budget
+        );
+        // What the verdicts above are worth. A probe whose request differed
+        // from the recording answered a question nobody asked, and one that
+        // cannot say is not evidence that it matched.
+        println!("\n  request fidelity, of the {} driven", tally.driven);
+        println!(
+            "    {:<16} {:>5}  — the replay sent what the recording sent",
+            "matches", tally.matches
+        );
+        println!(
+            "    {:<16} {:>5}  — tool surface provably changed since",
+            "differs", tally.differs
+        );
+        println!(
+            "    {:<16} {:>5}  — recorded before the surface was kept",
+            "unknown", tally.unknown
         );
     }
     Ok(())

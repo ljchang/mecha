@@ -50,6 +50,15 @@ pub struct ProbePrep {
 }
 
 impl ProbePrep {
+    /// The tool-surface fingerprint the recording carries, if it carries one.
+    ///
+    /// `None` is a recording made before the field existed, and the caller must
+    /// read it as *unknown* rather than as a match — which is why this hands
+    /// back the `Option` rather than a `bool` or a resolved verdict.
+    pub fn recorded_tools_hash(&self) -> Option<&str> {
+        self.recorded.tools_hash.as_deref()
+    }
+
     /// The recorded system prompt **verbatim**, rules block and all.
     ///
     /// The arm an appraisal probe wants, and the difference is not cosmetic.
