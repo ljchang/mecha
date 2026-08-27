@@ -1497,12 +1497,64 @@ moved. As of the timestamp above:
   eleven affect labels are unreachable for a reason that is neither the probe
   nor the charter.
 
+  **Fixed 2026-08-27, and the diagnosis is narrower than the paragraph above
+  states.** `TodoTool::description` already told the model to pass `serves`
+  when work serves a task — all 15 delegated runs above carried that
+  instruction *and* this task's own id on the seed's `Id:` line, and still
+  wrote nothing. So the gap was not "nobody was ever told"; it was that
+  nothing bound the schema's generic reminder to *this run's specific* id.
+  Both delegated postures (`work_prompt`, `discuss_prompt` in `tasks.rs`) now
+  do that binding explicitly, using the id already in the seed — nothing new
+  is fetched or paraphrased. **Caught on review** (#92): the first cut of
+  this sentence repeated the "nobody was told" framing the code comment and
+  CHANGELOG entry originally used, which the schema text already
+  contradicted.
+
+  **Whether the narrower fix moves the number is unmeasured, and the 120
+  sessions already appraised stay at 0 regardless** — this changes what
+  future delegated runs write, not what past ones did, so the next honest
+  read of `serves:` coverage needs sessions recorded after this lands, same
+  as the surface fix below.
+
   **And `sessions appraise` reported that zero by construction**, which is the
   sharper half: it passed `&[]` for goals unconditionally, so the command built
   to measure whether the labels were degenerate could never have reported
   anything but zero goals. Absent and zero conflated inside the instrument.
-  Fixed 2026-08-27 — it reads the plan off the transcript it was already
-  loading, and the output line now says `· 0 named a goal` as a measurement.
+  **Fixed and confirmed in `main` as of `acceaea` (part of #88, merged
+  2026-08-27T19:47:23Z)** — verified by reading `commands/sessions.rs` at
+  the current tip rather than trusting an earlier claim about it: `appraise`
+  now calls `TodoTool::plan_from_transcript` on the loaded messages and
+  passes the real goal through. This superseded an earlier, narrower fix
+  (`plan_from_transcript` on `feat/appraisal-probe` at `efaa4b9`) written
+  independently by the same review pass that fixed the `Frustration`
+  mislabelling bug below — the two landed together because both touch
+  `of_session`'s goal handling. **#91 has since merged too** (`f0ca8ca`,
+  2026-08-27T20:41:57Z) — `efaa4b9` is an ancestor of `main` now — but its
+  `named_a_goal` counter and `· 0 named a goal` print line did not survive:
+  confirmed absent from the current tree by grep, same as before #91
+  merged. Presumably dropped resolving overlap with #88's independent fix,
+  since both touch the same call site. If that measurement matters, it
+  still needs building from scratch against the current code, not assumed
+  to already exist because the commit that once added it is now merged.
+
+  **A second, more consequential bug was fixed in the same pass, and already
+  landed** (`acceaea`, #88's review — this is a record of what shipped, not
+  an open finding). `of_session` had cloned `goals.first()` onto every error,
+  so `Frustration`'s actual definition — *repeated negative error, one goal,
+  self-agency* — degenerated to *any two negative errors, once a session has
+  a goal at all*, and the check ran before agency/exposure and could mask a
+  more informative label (a turn-ceiling failure alongside an embarrassing
+  rewritten draft would have reported `Frustration` and hidden both facts).
+  The fix is in `affect_of` now: the `repeated` check is filtered to
+  `Agency::Own` and grouped by `error_kind` (`Channel` plus, for a
+  `Cite::Counter`, the counter's own name), which restores the real
+  definition and keeps the rank comparison from burying an exposed error.
+  Recorded here because it changes what "the labels resolve now" will
+  actually mean the next time `sessions appraise` runs with goals present —
+  which is what this PR's own `serves:` seed fix starts making possible —
+  and because it was latent until something populated goals widely enough to
+  reach it, so a reader might otherwise assume it is still open. It is not;
+  check `affect_of` before re-deriving it.
 
   **Two corrections to that, from the lane building the probe** (`mecha-80`,
   2026-08-27, pending its own PR — the counts are theirs and are not
