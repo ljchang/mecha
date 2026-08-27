@@ -88,6 +88,51 @@ impl GoalRef {
     }
 }
 
+/// Serialised as the same `kind:id` string the model writes, never as an
+/// object.
+///
+/// One spelling on every wire this type crosses. A derived impl would give a
+/// stored record a second shape — `{"Task": "01J8ZK"}` — and then "what does a
+/// goal reference look like" would have two answers depending on which file
+/// you opened, which is how a reader written against one silently mis-reads
+/// the other.
+impl serde::Serialize for GoalRef {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+/// Read an optional reference **out of a record**, leniently.
+///
+/// The record half of the module's two policies, as a function so it is
+/// decided once. A derived `Deserialize` could not express it: the lenient
+/// answer to an unknown kind is *no reference*, and a `Deserialize for
+/// GoalRef` must produce a `GoalRef` or fail the whole record. Reaching this
+/// through `Option` is what lets one unrecognised word cost the reference and
+/// nothing around it.
+pub fn de_lenient<'de, D>(d: D) -> Result<Option<GoalRef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    Ok(Option::<String>::deserialize(d)?
+        .as_deref()
+        .and_then(GoalRef::parse_lenient))
+}
+
+/// The same, for a list. An unrecognised entry is dropped and its neighbours
+/// survive.
+pub fn de_lenient_vec<'de, D>(d: D) -> Result<Vec<GoalRef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    Ok(Vec::<String>::deserialize(d)?
+        .iter()
+        .filter_map(|s| GoalRef::parse_lenient(s))
+        .collect())
+}
+
 impl fmt::Display for GoalRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.kind(), self.id())
