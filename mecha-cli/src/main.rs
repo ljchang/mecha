@@ -1,6 +1,7 @@
 //! `mecha` — an agent harness for local models.
 
 mod appraisal_probe;
+mod appraiser_pass;
 mod approve;
 mod commands;
 mod editor;
