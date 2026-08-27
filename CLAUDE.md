@@ -142,6 +142,8 @@ pressure.rs  how big the *next* request will be, from what the last one cost
 step.rs      what a finished plan step actually did, from the run's own trace
 boredom.rs   an approach that has stopped teaching the run anything, named
              while there is still something to do about it
+appraisal.rs how a run went against what it was for: a signed error per
+             channel, and a label derived from them and never reported
 cron.rs      five-field cron, resolved in an IANA zone (both DST directions)
 trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
 runmarker.rs "is a run in flight, and please stop it", as two files in a directory
