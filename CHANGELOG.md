@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A finished plan step is checked against what the run actually did.** A
+  board task is closed by the owner, so a person is the check; a todo step is
+  closed by the model, so there was no check at all. The loop folds its own
+  trace into counters and the plan tool differences two of them into a span,
+  reporting two facts on the `todo` result: nothing was attempted, or the last
+  attempt did not succeed. Four rules keep it off honest work — a refusal is
+  not a failure, only the last attempt decides, a sibling still running
+  supports no finding, and plan revision is not work.
+
+- **A run that has stopped making progress is told so, while there is still
+  something to do about it.** The loop guard ends a run that repeats itself
+  after a compaction, and it was the only rung of that ladder: a run going
+  nowhere had exactly two states, proceeding and dead. Boredom is the graded
+  version — three identical outcomes in, it names the approach and offers a
+  different route or a fresh conversation. It only speaks, so it costs nothing;
+  bounded to once per rung, once per turn, three times per run, because a model
+  fails more when its context holds its own earlier errors. `[agent] boredom`
+  switches it off for a pinned scorecard.
+
+- **`mecha sessions health` reports how often that fired.** Every threshold
+  behind it was argued rather than measured, and a detector nobody can count
+  fires either constantly or never with no way to tell which. Prints a dash
+  where no run recorded the counter, which is what it prints today.
+
 ## [0.1.15] - 2026-08-26
 
 Five surfaces that described themselves wrongly, found by using them. A chip
