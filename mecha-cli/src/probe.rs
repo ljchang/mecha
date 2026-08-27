@@ -46,30 +46,76 @@ pub struct ProbePrep {
     point: ProbePoint,
     recorded: RunConfig,
     base_system: String,
+    recorded_system: String,
+}
+
+impl ProbePrep {
+    /// The recorded system prompt **verbatim**, rules block and all.
+    ///
+    /// The arm an appraisal probe wants, and the difference is not cosmetic.
+    /// `validate` asks *which rule set does better*, so its arms must carry
+    /// exactly one generation's block and [`Self::system_with`] strips the
+    /// recorded one to guarantee it. An appraisal asks a different question —
+    /// *would this run, as it actually was, have got there unprompted* — and
+    /// answering it with the rules removed replays a **weaker agent than the
+    /// one that ran**, which diverges more readily and would bias every
+    /// verdict toward `Mattered`. That inflates regret out of an artifact of
+    /// the harness, in the field a label is derived from.
+    pub fn system_as_recorded(&self) -> String {
+        self.recorded_system.clone()
+    }
+
+    /// The recorded prompt stripped of its own rules block, plus `block`
+    /// (`None` = rules-free). An arm must carry exactly the block it was
+    /// given, not a mixture of generations.
+    pub fn system_with(&self, block: Option<&str>) -> String {
+        match block {
+            None => self.base_system.clone(),
+            Some(b) if self.base_system.is_empty() => b.to_string(),
+            Some(b) => format!("{}\n\n{b}", self.base_system),
+        }
+    }
 }
 
 /// Load the recording behind a steer/denial reflection. `Err(reason)` in the
 /// inner result is a skip — never evidence for either arm.
 pub fn prepare_probe(sessions_dir: &Path, r: &Reflexion) -> Result<Result<ProbePrep, String>> {
-    let path = match Session::find(sessions_dir, &r.session_id) {
+    prepare_probe_at(sessions_dir, &r.session_id, &r.trigger, &r.intervention)
+}
+
+/// The same, addressed by what a probe point actually needs rather than by the
+/// record that happens to carry it.
+///
+/// A [`Reflexion`] is one of two things that names an intervention; a
+/// [`mecha_core::learning::Intervention`] read straight off a transcript is the
+/// other, and the appraisal probe has only the second. Nothing in the slicing
+/// below ever wanted the reflection — it wanted a session, a trigger and the
+/// text to match — so the narrower signature is what the function was already
+/// doing.
+pub fn prepare_probe_at(
+    sessions_dir: &Path,
+    session_id: &str,
+    trigger: &str,
+    intervention: &str,
+) -> Result<Result<ProbePrep, String>> {
+    let path = match Session::find(sessions_dir, session_id) {
         Ok(p) => p,
-        Err(_) => return Ok(Err(format!("session {} not found", r.session_id))),
+        Err(_) => return Ok(Err(format!("session {session_id} not found"))),
     };
     let (_, convo) = match Session::load(&path) {
         Ok(loaded) => loaded,
         Err(e) => return Ok(Err(format!("session unreadable: {e:#}"))),
     };
-    let point = if r.trigger == Trigger::Steer.as_str() {
-        locate_steer(&convo.messages, &r.intervention)
-    } else if r.trigger == Trigger::Denial.as_str() {
-        locate_denial(&convo.messages, &r.intervention)
+    let point = if trigger == Trigger::Steer.as_str() {
+        locate_steer(&convo.messages, intervention)
+    } else if trigger == Trigger::Denial.as_str() {
+        locate_denial(&convo.messages, intervention)
     } else {
         // An `edit` reflection's intervention lives in an outbox item, not in
         // any transcript — there is no prefix to replay. Explicit, so a new
         // trigger kind cannot silently be probed as if it were a denial.
         return Ok(Err(format!(
-            "`{}` reflections have no replayable intervention point",
-            r.trigger
+            "`{trigger}` interventions have no replayable intervention point"
         )));
     };
     let Some(point) = point else {
@@ -87,33 +133,31 @@ pub fn prepare_probe(sessions_dir: &Path, r: &Reflexion) -> Result<Result<ProbeP
     // The recorded system prompt with any rules block of its era removed: an
     // arm must carry exactly the block it was given, not a mixture of
     // generations.
-    let base_system = recorded
-        .system_prompt
-        .as_deref()
-        .map(strip_rules_block)
-        .unwrap_or_default();
+    let recorded_system = recorded.system_prompt.clone().unwrap_or_default();
+    let base_system = strip_rules_block(&recorded_system);
     Ok(Ok(ProbePrep {
         trajectory,
         point,
         recorded,
         base_system,
+        recorded_system,
     }))
 }
 
-/// Drive the prepared prefix once under `block` (appended to the recorded
-/// system prompt; `None` = rules-free) and grade the trace.
+/// Drive the prepared prefix once under `system` and grade the trace.
+///
+/// The prompt arrives **resolved** rather than as a rules block to append,
+/// because there is more than one right answer now: [`ProbePrep::system_with`]
+/// is validate's, and [`ProbePrep::system_as_recorded`] is the appraisal
+/// probe's. Deciding it here would mean this function knowing which caller it
+/// had, which is the thing it was split apart to avoid.
 pub async fn drive_arm(
     prepared: &Prepared,
     provider_cfg: &ProviderConfig,
     model: &str,
     prep: &ProbePrep,
-    block: Option<&str>,
+    system: String,
 ) -> Result<Result<ProbeVerdict, String>> {
-    let system = match block {
-        None => prep.base_system.clone(),
-        Some(b) if prep.base_system.is_empty() => b.to_string(),
-        Some(b) => format!("{}\n\n{b}", prep.base_system),
-    };
     let recorded = &prep.recorded;
     let cancel = CancellationToken::new();
     let registry = match replay_registry(
@@ -191,7 +235,15 @@ pub async fn probe_reflection(
     };
     let mut verdicts = Vec::new();
     for block in [baseline_block, treatment_block] {
-        match drive_arm(prepared, provider_cfg, model, &prep, block).await? {
+        match drive_arm(
+            prepared,
+            provider_cfg,
+            model,
+            &prep,
+            prep.system_with(block),
+        )
+        .await?
+        {
             Ok(v) => verdicts.push(v),
             Err(why) => return Ok(ProbeResult::Skipped(why)),
         }

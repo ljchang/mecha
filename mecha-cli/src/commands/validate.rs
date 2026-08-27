@@ -145,7 +145,15 @@ async fn attribute_regression(
     }
     let fails = |selected: Vec<usize>| async move {
         let block = surface.block_with(&selected);
-        match probe::drive_arm(prepared, provider_cfg, model, prep, block.as_deref()).await? {
+        match probe::drive_arm(
+            prepared,
+            provider_cfg,
+            model,
+            prep,
+            prep.system_with(block.as_deref()),
+        )
+        .await?
+        {
             Ok(ProbeVerdict::Fail) => Ok(Some(true)),
             Ok(ProbeVerdict::Pass) => Ok(Some(false)),
             // An inconclusive or failed arm aborts the whole attribution.
@@ -327,7 +335,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             };
             let mut arms = Vec::new();
             for block in [None, Some(rules_block.as_str())] {
-                match probe::drive_arm(prepared, provider_cfg, &model, &prep, block).await? {
+                match probe::drive_arm(
+                    prepared,
+                    provider_cfg,
+                    &model,
+                    &prep,
+                    prep.system_with(block),
+                )
+                .await?
+                {
                     Ok(v) => arms.push(v),
                     Err(why) => {
                         eprintln!("· {}: {why}; skipping", r.id);
