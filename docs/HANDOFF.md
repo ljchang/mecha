@@ -119,7 +119,9 @@ shared checkout describes one disk and no commit, so say which tree.
 Breakdown: **526** in `mecha-cli` with 1 ignored, **815** in `mecha-core`,
 6 + 9 in its two
 integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75**
-in `mecha-slack`, and 1 doctest.
+in `mecha-slack`, and 1 doctest. Stale again the moment any of the
+2026-08-27 appraisal-arc PRs (#86–#91) lands — re-measure on whichever
+commit merges last rather than trusting this number forward.
 
 Clippy and rustfmt are clean at that commit, **measured locally**. CI is a
 separate claim and a weaker one, and it must be made per **sha**. Every PR
@@ -1390,52 +1392,63 @@ the mechanism and every decision. What it left standing:
   live recognizer sees it — otherwise a bad nightly write takes `:8992` down
   and voice goes deaf with no error text anywhere.
 
-### The goal system — rungs 0–5 shipped 2026-08-26, rung 6 next
+### The goal system — rungs 0–6 shipped, rung 7 next
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the authority and carries a status header
 saying which rungs shipped. The arc's premise, which is what makes the rest
 follow: **every evaluative signal mecha had was a cost or a correction**, so a
 run could be recorded as having gone badly and never as having gone well.
 
-Rungs 0–5 are in `main` (#61–#72). Everything with no model, no charter and no
-adversary in it is now built, which is §14's ordering and not a coincidence.
+Rungs 0–6 are in `main`. Everything with no model, no charter and no adversary
+in it is now built, which is §14's ordering and not a coincidence — and it is
+also the end of the free part: rung 7 is the first with a model in the path.
 
 **Open now:**
 
-- **Rung 5's model-facing half is unbuilt**, and it is the next thing. The
-  harness now predicts context pressure and acts on it — compacting early,
-  narrowing the tool-output budget — but the *model* still cannot see any of
-  it, so §7.1's second-order win is unclaimed: an anticipatory signal that can
-  act on the **plan** (pick a smaller task, delegate to a subagent with a
-  fresh `Conversation`) where a threshold can only fire after the plan is
-  committed. Three pieces, decided with the owner on 2026-08-26 and not to be
-  re-litigated: `ContextTracker::forecast()` returning headroom, observed mean
-  cost per recent turn and turns-remaining *as measurements*, so the model is
-  never asked to estimate its own token use; that reading on the **`todo` tool
-  result**, where it appears when the plan is being revised and costs nothing
-  on other turns — the turn tail was rejected because an append-only
-  transcript would accumulate a stale reading per turn, which is the
-  distractor shape the eviction pass exists to remove; and a **`compact`
-  tool**, unapproved and argument-free, because it is reversible through
-  `recall` and a confirmation on a routine reversible action is what trains
-  people to approve without reading. Monotonicity is structural rather than
-  asked for: the harness floor stays `reported || predicted`, so nothing the
-  model decides can make a run compact *later* than it does today.
-  `forecast()` needs the tracker to keep more than two observations, which is
-  a change to the type rather than a new method.
+- **Rung 7 is next**: the appraisal store and the pure `Affect` function (§5,
+  §6), plus the model half of step appraisal — the escalation, not the common
+  path. **Observation only.** Build the corpus and check the labels are not
+  degenerate before anything consumes them; if 95% come back neutral the
+  channel is dead, and that is learned cheaply.
 
-- **Rung 6 after that**: boredom (§9.1 rungs 1–3) and the deterministic half
-  of step appraisal (§5.5). Both read signals that already exist, both are
-  free, and together they fill the gap between "proceeding" and the loop
-  guard's "dead".
+- **Rung 6 shipped with two gaps that are stated reasons, not sequencing.**
+  Both are named in `GOAL-SYSTEM-DESIGN.md` §14 rung 6 and in the modules
+  themselves, so neither is rediscovered as an oversight.
+  - **Step appraisal reads two of §5.5's five signals** (`step.rs`). The two
+    shipped are facts about the span — nothing was attempted, and the last
+    attempt did not succeed. Of the three absent, one turned out to belong to
+    boredom and is built there; the other two — a span far longer than its
+    siblings, a verify-shaped call that passed — each need a threshold nobody
+    has measured here or a guess about what a call meant, and the escalation
+    that would settle an ambiguous span is rung 7's.
+  - **Boredom's rung 2 — consult — is unbuilt** (`boredom.rs`), because
+    neither half can be reached: a §7.4 marker does not exist at all, and
+    while a skill does, nothing in the `Tool` trait identifies the tool that
+    loads one. `narrows_surface_to` answers `None` until a skill is already
+    loaded, so it recognises the state the notice exists to escape only after
+    the escape has been taken. `Tool::runs_a_fresh_conversation` — added for
+    rung 3, fourth in the family with `carried_state`, `fixed_workspace` and
+    `narrows_surface_to` — is the shape closing it would take.
+
+- **Nothing has measured rung 6 yet, and the sensor is now there to do it.**
+  `RunStats::boredom_notices` and `Corpus::boredom_rate` landed with it and
+  `mecha sessions health` prints a `went nowhere` line; as of 2026-08-27 it
+  prints a dash, because no run in the store predates nothing — the sensor is
+  newer than every row. **Every threshold in `boredom.rs` was argued rather
+  than measured** — three identical outcomes, six, three notices a run — and
+  the same is true of `step.rs`'s silence on the common path. What to look for
+  once a corpus exists: a boredom rate near zero means the constants are too
+  slow to be worth the mechanism, and one near one means the transcript is
+  mostly the harness talking about the harness. Neither is visible any other
+  way.
 
 **Two things named rather than done**, recorded so they are not rediscovered
 as oversights. (The third — context pressure absent from `Homeostat` — shipped:
-`peak_prompt_tokens` and `peak_context_pressure`, `homeostat.rs:76,84`.)
+`peak_prompt_tokens` and `peak_context_pressure` on `Homeostat`.)
 
 - **`/queues` still walks the stores itself.** `backlog.rs` is the shared walk
   and the homeostat uses it, but rewiring `mecha review`'s `collect_queues`
-  (`commands/review.rs:470`) onto it needs either a wider `Backlog` or the loss
+  (`commands/review.rs`) onto it needs either a wider `Backlog` or the loss
   of its per-item detail lines (*"3 drafted with the trifecta armed"*). That is
   a design choice, not a mechanical port. Doctor is deliberately further out —
   its per-store error isolation is load-bearing.
@@ -1443,14 +1456,22 @@ as oversights. (The third — context pressure absent from `Homeostat` — shipp
   occupancy directly rather than by proxy, and a second witness to prompt-cache
   reuse that `cache_lens` cannot get — but nothing reads it yet, and a sensor
   with no consumer should not put an HTTP call in the path of every run's
-  start. `homeostat.rs:35` says so at the point where it would go.
+  start. `homeostat.rs` says so at the point where it would go.
 
 **A session resumed from disk starts unanchored.** The pressure series now
 survives a run boundary, so chat and the TUI predict from the first turn — but
 a transcript records what runs cost *in total* and never what the last request
 weighed, so a resumed session predicts from its second turn on. Closing it
 means recording a last-prompt-size beside `peak_prompt_tokens`; cheap, and
-nothing depends on it yet.
+nothing depends on it yet. Verified still open 2026-08-27: no `last_prompt_*`
+field exists.
+
+**And a step whose span crosses that same boundary gets no reading at all.**
+`step.rs` differences the run's own trace, which restarts with the run, so a
+mark taken in an earlier run is *unmeasurable* rather than empty — deliberately,
+since the arithmetic alone would saturate to zero and announce the null step on
+the commonest shape chat has. It is the same missing anchor as the item above,
+one mechanism over, and a conversation-scoped work counter would close both.
 
 **The compaction threshold is still a default nobody chose, and only half of
 it is fixable by machine.** `AgentConfig::compact_at` derives two thirds of
