@@ -1178,6 +1178,13 @@ impl Agent {
                 cancel: cx.cancel.clone(),
                 phase: cx.phase,
                 withheld: cx.withheld.clone(),
+                // Identity only — the counters are folded per turn in
+                // `run_tools`, which is the one place the trace is in scope.
+                // It has to be minted *here*: the trace is per run and a
+                // `RunContext` is not, so an id on the context would be one
+                // value across every chat turn and the reset it exists to
+                // catch would be invisible.
+                work: Some(crate::step::Work::default().in_run(crate::step::next_run())),
                 ..(*cx.tools).clone()
             }),
             ..cx.clone()
@@ -2884,6 +2891,16 @@ impl Agent {
             approved.push((i, Arc::clone(tool), id.clone(), name.clone(), input.clone()));
         }
 
+        // What the run has done, as of now. Folded after the gate rather than
+        // before it, so a call this turn's approver refused is already in the
+        // count — a step whose last attempt was refused reads as blocked
+        // instead of as never tried. Siblings are the other half: their
+        // results are not back, so they are carried as *in flight* and support
+        // no finding at all rather than reading as an empty span.
+        let work = crate::step::Work::of(trace)
+            .with_in_flight(approved.len().saturating_sub(1) as u32)
+            .in_run(cx.tools.work.map(|w| w.run).unwrap_or_default());
+
         let executed =
             futures::future::join_all(approved.into_iter().map(|(i, tool, id, name, input)| {
                 // Stamp the call's own id onto the context it runs under, so
@@ -2903,6 +2920,7 @@ impl Agent {
                     call_id: Some(id.clone()),
                     taint: Some(turn_taint),
                     context,
+                    work: Some(work),
                     ..(*cx.tools).clone()
                 });
                 async move {
@@ -5409,6 +5427,110 @@ mod tests {
             result_len < 1_000,
             "the result was not thinned: {result_len} bytes"
         );
+    }
+
+    // --- step appraisal ---
+
+    /// The wiring, which the pure tests in `step.rs` and the ctx-faking ones in
+    /// `todo.rs` cannot reach: does the loop's own trace actually arrive at the
+    /// tool, and is the reading against the *right* span?
+    ///
+    /// Worth a scripted run rather than an assertion about the code, on this
+    /// project's own rule — the level-3 skill bug and the `todo`-after-a-
+    /// compaction bug were both found by running the thing, not by reading it.
+    #[tokio::test]
+    async fn a_step_ticked_over_a_failed_call_is_reported_on_the_plan() {
+        struct BreakTool;
+        #[async_trait]
+        impl Tool for BreakTool {
+            fn name(&self) -> &str {
+                "build"
+            }
+            fn description(&self) -> &str {
+                "Build it."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::err("linker error"))
+            }
+        }
+
+        let plan = |status: &str, id: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "todo".into(),
+                    input: json!({"items": [{"content": "fix the port", "status": status}]}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+
+        let (agent, _) = agent_with_tools(
+            vec![
+                plan("in_progress", "p1"),
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "b1".into(),
+                        name: "build".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                plan("completed", "p2"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![
+                Arc::new(BreakTool),
+                Arc::new(crate::tool::todo::TodoTool::new()),
+            ],
+            PermissionMode::Allow,
+        );
+
+        let mut convo = Conversation::user("fix the port");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let closing = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == "p2" => Some(content.clone()),
+                _ => None,
+            })
+            .expect("the closing plan write has a result");
+
+        assert!(
+            closing.contains("fix the port") && closing.contains("still failing"),
+            "the harness said nothing about a step ticked over a failed call: {closing}"
+        );
+
+        // And the opening write is silent: the step had not finished, so there
+        // was nothing to appraise. A reading on every plan write would be bulk
+        // carried for the rest of the run.
+        let opening = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == "p1" => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(!opening.contains("still failing"), "{opening}");
     }
 
     // --- compaction ---
