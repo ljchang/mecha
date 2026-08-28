@@ -102,6 +102,13 @@ pub struct Evidence {
     /// Average `Homeostat::anticipated_guilt` over the runs that sensed it
     /// (`crate::guilt`). The sensor has no behavioural consumer yet; this is
     /// the corpus existing before anything is built on it.
+    ///
+    /// **Not independent of [`Self::mean_peak_context_pressure`] above it.**
+    /// `crate::guilt::anticipated_guilt`'s own formula takes context pressure
+    /// as one of its three terms, so the two fields will move together by
+    /// construction whenever pressure is what is driving guilt up — a reader
+    /// treating a rise in both as two corroborating signals is seeing one
+    /// cause twice.
     pub mean_anticipated_guilt: Option<f64>,
     /// What `doctor` said, verbatim — machine-authored text, not third-party.
     pub findings: Vec<String>,

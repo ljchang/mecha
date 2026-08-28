@@ -58,7 +58,8 @@ use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// The charter's whole rendered form must fit this many characters.
+/// The charter's whole rendered form is meant to fit this many characters —
+/// checked by [`Charter::over_budget`], never enforced by [`Charter::load`].
 ///
 /// Moves with [`crate::learning::RULES_CHAR_BUDGET`] in spirit — this rides
 /// in every run's cached prefix exactly like the learned-rules block — but is
@@ -117,9 +118,17 @@ impl Charter {
         Charter::validate(raw.line)
     }
 
+    /// Only the conditions that make a line *ambiguous or unusable* refuse
+    /// the whole document. Crossing [`CHARTER_CHAR_BUDGET`] is deliberately
+    /// **not** one of them — see [`Charter::over_budget`] — on the
+    /// `over_budget_domains` precedent for the learned-rules cap
+    /// (`crate::learning`): a document that costs more of the cached prefix
+    /// than argued still means exactly what it says, and dropping the whole
+    /// charter because an eleventh line pushed it over a budget would un-rank
+    /// every priority in it over a problem that is really about cost, not
+    /// validity.
     fn validate(lines: Vec<CharterLine>) -> Result<Charter> {
         let mut seen = BTreeSet::new();
-        let mut total_chars = 0usize;
         for line in &lines {
             if line.id.trim().is_empty() {
                 bail!("a charter line has an empty `id`");
@@ -137,20 +146,28 @@ impl Charter {
                     line.id
                 );
             }
-            total_chars += line.id.chars().count() + line.text.chars().count();
-        }
-        if total_chars > CHARTER_CHAR_BUDGET {
-            bail!(
-                "the charter is {total_chars} characters, over the {CHARTER_CHAR_BUDGET}-character \
-                 budget — it rides in every run's cached prefix, so keep it to the priorities that \
-                 actually need to outrank everything else rather than a full policy document"
-            );
         }
         Ok(Charter { lines })
     }
 
     pub fn lines(&self) -> &[CharterLine] {
         &self.lines
+    }
+
+    /// Total characters across every id and text — what
+    /// [`Charter::over_budget`] checks against [`CHARTER_CHAR_BUDGET`].
+    pub fn char_count(&self) -> usize {
+        self.lines
+            .iter()
+            .map(|l| l.id.chars().count() + l.text.chars().count())
+            .sum()
+    }
+
+    /// Costs more of the cached prefix than [`CHARTER_CHAR_BUDGET`] argues
+    /// for. Not refused by [`Charter::load`] — see its doc comment — so a
+    /// caller that cares (today: `mecha doctor`) checks this after loading.
+    pub fn over_budget(&self) -> bool {
+        self.char_count() > CHARTER_CHAR_BUDGET
     }
 
     pub fn is_empty(&self) -> bool {
@@ -250,12 +267,20 @@ text = "Tell the owner the truth early, especially when it disappoints."
     }
 
     #[test]
-    fn a_charter_over_the_character_budget_is_refused() {
+    fn a_charter_over_the_character_budget_still_loads_and_says_so() {
+        // Refusing the whole document over its eleventh line would un-rank
+        // every priority in it for a problem that is about cost, not
+        // validity — the `over_budget_domains` precedent, applied here.
         let long = "x".repeat(CHARTER_CHAR_BUDGET + 1);
-        let e = Charter::validate(vec![line("only-line", &long)])
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("character"), "{e}");
+        let charter = Charter::validate(vec![line("only-line", &long)]).unwrap();
+        assert_eq!(charter.lines().len(), 1);
+        assert!(charter.over_budget());
+    }
+
+    #[test]
+    fn a_charter_under_the_budget_is_not_over_it() {
+        let charter = Charter::validate(vec![line("a", "short")]).unwrap();
+        assert!(!charter.over_budget());
     }
 
     #[test]
