@@ -169,7 +169,9 @@ impl Evidence {
             "model: {}\nruns: {} (from {} session(s))\n\
              tool calls: {} · refused by the environment: {} ({})\n\
              finished on a failed call: {} ({})\ncompactions: {}\nstop causes: {}\n\
-             avg peak context pressure: {} · avg anticipated guilt: {}\n",
+             avg peak context pressure: {} · avg anticipated guilt: {} \
+             (guilt is computed partly from pressure — a rise in both is not two \
+             independent findings)\n",
             self.model,
             self.runs,
             self.sessions_read,
@@ -714,6 +716,9 @@ rationale: the threshold is too low";
         let brief = evidence.brief();
         assert!(brief.contains("42.0%"), "{brief}");
         assert!(brief.contains("0.10"), "{brief}");
+        // The non-independence has to reach the model reading this brief,
+        // not just a Rust doc comment nobody handed to it.
+        assert!(brief.contains("not two"), "{brief}");
     }
 
     #[test]

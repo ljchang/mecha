@@ -167,6 +167,19 @@ impl Charter {
                 );
             }
         }
+        // Checking uniqueness on the trimmed form and then keeping the
+        // untrimmed one would make the guarantee above a check rather than a
+        // fact: `id = "x "` would still render with the trailing space and a
+        // future `GoalRef::Charter("x")` lookup — itself trimmed, per
+        // `goal.rs` — would miss a line recorded as `"x "`. Store what was
+        // checked.
+        let lines = lines
+            .into_iter()
+            .map(|l| CharterLine {
+                id: l.id.trim().to_string(),
+                ..l
+            })
+            .collect();
         Ok(Charter { lines })
     }
 
@@ -174,13 +187,16 @@ impl Charter {
         &self.lines
     }
 
-    /// Total characters across every id and text — what
-    /// [`Charter::over_budget`] checks against [`CHARTER_CHAR_BUDGET`].
+    /// How many characters the charter actually costs when rendered into the
+    /// system prompt — [`prompt_block`]'s own length, not just the authored
+    /// `id`/`text` content. The header and the per-line `"N. `id` — "`
+    /// formatting ride in the cached prefix too, so measuring only the
+    /// authored text would under-report the true cost by a few hundred
+    /// characters of fixed overhead. What [`Charter::over_budget`] checks
+    /// against [`CHARTER_CHAR_BUDGET`], and the same number every message
+    /// that quotes "characters" beside "the prompt" means.
     pub fn char_count(&self) -> usize {
-        self.lines
-            .iter()
-            .map(|l| l.id.chars().count() + l.text.chars().count())
-            .sum()
+        prompt_block(self).map_or(0, |b| b.chars().count())
     }
 
     /// Costs more of the cached prefix than [`CHARTER_CHAR_BUDGET`] argues
@@ -335,6 +351,32 @@ priority = 1
             .unwrap_err()
             .to_string();
         assert!(e.contains("used more than once"), "{e}");
+    }
+
+    #[test]
+    fn a_surviving_id_is_stored_trimmed_not_just_checked_trimmed() {
+        // Checking uniqueness on the trimmed form and then keeping the
+        // untrimmed one would make the guarantee a check rather than a
+        // fact — a lone `"x "` line would pass validation and then render
+        // with the trailing space, answering to `charter:x` by nothing more
+        // than luck.
+        let charter = Charter::validate(vec![line(" x ", "one")]).unwrap();
+        assert_eq!(charter.lines()[0].id, "x");
+    }
+
+    #[test]
+    fn char_count_is_the_rendered_costs_not_just_the_authored_text() {
+        // The header and the `"1. `id` — "` formatting ride in the cached
+        // prefix too — a budget checked only against authored text would
+        // under-report the true cost, and the messages that quote this
+        // number beside "in the prompt" would be naming a different number
+        // than the one that actually rides there.
+        let charter = Charter::validate(vec![line("a", "short")]).unwrap();
+        assert_eq!(
+            charter.char_count(),
+            prompt_block(&charter).unwrap().chars().count()
+        );
+        assert!(charter.char_count() > "a".len() + "short".len());
     }
 
     #[test]
